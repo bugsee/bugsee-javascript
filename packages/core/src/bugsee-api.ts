@@ -2,7 +2,14 @@ import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { randomId, strFromU8 } from '@bugsee/util';
 import { BugseeError } from './errors';
-import type { BugseeApi, HttpResponse, HttpTransport, IssueCreateResult } from './transport';
+import type {
+  BugseeApi,
+  HttpResponse,
+  HttpTransport,
+  IssueCreateResult,
+  NotifyItem,
+  NotifyResult,
+} from './transport';
 
 // The control-plane BugseeApi (design §7.5/§8.1/§8.2) — platform-agnostic logic over an injected
 // HttpTransport. Lazily creates a session (POST /v2/sessions), memoizes the access token, and
@@ -116,6 +123,93 @@ function httpFailure(what: string, response: HttpResponse): BugseeError {
   );
 }
 
+/** The per-notification verdicts of a relay answer (`{ notifications: { <id>: status } }`), or `undefined`. */
+function notifyStatusMap(decoded: unknown): Record<string, unknown> | undefined {
+  if (typeof decoded !== 'object' || decoded === null) {
+    return undefined;
+  }
+  const envelope = decoded as { result?: { notifications?: unknown }; notifications?: unknown };
+  const map = envelope.result?.notifications ?? envelope.notifications;
+  return typeof map === 'object' && map !== null ? (map as Record<string, unknown>) : undefined;
+}
+
+/** The relay's `{ ok: false, error: '<Name>' }` error name (a string, unlike the `/v2/issues` envelope). */
+function relayErrorName(body: Uint8Array): string | undefined {
+  try {
+    const error = (decode(body) as { error?: unknown } | null)?.error;
+    return typeof error === 'string' ? error : undefined;
+  } catch {
+    return undefined; // not JSON: a proxy, not the collector
+  }
+}
+
+/** A 429's wait in ms: the body's `retryAfter` (seconds, `QuotaExceeded`), else a numeric `Retry-After` header. */
+function retryAfterMs(response: HttpResponse): number | undefined {
+  let seconds: unknown;
+  try {
+    seconds = (decode(response.body) as { retryAfter?: unknown } | null)?.retryAfter;
+  } catch {
+    seconds = undefined;
+  }
+  if (typeof seconds !== 'number') {
+    const header = response.headers['retry-after'];
+    seconds = typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : undefined;
+  }
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? Math.round(seconds * 1000)
+    : undefined;
+}
+
+/**
+ * Map the relay's answer onto what the sender should do (Android `NotificationRelayUploadJob.upload`).
+ *
+ * - 2xx / 5xx: the per-item map decides — only an item the collector called `failed` is worth sending
+ *   again (`accepted`, `skipped` and `invalid` are final). A 5xx with no map retries everything.
+ * - 408 / 429 and anything else non-2xx below 400 or unparseable: retry (a 429's `retryAfter` is the wait).
+ * - 403 with `error: 'KillSdk'`: kill (the app's SDK was switched off server-side).
+ * - other 4xx: rejected.
+ * - a `{ ok: false }` envelope inside a 200 is the collector refusing the batch: rejected (the error
+ *   router forces HTTP 200, so retrying would repeat the same refusal forever).
+ */
+function classifyNotify(response: HttpResponse, items: readonly NotifyItem[]): NotifyResult {
+  const { status } = response;
+  if (status === 429) {
+    const wait = retryAfterMs(response);
+    return wait === undefined
+      ? { outcome: 'retry', rateLimited: true }
+      : { outcome: 'retry', retryAfterMs: wait, rateLimited: true };
+  }
+  if (status === 408) {
+    return { outcome: 'retry' };
+  }
+  if (status === 403 && relayErrorName(response.body) === 'KillSdk') {
+    return { outcome: 'kill' }; // the app's SDK is switched off (appserver `resolveOrgAndApp`)
+  }
+  if (status >= 400 && status < 500) {
+    return { outcome: 'rejected' };
+  }
+  const success = isOk(status);
+  if (!success && status < 500) {
+    return { outcome: 'retry' };
+  }
+  let decoded: unknown;
+  try {
+    decoded = decode(response.body);
+  } catch {
+    // An intermediary's page, not the collector: 5xx or garbage with a 200 — try again.
+    return { outcome: 'retry' };
+  }
+  if (success && (decoded as V2Envelope | null)?.ok === false) {
+    return { outcome: 'rejected' };
+  }
+  const map = notifyStatusMap(decoded);
+  if (map === undefined) {
+    return success ? { outcome: 'sent' } : { outcome: 'retry' };
+  }
+  const retryIds = items.map((item) => item.id).filter((id) => map[id] === 'failed');
+  return retryIds.length > 0 ? { outcome: 'retry', retryIds } : { outcome: 'sent' };
+}
+
 export function createBugseeApi(transport: HttpTransport, options: BugseeApiOptions): BugseeApi {
   const { baseUrl, appToken, sdkVersion } = options;
   const sessionId = options.sessionId ?? randomId();
@@ -202,6 +296,23 @@ export function createBugseeApi(transport: HttpTransport, options: BugseeApiOpti
 
     invalidateSession(): void {
       accessToken = null;
+    },
+
+    async notify(items: readonly NotifyItem[]): Promise<NotifyResult> {
+      // The relay authenticates with the app token alone (appserver `notification-relay.service.js`
+      // `resolveOrgAndApp` reads `body.app_token`), so no session is opened for it — `notify()` works
+      // before the first report and while the session endpoint is failing.
+      let response: HttpResponse;
+      try {
+        response = await transport(`${baseUrl}/v2/notifications`, {
+          method: 'POST',
+          headers: baseHeaders(),
+          body: JSON.stringify({ app_token: appToken, notifications: items }),
+        });
+      } catch {
+        return { outcome: 'retry' }; // offline / DNS / aborted: the batch is still wanted
+      }
+      return classifyNotify(response, items);
     },
   };
 }

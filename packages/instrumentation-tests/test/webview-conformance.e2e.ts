@@ -8,7 +8,7 @@
 // checkable JSON Schema (`packages/webview/bridge-protocol.schema.json`), and (b) the exact semantic round-trips
 // native must implement. The schema + this scenario together define the wire contract the native receiver
 // consumes; if this is green, a conforming native receiver can be written against the same schema.
-import { type Bugsee, launch } from '@bugsee/webview';
+import { type Bugsee, launchWithSeams as launch } from '@bugsee/webview';
 import { Ajv } from 'ajv';
 import { afterEach, describe, expect, it } from 'vitest';
 // The machine-checkable JSON Schema (the cross-language artifact handed to the native team). Imported directly so
@@ -434,6 +434,25 @@ describe('slice 7 — WebView bridge protocol conformance (the native-team refer
     expect(validateMessage({ b: 1, k: 'control', tok: 'ok' })).toBe(true);
     expect(validateMessage({ b: 1, k: 'control', tok: '' })).toBe(false);
     expect(validateMessage({ b: 1, k: 'control', tok: 42 })).toBe(false);
+  });
+
+  it('R4V-10: blackout messages are schema-valid, stamped, ordered after hello, and the a:false state is restated at launch', () => {
+    const { client, rx } = track(boot());
+    client.startBlackout();
+    client.endBlackout();
+    const kinds = rx.messages().map((m) => m.k);
+    expect(kinds.slice(0, 2)).toEqual(['hello', 'blackout']); // the post-hello state comes right after hello
+    const blackouts = rx.byKind('blackout');
+    expect(blackouts.map((m) => m.a)).toEqual([false, true, false]);
+    for (const message of blackouts) {
+      expect(validateMessage(message), JSON.stringify(validateMessage.errors)).toBe(true);
+      expect(message).toMatchObject({ b: 1, k: 'blackout', n: CAPTURE_NONCE });
+      expect(typeof message.ts).toBe('number');
+    }
+    rx.assertAllConform(); // every message (blackout included) validates AND carries the capture nonce
+    // the schema discriminates: a blackout without its state, or with a non-boolean one, is not valid
+    expect(validateMessage({ b: 1, k: 'blackout', ts: 1 })).toBe(false);
+    expect(validateMessage({ b: 1, k: 'blackout', a: 'yes', ts: 1 })).toBe(false);
   });
 
   it('the schema REJECTS a malformed message (the guard actually discriminates)', () => {

@@ -13,6 +13,7 @@
 //
 // SERVER-only (node OTel SDK) → reached only from `./server`; never the portable `.` graph.
 import type { BugseeSpanProcessor } from '@bugsee/bugsee/node';
+import { describeValue, reportGuarded, resolveFailClosedBoolean } from '@bugsee/core';
 
 /** The minimal OTel surface we use — resolved from the optional peers by {@link defaultLoad}, or injected. */
 export interface OtelTracerModules {
@@ -31,7 +32,7 @@ export type OtelProviderOutcome =
   | 'error'; // provider construction / registration threw
 
 export interface AttachOtelProviderOptions {
-  /** Turn OFF Bugsee's zero-config provider self-registration (e.g. you run your own OTel). Default on. */
+  /** Turn OFF Bugsee's zero-config provider self-registration (e.g. you run your own OTel). Default on; an INVALID value (not a boolean) is OFF and reported. */
   setupOtelProvider?: boolean;
   /** Diagnostic sink for the coexistence notice + any failure. */
   onError?: (error: unknown) => void;
@@ -67,7 +68,19 @@ export async function attachBugseeOtelProvider(
   processor: BugseeSpanProcessor,
   options: AttachOtelProviderOptions = {},
 ): Promise<OtelProviderOutcome> {
-  if (options.setupOtelProvider === false) return 'disabled';
+  // Zero-config OTel installs a process-wide provider that consumes every span, so only boolean `true` (or absent)
+  // sets it up: `'false'`, `0`, `null`, `1` are OFF and reported, never read as "on" (R5V-8).
+  if (!resolveFailClosedBoolean(options.setupOtelProvider, true)) {
+    if (options.setupOtelProvider !== false) {
+      reportGuarded(
+        options.onError,
+        new Error(
+          `Bugsee: setupOtelProvider must be a boolean (got ${describeValue(options.setupOtelProvider)}); the zero-config OpenTelemetry provider stays OFF`,
+        ),
+      );
+    }
+    return 'disabled';
+  }
 
   let mods: OtelTracerModules | undefined;
   try {

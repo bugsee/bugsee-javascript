@@ -1,3 +1,4 @@
+import { createBlackoutState } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import {
   createBrowserInteractionSource,
@@ -9,6 +10,7 @@ import {
 interface EntryLike {
   name: string;
   duration: number;
+  startTime?: number;
   interactionId?: number;
   target?: unknown;
 }
@@ -238,5 +240,182 @@ describe('createBrowserInteractionSource', () => {
     expect(instances[0]?.disconnected).toBe(false);
     off();
     expect(instances[0]?.disconnected).toBe(true);
+  });
+
+  it('emits nothing during a blackout, and an entry seen then is not replayed after it ends', () => {
+    const { Ctor, instances } = fakeObserver();
+    const blackout = createBlackoutState();
+    const { seen } = wire({ PerformanceObserver: Ctor, blackout });
+    const click = (id: number) => ({
+      name: 'click',
+      duration: 90,
+      interactionId: id,
+      target: { tagName: 'BUTTON', id: `b${id}` },
+    });
+    instances[0]?.push([click(1)]);
+    blackout.start();
+    instances[0]?.push([click(2)]);
+    blackout.end();
+    instances[0]?.push([click(2), click(3)]); // 2 was consumed during the blackout
+    expect(seen.map((d) => d.interactionId)).toEqual([1, 3]);
+  });
+
+  describe('blackout is judged by EVENT time, not delivery time (V6)', () => {
+    const click = (id: number, startTime: number, duration = 90) => ({
+      name: 'click',
+      duration,
+      startTime,
+      interactionId: id,
+      target: { tagName: 'BUTTON', id: `b${id}` },
+    });
+    const setup = () => {
+      const { Ctor, instances } = fakeObserver();
+      const blackout = createBlackoutState();
+      let t = 0;
+      const wired = wire({ PerformanceObserver: Ctor, blackout, now: () => t });
+      return {
+        ...wired,
+        instances,
+        blackout,
+        at: (ms: number) => {
+          t = ms;
+        },
+      };
+    };
+
+    it('drops an interaction that happened DURING a blackout even when it is delivered after it ended', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(2000);
+      h.blackout.end();
+      // Delivered (3000) well after the blackout ended; the click itself was at 1500, inside the span.
+      h.at(3000);
+      h.instances[0]?.push([click(1, 1500), click(2, 2500)]);
+      expect(h.seen.map((d) => d.interactionId)).toEqual([2]);
+    });
+
+    it('drops an interaction that STARTED before the blackout but was still processing when it began', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(2000);
+      h.blackout.end();
+      h.at(3000);
+      h.instances[0]?.push([click(1, 950, 100)]); // 950..1050 overlaps the span start
+      expect(h.seen).toEqual([]);
+    });
+
+    it('keeps interactions that ended before the blackout began and ones that started after it ended', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(2000);
+      h.blackout.end();
+      h.at(3000);
+      h.instances[0]?.push([click(1, 800, 100), click(2, 2000.5)]);
+      expect(h.seen.map((d) => d.interactionId)).toEqual([1, 2]);
+    });
+
+    it('a span still OPEN at delivery covers entries from its start onward', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(1200);
+      h.instances[0]?.push([click(1, 1100)]);
+      expect(h.seen).toEqual([]);
+    });
+
+    it('remembers several spans', () => {
+      const h = setup();
+      h.at(100);
+      h.blackout.start();
+      h.at(200);
+      h.blackout.end();
+      h.at(300);
+      h.blackout.start();
+      h.at(400);
+      h.blackout.end();
+      h.at(500);
+      h.instances[0]?.push([click(1, 150, 10), click(2, 250, 10), click(3, 350, 10)]);
+      expect(h.seen.map((d) => d.interactionId)).toEqual([2]);
+    });
+
+    it('a blackout already in force when the source is built covers everything before it ends', () => {
+      const { Ctor, instances } = fakeObserver();
+      const blackout = createBlackoutState();
+      blackout.start();
+      let t = 5000;
+      const { seen } = wire({ PerformanceObserver: Ctor, blackout, now: () => t });
+      t = 6000;
+      blackout.end();
+      t = 7000;
+      instances[0]?.push([click(1, 10), click(2, 5500), click(3, 6500)]);
+      expect(seen.map((d) => d.interactionId)).toEqual([3]);
+    });
+
+    it('forgets spans long past (bounded memory) but still drops entries from a recent one', () => {
+      const h = setup();
+      for (let i = 0; i < 200; i += 1) {
+        h.at(1000 + i * 10_000);
+        h.blackout.start();
+        h.at(1005 + i * 10_000);
+        h.blackout.end();
+      }
+      const last = 1000 + 199 * 10_000;
+      h.at(last + 100);
+      h.instances[0]?.push([click(1, 1002), click(2, last + 2)]);
+      // 1002 sits in the very first span, forgotten after the 5 min retention (the whole point of the
+      // bound); the recent span is still enforced.
+      expect(h.seen.map((d) => d.interactionId)).toEqual([1]);
+    });
+
+    it('caps the number of remembered spans (a blackout storm cannot grow memory)', () => {
+      const h = setup();
+      for (let i = 0; i < 100; i += 1) {
+        h.at(i * 10);
+        h.blackout.start();
+        h.at(i * 10 + 5);
+        h.blackout.end();
+      }
+      h.at(2000);
+      // 64 newest spans are kept (i = 36..99); span 0 (0..5) was evicted, span 99 (990..995) remains.
+      h.instances[0]?.push([click(1, 1, 1), click(2, 991, 1)]);
+      expect(h.seen.map((d) => d.interactionId)).toEqual([1]);
+    });
+
+    it('treats the span edges as INSIDE (an interaction touching the blackout is dropped)', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(2000);
+      h.blackout.end();
+      h.at(3000);
+      // 910..1000 ends exactly where the span starts; 2000..2001 starts exactly where it ends.
+      h.instances[0]?.push([click(1, 910, 90), click(2, 2000, 1)]);
+      expect(h.seen).toEqual([]);
+    });
+
+    it('forgets a span older than the retention window (5 min) even when few spans exist', () => {
+      const h = setup();
+      h.at(1000);
+      h.blackout.start();
+      h.at(1005);
+      h.blackout.end();
+      h.at(1000 + 6 * 60_000);
+      h.blackout.start(); // a later blackout prunes the long-dead first span
+      h.at(1005 + 6 * 60_000);
+      h.blackout.end();
+      h.instances[0]?.push([click(1, 1002, 1)]);
+      expect(h.seen.map((d) => d.interactionId)).toEqual([1]);
+    });
+
+    it('an entry without a startTime falls back to the delivery-time gate', () => {
+      const h = setup();
+      h.blackout.start();
+      h.instances[0]?.push([{ name: 'click', duration: 90, interactionId: 1, target: {} }]);
+      h.blackout.end();
+      expect(h.seen).toEqual([]);
+    });
   });
 });

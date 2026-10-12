@@ -1,5 +1,11 @@
 import type { Bugsee } from '@bugsee/browser';
-import { getCarrierClient, guarded, type LogExceptionOptions, neverThrow } from '@bugsee/core';
+import {
+  asInternalClient,
+  getCarrierClient,
+  guarded,
+  type InternalLogExceptionOptions,
+  neverThrow,
+} from '@bugsee/core';
 import type { PerformanceApi } from '@bugsee/performance';
 
 // Re-exported so each adapter can contain its OWN pre-report work (component-name lookup, route extraction)
@@ -13,7 +19,7 @@ export { guarded, neverThrow };
 // call (+ mechanism/labels), and the performance naming seam live in ONE place instead of duplicated 5×.
 
 /** Capture mechanism for an adapter error report (the `logException` mechanism vocabulary). */
-export type AdapterMechanism = NonNullable<LogExceptionOptions['mechanism']>;
+export type AdapterMechanism = NonNullable<InternalLogExceptionOptions['mechanism']>;
 
 /** Base options shared by every adapter entry point. */
 export interface AdapterClientOptions {
@@ -72,7 +78,7 @@ export function reportError(error: unknown, options: ReportErrorOptions = {}): v
   neverThrow(() => {
     const client = resolveClient(options.getClient);
     if (client === undefined) return;
-    return client.logException(error, {
+    return asInternalClient(client).logException(error, {
       mechanism: options.mechanism ?? 'uncaught',
       ...(options.labels !== undefined ? { labels: options.labels } : {}),
     });

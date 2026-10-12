@@ -1,6 +1,7 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
+import { encodeRequestForMarker, normalizeReportAttachments } from './attachments';
 import { createMarkerAwareBundleReplay, recoverReports } from './capture-recovery';
 import type { ChunkBackend, PartRef } from './chunk-backend';
 import { createInMemoryChunkStorage } from './chunk-storage';
@@ -111,6 +112,54 @@ describe('recoverReports', () => {
     expect(logsOf(bundle)).toEqual([{ m: 'hello' }]); // the prior gen's capture made it in
     expect(markers.list()).toEqual([]); // delivered marker removed
     expect(await backend.listGenerations()).not.toContain(100); // recovered gen removed
+  });
+
+  it('rebuilds a binary user attachment from its base64 marker form (P1)', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const request = createReportingRequest({
+      source: { type: 'crash' },
+      id: 'inc1',
+      userAttachments: [{ name: 'bin', data: new Uint8Array([9, 0, 255]) }],
+    });
+    normalizeReportAttachments(request.report, vi.fn());
+    const stored: ReportMarker = JSON.parse(
+      JSON.stringify({
+        generation: 100,
+        request: encodeRequestForMarker(request),
+        attributes: {},
+        userIdentifier: null,
+      }),
+    );
+    const pipe = fakePipeline();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers: fakeMarkers([stored]),
+      context: baseContext,
+      uploadPipeline: pipe,
+    });
+    const files = unzipSync((pipe.bundles[0] as Bundle).body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
+    expect(Array.from(files[entry.filename] as Uint8Array)).toEqual([9, 0, 255]);
+  });
+
+  it('routes recovery-assembly problems to onError when the context has no sink (P8)', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const request = createReportingRequest({ source: { type: 'crash' }, id: 'inc1' });
+    request.report.userAttachments = [{ name: '', data: 'x' }];
+    const onError = vi.fn();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers: fakeMarkers([{ generation: 100, request, attributes: {}, userIdentifier: null }]),
+      context: baseContext,
+      uploadPipeline: fakePipeline(),
+      onError,
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 
   it('applies the marker’s incident-time attributes (not next-launch state)', async () => {

@@ -1,4 +1,5 @@
 import {
+  type BlackoutGate,
   type BreadcrumbInput,
   type CaptureProvider,
   CaptureProviderBase,
@@ -231,15 +232,15 @@ export function createUiBreadcrumbSource(
  * The capture provider that pumps a {@link UiBreadcrumbSource} into `client.addBreadcrumb` — the seam
  * that runs the app's breadcrumb filter and adds the `breadcrumbs` entry.
  *
- * GATED BY `captureInteractions`. Android gates its gesture breadcrumb on `Options.CaptureBreadcrumbs`
- * (`BugseeCaptureDataProviderBreadcrumb` carries `@BugseeCaptureControllingOptions(Options.CaptureBreadcrumbs)`
- * and owns `BreadcrumbInputGesture`), but this SDK has no such option and cannot grow one here:
- * breadcrumbs enter through `client.addBreadcrumb`, which is the APPLICATION's own API and must not be
- * gated by an SDK capture switch. The nearest true equivalent is the option that already decides
- * whether the SDK observes the person's DOM interactions at all — and turning it off must keep meaning
- * "the SDK does not watch what I click and type", whatever stream the observation lands on. A user who
- * set `captureInteractions: false` today gets no change/submit/focus record; they must not silently
- * start getting one because the destination changed.
+ * GATED TWICE, by two different options:
+ *  - `captureInteractions` gates this PROVIDER (`controllingOption`): turning it off keeps meaning "the SDK
+ *    does not watch what I click and type", whatever stream the observation lands on. A user who set
+ *    `captureInteractions: false` gets no change/submit/focus record.
+ *  - `captureBreadcrumbs` (Android `Options.CaptureBreadcrumbs`) gates the SINK: every breadcrumb enters
+ *    through `client.addBreadcrumb`, which drops it when that option is off. That switch is applied by the
+ *    client rather than by this provider because it covers the application's own `addBreadcrumb` calls as
+ *    well, exactly as on Android. (Android additionally names the option on its gesture-breadcrumb
+ *    provider; here the client-level gate subsumes that.)
  *
  * Being a provider (rather than a bare subscription in `launch()`) also buys the coordinator lifecycle:
  * the listeners detach on pause/stop with every other capture provider.
@@ -249,16 +250,27 @@ class UiBreadcrumbProvider extends CaptureProviderBase {
   readonly controllingOption = BugseeOption.CaptureInteractions;
   readonly #source: UiBreadcrumbSource;
   readonly #sink: (breadcrumb: BreadcrumbInput) => void;
+  readonly #blackout: BlackoutGate | undefined;
   #off: (() => void) | null = null;
 
-  constructor(source: UiBreadcrumbSource, sink: (breadcrumb: BreadcrumbInput) => void) {
+  constructor(
+    source: UiBreadcrumbSource,
+    sink: (breadcrumb: BreadcrumbInput) => void,
+    blackout?: BlackoutGate,
+  ) {
     super();
     this.#source = source;
     this.#sink = sink;
+    this.#blackout = blackout;
   }
 
   protected onStart(): void {
-    this.#off = this.#source.on('breadcrumb', (crumb) => this.#sink(crumb));
+    this.#off = this.#source.on('breadcrumb', (crumb) => {
+      // Blackout: interaction breadcrumbs (keyboard/focus/change/submit) are visual capture — dropped.
+      if (this.#blackout?.isActive() !== true) {
+        this.#sink(crumb);
+      }
+    });
   }
 
   protected override onStop(): void {
@@ -270,6 +282,7 @@ class UiBreadcrumbProvider extends CaptureProviderBase {
 export function createUiBreadcrumbProvider(
   source: UiBreadcrumbSource,
   sink: (breadcrumb: BreadcrumbInput) => void,
+  blackout?: BlackoutGate,
 ): CaptureProvider {
-  return new UiBreadcrumbProvider(source, sink);
+  return new UiBreadcrumbProvider(source, sink, blackout);
 }

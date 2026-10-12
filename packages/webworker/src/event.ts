@@ -1,4 +1,4 @@
-import { neverThrow } from '@bugsee/core';
+import { asInternalClient, neverThrow } from '@bugsee/core';
 import type { Bugsee } from './launch';
 
 // Service Worker event flush (design §3.x — the SW analog of the edge ctx.waitUntil). A Service Worker is
@@ -73,7 +73,10 @@ export function withBugseeEvent<E extends ExtendableEventLike>(
   const onError = resolved.onError;
   const flushTimeoutMs = resolved.flushTimeoutMs ?? SW_FLUSH_TIMEOUT_MS;
   const capture = (error: unknown): void => {
-    neverThrow(() => client.logException(error, { mechanism: 'uncaught' }), onError);
+    neverThrow(
+      () => asInternalClient(client).logException(error, { mechanism: 'uncaught' }),
+      onError,
+    );
   };
   // A flush that can only resolve — see the note above on rejected extend-lifetime promises.
   const flushed = async (): Promise<void> => {

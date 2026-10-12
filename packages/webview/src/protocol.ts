@@ -19,7 +19,7 @@ const jsonStringify = JSON.stringify;
 // The versioned wire protocol crossing the WebView boundary (docs/design/webview-bridge.md §6). A single,
 // transport-agnostic JSON envelope rides whichever channel is available (Android @JavascriptInterface /
 // WebMessageChannel; later iOS/Cordova). Every message carries `b` (the protocol version) — its presence also
-// tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | report | secure | bye.
+// tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | report | secure | blackout | bye.
 // native→JS: control (parsed here; applied by the control channel). Unknown fields/kinds are ignored by the
 // receiver (forward-compatible). This module is PURE — builders + encode + a defensive control parse.
 //
@@ -37,6 +37,7 @@ export type BridgeMessageKind =
   | 'batch'
   | 'report'
   | 'secure'
+  | 'blackout'
   | 'control'
   | 'bye';
 
@@ -144,6 +145,30 @@ export interface BatchMessage {
   readonly e: readonly EntryMessage[];
 }
 
+/**
+ * JS→native: the application's blackout began (`a: true`) or ended (`a: false`). A blackout stops the JS
+ * side's own visual/interaction capture, but the screen the user sees in a WebView is recorded by the NATIVE
+ * host (its video / screenshots), which only the host can pause. A receiver that supports it MUST stop
+ * (clear) its visual capture while `a` is true and declare that with `config.blackout: true` in its control
+ * reply; a receiver that predates it ignores the unknown kind (forward-compatible) and the SDK reports that
+ * the native video is NOT paused (docs/design/blackout.md).
+ *
+ * Receiver contract: (1) the CURRENT state is ALWAYS posted right after `hello` (`a: true` for a blackout carried over
+ * a relaunch, `a: false` otherwise), and native RESETS its JS-reported flag on `bye` and on `hello`: a torn client
+ * says nothing after its `bye`, so the next session's first message is what restores the truth;
+ * (2) `a: false` NEVER ends native's OWN blackout: native keeps a separate flag for its own reasons and stays
+ * dark while EITHER that flag or the JS-reported one is set; (3) the SDK judges "native declared no support"
+ * only after native answered the handshake (the control reply).
+ */
+export interface BlackoutMessage {
+  readonly b: number;
+  readonly k: 'blackout';
+  /** Whether the blackout is now in force. */
+  readonly a: boolean;
+  /** Wall-clock unix-ms of the change. */
+  readonly ts: number;
+}
+
 /** JS→native: teardown signal (pagehide / stop) so native can finalize. */
 export interface ByeMessage {
   readonly b: number;
@@ -156,6 +181,8 @@ export interface ControlConfig {
   readonly enabledTypes?: readonly FileType[];
   /** Whether the WebView may emit report triggers (D5 — default off). */
   readonly reportTrigger?: boolean;
+  /** Native declares that it applies `blackout` messages to its own visual capture (R2V-2). */
+  readonly blackout?: boolean;
 }
 
 /** native→JS: the handshake reply + ongoing control commands. */
@@ -276,6 +303,11 @@ export function batchMessage(entries: readonly EntryMessage[]): BatchMessage {
   return { b: PROTOCOL_VERSION, k: 'batch', e: entries };
 }
 
+/** Build a `blackout` message (the application's blackout began / ended). */
+export function blackoutMessage(active: boolean, timestamp: number): BlackoutMessage {
+  return { b: PROTOCOL_VERSION, k: 'blackout', a: active, ts: timestamp };
+}
+
 /** Build a `bye` teardown message. */
 export function byeMessage(): ByeMessage {
   return { b: PROTOCOL_VERSION, k: 'bye' };
@@ -290,7 +322,14 @@ export function byeMessage(): ByeMessage {
  * have no opaque payload, so plain `JSON.stringify`.
  */
 export function encode(
-  message: HelloMessage | EntryMessage | ReportMessage | SecureMessage | BatchMessage | ByeMessage,
+  message:
+    | HelloMessage
+    | EntryMessage
+    | ReportMessage
+    | SecureMessage
+    | BatchMessage
+    | BlackoutMessage
+    | ByeMessage,
 ): string {
   switch (message.k) {
     case 'entry':

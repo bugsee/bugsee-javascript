@@ -10,8 +10,10 @@
 
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import {
+  BlackoutToken,
   type CaptureDataEntry,
   CaptureDataEntryBase,
+  createBlackoutState,
   createMemoryCaptureStore,
   type StoredEntry,
 } from '@bugsee/core';
@@ -130,6 +132,8 @@ async function bootRenderer(
   sessionId: () => string | undefined;
   stop: ReturnType<typeof vi.fn>;
   flush: ReturnType<typeof vi.fn>;
+  /** The renderer client's blackout state (what its providers would read). */
+  blackout: ReturnType<typeof createBlackoutState>;
 }> {
   const { ipcRenderer } = bus.renderer(id);
 
@@ -144,18 +148,43 @@ async function bootRenderer(
   let injectedStore: { add(e: StoredEntry): void } | undefined;
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
+  const blackout = createBlackoutState();
   const fakeBrowserLaunch = (async (
     _token: string,
-    options: { captureStore: { add(e: StoredEntry): void } },
+    options: {
+      captureStore: { add(e: StoredEntry): void };
+      startInBlackout?: boolean;
+      holdBlackout?: boolean;
+    },
   ) => {
     injectedStore = options.captureStore;
-    return { client: { stop, flush }, internals: undefined };
+    // What the real @bugsee/browser launch does with the options: the blackout is up before any provider.
+    if (options.startInBlackout === true || options.holdBlackout === true) {
+      blackout.start({ silent: true });
+    }
+    const getService = (token: unknown) => (token === BlackoutToken ? blackout : undefined);
+    return {
+      client: {
+        stop,
+        flush,
+        getService,
+        isLaunched: () => true,
+        startBlackout: () => blackout.start(),
+        endBlackout: () => blackout.end(),
+        isBlackout: () => blackout.isActive(),
+        emitLifecycleEvent: () => {},
+      },
+      internals: undefined,
+    };
   }) as never;
 
   let sessionId: string | undefined;
+  // Each call here stands for a SEPARATE renderer page: the one-instance-per-page slot is per JS realm.
+  delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('bugsee.electron.renderer')];
   await launchRenderer('tok', {
     launch: fakeBrowserLaunch,
     bridge,
+    carrier: {}, // the renderer's own realm: it does not share the main process's carrier
     onSessionId: (id2) => {
       sessionId = id2;
     },
@@ -166,6 +195,7 @@ async function bootRenderer(
     sessionId: () => sessionId,
     stop,
     flush,
+    blackout,
   };
 }
 
@@ -181,6 +211,7 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     const videoSource: VideoCaptureSource = {
       start: () => {},
       stop: () => {},
+      clear: () => {},
       snapshot: async (now: number): Promise<CaptureDataEntry[]> => [
         new CaptureDataEntryBase('video', now, new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
       ],
@@ -245,5 +276,63 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     expect(r2.stop).toHaveBeenCalled();
     // The main's stream listener is gone after stop (no more renderer→main capture).
     expect(bus.mainListeners.get(BUGSEE_STREAM_CHANNEL)).toEqual([]);
+  });
+});
+
+describe('V1 - the main blackout reaches every renderer and the pixel video (privacy)', () => {
+  it('forwards start/end to all renderers, keeps a late renderer dark, and gates the pixel video', async () => {
+    const bus = fakeElectronBus();
+    const { fn: transport, puts } = recordingTransport();
+    const mainStore = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const videoCalls: string[] = [];
+    const videoSource: VideoCaptureSource = {
+      start: () => void videoCalls.push('start'),
+      stop: () => void videoCalls.push('stop'),
+      clear: () => void videoCalls.push('clear'),
+      snapshot: async (now: number): Promise<CaptureDataEntry[]> => [
+        new CaptureDataEntryBase('video', now, new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
+      ],
+    };
+    const mainClient = launchMain('tok', {
+      ipcMain: bus.ipcMain,
+      transport,
+      captureStore: mainStore,
+      captureNetwork: false,
+      capturedDataStore: 'memory',
+      detectHangs: false,
+      process: fakeProcess(),
+      systemProbe: realSystemProbe,
+      onError: vi.fn(),
+      video: { source: videoSource, hasPermission: () => true },
+    });
+    const r1 = await bootRenderer(bus, 1);
+    const r2 = await bootRenderer(bus, 2);
+    await Promise.resolve(); // the controller's async permission check settles
+    // Born dark, released by the handshake: a main that is not blacked out leaves renderers recording.
+    expect(r1.blackout.isActive()).toBe(false);
+    expect(r2.blackout.isActive()).toBe(false);
+    expect(videoCalls).toEqual(['start']);
+
+    mainClient.startBlackout();
+    expect(r1.blackout.isActive()).toBe(true);
+    expect(r2.blackout.isActive()).toBe(true);
+    expect(videoCalls).toEqual(['start', 'stop', 'clear']); // frames dropped and the ring emptied
+
+    // A renderer that loads mid-blackout stays dark after its handshake.
+    const r3 = await bootRenderer(bus, 3);
+    expect(r3.blackout.isActive()).toBe(true);
+
+    // A report built DURING the blackout carries no pixel video.
+    await mainClient.logException(new Error('during blackout'));
+    expect(puts).toHaveLength(1);
+    expect('video.webm' in unzipSync(puts[0] as Uint8Array)).toBe(false);
+
+    mainClient.endBlackout();
+    for (const r of [r1, r2, r3]) expect(r.blackout.isActive()).toBe(false);
+    expect(videoCalls).toEqual(['start', 'stop', 'clear', 'start']);
+    await mainClient.logException(new Error('after blackout'));
+    expect('video.webm' in unzipSync(puts[1] as Uint8Array)).toBe(true);
+
+    await mainClient.stop();
   });
 });

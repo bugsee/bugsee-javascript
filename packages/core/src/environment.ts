@@ -28,7 +28,9 @@ export function createEnvironment(): Environment {
 
   return {
     setUserIdentifier(id: string): void {
-      userIdentifier = id;
+      // Mobile parity: null / undefined / a non-string is a CLEAR. Every runtime (not only the browser
+      // wrapper) reaches this setter, and a stray value must never ship as request.json `email`.
+      userIdentifier = typeof id === 'string' ? id : null;
     },
     getUserIdentifier(): string | null {
       return userIdentifier;

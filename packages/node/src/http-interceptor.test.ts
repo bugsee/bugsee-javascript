@@ -211,6 +211,28 @@ describe('createNodeHttpInterceptor', () => {
     expect(events[1]?.custom?.error).toBe('boom');
   });
 
+  it.each([
+    ['AbortError by name', Object.assign(new Error('aborted'), { name: 'AbortError' })],
+    [
+      'ABORT_ERR by code',
+      Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' }),
+    ],
+  ])('emits an ABORT stage (not error) for %s, still re-raising it', (_label, err) => {
+    const { target, last, events } = harness({ now: () => 7 });
+    target.http.request('http://api.test/e');
+    expect(caught(() => last().fire('error', err))).toBe(err);
+    expect(events.map((e) => e.type)).toEqual(['before', 'abort']);
+    expect(events[1]).toMatchObject({ type: 'abort', timestamp: 7 });
+  });
+
+  it('keeps a reset / refused connection on the error stage', () => {
+    const { target, last, events } = harness();
+    target.http.request('http://api.test/e');
+    const err = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    caught(() => last().fire('error', err));
+    expect(events.map((e) => e.type)).toEqual(['before', 'error']);
+  });
+
   it('re-raises a non-Error error value UNCHANGED (no Error wrapping)', () => {
     const { target, last, events } = harness();
     target.http.request('http://api.test/e');

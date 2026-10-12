@@ -100,7 +100,7 @@ describe('@bugsee/hono — real Hono app (e2e)', () => {
     for (const path of ['/handler-error', '/http-404', '/ok']) {
       await app.request(path);
     }
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
   });
@@ -109,7 +109,7 @@ describe('@bugsee/hono — real Hono app (e2e)', () => {
     const { app, client } = boot();
     expect((await app.request('/http-404')).status).toBe(404);
     expect(await (await app.request('/ok')).text()).toBe('ok');
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
   });
 
   it('attributes each CONCURRENT request to its own user + contextId with no bleed', async () => {
@@ -121,7 +121,7 @@ describe('@bugsee/hono — real Hono app (e2e)', () => {
         app.request(`/work?d=${users.length - 1 - i}`, { headers: { 'x-user': user } }),
       ),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(3);

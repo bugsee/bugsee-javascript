@@ -21,6 +21,8 @@ export interface ContextBridgeLike {
 export interface IpcRendererLike {
   send(channel: string, ...args: unknown[]): void;
   on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void;
+  /** Electron's `ipcRenderer.removeListener`: used by the unsubscribe `onControl` returns (optional in fakes). */
+  removeListener?(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void;
 }
 
 /** The API exposed into the renderer's main world as `window.__bugseeElectron`. */
@@ -29,8 +31,13 @@ export interface BugseeElectronBridge {
   post(raw: string): void;
   /** Send the handshake request UP to the main process (prompts the `session` reply). */
   sendHello(raw: string): void;
-  /** Subscribe to main→renderer control messages (pause/resume/flush/stop/session). */
-  onControl(handler: (raw: string) => void): void;
+  /**
+   * Subscribe to main→renderer control messages (pause/resume/flush/stop/session). Returns an UNSUBSCRIBE: a
+   * renderer re-run must be able to retire the previous client's handler, or every message runs twice (R4V-3).
+   * (An older bridge returns nothing; the renderer then relies on its own stopped-client guard.)
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: an older bridge returns nothing (void) rather than undefined
+  onControl(handler: (raw: string) => void): void | (() => void);
 }
 
 export interface RegisterBugseePreloadOptions {
@@ -64,13 +71,20 @@ export function registerBugseePreload(options: RegisterBugseePreloadOptions): vo
     sendHello(raw: string): void {
       ipcRenderer.send(helloChannel, raw);
     },
-    onControl(handler: (raw: string) => void): void {
-      ipcRenderer.on(controlChannel, (_event: unknown, ...args: unknown[]): void => {
+    onControl(handler: (raw: string) => void): () => void {
+      let subscribed = true;
+      const listener = (_event: unknown, ...args: unknown[]): void => {
         const raw = args[0];
-        if (typeof raw === 'string') {
+        if (subscribed && typeof raw === 'string') {
           handler(raw);
         }
-      });
+      };
+      ipcRenderer.on(controlChannel, listener);
+      return (): void => {
+        // Dead even where the IPC object cannot remove a listener.
+        subscribed = false;
+        ipcRenderer.removeListener?.(controlChannel, listener);
+      };
     },
   };
   contextBridge.exposeInMainWorld(key, bridge);

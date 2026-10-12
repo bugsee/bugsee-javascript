@@ -1494,6 +1494,9 @@ describe('launch — capture recovery', () => {
     );
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
+    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff just described: the
+    // shared afterEach must not wait for it, so this already-stopped client leaves the tracked list.
+    clients.splice(clients.indexOf(client), 1);
   });
 
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
@@ -1717,6 +1720,96 @@ describe('launch — capture recovery', () => {
       }),
     );
     expect(started).toBe(false); // the controllingOption gate skips a disabled provider
+  });
+
+  it('reportDefaultBugPriority applies to client.upload() on node too (R2D-3)', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        scheduler: fakeScheduler().scheduler,
+        reportDefaultBugPriority: 'critical',
+      }),
+    );
+    await client.upload({ summary: 'bug' });
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const req = JSON.parse(
+      strFromU8(
+        unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array)[
+          'request.json'
+        ] as Uint8Array,
+      ),
+    );
+    expect(req.severity).toBe(Severity.Critical);
+  });
+
+  it('profiling is on ONLY for boolean true: any other value is off and reported (R2P-5)', async () => {
+    for (const bad of ['true', 'yes', 1, {}, 'false', 0, null]) {
+      const transport = uploadTransport();
+      const { scheduler } = fakeScheduler();
+      const onError = vi.fn();
+      let profilerStarted = false;
+      const cpuProfiler = {
+        running: false,
+        start: async () => {
+          profilerStarted = true;
+        },
+        collect: async () => undefined,
+        stop: async () => undefined,
+      };
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          transport,
+          captureStore: memStore(),
+          scheduler,
+          profiling: bad as unknown as boolean,
+          cpuProfiler,
+          onError,
+        }),
+      );
+      await client.logException(new Error('boom'));
+      expect(profilerStarted, String(bad)).toBe(false);
+      expect(profileInBundle(transport), String(bad)).toBe(false);
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('profiling must be'),
+        ),
+        String(bad),
+      ).toHaveLength(1);
+      await client.stop(50);
+    }
+  });
+
+  it('detectHangs with a non-boolean keeps the default (ON) and says so (R2P-5)', () => {
+    for (const bad of ['false', 0, null]) {
+      let started = false;
+      const onError = vi.fn();
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: memStore(),
+          scheduler: fakeScheduler().scheduler,
+          detectHangs: bad as unknown as boolean,
+          onError,
+          hangWatchdogFactory: () => ({
+            start: () => {
+              started = true;
+            },
+            stop() {},
+          }),
+        }),
+      );
+      expect(started, String(bad)).toBe(true);
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('detectHangs must be'),
+        ),
+      ).toHaveLength(1);
+      void client.stop(50);
+    }
   });
 
   it('attaches NO profile when profiling is disabled (the default)', async () => {
@@ -2120,12 +2213,15 @@ describe('launch — trace propagation (X3)', () => {
     }
   });
 
-  it('propagateTrace:false is the kill-switch — NO decorator wired, no traceparent even in a traced context', async () => {
+  // R5V-6: `['']` is a substring of every URL, so the trace + session ids went to every third party; and the
+  // invalid list must reach the host's onError THROUGH the launch (not only through the unit-level builder).
+  it('tracePropagationTargets [""] sends no trace to a third party; an invalid entry is reported', async () => {
     const { scheduler } = fakeScheduler();
     let init: { headers?: Record<string, string> } | undefined;
     fetchSpy((i) => {
       init = i;
     });
+    const errors: Error[] = [];
     let client: ReturnType<typeof launch> | undefined;
     try {
       client = launchTracked(
@@ -2134,8 +2230,55 @@ describe('launch — trace propagation (X3)', () => {
           scheduler,
           captureNetwork: true,
           capturedDataStore: 'memory',
-          propagateTrace: false,
+          tracePropagationTargets: ['', 5 as never],
+          onError: (e: unknown) => errors.push(e as Error),
+        }),
+      );
+      const store = client.getService(RequestContextStoreToken);
+      await store.run({ contextId: 'c1', attributes: {}, trace: TRACE }, async () => {
+        await (globalThis as { fetch: (u: string, o?: unknown) => Promise<unknown> }).fetch(
+          'https://third-party.test/x',
+          { method: 'GET' },
+        );
+      });
+      expect(init?.headers?.traceparent).toBeUndefined();
+      expect(
+        errors.filter((e) => e.message.includes('tracePropagationTargets entries')),
+      ).toHaveLength(1);
+    } finally {
+      await client?.stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // R4V-4: `propagateTrace` is node's OWN definition (default ON, fail OFF): `'false'`/`0`/`null`/`''` used to
+  // leave propagation ON (a raw `=== false` read). Only boolean `true` or absence keeps it on.
+  it.each([
+    false,
+    'false',
+    0,
+    null,
+    '',
+    'true',
+    1,
+  ])('propagateTrace=%j is the kill-switch — NO decorator wired, no traceparent even in a traced context', async (value) => {
+    const { scheduler } = fakeScheduler();
+    let init: { headers?: Record<string, string> } | undefined;
+    fetchSpy((i) => {
+      init = i;
+    });
+    const errors: Error[] = [];
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          captureNetwork: true,
+          capturedDataStore: 'memory',
+          propagateTrace: value as never,
           tracePropagationTargets: ['target.test'],
+          onError: (e: unknown) => errors.push(e as Error),
         }),
       );
       const store = client.getService(RequestContextStoreToken);
@@ -2146,6 +2289,31 @@ describe('launch — trace propagation (X3)', () => {
         );
       });
       expect(init?.headers?.traceparent).toBeUndefined(); // the kill-switch removed the decorator entirely
+      expect(errors.filter((e) => e.message.startsWith('propagateTrace')).length).toBe(
+        value === false ? 0 : 1,
+      );
+    } finally {
+      await client?.stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('propagateTrace:true is accepted without a report', async () => {
+    const { scheduler } = fakeScheduler();
+    const errors: Error[] = [];
+    fetchSpy(() => {});
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          capturedDataStore: 'memory',
+          propagateTrace: true,
+          onError: (e: unknown) => errors.push(e as Error),
+        }),
+      );
+      expect(errors.filter((e) => e.message.startsWith('propagateTrace'))).toEqual([]);
     } finally {
       await client?.stop();
       vi.unstubAllGlobals();

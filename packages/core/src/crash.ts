@@ -16,6 +16,11 @@ export interface CrashFrame {
   data?: { source?: string; member?: string; line?: number; column?: number };
   debug_id?: string;
   /**
+   * Excluded from the grouping location (the worker skips `hidden` frames when it picks the crash
+   * location) while still shown in the trace. Set by `logException({ skipFrames })`.
+   */
+  hidden?: boolean;
+  /**
    * Local variables in scope at this frame — `{ name: stringified-value }`, already scrubbed and capped
    * by the capturing tier. Absent unless the platform captured them.
    */
@@ -51,6 +56,8 @@ export interface CrashProvenance {
 export interface CrashException {
   name: string;
   reason?: string;
+  /** Application-supplied exception domain (`logException({ domain })`; Android `ExceptionOptions.Domain`). */
+  domain?: string;
   frames: CrashFrame[];
   cause?: CrashException;
 }
@@ -291,6 +298,37 @@ function renderThrowable(value: unknown): string {
     }
   }
   return String(value);
+}
+
+/**
+ * Apply the already-validated `logException` options that live in the crash document: stamp `domain` on
+ * the outermost exception and mark its top `skipFrames` frames `hidden`, never the last one (Android/iOS `skipFrames`: the
+ * frames stay in the trace but stop deciding the grouping location, so a wrapper or adapter does not
+ * collapse every error it reports into one issue). Mutates and returns `crash`.
+ */
+export function applyExceptionOptions(
+  crash: CrashJson,
+  options: { domain?: string; skipFrames?: number },
+  onError: (error: unknown) => void = () => undefined,
+): CrashJson {
+  if (options.domain !== undefined) {
+    crash.exception.domain = options.domain;
+  }
+  if (options.skipFrames !== undefined) {
+    // Hiding every frame leaves the worker no location or signature, so one frame always stays visible.
+    const limit = Math.max(crash.exception.frames.length - 1, 0);
+    if (options.skipFrames > limit) {
+      onError(
+        new Error(
+          `logException: \`skipFrames\` (${options.skipFrames}) is not below the ${crash.exception.frames.length} frame(s) of the stack; clamped to ${limit}`,
+        ),
+      );
+    }
+    for (const frame of crash.exception.frames.slice(0, Math.min(options.skipFrames, limit))) {
+      frame.hidden = true;
+    }
+  }
+  return crash;
 }
 
 export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson {

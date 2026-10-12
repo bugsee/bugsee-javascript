@@ -14,17 +14,21 @@ import {
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   installNetworkCapture,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -34,18 +38,25 @@ import {
   createSystemClock,
   createUploadPipeline,
   defineService,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type OptionDefinition,
   ReportMarkerStoreToken,
   recoverReports,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
@@ -79,10 +90,20 @@ const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Browser/worker capture buffer ceiling (design §966: 10 MB on browser/worker).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
-const WORKER_OPTION_DEFINITIONS = [
+/** Worker-local identifier of the `persist` switch: no cross-SDK identity. */
+const PERSIST_OPTION_KEY = 'com.bugsee.option.worker.persist';
+
+const WORKER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+  // Persisting writes captured data to IndexedDB, so only boolean `true` turns it on; any other supplied value
+  // (`'false'`, `0`, `null`) is OFF and reported, even on a Service Worker whose default is on (R3V-3). The
+  // default here is only for an ABSENT option; `launch` substitutes the platform default below.
+  { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
 ];
+
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
 
 export interface BugseeWorkerLaunchOptions {
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
@@ -102,6 +123,29 @@ export interface BugseeWorkerLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
   /** Detect global `error` + `unhandledrejection` on the worker scope. Default true. */
@@ -145,6 +189,14 @@ export interface BugseeWorkerLaunchOptions {
   systemProbe?: WorkerProbe;
   /** Carrier host for the process-global singletons; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives a relaunch. `RelaunchedAfterCrash`
+   * is told when the launch recovery finds a dead sibling's unsettled incident marker. The same listener can
+   * be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
   /** Web Locks manager for multi-instance liveness. Default `navigator.locks` (degrades when absent). */
   locks?: LockManagerLike;
   /** IDBFactory for the durable queue; injectable for tests. Default `globalThis.indexedDB`. */
@@ -179,6 +231,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     WORKER_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   const services = createServiceContainer();
@@ -197,7 +250,10 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // @bugsee/util the whole time with zero callers (Wave 4.2). An explicit option still wins.
   const platformType: WorkerPlatformType =
     options.platformType ?? (isServiceWorker() ? 'service-worker' : 'web-worker');
-  const persist = options.persist ?? platformType === 'service-worker';
+  const persist =
+    options.persist === undefined
+      ? platformType === 'service-worker'
+      : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
   // Persist the ROLLING capture buffer too (durable IDB chunk store + marker recovery) when persisting and no
   // capture-store override — so a Service Worker killed BEFORE its incident bundle is assembled still delivers
   // the report, rebuilt from its preserved capture chunks, on the next activation. `recoverEnabled` additionally
@@ -279,8 +335,21 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
       : createMemoryCaptureStore(storeBounds));
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so a listener set
+    // by option or by `setProcessLifecycleEventsListener` is the same one every client of the worker sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() releases the carrier slot, the liveness lock and the IndexedDB handles, so a stopped client must
+    // not be restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    restartable: false,
+    // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox worker stack would
+    // ship `frames: []` in crash.json (R3P-1).
+    stackParser: parseStack,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
     appToken,
@@ -313,6 +382,8 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   // Detection: global `error` → crash, `unhandledrejection` → error, on the worker scope (gated by
   // detectCrashes via each provider's controllingOption). Skipped if there is no worker global (non-worker).
@@ -341,7 +412,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // shared stores directly (no mirror hydration). The coordinator hands this callback the sibling's
   // hydrated marker store plus the incidents its bundle-queue leg already settled with, so an incident
   // that left BOTH a staged bundle and a marker (the SEV1 double-upload) is delivered exactly once.
-  void runLaunchRecovery({
+  let recoverySettled = false;
+  let crashSignalled = false; // RelaunchedAfterCrash is told at most once per launch
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
     // activations, so the dead-sibling scan must get first refusal on it (docs on the option in core).
@@ -356,6 +429,12 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                // R2D-2: an unsettled incident marker left by a dead sibling is this tier's honest evidence that
+                // the previous activation did not end cleanly (told at most once, to a client still running).
+                if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
+                  crashSignalled = true;
+                  asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+                }
                 await recoverReports({
                   backend: createIdbChunkBackend(captureView, {
                     generation: -1,
@@ -373,17 +452,121 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
             }
           : {}),
       }),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
-  // The public client. stop() clears the per-worker carrier slot so a later launch() starts fresh.
+  // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
+  // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
+  // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
+  // WHEN the lock is released (R3L-1): it follows the ONE shared real drain, not any single stop() call. Every
+  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
+  // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   const stopCore = client.stop;
+  let released = false;
+  const releaseIfSafe = (): void => {
+    if (!released && recoverySettled) {
+      released = true;
+      coexistence.release();
+    }
+  };
+  // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
+  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
+  let storeFlushed: Promise<void> | undefined;
+  /** A sink that throws must not turn a background step into an unhandled rejection (R4L-4 / R4H-7). */
+  const reportSafe = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // the host's own sink threw: nothing left to tell
+    }
+  };
+  const flushStore = async (): Promise<void> => {
+    try {
+      await captureStore.flush?.();
+    } catch (error) {
+      reportSafe(error);
+    }
+  };
+  const makeDurable = (): Promise<void> => {
+    storeFlushed ??= flushStore();
+    return storeFlushed;
+  };
+  let observingDrain = false;
+  const observeDrain = (wasLaunched: boolean): void => {
+    if (observingDrain) {
+      return;
+    }
+    observingDrain = true;
+    stopCore().then(
+      async (drained) => {
+        if (!drained) {
+          return;
+        }
+        try {
+          if (wasLaunched) {
+            // A FRESH flush, not the memoized one (R4L-4): a stop(timeout) that gave up memoized its flush
+            // BEFORE the drain finished, and the drain's own writes (deferred chunk deletes) must be durable
+            // before the connections are released.
+            await flushStore();
+          }
+          await recoveryDone;
+          releaseIfSafe();
+        } catch (error) {
+          reportSafe(error); // a throwing release()/sink is reported, never an unhandled rejection
+        }
+      },
+      /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */
+      () => undefined,
+    );
+  };
   const publicClient: Bugsee = {
     ...client,
-    stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+    async stop(timeout?: number): Promise<boolean> {
+      const wasLaunched = client.isLaunched();
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(wasLaunched ? BugseeStatus.Stopping : BugseeStatus.Stopped, carrier);
+        clearCarrierClient(publicClient, carrier);
+      }
+      let drained = false;
+      try {
+        const stopping = stopCore(timeout);
+        observeDrain(wasLaunched);
+        drained = await stopping;
+        return drained;
+      } finally {
+        // Make the data durable first (a launched client only: a killed one has no live store to flush), as the
+        // browser tier does (R2L-10): closing IndexedDB under the capture store's write queue loses its tail.
+        if (wasLaunched) {
+          await makeDurable();
+        }
+        // The launch-time dead-sibling scan may still be reading IndexedDB; closing under it would only
+        // make it reopen the connection. Wait for it, bounded by the caller's own deadline.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await (timeout === undefined
+          ? recoveryDone
+          : Promise.race([
+              recoveryDone,
+              new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, timeout);
+              }),
+            ]));
+        clearTimeout(timer);
+        // Release ONLY when the drain completed (a timed-out upload may still be running here and another
+        // context that saw this instance as dead would upload it again) and the recovery has settled.
+        if (drained) {
+          releaseIfSafe();
+        }
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      }
     },
   };
   setCarrierClient(publicClient, carrier);
+  setCarrierLastLaunch(appToken, options, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier);
   return publicClient;
 }

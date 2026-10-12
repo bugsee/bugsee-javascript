@@ -6,6 +6,8 @@ import type {
   AttributeValue,
   Breadcrumb,
   BreadcrumbInput,
+  LifecycleEventsListener,
+  LifecycleEventType,
   LogExceptionOptions,
   ReportDialogOptions,
   ReportDialogStrings,
@@ -27,10 +29,25 @@ describe('@bugsee/bugsee public API surface', () => {
     expect([attr, input, crumb, options]).toHaveLength(4);
   });
 
+  it('exports getDefaultNetworkSanitizer so a custom network filter can keep the default redaction', () => {
+    const sanitizer = publicApi.getDefaultNetworkSanitizer();
+    expect(sanitizer.sanitizeUrl('https://a.test/x?token=SECRET')).not.toContain('SECRET');
+  });
+
   it('re-exports the types of the manual-report API (upload) and of the report dialog', () => {
     const upload = {} as UploadOptions;
     const dialog = {} as ReportDialogOptions;
     const strings = {} as ReportDialogStrings;
     expect([upload, dialog, strings]).toHaveLength(3);
+  });
+
+  it('re-exports the lifecycle event constants and listener types', () => {
+    const listener: LifecycleEventsListener = () => {};
+    const type: LifecycleEventType = publicApi.LifecycleEvents.Launched;
+    expect(type).toBe('com.bugsee.lifecycle.Launched');
+    expect(publicApi.LifecycleEvents.AfterReportUploaded).toBe(
+      'com.bugsee.lifecycle.AfterReportUploaded',
+    );
+    expect(typeof listener).toBe('function');
   });
 });

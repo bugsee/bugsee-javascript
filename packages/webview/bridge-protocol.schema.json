@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://bugsee.com/schemas/webview-bridge-protocol/v1.json",
   "title": "Bugsee WebView Bridge Protocol v1",
-  "description": "The versioned JSON envelope crossing the WebView boundary (docs/design/webview-bridge.md §6). JS->native kinds: hello | entry | batch | report | secure | bye. native->JS kind: control. Every message carries `b` (protocol version). `p` is the per-kind payload INLINE as a JSON value (an object for entry/report, an array for secure) — the JS host splices the already-serialized payload in verbatim (serialize once), so native does exactly ONE JSON.parse of the whole message (no nested/second parse). Receivers MUST ignore unknown fields/kinds (forward-compatible); this schema validates that the SDK EMITS well-formed messages (hence additionalProperties:false on the emitter side).",
+  "description": "The versioned JSON envelope crossing the WebView boundary (docs/design/webview-bridge.md §6). JS->native kinds: hello | entry | batch | report | secure | blackout | bye. native->JS kind: control. Every message carries `b` (protocol version). `p` is the per-kind payload INLINE as a JSON value (an object for entry/report, an array for secure) — the JS host splices the already-serialized payload in verbatim (serialize once), so native does exactly ONE JSON.parse of the whole message (no nested/second parse). Receivers MUST ignore unknown fields/kinds (forward-compatible); this schema validates that the SDK EMITS well-formed messages (hence additionalProperties:false on the emitter side).",
   "definitions": {
     "traceRef": {
       "type": "object",
@@ -233,6 +233,32 @@
       "required": ["b", "k", "e"],
       "additionalProperties": false
     },
+    "blackout": {
+      "type": "object",
+      "description": "JS->native: the application's blackout began (a=true) or ended (a=false). The JS side stops its own visual/interaction capture, but the WebView's pixels are recorded by the NATIVE host, which only it can pause: a receiver that supports this MUST stop and CLEAR its visual capture (video/screenshots) while a=true, and declare support with control.config.blackout=true. A receiver that predates it ignores the unknown kind; the SDK then reports through onError that native video is not paused. Receiver contract: the CURRENT state is ALWAYS posted right after `hello` (a=true for a blackout carried over a relaunch, a=false otherwise) and native RESETS its JS-reported flag on `bye` and on `hello` (a torn client says nothing after its `bye`); a=false NEVER ends native's OWN blackout (native keeps a separate flag and stays dark while EITHER its own flag or the JS-reported one is set); the SDK judges 'native declared no support' only after native answered the handshake (the control reply).",
+      "properties": {
+        "b": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "k": {
+          "const": "blackout"
+        },
+        "n": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The capture nonce (D-A11). Native mints it, interpolates it into the bundle it injects, and DROPS any inbound message that does not carry it. Optional on the wire so a host that mints no nonce still validates; a native receiver that mints one MUST require it."
+        },
+        "a": {
+          "type": "boolean"
+        },
+        "ts": {
+          "type": "number"
+        }
+      },
+      "required": ["b", "k", "a", "ts"],
+      "additionalProperties": false
+    },
     "bye": {
       "type": "object",
       "description": "JS->native: teardown signal (pagehide / stop) so native can finalize.",
@@ -281,6 +307,10 @@
             },
             "reportTrigger": {
               "type": "boolean"
+            },
+            "blackout": {
+              "type": "boolean",
+              "description": "Native declares that it applies `blackout` messages to its own visual capture (R2V-2)."
             }
           },
           "additionalProperties": false
@@ -336,6 +366,9 @@
     },
     {
       "$ref": "#/definitions/batch"
+    },
+    {
+      "$ref": "#/definitions/blackout"
     },
     {
       "$ref": "#/definitions/bye"

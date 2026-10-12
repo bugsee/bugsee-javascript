@@ -49,7 +49,13 @@ export type SpanFilter = (span: FilterableSpan) => FilterableSpan | null;
 /** Report handler (design §7.1): `before` mutates/returns a new request, or null to veto the report. */
 export interface ReportHandler {
   before?: (request: ReportingRequest) => ReportingRequest | null;
-  /** Accepted for forward-compat; not yet invoked (deferred to a later slice). */
+  /**
+   * Runs once the report exists (Android `ReportHandler.onAfterReportCreated`): after `before`, and BEFORE
+   * the bundle is assembled or uploaded, so it may still mutate the request (labels, attributes,
+   * attachments). Not called when no report was created — a veto, no upload pipeline, or a report the
+   * queue refused. How the upload ended is observable through the lifecycle events. A throwing handler
+   * goes to `onError` and never breaks reporting.
+   */
   after?: (request: ReportingRequest) => void;
 }
 

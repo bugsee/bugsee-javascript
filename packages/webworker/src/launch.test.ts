@@ -29,6 +29,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   ReportMarkerStoreToken,
   type Scheduler,
   type StoredEntry,
@@ -270,6 +271,30 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('user-agent');
   });
 
+  it.each([
+    [
+      'JavaScriptCore (Safari worker, recorded from jsc)',
+      'applicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11',
+    ],
+    [
+      'SpiderMonkey (Firefox worker)',
+      'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
+    ],
+  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport }));
+    const error = new Error('non-v8-stack');
+    error.stack = stack;
+    await client.logException(error);
+    await vi.waitFor(() => expect(findPut(transport)).toBeDefined());
+    const files = unzipSync((findPut(transport)?.[1] as HttpRequestOptions).body as Uint8Array);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+      exception: { frames: { data: { member: string } }[] };
+    };
+    expect(crash.exception.frames[0]?.data.member).toBe('applicationCode');
+    expect(crash.exception.frames).toHaveLength(2);
+  });
+
   it('persist ON (service-worker) registers the report-marker store', () => {
     const client = track(
       'tok',
@@ -298,6 +323,16 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     );
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow(); // no marker store...
     expect(client.getService(BundleStoreToken)).toBeDefined(); // ...but the durable bundle store still wired
+  });
+
+  it('reportDefaultBugPriority applies to client.upload() in a worker too (R2D-3)', async () => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, reportDefaultBugPriority: 'critical' }));
+    await client.upload({ summary: 'bug' });
+    expect((issueJson(transport) as unknown as { severity: number }).severity).toBe(4);
+    await client.upload({ summary: 'explicit', severity: 'medium' });
+    const calls = transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'));
+    expect(JSON.parse((calls[1]?.[1] as HttpRequestOptions).body as string).severity).toBe(2);
   });
 
   it('a memory-only (web-worker) launch records NO markers and reports no internal error', async () => {
@@ -484,6 +519,9 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
+    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff described above: the shared
+    // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
+    clients.splice(clients.indexOf(client), 1);
   });
 
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
@@ -961,6 +999,41 @@ describe('launch (webworker)', () => {
   it('a service-worker defaults persist ON → registers a durable BundleStore', () => {
     const client = track('tok', baseOptions({ platformType: 'service-worker' }));
     expect(client.getService(BundleStoreToken)).toBeDefined(); // IndexedDB durable queue wired
+  });
+
+  // R3V-3: `options.persist ?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
+  // more data, so only boolean `true` turns it on and any other value is OFF (even on a Service Worker, whose
+  // default is on) and is reported.
+  it.each([
+    0,
+    '',
+    'false',
+    'true',
+    1,
+    null,
+  ])('persist=%j (invalid) is OFF even for a service-worker, and reports', (bad) => {
+    const onError = vi.fn();
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', persist: bad as never, onError }),
+    );
+    expect(() => client.getService(BundleStoreToken)).toThrow(); // memory-only
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('persist must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('persist: true forces durable storage on a web-worker, false forces memory on a service-worker', () => {
+    expect(
+      track('tok', baseOptions({ persist: true, carrier: {} })).getService(BundleStoreToken),
+    ).toBeDefined();
+    const sw = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', persist: false, carrier: {} }),
+    );
+    expect(() => sw.getService(BundleStoreToken)).toThrow();
   });
 
   it('a web-worker defaults persist OFF → no durable BundleStore', () => {
@@ -1513,10 +1586,100 @@ describe('launch — network capture wiring', () => {
     ]);
   });
 
+  it('detectHttpErrors (review O6): reports a 5xx fetch once per endpoint+status, ignores a 4xx, off by default', async () => {
+    // The interceptor wraps whatever `fetch` is at activation: switch the status through a variable.
+    let status = 503;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+    const offTransport = uploadTransport();
+    const off = track('tok-off', baseOptions({ transport: offTransport, carrier: {} }));
+    await fetch('https://api.example.com/orders');
+    await off.flush();
+    expect(offTransport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+
+    status = 404;
+    const transport = uploadTransport();
+    const client = track(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, detectHttpErrors: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders/1');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+    status = 503;
+    await fetch('https://api.example.com/orders/1');
+    await fetch('https://api.example.com/orders/2');
+    await client.flush();
+    expect(issueJson(transport).summary).toBe('HTTP 503');
+    expect(transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'))).toHaveLength(1);
+  });
+
   it('reuses a console interceptor already on the carrier instead of installing a second one', () => {
     const carrier = {};
     const existing = getOrCreateInterceptor('console', () => createConsoleInterceptor(), carrier);
     track('tok', baseOptions({ carrier }));
     expect(getCarrier(carrier).interceptors.get('console')).toBe(existing); // same instance, one patch
+  });
+});
+
+// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+  const run = async (withMarker: boolean, siblings = 1) => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, withMarker);
+    if (siblings > 1) await seedSibling(idb, 'deadsib2', 600, { m: 'pre-crash-2' }, withMarker);
+    const seen: string[] = [];
+    track(
+      'tok',
+      baseOptions({
+        transport: uploadTransport(),
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    return seen;
+  };
+
+  it('is emitted once, after Launched, when a dead sibling left an incident marker', async () => {
+    expect(await run(true)).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+      LifecycleEvents.RelaunchedAfterCrash,
+    ]);
+  });
+
+  it('is emitted ONCE however many dead siblings left an incident marker', async () => {
+    const seen = await run(true, 2);
+    expect(seen.filter((type) => type === LifecycleEvents.RelaunchedAfterCrash)).toHaveLength(1);
+  });
+
+  it('is NOT told to a client that has been stopped before the recovery got there', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const seen: string[] = [];
+    const client = track(
+      'tok',
+      baseOptions({
+        transport: uploadTransport(),
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await client.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT emitted when the dead sibling left only capture', async () => {
+    expect(await run(false)).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
   });
 });

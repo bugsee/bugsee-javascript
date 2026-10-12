@@ -1,5 +1,10 @@
 // @vitest-environment jsdom -- selector validation (Wave 1.4) needs a DOM to parse against
-import type { CaptureDataEntry, CaptureProvider, CaptureProviderInit } from '@bugsee/core';
+import {
+  type CaptureDataEntry,
+  type CaptureProvider,
+  type CaptureProviderInit,
+  createBlackoutState,
+} from '@bugsee/core';
 import type { eventWithTime, recordOptions } from '@bugsee/rrweb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeReplay } from './encoder';
@@ -53,6 +58,19 @@ describe('registerReplay', () => {
     expect(typeof recorder.stopBlackout).toBe('function');
   });
 
+  it('threads the blackout gate into the recorder: a blackout active at registration never records', () => {
+    const blackout = createBlackoutState();
+    blackout.start();
+    const client = fakeClient();
+    const fake = fakeRecord();
+    mustRegister(client, {}, { record: fake.record, blackout });
+    client.providers[0]?.init(fakeInit());
+    client.providers[0]?.start({} as never);
+    expect(fake.record).not.toHaveBeenCalled();
+    blackout.end();
+    expect(fake.record).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a dropped invalid masking selector through the caller onError', () => {
     // Wave 1.4. Without this wiring the resolver's report has nowhere to go, and a developer's typo'd
     // selector is silently downgraded — which is how the original defect stayed invisible in the first place.
@@ -68,6 +86,34 @@ describe('registerReplay', () => {
     );
     expect(errors).toHaveLength(1);
     expect(String(errors[0])).toContain('blockSelector');
+  });
+
+  it('threads onError into the recorder: canvas given up after repeated blackout restarts is reported (R2V-7)', () => {
+    const blackout = createBlackoutState();
+    const errors: unknown[] = [];
+    const client = fakeClient();
+    const fake = fakeRecord();
+    registerReplay(
+      client,
+      {},
+      {
+        record: fake.record,
+        blackout,
+        onError: (e) => errors.push(e),
+        canvas: {
+          recordCanvas: true,
+          sampling: { canvas: 2 },
+          dataURLOptions: { type: 'image/webp', quality: 0.6 },
+        },
+      },
+    );
+    client.providers[0]?.init(fakeInit());
+    client.providers[0]?.start({} as never);
+    for (let i = 0; i < 6; i++) {
+      blackout.start();
+      blackout.end();
+    }
+    expect(errors.filter((e) => /canvas/i.test(String(e)))).toHaveLength(1);
   });
 
   it('builds the recorder with the fail-closed masking + checkoutEveryNms (started → rrweb record opts)', () => {

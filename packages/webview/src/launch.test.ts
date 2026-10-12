@@ -1,16 +1,31 @@
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  BUGSEE_SDK_VERSION,
+  BugseeStatus,
   type CaptureStore,
   type Clock,
+  clearCarrierClient,
   contributeServiceManifest,
   FiltersToken,
+  getCarrierBlackout,
+  getCarrierClient,
+  getCarrierStatus,
+  LifecycleEvents,
   type Scheduler,
   type StoredEntry,
+  setCarrierBlackout,
   setCarrierClient,
+  setCarrierStatus,
+  setProcessLifecycleEventsListener,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import bridgeSchema from '../bridge-protocol.schema.json' with { type: 'json' };
-import { type BugseeWebViewLaunchOptions, launch, SDK_VERSION } from './launch';
+import {
+  type BugseeWebViewLaunchOptions,
+  launchWithSeams as launch,
+  launch as publicLaunch,
+  SDK_VERSION,
+} from './launch';
 import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
   BatchMessage,
@@ -141,6 +156,17 @@ describe('launch (webview)', () => {
   it('returns a started client', () => {
     const client = track('tok', baseOptions());
     expect(client.isLaunched()).toBe(true);
+  });
+
+  it('getLaunchOptions / getHostLaunchOptions report the options in effect (L9), not {}', () => {
+    const client = track('tok', baseOptions({ captureLogs: false }));
+    expect(client.getLaunchOptions()['com.bugsee.option.capture.logs']).toBe(false);
+    expect(client.getHostLaunchOptions()).toMatchObject({
+      'com.bugsee.option.capture.logs': false,
+    });
+    expect(client.getHostLaunchOptions()).not.toHaveProperty([
+      'com.bugsee.option.capture.system.events',
+    ]);
   });
 
   it('opens with a hello handshake declaring sdk + capabilities + a session', () => {
@@ -442,6 +468,402 @@ describe('launch (webview)', () => {
     expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
   });
 
+  // V10: a blackout used to gate NOTHING in a WebView: the input and ui.* providers were built without the
+  // client's blackout gate, so a blacked-out embedded page still streamed every press and field focus.
+  describe('blackout gates the WebView interaction capture (V10)', () => {
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      type: 'number',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+    const press = (doc: ReturnType<typeof fakeEventTarget>, id: number): void =>
+      doc.emit('pointerdown', {
+        pointerId: id,
+        pointerType: 'touch',
+        target: {
+          tagName: 'BUTTON',
+          getAttribute: () => null,
+          closest: () => null,
+          matches: () => false,
+        },
+        clientX: id,
+        clientY: id,
+        button: 0,
+        pressure: 1,
+      });
+    const boot = () => {
+      const fake = fakeGlobal();
+      const doc = fakeEventTarget();
+      const win = fakeEventTarget();
+      const client = track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+        }),
+      );
+      return { fake, doc, client };
+    };
+
+    it('drops presses and ui.* breadcrumbs during the blackout, and only then', () => {
+      const { fake, doc, client } = boot();
+      press(doc, 1);
+      doc.emit('focusin', { target: field });
+      client.startBlackout();
+      press(doc, 2);
+      doc.emit('change', { target: field });
+      client.endBlackout();
+      press(doc, 3);
+      doc.emit('change', { target: field });
+      const xs = entriesOfType(fake.msgs(), 'input').map(
+        (e) => (e.p as unknown as { data: { x: number } }).data.x,
+      );
+      expect(xs).toEqual([1, 3]);
+      const categories = entriesOfType(fake.msgs(), 'breadcrumbs').map(
+        (e) => (e.p as unknown as { data: { category: string } }).data.category,
+      );
+      expect(categories).toEqual(['ui.focus', 'ui.change']);
+    });
+
+    it('a wheel turn made during the blackout is never streamed, even if its frame flushes after it ended', async () => {
+      const { fake, doc, client } = boot();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 11,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
+    });
+
+    describe('the native host is told (R2V-2: its video is paused only by the host)', () => {
+      const blackoutMsgs = (fake: ReturnType<typeof fakeGlobal>) =>
+        fake.msgs().filter((m) => (m as { k: string }).k === 'blackout') as unknown as Array<{
+          a: boolean;
+          ts: number;
+          b: number;
+        }>;
+      const bootWith = (over: Partial<BugseeWebViewLaunchOptions> = {}) => {
+        const fake = fakeGlobal();
+        const errors: unknown[] = [];
+        const client = track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            onError: (e) => errors.push(e),
+            ...over,
+          }),
+        );
+        return { fake, client, errors };
+      };
+
+      it('startBlackout()/endBlackout() cross the bridge as blackout messages, schema-shaped', () => {
+        const { fake, client } = bootWith();
+        client.startBlackout();
+        client.startBlackout(); // idempotent: no second message
+        client.endBlackout();
+        const msgs = blackoutMsgs(fake);
+        expect(msgs.map((m) => m.a)).toEqual([false, true, false]); // the post-hello state, then the two changes
+        expect(msgs[1]?.b).toBe(1);
+        expect(typeof msgs[1]?.ts).toBe('number');
+        expect(bridgeSchema.definitions.blackout.required).toEqual(['b', 'k', 'a', 'ts']);
+      });
+
+      it('warns ONCE through onError while native has not declared blackout support', () => {
+        const { client, errors } = bootWith();
+        client.startBlackout();
+        client.endBlackout();
+        client.startBlackout();
+        const warnings = errors.filter(
+          (e) => /native/i.test(String(e)) && /blackout/i.test(String(e)),
+        );
+        expect(warnings).toHaveLength(1);
+      });
+
+      it('does not warn once native declared blackout support in its control reply', () => {
+        const { fake, client, errors } = bootWith();
+        sendControl(fake.global, { config: { blackout: true } });
+        client.startBlackout();
+        client.endBlackout();
+        expect(errors).toEqual([]);
+        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false, true, false]);
+      });
+
+      it('a native that later withdraws support is warned about again', () => {
+        const { fake, client, errors } = bootWith();
+        sendControl(fake.global, { config: { blackout: true } });
+        client.startBlackout();
+        sendControl(fake.global, { config: { blackout: false } });
+        client.endBlackout();
+        client.startBlackout();
+        expect(errors).toHaveLength(1);
+      });
+
+      it('warns when there is no native bridge to deliver to (the message is buffered, not delivered)', () => {
+        const errors: unknown[] = [];
+        const client = track('tok', baseOptions({ global: {}, onError: (e) => errors.push(e) }));
+        client.startBlackout();
+        expect(errors.some((e) => /not delivered|no native bridge/i.test(String(e)))).toBe(true);
+      });
+
+      // R3V-5 (a): a blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
+      // native must still be told, and after `hello` (a receiver has no session to attach it to before that).
+      it('R3V-5: a carried blackout is posted to native right after hello', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake } = bootWith({ carrier });
+        const kinds = fake.msgs().map((m) => (m as { k: string }).k);
+        expect(kinds.slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(blackoutMsgs(fake)).toHaveLength(1);
+        expect(blackoutMsgs(fake)[0]?.a).toBe(true);
+      });
+
+      // R4L-3: native resets the JS-reported flag on `bye`/`hello`, so the state is ALWAYS restated after `hello`,
+      // `a:false` included: a client that never posts it can leave native paused for a session that is not dark.
+      it('R4L-3: the current state is posted after hello even when no blackout is in force (a:false)', () => {
+        const { fake } = bootWith({ carrier: {} });
+        const kinds = fake.msgs().map((m) => (m as { k: string }).k);
+        expect(kinds.slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false]);
+      });
+
+      it('R4L-3: A dark -> A.stop() -> A.endBlackout() -> launch B: B tells native a:false right after its hello', async () => {
+        const carrier = {};
+        const fake = fakeGlobal();
+        const a = launch('tok', baseOptions({ global: fake.global, carrier }));
+        a.startBlackout();
+        await a.stop(); // `bye` posted; native's flag reset by it, but a late/old receiver may not
+        a.endBlackout(); // lifts the carried flag quietly: nothing may be posted toward native from the torn A
+        const before = fake.msgs().length;
+        track('tok', baseOptions({ global: fake.global, carrier }));
+        const after = fake.msgs().slice(before) as Array<{ k: string; a?: boolean }>;
+        expect(after.map((m) => m.k).slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(after[1]?.a).toBe(false);
+      });
+
+      it('R4L-3: a launch without any bridge posts nothing and warns about nothing for an inactive blackout', () => {
+        const errors: unknown[] = [];
+        track('tok', baseOptions({ global: {}, onError: (e) => errors.push(e) }));
+        expect(errors.filter((e) => /blackout/i.test(String(e)))).toEqual([]);
+      });
+
+      // R3V-5 (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
+      // the handshake, not at the instant of the (launch-time) announcement.
+      it('R3V-5: a carried blackout does not warn before the control reply, nor after a reply declaring support', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake, errors } = bootWith({ carrier });
+        expect(errors).toEqual([]); // judged lazily: the reply may still be in flight
+        sendControl(fake.global, { session: 'native-1', config: { blackout: true } });
+        expect(errors).toEqual([]);
+      });
+
+      it('R3V-5: ... and warns once the reply arrives WITHOUT declaring support', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake, errors } = bootWith({ carrier });
+        sendControl(fake.global, { session: 'native-1', config: { reportTrigger: false } });
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+        sendControl(fake.global, { session: 'native-1' });
+        expect(errors).toHaveLength(1); // once
+      });
+
+      it('R3V-5: once native HAS replied, the first blackout change is judged at once (nothing left to wait for)', () => {
+        const { fake, client, errors } = bootWith({ carrier: {} });
+        sendControl(fake.global, { session: 'native-1' }); // replied, no blackout support declared
+        client.startBlackout();
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+      });
+
+      it('R3V-5: a SECOND blackout change before any reply stops waiting and warns', () => {
+        const { client, errors } = bootWith({ carrier: {} });
+        client.startBlackout(); // first announcement: deferred to the reply
+        expect(errors).toEqual([]);
+        client.endBlackout(); // native has been silent through two announcements
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+      });
+
+      // R4V-9: a legacy receiver that never answers the handshake used to leave the judgement pending for ever
+      // (one blackout change, no reply): the integrator was never told the native video keeps running.
+      describe('R4V-9: the "native has not declared support" judgement is bounded', () => {
+        const notDeclared = (errors: unknown[]): number =>
+          errors.filter((e) => /not declared blackout support/.test(String(e))).length;
+
+        it('is judged at the deadline when native never replies (one change, then silence)', () => {
+          vi.useFakeTimers();
+          try {
+            const { client, errors } = bootWith({ carrier: {} });
+            client.startBlackout(); // first announcement: waits for the reply
+            expect(notDeclared(errors)).toBe(0);
+            vi.advanceTimersByTime(4_999);
+            expect(notDeclared(errors)).toBe(0); // not before the deadline
+            vi.advanceTimersByTime(1); // exactly the 5 s deadline
+            expect(notDeclared(errors)).toBe(1);
+            vi.advanceTimersByTime(60_000);
+            expect(notDeclared(errors)).toBe(1); // once
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('a reply that declares support before the deadline cancels the judgement', () => {
+          vi.useFakeTimers();
+          try {
+            const { fake, client, errors } = bootWith({ carrier: {} });
+            client.startBlackout();
+            sendControl(fake.global, { session: 'native-1', config: { blackout: true } });
+            vi.advanceTimersByTime(60_000);
+            expect(notDeclared(errors)).toBe(0);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('is judged at stop() when it is still pending', async () => {
+          const { client, errors } = bootWith({ carrier: {} });
+          client.startBlackout();
+          expect(notDeclared(errors)).toBe(0);
+          await client.stop();
+          expect(notDeclared(errors)).toBe(1);
+        });
+      });
+
+      it('a throwing onError never breaks the call', () => {
+        const fake = fakeGlobal();
+        const client = track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            onError: () => {
+              throw new Error('host handler');
+            },
+          }),
+        );
+        expect(() => client.startBlackout()).not.toThrow();
+        expect(client.isBlackout()).toBe(true);
+      });
+
+      // R3V-1 / R3L-4: only the client that owns the process blackout may change the flag or tell native.
+      describe('a stale handle cannot change the blackout or speak to native (R3V-1)', () => {
+        const startStale = async (darkFirst: boolean) => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const errors: unknown[] = [];
+          const first = launch(
+            'tok',
+            baseOptions({ global: fake.global, carrier, onError: (e) => errors.push(e) }),
+          );
+          if (darkFirst) first.startBlackout();
+          await first.stop();
+          const second = track('tok', baseOptions({ global: fake.global, carrier }));
+          return { carrier, fake, errors, first, second };
+        };
+
+        it('A dark + stop, B launches dark: A.endBlackout() leaves B dark, the flag set and native unmoved', async () => {
+          const { carrier, fake, errors, first, second } = await startStale(true);
+          expect(second.isBlackout()).toBe(true); // carried
+          const before = blackoutMsgs(fake).length;
+          first.endBlackout();
+          expect(second.isBlackout()).toBe(true);
+          expect(getCarrierBlackout(carrier)).toBe(true);
+          expect(blackoutMsgs(fake)).toHaveLength(before); // no `a:false` to the host
+          expect(errors.some((e) => /endBlackout/.test(String(e)))).toBe(true);
+        });
+
+        it('a stale startBlackout() is forwarded to the live client and announced to native once', async () => {
+          const { carrier, fake, first, second } = await startStale(false);
+          first.startBlackout();
+          expect(second.isBlackout()).toBe(true);
+          expect(getCarrierBlackout(carrier)).toBe(true);
+          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false, false, true]); // each launch's post-hello state, then the forwarded start once
+        });
+
+        it('a client whose carrier slot another client has taken tells native nothing', () => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const client = track('tok', baseOptions({ global: fake.global, carrier }));
+          setCarrierClient({ another: 'client' }, carrier);
+          client.startBlackout();
+          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([false]); // only the post-hello state; the start said nothing
+        });
+
+        it('a stopped client that is still the last owner lifts the carried flag quietly, posting nothing after bye', async () => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const only = launch('tok', baseOptions({ global: fake.global, carrier }));
+          only.startBlackout();
+          await only.stop();
+          const before = fake.msgs().length;
+          only.endBlackout();
+          expect(getCarrierBlackout(carrier)).toBe(false);
+          expect(fake.msgs()).toHaveLength(before);
+        });
+      });
+    });
+
+    it('R2V-3: a relaunch on the same carrier gates the SHARED input source with the NEW client', async () => {
+      const carrier = {};
+      const doc = fakeEventTarget();
+      const win = fakeEventTarget();
+      const opts = (global: object) =>
+        baseOptions({
+          global,
+          carrier,
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+        });
+      const first = launch('tok', opts(fakeGlobal().global));
+      await first.stop();
+      const fake = fakeGlobal();
+      const second = track('tok', opts(fake.global));
+      second.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      second.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
+    });
+
+    it('does not suppress non-visual capture (an app breadcrumb still streams)', () => {
+      const { fake, client } = boot();
+      client.startBlackout();
+      client.addBreadcrumb({ category: 'app.step', message: 'kept' });
+      const categories = entriesOfType(fake.msgs(), 'breadcrumbs').map(
+        (e) => (e.p as unknown as { data: { category: string } }).data.category,
+      );
+      expect(categories).toEqual(['app.step']);
+    });
+  });
+
   it('withholds a WebView ui.* breadcrumb for a sensitive field', () => {
     const fake = fakeGlobal();
     const doc = fakeEventTarget();
@@ -499,6 +921,31 @@ describe('launch (webview)', () => {
     expect(fake.msgs().some((m) => m.k === 'report')).toBe(false); // no native bug opened (gate off)
   });
 
+  it.each([
+    [
+      'JavaScriptCore (iOS WebView, recorded from jsc)',
+      'applicationCode@https://app.example.com/main.js:12:30\nglobal code@https://app.example.com/main.js:20:11',
+    ],
+    [
+      'SpiderMonkey (Firefox)',
+      'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
+    ],
+  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
+    const error = new Error('non-v8-stack');
+    error.stack = stack;
+    await client.logException(error);
+    const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
+    const frames = (
+      report?.p as unknown as {
+        report: { crash: { exception: { frames: { data: { member: string } }[] } } };
+      }
+    ).report.crash.exception.frames;
+    expect(frames[0]?.data.member).toBe('applicationCode');
+    expect(frames).toHaveLength(2);
+  });
+
   it('ALSO emits a report trigger (crash, carrying the incident) for a logException when on', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
@@ -509,6 +956,41 @@ describe('launch (webview)', () => {
     const report = fake.msgs().find((m): m is ReportMessage => m.k === 'report');
     expect(report?.t).toBe('crash');
     expect(JSON.stringify(report?.p)).toContain('kaboom-wv'); // the report carries the incident, not an empty trigger
+  });
+
+  it('detectHttpErrors: a 5xx fetch triggers a native report; off by default and for 4xx (review O6)', async () => {
+    // The interceptor wraps whatever `fetch` is at activation: switch the status through a variable.
+    let status = 503;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+    try {
+      const off = fakeGlobal();
+      track('tok', baseOptions({ global: off.global, reportTrigger: true, carrier: {} }));
+      await fetch('https://api.example.com/orders');
+      expect(off.msgs().some((m) => m.k === 'report')).toBe(false); // option off
+
+      const on = fakeGlobal();
+      track(
+        'tok',
+        baseOptions({
+          global: on.global,
+          reportTrigger: true,
+          detectHttpErrors: true,
+          carrier: {},
+        }),
+      );
+      status = 404;
+      await fetch('https://api.example.com/orders');
+      expect(on.msgs().some((m) => m.k === 'report')).toBe(false); // 4xx is not a server error
+      status = 503;
+      await fetch('https://api.example.com/orders');
+      const report = on.msgs().find((m): m is ReportMessage => m.k === 'report');
+      expect(JSON.stringify(report?.p)).toContain('HTTP 503');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('uses ONE shared per-session seq across the capture stream AND the report path', async () => {
@@ -723,6 +1205,74 @@ describe('launch (webview)', () => {
       );
       expect((fake.msgs()[0] as HelloMessage).caps).not.toContain('obscuring');
       expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // pull returns empty when off
+    });
+
+    // R3V-3: `captureObscuring ?? true` made `0`, `''` and `null` (nullish aside) switch the masking OFF. It is a
+    // PROTECTIVE option, so an invalid value keeps it ON (fail-on) and tells onError; only boolean false opts out.
+    it.each([
+      0,
+      '',
+      'false',
+      'true',
+      1,
+      null,
+    ])('captureObscuring=%j (invalid) keeps obscuring ON and reports', (bad) => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(5)] });
+      const onError = vi.fn();
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          captureObscuring: bad as never,
+          onError,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('captureObscuring must be a boolean'),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('captureObscuring=true / absent keep obscuring on without reporting', () => {
+      for (const over of [{ captureObscuring: true }, {}]) {
+        const fake = fakeGlobal();
+        const onError = vi.fn();
+        track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            document: fakeDomDocument().document as unknown as Document,
+            onError,
+            ...over,
+          }),
+        );
+        expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+        expect(onError).not.toHaveBeenCalled();
+      }
+    });
+
+    it('a SUB-frame with an invalid captureObscuring still runs its composer (bubbles to the parent)', () => {
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
+      const win = fakeEventTarget();
+      const parentPost = vi.fn();
+      Object.assign(win.target, {
+        self: win.target,
+        top: { other: true },
+        parent: { postMessage: parentPost },
+      });
+      track(
+        'tok',
+        baseOptions({
+          document: dom.document as unknown as Document,
+          window: win.target as unknown as WindowEvents,
+          captureObscuring: 0 as never,
+        }),
+      );
+      expect(parentPost).toHaveBeenCalled();
     });
 
     it('a SUB-frame does NOT declare `obscuring`/post to native, but BUBBLES its rects to the parent (D9)', () => {
@@ -944,6 +1494,96 @@ describe('launch (webview)', () => {
     expect(() => repeat.event('still allowed')).not.toThrow();
   });
 
+  // R4L-6 (= R4V-7): a page must not gain control over REDACTION. Ending a blackout un-redacts the visual capture
+  // and a lifecycle listener observes the session's internals; `startBlackout` only fails closed, so it stays.
+  it('R4L-6: a repeat launch cannot end the blackout or install a lifecycle listener, but may still start one', () => {
+    const onError = vi.fn();
+    const carrier = {};
+    const opts = baseOptions({ onError, carrier });
+    const first = track('tok', opts);
+    const events: string[] = [];
+    first.startBlackout();
+    const repeat = launch('tok', opts);
+    const said = (n: string): boolean =>
+      onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${n}\``));
+
+    repeat.endBlackout();
+    expect(said('endBlackout')).toBe(true);
+    expect(first.isBlackout()).toBe(true); // the blackout was NOT lifted from the page
+    expect(getCarrierBlackout(carrier)).toBe(true);
+
+    repeat.setLifecycleEventsListener(((type: string) => events.push(type)) as never);
+    expect(said('setLifecycleEventsListener')).toBe(true);
+    first.endBlackout(); // the owner may still end it: the page's listener must not hear anything
+    first.startBlackout();
+    expect(events).toEqual([]);
+
+    first.endBlackout();
+    repeat.startBlackout(); // fails closed: allowed
+    expect(first.isBlackout()).toBe(true);
+    expect(said('startBlackout')).toBe(false);
+  });
+
+  // R5L-1: the facade is built from an explicit allow-list, and the lifecycle slot is not page-writable.
+  it('R5L-1: page script cannot install a lifecycle listener through the carrier', () => {
+    const carrier = {};
+    const owner: string[] = [];
+    const first = track(
+      'tok',
+      baseOptions({ carrier, lifecycleEventsListener: (type) => owner.push(type) }),
+    );
+    const page = vi.fn();
+    const view = (carrier as { __BUGSEE__: Record<string, Record<string, unknown>> }).__BUGSEE__[
+      BUGSEE_SDK_VERSION
+    ] as Record<string, unknown>;
+    try {
+      view.lifecycleListener = page; // what `window.__BUGSEE__[v].lifecycleListener = fn` does
+    } catch {
+      // strict mode throws; sloppy page script is silently ignored — either way nothing is installed
+    }
+    expect(view.lifecycleListener).toBeUndefined();
+    owner.length = 0;
+    first.startBlackout();
+    first.endBlackout();
+    expect(page).not.toHaveBeenCalled();
+    expect(owner).toContain(LifecycleEvents.BlackoutStarted); // the legitimate host listener still hears
+  });
+
+  it('R5L-1: the repeat-launch client is an allow-list: no internal-client brand, no emit, no unstripped wire methods', async () => {
+    const onError = vi.fn();
+    const opts = baseOptions({ onError });
+    track('tok', opts);
+    const repeat = launch('tok', opts) as unknown as Record<string | symbol, unknown>;
+    expect(Reflect.ownKeys(repeat).filter((k) => typeof k === 'symbol')).toEqual([]);
+    expect(Object.getOwnPropertySymbols(repeat)).toEqual([]);
+    expect(repeat.emitLifecycleEvent).toBeUndefined();
+    expect(repeat.deferBlackoutStarted).toBeUndefined();
+    // the page-facing upload strips the wire `trigger`: a forged code_dialog source is not reachable
+    const brand = Symbol.for('com.bugsee.internal-client');
+    expect(repeat[brand]).toBeUndefined();
+    // still a working client for the allowed surface
+    expect(() => (repeat.log as (m: string) => void)('x')).not.toThrow();
+    // methods the old spread passed live are refused now (no capture-provider/ span-filter/ launch control)
+    for (const name of [
+      'setSpanFilter',
+      'addCaptureProvider',
+      'addDetectionProvider',
+      'ext',
+      'launch',
+    ]) {
+      onError.mockClear();
+      try {
+        (repeat[name] as (...a: unknown[]) => unknown)({});
+      } catch {
+        // `ext` throws as well as reports
+      }
+      expect(
+        onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${name}\``)),
+      ).toBe(true);
+    }
+    await expect((repeat.upload as () => Promise<unknown>)()).resolves.toBeDefined();
+  });
+
   it('a repeat launch cannot end or drain the session the embedder owns', async () => {
     // `stop()` from page script is a kill switch on the host app's capture; `flush()` forces an upload
     // the embedder did not ask for. Both report and return false rather than throwing, so an embedder who
@@ -971,6 +1611,7 @@ describe('launch (webview)', () => {
     // page. An inert client is diagnosable; a crash in someone else's page is not.
     const carrier: Record<string, unknown> = {};
     setCarrierClient({ isLaunched: () => true } as never, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
     const onError = vi.fn();
     const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
       string,
@@ -1011,6 +1652,102 @@ describe('launch (webview)', () => {
     expect(inert.getUserIdentifier?.()).toBeNull();
     expect(inert.getAttribute?.('k')).toBeUndefined();
     expect(inert.getAllAttributes?.()).toEqual({});
+  });
+
+  // R3V-7: the inert client lacked `startBlackout`/`endBlackout`/`isBlackout`/`getStatus`/
+  // `setLifecycleEventsListener` (and whatever else the real client grew): the TypeError this fallback exists to
+  // prevent. The whole surface of a real client must exist, and the blackout/status ones must report, not throw.
+  it('R3V-7: the inert client has EVERY method of a real client; blackout/status/listener calls report through onError', async () => {
+    const carrier: Record<string, unknown> = {};
+    setCarrierClient({ isLaunched: () => true } as never, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
+    const onError = vi.fn();
+    const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    const real = track('tok', baseOptions({ carrier: {} })) as unknown as Record<string, unknown>;
+    const missing = Object.keys(real).filter(
+      (key) => typeof real[key] === 'function' && typeof inert[key] !== 'function',
+    );
+    expect(missing).toEqual([]);
+
+    onError.mockClear();
+    expect(() => inert.startBlackout?.()).not.toThrow();
+    expect(() => inert.endBlackout?.()).not.toThrow();
+    expect(inert.isBlackout?.()).toBe(false);
+    expect(inert.getStatus?.()).toBe(BugseeStatus.Launched); // the owner's published state; consistent with isLaunched()
+    expect(() => inert.setLifecycleEventsListener?.(() => {})).not.toThrow();
+    expect(inert.getLaunchOptions?.()).toEqual({});
+    expect(inert.getHostLaunchOptions?.()).toEqual({});
+    expect(() => inert.setSpanFilter?.(() => null)).not.toThrow();
+    expect(() => inert.notify?.('title')).not.toThrow();
+    expect(() => inert.registerExt?.('performance', {})).not.toThrow();
+    expect(() => inert.addService?.({})).not.toThrow();
+    expect(() => inert.addCaptureProvider?.({})).not.toThrow();
+    expect(() => inert.addDetectionProvider?.({})).not.toThrow();
+    expect(inert.prepareUpload?.()).toBeNull();
+    expect(() => inert.ext?.('performance')).toThrow(/not available/);
+    expect(() => inert.getService?.({})).toThrow(/not available/);
+    expect(() => inert.getServiceProvider?.({})).toThrow(/not available/);
+    inert.startBlackout?.(); // a repeat is not re-reported
+    const messages = onError.mock.calls.map(([e]) => (e as Error).message);
+    for (const method of [
+      'startBlackout',
+      'endBlackout',
+      'setLifecycleEventsListener',
+      'setSpanFilter',
+      'notify',
+      'registerExt',
+      'addService',
+      'addCaptureProvider',
+      'addDetectionProvider',
+      'prepareUpload',
+      'ext',
+      'getService',
+      'getServiceProvider',
+    ]) {
+      expect(
+        messages.filter((m) => m.includes(`\`${method}\``)),
+        method,
+      ).toHaveLength(1);
+    }
+    await expect(inert.logException?.(new Error('x'))).resolves.toEqual({ ok: false });
+    await expect(inert.upload?.()).resolves.toEqual({ ok: false });
+    expect(
+      onError.mock.calls
+        .map(([e]) => (e as Error).message)
+        .filter((m) => /logException|upload/.test(m)),
+    ).toHaveLength(2);
+  });
+
+  it('R4V-10: the inert client reads the shared carrier: isBlackout() is the process flag, getStatus() follows the owner', () => {
+    const carrier: Record<string, unknown> = {};
+    const owner = { isLaunched: () => true } as never;
+    setCarrierClient(owner, carrier);
+    setCarrierStatus(BugseeStatus.Launched, carrier);
+    const inert = launch('tok', baseOptions({ carrier }));
+    expect(inert.isBlackout()).toBe(false);
+    setCarrierBlackout(true, carrier);
+    expect(inert.isBlackout()).toBe(true);
+    setCarrierBlackout(false, carrier);
+    expect(inert.isBlackout()).toBe(false);
+    expect(inert.getStatus()).toBe(BugseeStatus.Launched);
+    expect(inert.isLaunched()).toBe(true);
+    setCarrierStatus(BugseeStatus.Stopping, carrier);
+    expect(inert.getStatus()).toBe(BugseeStatus.Stopping);
+    expect(inert.isLaunched()).toBe(false);
+    clearCarrierClient(owner, carrier);
+    setCarrierStatus(BugseeStatus.Stopped, carrier);
+    expect(inert.getStatus()).toBe(BugseeStatus.Stopped); // the owner has stopped: no more "Launched"
+  });
+
+  it('R4V-10: a real WebView launch publishes Launched on the carrier and Stopped after stop()', async () => {
+    const carrier = {};
+    const client = launch('tok', baseOptions({ carrier }));
+    expect(getCarrierStatus(carrier)).toBe(BugseeStatus.Launched);
+    await client.stop();
+    expect(getCarrierStatus(carrier)).toBe(BugseeStatus.Stopped);
   });
 
   it('the inert client refuses to end a session it does not own', async () => {
@@ -1570,7 +2307,88 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     ).not.toBe('[]');
   });
 
-  it('a page-forced RELAUNCH cannot un-latch the control channel', () => {
+  it('the page-reachable launch() ignores every injectable seam, so a fresh global/carrier cannot look like a first launch', async () => {
+    const fake = fakeGlobal();
+    const client = publicLaunch('tok', {
+      global: fake.global,
+      carrier: {},
+      captureNetwork: false,
+    } as BugseeWebViewLaunchOptions);
+    // The seam global was never used: no handshake went to it.
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+    expect(() => publicLaunch('tok', null as unknown as BugseeWebViewLaunchOptions)).not.toThrow();
+    await client.stop();
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__; // this launch used the REAL globalThis carrier
+  });
+
+  it('a seam planted on Object.prototype cannot re-enter through the page-reachable launch()', async () => {
+    const fake = fakeGlobal();
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    proto.global = fake.global;
+    proto.carrier = {};
+    try {
+      const client = publicLaunch('tok', { captureNetwork: false });
+      expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+      await client.stop();
+    } finally {
+      delete proto.global;
+      delete proto.carrier;
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+    }
+  });
+
+  it('accessor plants on Object.prototype (getter+setter, getter-only) and inherited non-seam options do not re-enter', async () => {
+    const fake = fakeGlobal();
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    const seen: string[] = [];
+    Object.defineProperty(Object.prototype, 'global', {
+      get: () => fake.global,
+      set: () => {},
+      configurable: true,
+    });
+    Object.defineProperty(Object.prototype, 'carrier', { get: () => ({}), configurable: true });
+    Object.defineProperty(Object.prototype, 'lifecycleEventsListener', {
+      get: () => (type: string) => seen.push(type),
+      configurable: true,
+    });
+    try {
+      const client = publicLaunch('tok', { captureNetwork: false });
+      expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+      expect(seen).toEqual([]);
+      await client.stop();
+    } finally {
+      delete proto.global;
+      delete proto.carrier;
+      delete proto.lifecycleEventsListener;
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+    }
+  });
+
+  it('a page-supplied fresh carrier (or global) cannot mint a second live client', () => {
+    const fake = fakeGlobal();
+    const first = track('tok', baseOptions({ global: fake.global, carrier: {} }));
+    expect(first).toBeDefined();
+    const viaCarrier = launch(
+      'tok',
+      baseOptions({ global: fake.global, carrier: {} }),
+    ) as unknown as Record<string | symbol, unknown>;
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(1);
+    expect(Object.getOwnPropertySymbols(viaCarrier)).toEqual([]);
+    expect(typeof viaCarrier.stop).toBe('function');
+    const sameCarrier = {};
+    const firstOnShared = track(
+      'tok2',
+      baseOptions({ global: fakeGlobal().global, carrier: sameCarrier }),
+    );
+    expect(firstOnShared).toBeDefined();
+    const viaGlobal = launch(
+      'tok2',
+      baseOptions({ global: fakeGlobal().global, carrier: sameCarrier }),
+    ) as unknown as Record<string | symbol, unknown>;
+    expect(Object.getOwnPropertySymbols(viaGlobal)).toEqual([]);
+  });
+
+  it('a page-forced RELAUNCH cannot un-latch the control channel', async () => {
     // SEV2: `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
     // whose singleton guard reads a mutable carrier field. So the page could clear the carrier, relaunch,
     // and get a fresh unlatched channel — defeating "one-way" entirely. The latch belongs to the GLOBAL.
@@ -1590,11 +2408,24 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     for (const slot of Object.values(carrier.__BUGSEE__ ?? {})) {
       slot.client = undefined;
     }
-    track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    const relaunched = launch(
+      'tok',
+      baseOptions({ global: fake.global, carrier, onError }),
+    ) as unknown as Record<string | symbol, unknown>;
     expect(
       fake.msgs().filter((m) => m.k === 'hello').length,
-      'the relaunch never happened — the guard swallowed it, so this asserts nothing',
-    ).toBe(2);
+      'the module-private launched marker must refuse the relaunch (no second handshake)',
+    ).toBe(1);
+    // ...and what it hands back is the RESTRICTED facade, never the live client (page-reachable `launch`).
+    expect(Object.getOwnPropertySymbols(relaunched)).toEqual([]);
+    expect(relaunched[Symbol.for('com.bugsee.internal-client')]).toBeUndefined();
+    onError.mockClear();
+    (relaunched.setNetworkEventFilter as (f: unknown) => void)(() => null);
+    (relaunched.setReportHandler as (f: unknown) => void)(() => null);
+    await expect((relaunched.stop as () => Promise<boolean>)()).resolves.toBe(false);
+    expect(onError.mock.calls.map(([e]) => (e as Error).message).join('\n')).toMatch(
+      /`setNetworkEventFilter`[\s\S]*`setReportHandler`[\s\S]*`stop`/,
+    );
 
     onError.mockClear();
     sendControl(fake.global, { command: 'pause' }); // untokened, from the page
@@ -1785,5 +2616,83 @@ describe('secure views from a SUB-frame still reach native (D9 chain, through la
     expect(fake.global.__bugsee_bridge?.snapshot()).toBe(
       JSON.stringify([{ type: 'text', top: 2, left: 3, bottom: 4, right: 5 }]),
     );
+  });
+});
+
+describe('review round 2 — F1 (webview)', () => {
+  it('R2L-9: a stale stop() leaves a NEWER launch its carrier slot and its repeat-launch handle', async () => {
+    const fake = fakeGlobal();
+    const carrier = {};
+    const onError = vi.fn();
+    const a = launch('tok', baseOptions({ global: fake.global, carrier }));
+    await a.stop();
+    const b = track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    expect(getCarrierClient(carrier)).toBeDefined();
+
+    await a.stop(); // the stale handle fires again
+
+    expect(
+      getCarrierClient(carrier),
+      'a stale stop() evicted the newer carrier slot',
+    ).toBeDefined();
+    // …and a repeat launch still gets the RESTRICTED live client, not an inert one
+    const repeat = launch('tok', baseOptions({ global: fake.global, carrier, onError }));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(repeat.isLaunched()).toBe(b.isLaunched());
+    expect(repeat.isLaunched()).toBe(true);
+  });
+
+  it('R2L-9: the owning stop() still clears the slot', async () => {
+    const carrier = {};
+    const a = launch('tok', baseOptions({ carrier }));
+    expect(getCarrierClient(carrier)).toBeDefined();
+    await a.stop();
+    expect(getCarrierClient(carrier)).toBeUndefined();
+  });
+
+  it('R2L-3: client.launch() on a stopped WebView client is refused and says so', async () => {
+    const onError = vi.fn();
+    const carrier = {};
+    const client = launch('tok', baseOptions({ carrier, onError }));
+    await client.stop();
+    client.launch();
+    expect(client.isLaunched()).toBe(false);
+    expect(getCarrierClient(carrier)).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+  });
+
+  it('R2L-4: the lifecycleEventsListener option sees Launching and Launched', () => {
+    const seen: string[] = [];
+    track('tok', baseOptions({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+  });
+
+  it('R2L-4: without a carrier option the WebView carrier is globalThis; a listener set BEFORE launch is page-reachable, so it is discarded at the seal', async () => {
+    // The carrier is page-writable until sealed, so a pre-launch listener cannot be told from a planted one.
+    const seen: string[] = [];
+    setProcessLifecycleEventsListener((type) => seen.push(type));
+    const { carrier: _omitted, ...withoutCarrier } = baseOptions();
+    const client = launch('tok', withoutCarrier);
+    expect(seen).toEqual([]);
+    await client.stop();
+    setProcessLifecycleEventsListener(null);
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('R2L-2: ReportHandler.after runs for a WebView report (an injected report pipeline), before it crosses the bridge', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    const order: string[] = [];
+    client.setReportHandler({
+      after: (request) => {
+        order.push(`after:${fake.msgs().filter((m) => m.k === 'entry' && m.t === 'crash').length}`);
+        request.report.labels = ['from-after'];
+      },
+    });
+    await client.logException(new Error('boom-after'));
+    expect(order).toEqual(['after:0']); // once, and BEFORE the crash entry reached native
+    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0);
   });
 });

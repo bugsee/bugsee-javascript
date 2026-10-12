@@ -24,6 +24,7 @@ import {
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { STOPPED_FILE } from './liveness';
 import { recoverInstances } from './recover-instances';
 
 const dirs: string[] = [];
@@ -201,6 +202,28 @@ describe('recoverInstances', () => {
     expect(pipe.enqueue).toHaveBeenCalledTimes(1);
     expect(pipe.bundles[0]?.request.summary).toBe('prior crash');
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully delivered → subtree removed
+  });
+
+  it('recovers a CLEANLY STOPPED sibling although its owning pid is alive, and leaves an un-stopped live one', async () => {
+    const dir = mkDir();
+    // Both siblings belong to THIS (live) process; only the first shut down cleanly.
+    seedPendingBundle(dir, '1-0-stopped', 'b1', aBundle('left by a clean stop'));
+    seedPendingBundle(dir, '1-0-running', 'b2', aBundle('belongs to a live instance'));
+    writeOwner(dir, '1-0-stopped', process.pid);
+    writeOwner(dir, '1-0-running', process.pid);
+    writeFileSync(join(dir, '1-0-stopped', STOPPED_FILE), '');
+    const pipe = fakePipeline();
+
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+    });
+
+    expect(pipe.bundles.map((b) => b.request.summary)).toEqual(['left by a clean stop']);
+    expect(existsSync(join(dir, '1-0-stopped'))).toBe(false);
+    expect(existsSync(join(dir, '1-0-running'))).toBe(true);
   });
 
   it('rebuilds + delivers a dead sibling’s detected incident from its chunks, then removes the subtree', async () => {
@@ -1076,5 +1099,96 @@ describe('recoverInstances', () => {
       }),
     ).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+describe('recoverInstances — evidence that the previous run did not stop cleanly (R2D-2)', () => {
+  const run = async (dir: string, extra: Partial<Parameters<typeof recoverInstances>[0]> = {}) => {
+    const onCrashEvidence = vi.fn();
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: fakePipeline(),
+      context,
+      onCrashEvidence,
+      ...extra,
+    });
+    return onCrashEvidence;
+  };
+
+  it('fires once for a DEAD, not cleanly stopped sibling that left a pending incident marker', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 700, 'inc-dead');
+    expect(await run(dir)).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires for a dead sibling that left an undelivered bundle', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('left behind'));
+    expect(await run(dir)).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires for a dead sibling with a pending native crash marker', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'x' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-dead');
+    expect(
+      await run(dir, { nativeCrashSource: fakeNativeSource([dump('main.dmp', 1)]) }),
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fire for a crashpad session marker whose harvest finds no dump (the marker is written at every start)', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'x' });
+    seedCrashpadMarker(dir, '9-9-dead', 800, 'sess-dead');
+    expect(await run(dir, { nativeCrashSource: fakeNativeSource([]) })).not.toHaveBeenCalled();
+  });
+
+  it('fires ONCE however many dead siblings show evidence', async () => {
+    const dir = mkDir();
+    seedIncident(dir, '9-9-dead', 700, 'inc-a');
+    seedPendingBundle(dir, '8-8-dead', 'b1', aBundle('left behind'));
+    expect(await run(dir)).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fire for a CLEANLY STOPPED sibling, even with leftovers (a stop is not a crash)', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '1-0-stopped', 'b1', aBundle('left by a clean stop'));
+    writeOwner(dir, '1-0-stopped', process.pid);
+    writeFileSync(join(dir, '1-0-stopped', STOPPED_FILE), '');
+    expect(await run(dir)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire for a dead sibling with nothing in flight (no honest evidence of a crash)', async () => {
+    const dir = mkDir();
+    seedCaptureGen(dir, '9-9-dead', 800, { m: 'just a capture' });
+    expect(await run(dir)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire for a LIVE sibling or when there is no sibling at all', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '1-0-running', 'b1', aBundle('belongs to a live instance'));
+    writeOwner(dir, '1-0-running', process.pid);
+    expect(await run(dir)).not.toHaveBeenCalled();
+    expect(await run(mkDir())).not.toHaveBeenCalled();
+  });
+
+  it('a throwing callback is isolated: recovery still delivers and never throws', async () => {
+    const dir = mkDir();
+    seedPendingBundle(dir, '9-9-dead', 'b1', aBundle('left behind'));
+    const pipe = fakePipeline();
+    const onError = vi.fn();
+    await recoverInstances({
+      dataDir: dir,
+      ownInstanceId: '1-0-live',
+      uploadPipeline: pipe,
+      context,
+      onError,
+      onCrashEvidence: () => {
+        throw new Error('listener');
+      },
+    });
+    expect(pipe.enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'listener' }));
   });
 });

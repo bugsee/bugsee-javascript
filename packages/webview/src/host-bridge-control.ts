@@ -14,6 +14,8 @@ export interface BridgeControlConfig {
   session?: string;
   /** Whether the WebView may emit report triggers (D5). Seeded from the launch option; native may override. */
   reportTrigger: boolean;
+  /** Whether native declared (`config.blackout`) that it applies `blackout` messages to its own video (R2V-2). */
+  nativeBlackout: boolean;
 }
 
 export interface BridgeControl {
@@ -50,6 +52,11 @@ export function createBridgeControl(opts?: {
    * rather than a possible legacy receiver.
    */
   nativeSecret?: string;
+  /**
+   * Called after an ADMITTED control message that carried the session or config (the handshake reply) was applied.
+   * The launch uses it to judge, only now, whether native declared blackout support.
+   */
+  onApplied?: () => void;
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
   /**
@@ -61,7 +68,10 @@ export function createBridgeControl(opts?: {
    */
   auth?: { authenticated: boolean };
 }): BridgeControl {
-  const config: BridgeControlConfig = { reportTrigger: opts?.reportTrigger ?? false };
+  const config: BridgeControlConfig = {
+    reportTrigger: opts?.reportTrigger ?? false,
+    nativeBlackout: false,
+  };
   const token = opts?.token;
   const nativeSecret = opts?.nativeSecret;
   // The one-way upgrade (D-A2) — the FALLBACK path only, reached when native injected no `nativeSecret`.
@@ -137,6 +147,12 @@ export function createBridgeControl(opts?: {
       }
       if (msg.config?.reportTrigger !== undefined) {
         config.reportTrigger = msg.config.reportTrigger;
+      }
+      if (msg.config?.blackout !== undefined) {
+        config.nativeBlackout = msg.config.blackout === true;
+      }
+      if (msg.session !== undefined || msg.config !== undefined) {
+        opts?.onApplied?.();
       }
       if (msg.command !== undefined) {
         opts?.onCommand?.(msg.command);

@@ -20,16 +20,48 @@ import { type Bugsee, type BugseeEdgeLaunchOptions, launchEdge } from '@bugsee/v
 //     fallback + a one-time warning (never throws). See the README.
 // platformType stays overridable — a caller-supplied option wins (it spreads AFTER the 'workers' default).
 
+/** Isolates (carriers) that have already been told their tenant isolation is off. */
+const warnedIsolates = new WeakSet<object>();
+
+/**
+ * `partitionCaptureByTenant: false` is allowed, but on Cloudflare it silently reinstates the cross-tenant leak the
+ * default exists to prevent (one isolate, many customers' Durable Objects, one capture ring), so say so, once per
+ * isolate (R5V-9). The host's sink may throw: the warning must never break launch (R5V-4).
+ */
+function warnOnceIfIsolationDisabled(options: BugseeEdgeLaunchOptions): void {
+  if (options.partitionCaptureByTenant !== false) {
+    return;
+  }
+  const isolate: object = options.carrier ?? globalThis;
+  if (warnedIsolates.has(isolate)) {
+    return;
+  }
+  warnedIsolates.add(isolate);
+  try {
+    options.onError?.(
+      new Error(
+        "Bugsee: partitionCaptureByTenant: false turns OFF per-tenant isolation on Cloudflare, so one Durable Object incident can upload another tenant's capture. Remove the option to keep isolation on.",
+      ),
+    );
+  } catch {
+    /* the host's own sink threw: nothing left to tell */
+  }
+}
+
 /** Launch the Bugsee SDK on Cloudflare Workers. A per-isolate singleton; returns the started client.
  *  AsyncLocalStorage is wired automatically (see the import note) — a caller-supplied `asyncLocalStorage`
  *  still wins, since the caller's options spread AFTER the defaults. */
 export function launch(appToken: string, options: BugseeEdgeLaunchOptions = {}): Bugsee {
+  warnOnceIfIsolationDisabled(options);
   return launchEdge(appToken, {
     platformType: 'workers',
     asyncLocalStorage: new AsyncLocalStorage(),
-    // Durable Objects for different customers share one isolate and therefore one capture ring; partition
-    // by tenant so an incident in one cannot upload another's data (SEV1 #2).
-    partitionCaptureByTenant: true,
     ...options,
+    // Durable Objects for different customers share one isolate and therefore one capture ring; partition
+    // by tenant so an incident in one cannot upload another's data (SEV1 #2). The default applies ONLY for an
+    // absent/`undefined` value and is placed AFTER the spread: an explicit `{partitionCaptureByTenant: undefined}`
+    // would otherwise override it (R4V-1). Any other value is judged by launchEdge (fail ON + onError).
+    partitionCaptureByTenant:
+      options.partitionCaptureByTenant === undefined ? true : options.partitionCaptureByTenant,
   });
 }

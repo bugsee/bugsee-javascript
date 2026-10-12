@@ -27,6 +27,8 @@ export interface WirePerformanceOptions {
   monitoring: boolean;
   sampleRate: number;
   flushIntervalMs: number;
+  /** Send each transaction when it finishes (`performanceUploadMode: 'realtime'`) instead of on the tick. */
+  realtime?: boolean;
   /** Collect the browser pageload transaction + web-vitals. Default true; Node sets false (no pageload
    *  lifecycle — it records its own startup transaction instead). */
   pageload?: boolean;
@@ -136,6 +138,8 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     send: options.send,
     scheduler: options.scheduler,
     flushIntervalMs: options.flushIntervalMs,
+    ...(options.realtime === true ? { realtime: true } : {}),
+    isActive: () => options.client.isLaunched(),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   uploader.start();

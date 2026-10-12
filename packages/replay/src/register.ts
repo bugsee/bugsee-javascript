@@ -3,8 +3,8 @@
 // (`client.addCaptureProvider`), and registers the `replay.bin` encoder into the client's shared
 // `fileEncoders` map (read at each report's bundle assembly, RP5a). The browser launch lazy-`import()`s this
 // module + calls `registerReplay` when the `replay` option is truthy (RP5c). Returns the recorder so the
-// caller can wire `client.startBlackout` → its blackout controls.
-import type { CaptureProvider } from '@bugsee/core';
+// caller can wire `client.startBlackout` → its blackout controls (or pass `blackout`, and the recorder follows it).
+import type { BlackoutGate, CaptureProvider } from '@bugsee/core';
 import { record as rrwebRecord } from '@bugsee/rrweb';
 import { encodeReplay } from './encoder';
 import { type ReplayMaskingOptions, resolveReplayMaskingOptions } from './masking';
@@ -35,6 +35,8 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
   /** Internal-error sink. Today: an invalid masking selector that was dropped and escalated (Wave 1.4) —
    *  without it the downgrade is silent, which is precisely how the original fail-open survived. */
   onError?: (error: unknown) => void;
+  /** The client's blackout gate (`client.getService(BlackoutToken)`): the recorder pauses/resumes with it. */
+  blackout?: BlackoutGate;
 }
 
 /**
@@ -74,6 +76,8 @@ export function registerReplay(
       ? { checkoutEveryNms: options.checkoutEveryNms }
       : {}),
     ...(options.canvas !== undefined ? { canvas: options.canvas } : {}),
+    ...(options.blackout !== undefined ? { blackout: options.blackout } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   client.addCaptureProvider(provider);
   // Register the encoder into the SHARED map the client reads at assembly time (RP5a) — so the next report's

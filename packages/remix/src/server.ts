@@ -9,6 +9,9 @@
 import { type Bugsee, type BugseeNodeLaunchOptions, launch } from '@bugsee/bugsee/node';
 
 export type { Bugsee } from '@bugsee/bugsee/node';
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/bugsee/node';
 
 // R3 (node half): the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
 // on the node-only entry, alongside launch.
@@ -24,3 +27,15 @@ export interface RemixServerOptions extends BugseeNodeLaunchOptions {}
 export function registerServer(appToken: string, options: RemixServerOptions = {}): Bugsee {
   return launch(appToken, options);
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/bugsee/node';

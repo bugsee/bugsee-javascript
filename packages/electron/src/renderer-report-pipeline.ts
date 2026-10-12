@@ -1,4 +1,4 @@
-import type { ReportingRequest, UploadResult } from '@bugsee/core';
+import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from '@bugsee/core';
 import { encodeReport } from './protocol';
 
 // The renderer report path (docs/design/electron-renderer-incident-convergence.md §4.1, slice R2). A
@@ -55,7 +55,10 @@ export function createElectronRendererReportPipeline(
         // `source` carries the mechanism (uncaught / unhandledrejection / programmatic), which main preserves
         // — that attribution is the whole point, and re-filing through `logException` on the main side would
         // destroy it (design review SEV1-2).
-        options.post(encodeReport(request.source, request.report, wallNow()));
+        // Binary user attachments do not survive JSON as typed arrays, so they cross as base64 (main decodes).
+        options.post(
+          encodeReport(request.source, encodeRequestForMarker(request).report, wallNow()),
+        );
       } catch (error) {
         options.onError?.(error);
         return Promise.resolve({ ok: false });

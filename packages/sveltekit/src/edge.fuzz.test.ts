@@ -13,6 +13,10 @@ const { launchEdge, runInEdgeContext } = vi.hoisted(() => ({
   runInEdgeContext: vi.fn((_client: unknown, _opts: unknown, fn: () => unknown) => fn()),
 }));
 vi.mock('@bugsee/vercel-edge', () => ({ launchEdge, runInEdgeContext }));
+vi.mock('@bugsee/vercel-edge/relaunch-edge', () => ({
+  relaunchEdge: vi.fn(),
+  rememberEdgeLaunch: vi.fn(),
+}));
 const { getCarrierClient } = vi.hoisted(() => ({ getCarrierClient: vi.fn() }));
 vi.mock('@bugsee/core', () => ({
   getCarrierClient,

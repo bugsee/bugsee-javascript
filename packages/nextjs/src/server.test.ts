@@ -260,6 +260,36 @@ describe('registerServer', () => {
     expect(perfTransactions(calls).map((t) => t.name)).toContain('GET /api/users');
   });
 
+  it('the surfaced processor forwards every SpanProcessor method to the current client processor (R3P-2)', async () => {
+    const { fn } = recordingTransport();
+    const carrier = {};
+    let surfaced: BugseeSpanProcessor | undefined;
+    register('tok', {
+      transport: fn,
+      carrier,
+      onSpanProcessor: (p) => {
+        surfaced = p;
+      },
+    });
+    const delegate = (carrier as Record<symbol, { target: BugseeSpanProcessor }>)[
+      Symbol.for('@bugsee/nextjs.spanProcessorDelegate')
+    ];
+    const target = delegate?.target as BugseeSpanProcessor;
+    const onStart = vi.spyOn(target, 'onStart');
+    const onEnd = vi.spyOn(target, 'onEnd').mockImplementation(() => {});
+    const forceFlush = vi.spyOn(target, 'forceFlush').mockResolvedValue(undefined);
+    const shutdown = vi.spyOn(target, 'shutdown').mockResolvedValue(undefined);
+    const span = { name: 's' } as never;
+    surfaced?.onStart();
+    surfaced?.onEnd(span);
+    await surfaced?.forceFlush();
+    await surfaced?.shutdown();
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledWith(span);
+    expect(forceFlush).toHaveBeenCalledTimes(1);
+    expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
   it('launches without an onSpanProcessor callback (consume still enabled, no throw)', async () => {
     const { scheduler, fire } = fakeScheduler();
     const { fn, calls } = recordingTransport();

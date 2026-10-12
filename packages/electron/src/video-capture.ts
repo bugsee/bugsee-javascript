@@ -22,6 +22,12 @@ export interface VideoCaptureSource {
   start(): void;
   stop(): void;
   snapshot(now: number): Promise<CaptureDataEntry[]>;
+  /**
+   * Discard EVERYTHING buffered, including any frame or chunk still in flight (blackout: the span's video
+   * must not exist, and neither may the frames just before it). Required, not optional: a custom source
+   * that cannot forget would silently keep a blacked-out screen, so the compiler must force the question.
+   */
+  clear(): void;
 }
 
 /** Wrap already-encoded video bytes as the single report-time `video` bundle entry. */
@@ -54,10 +60,16 @@ export function createCapturePageVideoSource(
   const maxFrames = options.maxFrames ?? 300;
   const ring: VideoFrame[] = [];
   let handle: unknown;
+  // Bumped by clear(): a grab that began before it is discarded when it resolves.
+  let epoch = 0;
 
   const tick = async (): Promise<void> => {
+    const started = epoch;
     try {
       const bytes = await options.capturePage();
+      if (started !== epoch) {
+        return; // cleared (blackout) while this grab was in flight
+      }
       ring.push({ timestamp: options.now(), bytes });
       if (ring.length > maxFrames) {
         ring.shift(); // drop-oldest — a rolling incident window
@@ -84,6 +96,10 @@ export function createCapturePageVideoSource(
         options.scheduler.clearInterval(handle);
         handle = undefined;
       }
+    },
+    clear(): void {
+      epoch += 1;
+      ring.length = 0;
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
       if (ring.length === 0) {
@@ -118,17 +134,26 @@ export function createMediaRecorderVideoSource(
 ): VideoCaptureSource {
   const chunks: unknown[] = [];
   let recorder: MediaRecorderLike | undefined;
+  // Bumped by clear(): a recorder started before it (and its late `stop` flush) can no longer add chunks.
+  let epoch = 0;
 
   return {
     start(): void {
       recorder = options.recorderFactory();
+      const started = epoch;
       recorder.ondataavailable = (event): void => {
-        chunks.push(event.data);
+        if (started === epoch) {
+          chunks.push(event.data);
+        }
       };
       recorder.start(options.timeslice);
     },
     stop(): void {
       recorder?.stop();
+    },
+    clear(): void {
+      epoch += 1;
+      chunks.length = 0;
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
       if (chunks.length === 0) {

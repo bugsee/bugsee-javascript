@@ -1,4 +1,5 @@
 import {
+  bindInputBlackout,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTracesSampler,
@@ -11,6 +12,7 @@ import {
 } from '@bugsee/browser';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
@@ -19,26 +21,36 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  BlackoutToken,
   type BreadcrumbFilter,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createClient,
   createServiceContainer,
+  FAIL_ON_BOOLEAN_OPTION,
   type FilterStore,
   FiltersToken,
+  getCarrierBlackout,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
+  type LifecycleEventsListener,
   type LogEventFilter,
   type NetworkEventFilter,
   neverThrow,
+  type OptionDefinition,
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
+  sealCarrierLifecycleSlot,
   setCarrierClient,
+  setCarrierStatus,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
@@ -52,7 +64,7 @@ import {
   type ComposerWindow,
   createObscuringComposer,
 } from './obscuring-composer';
-import { byeMessage, encode, helloMessage } from './protocol';
+import { blackoutMessage, byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
@@ -66,6 +78,22 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 
 /** The SDK version reported in the handshake (default) + published on the injectable `BugseeWebView` global. */
 export const SDK_VERSION = BUGSEE_SDK_VERSION;
+
+/** WebView-local identifier of the `captureObscuring` switch: no cross-SDK identity. */
+/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged (R4V-9). */
+const NATIVE_REPLY_DEADLINE_MS = 5000;
+const OBSCURING_OPTION_KEY = 'com.bugsee.option.capture.obscuring';
+
+/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported (R3V-3). */
+const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
+  ...COMMON_OPTION_DEFINITIONS,
+  {
+    friendly: 'captureObscuring',
+    key: OBSCURING_OPTION_KEY,
+    default: true,
+    ...FAIL_ON_BOOLEAN_OPTION,
+  },
+];
 
 /**
  * The launched client, held HERE rather than on the process-global carrier.
@@ -86,7 +114,8 @@ export const SDK_VERSION = BUGSEE_SDK_VERSION;
  * stays in this module's scope, reachable only through the value `launch()` returns — which native's
  * bootstrap holds in a closure the page never sees.
  */
-let launchedClient: Bugsee | undefined;
+const launchedClients = new WeakMap<object, Bugsee>();
+const carrierKey = (carrier: object | undefined): object => carrier ?? globalThis;
 
 // The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
 // nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
@@ -108,6 +137,9 @@ const CAPABILITIES = [
   'crash',
 ] as const;
 
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+
 export interface BugseeWebViewLaunchOptions {
   /** SDK version reported in the handshake. Default the package version. */
   sdkVersion?: string;
@@ -120,6 +152,29 @@ export interface BugseeWebViewLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /**
    * Stream the viewport rects of sensitive elements (password / payment inputs + `.bugsee-hide`) so native masks
    * them in its captured frames. Default true. When on, the SDK declares the `obscuring` capability and streams
@@ -212,6 +267,14 @@ export interface BugseeWebViewLaunchOptions {
    * mismatched `red` provenance flag is never a privacy hazard — see redaction-provenance.ts.)
    */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the WebView carrier. Also set with
+   * `client.setLifecycleEventsListener(...)`. `RelaunchedAfterCrash` is never emitted here: the WebView keeps
+   * nothing durable (native owns the stream), so there is no previous run to find evidence of.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 }
 
 /** What `__bugsee_bridge` forwards to for the CURRENT session (swapped on launch/stop). */
@@ -299,18 +362,65 @@ function bridgeSlotFor(
 /** The launched WebView client — the public SDK surface. */
 export type Bugsee = BugseeClient;
 
-/** Launch the Bugsee WebView SDK. A per-WebView singleton (a repeat call is ignored). Returns the started client. */
+const PAGE_STRIPPED_SEAMS: readonly string[] = [
+  'global',
+  'carrier',
+  'window',
+  'document',
+  'clock',
+  'scheduler',
+  'captureStore',
+  'systemMetricsSampler',
+];
+
+/**
+ * Launch the Bugsee WebView SDK. A per-WebView singleton (a repeat call is ignored). Returns the started client.
+ *
+ * This is the PAGE-REACHABLE entry (`BugseeWebView.launch`), so the injectable seams (`global`, `carrier`,
+ * `window`, `document`, `clock`, `scheduler`, `captureStore`, `systemMetricsSampler`) are dropped here: page script
+ * could otherwise pass a fresh `{ global: {}, carrier: {} }` and look like a first launch, minting a second LIVE
+ * client. Tests and embedders that need the seams call {@link launchWithSeams}.
+ */
 export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {}): Bugsee {
+  const given = (typeof options === 'object' && options !== null ? options : {}) as Record<
+    string,
+    unknown
+  >;
+  // A null-prototype bag: nothing planted on `Object.prototype` (a data property OR an accessor, and the
+  // non-seam options `controlNonce` / `lifecycleEventsListener` too) can be inherited into the launch.
+  const safe: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(given)) {
+    if (!PAGE_STRIPPED_SEAMS.includes(key)) {
+      safe[key] = given[key];
+    }
+  }
+  return launchWithSeams(appToken, safe as BugseeWebViewLaunchOptions);
+}
+
+/** {@link launch} with the injectable seams honoured. NOT for page-reachable surfaces (see {@link launch}). */
+export function launchWithSeams(
+  appToken: string,
+  options: BugseeWebViewLaunchOptions = {},
+): Bugsee {
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
+
+  // The lifecycle listener must not live on the page-reachable carrier (R5L-1): move it module-private BEFORE
+  // anything installs one (the `lifecycleEventsListener` option is installed during client creation below).
+  sealCarrierLifecycleSlot(carrier);
 
   const bridgeSlot = bridgeSlotFor(global, options.onError);
 
   // The carrier holds the FACADE, so its presence is the "already launched" signal; the client to hand
   // back comes from module scope — RESTRICTED, because `launch` is a page global and a repeat call is
   // therefore a page-reachable request for the live client. See `restrictedClientFor`.
-  if (getCarrierClient<unknown>(carrier) !== undefined) {
+  // `launchedClients` is module-private, so it stays set when page script clears the page-writable `carrier.client`.
+  // Looked up by the carrier AND by the control global: `carrier` is a page-suppliable option (a fresh `{}` would
+  // otherwise look like a first launch), but the page cannot make the native bridge global a different object.
+  const launchedClient =
+    launchedClients.get(carrierKey(carrier)) ?? launchedClients.get(global as object);
+  if (getCarrierClient<unknown>(carrier) !== undefined || launchedClient !== undefined) {
     options.onError?.(
       new Error(
         'Bugsee.launch() called more than once in this WebView; the repeat call is ignored',
@@ -320,13 +430,16 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     // a value whose first method call is a TypeError. An inert client is diagnosable; a crash is not.
     return launchedClient !== undefined
       ? restrictedClientFor(launchedClient, options.onError)
-      : inertClient(options.onError);
+      : inertClient(options.onError, carrier);
   }
 
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
-    COMMON_OPTION_DEFINITIONS,
+    WEBVIEW_OPTION_DEFINITIONS,
+    options.onError,
   );
+  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON (R3V-3).
+  const obscuringEnabled = resolved.options.get<boolean>(OBSCURING_OPTION_KEY, true);
 
   const services = createServiceContainer();
 
@@ -375,7 +488,16 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const nativeSecret = options.controlNonce;
   const controlToken =
     nativeSecret === undefined && bridge.available ? mintControlToken() : undefined;
+  // Set once native has answered the handshake (the control reply): until then it cannot have declared anything,
+  // so "native has not declared blackout support" is not yet a finding (R3V-5). `judgeNativeBlackout` is bound
+  // below, where the blackout state exists.
+  let nativeReplied = false;
+  let judgeNativeBlackout: (() => void) | undefined;
   const control = createBridgeControl({
+    onApplied: () => {
+      nativeReplied = true;
+      judgeNativeBlackout?.();
+    },
     token: controlToken,
     ...(nativeSecret !== undefined ? { nativeSecret } : {}),
     // The latch lives on the per-global slot, not in this closure, so a page-forced relaunch inherits it.
@@ -427,8 +549,21 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   });
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
+    // the same one every client of this WebView sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() clears the carrier slot and makes the control binding inert, so a stopped client must not be
+    // restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    restartable: false,
+    // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox stack (every iOS
+    // WebView) would ship `frames: []` in crash.json (R3P-1).
+    stackParser: parseStack,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     captureStore,
     triggerPipeline,
@@ -492,7 +627,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // HAS a window. `isTopFrame` is derived from `win`, so `!isTopFrame` already implies it is defined —
   // spelling it here keeps the composer's `window` unconditional instead of leaving an unreachable branch.
   if (win !== undefined && !isTopFrame) {
-    if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+    if (obscuringEnabled && domDocument !== undefined) {
       const childComposer = createObscuringComposer({
         document: domDocument as unknown as ComposerDocument,
         window: win as unknown as ComposerWindow,
@@ -512,7 +647,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     } else {
       publicClient = client;
     }
-    launchedClient = publicClient;
+    launchedClients.set(carrierKey(carrier), publicClient);
+    launchedClients.set(global as object, publicClient);
     setCarrierClient(carrierFacadeFor(publicClient), carrier);
     return publicClient;
   }
@@ -531,6 +667,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
@@ -550,12 +688,91 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
   // `input` stream. NOT `events.user`: that stream carries the embedded app's own `client.event()` data,
   // and SDK code must never write into a `user.*` stream.
+  // The client's blackout gate gates every interaction source below (same as the browser tier): a blacked-out
+  // embedded page streams no presses, wheel turns or ui.* breadcrumbs to the host.
+  const blackout = client.getService(BlackoutToken);
+  // Tell the NATIVE host. This SDK stops its own capture, but a WebView's pixels are recorded by the host
+  // (video / screenshots), which only it can pause. A message it does not understand is ignored by an older
+  // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
+  // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
+  let warnedNativeBlackout = false;
+  // Only the client that owns the process may speak for it (R3V-1): one that has been stopped (its stream is
+  // finalized: `bye` was posted) or whose carrier slot another client has taken must not tell native anything.
+  // A launch that has not reached the slot yet still announces (a blackout carried over from an earlier client).
+  let torn = false;
+  let ownFacade: unknown;
+  const mayTellNative = (): boolean => {
+    if (torn) {
+      return false;
+    }
+    const current = getCarrierClient<unknown>(carrier);
+    return current === undefined || current === ownFacade;
+  };
+  // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
+  // blackout is announced at launch, before any reply could possibly have arrived): R3V-5.
+  let judgementPending = false;
+  // …but not for ever (R4V-9): a legacy receiver that never answers the handshake, with a single blackout change,
+  // would leave the integrator unwarned that the native video keeps running. The wait is bounded; `stop()` judges too.
+  let judgementTimer: unknown;
+  const clearJudgementTimer = (): void => {
+    if (judgementTimer !== undefined) {
+      (globalThis as unknown as { clearTimeout(h: unknown): void }).clearTimeout(judgementTimer);
+      judgementTimer = undefined;
+    }
+  };
+  const judge = (): void => {
+    judgementPending = false;
+    clearJudgementTimer();
+    const delivered = bridge.available;
+    if (warnedNativeBlackout || (delivered && control.config.nativeBlackout)) {
+      return;
+    }
+    warnedNativeBlackout = true;
+    neverThrow(
+      () =>
+        options.onError?.(
+          new Error(
+            delivered
+              ? "Bugsee: the native host has not declared blackout support; the blackout stops WebView capture in JS only and the host app's own video/screenshots are NOT paused"
+              : "Bugsee: blackout not delivered to native (no native bridge attached); the host app's own video/screenshots are NOT paused",
+          ),
+        ),
+      undefined,
+    );
+  };
+  judgeNativeBlackout = () => {
+    if (judgementPending) {
+      judge();
+    }
+  };
+  const announceBlackout = (active: boolean): void => {
+    if (!mayTellNative()) {
+      return;
+    }
+    bridge.post(encode(blackoutMessage(active, Date.now())));
+    if (bridge.available && !nativeReplied && !judgementPending && !warnedNativeBlackout) {
+      judgementPending = true; // wait for the handshake reply; a later change before it forces the judgement
+      const handle = (
+        globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown }
+      ).setTimeout(() => {
+        judgementTimer = undefined;
+        judgeNativeBlackout?.();
+      }, NATIVE_REPLY_DEADLINE_MS);
+      (handle as { unref?: () => void } | null)?.unref?.();
+      judgementTimer = handle;
+      return;
+    }
+    judge();
+  };
+  blackout.onChange(announceBlackout);
   const inputSource = getOrCreateInterceptor(
     'webview-input',
-    () => createBrowserInputSource({ target: domDocument }),
+    () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  client.addCaptureProvider(createInputProvider(inputSource));
+  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate (R2V-3).
+  bindInputBlackout(inputSource, blackout);
+  client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
   // coordinates belong to (`video.aux`) because nothing else knows it; here the native receiver
   // REWRITES every point before storing it — Android's `BridgeInputMapper` maps viewport-relative CSS
@@ -577,9 +794,13 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     carrier,
   );
   client.addCaptureProvider(
-    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
-      client.addBreadcrumb(crumb);
-    }),
+    createUiBreadcrumbProvider(
+      uiBreadcrumbSource,
+      (crumb) => {
+        client.addBreadcrumb(crumb);
+      },
+      blackout,
+    ),
   );
 
   // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path
@@ -599,7 +820,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   //   - a SUB-frame runs a composer that `postMessage`s its (composed) viewport rects to its parent — handled
   //     by the sub-frame branch above, which returns before reaching here.
   // (Native never drops its own masking for this — D-A7. The union is what makes the whole path monotone.)
-  if ((options.captureObscuring ?? true) && domDocument !== undefined) {
+  if (obscuringEnabled && domDocument !== undefined) {
     obscuring = createObscuringChannel({
       bridge,
       document: domDocument as unknown as ComposerDocument,
@@ -652,6 +873,18 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
 
+  // The CURRENT state is restated after `hello`, always (R3V-5, R4L-3). A blackout CARRIED over from a previous
+  // client is already in force and never fires `onChange`, so native has to be told. An INACTIVE one is posted
+  // too (`a:false`): native resets the JS-reported flag on `bye`/`hello`, but a torn client whose
+  // `endBlackout()` was suppressed toward native (it had already said `bye`) would otherwise leave an older
+  // receiver paused for this new, un-dark session. Only an active blackout is judged ("native has not declared
+  // support"): nothing is lost by an unheard `a:false`.
+  if (blackout.isActive()) {
+    announceBlackout(true);
+  } else if (mayTellNative()) {
+    bridge.post(encode(blackoutMessage(false, Date.now())));
+  }
+
   client.launch();
   // Begin secure-area tracking once the SDK is live (top frame posts to native; a sub-frame bubbles to parent).
   // Only when the probe proved collection works — see `obscuringWorks` above.
@@ -663,13 +896,28 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // binding is non-configurable and cannot be removed (D-A3), so a later launch() re-points the session
   // behind it rather than starting from a fresh binding.
   const stopCore = client.stop;
+  // The carrier holds this facade, not the client: keep the reference so `stop()` can release the slot only
+  // while it is still ours.
+  const facade = carrierFacadeFor(client);
+  ownFacade = facade;
   publicClient = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      torn = true;
+      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now (R4V-9)
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
-      setCarrierClient(undefined, carrier);
-      launchedClient = undefined;
+      // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
+      // the module's `launchedClients` entry, of a NEWER launch that has since taken them.
+      if (getCarrierClient<unknown>(carrier) === facade) {
+        setCarrierStatus(BugseeStatus.Stopped, carrier);
+      }
+      clearCarrierClient(facade, carrier);
+      for (const key of [carrierKey(carrier), global as object]) {
+        if (launchedClients.get(key) === publicClient) {
+          launchedClients.delete(key);
+        }
+      }
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
       // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
@@ -681,8 +929,10 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       return stopCore(timeout);
     },
   };
-  launchedClient = publicClient;
-  setCarrierClient(carrierFacadeFor(publicClient), carrier);
+  launchedClients.set(carrierKey(carrier), publicClient);
+  launchedClients.set(global as object, publicClient);
+  setCarrierClient(facade, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier); // what a repeat launch from another module copy reports
   return publicClient;
 }
 
@@ -705,6 +955,31 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
  * genuinely double-launched gets a working object rather than a TypeError. Each blocked call reports
  * through `onError`, so a real double-launch is diagnosable.
  */
+const PAGE_SAFE_CLIENT_METHODS = [
+  'setUserIdentifier',
+  'getUserIdentifier',
+  'clearUserIdentifier',
+  'setAttribute',
+  'getAttribute',
+  'clearAttribute',
+  'clearAllAttributes',
+  'getAllAttributes',
+  'addBreadcrumb',
+  'log',
+  'event',
+  'trace',
+  'logException',
+  'notify',
+  'upload',
+  'prepareUpload',
+  'startBlackout',
+  'isBlackout',
+  'isLaunched',
+  'getStatus',
+  'getLaunchOptions',
+  'getHostLaunchOptions',
+] as const;
+
 function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void): Bugsee {
   const refuse = (method: string): void => {
     neverThrow(
@@ -741,12 +1016,34 @@ function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void)
     },
     addService: (): void => refuse('addService'),
     registerExt: (): void => refuse('registerExt'),
+    // Redaction control (R4L-6 / R4V-7): ending a blackout un-redacts the visual capture and a lifecycle
+    // listener observes the session; a page may do neither. `startBlackout` stays (it only fails closed).
+    endBlackout: (): void => refuse('endBlackout'),
+    setLifecycleEventsListener: (): void => refuse('setLifecycleEventsListener'),
+    // Control the old spread passed through live (R5L-1): provider/filter registration and relaunch control.
+    setSpanFilter: (): void => refuse('setSpanFilter'),
+    addCaptureProvider: (): void => refuse('addCaptureProvider'),
+    addDetectionProvider: (): void => refuse('addDetectionProvider'),
+    ext: (): never => {
+      refuse('ext');
+      throw new Error('Bugsee: ext is not available on a repeat launch()');
+    },
+    launch: (): void => refuse('launch'),
   };
-  return { ...client, ...blocked } as unknown as Bugsee;
+  // The live half is an EXPLICIT ALLOW-LIST of the public methods, each forwarded through a lambda. NO spread of
+  // the client: it carries the `Symbol.for('com.bugsee.internal-client')` brand (unstripped `upload`/`prepareUpload`
+  // that forge `trigger`, and `emitLifecycleEvent` that fakes SDK events) and any method added later would be
+  // live by default.
+  const target = client as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const live: Record<string, (...args: unknown[]) => unknown> = {};
+  for (const name of PAGE_SAFE_CLIENT_METHODS) {
+    live[name] = (...args: unknown[]): unknown => target[name]?.(...args);
+  }
+  return { ...live, ...blocked } as unknown as Bugsee;
 }
 
 /** A repeat launch from a module copy that did not perform it: inert, but never `undefined`. */
-function inertClient(onError?: (error: unknown) => void): Bugsee {
+function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugsee {
   neverThrow(
     () =>
       onError?.(
@@ -757,8 +1054,70 @@ function inertClient(onError?: (error: unknown) => void): Bugsee {
     undefined,
   );
   const noop = (): void => {};
+  // Every other call is a no-op that SAYS so, once per method (R3V-7): a page can call these at will, so the
+  // report is rate-limited the way every other once-only diagnostic here is.
+  const told = new Set<string>();
+  const say = (method: string): void => {
+    if (told.has(method)) {
+      return;
+    }
+    told.add(method);
+    neverThrow(
+      () =>
+        onError?.(
+          new Error(
+            `Bugsee: \`${method}\` is a no-op on this client: the session belongs to another module copy of the SDK.`,
+          ),
+        ),
+      undefined,
+    );
+  };
+  const ignored =
+    (method: string): (() => void) =>
+    (): void => {
+      say(method);
+    };
+  const refused = (method: string): (() => never) => {
+    return (): never => {
+      say(method);
+      throw new Error(`Bugsee: ${method} is not available on this client`);
+    };
+  };
+  const failedUpload = (method: string) => async (): Promise<{ ok: false }> => {
+    say(method);
+    return { ok: false };
+  };
   return {
-    isLaunched: (): boolean => true,
+    startBlackout: ignored('startBlackout'),
+    endBlackout: ignored('endBlackout'),
+    // The session belongs to another module copy, but the carrier is shared (R4V-10): read the process flag and
+    // the OWNER's published state instead of claiming "not dark" / "Launched" for ever.
+    isBlackout: (): boolean => getCarrierBlackout(carrier),
+    getStatus: (): BugseeStatus =>
+      getCarrierClient<unknown>(carrier) === undefined
+        ? BugseeStatus.Stopped
+        : getCarrierStatus(carrier),
+    getLaunchOptions: (): Record<string, never> => ({}),
+    getHostLaunchOptions: (): Record<string, never> => ({}),
+    setLifecycleEventsListener: ignored('setLifecycleEventsListener'),
+    setSpanFilter: ignored('setSpanFilter'),
+    notify: ignored('notify'),
+    logException: failedUpload('logException'),
+    upload: failedUpload('upload'),
+    prepareUpload: (): null => {
+      say('prepareUpload');
+      return null;
+    },
+    registerExt: ignored('registerExt'),
+    addService: ignored('addService'),
+    addCaptureProvider: ignored('addCaptureProvider'),
+    addDetectionProvider: ignored('addDetectionProvider'),
+    ext: refused('ext'),
+    getService: refused('getService'),
+    getServiceProvider: refused('getServiceProvider'),
+    isLaunched: (): boolean =>
+      getCarrierClient<unknown>(carrier) !== undefined &&
+      getCarrierStatus(carrier) === BugseeStatus.Launched,
     launch: noop,
     stop: async (): Promise<boolean> => false,
     flush: async (): Promise<boolean> => false,

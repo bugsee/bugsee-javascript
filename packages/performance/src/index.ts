@@ -22,6 +22,7 @@ export {
   type PerformanceExtension,
   type PerformanceExtensionOptions,
 } from './extension';
+export { createNoopTransaction, createPerformanceFacade, type PerformanceFacade } from './facade';
 export {
   collectHttpSpans,
   type HttpSpanCollectorDeps,

@@ -2,9 +2,17 @@ import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
+import { addReportAttachment, decodeRequestFromMarker } from './attachments';
+import { BlackoutToken } from './blackout';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { createClient, type Scheduler, SchedulerToken } from './client';
+import {
+  asInternalClient,
+  type BugseeClient,
+  createClient,
+  type Scheduler,
+  SchedulerToken,
+} from './client';
 import { type Clock, ClockToken } from './clock';
 import {
   type CaptureProvider,
@@ -20,11 +28,17 @@ import {
 } from './durable-upload-pipeline';
 import { BugseeError } from './errors';
 import { type FilterableSpan, FiltersToken } from './filters';
+import { BugseeStatus } from './launch-status';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import { createPartitionedCaptureStore } from './partitioned-capture-store';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
-import { createReportingRequest, type ReportingRequest } from './reporting';
+import {
+  createReportingRequest,
+  type Report,
+  type ReportAttachmentInput,
+  type ReportingRequest,
+} from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
 import {
   type Bundle,
@@ -593,7 +607,53 @@ describe('createClient — crash.json (SC3)', () => {
       (f: { data?: { member?: string } }) => f.data?.member,
     );
     expect(members).toContain('applicationCode');
-    expect(members).not.toContain('logException');
+    // R2P-1: the PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
+    expect(members[0]).toBe('applicationCode');
+    expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
+  });
+
+  it('skipFrames on a non-Error counts from the APPLICATION frame, not the SDK wrapper (R2P-1)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    async function applicationCode(): Promise<void> {
+      await client.logException('str', { skipFrames: 1 });
+    }
+    await applicationCode();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    const frames = crash.exception.frames as { hidden?: boolean; data?: { member?: string } }[];
+    expect(frames[0]?.data?.member).toBe('applicationCode');
+    expect(frames[0]?.hidden).toBe(true);
+    expect(frames[1]?.hidden).not.toBe(true);
+  });
+
+  it('the fallback (no Error.captureStackTrace) also starts at the application frame (R2P-1)', async () => {
+    const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
+    (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
+    try {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+      async function applicationCode(): Promise<void> {
+        await client.logException('str');
+      }
+      await applicationCode();
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.frames[0].data.member).toBe('applicationCode');
+    } finally {
+      (Error as { captureStackTrace?: unknown }).captureStackTrace = original;
+    }
+  });
+
+  it('the wrapper callSite wins over a caller-supplied one (R2P-1, R3P-5)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    async function applicationCode(): Promise<void> {
+      await client.logException('str', {
+        callSite: { boundary: () => undefined, sdkFrames: 0 },
+      } as never);
+    }
+    await applicationCode();
+    const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+    expect(crash.exception.frames[0].data.member).toBe('applicationCode');
   });
 
   it('uses the injected stackParser (browser passes its multi-engine parser)', async () => {
@@ -608,6 +668,113 @@ describe('createClient — crash.json (SC3)', () => {
       member: 'fn',
       line: 5,
       column: 6,
+    });
+  });
+
+  describe('logException domain and skipFrames', () => {
+    const stacked = () => {
+      const err = new Error('boom');
+      err.stack =
+        'Error: boom\n    at wrapper (a.js:1:1)\n    at inner (b.js:2:2)\n    at app (c.js:3:3)';
+      return err;
+    };
+    const run = async (opts: Record<string, unknown>) => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const onError = vi.fn();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+      await client.logException(stacked(), opts);
+      return { crash: crashOf(enqueue.mock.calls[0]?.[0] as Bundle), onError };
+    };
+
+    it('writes exception.domain, the field the Android worker folds into the signature', async () => {
+      const { crash, onError } = await run({ domain: 'checkout ' });
+      expect(crash.exception.domain).toBe('checkout '); // verbatim, not trimmed
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('omits domain when not given', async () => {
+      const { crash } = await run({});
+      expect('domain' in crash.exception).toBe(false);
+      expect(crash.exception.frames.some((f: { hidden?: boolean }) => f.hidden)).toBe(false);
+    });
+
+    it('ignores a non-string or empty domain and warns through onError', async () => {
+      for (const bad of [42, '', {}]) {
+        const { crash, onError } = await run({ domain: bad });
+        expect('domain' in crash.exception).toBe(false);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toContain('domain');
+      }
+    });
+
+    it('marks the top skipFrames frames hidden, so grouping skips them but they stay visible', async () => {
+      const { crash } = await run({ skipFrames: 2 });
+      const f = crash.exception.frames as { trace: string; hidden?: boolean }[];
+      expect(f).toHaveLength(3);
+      expect(f.map((x) => x.hidden)).toEqual([true, true, undefined]);
+    });
+
+    it('clamps skipFrames to frames.length - 1 so a location always remains; 0 hides none (P5)', async () => {
+      const all = await run({ skipFrames: 99 });
+      const hidden = all.crash.exception.frames.map((x: { hidden?: boolean }) => x.hidden);
+      expect(hidden).toEqual([true, true, undefined]); // 3 frames: the last one stays visible
+      expect(all.onError).toHaveBeenCalledTimes(1);
+      expect(String(all.onError.mock.calls[0]?.[0])).toContain('skipFrames');
+      const exact = await run({ skipFrames: 3 }); // == frames.length also clamps
+      expect(exact.crash.exception.frames.map((x: { hidden?: boolean }) => x.hidden)).toEqual([
+        true,
+        true,
+        undefined,
+      ]);
+      expect(exact.onError).toHaveBeenCalledTimes(1);
+      const inRange = await run({ skipFrames: 2 }); // frames.length - 1: no clamp, no warning
+      expect(inRange.onError).not.toHaveBeenCalled();
+      const none = await run({ skipFrames: 0 });
+      expect(none.crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
+      expect(none.onError).not.toHaveBeenCalled();
+    });
+
+    it('caps domain at 150 characters and says so once (P9)', async () => {
+      const { crash, onError } = await run({ domain: 'd'.repeat(151) });
+      expect(crash.exception.domain).toBe('d'.repeat(150));
+      expect(onError).toHaveBeenCalledTimes(1);
+      const ok = await run({ domain: 'd'.repeat(150) });
+      expect(ok.crash.exception.domain).toBe('d'.repeat(150));
+      expect(ok.onError).not.toHaveBeenCalled();
+    });
+
+    it('does not cut a surrogate pair in half when capping domain', async () => {
+      const { crash } = await run({ domain: `${'d'.repeat(149)}\u{1F600}` });
+      expect(crash.exception.domain).toBe('d'.repeat(149));
+    });
+
+    it('skipFrames on a stackless throwable keeps its one frame visible', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const onError = vi.fn();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+      const err = new Error('x');
+      err.stack = 'Error: x';
+      await client.logException(err, { skipFrames: 5 });
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
+    });
+
+    it('ignores an invalid skipFrames (negative, fractional, non-number) and warns', async () => {
+      for (const bad of [-1, 1.5, '2', Number.NaN]) {
+        const { crash, onError } = await run({ skipFrames: bad });
+        expect(crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toContain('skipFrames');
+      }
+    });
+
+    it('applies to a non-Error throwable too', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+      await client.logException('str', { domain: 'd', skipFrames: 1 });
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.domain).toBe('d');
+      expect(crash.exception.frames[0].hidden).toBe(true);
     });
   });
 
@@ -1284,7 +1451,7 @@ describe('createClient — lifecycle', () => {
     const drained = await client.stop(50);
     expect(drained).toBe(true);
     expect(provider.stop).toHaveBeenCalledTimes(1);
-    expect(flush).toHaveBeenCalledWith(50);
+    expect(flush).toHaveBeenCalledWith(undefined); // the shared drain is unbounded (R3L-2); 50 only bounds this wait
     expect(client.isLaunched()).toBe(false);
   });
 
@@ -1314,6 +1481,45 @@ describe('createClient — lifecycle', () => {
 
   it('flush without an upload pipeline resolves true', async () => {
     expect(await createClient().flush()).toBe(true);
+  });
+
+  it('getStatus walks Stopped -> Launched -> Stopping -> Stopped around a draining stop', async () => {
+    let release!: () => void;
+    const flush = vi.fn(() => new Promise<boolean>((r) => (release = () => r(true))));
+    const client = createClient({ uploadPipeline: { flush } as unknown as UploadPipeline });
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+    client.launch();
+    expect(client.getStatus()).toBe(BugseeStatus.Launched);
+    const stopping = client.stop();
+    expect(client.getStatus()).toBe(BugseeStatus.Stopping);
+    await vi.waitFor(() => expect(flush).toHaveBeenCalled());
+    expect(client.getStatus()).toBe(BugseeStatus.Stopping); // still draining
+    release();
+    await stopping;
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+  });
+
+  it('a stop whose drain times out still ends Stopped', async () => {
+    const flush = vi.fn(() => new Promise<boolean>(() => {}));
+    const client = createClient({ uploadPipeline: { flush } as unknown as UploadPipeline });
+    client.launch();
+    expect(await client.stop(5)).toBe(false);
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+  });
+
+  it('getLaunchOptions / getHostLaunchOptions return copies of the supplied view (empty by default)', () => {
+    expect(createClient().getLaunchOptions()).toEqual({});
+    expect(createClient().getHostLaunchOptions()).toEqual({});
+    const effective = { a: 1, b: 2 };
+    const host = { b: 2 };
+    const client = createClient({ launchOptionsView: { effective, host } });
+    const got = client.getLaunchOptions();
+    expect(got).toEqual(effective);
+    expect(got).not.toBe(effective);
+    got.a = 99;
+    expect(client.getLaunchOptions()).toEqual({ a: 1, b: 2 });
+    expect(client.getHostLaunchOptions()).toEqual({ b: 2 });
+    expect(client.getHostLaunchOptions()).not.toBe(host);
   });
 
   it('can relaunch after stop', () => {
@@ -1523,7 +1729,7 @@ describe('createClient — logException', () => {
 
   it('applies mechanism, severity and labels overrides', async () => {
     const { client, report } = withTrigger();
-    await client.logException(new Error('x'), {
+    await asInternalClient(client).logException(new Error('x'), {
       mechanism: 'uncaught',
       severity: 'blocker',
       labels: ['p1'],
@@ -1707,6 +1913,7 @@ describe('createClient — kill-state (collector KILL_SDK)', () => {
 
     expect(onError).toHaveBeenCalledWith(err);
     expect(client.isLaunched()).toBe(false); // capture/detection halted
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped); // a killed SDK is not 'Launched'
     expect(provider.stop).toHaveBeenCalled(); // the capture coordinator was stopped
     // Subsequent captures are no-ops.
     client.log('after-kill');
@@ -2118,6 +2325,751 @@ describe('createClient — upload (manual report)', () => {
     expect(sent().severity).toBe(4); // critical on the wire
   });
 
+  it('attaches UploadOptions.attachments to the uploaded bundle and drops over-limit ones to onError', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    await client.upload({
+      attachments: [
+        { name: 'one', data: 'a' },
+        { name: 'two', data: 'b' },
+        { name: 'three', data: 'c' },
+        { name: 'four', data: 'd' },
+      ],
+    });
+
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const names = manifest.files
+      .filter((f: { type: string }) => f.type === 'attachment')
+      .map((f: { name: string }) => f.name);
+    expect(names).toEqual(['one', 'two', 'three']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a THROWING user onError never loses a report that carries a bad attachment (R2P-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn(() => {
+      throw new Error('the app\u2019s onError is broken');
+    });
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    const result = await client.upload({
+      attachments: [
+        { name: 'ok', data: 'fine' },
+        { name: '', data: 'x' },
+        'junk',
+        { name: 'x', data: 'y', fileName: 42 },
+      ],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const names = manifest.files
+      .filter((f: { type: string }) => f.type === 'attachment')
+      .map((f: { name: string }) => f.name);
+    expect(names).toEqual(['ok', 'x']);
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('a throwing onError and a FROZEN report (limits cannot be applied at submit) still deliver (R2P-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn(() => {
+      throw new Error('the app\u2019s onError is broken');
+    });
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report.userAttachments);
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+
+    const result = await client.upload({
+      attachments: [
+        { name: 'ok', data: 'fine' },
+        { name: '', data: 'x' },
+      ],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    expect(
+      manifest.files
+        .filter((f: { type: string }) => f.type === 'attachment')
+        .map((f: { name: string }) => f.name),
+    ).toEqual(['ok']);
+  });
+
+  it('delivers the report for a plain-JS attachment with a non-string fileName (P2)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    const result = await client.upload({
+      attachments: [{ name: 'x', data: 'y', fileName: 42 }],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
+    expect(entry.attrs.fileName).toBe('x');
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists attachments in the recovery marker already limited and JSON-safe (P1)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    const bytes = new Uint8Array([0, 7, 255]);
+
+    await client.upload({
+      attachments: [
+        { name: 'bin', data: bytes },
+        { name: 'huge', data: new Uint8Array(3 * 1024 * 1024 + 1) },
+        { name: 'bad', data: 'x', fileName: 42 as never },
+      ],
+    });
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const wire = JSON.stringify(marker);
+    expect(wire.length).toBeLessThan(2000); // the 3 MB attachment never reached the marker
+    const back = decodeRequestFromMarker(JSON.parse(wire).request, vi.fn());
+    const names = back.report.userAttachments?.map((a) => a.name);
+    expect(names).toEqual(['bin', 'bad']);
+    expect(Array.from(back.report.userAttachments?.[0]?.data as Uint8Array)).toEqual([0, 7, 255]);
+    expect(onError).toHaveBeenCalledTimes(2); // the oversize one and the bad fileName, once each
+  });
+
+  it('still delivers a report whose handler froze it (attachment normalisation cannot assign) (P2)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+    const result = await client.upload({ attachments: [{ name: 'a', data: 'x' }] });
+    expect(result.ok).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('what ReportHandler.after adds reaches the recovery marker: a recovered report equals the live one (R2P-7)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const wires: string[] = []; // what a real store would have serialised AT each put
+    put.mockImplementation((marker) => {
+      wires.push(JSON.stringify(marker));
+    });
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited-by-after';
+        request.report.labels.push('late-label');
+        addReportAttachment(request.report, { name: 'late.bin', data: new Uint8Array([9, 8, 7]) });
+        // Over the limit: the marker must stay bounded however late the attachment arrives.
+        addReportAttachment(request.report, {
+          name: 'huge',
+          data: new Uint8Array(3 * 1024 * 1024 + 1),
+        });
+      },
+    });
+
+    client.setAttribute('k', 1);
+    client.setUserIdentifier('u@e.com');
+    await client.upload({ summary: 'original' });
+
+    const live = (enqueue.mock.calls[0]?.[0] as Bundle).request;
+    expect(live.summary).toBe('edited-by-after');
+    const markers = wires.map((w) => JSON.parse(w) as ReportMarker);
+    expect(markers).toHaveLength(2); // the submit-time marker, then the one carrying what `after` did
+    const last = markers[1] as ReportMarker;
+    expect(wires[1]?.length).toBeLessThan(2000); // 3 MB never reached the marker
+    const recovered = decodeRequestFromMarker(last.request, vi.fn());
+    expect(recovered.report.summary).toBe(live.summary);
+    expect(recovered.report.labels).toEqual(live.labels);
+    expect(recovered.report.userAttachments?.map((a) => a.name)).toEqual(['late.bin']);
+    expect(last.attributes).toEqual(markers[0]?.attributes);
+    expect(last.attributes).toEqual({ k: 1 });
+    expect(last.userIdentifier).toBe('u@e.com');
+    expect(markers[0]?.request.report.summary).toBe('original'); // what was persisted FIRST
+  });
+
+  it('does not rewrite the marker when there is no `after` handler, or the write throws (R2P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    await client.upload({ summary: 'plain' });
+    expect(put).toHaveBeenCalledTimes(1);
+
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited';
+      },
+    });
+    put.mockImplementationOnce(() => {}); // the submit-time write succeeds ...
+    put.mockImplementationOnce(() => {
+      throw new Error('disk full'); // ... the rewrite fails: reported, never fatal
+    });
+    const result = await client.upload({ summary: 'second' });
+    expect(result.ok).toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'disk full' }));
+  });
+
+  it('an `after` handler that changes nothing leaves the marker written once (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    const after = vi.fn();
+    client.setReportHandler({ after });
+    await client.upload({
+      summary: 's',
+      description: 'd',
+      labels: ['l'],
+      attachments: [{ name: 'a', data: 'xyz' }],
+    });
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('a binary attachment that changes size rewrites the marker (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      after: (request) => {
+        if (request.report.userAttachments) {
+          const old = request.report.userAttachments[0] as ReportAttachmentInput;
+          request.report.userAttachments[0] = { ...old, data: new Uint8Array(8) }; // same name/type, only the size differs
+        }
+      },
+    });
+    await client.upload({ summary: 's', attachments: [{ name: 'a', data: new Uint8Array(3) }] });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('an unreadable report (signature throws) is treated as changed and rewritten (R3P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        request.report.attributes.big = BigInt(1) as never; // JSON.stringify throws on a BigInt
+        return request;
+      },
+      after: () => {},
+    });
+    await client.upload({ summary: 's' });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'summary',
+      (r: Report) => {
+        r.summary = 'changed';
+      },
+    ],
+    [
+      'description',
+      (r: Report) => {
+        r.description = 'changed';
+      },
+    ],
+    [
+      'labels',
+      (r: Report) => {
+        r.labels.push('new');
+      },
+    ],
+    [
+      'attributes',
+      (r: Report) => {
+        r.attributes.extra = 1;
+      },
+    ],
+    [
+      'attachment count',
+      (r: Report) => {
+        addReportAttachment(r, { name: 'b', data: 'q' });
+      },
+    ],
+    [
+      'attachment size',
+      (r: Report) => {
+        if (r.userAttachments) r.userAttachments[0] = { name: 'a', data: 'longer-data' };
+      },
+    ],
+    [
+      'severity',
+      (r: Report) => {
+        r.severity = 'low';
+      },
+    ],
+    [
+      'email',
+      (r: Report) => {
+        r.email = 'x@y.z';
+      },
+    ],
+    [
+      'type',
+      (r: Report) => {
+        r.type = 'crash';
+      },
+    ],
+    [
+      'attachment name',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            name: 'renamed',
+          };
+      },
+    ],
+    [
+      'attachment mimeType',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            mimeType: 'text/x',
+          };
+      },
+    ],
+    [
+      'attachment fileName',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            fileName: 'f.txt',
+          };
+      },
+    ],
+    [
+      'signatures',
+      (r: Report) => {
+        r.signatures.push('sig');
+      },
+    ],
+    [
+      'crash frame count',
+      (r: Report) => {
+        const crash = r.crash as { exception: { frames: unknown[] } };
+        crash.exception.frames.pop();
+      },
+    ],
+    [
+      'crash frame locals',
+      (r: Report) => {
+        const crash = r.crash as { exception: { frames: { variables?: unknown }[] } };
+        for (const f of crash.exception.frames) f.variables = { scrubbed: '1' };
+      },
+    ],
+    [
+      'crash cause chain frame locals (R5H-1)',
+      (r: Report) => {
+        const cause = (r.crash as { exception: { cause?: { frames: { variables?: unknown }[] } } })
+          .exception.cause;
+        for (const f of cause?.frames ?? []) delete f.variables;
+      },
+    ],
+    [
+      'crash cause reason (R5H-1)',
+      (r: Report) => {
+        (r.crash as { exception: { cause: { reason: string } } }).exception.cause.reason =
+          'scrubbed';
+      },
+    ],
+    [
+      'crash exception name (R5H-1)',
+      (r: Report) => {
+        (r.crash as { exception: { name: string } }).exception.name = 'Scrubbed';
+      },
+    ],
+    [
+      'crash domain (R5H-1)',
+      (r: Report) => {
+        (r.crash as unknown as { domain: string }).domain = 'scrubbed';
+      },
+    ],
+    [
+      'same-length string attachment (masked with *) (R5H-2)',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            data: '***',
+          };
+      },
+    ],
+    [
+      'same-length binary attachment (fill(0)) (R5H-2)',
+      (r: Report) => {
+        const bin = r.userAttachments?.[1]?.data;
+        if (bin instanceof Uint8Array) bin.fill(0);
+      },
+    ],
+    [
+      'SDK attachment removed (R5H-2)',
+      (r: Report) => {
+        r.attachments = undefined;
+      },
+    ],
+    [
+      'SDK attachment bytes zeroed in place, same length (R5H-2)',
+      (r: Report) => {
+        const dmp = r.attachments?.[0]?.data;
+        if (dmp instanceof Uint8Array) dmp.fill(0);
+      },
+    ],
+    [
+      'crash exception message',
+      (r: Report) => {
+        (r.crash as { exception: { reason?: string } }).exception.reason = 'scrubbed';
+      },
+    ],
+  ])('an `after` handler that changes the %s rewrites the marker (R3P-7)', async (_name, mutate) => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        // Every row starts from a report that carries a crash (the crash rows edit it in place).
+        request.report.crash = {
+          exception_type: 'error',
+          ndkCrash: false,
+          handled: true,
+          exception: {
+            name: 'Error',
+            reason: 'boom',
+            frames: [{ trace: 'at a' }, { trace: 'at b' }],
+            cause: {
+              name: 'Error',
+              reason: 'inner',
+              frames: [{ trace: 'at c', variables: { password: 'hunter2' } }],
+            },
+          },
+          domain: 'orig',
+        } as unknown as Report['crash'];
+        request.report.attachments = [{ name: 'crash.dmp', data: new Uint8Array([7, 8, 9]) }];
+        return request;
+      },
+      after: (request) => mutate(request.report),
+    });
+    await client.upload({
+      summary: 's',
+      description: 'd',
+      labels: ['l'],
+      attachments: [
+        { name: 'a', data: 'xyz' },
+        { name: 'b', data: new Uint8Array([1, 2, 3]) },
+      ],
+    });
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('a scrubbing `after` leaves the marker holding the SCRUBBED crash (R4H-1)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        request.report.crash = {
+          exception_type: 'error',
+          ndkCrash: false,
+          handled: true,
+          exception: {
+            name: 'Error',
+            reason: 'boom',
+            frames: [{ trace: 'at f', variables: { password: 'hunter2' } }],
+          },
+        } as unknown as Report['crash'];
+        return request;
+      },
+      after: (request) => {
+        const crash = request.report.crash as {
+          exception: { frames: { variables?: unknown }[] };
+        };
+        for (const f of crash.exception.frames) delete f.variables;
+      },
+    });
+    await client.upload({ summary: 's' });
+    expect(put).toHaveBeenCalledTimes(2);
+    const last = put.mock.calls[1]?.[0] as ReportMarker;
+    expect(JSON.stringify(last.request.report.crash)).not.toContain('hunter2');
+  });
+
+  it('a hostile report (throwing Proxy) never loses the report at the marker limit step (R3P-8)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        // Frozen: normalisation cannot assign, so the marker falls back to limiting a COPY, which a
+        // throwing ownKeys then breaks.
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    const result = await client.upload({
+      summary: 'x',
+      attachments: [{ name: 'a', data: 'x' }],
+    });
+    expect(result.ok).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'hostile ownKeys' }));
+  });
+
+  it('a limit step that throws persists NO user attachments in the marker (fail closed, R4H-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        // Throws on the FIRST enumeration only (the limit step); encodable afterwards.
+        let calls = 0;
+        const flaky = new Proxy(request.report, {
+          ownKeys: (target) => {
+            calls += 1;
+            if (calls === 1) throw new Error('flaky ownKeys');
+            return Reflect.ownKeys(target);
+          },
+        });
+        return { ...request, report: flaky };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    expect(marker.request.report.userAttachments).toEqual([]);
+    expect(JSON.stringify(marker)).not.toContain('secret-bytes');
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report that cannot even be copied persists no marker, and is still uploaded (R4H-6)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    expect(put).not.toHaveBeenCalled();
+    // normalise, limit, copy: nothing was ever handed to the encoder (it would add a 4th report)
+    expect(onError).toHaveBeenCalledTimes(3);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report that cannot be copied (no marker persisted) still raises the unrecoverable warning when the upload fails (R5H-3)', async () => {
+    const { store, put, remove } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: {
+        enqueue: vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false })), // retryable, nothing retained
+        flush: vi.fn(async () => true),
+        drop: vi.fn(),
+      },
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('unrecoverable') }),
+      ),
+    );
+    expect(put).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      after: (request) => {
+        request.report.summary = 'edited';
+      },
+    });
+    put.mockResolvedValueOnce(undefined);
+    put.mockRejectedValueOnce(new Error('idb quota'));
+    const result = await client.upload({ summary: 'x' });
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(result.ok).toBe(true);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'idb quota' }));
+  });
+
+  it('a FROZEN report still gets its attachments limited before the marker encodes them (R2P-9)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError: () => {},
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+
+    await client.upload({
+      attachments: [
+        { name: 'a', data: new Uint8Array([1, 2, 3]) },
+        { name: 'huge', data: new Uint8Array(3 * 1024 * 1024 + 1) },
+        { name: 'b', data: 'two' },
+        { name: 'c', data: 'three' },
+        { name: 'd', data: 'four' },
+      ],
+    });
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const wire = JSON.stringify(marker);
+    expect(wire.length).toBeLessThan(2000); // 4 MB of base64 never reached the marker
+    const back = decodeRequestFromMarker(JSON.parse(wire).request, vi.fn());
+    expect(back.report.userAttachments?.map((a) => a.name)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('lets ReportHandler.before add attachments with addReportAttachment', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setReportHandler({
+      before: (request) => {
+        addReportAttachment(request.report, {
+          name: 'state.json',
+          data: '{"a":1}',
+          mimeType: 'application/json',
+        });
+        return request;
+      },
+    });
+
+    await client.upload();
+
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
+    expect(entry.attrs.mimeType).toBe('application/json');
+    expect(strFromU8(files[entry.filename] as Uint8Array)).toBe('{"a":1}');
+  });
+
   it('defaults to a high-severity bug with nothing else set', async () => {
     const { client, sent } = upload();
 
@@ -2131,7 +3083,16 @@ describe('createClient — upload (manual report)', () => {
   it('marks a report from the dialog with the code_dialog trigger', async () => {
     const { client, sent } = upload();
 
-    await client.upload({ trigger: 'code_dialog', summary: 's' });
+    await asInternalClient(client).upload({ trigger: 'code_dialog', summary: 's' });
+
+    expect(sent().source.type).toBe('code_dialog');
+  });
+
+  it('asInternalClient reaches the wire-level trigger through the public type', async () => {
+    const { client, sent } = upload();
+    const publicClient: BugseeClient = client;
+
+    await asInternalClient(publicClient).upload({ trigger: 'code_dialog', summary: 's' });
 
     expect(sent().source.type).toBe('code_dialog');
   });
@@ -2207,7 +3168,7 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
   it('builds the same report fields as upload()', async () => {
     const { client, enqueue } = setup();
-    const prepared = client.prepareUpload();
+    const prepared = asInternalClient(client).prepareUpload();
 
     await prepared?.send({
       summary: 's',
@@ -2298,5 +3259,363 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
     expect(result).toEqual({ ok: true });
     expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createClient — blackout', () => {
+  it('starts not blacked out', () => {
+    expect(createClient().isBlackout()).toBe(false);
+  });
+
+  it('startBlackout()/endBlackout() toggle isBlackout()', () => {
+    const client = createClient();
+    client.launch();
+    client.startBlackout();
+    expect(client.isBlackout()).toBe(true);
+    client.endBlackout();
+    expect(client.isBlackout()).toBe(false);
+  });
+
+  it('is idempotent and not counted (one end clears any number of starts)', () => {
+    const client = createClient();
+    client.launch();
+    client.startBlackout();
+    client.startBlackout();
+    client.endBlackout();
+    expect(client.isBlackout()).toBe(false);
+  });
+
+  it('publishes the state through the container so providers can subscribe (internal onBlackoutChange)', () => {
+    const client = createClient();
+    client.launch();
+    const seen: boolean[] = [];
+    client.getService(BlackoutToken).onChange((active) => seen.push(active));
+    client.startBlackout();
+    client.startBlackout();
+    client.endBlackout();
+    expect(seen).toEqual([true, false]);
+  });
+
+  it('routes a throwing subscriber to onError without breaking the toggle', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    client.launch();
+    const boom = new Error('boom');
+    client.getService(BlackoutToken).onChange(() => {
+      throw boom;
+    });
+    client.startBlackout();
+    expect(client.isBlackout()).toBe(true);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('does not suppress non-visual capture (logs/events/traces continue)', async () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store });
+    client.launch();
+    client.startBlackout();
+    client.log('still logged');
+    client.event('still-evented');
+    client.trace('still-traced', 1);
+    const drained = await createCaptureExporter(store).drain();
+    expect(drained.get('log')).toHaveLength(1);
+    expect(drained.get('events.user')).toHaveLength(1);
+    expect(drained.get('traces.user')).toHaveLength(1);
+  });
+});
+
+describe('createClient — mobile-parity options (T6)', () => {
+  const memStore = () => createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+  const drain = async (store: CaptureStore, type: FileType) =>
+    (await createCaptureExporter(store).drain()).get(type);
+  const noScheduler = { setInterval: () => 'h', clearInterval: () => {} };
+
+  describe('captureBreadcrumbs', () => {
+    it('drops addBreadcrumb when the option is switched off', async () => {
+      const store = memStore();
+      const client = createClient({
+        captureStore: store,
+        clock: fixedClock(1000),
+        isEnabled: (key) => key !== 'com.bugsee.option.capture.breadcrumbs',
+      });
+      client.addBreadcrumb({ message: 'clicked' });
+      expect(await drain(store, 'breadcrumbs')).toBeUndefined();
+    });
+
+    it('keeps capturing when the option is on (the JS default)', async () => {
+      const store = memStore();
+      const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+      client.addBreadcrumb({ message: 'clicked' });
+      expect(await drain(store, 'breadcrumbs')).toHaveLength(1);
+    });
+  });
+
+  describe('captureLogsLevel', () => {
+    const levelled = (level: unknown, onError?: (e: unknown) => void) => {
+      const store = memStore();
+      const client = createClient({
+        captureStore: store,
+        clock: fixedClock(1000),
+        launchOptions: createOptionsContainer({ 'com.bugsee.option.capture.logs.level': level }),
+        ...(onError !== undefined ? { onError } : {}),
+      });
+      return { store, client };
+    };
+
+    it('drops client.log records below the level and keeps the rest', async () => {
+      const { store, client } = levelled('warning');
+      client.log('chatty', 'info');
+      client.log('verbose-ish', 'debug');
+      client.log('bad', 'error');
+      client.log('careful', 'warning');
+      const messages = (await drain(store, 'log'))?.map(
+        (e) => (e.data as { message: string }).message,
+      );
+      expect(messages).toEqual(['bad', 'careful']);
+    });
+
+    it('also applies to a numeric wire level', async () => {
+      const { store, client } = levelled('error');
+      client.log('x', 3 as unknown as 'info');
+      expect(await drain(store, 'log')).toBeUndefined();
+    });
+
+    it('captures everything by default (verbose)', async () => {
+      const store = memStore();
+      const client = createClient({ captureStore: store, clock: fixedClock(1000) });
+      client.log('v', 'verbose');
+      expect(await drain(store, 'log')).toHaveLength(1);
+    });
+
+    it('warns through onError and falls back to verbose on an unknown level', async () => {
+      const onError = vi.fn();
+      const { store, client } = levelled('chatty', onError);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(String((onError.mock.calls[0]?.[0] as Error).message)).toBe(
+        'captureLogsLevel must be one of error | warning | info | debug | verbose (got chatty); using verbose',
+      );
+      client.log('v', 'verbose');
+      expect(await drain(store, 'log')).toHaveLength(1);
+    });
+  });
+
+  describe('reportDefaultCrashPriority / reportDefaultErrorPriority', () => {
+    const configured = (values: Record<string, unknown>, onError?: (e: unknown) => void) => {
+      const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+      const provider = detectionProvider('d');
+      const client = createClient({
+        triggerPipeline: { report } as TriggerPipeline,
+        launchOptions: createOptionsContainer(values),
+        scheduler: noScheduler,
+        ...(onError !== undefined ? { onError } : {}),
+      });
+      client.addDetectionProvider(provider);
+      client.launch();
+      const sink = (provider.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as (
+        r: ReportingRequest,
+      ) => void;
+      return { client, report, sink };
+    };
+    const CRASH = 'com.bugsee.option.reporting.defaults.crash-priority';
+    const ERROR = 'com.bugsee.option.reporting.defaults.error-priority';
+    const severities = (report: { mock: { calls: unknown[][] } }) =>
+      report.mock.calls.map((c) => (c[0] as ReportingRequest).report.severity);
+
+    it('applies the configured crash priority to a detected crash with no explicit severity', () => {
+      const { report, sink } = configured({ [CRASH]: 'critical' });
+      sink(createReportingRequest({ source: { type: 'crash', mechanism: 'uncaught' } }));
+      expect(severities(report)).toEqual(['critical']);
+    });
+
+    it('applies the configured error priority to a detected error and to logException', async () => {
+      const { client, report, sink } = configured({ [ERROR]: 'low' });
+      sink(createReportingRequest({ source: { type: 'error' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['low', 'low']);
+    });
+
+    it('lets an explicit per-call severity win over the configured default', async () => {
+      const { client, report, sink } = configured({ [ERROR]: 'low', [CRASH]: 'low' });
+      sink(createReportingRequest({ source: { type: 'crash' }, severity: 'blocker' }));
+      await client.logException(new Error('x'), { severity: 'critical' });
+      expect(severities(report)).toEqual(['blocker', 'critical']);
+    });
+
+    it('keeps the mobile defaults (crash blocker, error high) when unconfigured', async () => {
+      const { client, report, sink } = configured({});
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['blocker', 'high']);
+    });
+
+    it('does not touch a bug-type report (that default is reportDefaultBugPriority)', async () => {
+      const { client, report } = configured({ [CRASH]: 'low', [ERROR]: 'low' });
+      await client.upload({});
+      expect(severities(report)).toEqual(['high']);
+    });
+
+    // R2D-3: Android applies ReportingDefaultBugPriority to EVERY bug report, not only the browser dialog's.
+    const BUG = 'com.bugsee.option.reporting.defaults.bug-priority';
+
+    it('applies reportDefaultBugPriority to client.upload() and to a detected bug-type report', async () => {
+      const { client, report, sink } = configured({ [BUG]: 'critical' });
+      await client.upload({});
+      sink(createReportingRequest({ source: { type: 'shake' } }));
+      expect(severities(report)).toEqual(['critical', 'critical']);
+    });
+
+    it('does not apply the bug priority to crash / error reports', async () => {
+      const { client, report, sink } = configured({ [BUG]: 'low' });
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      await client.logException(new Error('x'));
+      expect(severities(report)).toEqual(['blocker', 'high']);
+    });
+
+    it('an explicit upload severity beats the bug priority; the handler still rewrites it', async () => {
+      const { client, report } = configured({ [BUG]: 'low' });
+      await client.upload({ severity: 'blocker' });
+      client.setReportHandler({
+        before: (request) => {
+          request.report.severity = 'medium';
+          return request;
+        },
+      });
+      await client.upload({});
+      expect(severities(report)).toEqual(['blocker', 'medium']);
+    });
+
+    it('an invalid bug priority reports once (naming verylow) and uses high', async () => {
+      const onError = vi.fn();
+      const { client, report } = configured({ [BUG]: 'urgent' }, onError);
+      expect(onError.mock.calls.map((c) => String((c[0] as Error).message))).toEqual([
+        'reportDefaultBugPriority must be one of verylow | low | medium | high | critical | blocker (got urgent); using high',
+      ]);
+      await client.upload({});
+      expect(severities(report)).toEqual(['high']);
+    });
+
+    it('lets the report handler still rewrite the severity afterwards', () => {
+      const { client, report, sink } = configured({ [CRASH]: 'low' });
+      client.setReportHandler({
+        before: (request) => {
+          request.report.severity = 'medium';
+          return request;
+        },
+      });
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      expect(severities(report)).toEqual(['medium']);
+    });
+
+    it('warns through onError and falls back to the mobile default for an invalid value', () => {
+      const onError = vi.fn();
+      const { report, sink } = configured({ [CRASH]: 'urgent', [ERROR]: 7 }, onError);
+      const messages = onError.mock.calls.map((c) => String((c[0] as Error).message));
+      expect(messages).toEqual([
+        'reportDefaultCrashPriority must be one of verylow | low | medium | high | critical | blocker (got urgent); using blocker',
+        'reportDefaultErrorPriority must be one of verylow | low | medium | high | critical | blocker (got 7); using high',
+      ]);
+      sink(createReportingRequest({ source: { type: 'crash' } }));
+      expect(severities(report)).toEqual(['blocker']);
+    });
+  });
+});
+
+describe('createClient — wire-level options are not reachable from the public surface (review O12)', () => {
+  const setup = () => {
+    // `upload` goes through the upload pipeline, `logException` through the trigger pipeline.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    const logClient = createClient({ triggerPipeline: { report } as TriggerPipeline });
+    const sentSource = () => (enqueue.mock.calls[0]?.[0] as Bundle).request.source;
+    const reportedSource = () => (report.mock.calls[0]?.[0] as ReportingRequest).source;
+    return { client, logClient, sentSource, reportedSource };
+  };
+  // What plain JavaScript can do: the type system hides these options, the runtime must too.
+  const forge = (value: unknown) => value as never;
+
+  it('upload() ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
+    const { client, sentSource } = setup();
+    await client.upload(forge({ trigger: 'code_dialog', summary: 's' }));
+    expect(sentSource().type).toBe('code_upload');
+  });
+
+  it('upload() still honours every public field next to a forged trigger', async () => {
+    const { client, enqueue } = (() => {
+      const { uploadPipeline, enqueue: e } = fakeUpload();
+      return {
+        client: createClient({ uploadPipeline, appToken: 'tok', getEnvironment }),
+        enqueue: e,
+      };
+    })();
+    await client.upload(forge({ trigger: 'code_dialog', summary: 'kept', labels: ['a'] }));
+    const request = (enqueue.mock.calls[0]?.[0] as Bundle).request;
+    expect(request.summary).toBe('kept');
+    expect(request.labels).toEqual(['a']);
+  });
+
+  it('logException() ignores a forged `mechanism`', async () => {
+    const { logClient, reportedSource } = setup();
+    await logClient.logException(new Error('x'), forge({ mechanism: 'uncaught' }));
+    expect(reportedSource()).toEqual({ type: 'error', mechanism: 'programmatic' });
+  });
+
+  it('prepareUpload().send() ignores a forged `trigger`', async () => {
+    const { client, sentSource } = setup();
+    await client.prepareUpload()?.send(forge({ trigger: 'code_dialog' }));
+    expect(sentSource().type).toBe('code_upload');
+  });
+
+  it('upload() / logException() tolerate a null or non-object options argument', async () => {
+    const { client, logClient } = setup();
+    await expect(client.upload(forge(null))).resolves.toBeDefined();
+    await expect(logClient.logException(new Error('y'), forge('nope'))).resolves.toBeDefined();
+  });
+
+  it('asInternalClient keeps the wire-level options: trigger, mechanism and the dialog path', async () => {
+    const { client, logClient, sentSource, reportedSource } = setup();
+    await asInternalClient(client).upload({ trigger: 'code_dialog', summary: 's' });
+    expect(sentSource().type).toBe('code_dialog');
+    await asInternalClient(logClient).logException(new Error('z'), { mechanism: 'http-error' });
+    expect(reportedSource()).toEqual({ type: 'error', mechanism: 'http-error' });
+  });
+
+  it('asInternalClient keeps prepareUpload().send({ trigger }) (the report dialog)', async () => {
+    const { client, sentSource } = setup();
+    await asInternalClient(client).prepareUpload()?.send({ trigger: 'code_dialog' });
+    expect(sentSource().type).toBe('code_dialog');
+  });
+
+  it('prepareUpload() is null on a stopped client through both views', async () => {
+    const { client } = setup();
+    client.launch();
+    await client.stop();
+    expect(client.prepareUpload()).toBeNull();
+    expect(asInternalClient(client).prepareUpload()).toBeNull();
+  });
+
+  it('the internal view survives a platform wrapper that spreads the public client', async () => {
+    const { client, sentSource } = setup();
+    const wrapped: BugseeClient = { ...client, stop: client.stop };
+    await asInternalClient(wrapped).upload({ trigger: 'code_dialog', summary: 's' });
+    expect(sentSource().type).toBe('code_dialog');
+    // ...while the wrapper's own public methods stay stripped.
+    await wrapped.upload(forge({ trigger: 'code_dialog' }));
+  });
+
+  it('a client that was not created by createClient is returned as is (no brand to unwrap)', () => {
+    const plain = { upload: vi.fn() } as unknown as BugseeClient;
+    expect(asInternalClient(plain)).toBe(plain);
+  });
+
+  it('the public methods do not mutate the caller options object', async () => {
+    const { client } = setup();
+    const options = { trigger: 'code_dialog', summary: 's' };
+    await client.upload(forge(options));
+    expect(options).toEqual({ trigger: 'code_dialog', summary: 's' });
   });
 });

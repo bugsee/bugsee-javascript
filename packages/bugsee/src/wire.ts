@@ -19,11 +19,14 @@ import {
   defaultTraceId,
   hasDeviceIdAttribute,
   PERFORMANCE_OPTION_DEFINITIONS,
+  type PerformanceFacade,
   PerformanceOption,
+  type PerformanceUploadMode,
   type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { withPerformanceFacade } from './performance-facade';
 
 /**
  * Per-runtime root-transaction policy. The browser collects a pageload transaction (+ web-vitals); Node
@@ -89,6 +92,8 @@ export interface UmbrellaExtensionOptions {
   performanceMonitoring?: boolean;
   /** Head sampling rate for performance transactions, 0..1. Default 1 (keep all). */
   performanceSampleRate?: number;
+  /** Upload cadence: `batched` (every flush interval, the default) or `realtime` (per transaction). */
+  performanceUploadMode?: PerformanceUploadMode;
   /** Batched-upload flush interval in milliseconds. Default 30000. */
   performanceFlushIntervalMs?: number;
   /** The pageload transaction name. Default the current path (`location.pathname`) or `pageload`. */
@@ -119,9 +124,10 @@ export interface UmbrellaExtensionOptions {
   /**
    * OTLP/HTTP-JSON traces endpoint (e.g. `https://api.honeycomb.io/v1/traces`). When set, finished
    * performance transactions are ALSO exported here (a TEE — Bugsee still receives them), so your data
-   * lands in your own OTel backend. Requires performance on.
+   * lands in your own OTel backend. A string (trimmed) or a `URL`; empty or whitespace means no exporter, any other
+   * type is reported through `onError` and means no exporter. Requires performance on.
    */
-  otelExportUrl?: string;
+  otelExportUrl?: string | URL;
   /** Headers for the OTLP export (e.g. `authorization`, `x-honeycomb-team`). Use lowercase keys. */
   otelExportHeaders?: Record<string, string>;
   /** OTLP resource attributes for the export (e.g. `{ 'service.name': 'web' }`). */
@@ -147,6 +153,40 @@ function teeSend(
   };
 }
 
+/**
+ * The OTLP endpoint of `otelExportUrl` (R5V-7): a string (trimmed) or a `URL` object (its href). Absent, `null`, an
+ * empty or whitespace-only string mean "no exporter" silently; anything else (a number, an object, ...) is reported
+ * and means no exporter either, so nothing is ever posted to an address the host did not give.
+ */
+function resolveOtlpUrl(
+  value: unknown,
+  onError: ((error: unknown) => void) | undefined,
+): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const text =
+    typeof value === 'string'
+      ? value
+      : Object.prototype.toString.call(value) === '[object URL]'
+        ? (value as { href: string }).href
+        : undefined;
+  if (text === undefined) {
+    try {
+      onError?.(
+        new Error(
+          `otelExportUrl must be a string or a URL (got ${typeof value}); no OTLP exporter is configured`,
+        ),
+      );
+    } catch {
+      /* a throwing onError must not break launch */
+    }
+    return undefined;
+  }
+  const trimmed = text.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
 /** Merge `device_id` into an OTLP resource when the caller did not already set a recognized key. */
 function otlpResourceWithDeviceId(
   resource: Record<string, unknown> | undefined,
@@ -170,11 +210,20 @@ export function wireUmbrella<C extends BugseeClient>(
   options: UmbrellaExtensionOptions,
   platform: UmbrellaPlatform,
   browserSources: UmbrellaBrowserSources = {},
-): C {
+): C & PerformanceFacade {
+  // `startTransaction` / `startSpan` / `getActiveSpan` straight on the client (mobile parity). Installed
+  // first so they exist even when performance is switched off, where they are no-ops.
+  const facade = withPerformanceFacade(client);
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
-    PERFORMANCE_OPTION_DEFINITIONS,
+    // `propagateTrace` is the BROWSER's perf-sourced propagation switch; on Node the `@bugsee/node` launch owns that
+    // option (default ON, invalid => OFF) and reports it, so the umbrella must not judge it a second time with a
+    // contradictory definition ("using false" while node kept propagating: R4V-4).
+    platform.pageload
+      ? PERFORMANCE_OPTION_DEFINITIONS
+      : PERFORMANCE_OPTION_DEFINITIONS.filter((d) => d.friendly !== 'propagateTrace'),
+    internals.onError,
   );
 
   const bugseeSend = createPerformanceSend({
@@ -190,11 +239,13 @@ export function wireUmbrella<C extends BugseeClient>(
   // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
   // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
   const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
+  const otlpUrl = resolveOtlpUrl(options.otelExportUrl, internals.onError);
   const otlpSend =
-    options.otelExportUrl !== undefined
+    // Only a NON-EMPTY URL configures an exporter: `''` / `'   '` would post to the page's own URL (R4V-10, R5V-7).
+    otlpUrl !== undefined
       ? createOtlpTraceExporter({
           transport: internals.transport,
-          url: options.otelExportUrl,
+          url: otlpUrl,
           scope: { name: scopeName },
           ...(options.otelExportHeaders !== undefined
             ? { headers: options.otelExportHeaders }
@@ -208,7 +259,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // navigation), opt-out via `traceNavigations: false`. The detector self-skips if the browser globals are
   // absent; wirePerformance subscribes to it (which activates it) and tears it down on stop.
   const navigationSource =
-    platform.pageload && (options.traceNavigations ?? true)
+    platform.pageload && perf.options.get(PerformanceOption.TraceNavigations, true)
       ? browserSources.createNavigationSource?.()
       : undefined;
 
@@ -216,7 +267,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // false`. The Event Timing source self-skips where the API is unsupported; wirePerformance subscribes
   // (activating it) and tears it down on stop.
   const interactionSource =
-    platform.pageload && (options.traceInteractions ?? true)
+    platform.pageload && perf.options.get(PerformanceOption.TraceInteractions, true)
       ? browserSources.createInteractionSource?.()
       : undefined;
 
@@ -234,6 +285,9 @@ export function wireUmbrella<C extends BugseeClient>(
     monitoring: perf.options.get(PerformanceOption.Monitoring, true),
     sampleRate: perf.options.get(PerformanceOption.SampleRate, 1),
     flushIntervalMs: perf.options.get(PerformanceOption.FlushIntervalMs, 30000),
+    realtime:
+      perf.options.get<PerformanceUploadMode>(PerformanceOption.UploadMode, 'batched') ===
+      'realtime',
     pageload: platform.pageload,
     networkSource: internals.network.interceptor,
     ...(navigationSource !== undefined ? { navigationSource } : {}),
@@ -249,7 +303,7 @@ export function wireUmbrella<C extends BugseeClient>(
   });
 
   // monitoring off → wirePerformance installed nothing; return the client as-is (no teardown to compose).
-  if (wired === undefined) return client;
+  if (wired === undefined) return facade;
 
   // Node startup transaction (the pageload analog): record an already-finished `app.start` transaction
   // spanning process-start → launch, so it uploads immediately (no pageload/hidden lifecycle on Node).
@@ -288,7 +342,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // is built on, and it is tied to the OPT-IN APM extension. Same-origin propagates by default; cross-origin only via the
   // allowlist (`tracePropagationTargets`).
   let offPropagation: (() => void) | undefined;
-  if (platform.pageload && (options.propagateTrace ?? false)) {
+  if (platform.pageload && perf.options.get(PerformanceOption.PropagateTrace, false)) {
     offPropagation = internals.network.interceptor.addRequestDecorator(
       createTraceparentDecorator({
         getActiveSpan: () => client.ext('performance').getActiveSpan(),
@@ -296,6 +350,7 @@ export function wireUmbrella<C extends BugseeClient>(
         ...(options.tracePropagationTargets !== undefined
           ? { allowlist: options.tracePropagationTargets }
           : {}),
+        ...(internals.onError !== undefined ? { onError: internals.onError } : {}),
         ...(options.tracePropagationOrigin !== undefined
           ? { origin: options.tracePropagationOrigin }
           : {}),
@@ -329,5 +384,5 @@ export function wireUmbrella<C extends BugseeClient>(
     wired.stop();
     return stopClient(timeout);
   };
-  return client;
+  return facade;
 }

@@ -1,16 +1,19 @@
 import { fetchTransport } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   installNetworkCapture,
 } from '@bugsee/capture';
 import {
   BUGSEE_SDK_VERSION,
   type BugseeClient,
+  BugseeStatus,
   type CaptureStore,
   CaptureStoreToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -20,20 +23,26 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type LifecycleEventsListener,
   type RequestContext,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
   resolveMaxPartitions,
   type Scheduler,
   serviceToken,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
+import { describeValue, reportGuarded } from '@bugsee/util';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -71,6 +80,9 @@ export const EdgeContextStoreToken = serviceToken<EdgeRequestContextStore>(
   'edge-request-context-store',
 );
 
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+
 export interface BugseeEdgeLaunchOptions {
   /**
    * The run()-scoped async store backing per-request context. Default: probe `globalThis.AsyncLocalStorage`,
@@ -94,8 +106,12 @@ export interface BugseeEdgeLaunchOptions {
    * isolate and therefore one capture ring — the leak proven on real workerd
    * (docs/review/cloudflare.md SEV1 #2, docs/design/cloudflare-tenant-isolation.md).
    *
-   * Default false: Vercel Edge and plain fetch handlers are single-tenant, and partitioning there would be
-   * overhead with nothing to separate.
+   * Default false on Vercel Edge and plain fetch handlers (single-tenant: partitioning there would be overhead
+   * with nothing to separate). `@bugsee/cloudflare` defaults it to TRUE.
+   *
+   * This option PROTECTS data, so an INVALID value (`'true'`, `1`, `null`, `0`, `''`) is treated as ON and reported
+   * through `onError`; only boolean `false` switches it off. On Cloudflare an explicit `false` silently reinstates
+   * the cross-tenant leak the default prevents, so `@bugsee/cloudflare` warns about it once per isolate.
    */
   partitionCaptureByTenant?: boolean;
   /**
@@ -125,6 +141,29 @@ export interface BugseeEdgeLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
   /** Detect global `unhandledrejection` (floating-promise rejections). Default true. */
@@ -158,6 +197,14 @@ export interface BugseeEdgeLaunchOptions {
   globalTarget?: EdgeGlobalEvents;
   /** Carrier host for the per-isolate singleton; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the isolate carrier, so a later client sees it too. Also set with
+   * `client.setLifecycleEventsListener(...)`. `RelaunchedAfterCrash` is never emitted here: an edge isolate
+   * keeps nothing durable, so there is no previous run to find evidence of.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 }
 
 /** The launched edge client — the public edge SDK surface. */
@@ -177,7 +224,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
   if (alreadyLaunched !== undefined) {
-    options.onError?.(
+    reportGuarded(
+      options.onError,
       new Error(
         'Bugsee.launch() called more than once in this isolate; the repeat call is ignored',
       ),
@@ -186,7 +234,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     // partition — e.g. `launchEdge(token)` ran first (it is re-exported by @bugsee/cloudflare) and a
     // Durable Object's lazy launcher then reuses it. The generic message above does not name that
     // consequence, and silence here is how the cross-tenant leak comes back (review pass 2, SEV3 #3).
-    if (options.partitionCaptureByTenant === true) {
+    if (resolveFailOnBoolean(options.partitionCaptureByTenant, false)) {
       // Guarded: this runs inside launch() against a client we did not create — it may lack the service,
       // be mid-teardown, or be a foreign object someone else placed on the carrier. A throw here would
       // break launch() itself, and the SDK crashing the host app at startup is far worse than the missing
@@ -202,7 +250,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
         existing = undefined; // unknown store kind → warn, which is the safe direction
       }
       if (existing?.owners === undefined) {
-        options.onError?.(
+        reportGuarded(
+          options.onError,
           new Error(
             'Bugsee: this launch requested per-tenant isolation but an earlier launch in this isolate ' +
               'created a NON-partitioned client, which is reused. On Cloudflare that means one Durable ' +
@@ -218,6 +267,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     EDGE_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   const services = createServiceContainer();
@@ -247,13 +297,27 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
-  const partitionByTenant = options.partitionCaptureByTenant === true;
+  // PROTECTS (cross-tenant isolation): only boolean `false`/absent is OFF; any other value (`'true'`, `1`, `null`)
+  // fails ON and is reported (R4V-1).
+  const partitionByTenant = resolveFailOnBoolean(options.partitionCaptureByTenant, false);
+  if (
+    options.partitionCaptureByTenant !== undefined &&
+    typeof options.partitionCaptureByTenant !== 'boolean'
+  ) {
+    reportGuarded(
+      options.onError,
+      new Error(
+        `Bugsee: partitionCaptureByTenant expected a boolean, got ${describeValue(options.partitionCaptureByTenant)}; tenant partitioning stays ON`,
+      ),
+    );
+  }
   // The SAME coercion the store applies, so the divisor below and the store's bound can never disagree.
   const maxTenantPartitions = resolveMaxPartitions(options.maxTenantPartitions);
   // A caller-supplied store WINS over the partitioning switch — and that silently reinstates the
   // cross-tenant leak, so say so rather than failing open quietly.
   if (partitionByTenant && options.captureStore !== undefined) {
-    options.onError?.(
+    reportGuarded(
+      options.onError,
       new Error(
         'Bugsee: partitionCaptureByTenant was requested but an explicit captureStore was supplied, so ' +
           'per-tenant isolation is NOT active. On Cloudflare this means one Durable Object incident can ' +
@@ -289,8 +353,18 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   services.addService(defineService(EdgeContextStoreToken, () => contextStore));
 
   const client = createClient({
+    // Isolate-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
+    // the same one every client of the isolate sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() releases the carrier slot, so a stopped client must not be restarted in place (R2L-3): a new one
+    // comes from `launch(appToken)`.
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
     appToken,
@@ -318,6 +392,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   // Detection: the `unhandledrejection` safety net (gated by `detectCrashes` via its controllingOption). It
   // self-skips where the global target has no addEventListener (a non-edge runtime).
@@ -327,15 +403,29 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   client.launch();
 
-  // The public client. stop() clears the per-isolate carrier slot so a later launch() starts fresh.
+  // The public client. stop() releases the per-isolate carrier slot, but only if it is still OURS: a late
+  // stop() must not take the slot from a client that has since been relaunched (as browser/node already do).
   const stopCore = client.stop;
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(
+          client.isLaunched() ? BugseeStatus.Stopping : BugseeStatus.Stopped,
+          carrier,
+        );
+        clearCarrierClient(publicClient, carrier);
+      }
+      return stopCore(timeout).finally(() => {
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      });
     },
   };
   setCarrierClient(publicClient, carrier);
+  setCarrierLastLaunch(appToken, options, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier);
   return publicClient;
 }

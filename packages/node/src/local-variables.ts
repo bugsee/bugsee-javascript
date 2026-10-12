@@ -9,6 +9,7 @@ import {
   type StackFrame,
 } from '@bugsee/core';
 import { isSensitiveKey, REDACTED } from '@bugsee/protocol';
+import { reportGuarded } from '@bugsee/util';
 
 // Local variables at the moment of the throw (design reference: Sentry's LocalVariables integration;
 // Android has no analogue because a Java stack frame carries no locals). "It threw" becomes "it threw
@@ -82,6 +83,10 @@ export interface LocalVariablesOptions {
    * makes; the report site costs ~410 µs on every `logException` CALL, which for most applications is
    * several orders of magnitude rarer. What it gives up is the frames between the try and the throw —
    * it sees the catch block and everything below it, not the function that failed.
+   *
+   * Only a boolean is accepted: an INVALID value (`0`, `null`, `'false'`, `1`) is treated as OFF and reported
+   * through `onError`, never as ON (it pauses the process, so it is never switched on by accident). The same rule
+   * applies to {@link includeCaught}.
    */
   reportSite?: boolean;
   /** Test seam: the inspector session. Default a real `node:inspector` Session. */
@@ -287,15 +292,29 @@ export function createLocalVariablesCapture(
   options: LocalVariablesOptions = {},
 ): LocalVariablesCapture {
   const {
-    includeCaught = false,
     maxFrames = 5,
     maxVariables = 20,
     maxValueLength = 120,
     maxCached = 20,
     maxCaughtPerSecond = 50,
-    reportSite: reportSite_enabled = true,
   } = options;
-  const onError = options.onError ?? ((): void => {});
+  // Every report goes through the guard: a sink that throws (or rejects) must not break launch, nor a pause handler (R5V-4).
+  const onError = (error: unknown): void => reportGuarded(options.onError, error);
+  // Both switches COLLECT data (a process pause per caught throw / per report), so only boolean `true` enables
+  // them; any other non-undefined value (`'false'`, `1`, `null`) is OFF and reported, never truthy-ON (R4V-2).
+  const readSwitch = (name: 'includeCaught' | 'reportSite', fallback: boolean): boolean => {
+    const value: unknown = options[name];
+    if (value === undefined) {
+      return fallback;
+    }
+    if (typeof value !== 'boolean') {
+      onError(new Error(`Bugsee: ${name} must be a boolean, got ${typeof value}; it stays OFF`));
+      return false;
+    }
+    return value;
+  };
+  const includeCaught = readSwitch('includeCaught', false);
+  const reportSite_enabled = readSwitch('reportSite', true);
   const clock = options.clock ?? createSystemClock();
   const scheduler = options.scheduler ?? defaultScheduler;
   const session = options.session;

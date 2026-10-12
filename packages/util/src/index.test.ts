@@ -11,6 +11,8 @@ describe('@bugsee/util public surface', () => {
       'computeBackoff',
       'deepMerge',
       'createDeferred',
+      'describeValue',
+      'reportGuarded',
       'isBrowser',
       'isBun',
       'isCloudflareWorker',

@@ -1,6 +1,7 @@
 import {
   type Client,
   DetectionProviderBase,
+  decodeRequestFromMarker,
   type HarvestedDump,
   type ReportingRequest,
 } from '@bugsee/core';
@@ -88,10 +89,19 @@ export class RendererIncidentProvider extends DetectionProviderBase {
       if (!this.#allow(windowId)) {
         return;
       }
-      this.handleReportingRequest({
-        source: report.source,
-        report: { ...report.report, electron_window_id: windowId },
-      } as unknown as ReportingRequest);
+      // Renderer input is untrusted. `attachments` (report-level, written verbatim as zip members) is an
+      // SDK-internal field no renderer has a reason to set, so it is dropped; user attachments arrive base64
+      // encoded (JSON cannot carry bytes) and are decoded here, then bounded by the assembler as always.
+      const { attachments: _internal, ...fromRenderer } = report.report;
+      this.handleReportingRequest(
+        decodeRequestFromMarker(
+          {
+            source: report.source,
+            report: { ...fromRenderer, electron_window_id: windowId },
+          } as unknown as ReportingRequest,
+          this.#onError,
+        ),
+      );
     } catch (error) {
       this.#onError(error);
     }

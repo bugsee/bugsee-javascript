@@ -98,6 +98,49 @@ const issueJson = (transport: ReturnType<typeof uploadTransport>) => {
   };
 };
 
+describe('launchEdge: detectHttpErrors (review O6)', () => {
+  // One stub installed BEFORE launch: the interceptor wraps whatever `fetch` is at activation, so the
+  // status is switched through a variable, never by re-stubbing (that would replace the wrapper).
+  let status = 503;
+  const stub = (initial: number) => {
+    status = initial;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+  };
+
+  it('reports a 5xx fetch, once per endpoint+status, and ignores a 4xx', async () => {
+    stub(404);
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, detectHttpErrors: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders/1');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+    status = 503;
+    await fetch('https://api.example.com/orders/1');
+    await fetch('https://api.example.com/orders/2');
+    await client.flush();
+    expect(issueJson(transport).summary).toBe('HTTP 503');
+    expect(transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'))).toHaveLength(1);
+  });
+
+  it('is off by default', async () => {
+    stub(503);
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+  });
+});
+
 describe('launchEdge', () => {
   it('uploads a bundle on logException through the full edge path (session→issue→PUT)', async () => {
     const transport = uploadTransport();
@@ -362,6 +405,99 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     await client.stop?.();
   });
 
+  it.each([
+    ['true'],
+    [1],
+    [null],
+    [0],
+    [''],
+    [{}],
+  ])('an invalid partitionCaptureByTenant %j FAILS ON (partitioned) and is reported (R4V-1)', async (value) => {
+    const errors: Error[] = [];
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: value,
+      carrier: {},
+      onError: (e: Error) => errors.push(e),
+    } as unknown as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeDefined();
+    expect(errors.some((e) => e.message.includes('partitionCaptureByTenant'))).toBe(true);
+    await client.stop?.();
+  });
+
+  // R5V-4 / R5V-5: the warning must survive a host sink that throws, and describe ANY value without throwing
+  // (JSON.stringify throws on a BigInt and prints `undefined` for a Symbol or a function).
+  it.each([
+    [10n, '10n'],
+    [Symbol('on'), 'Symbol(on)'],
+    [function enable() {}, 'function enable'],
+    ['yes', '"yes"'],
+    [3, '3'],
+  ])('an invalid value %s is described safely and a rethrowing onError cannot break launch', async (value, text) => {
+    const seen: Error[] = [];
+    const onError = (e: Error): never => {
+      seen.push(e);
+      throw new Error('the host sink rethrows');
+    };
+    let client: ReturnType<typeof launchEdge> | undefined;
+    expect(() => {
+      client = launchEdge('tok', {
+        partitionCaptureByTenant: value,
+        carrier: {},
+        onError,
+      } as unknown as Parameters<typeof launchEdge>[1]);
+    }).not.toThrow();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.message).toContain(`got ${text}`);
+    expect(seen[0]?.message).toContain('tenant partitioning stays ON');
+    await client?.stop?.();
+  });
+
+  it('a rethrowing onError cannot break launch when an explicit captureStore overrides partitioning', async () => {
+    const inert = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release: () => {},
+      }),
+    };
+    const onError = vi.fn((_e: Error) => {
+      throw new Error('the host sink rethrows');
+    });
+    let client: ReturnType<typeof launchEdge> | undefined;
+    expect(() => {
+      client = launchEdge('tok', {
+        partitionCaptureByTenant: true,
+        captureStore: inert as never,
+        carrier: {},
+        onError,
+      } as unknown as Parameters<typeof launchEdge>[1]);
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('per-tenant isolation is NOT active');
+    await client?.stop?.();
+  });
+
+  it.each([[undefined], [false]])('%j is OFF and reports nothing', async (value) => {
+    const errors: Error[] = [];
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: value,
+      carrier: {},
+      onError: (e: Error) => errors.push(e),
+    } as unknown as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeUndefined();
+    expect(errors.some((e) => e.message.includes('partitionCaptureByTenant'))).toBe(false);
+    await client.stop?.();
+  });
+
   it('uses the plain single-tenant store by default (unchanged for Vercel Edge)', async () => {
     const client = launchEdge('tok', { carrier: {} } as Parameters<typeof launchEdge>[1]);
     const store = client.getService(
@@ -461,6 +597,26 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
     // …and the remedy, which is the only part the reader can act on.
     expect(message).toContain('Launch via @bugsee/cloudflare first');
     expect(message).toContain('or do not call launchEdge directly');
+  });
+
+  // R4V-1: an INVALID value asks for partitioning too (it fails ON), so the reuse warning must fire for it as well.
+  it.each([
+    ['true'],
+    [1],
+    [null],
+  ])('also names the loss when the repeat launch passes %j', (value) => {
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier }));
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier,
+        partitionCaptureByTenant: value as never,
+        onError: (e) => errors.push(e),
+      }),
+    );
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
   });
 
   it('stays quiet when the reused client DOES partition', () => {
@@ -572,6 +728,17 @@ describe('launchEdge — collector endpoint + SDK identity', () => {
     await client.flush();
     return transport;
   };
+
+  it('reportDefaultBugPriority applies to client.upload() at the edge too (R2D-3)', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, reportDefaultBugPriority: 'critical' }),
+    );
+    await client.upload({ summary: 'bug' });
+    await client.flush();
+    expect((issueJson(transport) as unknown as { severity: number }).severity).toBe(4);
+  });
 
   it('posts to https://api.bugsee.com by default', async () => {
     const transport = await upload({});

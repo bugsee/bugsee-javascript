@@ -118,7 +118,7 @@ describe('@bugsee/elysia — real Elysia app (e2e)', () => {
     await app.handle(new Request('http://localhost/handler-error')).then((r) => r.text());
     await app.handle(new Request('http://localhost/missing')).then((r) => r.text()); // 404 NOT_FOUND
     await app.handle(new Request('http://localhost/ok')).then((r) => r.text());
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
   });
@@ -127,7 +127,7 @@ describe('@bugsee/elysia — real Elysia app (e2e)', () => {
     const { app, client } = boot();
     expect((await app.handle(new Request('http://localhost/missing'))).status).toBe(404);
     expect(await (await app.handle(new Request('http://localhost/ok'))).text()).toBe('ok');
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
   });
 
   it('attributes each CONCURRENT request to its own user + contextId with no bleed', async () => {
@@ -144,7 +144,7 @@ describe('@bugsee/elysia — real Elysia app (e2e)', () => {
           .then((r) => r.text()),
       ),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(3);

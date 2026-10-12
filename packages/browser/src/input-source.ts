@@ -1,5 +1,11 @@
 import type { InputEventDetail } from '@bugsee/capture';
-import { InputTool, type Interceptor, InterceptorBase, isSensitiveInput } from '@bugsee/core';
+import {
+  type BlackoutGate,
+  InputTool,
+  type Interceptor,
+  InterceptorBase,
+  isSensitiveInput,
+} from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
 import { androidKeyCode, androidMetaState } from './keycodes';
 import { penAngles } from './pen-angles';
@@ -244,6 +250,13 @@ export interface BrowserInputEnv {
    * timeout where it does not exist (SSR / non-browser contexts this source may still be constructed in).
    */
   scheduleFrame?: (callback: () => void) => void;
+  /**
+   * The client's blackout gate. Wheel turns are COALESCED over a frame, so the provider-level gate (read
+   * at emission) is not enough: a turn made during a blackout would otherwise be flushed after it ended.
+   * With the gate the source refuses to collect during a blackout and drops any pending deltas at both
+   * edges.
+   */
+  blackout?: BlackoutGate;
 }
 
 // Capture phase so we observe before the app's bubbling handlers; passive so the browser knows we never
@@ -463,6 +476,9 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #wheelAccum: WheelAccumulator | null = null;
   #wheelFrameScheduled = false;
   #nextGestureId = 1;
+  #blackout: BlackoutGate | undefined;
+  #offBlackout: (() => void) | undefined;
+  #activated = false;
 
   // Each handler is wrapped by #dispatch: it builds the entry (returning undefined to skip) inside a
   // try/catch, so a malformed/exotic event, an instrumented DOM target, or an invalid app-supplied
@@ -506,8 +522,10 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     mask: string,
     now: () => number,
     scheduleFrame: (callback: () => void) => void,
+    blackout?: BlackoutGate,
   ) {
     super();
+    this.#blackout = blackout;
     this.#target = target;
     this.#mask = mask;
     this.#now = now;
@@ -640,6 +658,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
    *  emits synchronously — but the same observe-only guarantee applies via its own try/catch. */
   readonly #onWheel = (event: Event): void => {
     try {
+      if (this.#blackout?.isActive() === true) return; // blackout: not collected at all
       const e = event as WheelEventLike;
       const dx = typeof e.deltaX === 'number' && Number.isFinite(e.deltaX) ? e.deltaX : 0;
       const dy = typeof e.deltaY === 'number' && Number.isFinite(e.deltaY) ? e.deltaY : 0;
@@ -697,6 +716,8 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #dispatch(build: (event: Event) => InputEventDetail | undefined): (event: Event) => void {
     return (event) => {
       try {
+        // Dark: not collected at all (as for wheel), so no gesture state can be opened from sensitive content.
+        if (this.#blackout?.isActive() === true) return;
         const detail = build(event);
         if (detail !== undefined) this.emit('input', detail);
       } catch {
@@ -710,6 +731,43 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       this.#target?.addEventListener(type, this.#handlers[type], ADD_OPTIONS);
     }
     this.#target?.addEventListener('wheel', this.#onWheel, ADD_OPTIONS);
+    this.#activated = true;
+    this.#watchBlackout();
+  }
+
+  // Both edges drop whatever is pending: deltas turned before the blackout must not surface after it,
+  // and nothing collected around it may be merged into the first post-blackout entry.
+  #watchBlackout(): void {
+    this.#offBlackout = this.#blackout?.onChange(() => {
+      this.#wheelAccum = null;
+      // A gesture cannot span the blackout: one started in the dark must not leave a path to continue after
+      // it, and one open before it cannot be continued after it (its `up` may be dropped).
+      this.#clearGestures();
+    });
+  }
+
+  /**
+   * Re-point the source at a NEW client's blackout gate. The source is carrier-shared and outlives the
+   * client that created it, so a relaunch must hand it the new client's gate; otherwise it keeps reading
+   * the dead client's state (R2V-3). Pending wheel deltas are dropped; a live subscription is moved.
+   */
+  bindBlackout(gate: BlackoutGate | undefined): void {
+    this.#offBlackout?.();
+    this.#offBlackout = undefined;
+    this.#blackout = gate;
+    this.#wheelAccum = null;
+    this.#clearGestures();
+    if (this.#activated) {
+      this.#watchBlackout();
+    }
+  }
+
+  #clearGestures(): void {
+    this.#openGestures.clear();
+    this.#penPaths.clear();
+    this.#mouseDragPaths.clear();
+    this.#hoverIds.clear();
+    this.#lastHoverSampleAt.clear();
   }
 
   protected override onDeactivate(): void {
@@ -721,13 +779,25 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     // leak one Map entry per pointer and let a stale id resurface on the next activation. A pending wheel
     // accumulator is dropped the same way — no listener can feed it again until the next activate(), and
     // a stale already-scheduled frame callback finds it `null` and flushes nothing.
-    this.#openGestures.clear();
-    this.#penPaths.clear();
-    this.#mouseDragPaths.clear();
-    this.#hoverIds.clear();
-    this.#lastHoverSampleAt.clear();
+    this.#clearGestures();
     this.#wheelAccum = null;
+    this.#offBlackout?.();
+    this.#offBlackout = undefined;
+    this.#activated = false;
   }
+}
+
+/** A carrier-shared input source whose blackout gate can be re-pointed at a newer client. */
+export interface BlackoutBindable {
+  bindBlackout(gate: BlackoutGate | undefined): void;
+}
+
+/**
+ * Hand a (possibly carrier-shared, older) input source the CURRENT client's blackout gate. A no-op for
+ * a source that does not support it (a custom one injected through the carrier).
+ */
+export function bindInputBlackout(source: object, gate: BlackoutGate | undefined): void {
+  (source as Partial<BlackoutBindable>).bindBlackout?.(gate);
 }
 
 export function createBrowserInputSource(
@@ -740,5 +810,6 @@ export function createBrowserInputSource(
     env.maskSelector ?? '[data-bugsee-hidden]',
     env.now ?? (() => Date.now()),
     env.scheduleFrame ?? defaultScheduleFrame,
+    env.blackout,
   );
 }

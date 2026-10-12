@@ -150,6 +150,30 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     );
   });
 
+  // R4V-2: blocking PROTECTS, so an invalid value fails ON (block) and is reported; only boolean false/absent is off.
+  it.each([
+    'true',
+    1,
+    null,
+    0,
+    '',
+    {},
+  ])('blockAllCanvas=%j (invalid) blocks ALL canvas and reports', (bad) => {
+    const errors: unknown[] = [];
+    const m = resolveReplayMaskingOptions({ blockAllCanvas: bad } as never, {
+      onError: (e) => errors.push(e),
+    });
+    expect(m.blockSelector).toContain(CANVAS_SELECTOR);
+    expect(errors).toHaveLength(1);
+    expect(String((errors[0] as Error).message)).toContain('blockAllCanvas');
+  });
+
+  it('blockAllCanvas invalid still blocks when no onError sink is given', () => {
+    expect(resolveReplayMaskingOptions({ blockAllCanvas: 'yes' } as never).blockSelector).toContain(
+      CANVAS_SELECTOR,
+    );
+  });
+
   it('excludes iframes (blocked) — part of the media set', () => {
     expect(MEDIA_SELECTOR).toContain('iframe');
     expect(resolveReplayMaskingOptions().blockSelector).toContain('iframe');

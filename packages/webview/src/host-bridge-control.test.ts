@@ -57,7 +57,7 @@ describe('createBridgeControl', () => {
 
   it('defaults reportTrigger to false (D5) with no native session yet', () => {
     const bc = createBridgeControl();
-    expect(bc.config).toEqual({ reportTrigger: false });
+    expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
 
   it('seeds reportTrigger from the launch option', () => {
@@ -92,13 +92,13 @@ describe('createBridgeControl', () => {
     const bc = createBridgeControl({ reportTrigger: true });
     bc.control('not json {');
     bc.control(JSON.stringify({ k: 'entry' })); // foreign kind on a shared channel
-    expect(bc.config).toEqual({ reportTrigger: true }); // untouched
+    expect(bc.config).toEqual({ reportTrigger: true, nativeBlackout: false }); // untouched
   });
 
   it('accepts a bare reply (no session/config/command) without changing anything', () => {
     const bc = createBridgeControl();
     bc.control(reply({}));
-    expect(bc.config).toEqual({ reportTrigger: false });
+    expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
 
   it('retains a previously-set session across a later config-only reply (no clobber)', () => {
@@ -284,5 +284,46 @@ describe('createBridgeControl — the rejection report is contained and bounded'
     const second = createBridgeControl({ token: 'a-different-token', auth, onCommand });
     second.control(raw({ command: 'pause' })); // untokened, page-issued
     expect(onCommand, 'a fresh handler started un-latched').not.toHaveBeenCalled();
+  });
+});
+
+describe('control config: native blackout support (R2V-2)', () => {
+  const msg = (config: object) => JSON.stringify({ b: 1, k: 'control', config });
+
+  it('is false until native declares it, and follows later config pushes', () => {
+    const c = createBridgeControl();
+    expect(c.config.nativeBlackout).toBe(false);
+    c.control(msg({ blackout: true }));
+    expect(c.config.nativeBlackout).toBe(true);
+    c.control(msg({ blackout: false }));
+    expect(c.config.nativeBlackout).toBe(false);
+    c.control(msg({ reportTrigger: true })); // an unrelated push leaves it alone
+    expect(c.config.nativeBlackout).toBe(false);
+  });
+});
+
+describe('onApplied: the handshake reply has been applied (R3V-5)', () => {
+  const raw = (extra: object) => JSON.stringify({ b: 1, k: 'control', ...extra });
+
+  it('fires after an admitted message carrying the session or a config, with that state already applied', () => {
+    let seen: unknown;
+    const c = createBridgeControl({ onApplied: () => (seen = { ...c.config }) });
+    c.control(raw({ session: 's1', config: { blackout: true } }));
+    expect(seen).toMatchObject({ session: 's1', nativeBlackout: true });
+    seen = undefined;
+    c.control(raw({ session: 's2' }));
+    expect(seen).toMatchObject({ session: 's2' });
+    seen = undefined;
+    c.control(raw({ config: { reportTrigger: true } }));
+    expect(seen).toMatchObject({ reportTrigger: true });
+  });
+
+  it('does NOT fire for a bare command, a foreign message, or a REJECTED message', () => {
+    const onApplied = vi.fn();
+    const c = createBridgeControl({ onApplied, nativeSecret: 'sekrit' });
+    c.control(raw({ command: 'flush', tok: 'sekrit' })); // admitted but carries no session/config
+    c.control('not json');
+    c.control(raw({ session: 'evil', config: { blackout: true } })); // no token: rejected wholesale
+    expect(onApplied).not.toHaveBeenCalled();
   });
 });

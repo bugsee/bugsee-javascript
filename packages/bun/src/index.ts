@@ -11,5 +11,7 @@ export {
 export { bunSystemProbe, createBunSystemProbe } from './environment';
 // Bun's launch()/launchCore() — shadow the @bugsee/node ones re-exported by `export *` above.
 export { launch, launchCore } from './launch';
+// Likewise `relaunch` re-runs THIS launch (the node one from `export *` would drop the runtime probe/gates).
+export { relaunch } from './relaunch';
 // The guarded sampler (createGuardedSystemMetricsSampler + PerfHooks + GuardedSystemMetricsDeps) is now
 // shared in @bugsee/node and surfaced via `export *` above — no Bun-specific copy.

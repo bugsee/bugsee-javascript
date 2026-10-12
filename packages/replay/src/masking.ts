@@ -522,7 +522,14 @@ export function resolveReplayMaskingOptions(
   const maskAllText = readBoolean(source, 'maskAllText', true) || maskText.invalid;
   const maskAllInputs = readBoolean(source, 'maskAllInputs', true) || ignore.invalid;
   const blockAllMedia = readBoolean(source, 'blockAllMedia', true) || block.invalid;
-  const blockAllCanvas = readBoolean(source, 'blockAllCanvas', false);
+  // Blocking PROTECTS: an invalid value (`'true'`, `1`, `null`) fails ON and is reported (R4V-2).
+  const blockAllCanvasRaw = readOwn(source, 'blockAllCanvas');
+  const blockAllCanvas = blockAllCanvasRaw === undefined ? false : blockAllCanvasRaw !== false;
+  if (blockAllCanvasRaw !== undefined && typeof blockAllCanvasRaw !== 'boolean') {
+    onError?.(
+      new Error('Bugsee replay: `blockAllCanvas` must be a boolean; all canvas stays blocked.'),
+    );
+  }
 
   return {
     maskAllInputs,

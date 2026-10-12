@@ -71,13 +71,19 @@ const clock: Clock = { wallNow: () => 1000, monotonicNow: () => 0 };
 
 function fakeClient() {
   const registry = new Map<string, unknown>();
+  const state = { launched: true };
   const client = {
+    isLaunched: () => state.launched,
     getService: (token: unknown) => (token === ClockToken ? clock : undefined),
     registerExt: (name: string, api: unknown) => registry.set(name, api),
     ext: (name: string) => registry.get(name),
     addCaptureProvider: () => {}, // the perf provider is unused by these uploader/http-span tests
   } as unknown as BugseeClient;
-  return { client, perf: () => registry.get('performance') as PerformanceApi | undefined };
+  return {
+    client,
+    state,
+    perf: () => registry.get('performance') as PerformanceApi | undefined,
+  };
 }
 
 function fakeScheduler() {
@@ -159,6 +165,29 @@ describe('wirePerformance', () => {
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'custom store broken' }),
     );
+  });
+
+  it('a client that is no longer launched (KillSdk / stopped) makes the uploader drop its batch and stop ticking', async () => {
+    const { client, state } = fakeClient();
+    const { scheduler, fire, cleared } = fakeScheduler();
+    const send = vi.fn(async () => {});
+    const wired = wirePerformance(base({ client, scheduler, send, flushIntervalMs: 5000 }));
+    const wire = {
+      traceId: 't',
+      spanId: 's',
+      name: 'n',
+      operation: 'o',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      isSnapshot: false,
+      spans: [],
+    } as TransactionWire;
+    wired?.recordTransaction(wire);
+    state.launched = false;
+    await fire();
+    expect(send).not.toHaveBeenCalled();
+    expect(cleared.length).toBeGreaterThan(0);
   });
 
   it('recordTransaction buffers an external (already-finished) transaction into the uploader', async () => {

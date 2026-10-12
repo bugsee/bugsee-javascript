@@ -1,6 +1,6 @@
 import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { strFromU8, unzipSync } from '@bugsee/util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import type { CaptureDataEntry } from './contracts';
@@ -658,6 +658,110 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
 
   it('omits attachment files when the report has none', () => {
     const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'attachment' }));
+  });
+});
+
+describe('assembleBundle — user attachments', () => {
+  it('writes each under <random20>.attachment.bgsfile and registers name + attrs in the manifest', () => {
+    const bytes = new Uint8Array([9, 8, 7]);
+    const request = createReportingRequest({
+      source: { type: 'code_upload' },
+      id: 'r1',
+      userAttachments: [
+        { name: 'trace', data: bytes, mimeType: 'application/x-trace', fileName: '../trace.bin' },
+        { name: 'note', data: 'héllo' },
+      ],
+    });
+    const bundle = assembleBundle(request, new Map(), context());
+    const z = unzip(bundle.body);
+    const entries = z.manifest.files.filter((f: { type: string }) => f.type === 'attachment');
+    expect(entries).toHaveLength(2);
+    expect(entries[0].filename).toMatch(/^[a-z0-9]{20}\.attachment\.bgsfile$/);
+    expect(entries[0]).toMatchObject({
+      type: 'attachment',
+      name: 'trace',
+      attrs: { name: 'trace', mimeType: 'application/x-trace', fileName: 'trace.bin' },
+    });
+    expect(entries[1].attrs).toEqual({ name: 'note', mimeType: 'text/plain', fileName: 'note' });
+    const files = unzipSync(bundle.body);
+    expect(files[entries[0].filename]).toEqual(bytes);
+    expect(strFromU8(files[entries[1].filename] as Uint8Array)).toBe('héllo');
+    expect(z.names).not.toContain('../trace.bin');
+  });
+
+  it('skips a report attachment whose name is reserved or taken, instead of losing the whole report', () => {
+    const onError = vi.fn();
+    const request = createReportingRequest({
+      source: { type: 'crash' },
+      id: 'r1',
+      attachments: [
+        { name: 'ok.dmp', data: new Uint8Array([1]) },
+        { name: 'ok.dmp', data: new Uint8Array([2]) },
+        { name: 'request.json', data: 'x' },
+        { name: 'manifest.json', data: 'x' },
+        { name: '__proto__', data: 'x' },
+        { name: 42 as unknown as string, data: 'x' },
+      ],
+    });
+    const bundle = assembleBundle(
+      request,
+      new Map([['log', [entry('log', 1, { m: 1 })]]]),
+      context({ onError }),
+    );
+    const names = Object.keys(unzipSync(bundle.body));
+    expect(names.filter((n) => n === 'ok.dmp')).toHaveLength(1);
+    expect(unzipSync(bundle.body)['ok.dmp']).toEqual(new Uint8Array([1]));
+    expect(onError).toHaveBeenCalledTimes(5);
+    expect(
+      unzip(bundle.body).manifest.files.filter(
+        (f: { filename: string }) => f.filename === 'ok.dmp',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('coexists with internal attachments, which keep their verbatim file name', () => {
+    const request = createReportingRequest({
+      source: { type: 'crash' },
+      id: 'r1',
+      attachments: [{ name: 'dump-1.dmp', data: new Uint8Array([1]) }],
+      userAttachments: [{ name: 'a', data: 'x' }],
+    });
+    const z = unzip(assembleBundle(request, new Map(), context()).body);
+    expect(z.names).toContain('dump-1.dmp');
+    expect(z.manifest.files.filter((f: { type: string }) => f.type === 'attachment')).toHaveLength(
+      2,
+    );
+  });
+
+  it('applies the 3 x 3 MB limits and reports drops through context.onError', () => {
+    const onError = vi.fn();
+    const request = createReportingRequest({
+      source: { type: 'code_upload' },
+      id: 'r1',
+      userAttachments: [
+        { name: 'a', data: 'x' },
+        { name: 'huge', data: new Uint8Array(3 * 1024 * 1024 + 1) },
+        { name: 'b', data: 'x' },
+        { name: 'c', data: 'x' },
+        { name: 'd', data: 'x' },
+      ],
+    });
+    const z = unzip(assembleBundle(request, new Map(), { ...context(), onError }).body);
+    const names = z.manifest.files
+      .filter((f: { type: string }) => f.type === 'attachment')
+      .map((f: { name: string }) => f.name);
+    expect(names).toEqual(['a', 'b', 'c']);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops silently when no onError is wired', () => {
+    const request = createReportingRequest({
+      source: { type: 'code_upload' },
+      id: 'r1',
+      userAttachments: [{ name: '', data: 'x' }],
+    });
     const z = unzip(assembleBundle(request, new Map(), context()).body);
     expect(z.manifest.files).not.toContainEqual(expect.objectContaining({ type: 'attachment' }));
   });

@@ -203,7 +203,14 @@ export function isReport(raw: string): boolean {
 
 /** The main→renderer control commands. `pause`/`resume`/`flush`/`stop` reuse the WebView control kinds;
  *  `session` is the handshake reply assigning the owner's session id to a renderer. */
-export type ControlCommand = 'pause' | 'resume' | 'flush' | 'stop' | 'session';
+export type ControlCommand =
+  | 'pause'
+  | 'resume'
+  | 'flush'
+  | 'stop'
+  | 'session'
+  | 'blackout-start'
+  | 'blackout-end';
 
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'pause',
@@ -211,22 +218,33 @@ const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'flush',
   'stop',
   'session',
+  'blackout-start',
+  'blackout-end',
 ]);
 
 export interface ControlMessage {
   command: ControlCommand;
   /** The assigned session id — set only on the `session` handshake reply. */
   sessionId?: string;
+  /**
+   * The main client's blackout state at handshake time — set only on the `session` reply. A renderer that
+   * launches while main is blacked out must learn it from the reply (a broadcast sent before it said hello
+   * never reached it).
+   */
+  blackout?: boolean;
 }
 
 /** Encode a control message to a wire string (`sessionId` omitted unless present). */
 export function encodeControl(message: ControlMessage): string {
-  const wire: { k: 'control'; c: ControlCommand; sid?: string } = {
+  const wire: { k: 'control'; c: ControlCommand; sid?: string; bo?: boolean } = {
     k: 'control',
     c: message.command,
   };
   if (message.sessionId !== undefined) {
     wire.sid = message.sessionId;
+  }
+  if (message.blackout !== undefined) {
+    wire.bo = message.blackout;
   }
   return JSON.stringify(wire);
 }
@@ -235,6 +253,7 @@ interface WireControl {
   k?: string;
   c?: string;
   sid?: string;
+  bo?: unknown;
 }
 
 /** Decode a control wire string into a {@link ControlMessage}, or `undefined` if it isn't a valid control. */
@@ -251,6 +270,9 @@ export function decodeControl(raw: string): ControlMessage | undefined {
   const decoded: ControlMessage = { command: message.c as ControlCommand };
   if (message.sid !== undefined) {
     decoded.sessionId = message.sid;
+  }
+  if (typeof message.bo === 'boolean') {
+    decoded.blackout = message.bo;
   }
   return decoded;
 }

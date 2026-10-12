@@ -20,6 +20,12 @@ describe('@bugsee/bugsee node entry — re-exports needed by every backend adapt
     expect(nodeEntry.RequestContextStoreToken).toBeDefined();
   });
 
+  it('re-exports getDefaultNetworkSanitizer so a custom network filter can keep the default redaction', () => {
+    expect(
+      nodeEntry.getDefaultNetworkSanitizer().sanitizeUrl('https://a.test/x?token=SECRET'),
+    ).not.toContain('SECRET');
+  });
+
   it('re-exports the RequestContextStore type (F-5) so app code can type a resolved store', () => {
     const store = {} as RequestContextStore;
     expect(store).toBeDefined();

@@ -1,5 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 import {
+  BugseeOption,
   type EnvironmentEnvelope,
   type LogLevel,
   logLevelToWire,
@@ -21,11 +22,29 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { isThenable } from '@bugsee/util';
+import {
+  encodeRequestForMarker,
+  limitAttachmentsForMarker,
+  normalizeReportAttachments,
+  reportChangeSignature,
+} from './attachments';
+import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
+import {
+  type CarrierBlackoutOwner,
+  claimCarrierBlackoutOwner,
+  getCarrier,
+  getCarrierBlackout,
+  getCarrierBlackoutOwner,
+  getCarrierLifecycleSlot,
+  getCarrierRelaunchEpoch,
+  getCarrierRelaunching,
+  setCarrierBlackout,
+} from './carrier';
 import { type Clock, ClockToken, createSystemClock } from './clock';
 import {
   type CaptureDataEntry,
@@ -35,12 +54,12 @@ import {
   type Client,
   type OptionsContainer,
 } from './contracts';
-import { buildCrashJson, type FrameEnricher } from './crash';
+import { applyExceptionOptions, buildCrashJson, type FrameEnricher } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
 import { createEnvironment } from './environment';
-import type { BugseeError } from './errors';
+import { BugseeError } from './errors';
 import type { BreadcrumbInput, LogEvent } from './events';
 import {
   type BreadcrumbFilter,
@@ -52,22 +71,40 @@ import {
   runFilter,
   type SpanFilter,
 } from './filters';
+import { neverThrow } from './never-throw';
+import { createNotifyRelay } from './notify-relay';
 import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
 export type { Breadcrumb, BreadcrumbInput } from './events';
 
 import { createExtensionRegistry } from './extension-registry';
+import { BugseeStatus } from './launch-status';
+import {
+  createLifecycleEmitter,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from './lifecycle-events';
+import { isLogLevelEnabled, parseLogLevelName } from './log-level';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import type { ReportMarkerStore } from './report-marker-store';
-import { createReportingRequest, type ReportingRequest } from './reporting';
+import {
+  createReportingRequest,
+  hasDefaultSeverity,
+  parseSeverityName,
+  type ReportAttachmentInput,
+  type ReportingRequest,
+} from './reporting';
 import { type ContextProvider, ContextProviderToken, type RequestContext } from './request-context';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
   type Bundle,
   isUploadSettled,
+  type NotifyItem,
+  type NotifyResult,
   type UploadPipeline,
   UploadPipelineToken,
   type UploadResult,
@@ -143,12 +180,43 @@ function describeError(error: unknown): string | undefined {
 
 /** Options for logException (a focused core subset of Android ExceptionOptions). */
 export interface LogExceptionOptions {
-  /** Capture mechanism for the wire source (default 'programmatic'). */
-  mechanism?: Mechanism;
   /** Issue severity (default derived from the error issue type). */
   severity?: SeverityName;
   /** Extra labels for the issue. */
   labels?: string[];
+  /**
+   * Exception domain (Android `ExceptionOptions.Domain`, iOS `exceptionDomain`): a short category such as
+   * `checkout` that categorises the error. Sent as `crash.json` `exception.domain`; JavaScript reports are not
+   * grouped by it yet. A non-string or empty value is ignored and reported through `onError`.
+   */
+  domain?: string;
+  /**
+   * Number of top stack frames to leave out of issue grouping (Android `ExceptionOptions.SkipFrames`, iOS
+   * `mergingRules[skipFrames]`). Hides the top N frames of the reported value's OWN stack. Use it when the
+   * Error is created, or a non-Error is logged, inside a helper, so errors do not group at that helper. A
+   * caught Error's stack does not contain your `logException` call, so skipping frames there hides where it
+   * was thrown. The frames stay visible in the trace. Must be a non-negative integer; anything else is
+   * ignored and reported through `onError`.
+   */
+  skipFrames?: number;
+}
+
+/**
+ * {@link LogExceptionOptions} plus the wire `source.mechanism`. SDK-internal: the mobile SDKs expose no
+ * such option, so the public `BugseeClient` does not accept it. Adapters and platform packages reach it
+ * through {@link asInternalClient}.
+ * @internal
+ */
+export interface InternalLogExceptionOptions extends LogExceptionOptions {
+  /** Capture mechanism for the wire source (default 'programmatic'). */
+  mechanism?: Mechanism;
+  /**
+   * The function whose caller is the application, when it is NOT the method the crash is built in: the
+   * public `logException` wrapper supplies itself here so a non-Error throwable's synthetic stack starts
+   * at the app's call site and `skipFrames` counts from there (R2P-1). The wrapper always overwrites it.
+   * `sdkFrames` is the frames above the application when `Error.captureStackTrace` is unavailable.
+   */
+  callSite?: { boundary: (...args: never[]) => unknown; sdkFrames: number };
 }
 
 /**
@@ -164,6 +232,15 @@ export interface UploadOptions {
   labels?: string[];
   /** Reporter email; when absent the global user identifier is used, as for any report. */
   email?: string;
+  /** Files to attach (3 of 3 MB each at most; over-limit ones are dropped and reported via `onError`). */
+  attachments?: ReportAttachmentInput[];
+}
+
+/**
+ * {@link UploadOptions} plus the wire `source.type`. SDK-internal: the mobile SDKs expose no such option.
+ * @internal
+ */
+export interface InternalUploadOptions extends UploadOptions {
   /**
    * Who asked: `code_upload` (the default — the app called `upload()` directly) or `code_dialog` (the
    * user filled in the report dialog). It is the report's `source.type` on the wire, which the viewer
@@ -184,6 +261,11 @@ export interface PreparedUpload {
   discard(): void;
 }
 
+/** {@link PreparedUpload} whose `send` also accepts the internal `trigger`. @internal */
+export interface InternalPreparedUpload extends PreparedUpload {
+  send(options?: InternalUploadOptions): Promise<UploadResult>;
+}
+
 /** The public client surface, extending the provider-facing {@link Client} (grown per slice). */
 export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar {
   registerExt<K extends keyof NameExtensionMapping>(name: K, api: NameExtensionMapping[K]): void;
@@ -201,6 +283,25 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
 
   // Redaction filters (§4.1#4 / §7.1): each runs per captured event to mutate it or DROP it (return
   // null). A network filter REPLACES the built-in sanitizer. Pass null to clear. Settable any time.
+  /**
+   * Filter captured network events: mutate one, or return null to drop it.
+   *
+   * **A network filter REPLACES the built-in sanitizer — it does not layer on top of it.** Once a filter is
+   * set, nothing is redacted unless the filter does it: URLs, headers, bodies and error text are captured
+   * as-is. To keep the default redaction and add rules of your own, call the default sanitizer from inside
+   * the filter:
+   *
+   * ```ts
+   * import { getDefaultNetworkSanitizer } from '@bugsee/bugsee';
+   * const defaults = getDefaultNetworkSanitizer(); // { sanitize, sanitizeUrl, sanitizeErrorMessage }
+   * client.setNetworkEventFilter((event) =>
+   *   event.url.includes('/health') ? null : defaults.sanitize(event),
+   * );
+   * ```
+   *
+   * The filter runs once per stage (`before`, `complete`, `error`, …) of a request, so a veto must be
+   * returned for every stage of the requests you want gone.
+   */
   setNetworkEventFilter(filter: NetworkEventFilter | null): void;
   setLogEventFilter(filter: LogEventFilter | null): void;
   setBreadcrumbFilter(filter: BreadcrumbFilter | null): void;
@@ -212,8 +313,27 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * intact, so `db.statement` reaches the SDK as raw SQL with literals unless something scrubs it.
    */
   setSpanFilter(filter: SpanFilter | null): void;
-  /** `before` mutates/vetoes (return null) the report before assembly. `after` is accepted but deferred. */
+  /**
+   * `before` mutates/vetoes (return null) the report before assembly. `after` (Android
+   * `onAfterReportCreated`) runs next, once the report exists and BEFORE the bundle is built or uploaded,
+   * and may still mutate the request (labels, attributes, attachments). It is not called when no report
+   * was created: a veto, no upload pipeline, or a report the queue refused. How the upload ended is
+   * observable through the lifecycle events (`AfterReportUploaded`, `ReportUploadFailed`, ...). A throwing
+   * handler is routed to `onError` and never breaks reporting.
+   */
   setReportHandler(handler: ReportHandler | null): void;
+
+  /**
+   * Observe SDK lifecycle milestones (Android `setLifecycleEventsListener`). One listener at a time;
+   * `null` clears it. See {@link LifecycleEvents} for the event names. A throwing listener is routed to
+   * `onError` and never affects the SDK.
+   *
+   * The listener is PROCESS-level (Android keeps one static listener): it survives `relaunch()`, and the
+   * `lifecycleEventsListener` launch option installs it before launch so Launching and Launched are
+   * observable. Events are delivered after the SDK state has changed, and an event caused from inside a
+   * listener (calling `launch()`, `stop()`, `startBlackout()`...) is queued until the listener returns.
+   */
+  setLifecycleEventsListener(listener: LifecycleEventsListener | null): void;
 
   // Manual capture entry points (Android parity, §7.1). Each pushes a CaptureDataEntry.
   addBreadcrumb(breadcrumb: BreadcrumbInput): void;
@@ -223,6 +343,24 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
 
   /** Capture an exception (instance-deduped + rate-limited) and trigger a report. */
   logException(error: unknown, options?: LogExceptionOptions): Promise<UploadResult>;
+
+  /**
+   * Relay a message to the app's configured messaging integrations (Slack, webhooks, ...) — mobile
+   * `Bugsee.notify`. It skips the bug-report pipeline: no video, logs or events, just the message.
+   *
+   * Notifications are queued, sent in batches (window: the `notifyFlushDelay` launch option, default 0 =
+   * the end of the current tick) and retried with backoff. `urgent` sends this one at once, ahead of
+   * the window. An empty `title`, a call before `launch()` or after `stop()`, and a SDK killed by the
+   * collector are silent no-ops. `fields` keeps only string values. `flush()`/`stop()` deliver what is
+   * pending. Unlike mobile the queue is in memory: a page closed with an unsent message loses it.
+   */
+  notify(
+    title: string,
+    body?: string,
+    severity?: SeverityName,
+    fields?: Record<string, string>,
+    urgent?: boolean,
+  ): void;
 
   /**
    * Send a report on request (Android `Bugsee.upload`). Unlike {@link logException} it is neither
@@ -238,14 +376,156 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    */
   prepareUpload(): PreparedUpload | null;
 
+  // Blackout (mobile `startBlackout`/`endBlackout`/`isBlackout`).
+  /**
+   * Suppress ALL visual / interaction capture (session replay, input presses, `ui.*` interaction
+   * breadcrumbs, the report-time view hierarchy) until {@link endBlackout}. Logs, network, traces and
+   * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry: see
+   * docs/design/blackout.md for the exact list). Idempotent and NOT counted: one `endBlackout()` ends any
+   * number of calls, as on mobile.
+   *
+   * A NO-OP while the client is not launched (before it is launched, after `stop()`, or once the SDK has been
+   * killed): there is nothing to suppress yet, and the call is not remembered. To be dark from the very first
+   * frame use the `startInBlackout` launch option (browser) instead of calling this right after `launch()`.
+   */
+  startBlackout(): void;
+  /**
+   * End a blackout; visual capture resumes (replay with a fresh full snapshot). No-op when not active.
+   *
+   * PRIVACY: the replay snapshot is taken from the LIVE page at this moment, so if the sensitive view is
+   * still on screen it contains whatever it holds then, including values typed during the blackout when
+   * `maskAllInputs` is false. Call `endBlackout()` only AFTER the sensitive view is gone.
+   */
+  endBlackout(): void;
+  /** Whether a blackout is currently in force. */
+  isBlackout(): boolean;
+
   // Lifecycle (§7.1).
   /** Start capture + detection. Idempotent — a second call while launched is ignored. */
   launch(): void;
   isLaunched(): boolean;
+  /** The lifecycle state (Stopped / Launching / Launched / Stopping). `Stopping` lasts until the drain settles. */
+  getStatus(): BugseeStatus;
+  /** The effective launch options (host-supplied over defaults), by canonical `com.bugsee.option.*` key. */
+  getLaunchOptions(): Record<string, unknown>;
+  /** Only the options the host supplied at launch, by canonical key. */
+  getHostLaunchOptions(): Record<string, unknown>;
   /** Stop capture + detection and drain pending uploads. Resolves true if drained within `timeout`. */
   stop(timeout?: number): Promise<boolean>;
   /** Drain pending uploads. Resolves true if drained within `timeout`. */
   flush(timeout?: number): Promise<boolean>;
+}
+
+/**
+ * The client as the SDK's own packages see it: the public {@link BugseeClient} plus the wire-level
+ * options (`mechanism`, `trigger`) the public surface deliberately omits. A subtype, so it is assignable
+ * to `BugseeClient`; the reverse needs {@link asInternalClient}.
+ * @internal
+ */
+export interface InternalBugseeClient extends BugseeClient {
+  logException(error: unknown, options?: InternalLogExceptionOptions): Promise<UploadResult>;
+  upload(options?: InternalUploadOptions): Promise<UploadResult>;
+  prepareUpload(): InternalPreparedUpload | null;
+  /**
+   * Emit a lifecycle event from a platform tier that owns the milestone (the browser report dialog
+   * emits BeforeReportShown / AfterReportShown through this). Never throws. Internal: on the PUBLIC
+   * surface an application could fake SDK events.
+   */
+  emitLifecycleEvent(eventType: LifecycleEventType, data?: unknown): void;
+  /**
+   * A blackout raised SILENTLY before `launch()` (`startInBlackout`) owes the application one BlackoutStarted: owe
+   * it. It is announced after Launching/Launched when the client is still launched and still dark, and BEFORE
+   * the BlackoutEnded of a Launching listener that lifts the blackout at once, so Started always precedes Ended
+   * (R3L-7). Without this call a silent hold never announces itself.
+   */
+  deferBlackoutStarted(): void;
+}
+
+/**
+ * What `createClient` returns: the internal client WITHOUT `emitLifecycleEvent`, which exists only behind
+ * {@link asInternalClient} so application code cannot fake SDK events.
+ * @internal
+ */
+export type CreatedClient = Omit<
+  InternalBugseeClient,
+  'emitLifecycleEvent' | 'deferBlackoutStarted'
+>;
+
+/**
+ * View a public client through its internal surface. Returns a COPY of the client carrying the unstripped
+ * wire-level `logException` / `upload` / `prepareUpload` (the public methods strip `trigger` / `mechanism`
+ * at runtime), so it is NOT the same object as `client` and a wrapper that replaces public methods on the
+ * client does not affect it. A client without the brand (a test double) is cast as is. This is an SDK-internal
+ * seam, not a security boundary: code that can import `@bugsee/core` can call it.
+ * @internal
+ */
+export function asInternalClient(client: BugseeClient): InternalBugseeClient {
+  const internal = (client as { [INTERNAL_METHODS]?: InternalMethods })[INTERNAL_METHODS];
+  // A client without the brand was not made by `createClient` (a test double): nothing to unwrap.
+  return internal === undefined ? (client as InternalBugseeClient) : { ...client, ...internal };
+}
+
+// The wire-level methods of a client, kept under a symbol so the PUBLIC `upload` / `logException` /
+// `prepareUpload` can strip `trigger` / `mechanism` at RUNTIME (types alone do not stop plain JavaScript from
+// forging `code_dialog`). `Symbol.for`, so two copies of this module (the ESM and CJS builds) agree on it;
+// an enumerable own property, so a platform wrapper that spreads the client carries it along.
+const INTERNAL_METHODS = Symbol.for('com.bugsee.internal-client');
+type InternalMethods = Pick<
+  InternalBugseeClient,
+  'logException' | 'upload' | 'prepareUpload' | 'emitLifecycleEvent' | 'deferBlackoutStarted'
+>;
+
+/** A copy of `options` without `keys`; anything that is not an object (null, a string) counts as none. */
+function withoutWireOptions<T>(options: T, ...keys: string[]): T | undefined {
+  if (typeof options !== 'object' || options === null) {
+    return undefined;
+  }
+  const copy = { ...options } as Record<string, unknown>;
+  for (const key of keys) {
+    delete copy[key];
+  }
+  return copy as T;
+}
+
+/** The public face of a freshly built client: the same methods, minus the wire-level options. */
+function exposePublicSurface(client: InternalBugseeClient): CreatedClient {
+  const internal: InternalMethods = {
+    logException: client.logException,
+    upload: client.upload,
+    prepareUpload: client.prepareUpload,
+    emitLifecycleEvent: client.emitLifecycleEvent,
+    deferBlackoutStarted: client.deferBlackoutStarted,
+  };
+  const {
+    emitLifecycleEvent: _internalOnly,
+    deferBlackoutStarted: _alsoInternalOnly,
+    ...publicMethods
+  } = client;
+  return {
+    ...publicMethods,
+    logException: function logException(error, options) {
+      // The wrapper is itself an SDK frame: it names itself as the boundary so the application, not
+      // `Object.logException`, is frame 0 of a non-Error's synthetic stack (R2P-1).
+      // NOT a tail call: JavaScriptCore drops the frame of a function that tail-calls, which would make
+      // `sdkFrames: 2` remove the application frame in the fallback path (R3P-1).
+      const result = internal.logException(error, {
+        ...withoutWireOptions(options, 'mechanism'),
+        callSite: { boundary: logException, sdkFrames: 2 },
+      });
+      return result;
+    },
+    upload: (options) => internal.upload(withoutWireOptions(options, 'trigger')),
+    prepareUpload: () => {
+      const prepared = internal.prepareUpload();
+      return prepared === null
+        ? null
+        : {
+            send: (options) => prepared.send(withoutWireOptions(options, 'trigger')),
+            discard: () => prepared.discard(),
+          };
+    },
+    [INTERNAL_METHODS]: internal,
+  } as CreatedClient;
 }
 
 /**
@@ -286,6 +566,11 @@ export interface CreateClientOptions {
    * {@link FrameEnricher}.
    */
   onReportSite?: (error: unknown) => void;
+  /**
+   * Delivers a `notify()` batch (the platform wires this to `BugseeApi.notify`). Without it `notify()` is
+   * a silent no-op, as on a build that has no collector transport.
+   */
+  notifySender?: (items: readonly NotifyItem[]) => Promise<NotifyResult>;
   /** Capture storage backend (disk/IndexedDB on platform tiers). Default in-memory. */
   captureStore?: CaptureStore;
   /** The internal service container (the per-process DI registry). Default a fresh one. */
@@ -300,6 +585,14 @@ export interface CreateClientOptions {
   isEnabled?: OptionGate;
   /** Launch options passed to each provider's start(options) for per-launch reconfiguration. */
   launchOptions?: OptionsContainer;
+  /**
+   * The introspectable form of the launch options for `getLaunchOptions()` / `getHostLaunchOptions()`
+   * (canonical keys). Never put secrets in here — the platform passes only registered option definitions.
+   */
+  launchOptionsView?: {
+    effective: Readonly<Record<string, unknown>>;
+    host: Readonly<Record<string, unknown>>;
+  };
   /** Capture-storm rate limit (§7.7). Default 100 / 60s. */
   captureRateLimit?: RateLimiterOptions;
   /** Upload pipeline (built by the platform from BugseeApi/BundleUploader); enables flush/stop drain. */
@@ -345,6 +638,27 @@ export interface CreateClientOptions {
    */
   contextProvider?: ContextProvider;
   /**
+   * The process carrier host (default none). When given, PROCESS-level state lives on it, so it outlives a
+   * single client and `relaunch()` (which builds a new client) keeps it: the lifecycle listener (L1) and
+   * the blackout state (V2). Without it both stay private to this client.
+   */
+  carrier?: object;
+  /**
+   * The host's lifecycle listener (the `lifecycleEventsListener` launch option), installed at creation —
+   * before `launch()` can emit Launching — so the application observes the whole launch. Same as calling
+   * `setLifecycleEventsListener` first; on a carrier it applies to every later client too.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
+  /**
+   * Whether `launch()` may start this client again after `stop()`. Default `true` (the bare kernel). The
+   * platform composition roots pass `false`: their `stop()` tears down what the platform armed (exit and
+   * signal handlers, heartbeat, server instrumentation, page-hide flush, the carrier slot), and a bare core
+   * restart would bring capture back WITHOUT any of it (a live instance judged dead, two clients per
+   * process). A refused `launch()` reports through `onError` and changes nothing; build a new client with the
+   * platform's `launch(appToken)` / `relaunch()` instead.
+   */
+  restartable?: boolean;
+  /**
    * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
@@ -358,7 +672,7 @@ interface ReportIdentity {
   userIdentifier: string | null;
 }
 
-export function createClient(options: CreateClientOptions = {}): BugseeClient {
+export function createClient(options: CreateClientOptions = {}): CreatedClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
   const onError = options.onError ?? (() => {});
@@ -379,6 +693,22 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // capture pipeline reads the same instance via the container (getFilters). Registered eagerly so a
   // pipeline resolve always finds it once a client exists.
   const filters = createFilterStore(onError);
+  const processCarrier = options.carrier;
+  const lifecycle = createLifecycleEmitter(
+    onError,
+    processCarrier !== undefined ? getCarrierLifecycleSlot(processCarrier) : undefined,
+  );
+  // Own property only: a page that plants `lifecycleEventsListener` on `Object.prototype` must not be handed
+  // the lifecycle stream through an options bag that simply omits it.
+  if (
+    Object.hasOwn(options, 'lifecycleEventsListener') &&
+    options.lifecycleEventsListener !== undefined
+  ) {
+    lifecycle.set(options.lifecycleEventsListener);
+  }
+  // Requests whose bundle was assembled: only these have an upload to report on (a vetoed report, a
+  // failed assembly or an injected trigger pipeline that never assembles must not emit upload events).
+  const assembledReports = new WeakSet<ReportingRequest>();
   services.addService(defineService(FiltersToken, () => filters));
   const rateLimiter = createRateLimiter(clock, options.captureRateLimit);
   const environment = createEnvironment();
@@ -396,6 +726,57 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // via getService(CaptureStoreToken), alongside transport/filters (DI Phase 3).
   services.addService(defineService(CaptureStoreToken, () => captureStore));
   services.addService(defineService(ClockToken, () => clock));
+  // The blackout state: visual providers read it (and subscribe to its changes) via the container, so the
+  // kernel never has to know which of them are visual. `client.getService(BlackoutToken).onChange` is the
+  // internal subscription the lifecycle events (BlackoutStarted/Ended) hang off.
+  // The state is process-level when a carrier is given: a relaunch builds a NEW client and must not
+  // silently end a blackout the application asked for (V2). It starts in the carried state, silently.
+  const blackout: BlackoutState = createBlackoutState(
+    onErrorSafe,
+    processCarrier !== undefined && getCarrierBlackout(processCarrier),
+  );
+  services.addService(defineService(BlackoutToken, () => blackout));
+  // Who may change the PROCESS-wide blackout (R3L-4): the newest client created or launched on the carrier. An
+  // older handle (stopped, or replaced by a relaunch) would otherwise clear the flag under the live client,
+  // so the next relaunch would start un-dark. A client without a carrier is its own owner.
+  const blackoutOwner: CarrierBlackoutOwner = {
+    start: () => {
+      if (launched) {
+        blackout.start();
+      }
+    },
+    isLaunched: () => launched,
+  };
+  const ownsBlackout = (): boolean => {
+    if (processCarrier === undefined) {
+      return true;
+    }
+    const owner = getCarrierBlackoutOwner(processCarrier);
+    return owner === undefined || owner === blackoutOwner;
+  };
+  if (processCarrier !== undefined) {
+    claimCarrierBlackoutOwner(blackoutOwner, processCarrier);
+  }
+  let blackoutStartedOwed = false; // see InternalBugseeClient.deferBlackoutStarted
+  blackout.onChange((active) => {
+    if (processCarrier !== undefined && ownsBlackout()) {
+      setCarrierBlackout(active, processCarrier);
+    }
+    // A silent change (a launch hold, a handshake release) is bookkeeping the application never asked for, and
+    // a blackout can only be ENDED while the client is not launched (R2L-7): that clears the carried state
+    // quietly, since nothing is being captured for the events to describe.
+    if (launched && !blackout.isChangeSilent()) {
+      if (blackoutStartedOwed) {
+        // The owed announcement is ahead of whatever the application did to the blackout since: an Ended
+        // must never be heard for a blackout whose Started was not (R3L-7).
+        blackoutStartedOwed = false;
+        if (!active) {
+          lifecycle.emit(LifecycleEvents.BlackoutStarted);
+        }
+      }
+      lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
+    }
+  });
   // The active-request context provider (framework adapters). When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
   const contextProvider = options.contextProvider;
@@ -419,6 +800,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // `clearAllAttributes()` shipped an empty `manifest.attrs`, and the recovery marker — which has always
   // snapshotted at submit — described the same incident differently from its own live upload.
   const reportIdentity = new WeakMap<ReportingRequest, ReportIdentity>();
+  // The handler's `after` as it stood at submit: the handler that ran `before` is the one that runs `after`,
+  // even if the app replaces it while the report waits for assembly.
+  const reportAfter = new WeakMap<ReportingRequest, NonNullable<ReportHandler['after']>>();
   const liveIdentity = (): ReportIdentity => ({
     attributes: environment.getAllAttributes(),
     userIdentifier: environment.getUserIdentifier(),
@@ -429,6 +813,50 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   const captureProviderInit: CaptureProviderInit = { operations, captureAggregator };
   const captureCoordinator = createCaptureCoordinator(captureProviderInit);
   const launchOptions = options.launchOptions ?? createOptionsContainer();
+  // Launch options that arrive as untrusted strings are normalised once, here, with a warning: a typo
+  // ('urgent', 'warn') must not leave a report with no severity or silently change what is captured.
+  const logsLevelOption = launchOptions.get<unknown>(BugseeOption.CaptureLogsLevel, 'verbose');
+  const logsLevel = parseLogLevelName(logsLevelOption) ?? 'verbose';
+  if (parseLogLevelName(logsLevelOption) === undefined) {
+    onError(
+      new Error(
+        `captureLogsLevel must be one of error | warning | info | debug | verbose (got ${String(logsLevelOption)}); using verbose`,
+      ),
+    );
+  }
+  const resolvePriority = (
+    key: string,
+    friendly: string,
+    fallback: 'blocker' | 'high',
+  ): SeverityName => {
+    const configured = launchOptions.get<unknown>(key, fallback);
+    const parsed = parseSeverityName(configured);
+    if (parsed === undefined) {
+      onError(
+        new Error(
+          `${friendly} must be one of verylow | low | medium | high | critical | blocker (got ${String(configured)}); using ${fallback}`,
+        ),
+      );
+    }
+    return parsed ?? fallback;
+  };
+  const crashPriority = resolvePriority(
+    BugseeOption.ReportingDefaultCrashPriority,
+    'reportDefaultCrashPriority',
+    'blocker',
+  );
+  const errorPriority = resolvePriority(
+    BugseeOption.ReportingDefaultErrorPriority,
+    'reportDefaultErrorPriority',
+    'high',
+  );
+  // Android applies `ReportingDefaultBugPriority` to every bug report (an upload, a shake, the report
+  // dialog), so it is applied here for every platform, not only the browser dialog (R2D-3).
+  const bugPriority = resolvePriority(
+    BugseeOption.ReportingDefaultBugPriority,
+    'reportDefaultBugPriority',
+    'high',
+  );
   const detectionCoordinator = createDetectionCoordinator();
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
@@ -438,6 +866,13 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // True once stop() has run (until a re-launch): manual captures that upload become no-ops (§1501).
   // Distinct from `!launched` so capturing BEFORE the first launch is unaffected.
   let stopped = false;
+  // True from stop() until its upload drain settles (BugseeStatus.Stopping).
+  let stopping = false;
+  // True from launch() until providers are started (BugseeStatus.Launching).
+  let launching = false;
+  // Bumped by every launch(), stop() and kill: a drain that finishes after a newer transition is STALE and
+  // must not emit Stopped, suspend the notify relay or clear `stopping` for the launch that replaced it (L4).
+  let generation = 0;
   // Permanent kill-state (§1435/§1504): set when a report comes back with the collector's KILL_SDK
   // verdict (code 99099) — the app token has been switched OFF at the server. All capture goes no-op,
   // capture+detection halt, onError fires ONCE. An INVALID app token is a different thing entirely: it
@@ -455,10 +890,98 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
   const { uploadPipeline, appToken, getEnvironment } = options;
+  // `notify()` (T7). The window is read once: a non-number, negative or non-finite value is treated as the
+  // default 0 rather than reported, because a typo here only changes batching, never what is sent.
+  const notifyDelayOption = launchOptions.get<unknown>(BugseeOption.NotifyFlushDelay, 0);
+  const notifyFlushDelayMs =
+    typeof notifyDelayOption === 'number' &&
+    Number.isFinite(notifyDelayOption) &&
+    notifyDelayOption > 0
+      ? Math.floor(notifyDelayOption)
+      : 0;
+  const notifyRelay =
+    options.notifySender === undefined
+      ? undefined
+      : createNotifyRelay({
+          send: options.notifySender,
+          clock,
+          flushDelayMs: notifyFlushDelayMs,
+          onError: onErrorSafe,
+          // A batch still in a request when relaunch() took the queue, failing later (R3L-5).
+          onHandBack: (items) => handBackNotify(items),
+          // The relay's own `403 KillSdk` verdict switches the SDK off exactly like a report's.
+          onKill: () =>
+            enterKillState(
+              new BugseeError('Notification relay: the SDK has been disabled by the server', 403, {
+                fatal: true,
+              }),
+            ),
+          snapshot: () => {
+            let builtEnvironment: EnvironmentEnvelope | undefined;
+            try {
+              builtEnvironment = getEnvironment?.();
+            } catch (error) {
+              onError(error); // the message still goes out, without the device block
+            }
+            return {
+              userIdentifier: environment.getUserIdentifier(),
+              attributes: environment.getAllAttributes(),
+              ...(builtEnvironment !== undefined ? { environment: builtEnvironment } : {}),
+            };
+          },
+        });
   // The platform's assembled upload orchestrator, when present, is also a container service (DI Phase 3).
   if (uploadPipeline !== undefined) {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
+  // relaunch() hands what the old client could not deliver (an offline notify() queue) to the client it builds
+  // (R2L-6). The decision is taken when stop() is CALLED (`getCarrierRelaunching` is true only for the stop that
+  // relaunch() itself issues), never when the drain finishes: a slow old stop can settle after the new client
+  // is up. Where the items go, in order: the client that has already adopted (it registered as the carrier's
+  // adopter), else the carrier backlog its launch() will drain. A plain stop() keeps nothing on the carrier,
+  // which sits on `globalThis` and would otherwise hold user-identifying notifications for a process that never
+  // relaunches.
+  const notifyOwner = {};
+  /** The carrier's failed-relaunch counter when the handing-over stop() was issued (R4L-2). */
+  let handoverEpoch = 0;
+  const handBackNotify = (items: NotifyItem[]): void => {
+    if (processCarrier === undefined || items.length === 0) {
+      return;
+    }
+    if (getCarrierRelaunchEpoch(processCarrier) !== handoverEpoch) {
+      // The relaunch attempt this hand-over belonged to failed: nobody will adopt these (R4L-2).
+      onErrorSafe(
+        new Error(
+          `notify: dropped ${items.length} notification(s); the relaunch they were handed to failed`,
+        ),
+      );
+      return;
+    }
+    const carrier = getCarrier(processCarrier);
+    const adopter = carrier.notifyAdopter;
+    if (adopter !== undefined && adopter.owner !== notifyOwner) {
+      adopter.adopt(items);
+    } else {
+      carrier.notifyBacklog = [...(carrier.notifyBacklog ?? []), ...items];
+    }
+  };
+  const stashNotifyBacklog = (): void => {
+    if (notifyRelay !== undefined) {
+      handBackNotify(notifyRelay.take());
+    }
+  };
+  const adoptNotifyBacklog = (): void => {
+    if (processCarrier === undefined || notifyRelay === undefined) {
+      return;
+    }
+    const carrier = getCarrier(processCarrier);
+    carrier.notifyAdopter = { owner: notifyOwner, adopt: (items) => notifyRelay.adopt(items) };
+    if (carrier.notifyBacklog !== undefined) {
+      const backlog = carrier.notifyBacklog;
+      carrier.notifyBacklog = undefined;
+      notifyRelay.adopt(backlog);
+    }
+  };
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
     // The captured data for a report: the exporter's drain plus the report-time snapshot sources (e.g. the
@@ -495,6 +1018,21 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return capturedByType;
     };
     const assemble = async (request: ReportingRequest): Promise<Bundle> => {
+      lifecycle.emit(LifecycleEvents.BeforeReportAssembled, { reportId: request.id });
+      let bundle: Bundle;
+      try {
+        bundle = await assembleReport(request);
+      } catch (error) {
+        lifecycle.emit(LifecycleEvents.ReportAssemblyFailed, { reportId: request.id, error });
+        throw error;
+      }
+      assembledReports.add(request);
+      lifecycle.emit(LifecycleEvents.AfterReportAssembled, { reportId: request.id });
+      // The assembled bundle goes straight to the upload pipeline from here.
+      lifecycle.emit(LifecycleEvents.BeforeReportUploaded, { reportId: request.id });
+      return bundle;
+    };
+    const assembleReport = async (request: ReportingRequest): Promise<Bundle> => {
       // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable
       // Objects) an unscoped drain would put every other tenant's capture into this bundle — the leak
       // proven on real workerd (docs/review/cloudflare.md SEV1 #2). `owner` is undefined everywhere else,
@@ -506,11 +1044,44 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       const capturedByType =
         (frozen !== undefined ? await frozen.catch(() => undefined) : undefined) ??
         (await collectCapture(reportContext?.owner));
+      // ReportHandler.after (Android `onAfterReportCreated`): the report exists and `before` has had its say;
+      // assembly has not started. The handler may still mutate the request (labels, attributes,
+      // attachments) and the bundle below carries the result. Reaching here is what "created" means, so a
+      // veto, a missing pipeline, a queue overflow and a failed capture drain never call it.
+      const afterHandler = reportAfter.get(request) ?? filters.report?.after;
+      const beforeAfter =
+        afterHandler !== undefined ? reportChangeSignature(request.report) : undefined;
+      neverThrow(() => afterHandler?.(request), onErrorSafe);
       const captured = reportContext;
       // Submit-time identity (see reportIdentity). Absent only on a hypothetical assembly that did not
       // come through submitReport, where reading the Environment live is the previous behaviour and a
       // strictly better degrade than shipping no attributes at all.
       const identity = reportIdentity.get(request) ?? liveIdentity();
+      // What `after` just changed is part of the report, so it belongs in the recovery marker too (R2P-7).
+      // The marker is written at SUBMIT, before assembly - the crash-safety point - and `after` runs at
+      // assembly, so it is REPLACED here (same id) rather than the handler being run earlier, which would
+      // change when `after` fires for a refused or failed report. The remaining difference is a crash in the
+      // window between submit and this point, which recovers the report as `before` left it.
+      // Only when `after` actually changed the report (R3P-7): an unreadable report counts as changed.
+      if (
+        afterHandler !== undefined &&
+        reportMarkers !== undefined &&
+        (beforeAfter === undefined || beforeAfter !== reportChangeSignature(request.report))
+      ) {
+        try {
+          const rewritten = reportMarkers.store.put({
+            generation: reportMarkers.generation,
+            request: encodeRequestForMarker(limitAttachmentsForMarker(request)),
+            attributes: identity.attributes,
+            userIdentifier: identity.userIdentifier,
+          });
+          if (isThenable(rewritten)) {
+            Promise.resolve(rewritten).catch(onErrorSafe);
+          }
+        } catch (error) {
+          onErrorSafe(error);
+        }
+      }
       // Stamp the incident's id onto the bundle (NOT onto `request.json` — this never goes on the wire).
       // The durable queue writes it into its frame header, which is the only thing that later lets
       // recovery tell "this staged blob IS the incident that marker is still holding open" from "this
@@ -522,6 +1093,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
           clock,
+          onError: onErrorSafe,
           ...(captured !== undefined ? { requestContext: captured } : {}),
           ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
           ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
@@ -533,9 +1105,27 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
 
+  // The worker's Android path caps the exception domain at 150 characters; never leave a lone surrogate behind.
+  const MAX_DOMAIN_LENGTH = 150;
+  const capDomain = (domain: string, sink: (error: unknown) => void): string => {
+    if (domain.length <= MAX_DOMAIN_LENGTH) {
+      return domain;
+    }
+    sink(
+      new Error(
+        `logException: \`domain\` is longer than ${MAX_DOMAIN_LENGTH} characters; truncated`,
+      ),
+    );
+    const last = domain.charCodeAt(MAX_DOMAIN_LENGTH - 1);
+    return domain.slice(
+      0,
+      last >= 0xd800 && last <= 0xdbff ? MAX_DOMAIN_LENGTH - 1 : MAX_DOMAIN_LENGTH,
+    );
+  };
+
   // Build, filter and submit a report someone explicitly asked for (`upload` / a prepared upload).
   const sendUpload = (
-    uploadOptions: UploadOptions,
+    uploadOptions: InternalUploadOptions,
     frozen?: Promise<Map<FileType, CaptureDataEntry[]>>,
   ): Promise<UploadResult> => {
     const request = createReportingRequest({
@@ -547,6 +1137,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       ...(uploadOptions.severity !== undefined ? { severity: uploadOptions.severity } : {}),
       ...(uploadOptions.labels !== undefined ? { labels: uploadOptions.labels } : {}),
       ...(uploadOptions.email !== undefined ? { email: uploadOptions.email } : {}),
+      ...(uploadOptions.attachments !== undefined
+        ? { userAttachments: uploadOptions.attachments }
+        : {}),
     });
     const handled = applyReportBefore(request);
     if (handled === null) {
@@ -588,23 +1181,39 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     }, forget);
     return report;
   };
-  // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded
-  // by `timeout` so a hung assemble/upload can't block shutdown. Resolves true if drained in time.
-  const drainPending = (timeout?: number): Promise<boolean> => {
-    const drained = Promise.allSettled([...pendingReports]).then(
-      () => uploadPipeline?.flush(timeout) ?? true,
-    );
-    if (timeout === undefined) {
-      return drained;
-    }
-    return Promise.race([drained, sleep(timeout).then(() => false)]);
-  };
+  // Start draining in-flight reports (each resolves post-upload) then any directly-enqueued uploads. The
+  // returned promise is the REAL drain: it settles when the work does, however long that takes.
+  const startDrain = (timeout?: number): Promise<boolean> =>
+    Promise.allSettled([...pendingReports])
+      .then(async () => {
+        // Notifications go out alongside the report uploads; either one still pending makes this false.
+        const [uploaded, notified] = await Promise.all([
+          uploadPipeline?.flush(timeout) ?? true,
+          notifyRelay?.flush() ?? true,
+        ]);
+        return uploaded && notified;
+        // An injected pipeline whose flush rejects must not leave stop() rejecting without ever emitting Stopped.
+      })
+      .catch(() => false);
+  // Give up on `drained` after `timeout` (resolving false) so a hung assemble/upload can't block shutdown;
+  // the drain itself keeps running. Resolves true if drained in time.
+  const boundDrain = (drained: Promise<boolean>, timeout?: number): Promise<boolean> =>
+    timeout === undefined ? drained : Promise.race([drained, sleep(timeout).then(() => false)]);
+  const drainPending = (timeout?: number): Promise<boolean> =>
+    boundDrain(startDrain(timeout), timeout);
+  // The REAL drain of the latest stop(), kept after it settles (R2L-1): a repeat stop() while it is still
+  // running, or after a bounded stop() gave up on it, must answer for THAT drain. Answering "drained" at once
+  // let a platform mark the instance's data recoverable (node `.stopped`) or release its lock (browser,
+  // worker) while the first stop's upload was still going. Cleared by launch().
+  let stopDrain: Promise<boolean> | undefined;
 
   // Halt the live capture machinery (tick + capture/detection coordinators). Shared by stop() and the
   // kill-state; the caller decides whether to also drain pending uploads.
   const haltCapture = (): void => {
-    scheduler.clearInterval(tickTimer);
-    tickTimer = null;
+    if (tickTimer !== null) {
+      scheduler.clearInterval(tickTimer);
+      tickTimer = null;
+    }
     captureCoordinator.stop();
     detectionCoordinator.stop();
   };
@@ -617,15 +1226,37 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     }
     killed = true;
     onError(error);
+    notifyRelay?.suspend(); // a switched-off SDK sends nothing more, notifications included
     if (launched) {
+      // The same transition a stop() makes, announced the same way (L12): Stopping, then Stopped, with the
+      // state already settled when each is delivered. There is no drain to wait for.
+      generation += 1; // a transition like stop(): any drain started before it is stale
       launched = false;
+      launching = false;
       haltCapture();
+      stopping = true;
+      lifecycle.emit(LifecycleEvents.Stopping);
+      stopping = false;
+      lifecycle.emit(LifecycleEvents.Stopped);
     }
   };
 
   // Apply the report handler's `before` (mutate/veto) at report entry — before assembly. null = veto.
-  const applyReportBefore = (request: ReportingRequest): ReportingRequest | null =>
-    runFilter(filters.report?.before ?? null, request, onError);
+  // Before the handler runs, a crash/error report whose severity was only DERIVED takes the configured
+  // `reportDefault{Crash,Error,Bug}Priority`; the handler (and any explicit severity) still wins.
+  const applyReportBefore = (request: ReportingRequest): ReportingRequest | null => {
+    const { report } = request;
+    if (hasDefaultSeverity(report)) {
+      if (report.type === 'crash') {
+        report.severity = crashPriority;
+      } else if (report.type === 'error') {
+        report.severity = errorPriority;
+      } else if (report.type === 'bug') {
+        report.severity = bugPriority;
+      }
+    }
+    return runFilter(filters.report?.before ?? null, request, onError);
+  };
 
   // Submit a finalized (post-before-filter) report. When a capture-recovery marker hook is present,
   // persist a pending marker (with the incident-time attributes + user identifier) BEFORE assembly, then
@@ -653,15 +1284,48 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     // same incident can never disagree.
     const identity = liveIdentity();
     reportIdentity.set(handled, identity);
+    const submittedAfter = filters.report?.after;
+    if (submittedAfter !== undefined) {
+      reportAfter.set(handled, submittedAfter);
+    }
     // Did this incident's marker reach DURABLE storage? `true` when there was nothing async to wait for
     // (a synchronous store that did not throw). It decides nothing about retirement — it decides whether
     // keeping the marker actually preserves the incident, or only looks like it does.
     let markerDurable: boolean | Promise<boolean> = true;
-    if (reportMarkers !== undefined) {
+    // Apply the attachment limits NOW, so the marker below persists at most 3 x 3 MB of valid data (not an
+    // arbitrary pile of bytes) and assembly never meets a malformed one. Never lets the report be lost.
+    let markerRequest: ReportingRequest | undefined = handled;
+    try {
+      normalizeReportAttachments(handled.report, onErrorSafe);
+    } catch (error) {
+      onErrorSafe(error);
+      // The limits could not be applied in place (a handler froze the report): the marker still must not
+      // persist what they would drop, so it encodes a limited COPY (R2P-9). Assembly applies them again.
+      // A hostile report (throwing Proxy/getter) can throw here too: the encode below is guarded and the
+      // report must never be lost to its own recovery marker (R3P-8).
+      try {
+        markerRequest = limitAttachmentsForMarker(handled);
+      } catch (limitError) {
+        onErrorSafe(limitError);
+        // Fail CLOSED (R4H-6): the unlimited request must not reach the marker, so it persists no
+        // user attachments at all. Assembly still limits and ships them on the live path.
+        try {
+          markerRequest = { ...handled, report: { ...handled.report, userAttachments: [] } };
+        } catch (copyError) {
+          // Not even a copy can be made: persist no marker rather than an unlimited one.
+          onErrorSafe(copyError);
+          markerRequest = undefined;
+        }
+      }
+    }
+    if (markerRequest === undefined) {
+      markerDurable = false; // no marker is persisted at all: the "unrecoverable" warning must still fire (R5H-3)
+    }
+    if (reportMarkers !== undefined && markerRequest !== undefined) {
       try {
         const written = reportMarkers.store.put({
           generation: reportMarkers.generation,
-          request: handled,
+          request: encodeRequestForMarker(markerRequest),
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
         });
@@ -679,7 +1343,33 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
         markerDurable = false;
       }
     }
+    if (options.triggerPipeline !== undefined) {
+      // An injected pipeline (Electron renderer, WebView) never goes through `assembleReport`, which is where
+      // `after` runs for the built one (R2L-2). The report exists and `before` has had its say: same moment.
+      neverThrow(() => filters.report?.after?.(handled), onErrorSafe);
+    }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
+    // Once the pipeline settles: tell the lifecycle listener how the upload went. Guarded — observing a
+    // report must never be able to break it. (The report handler's `after` is NOT here: it runs before
+    // assembly, see `assembleReport`.)
+    const onSettled = (settled: UploadResult | undefined): void => {
+      try {
+        if (settled !== undefined && assembledReports.has(handled)) {
+          const data = { reportId: handled.id, result: settled };
+          if (settled.ok) {
+            lifecycle.emit(LifecycleEvents.AfterReportUploaded, data);
+          } else if (settled.permanent !== true && settled.retained === true) {
+            // Not refused, and durably staged: the next launch will retry it.
+            lifecycle.emit(LifecycleEvents.ReportUploadFailedWithFutureRetry, data);
+          } else {
+            lifecycle.emit(LifecycleEvents.ReportUploadFailed, data);
+          }
+        }
+      } catch (error) {
+        onErrorSafe(error);
+      }
+    };
+    result.then(onSettled, () => onSettled(undefined));
     if (reportMarkers !== undefined) {
       // WHEN MAY THIS MARKER BE RETIRED?
       //
@@ -749,7 +1439,33 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     addDetectionProvider: detectionCoordinator.addProvider,
   };
 
-  return {
+  // `getLaunchOptions()` / `getHostLaunchOptions()` report the values the client actually applies, not the
+  // raw host input (L11): an unrecognised priority or log level reads as the fallback it was replaced by,
+  // and the notify window as the whole-millisecond figure in force. Only keys the view already carries
+  // are rewritten, so the host view still lists only what the host supplied.
+  const inEffect = (
+    view: Readonly<Record<string, unknown>> | undefined,
+  ): Record<string, unknown> => {
+    const out: Record<string, unknown> = { ...view };
+    const applied: Record<string, unknown> = {
+      [BugseeOption.CaptureLogsLevel]: logsLevel,
+      [BugseeOption.ReportingDefaultCrashPriority]: crashPriority,
+      [BugseeOption.ReportingDefaultErrorPriority]: errorPriority,
+      [BugseeOption.NotifyFlushDelay]: notifyFlushDelayMs,
+    };
+    for (const [key, value] of Object.entries(applied)) {
+      if (key in out) {
+        out[key] = value;
+      }
+    }
+    if (BugseeOption.ReportingDefaultBugPriority in out) {
+      out[BugseeOption.ReportingDefaultBugPriority] =
+        parseSeverityName(out[BugseeOption.ReportingDefaultBugPriority]) ?? 'high';
+    }
+    return out;
+  };
+
+  const client: InternalBugseeClient = {
     ...context,
 
     registerExt: extensionRegistry.registerExt,
@@ -792,9 +1508,14 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     setReportHandler(handler: ReportHandler | null): void {
       filters.report = handler;
     },
+    setLifecycleEventsListener: lifecycle.set,
+    emitLifecycleEvent: lifecycle.emit,
+    deferBlackoutStarted(): void {
+      blackoutStartedOwed = true;
+    },
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
-      if (killed) {
+      if (killed || !isEnabled(BugseeOption.CaptureBreadcrumbs)) {
         return;
       }
       const timestamp = breadcrumb.timestamp ?? clock.wallNow();
@@ -808,7 +1529,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
     },
 
     log(message: string, level: LogLevel | LogLevelName = 'info', timestamp?: number): void {
-      if (killed) {
+      if (killed || !isLogLevelEnabled(level, logsLevel)) {
         return;
       }
       const ts = timestamp ?? clock.wallNow();
@@ -853,7 +1574,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
 
     logException: function logException(
       error: unknown,
-      exceptionOptions?: LogExceptionOptions,
+      exceptionOptions?: InternalLogExceptionOptions,
     ): Promise<UploadResult> {
       // After stop() (§1501) or in the kill-state (§1435), logException is a silent no-op.
       if (stopped || killed) {
@@ -885,13 +1606,42 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       const syntheticFrames =
         error instanceof Error
           ? undefined
-          : callSiteFrames(new Error(), logException, options.stackParser ?? parseV8Stack);
+          : callSiteFrames(
+              new Error(),
+              exceptionOptions?.callSite?.boundary ?? logException,
+              options.stackParser ?? parseV8Stack,
+              exceptionOptions?.callSite?.sdkFrames,
+            );
       const crash = buildCrashJson(error, {
         parseStack: options.stackParser,
         handled: true,
         ...(options.enrichFrames !== undefined ? { enrichFrames: options.enrichFrames } : {}),
         ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
       });
+      const crashOptions: { domain?: string; skipFrames?: number } = {};
+      const domain = exceptionOptions?.domain;
+      if (domain !== undefined) {
+        if (typeof domain === 'string' && domain !== '') {
+          crashOptions.domain = capDomain(domain, onError);
+        } else {
+          onError(
+            new Error('logException: ignoring invalid `domain` (expected a non-empty string)'),
+          );
+        }
+      }
+      const skipFrames = exceptionOptions?.skipFrames;
+      if (skipFrames !== undefined) {
+        if (Number.isInteger(skipFrames) && skipFrames >= 0) {
+          crashOptions.skipFrames = skipFrames;
+        } else {
+          onError(
+            new Error(
+              'logException: ignoring invalid `skipFrames` (expected a non-negative integer)',
+            ),
+          );
+        }
+      }
+      applyExceptionOptions(crash, crashOptions, onError);
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,
@@ -909,14 +1659,38 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return submitReport(handled);
     },
 
-    upload(uploadOptions: UploadOptions = {}): Promise<UploadResult> {
+    upload(uploadOptions: InternalUploadOptions = {}): Promise<UploadResult> {
       if (stopped || killed) {
         return Promise.resolve({ ok: false });
       }
       return sendUpload(uploadOptions);
     },
 
-    prepareUpload(): PreparedUpload | null {
+    notify(
+      title: string,
+      body?: string,
+      severity?: SeverityName,
+      fields?: Record<string, string>,
+      urgent?: boolean,
+    ): void {
+      // `killed` implies `!launched` (the kill-state halts the client and a killed client never re-launches).
+      if (!launched) {
+        return;
+      }
+      try {
+        notifyRelay?.enqueue({
+          title,
+          ...(body !== undefined ? { body } : {}),
+          ...(severity !== undefined ? { severity } : {}),
+          ...(fields !== undefined ? { fields } : {}),
+          ...(urgent !== undefined ? { urgent } : {}),
+        });
+      } catch (error) {
+        onError(error); // notify() must never throw into the host (hostile `fields`, ...)
+      }
+    },
+
+    prepareUpload(): InternalPreparedUpload | null {
       if (stopped || killed) {
         return null;
       }
@@ -934,7 +1708,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       frozen.catch(() => undefined);
       let spent = false;
       return {
-        send(sendOptions: UploadOptions = {}): Promise<UploadResult> {
+        send(sendOptions: InternalUploadOptions = {}): Promise<UploadResult> {
           if (spent || stopped || killed) {
             return Promise.resolve({ ok: false });
           }
@@ -951,13 +1725,106 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       return launched;
     },
 
+    // Refused while the client is not launched, as on Android: there is nothing to black out, and the
+    // BlackoutStarted/Ended events would describe a state that changed nothing.
+    startBlackout(): void {
+      if (!ownsBlackout()) {
+        // A stale handle: the blackout belongs to the current client, so the request goes THERE (fail closed:
+        // an app asking for privacy gets it). Nobody launched to take it: say so rather than ignore it.
+        const current = getCarrierBlackoutOwner(processCarrier);
+        if (current?.isLaunched() === true) {
+          current.start();
+        } else {
+          onErrorSafe(
+            new Error(
+              'Bugsee: startBlackout() on a stale client handle, and no client is launched; ignored',
+            ),
+          );
+        }
+        return;
+      }
+      if (launched) {
+        blackout.start();
+      }
+    },
+
+    // Allowed while stopped (R2L-7), unlike start: an app that stopped during a blackout must be able to lift
+    // it, or the carried process flag would make the NEXT launch start dark with no event to say so.
+    endBlackout(): void {
+      if (!ownsBlackout()) {
+        // Never lifted from a stale handle (R3L-4): that would clear the process flag under the live client.
+        onErrorSafe(
+          new Error(
+            'Bugsee: endBlackout() on a stale client handle ignored; end the blackout through the current client',
+          ),
+        );
+        return;
+      }
+      blackout.end();
+    },
+
+    isBlackout(): boolean {
+      // A stale handle answers with the PROCESS flag (R4L-5): its own state is a stopped client's memory.
+      return !ownsBlackout() && processCarrier !== undefined
+        ? getCarrierBlackout(processCarrier)
+        : blackout.isActive();
+    },
+
+    getStatus(): BugseeStatus {
+      if (stopping) {
+        return BugseeStatus.Stopping;
+      }
+      if (!launched) {
+        return BugseeStatus.Stopped;
+      }
+      return launching ? BugseeStatus.Launching : BugseeStatus.Launched;
+    },
+
+    getLaunchOptions(): Record<string, unknown> {
+      return inEffect(options.launchOptionsView?.effective);
+    },
+
+    getHostLaunchOptions(): Record<string, unknown> {
+      return inEffect(options.launchOptionsView?.host);
+    },
+
     launch(): void {
       // A killed client (collector KILL_SDK) is permanently dead: re-launching must not re-arm it.
       if (killed || launched) {
         return;
       }
+      if (options.restartable === false && (stopped || stopping)) {
+        onError(
+          new Error(
+            'Bugsee: launch() was called on a client that has been stopped; build a new one with the platform launch(appToken) or relaunch()',
+          ),
+        );
+        return;
+      }
+      if (stopping) {
+        // A launch while the previous stop() is still draining ends that stop: from here on the client is
+        // running, so the stale drain must not report Stopped (or suspend anything) when it finishes (L4).
+        stopping = false;
+        lifecycle.emit(LifecycleEvents.Stopped);
+      }
+      // State first, events second (L2): by the time a listener hears Launching the client already reads as
+      // launching, so a listener that calls launch() again is a no-op and one that calls stop() aborts this
+      // launch cleanly instead of racing it.
+      generation += 1;
+      const mine = generation;
       launched = true;
+      launching = true;
       stopped = false;
+      if (processCarrier !== undefined) {
+        claimCarrierBlackoutOwner(blackoutOwner, processCarrier);
+      }
+      lifecycle.emit(LifecycleEvents.Launching);
+      if (mine !== generation) {
+        return; // a listener stopped the client before it started
+      }
+      stopDrain = undefined; // this launch starts a fresh life: a repeat stop() answers for ITS drain
+      notifyRelay?.resume(); // a stop() suspended it; what was kept goes out now
+      adoptNotifyBacklog();
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
@@ -985,20 +1852,66 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           onError(error);
         }
       }, tickIntervalMs);
+      launching = false;
+      lifecycle.emit(LifecycleEvents.Launched);
+      if (blackoutStartedOwed) {
+        blackoutStartedOwed = false;
+        if (launched && blackout.isActive()) {
+          lifecycle.emit(LifecycleEvents.BlackoutStarted);
+        }
+      }
     },
 
     stop(timeout?: number): Promise<boolean> {
       if (!launched) {
-        return Promise.resolve(true);
+        // Already stopped, or stopping: answer for the drain of THAT stop (R2L-1), within this call's own bound.
+        // Never started, or killed (no drain was started): there is nothing left to wait for.
+        return stopDrain !== undefined ? boundDrain(stopDrain, timeout) : Promise.resolve(true);
       }
+      // Is this the stop relaunch() issues? Decided NOW: by the time the drain settles the new client may be up.
+      const handsOver = processCarrier !== undefined && getCarrierRelaunching(processCarrier);
+      if (handsOver) {
+        handoverEpoch = getCarrierRelaunchEpoch(processCarrier);
+      }
+      generation += 1;
+      const mine = generation;
       launched = false;
+      launching = false;
       stopped = true;
-      haltCapture(); // launch() always sets tickTimer first, so it is set here (stop runs only if launched)
-      return drainPending(timeout);
+      haltCapture(); // also valid mid-launch: a stop from the Launching listener has nothing started yet
+      stopping = true;
+      lifecycle.emit(LifecycleEvents.Stopping);
+      // The shared drain is UNBOUNDED (R3L-2): it is the one real drain every stop() answers for, so a first
+      // caller's deadline must not cap it (a repeat stop() could then never report true). Each caller applies
+      // its own timeout only when racing it.
+      const realDrain = startDrain();
+      stopDrain = realDrain;
+      return boundDrain(realDrain, timeout)
+        .finally(() => {
+          // Only the LATEST transition owns these: a launch() that superseded this stop has already cleared
+          // `stopping`, and its notify relay must keep running (L4).
+          if (mine === generation) {
+            stopping = false;
+            // A notification still waiting (offline) keeps its place for a re-launch but stops retrying: a
+            // stopped SDK must not keep a timer, and so a request, alive.
+            notifyRelay?.suspend();
+            if (handsOver) {
+              stashNotifyBacklog();
+            }
+          }
+        })
+        .then((drained) => {
+          // After `stopping` clears, so a listener that reads getStatus() sees Stopped, not Stopping.
+          if (mine === generation) {
+            lifecycle.emit(LifecycleEvents.Stopped);
+          }
+          return drained;
+        });
     },
 
     flush(timeout?: number): Promise<boolean> {
       return drainPending(timeout);
     },
   };
+  return exposePublicSurface(client);
 }

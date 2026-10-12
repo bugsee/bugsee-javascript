@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { asInternalClient, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   defaultShouldReport,
@@ -154,7 +154,7 @@ function setupFastifyUnsafe(app: FastifyInstance, options: FastifyAdapterOptions
         if (store !== undefined && route !== undefined) {
           store.setAttribute('http.route', route);
         }
-        void client.logException(error, { mechanism: 'http-error' });
+        void asInternalClient(client).logException(error, { mechanism: 'http-error' });
       }
     } catch {
       // never break Fastify's error handling

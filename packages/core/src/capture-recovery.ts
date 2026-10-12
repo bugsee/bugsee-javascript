@@ -1,3 +1,4 @@
+import { decodeRequestFromMarker } from './attachments';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { defaultEntryFactory } from './capture-data-entry';
 import { drainReified } from './capture-drain';
@@ -183,8 +184,9 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
         for (const marker of group) {
           try {
             const bundle: IdentifiedBundle = {
-              ...assembleBundle(marker.request, captured, {
+              ...assembleBundle(decodeRequestFromMarker(marker.request, onError), captured, {
                 ...base,
+                onError: base.onError ?? onError,
                 attributes: marker.attributes,
                 userIdentifier: marker.userIdentifier,
               }),

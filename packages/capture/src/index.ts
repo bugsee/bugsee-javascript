@@ -17,6 +17,10 @@ export {
   type FetchInterceptorOptions,
   type FetchTarget,
 } from './fetch-interceptor';
+export {
+  createHttpErrorDetectionProvider,
+  type HttpErrorProviderOptions,
+} from './http-error-provider';
 // `InputSource`/`InputProviderOptions` (./input-provider) are structural-typing helpers with no external
 // consumer — callers pass a value that satisfies `InputSource` (e.g. browser's `BrowserInputSource`)
 // without ever naming the type, and no caller passes provider options. Not re-exported (R3-13).
@@ -30,7 +34,12 @@ export {
 } from './install-network-capture';
 export { createLogCaptureProvider } from './log-provider';
 export { createNetworkInterceptor } from './network-interceptor';
-export { createNetworkCaptureProvider, type NetworkSource } from './network-provider';
+export {
+  createNetworkCaptureProvider,
+  type DefaultNetworkSanitizer,
+  getDefaultNetworkSanitizer,
+  type NetworkSource,
+} from './network-provider';
 export {
   createRequestDecoratorRegistry,
   type OutgoingRequest,

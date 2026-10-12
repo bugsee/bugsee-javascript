@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { asInternalClient, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   neverThrow,
@@ -179,7 +179,7 @@ function setupElysiaUnsafe(app: ElysiaAppLike, options: ElysiaAdapterOptions = {
       const report = options.shouldReport ? options.shouldReport(c.error) : serverError;
       if (report) {
         resolveStore(client)?.setAttribute('http.route', c.route ?? requestPath(c));
-        void client.logException(c.error, { mechanism: 'http-error' });
+        void asInternalClient(client).logException(c.error, { mechanism: 'http-error' });
       }
       // WAVE 6.8 — a NOT_FOUND is the ONE code Elysia short-circuits, so mapResponse never runs and the
       // transaction was left open forever. Probed on Elysia 1.4 (`app.handle`), per-request hook order:

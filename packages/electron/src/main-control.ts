@@ -38,6 +38,12 @@ export interface ElectronMainControlOptions {
   helloChannel?: string;
   /** The main→renderer control channel (default {@link BUGSEE_CONTROL_CHANNEL}). */
   controlChannel?: string;
+  /**
+   * Whether the owner's blackout is currently in force. Sent with every `session` reply so a renderer that
+   * launches (or reloads) mid-blackout starts dark. A throwing probe fails CLOSED (reported as active).
+   * Without a probe every reply says `bo:false` (nothing to report), so a renderer never waits on it.
+   */
+  isBlackout?: () => boolean;
 }
 
 export interface ElectronMainControl {
@@ -47,6 +53,10 @@ export interface ElectronMainControl {
   pause(): void;
   resume(): void;
   flush(): void;
+  /** Tell every renderer the owner's blackout began (renderers suspend visual capture). */
+  blackoutStart(): void;
+  /** Tell every renderer the owner's blackout ended. */
+  blackoutEnd(): void;
   /** The number of currently-registered renderers (window count). */
   readonly rendererCount: number;
 }
@@ -73,7 +83,9 @@ export function createElectronMainControl(
     renderers.delete(sender);
   };
 
-  const broadcast = (command: 'pause' | 'resume' | 'flush' | 'stop'): void => {
+  const broadcast = (
+    command: 'pause' | 'resume' | 'flush' | 'stop' | 'blackout-start' | 'blackout-end',
+  ): void => {
     const raw = encodeControl({ command });
     for (const sender of [...renderers]) {
       // Prune on the way past. `destroyed` is the primary signal, but it is an EVENT — a missed or absent
@@ -83,6 +95,15 @@ export function createElectronMainControl(
         continue;
       }
       sendTo(sender, raw);
+    }
+  };
+
+  /** Fail closed: if the probe throws we cannot prove there is no blackout, so say there is. */
+  const readBlackout = (probe: () => boolean): boolean => {
+    try {
+      return probe();
+    } catch {
+      return true;
     }
   };
 
@@ -107,7 +128,15 @@ export function createElectronMainControl(
       sender.once?.('destroyed', () => forget(sender));
     }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
-    sendTo(sender, encodeControl({ command: 'session', sessionId: options.sessionId }));
+    sendTo(
+      sender,
+      encodeControl({
+        command: 'session',
+        sessionId: options.sessionId,
+        // ALWAYS stated: a probe-less owner says `false` instead of leaving the renderer to guess.
+        blackout: options.isBlackout !== undefined ? readBlackout(options.isBlackout) : false,
+      }),
+    );
   };
 
   return {
@@ -126,6 +155,12 @@ export function createElectronMainControl(
     },
     flush(): void {
       broadcast('flush');
+    },
+    blackoutStart(): void {
+      broadcast('blackout-start');
+    },
+    blackoutEnd(): void {
+      broadcast('blackout-end');
     },
     get rendererCount(): number {
       return renderers.size;

@@ -1,10 +1,11 @@
-import type { BrowserProbe, Bugsee, DeviceIdLocalStorage } from '@bugsee/browser';
+import type { BrowserProbe, DeviceIdLocalStorage } from '@bugsee/browser';
 import { launchCore, resetBrowserDeviceIdCache } from '@bugsee/browser';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import { serializeTransaction, type Transaction } from '@bugsee/performance';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type BugseeLaunchOptionsWithPerformance, launch } from './launch';
+import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch, relaunch } from './launch';
+import { BugseeStatus, getStatus } from './status';
 
 // --- fakes ---------------------------------------------------------------------------------------
 
@@ -174,11 +175,116 @@ describe('bugsee umbrella launch', () => {
     expect(client.ext('performance').getActiveSpan()).toBeDefined(); // the pageload transaction is active
   });
 
+  it('exposes startTransaction / startSpan / getActiveSpan straight on the launched client', async () => {
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    const txn = client.startTransaction('Checkout', 'ui.load', { cart: 2 });
+    expect(txn.getName()).toBe('Checkout');
+    expect(txn.getAttributes()).toMatchObject({ cart: 2 });
+    expect(client.getActiveSpan()).toBe(txn);
+    expect(client.ext('performance').getActiveSpan()).toBe(txn);
+    expect(client.startSpan('db.query', 'select').getTraceId()).toBe(txn.getTraceId());
+  });
+
+  it('the calls are harmless no-ops when performanceMonitoring is false', async () => {
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: false })),
+    );
+    expect(client.startTransaction('Checkout', 'ui.load').isSampled()).toBe(false);
+    expect(client.startSpan('db').getOperation()).toBe('db');
+    expect(client.getActiveSpan()).toBeUndefined();
+  });
+
+  it('a repeat launch still returns a client carrying the calls', async () => {
+    const carrier = {};
+    await track(await launch('tok', base({ carrier })));
+    const second = await launch('tok', base({ carrier }));
+    expect(typeof second.startTransaction).toBe('function');
+  });
+
   it('does NOT wire performance when performanceMonitoring is false', async () => {
     const client = await track(
       await launch('tok', base({ carrier: {}, performanceMonitoring: false })),
     );
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
+  });
+
+  // R3V-3: the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
+  // OPPOSITE of what the app wrote. Data-collecting switches fail CLOSED: only boolean `true` opts in to what is
+  // off by default (propagateTrace), and an invalid value turns off what is on by default (monitoring, navigation,
+  // interaction spans); each is reported.
+  it.each([
+    0,
+    '',
+    'false',
+    null,
+  ])('performanceMonitoring=%j (invalid) turns performance OFF and reports', async (bad) => {
+    const onError = vi.fn();
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: bad as never, onError })),
+    );
+    expect(() => client.ext('performance')).toThrow(/not registered/);
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('performanceMonitoring must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    0,
+    'false',
+  ])('traceInteractions=%j (invalid) does NOT wire interactions', async (bad) => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const onError = vi.fn();
+    const client = await track(
+      await launch('tok', base({ carrier: {}, traceInteractions: bad as never, onError })),
+    );
+    pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('traceInteractions must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([0, 'false'])('traceNavigations=%j (invalid) does NOT patch history', async (bad) => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    vi.stubGlobal('location', { pathname: '/home' });
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    await track(await launch('tok', base({ carrier: {}, traceNavigations: bad as never })));
+    expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState);
+  });
+
+  it.each([
+    0,
+    'false',
+    'true',
+    1,
+    null,
+  ])('propagateTrace=%j (invalid) does NOT propagate (only boolean true opts in)', async (bad) => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          propagateTrace: bad as never,
+          tracePropagationOrigin: 'https://app.test',
+        }),
+      ),
+    );
+    const init = { method: 'GET' };
+    await globalFetch()('https://app.test/api', init);
+    expect(received?.init).toBe(init);
   });
 
   it('threads performanceSampleRate into the head sampler (0 → the pageload transaction is unsampled)', async () => {
@@ -260,6 +366,22 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['ui.interaction_type']).toBe('click');
   });
 
+  it('opens no `ui.interaction` transaction during a blackout', async () => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    client.startBlackout();
+    pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+    client.endBlackout();
+    pushEvent({ name: 'click', duration: 90, interactionId: 6, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'ui.interaction',
+    );
+  });
+
   it('does NOT wire interactions when traceInteractions is false', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
@@ -312,6 +434,20 @@ describe('bugsee umbrella launch', () => {
     expect(perfPosts[0]?.url.endsWith('/v2/performance/transactions')).toBe(true);
     expect(perfPosts[0]?.auth).toBe('Bearer access-tok');
     expect(JSON.parse(perfPosts[0]?.body ?? '{}').transactions).toHaveLength(1);
+  });
+
+  it("performanceUploadMode 'realtime' sends a finished transaction without waiting for the tick", async () => {
+    const { scheduler } = fakeScheduler();
+    const { fn: transport, perfPosts } = recordingTransport();
+    const client = await track(
+      await launch(
+        'tok',
+        base({ carrier: {}, scheduler, transport, performanceUploadMode: 'realtime' }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish(); // no tick fired
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(perfPosts).toHaveLength(1);
   });
 
   // A 30s tick is the ONLY delivery path the uploader had, so anything buffered since the last one was
@@ -477,6 +613,34 @@ describe('bugsee umbrella launch', () => {
     ).toBeDefined();
   });
 
+  // R5V-6: `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
+  it('an empty-string target never reaches a third party, and an invalid entry is reported to onError', async () => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    const onError = vi.fn();
+    await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          onError,
+          propagateTrace: true,
+          tracePropagationOrigin: 'https://app.test',
+          tracePropagationTargets: ['', 5 as never],
+        }),
+      ),
+    );
+    await globalFetch()('https://third-party.test/x', { method: 'GET' });
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0].message).toMatch(/tracePropagationTargets entries/);
+  });
+
   it('defaults same-origin detection to location.origin when no tracePropagationOrigin is given', async () => {
     vi.stubGlobal('location', { origin: 'https://default.test', pathname: '/' });
     let received: { init: unknown } | undefined;
@@ -551,6 +715,122 @@ describe('bugsee umbrella launch', () => {
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
+  // R4V-10: `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
+  // non-string) value means "no exporter": data is exported only to an explicitly configured endpoint.
+  it.each([
+    '',
+    null,
+    0,
+  ])('otelExportUrl=%j builds NO exporter (nothing is posted to any OTLP endpoint)', async (bad) => {
+    const { scheduler, fire } = fakeScheduler();
+    const calls: string[] = [];
+    const transport = vi.fn<HttpTransport>(async (url: string) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+      }
+      calls.push(url);
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    });
+    const client = await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          performanceFlushIntervalMs: 7777,
+          otelExportUrl: bad as never,
+        }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish();
+    await fire(7777);
+    expect(calls.some((u) => u.endsWith('/v2/performance/transactions'))).toBe(true); // Bugsee still gets it
+    expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
+  });
+
+  // R5V-7: a `URL` object worked before R4V-10 and was silently ignored after it; whitespace still built an exporter
+  // (`fetch('   ')` is the page's own URL); numbers and objects were dropped without a word.
+  describe('otelExportUrl forms (R5V-7)', () => {
+    async function runWith(
+      otelExportUrl: unknown,
+    ): Promise<{ otlpUrls: string[]; errors: Error[]; bugseeGotBatch: boolean }> {
+      const { scheduler, fire } = fakeScheduler();
+      const otlpUrls: string[] = [];
+      const errors: Error[] = [];
+      let bugseeGotBatch = false;
+      const transport = vi.fn<HttpTransport>(async (url: string) => {
+        if (url.endsWith('/v2/sessions')) {
+          return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+        }
+        if (url.endsWith('/v2/performance/transactions')) {
+          bugseeGotBatch = true;
+        } else {
+          otlpUrls.push(url);
+        }
+        return { status: 200, headers: {}, body: new Uint8Array() };
+      });
+      const client = await track(
+        await launch(
+          'tok',
+          base({
+            carrier: {},
+            scheduler,
+            transport,
+            onError: (error: unknown) => errors.push(error as Error),
+            performanceFlushIntervalMs: 7777,
+            otelExportUrl: otelExportUrl as never,
+          }),
+        ),
+      );
+      (client.ext('performance').getActiveSpan() as Transaction).finish();
+      await fire(7777);
+      return { otlpUrls, errors, bugseeGotBatch };
+    }
+    const COLLECTOR = 'https://collector.test/v1/traces';
+
+    it('a URL object exports to its href', async () => {
+      const result = await runWith(new URL(COLLECTOR));
+      expect(result.otlpUrls).toEqual([COLLECTOR]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('a string is trimmed', async () => {
+      const result = await runWith(`  \n${COLLECTOR}\t `);
+      expect(result.otlpUrls).toEqual([COLLECTOR]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it.each(['   ', '\n\t', ''])('%j is no exporter, silently', async (blank) => {
+      const result = await runWith(blank);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toEqual([]);
+      expect(result.bugseeGotBatch).toBe(true);
+    });
+
+    it.each([undefined, null])('%j is no exporter, silently', async (absent) => {
+      const result = await runWith(absent);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toEqual([]);
+    });
+
+    it.each([
+      ['a number', 5, 'number'],
+      ['zero', 0, 'number'],
+      ['an object', { href: COLLECTOR }, 'object'],
+      ['an array', [COLLECTOR], 'object'],
+      ['true', true, 'boolean'],
+      ['a function', () => COLLECTOR, 'function'],
+    ])('%s is no exporter and is reported', async (_name, value, kind) => {
+      const result = await runWith(value);
+      expect(result.otlpUrls).toEqual([]);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]?.message).toMatch(/otelExportUrl/);
+      expect(result.errors[0]?.message).toContain(kind);
+      expect(result.bugseeGotBatch).toBe(true); // Bugsee still receives its own batch
+    });
+  });
+
   it('produce-tee: an OTLP failure surfaces to onError, but Bugsee still receives the batch', async () => {
     const { scheduler, fire } = fakeScheduler();
     const onError = vi.fn();
@@ -623,5 +903,31 @@ describe('bugsee umbrella launch', () => {
   it('otelConsume without onOtelSpanProcessor wires no SpanProcessor (no throw)', async () => {
     const client = await track(await launch('tok', base({ carrier: {}, otelConsume: true })));
     expect(client).toBeDefined();
+  });
+});
+
+describe('umbrella relaunch / getStatus (browser)', () => {
+  it('relaunch stops the old client and returns a fresh one with the extensions re-wired', async () => {
+    const first = await track(launch('tok', base()));
+    expect(getStatus()).toBe(BugseeStatus.Launched);
+    const second = await track(relaunch(base()));
+    expect(second).not.toBe(first);
+    expect(first.getStatus()).toBe(BugseeStatus.Stopped);
+    expect(second.getStatus()).toBe(BugseeStatus.Launched);
+    expect(() => second.ext('performance')).not.toThrow(); // the on-by-default extension is wired again
+    expect(getStatus()).toBe(BugseeStatus.Launched);
+  });
+
+  it('relaunch with new options replaces the previous host options', async () => {
+    await track(launch('tok', base({ captureLogs: false })));
+    const second = await track(relaunch(base({ maxRecordingTime: 20 })));
+    expect(second.getHostLaunchOptions()).not.toHaveProperty(['com.bugsee.option.capture.logs']);
+    expect(second.getLaunchOptions()['com.bugsee.option.config.duration']).toBe(20);
+  });
+
+  it('getStatus reports Stopped once the client has been stopped', async () => {
+    const client = await track(launch('tok', base()));
+    await client.stop();
+    expect(getStatus()).toBe(BugseeStatus.Stopped);
   });
 });

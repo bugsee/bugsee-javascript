@@ -63,6 +63,7 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.CaptureSystemEvents).toBe('com.bugsee.option.capture.system-events');
     expect(BugseeOption.CaptureInteractions).toBe('com.bugsee.option.capture.interactions');
     expect(BugseeOption.CaptureViewHierarchy).toBe('com.bugsee.option.capture.view-hierarchy');
+    expect(BugseeOption.CaptureStartInBlackout).toBe('com.bugsee.option.capture.start-in-blackout');
     expect(BugseeOption.DetectCrash).toBe('com.bugsee.option.detect.crash');
     expect(BugseeOption.Duration).toBe('com.bugsee.option.config.duration');
     expect(BugseeOption.MaxDataSize).toBe('com.bugsee.option.config.data-size');
@@ -92,6 +93,27 @@ describe('BugseeOption canonical identifiers', () => {
     expect(BugseeOption.ReportingDefaultBugPriority).toBe(
       'com.bugsee.option.reporting.defaults.bug-priority',
     );
+  });
+
+  // Added for mobile parity (T6): byte for byte Android's `Options.*` strings.
+  it('match the Android log-level, breadcrumb, http-error and default-priority identifiers', () => {
+    expect(BugseeOption.CaptureLogsLevel).toBe('com.bugsee.option.capture.logs.level');
+    expect(BugseeOption.CaptureBreadcrumbs).toBe('com.bugsee.option.capture.breadcrumbs');
+    expect(BugseeOption.DetectHttpErrors).toBe('com.bugsee.option.detect.http-errors');
+    expect(BugseeOption.ReportingDefaultCrashPriority).toBe(
+      'com.bugsee.option.reporting.defaults.crash-priority',
+    );
+    expect(BugseeOption.ReportingDefaultErrorPriority).toBe(
+      'com.bugsee.option.reporting.defaults.error-priority',
+    );
+  });
+
+  it('names the user-identifier persistence option', () => {
+    expect(BugseeOption.PersistUserIdentifier).toBe('com.bugsee.option.user.persist-identifier');
+  });
+
+  it('matches the Android notify flush delay identifier (T7)', () => {
+    expect(BugseeOption.NotifyFlushDelay).toBe('com.bugsee.option.config.notify-flush-delay');
   });
 
   it('are all namespaced under com.bugsee.option. and unique', () => {

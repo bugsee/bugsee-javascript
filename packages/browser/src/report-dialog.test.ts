@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import type { PreparedUpload, UploadOptions, UploadResult } from '@bugsee/core';
+import {
+  type InternalPreparedUpload,
+  type InternalUploadOptions,
+  LifecycleEvents,
+  type UploadResult,
+} from '@bugsee/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createReportDialogLauncher,
@@ -21,10 +26,10 @@ const UI: ReportDialogUiOptions = {
 
 interface Harness {
   deps: ReportDialogDeps;
-  /** `PreparedUpload.send` — what the dialog submits. */
-  upload: ReturnType<typeof vi.fn<(options: UploadOptions) => Promise<UploadResult>>>;
+  /** `InternalPreparedUpload.send` — what the dialog submits. */
+  upload: ReturnType<typeof vi.fn<(options: InternalUploadOptions) => Promise<UploadResult>>>;
   discard: ReturnType<typeof vi.fn<() => void>>;
-  prepare: ReturnType<typeof vi.fn<() => PreparedUpload | null>>;
+  prepare: ReturnType<typeof vi.fn<() => InternalPreparedUpload | null>>;
   setUserIdentifier: ReturnType<typeof vi.fn<(email: string) => void>>;
   clearUserIdentifier: ReturnType<typeof vi.fn<() => void>>;
   show: ReturnType<typeof createReportDialogLauncher>;
@@ -34,11 +39,11 @@ const harness = (
   overrides: Partial<ReportDialogDeps> = {},
   ui: Partial<ReportDialogUiOptions> = {},
 ): Harness => {
-  const upload = vi.fn<(options: UploadOptions) => Promise<UploadResult>>(async () => ({
+  const upload = vi.fn<(options: InternalUploadOptions) => Promise<UploadResult>>(async () => ({
     ok: true,
   }));
   const discard = vi.fn<() => void>();
-  const prepare = vi.fn<() => PreparedUpload | null>(() => ({ send: upload, discard }));
+  const prepare = vi.fn<() => InternalPreparedUpload | null>(() => ({ send: upload, discard }));
   const setUserIdentifier = vi.fn<(email: string) => void>();
   const clearUserIdentifier = vi.fn<() => void>();
   const deps: ReportDialogDeps = {
@@ -1077,5 +1082,88 @@ describe('strings overrides', () => {
     });
 
     expect(field('summary').placeholder).toBe('Short summary');
+  });
+});
+
+describe('lifecycle events', () => {
+  it('announces BeforeReportShown when the dialog opens and AfterReportShown once it is gone', async () => {
+    const emit = vi.fn();
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+
+    expect(emit.mock.calls).toEqual([[LifecycleEvents.BeforeReportShown]]);
+    expect(host()).not.toBeNull(); // Before fired as the dialog went up, not after it was dismissed
+
+    send();
+    await pending;
+    expect(emit.mock.calls).toEqual([
+      [LifecycleEvents.BeforeReportShown],
+      [LifecycleEvents.AfterReportShown, { sent: true }],
+    ]);
+  });
+
+  it('announces AfterReportShown with sent:false when the user discards', async () => {
+    const emit = vi.fn();
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+    click('[data-action="cancel"]');
+    await pending;
+
+    expect(emit).toHaveBeenLastCalledWith(LifecycleEvents.AfterReportShown, { sent: false });
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('announces AfterReportShown only once the dialog is really gone from the page (L17)', async () => {
+    const hostAtAfter: Array<HTMLElement | null> = [];
+    const emit = vi.fn((type: string) => {
+      if (type === LifecycleEvents.AfterReportShown) hostAtAfter.push(host());
+    });
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+    send();
+    await pending;
+    expect(hostAtAfter).toEqual([null]);
+  });
+
+  it('reports sent:false when the send came back refused, or threw (L17)', async () => {
+    for (const failure of [
+      async () => ({ ok: false }) as UploadResult,
+      async () => {
+        throw new Error('boom');
+      },
+    ]) {
+      const emit = vi.fn();
+      const h = harness({ emitLifecycleEvent: emit });
+      h.upload.mockImplementation(failure);
+      const pending = h.show();
+      send();
+      await pending;
+      expect(emit).toHaveBeenLastCalledWith(LifecycleEvents.AfterReportShown, { sent: false });
+    }
+  });
+
+  it('still settles when the lifecycle hook throws', async () => {
+    const { show } = harness({
+      emitLifecycleEvent: (type) => {
+        if (type === LifecycleEvents.AfterReportShown) throw new Error('hook');
+      },
+    });
+    const pending = show();
+    send();
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
+  it('announces nothing when no dialog is shown (cannot prepare, or SDK not running)', async () => {
+    const emit = vi.fn();
+    await harness({ emitLifecycleEvent: emit, prepare: () => null }).show();
+    await harness({ emitLifecycleEvent: emit, isLaunched: () => false }).show();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('works without a lifecycle hook', async () => {
+    const { show } = harness();
+    const pending = show();
+    send();
+    await expect(pending).resolves.toEqual({ ok: true });
   });
 });

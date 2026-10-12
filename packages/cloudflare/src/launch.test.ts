@@ -115,4 +115,91 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
       expect.objectContaining({ partitionCaptureByTenant: false }),
     );
   });
+
+  // R5V-9: `false` silently disables the cross-tenant isolation Cloudflare turns on by default; say so, once.
+  it('an explicit false warns once per isolate through onError, and still opts out', () => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    const carrier = {};
+    const errors: Error[] = [];
+    launch('tok', {
+      partitionCaptureByTenant: false,
+      carrier,
+      onError: (e: unknown) => void errors.push(e as Error),
+    });
+    launch('tok', {
+      partitionCaptureByTenant: false,
+      carrier,
+      onError: (e: unknown) => void errors.push(e as Error),
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain('partitionCaptureByTenant: false');
+    expect(errors[0]?.message).toContain("another tenant's capture");
+    expect(spy).toHaveBeenLastCalledWith(
+      'tok',
+      expect.objectContaining({ partitionCaptureByTenant: false }),
+    );
+    // another isolate (carrier) is warned in its own right
+    launch('tok', {
+      partitionCaptureByTenant: false,
+      carrier: {},
+      onError: (e: unknown) => void errors.push(e as Error),
+    });
+    expect(errors).toHaveLength(2);
+  });
+
+  it('the opt-out warning cannot throw out of launch (a rethrowing onError)', () => {
+    vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    expect(() =>
+      launch('tok', { partitionCaptureByTenant: false, carrier: {}, onError }),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default, true and an explicit undefined do not warn', () => {
+    vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    const onError = vi.fn();
+    launch('tok', { carrier: {}, onError });
+    launch('tok', { partitionCaptureByTenant: true, carrier: {}, onError });
+    launch('tok', { partitionCaptureByTenant: undefined, carrier: {}, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a rethrowing onError cannot break the real launch of an invalid partition value (R5V-4)', async () => {
+    vi.restoreAllMocks();
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    let client: ReturnType<typeof launch> | undefined;
+    expect(() => {
+      client = launch('tok', { partitionCaptureByTenant: 10n as never, carrier: {}, onError });
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalled();
+    await client?.stop?.();
+  });
+
+  it('an explicit undefined does not override the Cloudflare default (R4V-1)', () => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok', { partitionCaptureByTenant: undefined });
+    expect(spy).toHaveBeenCalledWith(
+      'tok',
+      expect.objectContaining({ partitionCaptureByTenant: true }),
+    );
+  });
+
+  it.each([
+    ['true'],
+    [1],
+    [null],
+    [0],
+    [''],
+  ])('passes an invalid value %j through (edge treats it as ON and reports it)', (value) => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok', { partitionCaptureByTenant: value as never });
+    const passed = (spy.mock.calls[0]?.[1] as { partitionCaptureByTenant?: unknown })
+      .partitionCaptureByTenant;
+    expect(passed).toBe(value);
+  });
 });

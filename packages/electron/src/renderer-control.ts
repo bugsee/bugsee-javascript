@@ -10,10 +10,19 @@ export interface RendererControlHandlerOptions {
   setPaused(paused: boolean): void;
   /** Stop the renderer client (main sent `stop`). */
   stop(): void;
-  /** Deliver the owner's assigned session id (the `session` handshake reply). Optional. */
+  /**
+   * Deliver the owner's assigned session id (the `session` handshake reply). Optional. This is the
+   * handshake: it RELEASES the renderer's launch hold, so it is called AFTER `onBlackout` for the same
+   * reply (the owner's state must be known before the hold opens, or a dark owner would flicker light).
+   */
   onSession?(sessionId: string): void;
   /** Flush the renderer client (main sent `flush`). Optional — streaming has nothing local to drain. */
   flush?(): void;
+  /**
+   * The owner's blackout began (`true`) or ended (`false`) — also delivered with the `session` handshake
+   * reply, BEFORE `onSession`. Optional.
+   */
+  onBlackout?(active: boolean): void;
 }
 
 /** Build the renderer's control dispatcher: `handle(raw)` applies one main→renderer control message. */
@@ -39,9 +48,18 @@ export function createRendererControlHandler(
         options.stop();
         break;
       case 'session':
+        if (message.blackout !== undefined) {
+          options.onBlackout?.(message.blackout);
+        }
         if (message.sessionId !== undefined) {
           options.onSession?.(message.sessionId);
         }
+        break;
+      case 'blackout-start':
+        options.onBlackout?.(true);
+        break;
+      case 'blackout-end':
+        options.onBlackout?.(false);
         break;
     }
   };

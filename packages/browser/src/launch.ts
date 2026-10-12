@@ -8,6 +8,7 @@ import {
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
@@ -18,14 +19,19 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
+  BlackoutToken,
+  BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
+  BugseeStatus,
   type BundleStore,
   BundleStoreToken,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   createBugseeApi,
   createBundleUploader,
   createClient,
@@ -35,23 +41,38 @@ import {
   createSystemClock,
   createUploadPipeline,
   defineService,
+  FAIL_CLOSED_BOOLEAN_OPTION,
+  FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  FAIL_ON_BOOLEAN_OPTION,
   getCarrierClient,
+  getCarrierPendingLaunch,
+  getCarrierStatus,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type OptionDefinition,
   ReportMarkerStoreToken,
   recoverReports,
+  relaunchWith,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierPendingLaunch,
+  setCarrierStatus,
   TransportToken,
   type TriggerPipeline,
   type UploadResult,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { reportGuarded } from '@bugsee/util';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
@@ -61,11 +82,10 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-import { createBrowserInputSource } from './input-source';
+import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
   createReportDialogLauncher,
-  parseSeverityName,
   type ReportDialogOptions,
   type SeverityName,
 } from './report-dialog';
@@ -73,6 +93,7 @@ import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
+import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
@@ -100,37 +121,88 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
-const BROWSER_OPTION_DEFINITIONS = [
+/** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
+const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
+
+const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   // Input capture is browser/DOM-only (Node has no user input), so its gate lives here, not in COMMON.
-  { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
+  {
+    friendly: 'captureInteractions',
+    key: BugseeOption.CaptureInteractions,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   // View hierarchy is browser/DOM-only too.
-  { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
+  {
+    friendly: 'captureViewHierarchy',
+    key: BugseeOption.CaptureViewHierarchy,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
+  // A page that must load already blacked out (see BugseeLaunchOptions.startInBlackout).
+  {
+    friendly: 'startInBlackout',
+    key: BugseeOption.CaptureStartInBlackout,
+    default: false,
+    // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark" (R3V-2).
+    ...FAIL_ON_BOOLEAN_OPTION,
+  },
+  // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
+  // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported (R4V-2); it must never throw (R3V-3).
+  // Masking is fail-closed regardless.
+  {
+    friendly: 'replay',
+    key: REPLAY_OPTION_KEY,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
     friendly: 'reportSummaryRequired',
     key: BugseeOption.ReportingUiSummaryRequired,
     default: false,
+    ...BOOLEAN_OPTION,
   },
   {
     friendly: 'reportDescriptionRequired',
     key: BugseeOption.ReportingUiDescriptionRequired,
     default: false,
+    ...BOOLEAN_OPTION,
   },
-  { friendly: 'reportEmailRequired', key: BugseeOption.ReportingUiEmailRequired, default: false },
-  { friendly: 'reportLabelsEnabled', key: BugseeOption.ReportingUiLabelsEnabled, default: false },
-  { friendly: 'reportLabelsRequired', key: BugseeOption.ReportingUiLabelsRequired, default: false },
+  {
+    friendly: 'reportEmailRequired',
+    key: BugseeOption.ReportingUiEmailRequired,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'reportLabelsEnabled',
+    key: BugseeOption.ReportingUiLabelsEnabled,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'reportLabelsRequired',
+    key: BugseeOption.ReportingUiLabelsRequired,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
   {
     friendly: 'reportPrioritySelectorEnabled',
     key: BugseeOption.ReportingUiPrioritySelectorEnabled,
     default: false,
+    ...BOOLEAN_OPTION,
   },
+  // iOS persists the user identifier across launches; the browser does too (localStorage, per app token).
+  // Browser-only: server tiers keep it in memory. Opt out when the identifier is PII not to be stored.
   {
-    friendly: 'reportDefaultBugPriority',
-    key: BugseeOption.ReportingDefaultBugPriority,
-    default: 'high',
+    friendly: 'persistUserIdentifier',
+    key: BugseeOption.PersistUserIdentifier,
+    default: false,
+    ...BOOLEAN_OPTION,
   },
 ];
 
@@ -178,10 +250,22 @@ export interface BugseeLaunchOptions {
 
   /** Capture console output as logs. Default true. */
   captureLogs?: boolean;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /**
+   * Capture breadcrumbs (`addBreadcrumb` and the automatic UI-interaction ones). Default true. Mobile SDKs
+   * default this to false; on the web UI breadcrumbs are a core signal, so JS keeps them on.
+   */
+  captureBreadcrumbs?: boolean;
   /** Capture network (fetch/xhr/ws/sse/webtransport). Default true. */
   captureNetwork?: boolean;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true. A
+   * `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
@@ -198,6 +282,20 @@ export interface BugseeLaunchOptions {
   captureInteractions?: boolean;
   /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
   captureViewHierarchy?: boolean;
+  /**
+   * Launch with a blackout ALREADY in force: visual and interaction capture (replay, input, wheel, UI
+   * breadcrumbs, the view hierarchy) stays suppressed from the first instant until you call
+   * `endBlackout()`. Use it when the page shows sensitive content from its first frame, so there is no
+   * moment to call `startBlackout()` before capture could begin. Logs, network, traces and events carry on
+   * (see `startBlackout()` for exactly what a blackout covers). Default false.
+   */
+  startInBlackout?: boolean;
+  /**
+   * INTERNAL (the Electron renderer): launch dark like `startInBlackout`, but as a SILENT hold the owner
+   * releases with `getService(BlackoutToken).end({ silent: true })` — no lifecycle event for the hold
+   * itself. Not a Bugsee option and not reported in `sdk.options`.
+   */
+  holdBlackout?: boolean;
   /** Report dialog: the summary must be filled in before Send. Default false (as on mobile). */
   reportSummaryRequired?: boolean;
   /** Report dialog: the description must be filled in. Default false. */
@@ -212,8 +310,34 @@ export interface BugseeLaunchOptions {
   reportPrioritySelectorEnabled?: boolean;
   /** Severity a dialog report starts with: `low | medium | high | critical | blocker`. Default `high`. */
   reportDefaultBugPriority?: SeverityName;
+  /**
+   * Persist the user identifier (`setUserIdentifier`) in `localStorage` — one entry per app token — and
+   * restore it on the next page load, before any report (iOS persists it across app launches).
+   * **Opt-in, default false:** the identifier is often an email, i.e. PII, and a browser may be shared —
+   * whoever opens the page next would be reported as the previous user. Enable it only for an app whose
+   * users sign in on their own device, and call `clearUserIdentifier()` on logout. While off, nothing is
+   * written, a value left by an earlier opted-in launch is removed at launch, and `clearUserIdentifier()`
+   * always removes it. Storage failures never break the SDK; they go to `onError`.
+   *
+   * "Nothing is written" is about THIS identifier store only. A pending incident marker (the crash-recovery
+   * record in IndexedDB) and a report already assembled into the upload queue keep the `userIdentifier` they
+   * were created with until they are uploaded or expire, and `clearUserIdentifier()` does not rewrite them:
+   * the clear applies to reports created afterwards.
+   */
+  persistUserIdentifier?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityName;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityName;
+  /**
+   * `notify()` batching window in ms: after the first notification, wait this long so more can join its
+   * request. Default 0 (send as soon as the current tick ends); `urgent` notifications skip the wait.
+   */
+  notifyFlushDelay?: number;
   /**
    * Session replay (rrweb). **On by default** — parity with the iOS/Android SDKs, which record by default.
    * An options object customises it; `false` opts out entirely. Masking is FAIL-CLOSED (mask all
@@ -221,6 +345,9 @@ export interface BugseeLaunchOptions {
    *
    * `@bugsee/replay` is lazy-`import()`ed, so it is a separate chunk that is fetched only when replay runs
    * (design D2/D8): `replay: false` therefore keeps the errors-only bundle genuinely free of it.
+   *
+   * An INVALID value (anything but a boolean or a plain options object: `0`, `null`, `''`, `'false'`, an array) is
+   * treated as OFF and reported through `onError`: replay captures page content, so it never stays on by accident.
    *
    * Replay also requires a DOM. In a DOM-less host — an SSR / pre-render pass of any of the five
    * meta-framework adapters — the chunk is not fetched and nothing is recorded, whatever this option
@@ -245,6 +372,13 @@ export interface BugseeLaunchOptions {
   recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives `relaunch()`. The same
+   * listener can be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 
   // Injectable seams (advanced / tests) — defaults target the real browser runtime.
   /** HTTP primitive. Default the browser fetch transport. */
@@ -357,7 +491,48 @@ const internalTagged =
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
 
+// The public composition root's lifecycle shell: publishes Launching while the (async) composition is in
+// flight, Launched once it has built a client, and falls back to Stopped if it throws. A repeat launch
+// (a client already owns the slot) leaves the state alone.
 export async function launchCore(
+  appToken: string,
+  options: BugseeLaunchOptions = {},
+): Promise<LaunchResult> {
+  const carrier = options.carrier;
+  const owned = getCarrierClient(carrier) === undefined;
+  if (owned) {
+    setCarrierStatus(BugseeStatus.Launching, carrier);
+  }
+  // The build is async, so `relaunch()` must be able to wait for it: until the client exists there is
+  // nothing on the carrier to stop, and a relaunch that ran now would build a second client (or be handed
+  // this one back with its own options dropped). Registered synchronously, cleared when it settles.
+  const building = buildLaunch(appToken, options);
+  const inFlight = owned ? building.then(noop, noop) : undefined;
+  if (inFlight !== undefined) {
+    setCarrierPendingLaunch(inFlight, carrier);
+  }
+  try {
+    const result = await building;
+    if (result.internals !== undefined) {
+      setCarrierLastLaunch(appToken, options, carrier);
+      setCarrierStatus(BugseeStatus.Launched, carrier);
+    }
+    return result;
+  } catch (error) {
+    if (owned && getCarrierClient(carrier) === undefined) {
+      setCarrierStatus(BugseeStatus.Stopped, carrier);
+    }
+    throw error;
+  } finally {
+    if (inFlight !== undefined && getCarrierPendingLaunch(carrier) === inFlight) {
+      setCarrierPendingLaunch(undefined, carrier);
+    }
+  }
+}
+
+const noop = (): void => {};
+
+async function buildLaunch(
   appToken: string,
   options: BugseeLaunchOptions = {},
 ): Promise<LaunchResult> {
@@ -384,6 +559,7 @@ export async function launchCore(
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     BROWSER_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   // The internal service container (the client's "BugseeInternal"). Register the fetch transport, then
@@ -486,8 +662,16 @@ export async function launchCore(
   // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
   // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
   const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
+  let clientRef: BugseeClient | undefined;
   const reportSnapshots = captureViewtree
-    ? [createViewtreeSnapshotSource({ document: domDocument })]
+    ? [
+        createViewtreeSnapshotSource({
+          document: domDocument,
+          // The source is built before the client (it is an input to it), so it reads the client's blackout
+          // through a late-bound reference. A report cannot be assembled before the client exists.
+          blackout: { isActive: () => clientRef?.isBlackout() === true },
+        }),
+      ]
     : undefined;
 
   // Session replay (lazy). When enabled, a shared fileEncoders map is threaded into the client's report
@@ -513,15 +697,28 @@ export async function launchCore(
   // the server and client renders — an explicit `replay: true` legitimately reaches the server render, and
   // the correct behaviour there is to record nothing and say nothing. This matches how every cross-runtime
   // capture interceptor treats a missing global (see @bugsee/capture's sse/web-socket interceptors).
-  const replayEnabled = options.replay !== false && domDocument !== undefined;
+  const replayEnabled =
+    resolved.options.get<boolean>(REPLAY_OPTION_KEY, true) !== false && domDocument !== undefined;
   const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
+    // relaunch, which builds a new client.
+    carrier: carrier ?? globalThis,
+    // stop() tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
+    // stopped client must not be restarted in place (R2L-3): a new one comes from `launch(appToken)`/`relaunch()`.
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services,
     uploadPipeline,
+    // `client.notify()` rides the same transport and app token as the session/issue calls.
+    notifySender: (items) => api.notify(items),
     appToken,
     getEnvironment,
     captureStore,
@@ -538,6 +735,40 @@ export async function launchCore(
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+
+  clientRef = client;
+
+  // startInBlackout: raise the blackout BEFORE any provider is added or started (everything below, and
+  // `client.launch()`, runs after this synchronously), so no visual/interaction source can observe a single
+  // event before the app is able to call `startBlackout()` itself. Goes through the state service, the same
+  // one `client.startBlackout()` drives; the lifecycle events fire as for any blackout.
+  const blackout = client.getService(BlackoutToken);
+  const startInBlackout = resolved.options.get(BugseeOption.CaptureStartInBlackout, false);
+  const wasBlackedOut = blackout.isActive();
+  if (startInBlackout || resolveFailOnBoolean(options.holdBlackout, false)) {
+    // SILENT: the client has not launched yet, and a BlackoutStarted that precedes Launching describes a
+    // client the application cannot observe. The event for a real `startInBlackout` is emitted after launch.
+    blackout.start({ silent: true });
+  }
+
+  // The identifier store. Persistence is OPT-IN (PII): when off the store is still created, but only ever
+  // used to REMOVE a value an earlier opted-in launch (or another tab) left behind. When on, restore the
+  // persisted identifier NOW — synchronously, before any provider starts, any service manifest runs or the
+  // client is handed back — so the first report already carries it and an identifier the app (or a
+  // manifest) sets afterwards simply overwrites it.
+  const persistIdentifier = resolved.options.get(BugseeOption.PersistUserIdentifier, false);
+  const identifierStore = createUserIdentifierStore(appToken, {
+    storage: options.deviceIdEnv?.localStorage,
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
+  if (persistIdentifier) {
+    const restoredIdentifier = identifierStore.read();
+    if (restoredIdentifier !== null) {
+      client.setUserIdentifier(restoredIdentifier);
+    }
+  } else {
+    identifierStore.clear();
+  }
 
   // Run every contributed service manifest against the now-populated container.
   for (const manifest of getServiceManifests(carrier)) {
@@ -576,10 +807,13 @@ export async function launchCore(
   // `client.event()` data and SDK capture must never be written into a `user.*` stream.
   const inputSource = getOrCreateInterceptor(
     'browser-input',
-    () => createBrowserInputSource({ target: domDocument }),
+    () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  client.addCaptureProvider(createInputProvider(inputSource));
+  // The source is carrier-shared and may belong to an earlier (relaunched-away) client: bind it to THIS
+  // client's blackout gate, or it keeps reading the dead client's state (R2V-3).
+  bindInputBlackout(inputSource, blackout);
+  client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
   // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,
   // in CSS px, so it shrinks under page zoom while `clientX` does not, and the click renders off the
@@ -602,9 +836,13 @@ export async function launchCore(
     carrier,
   );
   client.addCaptureProvider(
-    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
-      client.addBreadcrumb(crumb);
-    }),
+    createUiBreadcrumbProvider(
+      uiBreadcrumbSource,
+      (crumb) => {
+        client.addBreadcrumb(crumb);
+      },
+      blackout,
+    ),
   );
 
   // Session replay: lazy-`import()` @bugsee/replay unless it was opted OUT (`replay: false`) or this host
@@ -613,10 +851,28 @@ export async function launchCore(
   // recorder + register the replay.bin encoder into the shared map. The
   // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
   if (replayEnabled && fileEncoders !== undefined) {
+    // The bag is read from the host's own options (the resolved record only says "on"); an invalid value
+    // resolved to OFF (never reaching here), so anything that is not a plain object is `{}`.
     const replayOptions: ReplayLaunchOptions =
-      typeof options.replay === 'object' ? options.replay : {};
+      typeof options.replay === 'object' &&
+      options.replay !== null &&
+      !Array.isArray(options.replay)
+        ? options.replay
+        : {};
     const { canvas: canvasOption, ...replayMasking } = replayOptions;
-    const canvasEnabled = canvasOption !== undefined && canvasOption !== false;
+    // Canvas pixels are recorded UNMASKED, so only boolean `true` or a plain object enables the add-on; anything
+    // else (`0`, `null`, `''`, `'false'`, an array) is OFF and reported (R4V-2).
+    const canvasIsBag =
+      typeof canvasOption === 'object' && canvasOption !== null && !Array.isArray(canvasOption);
+    const canvasEnabled = canvasOption === true || canvasIsBag;
+    if (canvasOption !== undefined && canvasOption !== false && !canvasEnabled) {
+      reportGuarded(
+        options.onError,
+        new Error(
+          'Bugsee: replay.canvas must be a boolean or an options object; canvas replay stays OFF',
+        ),
+      );
+    }
     void import('@bugsee/replay')
       .then(async (m) => {
         // Canvas is an opt-in add-on: lazy-`import()` @bugsee/replay-canvas ONLY when replay.canvas is set,
@@ -624,24 +880,44 @@ export async function launchCore(
         // replay never loads it.
         const canvas = canvasEnabled
           ? (await import('@bugsee/replay-canvas')).createCanvasRecordConfig(
-              typeof canvasOption === 'object' ? canvasOption : {},
+              canvasIsBag
+                ? (canvasOption as Exclude<typeof canvasOption, boolean | undefined>)
+                : {},
             )
           : undefined;
         m.registerReplay(client, fileEncoders, {
           ...replayMasking,
+          // The recorder follows the client's blackout: stopped for its whole span, restarted (a fresh full
+          // snapshot) at the end — and never started at all if a blackout began before this chunk loaded.
+          blackout: client.getService(BlackoutToken),
           ...(canvas !== undefined ? { canvas } : {}),
           // Give replay's masking resolver a sink: it drops an invalid caller selector rather than letting
           // it disable privacy page-wide, and that downgrade must not be silent (Wave 1.4).
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         });
       })
-      .catch((error) => options.onError?.(error));
+      .catch((error) => {
+        try {
+          options.onError?.(error);
+        } catch {
+          // A throwing host sink must never become an unhandled rejection (R4V-10).
+        }
+      });
   }
 
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));
   client.addDetectionProvider(createUnhandledRejectionProvider(win));
+  // fetch/xhr server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
+  // The deferred event of `startInBlackout`: owed only when this launch raised the blackout (a carried one is
+  // not a new event; an internal hold never announces itself). Core announces it after Launching/Launched when
+  // the client is still launched and dark, and ahead of the Ended of a Launching listener that lifts the blackout
+  // at once (R3L-7), so the application never hears an Ended without its Started.
+  if (startInBlackout && !wasBlackedOut) {
+    asInternalClient(client).deferBlackoutStarted();
+  }
   client.launch();
 
   // Recovery on the next launch. Self's own namespaces are empty (a fresh instanceId per launch), so the
@@ -665,7 +941,9 @@ export async function launchCore(
   // incidents its bundle-queue leg already settled with (`skipReportIds`), so one incident is delivered
   // once even when the sibling left BOTH a staged bundle and that incident's marker (the SEV1
   // double-upload — reconciled in browser-utils).
-  void runLaunchRecovery({
+  let recoverySettled = false;
+  let crashSignalled = false; // RelaunchedAfterCrash is told at most once per launch
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
     // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
@@ -680,12 +958,20 @@ export async function launchCore(
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                // R2D-2: a dead sibling that left an incident marker behind never settled that incident, which is
+                // the honest evidence this tier has that the previous run did not end cleanly. (A tab closed
+                // normally after a failed upload leaves one too, so this can over-report; it never invents one.)
+                if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
+                  crashSignalled = true;
+                  asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+                }
+                const backend = createIdbChunkBackend(captureView, {
+                  generation: -1,
+                  cleanOtherGenerations: false,
+                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                });
                 await recoverReports({
-                  backend: createIdbChunkBackend(captureView, {
-                    generation: -1,
-                    cleanOtherGenerations: false,
-                    ...(options.onError !== undefined ? { onError: options.onError } : {}),
-                  }),
+                  backend,
                   currentGeneration: -1,
                   markers,
                   context: () => ({ appToken, environment: getEnvironment(), clock }),
@@ -693,10 +979,16 @@ export async function launchCore(
                   skipReportIds,
                   ...(options.onError !== undefined ? { onError: options.onError } : {}),
                 });
+                // recoverReports deletes the sibling's generations through the backend's write QUEUE, which
+                // it does not await. Settle it here so the cleanup lands before this scan counts as done
+                // (and before a stop() closes the connection under it).
+                await backend.flush?.();
               },
             }
           : {}),
       }),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
   // Flush on page hide (Wave 6.2). The browser is the one runtime with no shutdown hook at all — no
@@ -725,27 +1017,103 @@ export async function launchCore(
   );
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
-  const reportUi = resolved.options;
-  // The default bug priority comes from an unvalidated launch option: a typo ('urgent') or a number must
-  // not leave a report with no severity at all, so it is normalised once, here, with a warning.
-  const configuredPriority = reportUi.get(BugseeOption.ReportingDefaultBugPriority, 'high');
-  const defaultSeverity = parseSeverityName(configuredPriority) ?? 'high';
-  if (parseSeverityName(configuredPriority) === undefined) {
-    options.onError?.(
-      new Error(
-        `reportDefaultBugPriority must be one of low | medium | high | critical | blocker (got ${String(configuredPriority)}); using high`,
-      ),
+  // WHEN the lock is released (R3L-1): it follows the ONE shared real drain, not any single stop() call. Every
+  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
+  // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
+  let released = false;
+  const releaseIfSafe = (): void => {
+    if (!released && recoverySettled) {
+      released = true;
+      coexistence.release();
+    }
+  };
+  // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
+  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
+  let storeFlushed: Promise<void> | undefined;
+  /** A sink that throws must not turn a background step into an unhandled rejection (R4L-4 / R4H-7). */
+  const reportSafe = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // the host's own sink threw: nothing left to tell
+    }
+  };
+  const flushStore = async (): Promise<void> => {
+    try {
+      await captureStore.flush?.();
+    } catch (error) {
+      reportSafe(error);
+    }
+  };
+  const makeDurable = (): Promise<void> => {
+    storeFlushed ??= flushStore();
+    return storeFlushed;
+  };
+  let observingDrain = false;
+  const observeDrain = (wasLaunched: boolean): void => {
+    if (observingDrain) {
+      return;
+    }
+    observingDrain = true;
+    stopCore().then(
+      async (drained) => {
+        if (!drained) {
+          return;
+        }
+        try {
+          if (wasLaunched) {
+            // A FRESH flush, not the memoized one (R4L-4): a stop(timeout) that gave up memoized its flush
+            // BEFORE the drain finished, and the drain's own writes (deferred chunk deletes) must be durable
+            // before the connections are released.
+            await flushStore();
+          }
+          await recoveryDone;
+          releaseIfSafe();
+        } catch (error) {
+          reportSafe(error); // a throwing release()/sink is reported, never an unhandled rejection
+        }
+      },
+      /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */
+      () => undefined,
     );
-  }
+  };
+  const reportUi = resolved.options;
+  // `reportDefaultBugPriority` is a COMMON option: the resolver has already validated it (an invalid value
+  // was reported there, naming every severity) and core applies it to every derived bug severity - an
+  // `upload()` included. The dialog only needs it to pre-select a severity.
+  const defaultSeverity = reportUi.get<SeverityName>(
+    BugseeOption.ReportingDefaultBugPriority,
+    'high',
+  );
+  // The public setters: update the Environment (authoritative, in memory), then persist best-effort. The
+  // report dialog goes through these too, so what the reporter types survives a reload.
+  const clearUserIdentifier = (): void => {
+    client.clearUserIdentifier();
+    identifierStore.clear(); // always: a value stored by an earlier opted-in launch must be erasable
+  };
+  const setUserIdentifier = (id: string): void => {
+    // `null` / `undefined` / a non-string is "clear" on the mobile SDKs; never store the text "null".
+    if (typeof id !== 'string') {
+      clearUserIdentifier();
+      return;
+    }
+    client.setUserIdentifier(id);
+    if (persistIdentifier) {
+      identifierStore.write(id);
+    }
+  };
   const showReportDialog = createReportDialogLauncher({
     // No DOM (a worker, SSR) → there is nothing to draw on; the launcher then resolves null.
     document: domDocument as Document,
-    prepare: () => client.prepareUpload(),
+    prepare: () => asInternalClient(client).prepareUpload(),
     isLaunched: () => domDocument !== undefined && client.isLaunched(),
     getUserIdentifier: () => client.getUserIdentifier(),
-    setUserIdentifier: (email) => client.setUserIdentifier(email),
-    clearUserIdentifier: () => client.clearUserIdentifier(),
+    setUserIdentifier: (email) => setUserIdentifier(email),
+    clearUserIdentifier: () => clearUserIdentifier(),
     sdkVersion: SDK_VERSION,
+    emitLifecycleEvent: (eventType, data) =>
+      asInternalClient(client).emitLifecycleEvent(eventType, data),
     ui: {
       summaryRequired: reportUi.get(BugseeOption.ReportingUiSummaryRequired, false),
       descriptionRequired: reportUi.get(BugseeOption.ReportingUiDescriptionRequired, false),
@@ -758,14 +1126,56 @@ export async function launchCore(
   });
   const publicClient: Bugsee = {
     ...client,
+    setUserIdentifier,
+    clearUserIdentifier,
     showReportDialog,
-    // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
-    upload: (uploadOptions) =>
-      client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
-    stop(timeout?: number): Promise<boolean> {
-      setCarrierClient(undefined, carrier);
+    async stop(timeout?: number): Promise<boolean> {
+      const wasLaunched = client.isLaunched();
+      // Release the process slot, but only if it is still OURS: a repeat/late stop() must not evict a
+      // client that has since been relaunched.
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(wasLaunched ? BugseeStatus.Stopping : BugseeStatus.Stopped, carrier);
+        clearCarrierClient(publicClient, carrier);
+      }
       uninstallPageHideFlush();
-      return stopCore(timeout);
+      let drained = false;
+      try {
+        const stopping = stopCore(timeout);
+        observeDrain(wasLaunched);
+        drained = await stopping;
+        return drained;
+      } finally {
+        // Make the data durable first (a launched client only: a killed one has no live store to flush).
+        if (wasLaunched) {
+          await makeDurable();
+        }
+        // The launch-time dead-sibling scan may still be reading IndexedDB (a quick launch -> stop); closing
+        // under it would just make it reopen the connection and leak it. Let it settle first — bounded by
+        // the caller's own timeout, since a long recovery upload must not hold up a deadline-bound stop.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await (timeout === undefined
+          ? recoveryDone
+          : Promise.race([
+              recoveryDone,
+              new Promise<void>((r) => {
+                timer = setTimeout(r, timeout);
+              }),
+            ]));
+        clearTimeout(timer);
+        // Let go of the instance liveness lock (this instance now reads as dead, so the NEXT launch can
+        // recover any leftovers) and the IndexedDB connections ONLY when that is true: the drain
+        // completed (a timed-out drain's upload may still be running here, and another tab that saw this
+        // instance as dead would upload it again), the launch recovery has settled (it may still be
+        // reading or writing). A killed client is released too (L14): the collector switched it off, so nothing
+        // of it is in flight.
+        if (drained) {
+          releaseIfSafe();
+        }
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      }
     },
   };
 
@@ -786,6 +1196,18 @@ export async function launchCore(
     activeSpanStore: undefined, // the single-slot default is correct here — see the interface note
   };
   return { client: publicClient, internals };
+}
+
+/** The process lifecycle state (Stopped / Launching / Launched / Stopping), also while no client exists.
+ *  `carrier` is the host the launch used (default `globalThis`). */
+export function getStatus(carrier?: object): BugseeStatus {
+  return getProcessStatus(carrier);
+}
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. Uses the process carrier of `options.carrier` (default `globalThis`). */
+export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
+  return relaunchWith(launch, options, options?.carrier);
 }
 
 // The public composition root: the launched client. Equivalent to `(await launchCore(...)).client` —

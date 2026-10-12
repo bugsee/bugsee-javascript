@@ -42,6 +42,13 @@ export const BugseeOption = {
   CaptureNetworkBodySizeLimit: 'com.bugsee.option.capture.network.body-size-limit',
   /** Capture a body even when its Content-Type is missing/blank (default off). */
   CaptureNetworkBodyWithoutType: 'com.bugsee.option.capture.network.body-without-type',
+  /** Minimum console/log level captured: `error | warning | info | debug | verbose`. Default `verbose`. */
+  CaptureLogsLevel: 'com.bugsee.option.capture.logs.level',
+  /**
+   * Capture breadcrumbs (manual `addBreadcrumb` and the automatic UI/route ones). Mobile defaults this
+   * to false; JS defaults it to TRUE because UI-interaction breadcrumbs are a core web signal.
+   */
+  CaptureBreadcrumbs: 'com.bugsee.option.capture.breadcrumbs',
   /** Apply the default network PII sanitizer. */
   CaptureNetworkDefaultSanitizer: 'com.bugsee.option.capture.network.default-sanitizer',
   /** Capture periodic system traces (memory / cpu / event-loop lag). */
@@ -58,8 +65,17 @@ export const BugseeOption = {
   CaptureInteractions: 'com.bugsee.option.capture.interactions',
   /** Capture a view hierarchy (DOM tree → viewtree) at report time. Browser/DOM only. */
   CaptureViewHierarchy: 'com.bugsee.option.capture.view-hierarchy',
+  /**
+   * Launch with a blackout ALREADY in force (as if `startBlackout()` had run before anything else): visual
+   * and interaction capture stays suppressed until `endBlackout()`. For a page that renders sensitive
+   * content from its first frame, where there is no moment to call `startBlackout()` before capture could
+   * begin. Default false. Browser only.
+   */
+  CaptureStartInBlackout: 'com.bugsee.option.capture.start-in-blackout',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
+  /** Report failed HTTP responses (>= 400) and network failures as `error` reports. Default false. */
+  DetectHttpErrors: 'com.bugsee.option.detect.http-errors',
   /** Detect main-thread/event-loop hangs (Android `BugseeDetectionHang` parity). */
   DetectHang: 'com.bugsee.option.detect.hang',
   /** Hang escalation thresholds in ms (Android-canonical defaults 3000 / 5000 / 10000). */
@@ -70,6 +86,12 @@ export const BugseeOption = {
   Duration: 'com.bugsee.option.config.duration',
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). */
   MaxDataSize: 'com.bugsee.option.config.data-size',
+  /**
+   * `notify()` coalescing window in milliseconds (Android `Options.NotifyFlushDelay`). `0` (default) sends
+   * a burst of notifications as one request the moment the current tick ends; a larger value waits that
+   * long after the first one so more can join the batch. An `urgent` notification skips the wait.
+   */
+  NotifyFlushDelay: 'com.bugsee.option.config.notify-flush-delay',
   /** Report dialog: the summary field must be filled in (Android `ReportingUISummaryRequired`). */
   ReportingUiSummaryRequired: 'com.bugsee.option.reporting.ui.summary-required',
   /** Report dialog: the description field must be filled in. */
@@ -82,8 +104,18 @@ export const BugseeOption = {
   ReportingUiLabelsRequired: 'com.bugsee.option.reporting.ui.labels-required',
   /** Report dialog: show the severity picker (off by default, as on mobile). */
   ReportingUiPrioritySelectorEnabled: 'com.bugsee.option.reporting.ui.priority-selector-enabled',
+  /**
+   * Persist the user identifier across launches (iOS persists it; the browser tier honours this — it
+   * keeps the identifier in localStorage). Default true. Set false when the identifier is PII you do
+   * not want at rest on the device. Node/server tiers never persist it.
+   */
+  PersistUserIdentifier: 'com.bugsee.option.user.persist-identifier',
   /** Severity a bug report starts with: `low | medium | high | critical | blocker`. Default `high`. */
   ReportingDefaultBugPriority: 'com.bugsee.option.reporting.defaults.bug-priority',
+  /** Severity a crash report starts with. Default `blocker`. */
+  ReportingDefaultCrashPriority: 'com.bugsee.option.reporting.defaults.crash-priority',
+  /** Severity an error report starts with. Default `high`. */
+  ReportingDefaultErrorPriority: 'com.bugsee.option.reporting.defaults.error-priority',
 } as const;
 
 /** A canonical option identifier value (one of {@link BugseeOption}'s string values). */
@@ -96,6 +128,9 @@ export type BugseeOptionKey = (typeof BugseeOption)[keyof typeof BugseeOption];
  */
 export interface BugseeOptionTypes {
   'com.bugsee.option.capture.logs': boolean;
+  'com.bugsee.option.capture.logs.level': string;
+  'com.bugsee.option.capture.breadcrumbs': boolean;
+  'com.bugsee.option.detect.http-errors': boolean;
   'com.bugsee.option.capture.network': boolean;
   'com.bugsee.option.capture.network.bodies': boolean;
   'com.bugsee.option.capture.network.body-size-limit': number;
@@ -105,6 +140,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.system-events': boolean;
   'com.bugsee.option.capture.interactions': boolean;
   'com.bugsee.option.capture.view-hierarchy': boolean;
+  'com.bugsee.option.capture.start-in-blackout': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.detect.hang': boolean;
   'com.bugsee.option.detect.hang.level.fair': number;
@@ -112,11 +148,15 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.detect.hang.level.severe': number;
   'com.bugsee.option.config.duration': number;
   'com.bugsee.option.config.data-size': number;
+  'com.bugsee.option.config.notify-flush-delay': number;
   'com.bugsee.option.reporting.ui.summary-required': boolean;
   'com.bugsee.option.reporting.ui.description-required': boolean;
   'com.bugsee.option.reporting.ui.email-required': boolean;
   'com.bugsee.option.reporting.ui.labels-enabled': boolean;
   'com.bugsee.option.reporting.ui.labels-required': boolean;
   'com.bugsee.option.reporting.ui.priority-selector-enabled': boolean;
+  'com.bugsee.option.user.persist-identifier': boolean;
   'com.bugsee.option.reporting.defaults.bug-priority': string;
+  'com.bugsee.option.reporting.defaults.crash-priority': string;
+  'com.bugsee.option.reporting.defaults.error-priority': string;
 }

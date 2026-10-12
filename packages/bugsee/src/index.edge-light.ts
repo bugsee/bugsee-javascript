@@ -4,12 +4,59 @@
 // Without it the umbrella fell through to `default`, i.e. the BROWSER entry, which needs IndexedDB and a
 // DOM. A thin re-export: `@bugsee/vercel-edge` IS the composition root here. `launchEdge` is also exported
 // as `launch` so the umbrella's entry point has the same name on every runtime.
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 export type {
   AttributeValue,
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
+// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+export {
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+} from '@bugsee/core';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export * from '@bugsee/vercel-edge';
-export { launchEdge as launch } from '@bugsee/vercel-edge';
+
+import { relaunchWith } from '@bugsee/core';
+import type { PerformanceFacade } from '@bugsee/performance';
+import {
+  type BugseeEdgeLaunchOptions,
+  type Bugsee as EdgeBugsee,
+  launchEdge,
+} from '@bugsee/vercel-edge';
+import { withPerformanceFacade } from './performance-facade';
+
+// The edge runtime collects no performance data, so the top-level performance calls are no-ops here (as
+// on the mobile SDKs with performance off). Explicit exports win over the `export *` above.
+export type Bugsee = EdgeBugsee & PerformanceFacade;
+export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bugsee {
+  return withPerformanceFacade(launchEdge(appToken, options));
+}
+
+// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
+export { addReportAttachment } from '@bugsee/core';
+// Lifecycle parity with the node/browser entries: the status enum, the process-level getStatus(), and
+// relaunch() on top of core's relaunchWith, so it re-runs THIS entry's launch (extensions re-wired).
+export { BugseeStatus, getStatus } from './status';
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. */
+export const relaunch = (options?: BugseeEdgeLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

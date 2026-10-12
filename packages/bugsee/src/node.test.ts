@@ -1,9 +1,9 @@
 import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import {
-  type Bugsee,
   type LaunchResult,
   launchCore,
   type NodeRuntime,
+  launch as nodeLaunch,
   RequestContextStoreToken,
   type SystemProbe,
 } from '@bugsee/node';
@@ -11,6 +11,7 @@ import type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BugseeNodeLaunchOptions, launch } from './node';
+import type { Bugsee } from './server-launch';
 
 // --- node fakes (no real process / network / perf_hooks) ----------------------------------------
 
@@ -182,6 +183,61 @@ describe('bugsee node umbrella launch', () => {
     expect(transactionsOf(perfPosts).some((t) => t.name === 'app.start')).toBe(true);
   });
 
+  // R4V-4: node owns `propagateTrace` (default ON, invalid => OFF); the umbrella must not ALSO judge it with the
+  // browser's performance definition (it logged "using false" while node kept propagating).
+  it.each([
+    'false',
+    0,
+    null,
+  ])('propagateTrace=%j is judged ONCE (by node) and propagates nothing', async (bad) => {
+    const okResp = { status: 200, statusText: 'OK', redirected: false, headers: { forEach() {} } };
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    const errors: Error[] = [];
+    const client = track(
+      launch(
+        'tok',
+        base({
+          carrier: {},
+          captureNetwork: true,
+          propagateTrace: bad as never,
+          tracePropagationTargets: ['target.test'],
+          appStartTimeMs: 1000,
+          onError: (e: unknown) => errors.push(e as Error),
+        }),
+      ),
+    );
+    const store = client.getService(
+      (await import('@bugsee/node')).RequestContextStoreToken,
+    ) as unknown as {
+      run: (c: unknown, f: () => Promise<void>) => Promise<void>;
+    };
+    await store.run(
+      {
+        contextId: 'c1',
+        attributes: {},
+        trace: {
+          traceId: '0af7651916cd43dd8448eb211c80319c',
+          spanId: 'b7ad6b7169203331',
+          sampled: true,
+        },
+      },
+      async () => {
+        await (globalThis as { fetch: (i: unknown, init?: unknown) => Promise<unknown> }).fetch(
+          'https://target.test/api',
+          { method: 'GET' },
+        );
+      },
+    );
+    expect(
+      (received?.init as { headers?: Record<string, string> }).headers?.traceparent,
+    ).toBeUndefined();
+    expect(errors.filter((e) => e.message.includes('propagateTrace'))).toHaveLength(1);
+  });
+
   it('does NOT wire umbrella propagation on Node (the launch owns it; no ambient perf-sourced leak)', async () => {
     // The fetch leaf wraps globalThis.fetch once the network source subscribes; stub BEFORE launch so the
     // wrap wraps the stub. okResp is the minimal Response shape the leaf reads.
@@ -245,6 +301,45 @@ describe('bugsee node umbrella launch', () => {
     await fire(7777); // flush → the app.start transaction tees to /v1/traces
     const body = JSON.parse(otlpBodies[0] ?? '{}');
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.nodejs/performance');
+  });
+
+  it('exposes startTransaction / startSpan / getActiveSpan straight on the launched client', () => {
+    const client = track(launch('tok', base({ carrier: {}, appStartTimeMs: 1000 })));
+    const txn = client.startTransaction('Checkout', 'ui.load', { cart: 2 });
+    expect(txn.isSampled()).toBe(true);
+    expect(txn.getAttributes()).toMatchObject({ cart: 2 });
+    expect(client.getActiveSpan()).toBe(client.ext('performance').getActiveSpan());
+    expect(client.getActiveSpan()).toBe(txn);
+    const child = client.startSpan('db.query', 'select');
+    expect(child.getTraceId()).toBe(txn.getTraceId());
+    txn.finish();
+  });
+
+  it('the calls are harmless no-ops when performanceMonitoring is off', () => {
+    const client = track(
+      launch('tok', base({ carrier: {}, appStartTimeMs: 1000, performanceMonitoring: false })),
+    );
+    const txn = client.startTransaction('Checkout', 'ui.load');
+    expect(txn.isSampled()).toBe(false);
+    expect(txn.getName()).toBe('Checkout');
+    expect(client.startSpan('db').getOperation()).toBe('db');
+    expect(client.getActiveSpan()).toBeUndefined();
+  });
+
+  it('a repeat launch over a client the PLAIN node launch created still carries the calls', () => {
+    // The singleton was created WITHOUT the umbrella (so it has no pass-throughs yet); the umbrella launch
+    // that finds it must install them on that same client, not hand back a bare one.
+    const carrier = {};
+    const plain = nodeLaunch('tok', base({ carrier, appStartTimeMs: 1000 }));
+    launched.push(plain as Bugsee);
+    expect((plain as Partial<Bugsee>).startTransaction).toBeUndefined();
+    const second = launch('tok', base({ carrier, appStartTimeMs: 1000 }));
+    expect(second).toBe(plain);
+    expect(typeof second.startTransaction).toBe('function');
+    // ... and they reach the performance API (a no-op transaction: this singleton wired no extension).
+    const txn = second.startTransaction('Repeat', 'ui.load');
+    expect(txn.getName()).toBe('Repeat');
+    expect(second.getActiveSpan()).toBeUndefined();
   });
 
   it('does not mint a device id on node launch', () => {

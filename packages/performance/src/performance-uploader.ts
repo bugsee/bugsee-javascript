@@ -17,6 +17,14 @@ export interface PerformanceUploaderDeps {
   scheduler: Scheduler;
   /** Batched-flush interval in ms. Default 30000. */
   flushIntervalMs?: number;
+  /** `performanceUploadMode: 'realtime'`: send each transaction as soon as it is stored, not on the tick. */
+  realtime?: boolean;
+  /**
+   * Whether the owning client still accepts data. When it does not (stopped, or killed by the collector
+   * rejecting the token), buffered transactions are dropped instead of POSTed and the uploader stops itself:
+   * a rejected token must not keep an interval, or a realtime `add` wrap, sending requests for ever.
+   */
+  isActive?: () => boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -36,6 +44,10 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
 
   const flush = async (): Promise<void> => {
     const transactions = deps.store.drain();
+    if (deps.isActive?.() === false) {
+      stop(); // the batch is dropped, not sent
+      return;
+    }
     if (transactions.length === 0) return;
     try {
       await deps.send(transactions);
@@ -44,18 +56,38 @@ export function createPerformanceUploader(deps: PerformanceUploaderDeps): Perfor
     }
   };
 
+  // Realtime: every add to the store triggers a flush. Done by wrapping `add` while started, so neither the
+  // controller nor the OTel consume path needs to know about the mode; stop() puts the original back.
+  let restoreAdd: (() => void) | undefined;
+  const watchAdds = (): void => {
+    const store = deps.store;
+    const add = store.add;
+    store.add = (transaction): void => {
+      add.call(store, transaction);
+      void flush();
+    };
+    restoreAdd = () => {
+      store.add = add;
+    };
+  };
+
+  const stop = (): void => {
+    restoreAdd?.();
+    restoreAdd = undefined;
+    if (handle === null) return;
+    deps.scheduler.clearInterval(handle);
+    handle = null;
+  };
+
   return {
     flush,
     start() {
       if (handle !== null) return;
+      if (deps.realtime === true) watchAdds();
       handle = deps.scheduler.setInterval(() => {
         void flush();
       }, flushIntervalMs);
     },
-    stop() {
-      if (handle === null) return;
-      deps.scheduler.clearInterval(handle);
-      handle = null;
-    },
+    stop,
   };
 }

@@ -21,16 +21,51 @@ describe('PerformanceOption', () => {
 
 describe('PERFORMANCE_OPTION_DEFINITIONS', () => {
   it('maps each friendly name to its canonical key with the on-by-default defaults', () => {
-    expect(PERFORMANCE_OPTION_DEFINITIONS).toEqual([
-      { friendly: 'performanceMonitoring', key: PerformanceOption.Monitoring, default: true },
-      { friendly: 'performanceSampleRate', key: PerformanceOption.SampleRate, default: 1 },
-      { friendly: 'performanceUploadMode', key: PerformanceOption.UploadMode, default: 'batched' },
-      {
-        friendly: 'performanceFlushIntervalMs',
-        key: PerformanceOption.FlushIntervalMs,
-        default: 30000,
-      },
+    const byName = Object.fromEntries(PERFORMANCE_OPTION_DEFINITIONS.map((d) => [d.friendly, d]));
+    expect(Object.keys(byName).sort()).toEqual([
+      'performanceFlushIntervalMs',
+      'performanceMonitoring',
+      'performanceSampleRate',
+      'performanceUploadMode',
+      'propagateTrace',
+      'traceInteractions',
+      'traceNavigations',
     ]);
+    expect(byName.performanceMonitoring).toMatchObject({
+      key: PerformanceOption.Monitoring,
+      default: true,
+      invalid: false, // fail-closed: data capture that is on by default
+    });
+    expect(byName.performanceSampleRate).toEqual({
+      friendly: 'performanceSampleRate',
+      key: PerformanceOption.SampleRate,
+      default: 1,
+    });
+    expect(byName.performanceUploadMode).toEqual({
+      friendly: 'performanceUploadMode',
+      key: PerformanceOption.UploadMode,
+      default: 'batched',
+    });
+    expect(byName.performanceFlushIntervalMs).toEqual({
+      friendly: 'performanceFlushIntervalMs',
+      key: PerformanceOption.FlushIntervalMs,
+      default: 30000,
+    });
+    expect(byName.traceNavigations).toMatchObject({
+      key: PerformanceOption.TraceNavigations,
+      default: true,
+      invalid: false,
+    });
+    expect(byName.traceInteractions).toMatchObject({
+      key: PerformanceOption.TraceInteractions,
+      default: true,
+      invalid: false,
+    });
+    expect(byName.propagateTrace).toMatchObject({
+      key: PerformanceOption.PropagateTrace,
+      default: false,
+    });
+    expect('invalid' in (byName.propagateTrace as object)).toBe(false); // an invalid value keeps the default OFF
   });
 
   it('resolves a friendly bag through the core resolver (defaults applied, overrides honoured)', () => {

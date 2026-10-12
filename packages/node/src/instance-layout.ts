@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { threadId } from 'node:worker_threads';
+import { getCarrier } from '@bugsee/core';
 import { ensureDir, writeFileSecure } from '@bugsee/node-utils';
 
 // Per-instance on-disk isolation (design: docs/design/multi-instance-disk-coexistence.md, D1). Multiple SDK
@@ -14,6 +16,7 @@ import { ensureDir, writeFileSecure } from '@bugsee/node-utils';
 
 const LIVE_FILE = '.live';
 const OWNER_FILE = 'owner.json';
+const STOPPED_FILE = '.stopped';
 const NONCE_LEN = 8;
 
 /** Identity + the per-instance subtree paths under a shared `dataDir`. */
@@ -29,6 +32,8 @@ export interface InstanceLayout {
   /** The liveness heartbeat file — its mtime is touched from the watchdog thread. */
   readonly liveFile: string;
   readonly ownerFile: string;
+  /** Written by a clean `stop()`: tells a later launch this subtree is recoverable although its pid lives. */
+  readonly stoppedFile: string;
 }
 
 /** The record persisted to `owner.json`, read by a peer to attribute + liveness-check a subtree. */
@@ -71,16 +76,43 @@ export function createInstanceLayout(
     incidentsDir: join(root, 'incidents'),
     liveFile: join(root, LIVE_FILE),
     ownerFile: join(root, OWNER_FILE),
+    stoppedFile: join(root, STOPPED_FILE),
   };
 }
 
-/** Create the subtree root and persist `owner.json` (the identity + this launch's start time + SDK version). */
+// Process-level count of LIVE launches per subtree root (R4L-1), held on the DEFAULT carrier so the ESM and CJS
+// copies of this package agree (R5L-2). Two launches share a root only through a pinned `instanceIdentity`; a
+// plain relaunch gets a fresh root, so "a newer client exists" is NOT "this subtree is live".
+const liveRoots = (): Map<string, number> => (getCarrier().liveInstanceRoots ??= new Map());
+
+/** Release one launch's claim on its subtree root (called once, when that launch begins to stop). */
+export function releaseInstanceRoot(layout: InstanceLayout): void {
+  const count = (liveRoots().get(layout.root) ?? 0) - 1;
+  if (count > 0) {
+    liveRoots().set(layout.root, count);
+  } else {
+    liveRoots().delete(layout.root);
+  }
+}
+
+/** True while some launch that has NOT begun to stop is writing into this subtree root. */
+export function isInstanceRootLive(layout: InstanceLayout): boolean {
+  return (liveRoots().get(layout.root) ?? 0) > 0;
+}
+
+/**
+ * Create the subtree root and persist `owner.json` (the identity + this launch's start time + SDK version).
+ * A `.stopped` marker left by an earlier clean stop of the same subtree is removed FIRST (R3L-3): this launch is
+ * live in it, and a stale marker would let a sibling judge it recoverable and delete it under the live writer.
+ * (A pinned `instanceIdentity` is the only way two launches share a subtree.)
+ */
 export function writeInstanceOwner(
   layout: InstanceLayout,
   startedAt: number,
   version: string,
 ): void {
   ensureDir(layout.root);
+  rmSync(layout.stoppedFile, { force: true });
   const owner: InstanceOwner = {
     instanceId: layout.instanceId,
     pid: layout.pid,
@@ -89,4 +121,13 @@ export function writeInstanceOwner(
     version,
   };
   writeFileSecure(layout.ownerFile, JSON.stringify(owner));
+}
+
+/**
+ * Count this launch as LIVE in its subtree root. Called at the very END of a successful launch (R5L-2): a launch
+ * that registered earlier and then threw would leak the count, and a later launch into the same pinned root
+ * would never be able to write `.stopped`. Pair with {@link releaseInstanceRoot}.
+ */
+export function claimInstanceRoot(layout: InstanceLayout): void {
+  liveRoots().set(layout.root, (liveRoots().get(layout.root) ?? 0) + 1);
 }

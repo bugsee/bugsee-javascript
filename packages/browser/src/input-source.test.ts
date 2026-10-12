@@ -1,8 +1,9 @@
 import type { InputEventDetail } from '@bugsee/capture';
-import { InputTool } from '@bugsee/core';
+import { createBlackoutState, InputTool } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type BrowserInputEnv,
+  bindInputBlackout,
   createBrowserInputSource,
   describeTarget,
   HOVER_SAMPLE_INTERVAL_MS,
@@ -297,6 +298,45 @@ describe('createBrowserInputSource', () => {
     ]) {
       expect(target.count(type)).toBe(0);
     }
+  });
+
+  describe('blackout (pointer gestures)', () => {
+    const pen = (over: Record<string, unknown> = {}) => ptr({ pointerType: 'pen', ...over });
+
+    it('a pen gesture that STARTS in the dark does not resurface as a path after the blackout ends', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      blackout.start();
+      target.emit('pointerdown', pen());
+      target.emit('pointermove', pen({ clientX: 50, clientY: 60 }));
+      blackout.end(); // the pointer is still down
+      target.emit('pointermove', pen({ clientX: 70, clientY: 80 }));
+      expect(events).toStrictEqual([]);
+    });
+
+    it('a gesture open when the blackout starts cannot be continued after it ends', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      target.emit('pointerdown', pen());
+      blackout.start();
+      blackout.end();
+      target.emit('pointermove', pen({ clientX: 70, clientY: 80 }));
+      expect(events.map((e) => [e.type, e.id])).toStrictEqual([['begin', '1']]);
+    });
+
+    it('nothing is built while dark, and the gesture ids resume cleanly afterwards', () => {
+      const target = fakeTarget();
+      const blackout = createBlackoutState();
+      const { events } = activate({ target, blackout });
+      blackout.start();
+      target.emit('pointerdown', ptr());
+      target.emit('pointerup', ptr({ pressure: 0, buttons: 0 }));
+      blackout.end();
+      target.emit('pointerdown', ptr());
+      expect(events.map((e) => [e.type, e.id])).toStrictEqual([['begin', '1']]);
+    });
   });
 
   it('maps a mouse pointerdown/up to a begin/end pair sharing one gesture id', () => {
@@ -1332,6 +1372,173 @@ describe('createBrowserInputSource', () => {
       clientY: 6,
       buttons: 0,
       ...over,
+    });
+
+    describe('blackout (V7: wheel deltas are gated when COLLECTED, and pending ones are cleared)', () => {
+      it('a wheel turn during a blackout is not collected at all (nothing is scheduled)', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        blackout.start();
+        target.emit('wheel', wheel({ deltaY: 40 }));
+        expect(frame.pendingCount()).toBe(0);
+        frame.flush();
+        expect(events).toEqual([]);
+      });
+
+      it('a wheel turn collected just BEFORE the blackout is cleared, so it cannot surface after it', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        target.emit('wheel', wheel({ deltaY: 7 }));
+        blackout.start();
+        blackout.end(); // the whole blackout falls inside one frame
+        frame.flush();
+        expect(events).toEqual([]);
+      });
+
+      it('deltas turned during the blackout never merge into the first post-blackout entry', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        blackout.start();
+        target.emit('wheel', wheel({ deltaY: 100 }));
+        blackout.end();
+        target.emit('wheel', wheel({ deltaY: 3 }));
+        frame.flush();
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: 'scroll', scrollY: 3 });
+      });
+
+      it('capture is normal outside a blackout and after it', () => {
+        const target = fakeTarget();
+        const frame = fakeFrame();
+        const blackout = createBlackoutState();
+        const { events } = activate({ target, scheduleFrame: frame.scheduleFrame, blackout });
+        target.emit('wheel', wheel({ deltaY: 1 }));
+        frame.flush();
+        blackout.start();
+        blackout.end();
+        target.emit('wheel', wheel({ deltaY: 2 }));
+        frame.flush();
+        expect(events.map((e) => (e as { scrollY: number }).scrollY)).toEqual([1, 2]);
+      });
+
+      describe('bindBlackout (R2V-3: a carrier-shared source follows the current client)', () => {
+        it('an ACTIVE source moves its subscription to the new gate and stops watching the old one', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const oldGate = createBlackoutState();
+          const newGate = createBlackoutState();
+          const source = createBrowserInputSource({
+            target,
+            scheduleFrame: frame.scheduleFrame,
+            blackout: oldGate,
+          });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          bindInputBlackout(source, newGate);
+          oldGate.start(); // the dead client's state must no longer matter
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          frame.flush();
+          expect(events).toHaveLength(1);
+          target.emit('wheel', wheel({ deltaY: 6 })); // pending when the blackout begins and ends
+          newGate.start();
+          newGate.end();
+          frame.flush();
+          expect(events).toHaveLength(1); // 6 cleared at the new gate's edges
+        });
+
+        it('unsubscribes from the OLD gate when rebinding', () => {
+          const target = fakeTarget();
+          const oldGate = createBlackoutState();
+          const unsub = vi.fn();
+          const watched = {
+            isActive: () => oldGate.isActive(),
+            onChange: (l: (a: boolean) => void) => {
+              const u = oldGate.onChange(l);
+              return () => {
+                unsub();
+                u();
+              };
+            },
+          };
+          const source = createBrowserInputSource({ target, blackout: watched });
+          source.onAny(() => {});
+          bindInputBlackout(source, createBlackoutState());
+          expect(unsub).toHaveBeenCalledTimes(1);
+        });
+
+        it('pending deltas are dropped when the gate is replaced', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const source = createBrowserInputSource({ target, scheduleFrame: frame.scheduleFrame });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          bindInputBlackout(source, createBlackoutState());
+          frame.flush();
+          expect(events).toEqual([]);
+        });
+
+        it('binding while INACTIVE subscribes only once the source activates, and not after it deactivates', () => {
+          const target = fakeTarget();
+          const gate = createBlackoutState();
+          const onChange = vi.spyOn(gate, 'onChange');
+          const source = createBrowserInputSource({ target });
+          bindInputBlackout(source, gate);
+          expect(onChange).not.toHaveBeenCalled();
+          const off = source.onAny(() => {});
+          expect(onChange).toHaveBeenCalledTimes(1);
+          off();
+          bindInputBlackout(source, gate);
+          expect(onChange).toHaveBeenCalledTimes(1); // inactive again: no subscription
+        });
+
+        it('binding undefined removes the gate (no subscription, nothing blocked)', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const gate = createBlackoutState();
+          const source = createBrowserInputSource({
+            target,
+            scheduleFrame: frame.scheduleFrame,
+            blackout: gate,
+          });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          bindInputBlackout(source, undefined);
+          gate.start();
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          frame.flush();
+          expect(events).toHaveLength(1);
+        });
+
+        it('is a no-op for a source without bindBlackout', () => {
+          expect(() => bindInputBlackout({}, createBlackoutState())).not.toThrow();
+        });
+      });
+
+      it('unsubscribes from the gate when the source deactivates', () => {
+        const target = fakeTarget();
+        const blackout = createBlackoutState();
+        const off = vi.fn();
+        const gate = {
+          isActive: () => blackout.isActive(),
+          onChange: (l: (a: boolean) => void) => {
+            const u = blackout.onChange(l);
+            return () => {
+              off();
+              u();
+            };
+          },
+        };
+        const { off: deactivate } = activate({ target, blackout: gate });
+        deactivate();
+        expect(off).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('does not emit a wheel event synchronously — only once the frame is flushed', () => {

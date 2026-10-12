@@ -61,7 +61,74 @@ describe('createElectronMainControl', () => {
     expect(decodeControl((r.sent[0] as { raw: string }).raw)).toEqual({
       command: 'session',
       sessionId: 'sess-1',
+      blackout: false,
     });
+  });
+
+  it('broadcasts blackout start / end to every registered renderer', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = fakeSender(1);
+    const b = fakeSender(2);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: a.sender }, encodeHello());
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: b.sender }, encodeHello());
+    control.blackoutStart();
+    control.blackoutEnd();
+    for (const r of [a, b]) {
+      expect(r.sent.slice(1).map((m) => decodeControl(m.raw)?.command)).toEqual([
+        'blackout-start',
+        'blackout-end',
+      ]);
+    }
+  });
+
+  it('the hello reply carries the CURRENT blackout state, so a renderer born mid-blackout stays dark', () => {
+    const ipc = fakeIpcMain();
+    let blackout = true;
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      isBlackout: () => blackout,
+    });
+    control.start();
+    const during = fakeSender(1);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: during.sender }, encodeHello());
+    expect(decodeControl((during.sent[0] as { raw: string }).raw)).toEqual({
+      command: 'session',
+      sessionId: 's1',
+      blackout: true,
+    });
+    blackout = false;
+    const after = fakeSender(2);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: after.sender }, encodeHello());
+    expect(decodeControl((after.sent[0] as { raw: string }).raw)?.blackout).toBe(false);
+  });
+
+  it('a throwing isBlackout fails CLOSED (the renderer is told blackout is on)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      isBlackout: () => {
+        throw new Error('gate gone');
+      },
+    });
+    control.start();
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(decodeControl((r.sent[0] as { raw: string }).raw)?.blackout).toBe(true);
+  });
+
+  it('without an isBlackout probe the reply still states bo:false explicitly (R2V-8)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    const raw = (r.sent[0] as { raw: string }).raw;
+    expect(JSON.parse(raw).bo).toBe(false);
+    expect(decodeControl(raw)?.blackout).toBe(false);
   });
 
   it('ignores a non-hello message on the hello channel (no reply, no registration)', () => {

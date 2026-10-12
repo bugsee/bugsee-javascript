@@ -187,6 +187,10 @@ export function formatStack(frames: StackFrame[]): string {
  *   - Without it, the boundary is frame 0 by construction, so dropping exactly one frame is exact —
  *     and stays exact under minification, which any function-name matching would not.
  *
+ * `sdkFrames` is how many SDK frames sit above the application in the fallback path (default 1: the
+ * boundary itself). A boundary that is not the frame the Error is constructed in (the public wrapper that
+ * calls the internal method) passes the real count.
+ *
  * `Error.stackTraceLimit` is deliberately NOT raised. It is app-observable global state, and the
  * default (10 in V8) is ample for a location and a grouping signature; quietly mutating a global to
  * enrich our own telemetry is the kind of thing the SDK does not do to its host.
@@ -195,6 +199,7 @@ export function callSiteFrames(
   error: Error,
   boundary: (...args: never[]) => unknown,
   parseStack: (stack: string) => StackFrame[],
+  sdkFrames = 1,
 ): StackFrame[] {
   // Contained: `parseStack` is injected, and a report must never be lost to a parser that throws on
   // an engine whose stack format it did not expect. No frames is the pre-existing behaviour.
@@ -202,10 +207,13 @@ export function callSiteFrames(
     const capture = (Error as { captureStackTrace?: (target: object, fn: unknown) => void })
       .captureStackTrace;
     if (typeof capture === 'function') {
-      capture(error, boundary);
-      return parseStack(error.stack ?? '');
+      // Into a plain holder, never `error`: JavaScriptCore does not re-capture an Error that already has
+      // a stack, so frame 0 stayed an SDK frame there (R3P-1). A fresh object has nothing to keep.
+      const holder: { stack?: string } = {};
+      capture(holder, boundary);
+      return parseStack(holder.stack ?? '');
     }
-    return parseStack(error.stack ?? '').slice(1);
+    return parseStack(error.stack ?? '').slice(sdkFrames);
   } catch {
     return [];
   }

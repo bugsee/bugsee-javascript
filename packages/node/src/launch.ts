@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import process from 'node:process';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
@@ -10,9 +11,12 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
+  BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
+  BugseeStatus,
   type BundleAssemblyContext,
   type BundleStore,
   BundleStoreToken,
@@ -20,6 +24,7 @@ import {
   ChunkStorageToken,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
+  clearCarrierClient,
   composeFrameEnrichers,
   createBugseeApi,
   createBundleUploader,
@@ -32,20 +37,28 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
+  type LifecycleEventsListener,
   type NativeCrashSource,
+  type OptionDefinition,
   type ReconcileOwnQueue,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
+  relaunchWith,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
   SchedulerToken,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierStatus,
   setStackAppRoot,
   TransportToken,
 } from '@bugsee/core';
@@ -58,6 +71,7 @@ import {
   createWorkerThreadRingWorker,
   httpRequest,
   nodeSha256Fallback,
+  writeFileSecure,
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
@@ -79,7 +93,14 @@ import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watc
 import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
-import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
+import {
+  claimInstanceRoot,
+  createInstanceLayout,
+  type InstanceIdentity,
+  isInstanceRootLive,
+  releaseInstanceRoot,
+  writeInstanceOwner,
+} from './instance-layout';
 import { startLivenessHeartbeat } from './liveness-heartbeat';
 import {
   createFrameEnricher,
@@ -87,7 +108,12 @@ import {
   createLocalVariablesCapture,
   type LocalVariablesOptions,
 } from './local-variables';
-import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+import {
+  NODE_PRIVACY_OPTION_DEFINITIONS,
+  NodePrivacyOption,
+  PROFILING_OPTION_DEFINITIONS,
+  ProfilingOption,
+} from './options';
 import {
   foreignListenerCount,
   markOwnHandler,
@@ -137,13 +163,14 @@ const CAPTURE_FILE_TYPES: readonly string[] = [...Object.keys(DEFAULT_FILENAMES)
 // platform-local because its default differs per runtime (50 MB on Node/Electron vs 10 MB on
 // browser/edge), so it does not belong in COMMON_OPTION_DEFINITIONS; its canonical identifier still
 // lives in @bugsee/protocol (BugseeOption.MaxDataSize) for cross-SDK / wire parity.
-const NODE_OPTION_DEFINITIONS = [
+const NODE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  ...NODE_PRIVACY_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
-  { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true },
+  { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true, ...BOOLEAN_OPTION },
   { friendly: 'hangFairMs', key: BugseeOption.DetectHangFairMs, default: 3000 },
   { friendly: 'hangMediumMs', key: BugseeOption.DetectHangMediumMs, default: 5000 },
   { friendly: 'hangSevereMs', key: BugseeOption.DetectHangSevereMs, default: 10_000 },
@@ -196,6 +223,15 @@ export interface BugseeLaunchOptions {
   unhandledRejections?: UnhandledRejectionMode;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true. A
+   * `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb` and adapter-supplied ones). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
@@ -222,6 +258,19 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with: `verylow | low | medium | high | critical | blocker`. Default `blocker`. */
+  reportDefaultCrashPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /** Severity a bug report (an `upload()`, a shake, ...) starts with when none is given. Default `high`. */
+  reportDefaultBugPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /**
+   * `notify()` batching window in ms: after the first notification, wait this long so more can join its
+   * request. Default 0 (send as soon as the current tick ends); `urgent` notifications skip the wait.
+   */
+  notifyFlushDelay?: number;
   /** Detect main-thread/event-loop hangs and report them (Android BugseeDetectionHang). Default true. */
   detectHangs?: boolean;
   /**
@@ -305,6 +354,13 @@ export interface BugseeLaunchOptions {
   recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives `relaunch()`. The same
+   * listener can be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 
   // Injectable seams (advanced / tests) — defaults target the real Node runtime.
   /** HTTP primitive. Default node-utils httpRequest. */
@@ -353,7 +409,8 @@ export interface BugseeLaunchOptions {
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
    * a per-request context + an `http.server` APM transaction. ON BY DEFAULT — set `false` to opt out (the
-   * escape hatch). Captures NO handled errors (the framework swallows them before node:http) and NO
+   * escape hatch). An INVALID value (anything but a boolean: `0`, `null`, `'false'`) is treated as OFF and
+   * reported through `onError`, never as ON. Captures NO handled errors (the framework swallows them before node:http) and NO
    * headers/bodies; coexists with the framework adapters via first-owner-wins re-entrancy (exactly one
    * context + one transaction per request). See docs/design/incoming-server-instrumentation.md.
    */
@@ -452,7 +509,18 @@ const safeCwd = (): string | undefined => {
   }
 };
 
+// The public composition root's lifecycle shell: it publishes Launched once a client was built (the Node
+// launch is synchronous, so Launching is never observable here) and records the arguments for relaunch().
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
+  const result = buildLaunch(appToken, options);
+  if (result.internals !== undefined) {
+    setCarrierLastLaunch(appToken, options, options.carrier);
+    setCarrierStatus(BugseeStatus.Launched, options.carrier);
+  }
+  return result;
+}
+
+function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   const proc = options.process ?? (process as unknown as NodeRuntime);
   // Tell core's frame scrubber where the application starts, so stack frames beneath it ship RELATIVE
   // (`./src/checkout.js`) instead of carrying the OS username, the home-directory layout and often an
@@ -482,6 +550,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     NODE_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   // The internal service container (the client's "BugseeInternal"). Node registers its platform
@@ -660,42 +729,53 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
 
   // Local variables (opt-in). Built BEFORE the client so its lookup can be handed in as the frame
   // enricher; inert when the runtime has no usable inspector.
-  const localVariables =
-    options.captureLocalVariables === undefined || options.captureLocalVariables === false
-      ? undefined
-      : createLocalVariablesCapture({
-          // This launch's timers, BEFORE the caller's object so an explicitly-passed seam still wins.
-          // The caught-exception throttle measures its backoff on the monotonic clock and recovers on a
-          // scheduler tick; left on the global timers it would ignore a host that injected its own.
-          clock,
-          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-          ...(typeof options.captureLocalVariables === 'object'
-            ? options.captureLocalVariables
-            : {}),
-          ...(typeof options.captureLocalVariables === 'object' &&
-          options.captureLocalVariables.session !== undefined
-            ? {}
-            : { session: createInspectorSession() }),
-          ...(options.onError !== undefined ? { onError: options.onError } : {}),
-        });
+  // Both opt-ins are gated on the RESOLVED value (R3V-3): only `true` or an options object turns them on, and a
+  // malformed value (`null`, `0`, `''`, `'false'`) is off and reported. The bag itself is read from the host's options.
+  const localVariablesBag =
+    typeof options.captureLocalVariables === 'object' && options.captureLocalVariables !== null
+      ? options.captureLocalVariables
+      : undefined;
+  const sourceContextBag =
+    typeof options.captureSourceContext === 'object' && options.captureSourceContext !== null
+      ? options.captureSourceContext
+      : undefined;
+  const localVariables = !resolved.isEnabled(NodePrivacyOption.CaptureLocalVariables)
+    ? undefined
+    : createLocalVariablesCapture({
+        // This launch's timers, BEFORE the caller's object so an explicitly-passed seam still wins.
+        // The caught-exception throttle measures its backoff on the monotonic clock and recovers on a
+        // scheduler tick; left on the global timers it would ignore a host that injected its own.
+        clock,
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        ...(localVariablesBag ?? {}),
+        ...(localVariablesBag?.session !== undefined ? {} : { session: createInspectorSession() }),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      });
 
   // Frame enrichers, in the order their output composes: locals first, then the source those locals
   // belong to. Both opt-in, so the common case wires nothing at all.
   const enrichFrames = composeFrameEnrichers([
     ...(localVariables !== undefined ? [createFrameEnricher(localVariables)] : []),
-    ...(options.captureSourceContext === undefined || options.captureSourceContext === false
+    ...(!resolved.isEnabled(NodePrivacyOption.CaptureSourceContext)
       ? []
       : [
           createSourceContextEnricher({
-            ...(typeof options.captureSourceContext === 'object'
-              ? options.captureSourceContext
-              : {}),
+            ...(sourceContextBag ?? {}),
             ...(options.onError !== undefined ? { onError: options.onError } : {}),
           }),
         ]),
   ]);
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
+    // relaunch, which builds a new client.
+    carrier: carrier ?? globalThis,
+    // stop() tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
+    // carrier slot), so a stopped client must not be restarted in place: see `markStopped` below (R2L-3).
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     ...(enrichFrames !== undefined ? { enrichFrames } : {}),
     // Called at the boundary of logException, while the caller's catch block is still on the stack —
@@ -704,8 +784,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       ? { onReportSite: (error: unknown) => localVariables.captureReportSite(error) }
       : {}),
     launchOptions: resolved.options,
+    launchOptionsView: { effective: resolved.canonical, host: resolved.host },
     services, // the internal container launch populated (transport + later seams)
     uploadPipeline,
+    // `client.notify()` rides the same transport and app token as the session/issue calls.
+    notifySender: (items) => api.notify(items),
     appToken,
     getEnvironment,
     captureStore,
@@ -769,10 +852,11 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // per-request context, default-on but allowlist-gated (no same-origin on a backend). Owns propagation in
   // the base — the OTel extension no longer needs to wire it.
   const propagationDecorator = buildTracePropagationDecorator(requestContextStore, api, {
-    ...(options.propagateTrace !== undefined ? { propagateTrace: options.propagateTrace } : {}),
+    propagateTrace: resolved.isEnabled(NodePrivacyOption.PropagateTrace),
     ...(options.tracePropagationTargets !== undefined
       ? { tracePropagationTargets: options.tracePropagationTargets }
       : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   if (propagationDecorator !== undefined) {
     network.interceptor.addRequestDecorator(propagationDecorator);
@@ -792,6 +876,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // and never goes through `logException`, so a client-configured enricher was skipped for every
   // uncaught crash — the one case local variables exist for.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc, enrichFrames));
+  // Outbound HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   if ((options.unhandledRejections ?? 'preserve') !== 'none') {
     client.addDetectionProvider(createUnhandledRejectionProvider(proc, enrichFrames));
   }
@@ -892,9 +978,19 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
               : {}),
             ...(options.onError !== undefined ? { onError: options.onError } : {}),
             ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
+            // R2D-2: evidence that the previous run did not stop cleanly. Told only to a client that is
+            // still running: one that has been stopped since has already said Stopped.
+            onCrashEvidence: () => {
+              if (client.isLaunched()) {
+                asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+              }
+            },
           })
       : (): Promise<void> => Promise.resolve();
-  void runLaunchRecovery({
+  // Kept (not `void`ed): stop() must not mark this instance's subtree recoverable while the recovery can
+  // still be staging bundles into it (L6). The promise never rejects.
+  let recoverySettled = false;
+  const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An INJECTED `bundleStore` is the integrator's, outside the per-instance layout and stable across
     // launches, so the dead-sibling scan must get first refusal on it (see the option's docs in core).
@@ -902,6 +998,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     pipeline: baseUploadPipeline,
     scan,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  }).finally(() => {
+    recoverySettled = true;
   });
 
   // Crash flush-then-exit (design §15): on uncaughtException the detection provider (its listener
@@ -1038,7 +1136,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // install runs once; uninstalled on stop(). The framework adapters coexist via first-owner-wins
   // re-entrancy (the owner here run-scopes the context + http.server txn; an adapter refines it).
   const serverInstallables: ServerInstallable[] = [];
-  if (options.instrumentIncomingRequests !== false) {
+  if (resolved.isEnabled(NodePrivacyOption.InstrumentIncomingRequests)) {
     serverInstallables.push(
       options.serverInterceptor ??
         createHttpServerInterceptor({
@@ -1065,9 +1163,108 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // detection providers but knows nothing about this listener — and (b) clears the process Carrier slot
   // so a later launch() starts a fresh client (the singleton is released on stop).
   const stopCore = client.stop;
+  let tornDown = false;
+  // A CLEAN stop (everything drained) marks this instance's subtree recoverable. The owning pid stays
+  // alive across a launch -> stop -> launch cycle, so no sibling would ever judge the subtree dead and every
+  // cycle stranded up to `maxDataSize` of capture files; the marker lets the NEXT launch recover whatever
+  // is undelivered (retained bundles, pending incident markers) and remove the rest. A timed-out drain is
+  // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
+  //
+  // The marker is written only when it can still be TRUE: the drain completed, the launch-time recovery has
+  // settled (it may still be staging bundles into the subtree), and no OTHER live launch uses the same subtree root
+  // (tracked process-wide by `instance-layout`; a plain relaunch has a FRESH root, so the old one is still
+  // marked — R4L-1; a relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
+  // marker at that launch, and an old drain finishing late must not put it back — R3L-3). A stopped client never
+  // comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
+  // refused — R2L-3): restarting only core would bring capture back with the heartbeat, the exit/signal
+  // handlers, the server instrumentation and the carrier slot all still torn down, and the subtree
+  // marked recoverable under a live writer. A new client is built by `launch(appToken)` / `relaunch()`.
+  //
+  // WHO writes it (R3L-1): the marker follows the ONE shared real drain, not any single stop() call. Every
+  // stop() — including one that timed out and returned false — leaves a background observer on that drain,
+  // and the caller of a stop() that sees the drain finish marks too; whichever gets there first writes, once.
+  let marked = false;
+  const markStopped = (): void => {
+    if (marked || instanceLayout === undefined || !recoverySettled) {
+      return;
+    }
+    if (isInstanceRootLive(instanceLayout)) {
+      return; // another live launch writes into THIS subtree (a pinned identity): not recoverable (R3L-3/R4L-1)
+    }
+    marked = true;
+    try {
+      writeFileSecure(instanceLayout.stoppedFile, '');
+    } catch (error) {
+      marked = false; // the write failed: a later observer may retry
+      options.onError?.(error);
+    }
+  };
+  let observingDrain = false;
+  /** Observe the shared real drain once (core hands the same unbounded promise to every `stopCore()`). */
+  const observeDrain = (): void => {
+    if (observingDrain) {
+      return;
+    }
+    observingDrain = true;
+    stopCore().then(
+      (drained) => (drained ? recoveryDone.then(markStopped) : undefined),
+      /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */
+      () => undefined,
+    );
+  };
+  /** Wait for the launch-time recovery, bounded by the caller's own deadline (a long recovery upload must
+   *  not hold up a deadline-bound stop). */
+  const awaitRecovery = async (timeout: number | undefined): Promise<void> => {
+    if (recoverySettled) {
+      return;
+    }
+    if (timeout === undefined) {
+      await recoveryDone;
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      recoveryDone,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeout);
+      }),
+    ]);
+    clearTimeout(timer);
+  };
+  const finishStop = (drained: boolean, timeout: number | undefined) =>
+    (drained ? awaitRecovery(timeout) : Promise.resolve()).then(() => {
+      if (drained) {
+        markStopped();
+      }
+      return drained;
+    });
   const publicClient: Bugsee = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      // Settled: Stopped — unless a relaunch has already taken the process state over.
+      const settle = (): void => {
+        if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
+          setCarrierStatus(BugseeStatus.Stopped, carrier);
+        }
+      };
+      // A repeat stop() (or one after the collector killed the SDK) has nothing left to tear down; running
+      // the teardown again would double-dispose the writer and could evict a relaunched client's slot.
+      if (tornDown) {
+        const repeat = stopCore(timeout).then((drained) => finishStop(drained, timeout));
+        observeDrain();
+        return repeat;
+      }
+      tornDown = true;
+      if (instanceLayout !== undefined) {
+        releaseInstanceRoot(instanceLayout); // this launch no longer writes into its subtree
+      }
+      const owned = getCarrierClient(carrier) === publicClient;
+      if (owned) {
+        setCarrierStatus(
+          client.isLaunched() ? BugseeStatus.Stopping : BugseeStatus.Stopped,
+          carrier,
+        );
+      }
       if (detectCrash) {
         proc.off('uncaughtException', onUncaughtException);
         // …and the rejection policy listener. Leaving it behind meant a STOPPED SDK still suppressed
@@ -1092,11 +1289,19 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       for (const installable of serverInstallables) {
         installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
       }
-      setCarrierClient(undefined, carrier);
-      return stopCore(timeout);
+      clearCarrierClient(publicClient, carrier);
+      const stopping = stopCore(timeout)
+        .then((drained) => finishStop(drained, timeout))
+        .finally(settle);
+      observeDrain();
+      return stopping;
     },
   };
   setCarrierClient(publicClient, carrier);
+  // Live in the subtree only now that nothing after this can throw (R5L-2); `stop()` releases it.
+  if (instanceLayout !== undefined) {
+    claimInstanceRoot(instanceLayout);
+  }
 
   // The internal wiring the umbrella needs (everything not already a DI service). The clock/scheduler are
   // intentionally omitted — they are resolvable via client.getService(ClockToken/SchedulerToken).
@@ -1118,6 +1323,18 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     }),
   };
   return { client: publicClient, internals };
+}
+
+/** The process lifecycle state (Stopped / Launching / Launched / Stopping), also while no client exists.
+ *  `carrier` is the host the launch used (default `globalThis`). */
+export function getStatus(carrier?: object): BugseeStatus {
+  return getProcessStatus(carrier);
+}
+
+/** Stop the running client (if any) and launch again with the same token; `options` replace the previous
+ *  launch options when given. Uses the process carrier of `options.carrier` (default `globalThis`). */
+export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
+  return relaunchWith(launch, options, options?.carrier);
 }
 
 // The public composition root: the launched client. Equivalent to `launchCore(...).client` — `launchCore`

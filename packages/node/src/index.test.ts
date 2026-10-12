@@ -29,6 +29,9 @@ import * as publicApi from './index';
 
 /** Every VALUE the package exports (types are erased and cannot be asserted at runtime). */
 const EXPECTED_EXPORTS = [
+  'LifecycleEvents',
+  'addReportAttachment',
+  'BugseeStatus',
   'PROFILING_OPTION_DEFINITIONS',
   'ProfilingOption',
   'RequestContextStoreToken',
@@ -52,6 +55,9 @@ const EXPECTED_EXPORTS = [
   'guarded',
   'launch',
   'launchCore',
+  'getDefaultNetworkSanitizer',
+  'getStatus',
+  'relaunch',
   'neverThrow',
   'openServerContext',
   'openServerRequest',

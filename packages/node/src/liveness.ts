@@ -1,4 +1,5 @@
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import process from 'node:process';
 import { readFileBytes } from '@bugsee/node-utils';
 import { strFromU8 } from '@bugsee/util';
@@ -25,6 +26,19 @@ export function pidAlive(
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/** Marker a CLEANLY stopped instance leaves in its subtree (see {@link isCleanlyStopped}). */
+export const STOPPED_FILE = '.stopped';
+
+/**
+ * Whether the subtree's owner shut down cleanly (`stop()` ran and fully drained). Such a subtree is
+ * recoverable immediately even though its owning PROCESS is alive — the launch -> stop -> launch cycle of
+ * a long-lived process. Without this the alive pid kept every stopped subtree "live" until the process
+ * died, stranding up to `maxDataSize` of capture files per cycle.
+ */
+export function isCleanlyStopped(subtree: string): boolean {
+  return existsSync(join(subtree, STOPPED_FILE));
 }
 
 /** Read + parse a subtree's `owner.json`, or undefined when it is missing or corrupt. */

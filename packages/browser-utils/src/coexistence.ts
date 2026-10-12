@@ -101,6 +101,10 @@ export interface Coexistence {
   /** After launch: recover every DEAD sibling (re-upload its bundles + run its capture/marker recovery), each
    *  under its own lock. A no-op when this instance has no coexisting durable data. Safe to fire-and-forget. */
   recoverDeadSiblings(options: RecoverDeadSiblingsOptions): Promise<void>;
+  /** Clean shutdown (idempotent): release the instance liveness lock — so this instance reads as dead and
+   *  its leftovers are recoverable by the next launch — and close the shared IndexedDB connections. Call it
+   *  AFTER the capture store has flushed; a later use of a store lazily reopens its connection. */
+  release(): void;
 }
 
 /** Build the multi-instance-safe coexistence root for a launch (bundle queue + optional capture/markers). */
@@ -154,15 +158,21 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
     onError !== undefined ? (message) => onError(new Error(message)) : undefined,
   );
   const coexisting = bundleShared !== undefined || captureShared !== undefined;
-  if (coexisting) {
-    liveness.holdSelf(instanceLockName(appToken, instanceId));
-  }
+  const releaseLock = coexisting
+    ? liveness.holdSelf(instanceLockName(appToken, instanceId))
+    : () => {};
 
   return {
     instanceId,
     bundleStore,
     captureView,
     markerView,
+    release: () => {
+      releaseLock();
+      bundleShared?.close?.();
+      captureShared?.close?.();
+      markerShared?.close?.();
+    },
     recoverDeadSiblings: async ({
       uploadPipeline,
       recoverReportsForSibling,

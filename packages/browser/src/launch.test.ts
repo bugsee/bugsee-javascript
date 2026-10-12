@@ -14,6 +14,7 @@ import {
   markerDatabaseName,
 } from '@bugsee/browser-utils';
 import {
+  BlackoutToken,
   type BundleStore,
   BundleStoreToken,
   CaptureStoreToken,
@@ -26,6 +27,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   ReportMarkerStoreToken,
   type StoredEntry,
   serializeBundle,
@@ -703,6 +705,282 @@ describe('launch', () => {
         children: [{ tag: 'main', rect: { x: 0, y: 0, width: 0, height: 0 } }],
       },
     ]);
+  });
+
+  describe('blackout', () => {
+    const press = (doc: ReturnType<typeof fakeWindow>, id: number): void =>
+      doc.emit('pointerdown', {
+        pointerId: id,
+        pointerType: 'mouse',
+        target: {
+          tagName: 'BUTTON',
+          getAttribute: () => null,
+          closest: () => null,
+          matches: () => false,
+        },
+        clientX: id,
+        clientY: id,
+        button: 0,
+        pressure: 0.5,
+      });
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      type: 'number',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+
+    it('exposes startBlackout / endBlackout / isBlackout on the launched client', async () => {
+      const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+      expect(client.isBlackout()).toBe(false);
+      client.startBlackout();
+      expect(client.isBlackout()).toBe(true);
+      client.endBlackout();
+      expect(client.isBlackout()).toBe(false);
+    });
+
+    it('suppresses input presses and ui.* breadcrumbs for the blackout window only', async () => {
+      const store = memStore();
+      const doc = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+      );
+      press(doc, 1);
+      doc.emit('focusin', { target: field });
+      client.startBlackout();
+      press(doc, 2);
+      doc.emit('change', { target: field });
+      doc.emit('submit', { target: field });
+      client.endBlackout();
+      press(doc, 3);
+      doc.emit('change', { target: field });
+
+      const input = await drain(store, 'input');
+      expect(input?.map((e) => (e.data as { x: number }).x)).toEqual([1, 3]);
+      const crumbs = await drain(store, 'breadcrumbs');
+      expect(crumbs?.map((e) => (e.data as { category: string }).category)).toEqual([
+        'ui.focus',
+        'ui.change',
+      ]);
+    });
+
+    it('a wheel turn made DURING a blackout is never emitted, even if the frame flushes after it ended', async () => {
+      const store = memStore();
+      const doc = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ captureStore: store, document: doc.win as unknown as Document }),
+      );
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 11,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60)); // the frame (16ms fallback) flushes
+      expect(await drain(store, 'input')).toBeUndefined();
+    });
+
+    it('does NOT suppress non-visual capture: logs, events and app breadcrumbs continue', async () => {
+      const store = memStore();
+      const client = await launchTracked('tok', baseOptions({ captureStore: store }));
+      client.startBlackout();
+      client.log('kept');
+      client.event('kept-event');
+      client.addBreadcrumb({ category: 'app.step', message: 'kept' });
+      expect(await drain(store, 'log')).toHaveLength(1);
+      expect(await drain(store, 'events.user')).toHaveLength(1);
+      expect(
+        (await drain(store, 'breadcrumbs'))?.map((e) => (e.data as { category: string }).category),
+      ).toEqual(['app.step']);
+    });
+
+    it('a report built DURING a blackout carries no viewtree; one built after it does', async () => {
+      const transport = uploadTransport();
+      const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ transport, captureStore: memStore(), document: doc }),
+      );
+      const bundleFiles = (n: number): Record<string, Uint8Array> => {
+        const puts = transport.mock.calls.filter(([url]) => url === 'https://s3.test/put');
+        return unzipSync((puts[n]?.[1] as HttpRequestOptions).body as Uint8Array);
+      };
+      client.startBlackout();
+      await client.upload({ summary: 'during' });
+      expect(bundleFiles(0)['viewtree.json']).toBeUndefined();
+      client.endBlackout();
+      await client.upload({ summary: 'after' });
+      expect(bundleFiles(1)['viewtree.json']).toBeDefined();
+    });
+
+    describe('startInBlackout (V11: a page that loads already blacked out)', () => {
+      it('defaults to NOT blacked out', async () => {
+        const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+        expect(client.isBlackout()).toBe(false);
+      });
+
+      it('launches with the blackout already in force, so isBlackout() is true from the first tick', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true }),
+        );
+        expect(client.isBlackout()).toBe(true);
+        client.endBlackout();
+        expect(client.isBlackout()).toBe(false);
+      });
+
+      it('captures NO input / ui breadcrumbs / wheel between launch and endBlackout()', async () => {
+        const store = memStore();
+        const doc = fakeWindow();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: store,
+            document: doc.win as unknown as Document,
+            startInBlackout: true,
+          }),
+        );
+        press(doc, 1);
+        doc.emit('focusin', { target: field });
+        doc.emit('change', { target: field });
+        client.endBlackout();
+        press(doc, 2);
+        const input = await drain(store, 'input');
+        expect(input?.map((e) => (e.data as { x: number }).x)).toEqual([2]);
+        expect(await drain(store, 'breadcrumbs')).toBeUndefined();
+      });
+
+      it('a report built before endBlackout() carries no viewtree', async () => {
+        const transport = uploadTransport();
+        const doc = fakeDocument(viewEl('body', { children: [viewEl('main')] }));
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            transport,
+            captureStore: memStore(),
+            document: doc,
+            startInBlackout: true,
+          }),
+        );
+        await client.upload({ summary: 'dark' });
+        const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+        const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+        expect(files['viewtree.json']).toBeUndefined();
+      });
+
+      it('the replay recorder is handed a gate that is ALREADY active when it is registered', async () => {
+        await launchTracked(
+          'tok',
+          baseOptions({ document: fakeDocument(viewEl('body')), startInBlackout: true }),
+        );
+        await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+        const options = registerReplay.mock.calls[0]?.[2] as { blackout: { isActive(): boolean } };
+        expect(options.blackout.isActive()).toBe(true);
+      });
+
+      it('the canonical key `com.bugsee.option.capture.start-in-blackout` is reported in sdk.options', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true }),
+        );
+        expect(client.getLaunchOptions()).toMatchObject({
+          'com.bugsee.option.capture.start-in-blackout': true,
+        });
+      });
+
+      it('the blackout is already in force when the FIRST provider starts (R2V-12 / m18)', async () => {
+        const carrier = {};
+        const atStart: boolean[] = [];
+        contributeServiceManifest((registrar) => {
+          // The manifest is handed the client itself at runtime (typed narrowly as a registrar).
+          const internal = registrar as unknown as {
+            addCaptureProvider(provider: unknown): void;
+            isBlackout(): boolean;
+          };
+          internal.addCaptureProvider({
+            name: 'probe',
+            init: () => {},
+            start: () => atStart.push(internal.isBlackout()),
+            stop: () => {},
+          });
+        }, carrier);
+        await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true, carrier }),
+        );
+        expect(atStart).toEqual([true]);
+      });
+
+      it('BlackoutStarted comes AFTER Launching, exactly once, never before it (R2V-11)', async () => {
+        const seen: string[] = [];
+        await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: memStore(),
+            startInBlackout: true,
+            lifecycleEventsListener: (type) => seen.push(type),
+          }),
+        );
+        const names = seen
+          .filter((t) => /Launching|Launched|Blackout/.test(t))
+          .map((t) => t.split('.').at(-1));
+        expect(names).toEqual(['Launching', 'Launched', 'BlackoutStarted']);
+      });
+
+      it('an internal launch HOLD is dark but silent: no event on hold, none on its release', async () => {
+        const seen: string[] = [];
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: memStore(),
+            holdBlackout: true,
+            lifecycleEventsListener: (type) => seen.push(type.split('.').at(-1) as string),
+          }),
+        );
+        expect(client.isBlackout()).toBe(true);
+        client.getService(BlackoutToken).end({ silent: true });
+        expect(client.isBlackout()).toBe(false);
+        expect(seen.filter((t) => t.startsWith('Blackout'))).toEqual([]);
+      });
+
+      it('a non-true value does not black the page out', async () => {
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: false }),
+        );
+        expect(client.isBlackout()).toBe(false);
+      });
+    });
+
+    it('hands the replay recorder the client blackout gate so it follows the blackout', async () => {
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ document: fakeDocument(viewEl('body')) }),
+      );
+      await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+      const options = registerReplay.mock.calls[0]?.[2] as {
+        blackout: { isActive(): boolean };
+      };
+      expect(options.blackout.isActive()).toBe(false);
+      client.startBlackout();
+      expect(options.blackout.isActive()).toBe(true);
+    });
   });
 
   it('omits the viewtree when captureViewHierarchy is disabled', async () => {
@@ -1383,6 +1661,9 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
+    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff described above: the shared
+    // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
+    clients.splice(clients.indexOf(client), 1);
   });
 
   // TWO dead siblings sharing one injected store. Each pass must take ONLY the blobs its own markers cover:
@@ -1756,7 +2037,7 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({}); // no caller overrides → replay's own fail-closed defaults apply
+    expect(call[2]).toEqual({ blackout: expect.any(Object) }); // no caller overrides → replay's own fail-closed defaults apply
   });
 
   it('records when the document arrives via window.document (the real-browser path)', async () => {
@@ -1803,7 +2084,11 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({ maskAllText: false, checkoutEveryNms: 5000 }); // options forwarded
+    expect(call[2]).toEqual({
+      maskAllText: false,
+      checkoutEveryNms: 5000,
+      blackout: expect.any(Object),
+    }); // options forwarded
   });
 
   it('forwards the launch onError so a dropped masking selector is actually reported', async () => {
@@ -1818,7 +2103,62 @@ describe('launch — session replay (lazy)', () => {
   it('enables replay with default options when replay is `true`', async () => {
     await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
-    expect(registerReplay.mock.calls[0]?.[2]).toEqual({}); // no options object → {}
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
+  });
+
+  // R4V-2 (product decision): `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
+  // closed) and reported. It never throws (`null` once did). Masking stays fail-closed regardless.
+  it.each([
+    null,
+    0,
+    '',
+    'false',
+    'true',
+    1,
+  ])('a malformed replay value %j turns replay OFF (not registered) and reports', async (bad) => {
+    const onError = vi.fn();
+    await launchTracked('tok', domReplayOptions({ replay: bad as never, onError }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(registerReplay).not.toHaveBeenCalled();
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('replay must be'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // R4V-2: canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
+  it.each([
+    0,
+    null,
+    '',
+    'false',
+    'true',
+    1,
+    [[]],
+  ])('replay.canvas=%j is OFF (add-on not loaded) and reported', async (bad) => {
+    const onError = vi.fn();
+    await launchTracked('tok', domReplayOptions({ replay: { canvas: bad as never }, onError }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    expect((registerReplay.mock.calls[0]?.[2] as { canvas?: unknown }).canvas).toBeUndefined();
+    expect(
+      onError.mock.calls.filter((c) => String((c[0] as Error).message).includes('replay.canvas')),
+    ).toHaveLength(1);
+  });
+
+  // R5V-4: the canvas warning called the app's sink unguarded, so a sink that rethrows made launch() reject.
+  it('a rethrowing onError cannot break launch over an invalid replay.canvas (the add-on stays OFF)', async () => {
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    await expect(
+      launchTracked('tok', domReplayOptions({ replay: { canvas: 'yes' as never }, onError })),
+    ).resolves.toBeDefined();
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
   });
 
   // `replay: false` is now THE errors-only path — it inherits the guarantee the old default carried: no
@@ -1840,6 +2180,33 @@ describe('launch — session replay (lazy)', () => {
     await launchTracked('tok', domReplayOptions({ replay: true, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
+  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load (R4V-10)', async () => {
+    registerReplay.mockImplementationOnce(() => {
+      throw new Error('replay boom');
+    });
+    const onError = vi.fn(() => {
+      throw new Error('sink boom');
+    });
+    const unhandled = vi.fn();
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on: (e: string, f: () => void) => void;
+          off: (e: string, f: () => void) => void;
+        };
+      }
+    ).process; // this package has no node types
+    proc.on('unhandledRejection', unhandled);
+    try {
+      await launchTracked('tok', domReplayOptions({ replay: true, onError }));
+      await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      proc.off('unhandledRejection', unhandled);
+    }
   });
 
   it('wires canvas when replay.canvas is set — resolves the config + threads it into registerReplay', async () => {
@@ -2080,8 +2447,10 @@ describe('flush on page hide (Wave 6.2)', () => {
     expect(win.count('pagehide')).toBe(1);
     await client.stop();
     expect(win.count('pagehide')).toBe(0);
+    // stop() itself commits the store once (the shutdown flush); the hook must add nothing after that.
+    const flushesAtStop = vi.mocked(captureStore.flush as () => Promise<void>).mock.calls.length;
     win.emit('pagehide', {});
-    expect(captureStore.flush).not.toHaveBeenCalled(); // …and it is genuinely disconnected
+    expect(captureStore.flush).toHaveBeenCalledTimes(flushesAtStop); // …and it is genuinely disconnected
   });
 
   it('a failing flush never throws back into the browser’s dispatch', async () => {
@@ -2094,5 +2463,88 @@ describe('flush on page hide (Wave 6.2)', () => {
     await launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
     expect(() => win.emit('pagehide', {})).not.toThrow();
     expect(onError).toHaveBeenCalled();
+  });
+});
+
+// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+  const run = async (seed: (idb: IDBFactory, locks: LockManagerLike) => Promise<void>) => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    await seed(idb, locks);
+    const seen: string[] = [];
+    const { fn: transport } = recordingTransport();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    // let the dead-sibling recovery finish (its marker is swept when it is done)
+    await new Promise((r) => setTimeout(r, 50));
+    return seen;
+  };
+
+  it('is emitted once, after Launched, when a dead sibling left an incident marker', async () => {
+    const seen = await run(async (idb) => {
+      await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+      await seedSibling(idb, 'deadsib2', 600, { m: 'pre-crash-2' }, true);
+    });
+    expect(seen).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+      LifecycleEvents.RelaunchedAfterCrash,
+    ]);
+  });
+
+  it('is NOT emitted for a dead sibling with capture but no incident marker', async () => {
+    const seen = await run(async (idb) => {
+      await seedSibling(idb, 'deadsib', 500, { m: 'just capture' }, false);
+    });
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT emitted for a LIVE sibling that has an incident marker', async () => {
+    const seen = await run(async (idb, locks) => {
+      createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib'));
+      await seedSibling(idb, 'livesib', 700, { m: 'live' }, true);
+    });
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT told to a client that has been stopped before the recovery got there', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const seen: string[] = [];
+    const client = await launchTracked(
+      'tok',
+      baseOptions({
+        transport: recordingTransport().fn,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await client.stop(); // the recovery is still reading IndexedDB: it will find the marker after this
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+    expect(seen).toContain(LifecycleEvents.Stopped);
+  });
+
+  it('is NOT emitted on a first launch with nothing behind it', async () => {
+    expect(await run(async () => {})).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
   });
 });

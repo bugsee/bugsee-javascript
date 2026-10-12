@@ -13,6 +13,12 @@ import {
   type BugseeNodeLaunchOptions,
   launch as nodeLaunch,
 } from '@bugsee/bugsee/node';
+import {
+  describeValue,
+  getCarrierClient,
+  reportGuarded,
+  resolveFailClosedBoolean,
+} from '@bugsee/core';
 
 /** The Nitro error-hook context subset we read (structural; no `nitropack` dep). */
 export interface NitroErrorContext {
@@ -43,7 +49,9 @@ export interface InstallBugseeNitroOptions extends BugseeNodeLaunchOptions {
   /** Test/advanced seam: the node launch. Default the batteries-included `bugsee/node` umbrella launch. */
   launch?: (appToken: string, options: BugseeNodeLaunchOptions) => Bugsee;
   /** Inject `<meta name="traceparent">` into the SSR `<head>` (via `render:html`) so the client pageload
-   *  adopts the server-request trace (FE↔BE join, the moat's correlation capstone). Default `true`. */
+   *  adopts the server-request trace (FE↔BE join, the moat's correlation capstone). Default `true`. It emits
+   *  trace ids into the page, so an INVALID value (`'false'`, `1`, `0`, `null`) is treated as OFF and reported
+   *  through `onError`; only boolean `true` (or absent) injects. */
   injectTraceMeta?: boolean;
 }
 
@@ -63,14 +71,28 @@ export function installBugseeNitro(
   nitroApp: NitroAppLike,
   options: InstallBugseeNitroOptions,
 ): Bugsee {
-  const { appToken, launch = nodeLaunch, injectTraceMeta = true, ...launchOptions } = options;
+  const { appToken, launch = nodeLaunch, injectTraceMeta, ...launchOptions } = options;
+  // Emits trace ids into every rendered page, so only boolean `true` (or absent) injects: `'false'`, `1`, `0`,
+  // `null` are OFF and reported, never read as "on" (R5V-8).
+  const inject = resolveFailClosedBoolean(injectTraceMeta, true);
+  if (injectTraceMeta !== undefined && typeof injectTraceMeta !== 'boolean') {
+    reportGuarded(
+      launchOptions.onError,
+      new Error(
+        `Bugsee: injectTraceMeta must be a boolean (got ${describeValue(injectTraceMeta)}); trace <meta> injection stays OFF`,
+      ),
+    );
+  }
   const client = launch(appToken, launchOptions);
+  // The hooks outlive this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
+  // invocation (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
+  const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
 
   nitroApp.hooks.hook('error', (error, context) => {
     if (isExpectedClientError(error)) return;
     const tags = context?.tags;
     reportServerError(error, {
-      getClient: () => client,
+      getClient: current,
       event: {
         name: 'nuxt.request-error',
         params: {
@@ -86,12 +108,12 @@ export function installBugseeNitro(
   // FE↔BE trace join: inject the active request's `<meta name="traceparent">` into the SSR `<head>` so the
   // browser pageload adopts the server trace. `render:html` runs inside the run-scoped request context, so
   // `traceMetaTag` sees the active trace; it yields `''` (nothing injected) when no trace is active.
-  if (injectTraceMeta) {
+  if (inject) {
     nitroApp.hooks.hook('render:html', (html) => {
       // Best-effort: trace injection must NEVER break SSR rendering (interceptors must not alter app
       // behavior). traceMetaTag is already total; this guards the `head.push` against a non-conformant host.
       try {
-        const tag = traceMetaTag({ getClient: () => client });
+        const tag = traceMetaTag({ getClient: current });
         if (tag !== '') html.head.push(tag);
       } catch {
         // swallow — a page renders fine without the trace meta

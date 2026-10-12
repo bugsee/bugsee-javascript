@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { asInternalClient, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   neverThrow,
@@ -170,7 +170,7 @@ function setupHapiUnsafe(server: HapiServerLike, options: HapiAdapterOptions = {
       ) {
         // Report the Boom directly against the active context (the owner's under re-entrancy).
         resolveStore(client)?.setAttribute('http.route', request.route?.path ?? request.path);
-        void client.logException(response, { mechanism: 'http-error' });
+        void asInternalClient(client).logException(response, { mechanism: 'http-error' });
       }
       const span = spans.get(request);
       if (span !== undefined) {

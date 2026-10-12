@@ -26,6 +26,23 @@ const opts = (bridge: HostBridge, reportTrigger: boolean) => ({
 });
 
 describe('createWebViewReportPipeline', () => {
+  it('sends binary user attachments as base64, not as an index-keyed object', async () => {
+    const { bridge, msgs } = recordingBridge();
+    const pipe = createWebViewReportPipeline(opts(bridge, false));
+    const request = createReportingRequest({
+      source: { type: 'crash' },
+      summary: 'boom',
+      id: 'inc-1',
+      userAttachments: [{ name: 'bin', data: new Uint8Array([1, 2, 3, 254]) }],
+    });
+    await pipe.report(request);
+    const entry = msgs().find((m): m is EntryMessage => m.k === 'entry');
+    const payload = entry?.p as unknown as {
+      report: { userAttachments: Array<{ data: string; dataBase64: string }> };
+    };
+    expect(payload.report.userAttachments[0]).toMatchObject({ data: '', dataBase64: 'AQID/g==' });
+  });
+
   it('always streams the incident as a crash ENTRY (timeline), regardless of the gate', async () => {
     const { bridge, msgs } = recordingBridge();
     const pipe = createWebViewReportPipeline(opts(bridge, false));

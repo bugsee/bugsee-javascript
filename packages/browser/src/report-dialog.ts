@@ -1,4 +1,9 @@
-import type { PreparedUpload, UploadResult } from '@bugsee/core';
+import {
+  type InternalPreparedUpload,
+  LifecycleEvents,
+  type LifecycleEventType,
+  type UploadResult,
+} from '@bugsee/core';
 import { DEFAULT_REPORT_DIALOG_STRINGS, type ReportDialogStrings } from './report-dialog-strings';
 import { REPORT_DIALOG_CLASS_PREFIX, REPORT_DIALOG_CSS } from './report-dialog-styles';
 
@@ -81,7 +86,7 @@ export interface ReportDialogUiOptions {
 export interface ReportDialogDeps {
   document: Document;
   /** Freeze the capture and return the report-in-waiting (`client.prepareUpload`); `null` = cannot. */
-  prepare(): PreparedUpload | null;
+  prepare(): InternalPreparedUpload | null;
   /** The dialog does nothing, as on mobile, while the SDK is not running. */
   isLaunched(): boolean;
   getUserIdentifier(): string | null;
@@ -90,6 +95,11 @@ export interface ReportDialogDeps {
   /** Shown in the footer as `v<sdkVersion>`. */
   sdkVersion: string;
   ui: ReportDialogUiOptions;
+  /**
+   * Lifecycle hook (`client.emitLifecycleEvent`): told BeforeReportShown just before the dialog is put on
+   * the page and AfterReportShown once it is gone, however it closed. Never expected to throw.
+   */
+  emitLifecycleEvent?: (eventType: LifecycleEventType, data?: unknown) => void;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -194,6 +204,7 @@ function showDialog(
   const previousOverflow = doc.documentElement.style.overflow;
   let busy = false;
   let closed = false;
+  let announced = false;
 
   const fieldValue = (name: FieldName): string => refs.fields[name]?.value.trim() ?? '';
   const severityValue = (): PickerSeverity =>
@@ -224,6 +235,15 @@ function showDialog(
       previousFocus?.focus?.();
     } catch {
       // a focus target that went away is not worth failing the close for
+    }
+    // Announced once the dialog is really gone, so a listener that inspects the page sees it closed; and
+    // `sent` is true only when the report was accepted (a refused or failed send is not "sent").
+    if (announced) {
+      try {
+        deps.emitLifecycleEvent?.(LifecycleEvents.AfterReportShown, { sent: result?.ok === true });
+      } catch {
+        // the hook is the platform's and never expected to throw; if it does, the dialog still settles
+      }
     }
     finish(result);
   };
@@ -405,6 +425,8 @@ function showDialog(
   }
 
   try {
+    announced = true;
+    deps.emitLifecycleEvent?.(LifecycleEvents.BeforeReportShown);
     doc.documentElement.append(refs.host);
     doc.documentElement.style.overflow = 'hidden';
     const dialog = refs.dialog as HTMLDialogElement;

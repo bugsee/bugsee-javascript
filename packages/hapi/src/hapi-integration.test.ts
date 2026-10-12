@@ -109,7 +109,7 @@ describe('@bugsee/hapi — real Hapi server (e2e)', () => {
     await server.inject({ method: 'GET', url: '/handler-error' });
     await server.inject({ method: 'GET', url: '/missing' }); // 404 client Boom
     await server.inject({ method: 'GET', url: '/ok' });
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(1);
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
   });
@@ -118,7 +118,7 @@ describe('@bugsee/hapi — real Hapi server (e2e)', () => {
     const { server, client } = boot();
     expect((await server.inject({ method: 'GET', url: '/missing' })).statusCode).toBe(404);
     expect((await server.inject({ method: 'GET', url: '/ok' })).result).toBe('ok');
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
   });
 
   it('attributes each CONCURRENT request to its own user + contextId with no bleed', async () => {
@@ -133,7 +133,7 @@ describe('@bugsee/hapi — real Hapi server (e2e)', () => {
         }),
       ),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(3);

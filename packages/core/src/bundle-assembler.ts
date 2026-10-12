@@ -15,6 +15,7 @@ import {
   VIDEO_AUX_VERSION,
 } from '@bugsee/protocol';
 import type { AttributeValue, IssueType } from '@bugsee/types';
+import { resolveUserAttachments } from './attachments';
 import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
@@ -57,6 +58,8 @@ export interface BundleAssemblyContext {
    * JSON path — keeping core codec-free. The encoder receives the type's ordered payloads (`entry.data`).
    */
   fileEncoders?: Partial<Record<FileType, (payloads: unknown[]) => Uint8Array>>;
+  /** Sink for non-fatal problems (a dropped user attachment). Absent → they are dropped silently. */
+  onError?: (error: unknown) => void;
 }
 
 const ALPHANUMERIC = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -201,9 +204,45 @@ export function assembleBundle(
   // Report-level attachments (§8.4 `attachment`) — extra binary/text files written verbatim (e.g. a
   // harvested native-crash `.dmp` referenced by `crash.minidumpFile`). Listed in the manifest by their own
   // filename so the backend can enumerate them.
+  // The name is a zip member name and must be unique among the bundle's members: a clash (a `before` handler
+  // or a forwarded renderer report supplying one) would make the zip writer throw and lose the whole
+  // incident, so the offending attachment is skipped and reported instead.
+  const taken = new Set<string>([
+    REQUEST_JSON_FILENAME,
+    MANIFEST_JSON_FILENAME,
+    APP_TOKEN_FILENAME,
+    ...typedFiles.map((file) => file.name),
+  ]);
   for (const attachment of report.attachments ?? []) {
-    files.push({ filename: attachment.name, type: 'attachment' });
-    typedFiles.push({ name: attachment.name, data: attachment.data });
+    const name: unknown = attachment?.name;
+    if (typeof name !== 'string' || name === '' || name === '__proto__' || taken.has(name)) {
+      context.onError?.(
+        new Error(
+          `Report attachment skipped: ${typeof name === 'string' ? JSON.stringify(name) : 'its name is not a string'} is not a usable, unused bundle file name`,
+        ),
+      );
+      continue;
+    }
+    taken.add(name);
+    files.push({ filename: name, type: 'attachment' });
+    typedFiles.push({ name, data: attachment.data });
+  }
+
+  // Application attachments (`Report.userAttachments`, mobile `Report.addAttachment`): limits applied here,
+  // the one place every report path passes through. The zip member is `<random20>.attachment.bgsfile` — the
+  // mobile layout, never derived from user input — and the label/MIME/download name ride in the manifest
+  // entry (`name` + `attrs`), which is where the worker and viewer read them.
+  for (const att of resolveUserAttachments(
+    report.userAttachments,
+    context.onError ?? (() => undefined),
+  )) {
+    files.push({
+      filename: att.bundleName,
+      type: 'attachment',
+      name: att.name,
+      attrs: { name: att.name, mimeType: att.mimeType, fileName: att.fileName },
+    });
+    typedFiles.push({ name: att.bundleName, data: att.data });
   }
 
   // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.

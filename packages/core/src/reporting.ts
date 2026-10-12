@@ -9,6 +9,23 @@ export interface ReportAttachment {
   data: Uint8Array | string;
 }
 
+/**
+ * A file the application attaches to a report (Android `Report.addAttachment`, iOS `BugseeAttachment`).
+ * At most 3 of 3 MB each (iOS's limits) travel with a report; an empty or malformed one, and the rest, are
+ * dropped and reported through `onError`, never thrown. The limits apply when the report is SUBMITTED, so what
+ * the crash-recovery marker persists is already bounded.
+ */
+export interface ReportAttachmentInput {
+  /** Human-readable label shown for the attachment. */
+  name: string;
+  /** The content; a string is encoded as UTF-8. */
+  data: Uint8Array | string;
+  /** MIME type; `text/plain` for a string and `application/octet-stream` for bytes when omitted. */
+  mimeType?: string;
+  /** Suggested download file name (directory parts are stripped); derived from `name` when omitted. */
+  fileName?: string;
+}
+
 // Report assembly request (Android BugseeReportingRequest / ReportingSource / Report parity). A
 // detection provider (or a manual entry point) builds a ReportingRequest and submits it; the trigger
 // pipeline assembles it into request.json + a bundle. This replaces the lightweight TriggerHint.
@@ -52,6 +69,12 @@ export interface Report {
   crash?: CrashJson | NativeCrashJson;
   /** Extra binary/text files written verbatim into the bundle (e.g. a native-crash `.dmp`). */
   attachments?: readonly ReportAttachment[];
+  /**
+   * Files the APPLICATION attaches (see {@link ReportAttachmentInput}); writable from `ReportHandler.before`
+   * or with `addReportAttachment`. Limits and naming are applied at submit (and again, idempotently, at assembly), so an over-limit entry
+   * is dropped there rather than throwing here.
+   */
+  userAttachments?: ReportAttachmentInput[];
 }
 
 /** A report being assembled (Android ReportingRequest), carrying its source and metadata. */
@@ -78,6 +101,8 @@ export interface ReportingRequestInit {
   crash?: CrashJson | NativeCrashJson;
   /** Extra binary/text bundle files (see {@link Report.attachments}). */
   attachments?: readonly ReportAttachment[];
+  /** Application-supplied attachments (see {@link Report.userAttachments}). */
+  userAttachments?: readonly ReportAttachmentInput[];
 }
 
 const defaultGenerateId = (): string =>
@@ -91,6 +116,34 @@ function defaultType(trigger: ReportingTriggerType): IssueType {
     return 'error';
   }
   return 'bug';
+}
+
+const SEVERITY_NAMES: readonly string[] = [
+  'verylow',
+  'low',
+  'medium',
+  'high',
+  'critical',
+  'blocker',
+];
+
+/** A severity name from untrusted input (a launch option): the canonical name, else `undefined`. */
+export function parseSeverityName(value: unknown): SeverityName | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const name = value.trim().toLowerCase();
+  return SEVERITY_NAMES.includes(name) ? (name as SeverityName) : undefined;
+}
+
+// Reports whose severity was DERIVED from their type rather than given. The client replaces those with
+// the configured `reportDefault{Crash,Error}Priority`; an explicit severity always wins. Tracked
+// out-of-band so the `Report` shape (and everything that serializes or compares it) is unchanged.
+const derivedSeverity = new WeakSet<Report>();
+
+/** True when the report's severity is the built-in per-type default, not one a caller asked for. */
+export function hasDefaultSeverity(report: Report): boolean {
+  return derivedSeverity.has(report);
 }
 
 function defaultSeverity(type: IssueType): SeverityName {
@@ -116,6 +169,10 @@ export function createReportingRequest(
     ...(init.email !== undefined ? { email: init.email } : {}),
     ...(init.crash !== undefined ? { crash: init.crash } : {}),
     ...(init.attachments !== undefined ? { attachments: init.attachments } : {}),
+    ...(init.userAttachments !== undefined ? { userAttachments: [...init.userAttachments] } : {}),
   };
+  if (init.severity === undefined) {
+    derivedSeverity.add(report);
+  }
   return { id, source: init.source, report };
 }

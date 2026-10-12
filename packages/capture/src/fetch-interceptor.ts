@@ -229,6 +229,19 @@ export interface FetchInterceptorOptions {
   maxBodyBytes?: number;
 }
 
+/** `AbortError` (a DOMException from `AbortController`, or the Node/undici equivalent). */
+const isAbortError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { name?: unknown }).name === 'AbortError';
+
+/** True when the signal the caller passed (init.signal, else the Request's own) has already fired. */
+const callerSignalAborted = (input: unknown, init: unknown): boolean => {
+  const fromInit = (init as { signal?: { aborted?: unknown } } | undefined)?.signal;
+  const signal = fromInit ?? (input as { signal?: { aborted?: unknown } } | undefined)?.signal;
+  return signal?.aborted === true;
+};
+
 class FetchInterceptor
   extends InterceptorBase<Record<NetworkStage, NetworkEvent>>
   implements RequestDecoratable
@@ -403,14 +416,17 @@ class FetchInterceptor
         },
         (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
-          this.emit('error', {
+          // A request the caller cancelled is an ABORT, not a failure (Android's RequestAborted stage):
+          // `AbortError`, or any rejection once the caller's own signal has fired.
+          const stage = isAbortError(error) || callerSignalAborted(input, init) ? 'abort' : 'error';
+          this.emit(stage, {
             timestamp: this.#now(),
             id,
             sequence: id,
             mechanism: 'fetch',
             url,
             method,
-            type: 'error',
+            type: stage,
             customError: message,
             custom: { error: message },
           });

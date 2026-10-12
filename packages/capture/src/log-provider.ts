@@ -3,10 +3,14 @@ import {
   CaptureProviderBase,
   type EventSubscribable,
   getFilters,
+  isLogLevelEnabled,
   type LogEvent,
+  type OptionsContainer,
+  parseLogLevelName,
   runFilter,
 } from '@bugsee/core';
 import { BugseeOption, logLevelToWire } from '@bugsee/protocol';
+import type { LogLevelName } from '@bugsee/types';
 
 // Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to a log SOURCE and routes each
 // LogEvent to the aggregator as a `log` capture entry. The source is any emitter with a 'log' stage —
@@ -38,14 +42,22 @@ class LogCaptureProvider extends CaptureProviderBase {
   readonly controllingOption = BugseeOption.CaptureLogs;
   readonly #source: LogSource;
   #off: (() => void) | null = null;
+  #level: LogLevelName = 'verbose';
 
   constructor(source: LogSource) {
     super();
     this.#source = source;
   }
 
-  protected onStart(): void {
+  protected onStart(options: OptionsContainer): void {
+    // `captureLogsLevel`: records less severe than the level are never captured. An unrecognised value
+    // keeps everything — the client reports it once through onError at launch.
+    this.#level =
+      parseLogLevelName(options.get(BugseeOption.CaptureLogsLevel, 'verbose')) ?? 'verbose';
     this.#off = this.#source.on('log', (event) => {
+      if (!isLogLevelEnabled(event.level, this.#level)) {
+        return;
+      }
       // Live per-event log filter (from the carrier's client); may mutate or DROP the entry.
       const filters = getFilters();
       if (filters?.log) {

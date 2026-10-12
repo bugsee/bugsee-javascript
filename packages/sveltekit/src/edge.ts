@@ -21,6 +21,7 @@ import {
   launchEdge,
   runInEdgeContext,
 } from '@bugsee/vercel-edge';
+import { relaunchEdge, rememberEdgeLaunch } from '@bugsee/vercel-edge/relaunch-edge';
 import type { SvelteKitHandle, SvelteKitResolveOptions } from './handle';
 import { injectTraceMeta } from './handle';
 
@@ -32,7 +33,9 @@ export interface SvelteKitEdgeOptions extends BugseeEdgeLaunchOptions {
 /** Start Bugsee for the SvelteKit EDGE runtime. Returns the started client (pass it to `createEdgeHandle`). */
 export function registerServerEdge(appToken: string, options: SvelteKitEdgeOptions = {}): Bugsee {
   const { launch = launchEdge, ...launchOptions } = options;
-  return launch(appToken, launchOptions);
+  const client = launch(appToken, launchOptions);
+  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch() (R4H-4)
+  return client;
 }
 
 export interface CreateEdgeHandleOptions {
@@ -91,4 +94,28 @@ export function createEdgeHandle(options: CreateEdgeHandleOptions = {}): SvelteK
       () => resolve(event, resolveOptions),
     );
   };
+}
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getDefaultNetworkSanitizer,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+} from '@bugsee/vercel-edge';
+
+/**
+ * Stop the running client and launch again with the remembered token through the SAME launch seam
+ * `registerServerEdge` was installed with (default `launchEdge`), so a custom launch (e.g. Cloudflare's) is re-run
+ * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9).
+ * That install-time seam is remembered on the carrier and is the DEFAULT here (R4H-4); an explicit `launch`
+ * argument wins and is remembered in turn.
+ * Bugsee options return to their defaults; integration seams are kept. Rejects when nothing was launched.
+ */
+export function relaunch(options: SvelteKitEdgeOptions = {}): Promise<Bugsee> {
+  return relaunchEdge(options);
 }

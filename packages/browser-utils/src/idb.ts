@@ -11,6 +11,8 @@ export interface AsyncBlobStore {
   put(id: string, bytes: Uint8Array): Promise<void>;
   /** Remove the value under `id`; a no-op if absent. */
   remove(id: string): Promise<void>;
+  /** Close the database connection (a later call lazily reopens it). Optional: wrappers/fakes may omit it. */
+  close?(): void;
 }
 
 export interface IdbBlobStoreOptions {
@@ -21,6 +23,14 @@ export interface IdbBlobStoreOptions {
   /** IDB factory; injectable for tests. Default globalThis.indexedDB. */
   indexedDB?: IDBFactory;
 }
+
+// Close a connection once it has opened; a connection that never opened has nothing to close.
+const closeQuietly = (pending: Promise<IDBDatabase> | undefined): void => {
+  void pending?.then(
+    (db) => db.close(),
+    () => undefined,
+  );
+};
 
 const reqError = (req: { error: DOMException | null }): Error =>
   req.error ?? new Error('indexedDB request failed');
@@ -46,6 +56,13 @@ export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlob
       });
     }
     return dbPromise;
+  };
+
+  // Release the connection (clean shutdown). A later call lazily reopens, so a straggling write is never lost.
+  const close = (): void => {
+    const pending = dbPromise;
+    dbPromise = undefined;
+    closeQuietly(pending);
   };
 
   // Run a single-request read/write transaction and resolve with the request result — ON COMMIT.
@@ -92,6 +109,7 @@ export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlob
       ),
     put: (id, bytes) => run('readwrite', (store) => store.put(bytes, id)).then(() => undefined),
     remove: (id) => run('readwrite', (store) => store.delete(id)).then(() => undefined),
+    close,
   };
 }
 
@@ -111,6 +129,8 @@ export interface AsyncKeyedStore {
   keys(prefix: string): Promise<string[]>;
   /** Delete every key starting with `prefix`; a no-op if none match. */
   deletePrefix(prefix: string): Promise<void>;
+  /** Close the database connection (a later call lazily reopens it). Optional: wrappers/fakes may omit it. */
+  close?(): void;
 }
 
 /** Build an {@link AsyncKeyedStore} over IndexedDB (lazily opening the database on first use). */
@@ -132,6 +152,13 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
       });
     }
     return dbPromise;
+  };
+
+  // Release the connection (clean shutdown). A later call lazily reopens, so a straggling write is never lost.
+  const close = (): void => {
+    const pending = dbPromise;
+    dbPromise = undefined;
+    closeQuietly(pending);
   };
 
   // The inclusive prefix range: all keys k with prefix ≤ k ≤ prefix+'￿'. With fixed-width padded
@@ -197,5 +224,7 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
             request.onerror = () => reject(reqError(request));
           }),
       ),
+
+    close,
   };
 }

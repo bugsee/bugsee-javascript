@@ -1,3 +1,4 @@
+import { BOOLEAN_OPTION } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
 
@@ -11,7 +12,7 @@ describe('node profiling options', () => {
 
   it('maps friendly names to canonical keys with opt-in defaults (off; 1ms interval)', () => {
     expect(PROFILING_OPTION_DEFINITIONS).toEqual([
-      { friendly: 'profiling', key: ProfilingOption.Enabled, default: false },
+      { friendly: 'profiling', key: ProfilingOption.Enabled, default: false, ...BOOLEAN_OPTION },
       {
         friendly: 'profilingSamplingIntervalMicros',
         key: ProfilingOption.SamplingInterval,

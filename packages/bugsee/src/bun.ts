@@ -1,6 +1,6 @@
 import { launchCore } from '@bugsee/bun';
-import type { Bugsee } from '@bugsee/node';
-import { type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
+import { relaunchWith } from '@bugsee/core';
+import { type Bugsee, type BugseeServerLaunchOptions, createServerLaunch } from './server-launch';
 
 // The `bugsee` umbrella launch() for BUN — selected via the package `exports` "bun" condition, which must
 // be listed BEFORE "node" because Bun sets both.
@@ -14,3 +14,8 @@ export type BugseeBunLaunchOptions = BugseeServerLaunchOptions;
 
 export const launch: (appToken: string, options?: BugseeBunLaunchOptions) => Bugsee =
   createServerLaunch(launchCore);
+
+/** Stop the running client (if any) and launch again with the same token, re-wiring the on-by-default
+ *  extensions; `options` replace the previous launch options when given. */
+export const relaunch = (options?: BugseeBunLaunchOptions): Promise<Bugsee> =>
+  relaunchWith(launch, options, options?.carrier);

@@ -22,3 +22,16 @@ export interface NextjsEdgeOptions extends BugseeEdgeLaunchOptions {}
 export function registerEdge(appToken: string, options: NextjsEdgeOptions = {}): Bugsee {
   return launchEdge(appToken, options);
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getDefaultNetworkSanitizer,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/vercel-edge';

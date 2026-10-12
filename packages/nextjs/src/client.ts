@@ -79,3 +79,16 @@ export function createOnRouterTransitionStart(
 
 /** The ready-made hook bound to the per-tab carrier client. `export const onRouterTransitionStart = ...`. */
 export const onRouterTransitionStart: NextRouterTransitionStart = createOnRouterTransitionStart();
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getDefaultNetworkSanitizer,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/bugsee';

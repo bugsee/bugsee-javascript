@@ -14,6 +14,23 @@ export {
   serviceToken,
 } from '@bugsee/service';
 export type { AttributeValue } from '@bugsee/types';
+// Diagnostics helpers for packages that read a host option themselves (framework adapters) and must warn about
+// an invalid value without ever breaking launch (R5V-4/5/8); they live in @bugsee/util.
+export { describeValue, reportGuarded } from '@bugsee/util';
+export {
+  addReportAttachment,
+  decodeRequestFromMarker,
+  encodeRequestForMarker,
+  MAX_USER_ATTACHMENT_BYTES,
+  MAX_USER_ATTACHMENTS,
+} from './attachments';
+export {
+  type BlackoutChangeOptions,
+  type BlackoutGate,
+  type BlackoutState,
+  BlackoutToken,
+  createBlackoutState,
+} from './blackout';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 export { createBundleUploader } from './bundle-uploader';
@@ -38,25 +55,42 @@ export {
 export {
   BUGSEE_SDK_VERSION,
   type BugseeCarrier,
+  clearCarrierClient,
   contributeServiceManifest,
   getCarrier,
+  getCarrierBlackout,
   getCarrierClient,
+  getCarrierLifecycleSlot,
+  getCarrierPendingLaunch,
+  getCarrierStatus,
   getFilters,
   getInternal,
   getOrCreateInterceptor,
+  getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
+  sealCarrierLifecycleSlot,
+  setCarrierBlackout,
   setCarrierClient,
+  setCarrierLastLaunch,
+  setCarrierPendingLaunch,
+  setCarrierStatus,
+  setProcessLifecycleEventsListener,
 } from './carrier';
 export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
 export { type ChunkStorage, ChunkStorageToken, createInMemoryChunkStorage } from './chunk-storage';
 export {
+  asInternalClient,
   type Breadcrumb,
   type BreadcrumbInput,
   type BugseeClient,
   type CreateClientOptions,
   createClient,
+  type InternalBugseeClient,
+  type InternalLogExceptionOptions,
+  type InternalPreparedUpload,
+  type InternalUploadOptions,
   type LogExceptionOptions,
   type PreparedUpload,
   type ReportSnapshotSource,
@@ -158,6 +192,16 @@ export {
   type ReconcileOwnQueue,
   runLaunchRecovery,
 } from './launch-recovery';
+export { BugseeStatus } from './launch-status';
+export {
+  createLifecycleEmitter,
+  type LifecycleEmitter,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type LifecycleListenerSlot,
+} from './lifecycle-events';
+export { isLogLevelEnabled, parseLogLevelName } from './log-level';
 export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,
@@ -172,12 +216,27 @@ export {
   recoverNativeCrashes,
 } from './native-crash-recovery';
 export { guarded, neverThrow } from './never-throw';
+export {
+  createNotifyRelay,
+  type NotifyInput,
+  type NotifyRelay,
+  type NotifyRelayOptions,
+  type NotifySnapshot,
+  type RelayTimers,
+} from './notify-relay';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
+  BOOLEAN_OPTION,
+  BOOLEAN_OR_BAG_OPTION,
   COMMON_OPTION_DEFINITIONS,
   createOptionsContainer,
+  FAIL_CLOSED_BOOLEAN_OPTION,
+  FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  FAIL_ON_BOOLEAN_OPTION,
   type OptionDefinition,
   type ResolvedLaunchOptions,
+  resolveFailClosedBoolean,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
 } from './options';
 export {
@@ -191,6 +250,7 @@ export {
   type RateLimiter,
   type RateLimiterOptions,
 } from './rate-limiter';
+export { RELAUNCH_KEPT_OPTIONS, relaunchWith } from './relaunch';
 export {
   type ReportMarker,
   type ReportMarkerStore,
@@ -198,8 +258,11 @@ export {
 } from './report-marker-store';
 export {
   createReportingRequest,
+  hasDefaultSeverity,
+  parseSeverityName,
   type Report,
   type ReportAttachment,
+  type ReportAttachmentInput,
   type ReportingRequest,
   type ReportingRequestInit,
   type ReportingSource,
@@ -239,6 +302,8 @@ export type {
   HttpResponse,
   HttpTransport,
   IssueCreateResult,
+  NotifyItem,
+  NotifyResult,
   OutcomeCategory,
   PutBundleOptions,
   PutResult,

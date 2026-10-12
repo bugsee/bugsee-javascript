@@ -6,6 +6,21 @@
 // for native→JS control (incl. a synchronous secure-area `snapshot()` pull). Obscuring (D10 — secure-area pixel
 // masking rects) is built in so the advanced SDK fully replaces the legacy masking script. Redaction provenance
 // (D3) + the IIFE build + the e2e conformance harness land in later slices.
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports, EXCEPT
+// `getStatus` and `relaunch`, deliberately absent here. In a WebView the process carrier holds only a
+// resolver-only FACADE of the client (see launch.ts: native, not the page, is the owner of the session), which
+// has no status to read and no remembered launch to re-run, so a process-level `getStatus()` would throw and
+// `relaunch()` could never find a token. Use the launched client's own `getStatus()`.
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
+export {
+  addReportAttachment,
+  BugseeStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+} from '@bugsee/core';
 export {
   createHostBridge,
   DEFAULT_MAX_BUFFER,
@@ -21,7 +36,7 @@ export {
   type BridgeControlConfig,
   createBridgeControl,
 } from './host-bridge-control';
-export { type Bugsee, type BugseeWebViewLaunchOptions, launch } from './launch';
+export { type Bugsee, type BugseeWebViewLaunchOptions, launch, launchWithSeams } from './launch';
 export {
   createObscuringChannel,
   type ObscuringChannel,
