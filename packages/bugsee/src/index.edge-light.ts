@@ -9,6 +9,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
 export * from '@bugsee/vercel-edge';

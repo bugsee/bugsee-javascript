@@ -10,6 +10,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
 // The SpanProcessor type users receive via `onOtelSpanProcessor` to register on their TracerProvider.

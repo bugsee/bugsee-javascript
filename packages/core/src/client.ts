@@ -62,7 +62,11 @@ import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';
 import { createRateLimiter, type RateLimiterOptions } from './rate-limiter';
 import type { ReportMarkerStore } from './report-marker-store';
-import { createReportingRequest, type ReportingRequest } from './reporting';
+import {
+  createReportingRequest,
+  type ReportAttachmentInput,
+  type ReportingRequest,
+} from './reporting';
 import { type ContextProvider, ContextProviderToken, type RequestContext } from './request-context';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 import {
@@ -170,6 +174,8 @@ export interface UploadOptions {
    * shows and filters on.
    */
   trigger?: 'code_upload' | 'code_dialog';
+  /** Files to attach (3 of 3 MB each at most; over-limit ones are dropped and reported via `onError`). */
+  attachments?: ReportAttachmentInput[];
 }
 
 /**
@@ -522,6 +528,7 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
           clock,
+          onError,
           ...(captured !== undefined ? { requestContext: captured } : {}),
           ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
           ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
@@ -547,6 +554,9 @@ export function createClient(options: CreateClientOptions = {}): BugseeClient {
       ...(uploadOptions.severity !== undefined ? { severity: uploadOptions.severity } : {}),
       ...(uploadOptions.labels !== undefined ? { labels: uploadOptions.labels } : {}),
       ...(uploadOptions.email !== undefined ? { email: uploadOptions.email } : {}),
+      ...(uploadOptions.attachments !== undefined
+        ? { userAttachments: uploadOptions.attachments }
+        : {}),
     });
     const handled = applyReportBefore(request);
     if (handled === null) {

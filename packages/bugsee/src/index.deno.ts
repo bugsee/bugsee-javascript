@@ -9,6 +9,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
 export type { Bugsee } from '@bugsee/deno';

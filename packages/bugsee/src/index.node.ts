@@ -8,6 +8,7 @@ export type {
   Breadcrumb,
   BreadcrumbInput,
   LogExceptionOptions,
+  ReportAttachmentInput,
   UploadOptions,
 } from '@bugsee/core';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes), so a custom transport (a

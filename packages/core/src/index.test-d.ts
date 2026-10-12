@@ -9,6 +9,8 @@ import type {
   BreadcrumbInput,
   CreateClientOptions,
   LogExceptionOptions,
+  ReportAttachmentInput,
+  UploadOptions,
 } from './index';
 
 // createClient's parameter type — home of the onError injection seam.
@@ -25,10 +27,24 @@ const crumb: Breadcrumb = { message: 'clicked', timestamp: 1 };
 const mechanism: Mechanism = 'programmatic';
 const logOpts: LogExceptionOptions = { mechanism, severity: 'high', labels: ['p1'] };
 
+// Attachments: string or bytes data; mimeType/fileName optional; reachable from UploadOptions.
+const attachment: ReportAttachmentInput = { name: 'log', data: new Uint8Array(1) };
+const uploadOpts: UploadOptions = {
+  attachments: [attachment, { name: 't', data: 'text', mimeType: 'text/plain' }],
+};
+
 // --- Negatives ---
+// @ts-expect-error data is required.
+export const badAttachment: ReportAttachmentInput = { name: 'x' };
 // @ts-expect-error onError must accept the thrown value; a wrong-arity handler is rejected.
 export const badOptions: CreateClientOptions = { onError: (_a: string, _b: string) => {} };
 // @ts-expect-error the base Breadcrumb requires `timestamp` (BreadcrumbInput makes it optional).
 export const badCrumb: Breadcrumb = { message: 'x' };
 
-export type IndexAssertions = [typeof options, typeof crumbInput, typeof crumb, typeof logOpts];
+export type IndexAssertions = [
+  typeof options,
+  typeof crumbInput,
+  typeof crumb,
+  typeof logOpts,
+  typeof uploadOpts,
+];
