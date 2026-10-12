@@ -185,7 +185,7 @@ describe('wirePerformance', () => {
     } as TransactionWire;
     wired?.recordTransaction(wire);
     state.launched = false;
-    await fire(5000);
+    await fire();
     expect(send).not.toHaveBeenCalled();
     expect(cleared.length).toBeGreaterThan(0);
   });
