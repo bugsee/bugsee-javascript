@@ -42,19 +42,19 @@ describe('createChunkCaptureStore — backend protocol', () => {
       clock: clockAt(10_000),
       maxRecordingTimeMs: 2000,
     });
-    store.add(recBytes(5));
-    store.tick(11_000); // closes @11000
-    store.tick(15_000); // cutting 12000 → (end 11000) evicted → removePart
-    expect((await backend.listParts(0)).map((p) => p.number)).toEqual([1, 2]); // gone
+    store.add(recBytes(5)); // part 0
+    store.tick(11_000); // part 0 closes @11000
+    store.tick(15_000); // cutting 12000 → part 0 (end 11000) evicted → removePart
+    expect((await backend.listParts(0)).map((p) => p.number)).toEqual([1, 2]); // part 0 gone
   });
 
   it('removes a byte-cap-evicted part from the backend', async () => {
     const backend = createMemoryChunkBackend();
     const store = createChunkCaptureStore(backend, { clock: clockAt(0), maxDataSizeBytes: 10 });
-    store.add(recBytes(8));
-    store.tick(1000); // close
-    store.add(recBytes(8)); // → total 16 > 10 → evict (closed) → removePart
-    expect((await backend.listParts(0)).map((p) => p.number)).toEqual([1]); // gone
+    store.add(recBytes(8)); // part 0
+    store.tick(1000); // close part 0
+    store.add(recBytes(8)); // part 1 → total 16 > 10 → evict part 0 (closed) → removePart
+    expect((await backend.listParts(0)).map((p) => p.number)).toEqual([1]); // part 0 gone
   });
 
   it('removes the whole generation on clear, then opens a fresh part', async () => {

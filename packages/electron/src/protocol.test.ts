@@ -152,7 +152,7 @@ describe('encodeHello / isHello', () => {
   });
 });
 
-// Wave 0.2 — the renderer is UNTRUSTED input.
+// The renderer is UNTRUSTED input.
 //
 // `decodeStreamEntry` parses JSON that arrives over IPC from a renderer, and the preload deliberately
 // exposes `post()` to the page's main world. XSS in loaded content — or a compromised renderer-side npm

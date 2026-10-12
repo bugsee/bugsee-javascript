@@ -18,8 +18,8 @@ import type { ReportingRequest } from './reporting';
 import type { NotifyItem, NotifyResult, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
 
-// Core half: stop safety, ReportHandler.after on injected pipelines
-// refusing launch on a stopped platform client, blackout end while stopped,
+// Core half: stop() safety, ReportHandler.after on injected pipelines,
+// refusing launch() on a stopped platform client, blackout end while stopped,
 // the kill-state generation and the notify backlog handover across relaunch.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
@@ -80,7 +80,7 @@ const hung = (extra: Partial<CreateClientOptions> = {}) => {
   };
 };
 
-describe('a repeat stop is the SAME drain, never "drained" while one is in flight', () => {
+describe('a repeat stop() is the SAME drain, never "drained" while one is in flight', () => {
   it('returns a promise that settles only when the first stop() drain does', async () => {
     const { client, release } = hung();
     client.launch();
@@ -99,7 +99,7 @@ describe('a repeat stop is the SAME drain, never "drained" while one is in fligh
     expect(client.getStatus()).toBe(BugseeStatus.Stopped);
   });
 
-  it('after a TIMED-OUT stop(), a repeat stop waits for the real drain (bounded by its own timeout)', async () => {
+  it('after a TIMED-OUT stop(), a repeat stop() waits for the real drain (bounded by its own timeout)', async () => {
     const { client, release } = hung();
     client.launch();
     await expect(client.stop(5)).resolves.toBe(false);
@@ -282,7 +282,7 @@ describe('ReportHandler.after also runs when a triggerPipeline is injected', () 
   });
 });
 
-describe('`restartable: false` refuses launch on a stopped client', () => {
+describe('`restartable: false` refuses launch() on a stopped client', () => {
   it('reports through onError, starts nothing and keeps the status Stopped', async () => {
     const onError = vi.fn();
     const client = createClient({ scheduler: noScheduler, restartable: false, onError });
@@ -313,7 +313,7 @@ describe('`restartable: false` refuses launch on a stopped client', () => {
     expect(client.getStatus()).toBe(BugseeStatus.Stopped);
   });
 
-  it('still allows the FIRST launch() and ignores a repeat launch while launched without an error', () => {
+  it('still allows the FIRST launch() and ignores a repeat launch() while launched without an error', () => {
     const onError = vi.fn();
     const client = createClient({ scheduler: noScheduler, restartable: false, onError });
     client.launch();

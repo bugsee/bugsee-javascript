@@ -10,7 +10,7 @@ import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 // truthiness these used to be wrong in BOTH directions: `persistUserIdentifier: 'false'` persisted PII,
 // `captureInteractions: 0` kept capturing input. The rules, per option:
 //   captureInteractions, captureViewHierarchy (default ON, capture)  -> invalid = OFF (fail-closed) + onError
-// startInBlackout (default OFF, but ON is the safe side) -> invalid = ON (fail-on) + onError
+//   startInBlackout (default OFF, but ON is the safe side)             -> invalid = ON (fail-on) + onError
 //   persistUserIdentifier, report* UI flags (default OFF)              -> only boolean true turns on
 
 const probe: BrowserProbe = {
@@ -113,7 +113,7 @@ describe('browser boolean launch options: invalid values', () => {
     'true',
     1,
     {},
-  ])('startInBlackout=%j (invalid) starts the page DARK and reports (R3V-2, fail-on)', async (bad) => {
+  ])('startInBlackout=%j (invalid) starts the page DARK and reports (fail-on)', async (bad) => {
     const { client, onError } = await start({ startInBlackout: bad });
     expect(client.isBlackout()).toBe(true);
     expect(client.getLaunchOptions()[BugseeOption.CaptureStartInBlackout]).toBe(true);

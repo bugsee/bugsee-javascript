@@ -257,7 +257,7 @@ describe('re-entrancy: a peer plugin transforming mid-traversal', () => {
 // sitting right there and it was ignored. Silent: the build succeeded, the component simply never appeared
 // in any attributed issue.
 describe('named function/class EXPRESSIONS are components too', () => {
-  it('annotates `export default memo(function Card{…})` with the function’s own name', () => {
+  it('annotates `export default memo(function Card(){…})` with the function’s own name', () => {
     const out = transform('export default memo(function Card() { return <div>x</div>; });');
     expect(out).toContain('<div data-bugsee-component="Card"');
   });

@@ -119,7 +119,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `injectTraceMeta` (Nuxt) and `flushTimeoutMs` (Nuxt edge) are adapter behaviour options consumed by the
  *    adapter's own installer, never by the platform launch a relaunch re-runs;
  *  - `instanceIdentity` (node) is a per-instance identity: a pinned one must never be shared by two instances,
- * so a relaunch builds a fresh one;
+ *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list).
  */

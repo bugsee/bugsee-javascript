@@ -229,7 +229,7 @@ export type ControllingOption = keyof BugseeOptionTypes | (string & Record<never
  *   (stop→start) across launches without re-init.
  * - stop(): unsubscribe / release hooks (the subscription, not a detached aggregator, is the gate).
  *
- * NB: this follows Android (works on CaptureDataEntry objects), not the design doc sketch's
+ * NB: this follows Android (works on CaptureDataEntry objects), not an earlier design sketch's
  * per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
  * serialization lives on the entry itself (serialize/deserialize).
  */

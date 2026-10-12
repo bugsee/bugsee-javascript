@@ -207,7 +207,7 @@ export async function runPluginUpload(
   // One pipeline per output DIRECTORY. `writeBundle` fires once per OUTPUT, so a multi-output
   // config whose entries resolve to the same directory — `[{ dir: 'dist' }, { file: 'dist/legacy.js' }]`,
   // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps
-  // while the other was still reading them (steps 1-2). A concurrent caller JOINS the in-flight run and
+  // while the other was still reading them. A concurrent caller JOINS the in-flight run and
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
   const inFlight = runsByDir.get(outDir);
   if (inFlight !== undefined) {

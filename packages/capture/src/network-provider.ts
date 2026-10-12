@@ -37,7 +37,7 @@ export type NetworkSource = EventSubscribable<Record<NetworkStage, NetworkEvent>
 // The URL is handled FIRST and OUTSIDE the `custom` guard: ws/sse/webtransport events carry no headers or
 // body, so an early return on `custom === undefined` would ship `wss://…?token=…` verbatim. This provider
 // is the single redaction point for every transport — including node:http, which folds in through
-// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere
+// `installNetworkCapture({ additionalSources })` — so a URL not scrubbed here is not scrubbed anywhere.
 /** Optional free text: sanitized when present, passed through untouched (and identity-preserving) when not,
  *  so the unchanged-checks below still short-circuit on an event that carried none of these fields. */
 const sanitizeText = (value: string | undefined): string | undefined =>

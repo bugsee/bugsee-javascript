@@ -88,7 +88,7 @@ describe('createMemoryCaptureStore — tick rotation + cleanup', () => {
 });
 
 describe('createMemoryCaptureStore — snapshot isolation', () => {
-  it('freezes the snapshot(): capture after snapshot does not change it', async () => {
+  it('freezes the snapshot(): capture after snapshot() does not change it', async () => {
     const store = mk();
     store.add(rec('log', 10_000));
     const snap = store.snapshot();
@@ -135,7 +135,7 @@ describe('createMemoryCaptureStore — maxDataSize byte bound', () => {
 
   it('evicts whole oldest closed parts once the byte total exceeds the cap', async () => {
     // cap 30 bytes, 10-byte records: part0(r0) + part1(r1) + part2(r2,r3) → total 40 > 30, so the
-    // oldest closed part is dropped down to 30.
+    // oldest closed part (part0) is dropped down to 30.
     const store = mk({ maxDataSizeBytes: 30 });
     store.add(recBytes('log', 1, 10)); // part0
     store.tick(10_100);

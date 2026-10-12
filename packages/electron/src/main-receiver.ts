@@ -52,7 +52,7 @@ export function createElectronMainReceiver(
   options: ElectronMainReceiverOptions,
 ): ElectronMainReceiver {
   const channel = options.channel ?? BUGSEE_STREAM_CHANNEL;
-  // the whole listener is contained. It runs inside Electron's ipcMain dispatch, so a throw here — a
+  // The whole listener is contained. It runs inside Electron's ipcMain dispatch, so a throw here — a
   // malformed message, a store failure, a user callback that raises — escapes into the host app's IPC
   // machinery and can take the channel (and with it all renderer capture) down. The receiver adds report submission
   // inside this listener, which is precisely why the containment lands first.

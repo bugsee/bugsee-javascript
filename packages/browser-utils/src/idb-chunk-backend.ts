@@ -433,7 +433,7 @@ export function createIdbChunkBackend(
       return readMetas(gen);
     },
 
-    // the commit seam the page-hide hook awaits. Chaining on `queue` is the whole
+    // The commit seam the page-hide hook awaits. Chaining on `queue` is the whole
     // implementation: every write is already a link in it, so waiting for the tail waits for all of them.
     // It resolves rather than rejects — each link already routes its own failure to `onError`, and a page
     // that is going away can do nothing with a rejection anyway.

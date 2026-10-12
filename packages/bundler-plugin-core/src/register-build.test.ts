@@ -14,7 +14,7 @@ import type { RunBugseeCliOptions } from './run-cli';
 const ID_A = '0f3c2a1e-7b1d-5e2a-9c4b-1a2b3c4d5e6f';
 
 describe('resolveRegistration', () => {
-  // the bundler's OWN production signal is the analog of AGP's `isDebuggable` — not
+  // The bundler's OWN production signal is the analog of AGP's `isDebuggable` — not
   // minification, and not a guess from the output directory's name.
   it('registers a production build by default', () => {
     expect(resolveRegistration('release', { isProduction: true }, {})).toEqual({ register: true });
@@ -159,7 +159,7 @@ describe('registerJsBuild', () => {
     expect(calls).toHaveLength(1);
     const [call] = calls as [Call];
     expect(call.args.slice(0, 2)).toEqual(['upload', 'build']);
-    // register-only. No `--artifact`, so the CLI sends `request_artifact_upload: false` itself;
+    // Register-only. No `--artifact`, so the CLI sends `request_artifact_upload: false` itself;
     // the flags that only describe artefact bytes would be refused without one.
     for (const flag of ['--artifact', '--mapping', '--chunked', '--out']) {
       expect(call.args).not.toContain(flag);
@@ -286,7 +286,7 @@ describe('registerJsBuild', () => {
     await expect(registerJsBuild(base({ appToken: '' }))).rejects.toThrow(/appToken/);
   });
 
-  describe('a failure ( — never fails the build by default)', () => {
+  describe('a failure (never fails the build by default)', () => {
     const failingRun = (): RegisterJsBuildOptions['run'] =>
       vi.fn(async () => {
         throw new Error('bugsee-cli exited 30: server said no');

@@ -93,8 +93,8 @@ function fileNameForType(type: FileType): string {
 // (`specs/sdk/reporting/bundle/{input,video-aux}.md`). Those two need the version for the same reason:
 // a consumer keys its decoding on it — `button`/`buttonMask`/`metaState`/scroll for `input`, and for
 // `video.aux` whether the frame is in display pixels (version 1) or in the coordinates' own units
-// (version 2), which are the same numbers meaning different things. Binary streams:
-// replay/screenshot/attachment) are platform-tier provider concerns; when those land the assembler
+// (version 2), which are the same numbers meaning different things. Binary streams
+// (replay/screenshot/attachment) are platform-tier provider concerns; when those land the assembler
 // branches further (passing a Uint8Array `data` through).
 function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   if (type === 'performance') {
@@ -146,7 +146,7 @@ export function assembleBundle(
     created_on: new Date(now).toISOString(),
     environment: context.environment,
     ...(requestContext !== undefined ? { context_id: requestContext.contextId } : {}),
-    // The active trace → the cross-project join key on the report envelope (T8).
+    // The active trace → the cross-project join key on the report envelope.
     ...(requestContext?.trace !== undefined
       ? { trace_id: requestContext.trace.traceId, span_id: requestContext.trace.spanId }
       : {}),

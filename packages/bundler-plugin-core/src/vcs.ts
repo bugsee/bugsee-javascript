@@ -8,7 +8,7 @@
 //    output shape is contractually byte-compatible with the Android Gradle plugin's `VcsMetadataResolver`
 //    and the appserver's `sanitizeVcs`, and the iOS agent + the fastlane plugin were both deleted in favour
 //    of shelling out to it. A fourth implementation, in JavaScript, is exactly the divergence that
-// consolidation removed. So we SPAWN it (plugins collect context; the CLI is the
+//    consolidation removed. So we SPAWN it (plugins collect context; the CLI is the
 //    engine).
 // 2. It does not re-validate or re-shape the resolver's output. The fields are passed through opaquely, so
 //    a provider added on the backend does not need a matching release here to survive the trip. The one

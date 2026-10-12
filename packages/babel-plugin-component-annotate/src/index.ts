@@ -1,6 +1,6 @@
 import type { types as BabelTypes, NodePath, PluginObj, PluginPass } from '@babel/core';
 
-// @bugsee/babel-plugin-component-annotate (frontend-adapters depth pass). Annotates each HOST (lowercase-
+// @bugsee/babel-plugin-component-annotate. Annotates each HOST (lowercase-
 // tag) JSX element with `data-bugsee-component="<ComponentName>"` — the name of the enclosing framework
 // component — so the @bugsee/browser runtime can attribute a click/error to a COMPONENT name that
 // survives minification (the literal name is emitted at build time). Covers the JSX ecosystems (React /

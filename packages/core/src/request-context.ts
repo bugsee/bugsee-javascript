@@ -19,7 +19,7 @@ export interface RequestContext {
    * TENANT, so a rolling window stays per-tenant: on Cloudflare it is the Durable Object id.
    *
    * Routing-only — it is passed out-of-band to the store and never written onto the wire payload. Absent on
-   * single-tenant runtimes, where partitioning is a no-op and behaviour is unchanged
+   * single-tenant runtimes, where partitioning is a no-op and behaviour is unchanged.
    */
   readonly owner?: string;
   /** End-user identity for reports produced in this context (wire `email`); overrides the global user. */

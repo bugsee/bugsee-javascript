@@ -1,4 +1,4 @@
-// the fake-Electron e2e. Boots the REAL @bugsee/node main (via launchMain, no launch seam) and TWO
+// The fake-Electron e2e. Boots the REAL @bugsee/node main (via launchMain, no launch seam) and TWO
 // renderers over a fake Electron IPC bus (fake ipcMain / per-renderer ipcRenderer+webContents / preload
 // contextBridge / crashReporter), drives capture from both renderers + the main, fires a report, and asserts:
 //   • both renderers learn the SAME owner session via the handshake,

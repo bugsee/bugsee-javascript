@@ -214,7 +214,7 @@ export interface UploadResult {
  * sweep, and on browser/worker not bounded at all. That second half is now closed separately, by the age
  * bound `recoverSiblingBundleQueue` applies from `DEFAULT_DURABLE_RETENTION`: a verdict settles a bundle,
  * and a bound gives up on one, and the two must stay different things. Widening what counts as a verdict
- * to make up for a missing bound is what produced a new loss path in three consecutive review passes.
+ * to make up for a missing bound is what produced a new loss path in three consecutive rounds of review.
  *
  * Android parity: `CommunicationErrorClassifier.java:14-33` + `ReportUploadExecutor.java:258-268`.
  */

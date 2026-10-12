@@ -1,5 +1,4 @@
-// Stamp debug-ids INTO the build, before it is written — the real fix for Subresource Integrity
-// (option 1).
+// Stamp debug-ids INTO the build, before it is written — the real fix for Subresource Integrity.
 //
 // The post-emit path runs `bugsee-cli sourcemaps inject` over the output directory, which appends bytes
 // to every bundle AFTER a plugin such as `webpack-subresource-integrity` has hashed it. The hash in the

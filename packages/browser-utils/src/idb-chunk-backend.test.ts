@@ -90,7 +90,7 @@ describe('createIdbChunkBackend — backend contract', () => {
     b.openPart(ref(5, 1), 2000);
     b.appendEntry(ref(5, 1), rec('c'));
     const snap = b.snapshot([
-      { ref: ref(5, 0), count: 1 }, // only the first record of
+      { ref: ref(5, 0), count: 1 }, // only the first record of part 0
       { ref: ref(5, 1), count: 1 },
     ]);
     b.appendEntry(ref(5, 0), rec('after')); // captured after the snapshot
@@ -319,10 +319,10 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
 
   it('evicts parts outside the recording window on tick', async () => {
     const store = mk(keyed(), { maxRecordingTimeMs: 2000 });
-    store.add(rec('old', 'log', 10_000));
-    store.tick(11_000); // closes @11000
-    store.add(rec('new', 'log', 11_000));
-    store.tick(15_000); // cutting 12000 → evicted
+    store.add(rec('old', 'log', 10_000)); // part 0
+    store.tick(11_000); // part 0 closes @11000
+    store.add(rec('new', 'log', 11_000)); // part 1
+    store.tick(15_000); // cutting 12000 → part 0 evicted
     expect((await store.snapshot().drainAll()).get('log')?.map((r) => r.serialized)).toEqual([
       'new',
     ]);
@@ -341,7 +341,7 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
     expect(got.map((r) => r.timestamp)).toEqual([10_001, 10_002, 10_003]);
   });
 
-  it('freezes the snapshot(): capture after snapshot does not change it', async () => {
+  it('freezes the snapshot(): capture after snapshot() does not change it', async () => {
     const store = mk(keyed());
     store.add(rec('first', 'log', 10_000));
     const snap = store.snapshot();
@@ -370,7 +370,7 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
       generation: 42,
     });
     store1.add(rec('before-reload', 'log', 10_000));
-    store1.tick(11_000); // close so its data + meta are durable
+    store1.tick(11_000); // close part 0 so its data + meta are durable
     await store1.snapshot().drainAll(); // drain the write queue
 
     // A fresh backend over the SAME database + generation, preserving prior chunks, reads them back.

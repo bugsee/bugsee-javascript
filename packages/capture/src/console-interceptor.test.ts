@@ -198,7 +198,7 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
   });
 });
 
-describe('createConsoleInterceptor— capture (fires the "log" stage)', () => {
+describe('createConsoleInterceptor — capture (fires the "log" stage)', () => {
   it('fires a LogEvent (mapped level, source "console", formatted message, clock timestamp)', () => {
     fake();
     const ic = createConsoleInterceptor({ now: () => 123 });
@@ -496,7 +496,7 @@ const parseFirefoxSafariStack = (stack: string): StackFrame[] => {
   return frames;
 };
 
-// Finding 1: on Firefox/Safari, `Error.captureStackTrace` exists (the interceptor tries it) but
+// On Firefox/Safari, `Error.captureStackTrace` exists (the interceptor tries it) but
 // `error.stack` comes back in the `fn@loc` dialect, not V8's `at fn (loc)` — so the hardcoded
 // `parseV8Stack` silently parses zero frames and the trace is lost. The fix is an injectable
 // `stackParser` option (defaulting to today's `parseV8Stack`, so behavior is unchanged when unset).

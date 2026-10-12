@@ -173,7 +173,7 @@ describe('@bugsee/bun launch', () => {
     }
   });
 
-  it('forwards traceResponse → a wrapped Bun.serve response carries the return headers (X4)', async () => {
+  it('forwards traceResponse → a wrapped Bun.serve response carries the return headers', async () => {
     type Served = { fetch?: (req: unknown) => unknown };
     type G = { Bun?: { serve: (o: Served) => unknown } };
     const served: Served[] = [];

@@ -322,7 +322,7 @@ describe('normalizeReportAttachments + marker round trip', () => {
     expect(request.report.userAttachments?.[0]?.data).toBeInstanceOf(Uint8Array);
   });
 
-  it('carries an SDK-internal binary attachment (a native-crash.dmp) across the JSON hop, with no user attachments', () => {
+  it('carries an SDK-internal binary attachment (a native-crash .dmp) across the JSON hop, with no user attachments', () => {
     const dmp = new Uint8Array([77, 68, 77, 80, 0, 255]);
     const request = createReportingRequest({
       source: { type: 'crash' },

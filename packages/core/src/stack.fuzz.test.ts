@@ -105,7 +105,7 @@ describe('parseV8Stack / formatStack (fuzz)', () => {
     );
   });
 
-  // The scrubbing this module exists for (step 5). A `file://` prefix that survives is a frame the
+  // The scrubbing this module exists for (frame-path scrubbing). A `file://` prefix that survives is a frame the
   // backend cannot match to a source map, and `webpack://` noise is what makes a stack unreadable.
   it('always strips file:// and normalizes webpack://', () => {
     fc.assert(

@@ -30,10 +30,10 @@ import { createWebLockLiveness, type LockManagerLike } from './web-lock-liveness
 // it hold ONE Web Lock for its lifetime (liveness), and — after launch — recovers ONLY DEAD siblings'
 // leftover data (under each sibling's lock so concurrent peers don't double-recover). It covers, per
 // instance, up to three durable stores, all keyed by the SAME instanceId + gated by the SAME lock:
-//   • the durable BUNDLE queue        (db `bugsee-<hash>`,         slice 4)
-//   • the capture-CHUNK store         (db `bugsee-capture-<hash>`, slice 5 — opt-in via `captureRecovery`)
-//   • the report-MARKER store         (db `bugsee-markers-<hash>`, slice 5)
-// All recovery is DEAD-SIBLING recovery (BD9): a fresh instanceId per launch ⇒ self's namespaces are empty,
+//   • the durable BUNDLE queue        (db `bugsee-<hash>`)
+//   • the capture-CHUNK store         (db `bugsee-capture-<hash>` — opt-in via `captureRecovery`)
+//   • the report-MARKER store         (db `bugsee-markers-<hash>`)
+// All recovery is DEAD-SIBLING recovery: a fresh instanceId per launch ⇒ self's namespaces are empty,
 // so the prior crashed session is just a dead sibling. A LIVE sibling holds its lock ⇒ it is skipped ⇒ its
 // data is never read, recovered, or swept (this is what closes the multi-tab capture-sweep hazard).
 
@@ -180,7 +180,7 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
       if (!coexisting) {
         return;
       }
-      // Discover dead-sibling instanceIds from the union of every shared store we have (BD10): the bundle +
+      // Discover dead-sibling instanceIds from the union of every shared store we have: the bundle +
       // marker blobs (cheap full loads) and the capture store (a keys-only scan — no values). A read failure
       // on any source is isolated to onError and just contributes no ids.
       const ids = new Set<string>();
@@ -215,7 +215,7 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
       // directly (no re-persist into our queue) + run its capture/marker recovery. Per-sibling failures are
       // isolated so one bad sibling doesn't abort the others.
       //
-      // (recovery double-upload): those two legs can both hold the SAME incident. `client.ts`'s
+      // Recovery double-upload: those two legs can both hold the SAME incident. `client.ts`'s
       // submitReport writes an incident's report marker before assembly and clears it only once the upload
       // SETTLES, while the durable queue stages the assembled bundle before that upload — a tab/worker
       // killed inside that window leaves both. Core's `createMarkerAwareBundleReplay` reconciles them PER

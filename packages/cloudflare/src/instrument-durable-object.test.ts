@@ -238,7 +238,7 @@ describe('instrumentDurableObject', () => {
   });
 });
 
-// each Durable Object instance stamps its OWN id as the tenant owner.
+// Each Durable Object instance stamps its OWN id as the tenant owner.
 //
 // Different DO instances share one isolate, one client and one capture ring. The owner is what lets the
 // partitioned store keep tenant C's incident bundle free of tenant A's and B's secrets — the leak proven

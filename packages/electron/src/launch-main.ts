@@ -13,7 +13,7 @@ import {
   getCrashDumpsDirectory,
   installNativeCrashReporter,
 } from './crash-reporter';
-/** The subset of Electron's `app` needs. */
+/** The subset of Electron's `app` that the SDK needs. */
 export interface ElectronAppLike {
   on(
     event: 'render-process-gone',
@@ -134,9 +134,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const store = client.getService(CaptureStoreToken);
 
   // The main-side submit path for renderer incidents. Registering this is what makes the feature
-  // LIVE: stopped renderers uploading, so without a join here every renderer incident is silently
+  // LIVE: renderers no longer upload locally, so without a join here every renderer incident is silently
   // destroyed while the app is told it was delivered — strictly worse than the defect
-  // (SEV1-1).
+  // it fixes.
   const incidents = new RendererIncidentProvider({
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
@@ -150,7 +150,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
   receiver.start();
 
-  // a renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
+  // A renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
   // minidump so the LIVE incident carries it; falls back to capture + reason when none arrives.
   if (app !== undefined) {
     const marker =

@@ -98,7 +98,7 @@ describe('createDenoServeInterceptor', () => {
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
-  it('forwards traceResponse → the wrapped handler decorates its Response with the return headers (X4)', async () => {
+  it('forwards traceResponse → the wrapped handler decorates its Response with the return headers', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, calls } = fakeDenoHost();
     const ic = createDenoServeInterceptor({
@@ -126,7 +126,7 @@ describe('createDenoServeInterceptor', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — )', async () => {
+  it('writes NO return headers by default (traceResponse off)', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, calls } = fakeDenoHost();
     const ic = createDenoServeInterceptor({ target: host, getClient: () => client });

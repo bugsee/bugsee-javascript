@@ -91,7 +91,7 @@ describe('templatePathSegment', () => {
   });
 });
 
-// R2P-8. Short ids and PII the first rule set missed, and the over-templating it did.
+// Short ids and PII the first rule set missed, and the over-templating it did.
 describe('templatePathSegment: short ids, PII-shaped values and dates', () => {
   it.each([
     // nanoid(21) and a Firebase push id (20): mixed case + digits
@@ -116,7 +116,7 @@ describe('templatePathSegment: short ids, PII-shaped values and dates', () => {
     ['2024-01-15', '{date}'],
     ['2024-01-15T10:20:30Z', '{date}'],
     ['2024-01-15T10:20:30.123Z', '{date}'],
-    // upper-case hex is hex too (mutation survivor m13)
+    // upper-case hex is hex too
     ['0123456789ABCDEF', '{hex}'],
     ['ABCDEFABCDEFABCDEFABCDEF', '{hex}'],
     ['AbCdEfAbCdEfAbCdEf', '{hex}'],
@@ -237,7 +237,7 @@ describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded tim
   });
 });
 
-// Leaks the rules missed: 16-23 character tokens, card numbers with separators, and an address on a
+// Leaks the earlier rules missed: 16-23 character tokens, card numbers with separators, and an address on a
 // dot-less host. Each positive is paired with the ordinary segment it must NOT swallow.
 describe('templatePathSegment: short tokens, card numbers and dot-less e-mail hosts', () => {
   it.each([
@@ -327,7 +327,7 @@ describe('rules stay linear: 1,000,000-character adversarial inputs', () => {
   });
 });
 
-// the 16-23 character `{token}` rule merged ordinary camelCase / versioned route names (every endpoint
+// The 16-23 character `{token}` rule merged ordinary camelCase / versioned route names (every endpoint
 // became one issue). It now needs RANDOMNESS: a segment made of words is an identifier, not a secret.
 describe('templatePathSegment: identifiers that read as words are NOT tokens', () => {
   it.each([

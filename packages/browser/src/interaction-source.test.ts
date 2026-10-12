@@ -260,7 +260,7 @@ describe('createBrowserInteractionSource', () => {
     expect(seen.map((d) => d.interactionId)).toEqual([1, 3]);
   });
 
-  describe('blackout is judged by EVENT time, not delivery time (V6)', () => {
+  describe('blackout is judged by EVENT time, not delivery time', () => {
     const click = (id: number, startTime: number, duration = 90) => ({
       name: 'click',
       duration,

@@ -1,8 +1,7 @@
-// Shared bundle-assertion library for the e2e harnesses (Wave V0 of).
+// Shared bundle-assertion library for the e2e harnesses.
 //
-// WHY THIS EXISTS. The adversarial review found ~90 s that survived ~100% unit coverage, and
-// root-caused a large share of them to harnesses that assert a bundle ARRIVED rather than what is IN it
-// (/#9). Each helper here is aimed at a defect class the review
+// WHY THIS EXISTS. The adversarial review found ~90 defects that survived ~100% unit coverage, and
+// root-caused a large share of them to harnesses that assert a bundle ARRIVED rather than what is IN it. Each helper here is aimed at a defect class the review
 // actually confirmed:
 //
 //   assertBundleIntegrity → core Pass D: a recovered crash bundle declared `profile.json` in its manifest

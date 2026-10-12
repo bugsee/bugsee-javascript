@@ -22,7 +22,7 @@ describe('templatePathSegment: lower-case random tokens are never "words"', () =
     // English words but no separator and no case change: not provably words (privacy over grouping)
     'getuserdetailsandsettings2',
     'updatenotificationsettings3',
-    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" in)
+    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" before the word check was tightened)
     'CLH3AM4PU0000QFW9RG5D1ZK',
     'GETUSERDETAILSANDSETTINGS2',
   ])('templates the single-case string %j', (segment) => {
@@ -95,7 +95,7 @@ describe('templatePathSegment: lower-case random tokens are never "words"', () =
   });
 
   // The acceptance numbers. Deterministic: the same seed produces the same tokens, so a figure is a fact, not luck.
-  // Ceilings are the (a98dabb, no word check at all) keep rates measured on THIS corpus (same seed,
+  // Ceilings are the keep rates (commit a98dabb, no word check at all) measured on THIS corpus (same seed,
   // 20,000 tokens a bucket), rounded up to 0.05. The word check may not raise a bucket above them (two base62
   // buckets sit one token in 20,000 above the measured a98dabb figure, inside the rounding). Where the review named
   // a figure it is used as is: base36-lower 24-31 <= 0.1%, cuid2 24-31 <= 0.2%, base32-lower 24-31 <= 1%.
@@ -149,7 +149,7 @@ describe('templatePathSegment: lower-case random tokens are never "words"', () =
   });
 });
 
-// R5V-2 / R5V-3.
+// E-mail detection on any `@`.
 describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is not an address', () => {
   it.each([
     'react@latest',
@@ -200,7 +200,7 @@ describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is
   });
 });
 
-// R5V-10: the cheap pre-round-4 misses.
+// The cheap misses of the earlier rule set.
 describe('templatePathSegment: addresses, phones and hashed assets', () => {
   it.each([
     ['10.0.0.1:8080', '{ip}'],

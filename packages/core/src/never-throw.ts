@@ -1,4 +1,4 @@
-// the host-boundary guard.
+// The host-boundary guard.
 //
 // The SDK's binding rule is that it never alters host application behaviour, and the review found the same
 // shape of violation in nearly every tier: SDK code runs inside host code with no guard, so an SDK-internal
@@ -28,7 +28,7 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
  *  - a SYNCHRONOUS throw is caught, routed to `onError`, and `undefined` is returned;
  *  - a returned PROMISE gets a rejection handler attached, because the idiomatic fire-and-forget
  *    `void somethingAsync()` turns a rejection into an unhandled rejection in the HOST process one tick
- * later — which on Node is now a crash again, since the default disposition was restored.
+ *    later — which on Node is now a crash again, since the default disposition was restored.
  *
  * The original promise is still returned, so a caller that awaits it still observes the rejection; the
  * attached handler only guarantees it is never *unhandled*. A caller that both awaits and supplies `onError`

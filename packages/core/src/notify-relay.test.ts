@@ -929,7 +929,7 @@ describe('suspend / resume: a stopped SDK sends nothing', () => {
 });
 
 describe('queue caps: total bytes and age', () => {
-  it('drops the oldest once the queued bytes MB', async () => {
+  it('drops the oldest once the queued bytes pass 1 MB', async () => {
     const { relay, onError } = make({ flushDelayMs: 100_000 });
     const big = 'x'.repeat(200 * 1024);
     for (let i = 0; i < 7; i++) {
