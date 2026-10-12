@@ -164,9 +164,7 @@ describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError
 describe('instrumentIncomingRequests: only boolean false opts out', () => {
   const installable = () => ({ install: vi.fn(), uninstall: vi.fn() });
 
-  it.each(
-    INVALID,
-  )('instrumentIncomingRequests=%j is OFF (fail closed) and reports', (bad) => {
+  it.each(INVALID)('instrumentIncomingRequests=%j is OFF (fail closed) and reports', (bad) => {
     const server = installable();
     const { onError } = start({ instrumentIncomingRequests: bad, serverInterceptor: server });
     expect(server.install).not.toHaveBeenCalled();
