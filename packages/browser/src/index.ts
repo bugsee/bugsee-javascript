@@ -5,7 +5,9 @@
 // Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.
 export type { ReportAttachmentInput } from '@bugsee/core';
 // Lifecycle events: the event-name constants + listener type for `setLifecycleEventsListener`.
+// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
 export {
+  addReportAttachment,
   BugseeStatus,
   LifecycleEvents,
   type LifecycleEventsListener,

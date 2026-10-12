@@ -1,6 +1,7 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyExceptionOptions,
   buildCrashJson,
   type CrashJson,
   composeFrameEnrichers,
@@ -500,5 +501,29 @@ describe('composeFrameEnrichers', () => {
       },
     ])?.(err, []);
     expect(seen).toEqual([err, err]);
+  });
+});
+
+describe('applyExceptionOptions skipFrames clamp (P5)', () => {
+  const crashWith = (n: number): CrashJson => {
+    const err = errorWith(
+      'Error',
+      'x',
+      `Error: x\n${Array.from({ length: n }, (_, i) => `    at f${i} (a.js:${i + 1}:1)`).join('\n')}`,
+    );
+    return buildCrashJson(err, { parseStack: parseV8Stack });
+  };
+
+  it('never hides the last frame and tolerates a missing sink', () => {
+    const crash = applyExceptionOptions(crashWith(3), { skipFrames: 10 });
+    expect(crash.exception.frames.map((f) => f.hidden)).toEqual([true, true, undefined]);
+  });
+
+  it('reports the clamp once through the sink', () => {
+    const sink = vi.fn();
+    applyExceptionOptions(crashWith(3), { skipFrames: 3 }, sink);
+    expect(sink).toHaveBeenCalledTimes(1);
+    applyExceptionOptions(crashWith(3), { skipFrames: 2 }, sink);
+    expect(sink).toHaveBeenCalledTimes(1);
   });
 });

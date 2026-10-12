@@ -69,7 +69,8 @@ export interface NotifyItem {
   fields?: Record<string, string>;
   urgent?: true;
   delivery?: 'immediate' | 'deferred';
-  user?: { id: string };
+  /** Android sends `{ email: <user identifier> }`; the integrations read only `name` / `email`. */
+  user?: { email: string };
   environment?: EnvironmentEnvelope;
   attributes?: Record<string, unknown>;
 }
@@ -83,7 +84,10 @@ export interface NotifyItem {
 export type NotifyResult =
   | { outcome: 'sent' }
   | { outcome: 'rejected' }
-  | { outcome: 'retry'; retryIds?: readonly string[] };
+  /** The collector disabled this app's SDK (`403 KillSdk`): stop sending, drop the queue. */
+  | { outcome: 'kill' }
+  /** `retryAfterMs`: the collector's own wait (a 429 `retryAfter`), used instead of the backoff. */
+  | { outcome: 'retry'; retryIds?: readonly string[]; retryAfterMs?: number };
 
 /** CONTROL PLANE — authenticated; orchestrates session + issue lifecycle (§7.5). */
 export interface BugseeApi {

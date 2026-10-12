@@ -2,6 +2,7 @@ import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
 import { BugseeError } from './errors';
+import { BugseeStatus } from './launch-status';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import type { NotifyItem, NotifyResult, UploadPipeline } from './transport';
@@ -152,6 +153,40 @@ describe('notify — gating', () => {
     expect(sender).not.toHaveBeenCalled();
   });
 
+  it('a kill-state client does not flush queued notifications either (P4)', async () => {
+    const { client, sender } = make({
+      options: { [FLUSH_DELAY]: 5000 },
+      uploadPipeline: {
+        enqueue: async () => ({
+          ok: false,
+          error: new BugseeError('off', 0, { fatal: true, serverCode: 99_099 }),
+        }),
+        flush: async () => true,
+        drop: () => {},
+      },
+    });
+    client.launch();
+    client.notify('queued before the kill');
+    await client.logException(new Error('boom'));
+    await client.flush();
+    expect(sender).not.toHaveBeenCalled();
+  });
+
+  it('the relay answering 403 KillSdk switches the SDK off like a report verdict (P9)', async () => {
+    const onError = vi.fn();
+    const send = vi.fn<Sender>(async () => ({ outcome: 'kill' }));
+    const { client } = make({ sender: send, onError });
+    client.launch();
+    client.notify('a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus()).toBe(BugseeStatus.Stopped);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as BugseeError).fatal).toBe(true);
+    client.notify('b');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('never throws, even if the relay does', async () => {
     const { client, onError } = make();
     client.launch();
@@ -179,7 +214,7 @@ describe('notify — snapshot and the flush delay option', () => {
     client.clearAllAttributes();
     await vi.advanceTimersByTimeAsync(0);
     expect(batches[0]?.[0]).toMatchObject({
-      user: { id: 'user-7' },
+      user: { email: 'user-7' }, // Android parity: integrations read name/email only
       attributes: { plan: 'pro' },
       environment: env,
     });
@@ -204,7 +239,7 @@ describe('notify — snapshot and the flush delay option', () => {
     client.setUserIdentifier('u');
     client.notify('x');
     await vi.advanceTimersByTimeAsync(0);
-    expect(batches[0]?.[0]).toMatchObject({ user: { id: 'u' } });
+    expect(batches[0]?.[0]).toMatchObject({ user: { email: 'u' } });
     expect(batches[0]?.[0]).not.toHaveProperty('environment');
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'no env' }));
   });
@@ -311,6 +346,29 @@ describe('notify — flush() and stop()', () => {
     const calls = send.mock.calls.length;
     await vi.advanceTimersByTimeAsync(120_000);
     expect(send).toHaveBeenCalledTimes(calls);
+  });
+
+  it('flush() after stop() sends nothing; a re-launch sends what was kept (P4)', async () => {
+    let online = false;
+    const send = vi.fn<Sender>(async (items) => {
+      if (!online) {
+        return { outcome: 'retry' };
+      }
+      batches.push(items.map((item) => ({ ...item })));
+      return { outcome: 'sent' };
+    });
+    const { client } = make({ sender: send });
+    client.launch();
+    client.notify('kept');
+    await client.stop();
+    const calls = send.mock.calls.length;
+    online = true;
+    await expect(client.flush()).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(send).toHaveBeenCalledTimes(calls);
+    client.launch();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batches[0]?.[0]).toMatchObject({ title: 'kept' });
   });
 
   it('stop(timeout) does not wait forever for a sender that never answers', async () => {

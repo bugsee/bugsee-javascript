@@ -11,8 +11,9 @@ export interface ReportAttachment {
 
 /**
  * A file the application attaches to a report (Android `Report.addAttachment`, iOS `BugseeAttachment`).
- * At most 3 of 3 MB each travel with a report; the
- * rest are dropped and reported through `onError`, never thrown.
+ * At most 3 of 3 MB each (iOS's limits) travel with a report; an empty or malformed one, and the rest, are
+ * dropped and reported through `onError`, never thrown. The limits apply when the report is SUBMITTED, so what
+ * the crash-recovery marker persists is already bounded.
  */
 export interface ReportAttachmentInput {
   /** Human-readable label shown for the attachment. */
@@ -70,7 +71,7 @@ export interface Report {
   attachments?: readonly ReportAttachment[];
   /**
    * Files the APPLICATION attaches (see {@link ReportAttachmentInput}); writable from `ReportHandler.before`
-   * or with `addReportAttachment`. Limits and naming are applied at assembly, so an over-limit entry
+   * or with `addReportAttachment`. Limits and naming are applied at submit (and again, idempotently, at assembly), so an over-limit entry
    * is dropped there rather than throwing here.
    */
   userAttachments?: ReportAttachmentInput[];

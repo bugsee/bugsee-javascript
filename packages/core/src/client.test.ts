@@ -2,7 +2,7 @@ import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { createServiceContainer, defineService, serviceToken } from '@bugsee/service';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
-import { addReportAttachment } from './attachments';
+import { addReportAttachment, decodeRequestFromMarker } from './attachments';
 import { BlackoutToken } from './blackout';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
@@ -663,12 +663,49 @@ describe('createClient — crash.json (SC3)', () => {
       expect(f.map((x) => x.hidden)).toEqual([true, true, undefined]);
     });
 
-    it('skipFrames beyond the frame count hides all of them; 0 hides none', async () => {
+    it('clamps skipFrames to frames.length - 1 so a location always remains; 0 hides none (P5)', async () => {
       const all = await run({ skipFrames: 99 });
-      expect(all.crash.exception.frames.every((x: { hidden?: boolean }) => x.hidden)).toBe(true);
+      const hidden = all.crash.exception.frames.map((x: { hidden?: boolean }) => x.hidden);
+      expect(hidden).toEqual([true, true, undefined]); // 3 frames: the last one stays visible
+      expect(all.onError).toHaveBeenCalledTimes(1);
+      expect(String(all.onError.mock.calls[0]?.[0])).toContain('skipFrames');
+      const exact = await run({ skipFrames: 3 }); // == frames.length also clamps
+      expect(exact.crash.exception.frames.map((x: { hidden?: boolean }) => x.hidden)).toEqual([
+        true,
+        true,
+        undefined,
+      ]);
+      expect(exact.onError).toHaveBeenCalledTimes(1);
+      const inRange = await run({ skipFrames: 2 }); // frames.length - 1: no clamp, no warning
+      expect(inRange.onError).not.toHaveBeenCalled();
       const none = await run({ skipFrames: 0 });
       expect(none.crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
       expect(none.onError).not.toHaveBeenCalled();
+    });
+
+    it('caps domain at 150 characters and says so once (P9)', async () => {
+      const { crash, onError } = await run({ domain: 'd'.repeat(151) });
+      expect(crash.exception.domain).toBe('d'.repeat(150));
+      expect(onError).toHaveBeenCalledTimes(1);
+      const ok = await run({ domain: 'd'.repeat(150) });
+      expect(ok.crash.exception.domain).toBe('d'.repeat(150));
+      expect(ok.onError).not.toHaveBeenCalled();
+    });
+
+    it('does not cut a surrogate pair in half when capping domain', async () => {
+      const { crash } = await run({ domain: `${'d'.repeat(149)}\u{1F600}` });
+      expect(crash.exception.domain).toBe('d'.repeat(149));
+    });
+
+    it('skipFrames on a stackless throwable keeps its one frame visible', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const onError = vi.fn();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+      const err = new Error('x');
+      err.stack = 'Error: x';
+      await client.logException(err, { skipFrames: 5 });
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
     });
 
     it('ignores an invalid skipFrames (negative, fractional, non-number) and warns', async () => {
@@ -2258,6 +2295,71 @@ describe('createClient — upload (manual report)', () => {
       .filter((f: { type: string }) => f.type === 'attachment')
       .map((f: { name: string }) => f.name);
     expect(names).toEqual(['one', 'two', 'three']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers the report for a plain-JS attachment with a non-string fileName (P2)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+
+    const result = await client.upload({
+      attachments: [{ name: 'x', data: 'y', fileName: 42 }],
+    } as never);
+
+    expect(result.ok).toBe(true);
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
+    const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
+    expect(entry.attrs.fileName).toBe('x');
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists attachments in the recovery marker already limited and JSON-safe (P1)', async () => {
+    const { uploadPipeline } = fakeUpload();
+    const { store, put } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    const bytes = new Uint8Array([0, 7, 255]);
+
+    await client.upload({
+      attachments: [
+        { name: 'bin', data: bytes },
+        { name: 'huge', data: new Uint8Array(3 * 1024 * 1024 + 1) },
+        { name: 'bad', data: 'x', fileName: 42 as never },
+      ],
+    });
+
+    const marker = put.mock.calls[0]?.[0] as ReportMarker;
+    const wire = JSON.stringify(marker);
+    expect(wire.length).toBeLessThan(2000); // the 3 MB attachment never reached the marker
+    const back = decodeRequestFromMarker(JSON.parse(wire).request, vi.fn());
+    const names = back.report.userAttachments?.map((a) => a.name);
+    expect(names).toEqual(['bin', 'bad']);
+    expect(Array.from(back.report.userAttachments?.[0]?.data as Uint8Array)).toEqual([0, 7, 255]);
+    expect(onError).toHaveBeenCalledTimes(2); // the oversize one and the bad fileName, once each
+  });
+
+  it('still delivers a report whose handler froze it (attachment normalisation cannot assign) (P2)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const onError = vi.fn();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        return request;
+      },
+    });
+    const result = await client.upload({ attachments: [{ name: 'a', data: 'x' }] });
+    expect(result.ok).toBe(true);
+    expect(enqueue).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
   });
 

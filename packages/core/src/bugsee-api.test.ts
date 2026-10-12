@@ -488,6 +488,61 @@ describe('createBugseeApi — notify', () => {
     expect(await api(transport).notify(batch)).toEqual({ outcome: 'retry', retryIds: ['n2'] });
   });
 
+  it('honours the 429 QuotaExceeded retryAfter (seconds, in the body) as the wait', async () => {
+    const { transport } = recorder(() => ({
+      status: 429,
+      headers: {},
+      body: enc({ ok: false, error: 'QuotaExceeded', retryAfter: 45 }),
+    }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry', retryAfterMs: 45_000 });
+  });
+
+  it('falls back to a numeric Retry-After header, and ignores nonsense', async () => {
+    const header = recorder(() => ({
+      status: 429,
+      headers: { 'retry-after': '7' },
+      body: enc({}),
+    }));
+    expect(await api(header.transport).notify([item])).toEqual({
+      outcome: 'retry',
+      retryAfterMs: 7000,
+    });
+    for (const bad of [{ retryAfter: -1 }, { retryAfter: 'soon' }, { retryAfter: Number.NaN }]) {
+      const { transport } = recorder(() => ({ status: 429, headers: {}, body: enc(bad) }));
+      expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+    }
+    for (const header of ['1e3', '1.5', '-5', '']) {
+      const odd = recorder(() => ({
+        status: 429,
+        headers: { 'retry-after': header },
+        body: enc({}),
+      }));
+      expect(await api(odd.transport).notify([item])).toEqual({ outcome: 'retry' });
+    }
+    const date = recorder(() => ({
+      status: 429,
+      headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' },
+      body: enc({}),
+    }));
+    expect(await api(date.transport).notify([item])).toEqual({ outcome: 'retry' });
+  });
+
+  it('a 429 whose body is not JSON still retries (no wait hint)', async () => {
+    const { transport } = recorder(() => ({ status: 429, headers: {}, body: strToU8('<html>') }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'retry' });
+  });
+
+  it('treats a 403 KillSdk from the relay as a kill, but not an anonymous 403', async () => {
+    const { transport } = recorder(() => ({
+      status: 403,
+      headers: {},
+      body: enc({ ok: false, error: 'KillSdk', message: 'SDK has been disabled by the server' }),
+    }));
+    expect(await api(transport).notify([item])).toEqual({ outcome: 'kill' });
+    const proxy = recorder(() => ({ status: 403, headers: {}, body: strToU8('<html>forbidden') }));
+    expect(await api(proxy.transport).notify([item])).toEqual({ outcome: 'rejected' });
+  });
+
   it('drops the batch on any other 4xx', async () => {
     for (const status of [400, 401, 403, 404, 499]) {
       const { transport } = recorder(() => ({ status, headers: {}, body: enc({}) }));

@@ -10,7 +10,8 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/co
 // Re-exported so the backend adapters can contain their OWN pre-request work (header reads, route
 // extraction, the application-supplied `user` callback) without each taking a direct @bugsee/core
 // dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.
-export { BugseeStatus, guarded, neverThrow } from '@bugsee/core';
+// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
+export { addReportAttachment, BugseeStatus, guarded, neverThrow } from '@bugsee/core';
 // R-7/F4: the request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two
 // live stores over the same source alias on it. The launch builds and owns one; hand-wirers must

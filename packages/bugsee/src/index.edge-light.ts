@@ -34,3 +34,6 @@ export type Bugsee = EdgeBugsee & PerformanceFacade;
 export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bugsee {
   return withPerformanceFacade(launchEdge(appToken, options));
 }
+
+// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
+export { addReportAttachment } from '@bugsee/core';
