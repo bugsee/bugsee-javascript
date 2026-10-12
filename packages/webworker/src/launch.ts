@@ -444,15 +444,55 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
   // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
   // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
+  // WHEN the lock is released (R3L-1): it follows the ONE shared real drain, not any single stop() call. Every
+  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
+  // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   const stopCore = client.stop;
-  // Bumped by every stop(): a stop may release the instance's lock only if it is still the latest stop when it
-  // gets there. A stopped client cannot be launched again (`restartable: false`).
-  let lifecycleEpoch = 0;
+  let released = false;
+  const releaseIfSafe = (): void => {
+    if (!released && recoverySettled) {
+      released = true;
+      coexistence.release();
+    }
+  };
+  // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
+  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
+  let storeFlushed: Promise<void> | undefined;
+  const makeDurable = (): Promise<void> => {
+    storeFlushed ??= (async () => {
+      try {
+        await captureStore.flush?.();
+      } catch (error) {
+        options.onError?.(error);
+      }
+    })();
+    return storeFlushed;
+  };
+  let observingDrain = false;
+  const observeDrain = (wasLaunched: boolean): void => {
+    if (observingDrain) {
+      return;
+    }
+    observingDrain = true;
+    stopCore().then(
+      async (drained) => {
+        if (drained) {
+          if (wasLaunched) {
+            await makeDurable();
+          }
+          await recoveryDone;
+          releaseIfSafe();
+        }
+      },
+      /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */
+      () => undefined,
+    );
+  };
   const publicClient: Bugsee = {
     ...client,
     async stop(timeout?: number): Promise<boolean> {
       const wasLaunched = client.isLaunched();
-      const epoch = ++lifecycleEpoch;
       const owned = getCarrierClient(carrier) === publicClient;
       if (owned) {
         setCarrierStatus(wasLaunched ? BugseeStatus.Stopping : BugseeStatus.Stopped, carrier);
@@ -460,17 +500,15 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
       }
       let drained = false;
       try {
-        drained = await stopCore(timeout);
+        const stopping = stopCore(timeout);
+        observeDrain(wasLaunched);
+        drained = await stopping;
         return drained;
       } finally {
         // Make the data durable first (a launched client only: a killed one has no live store to flush), as the
         // browser tier does (R2L-10): closing IndexedDB under the capture store's write queue loses its tail.
         if (wasLaunched) {
-          try {
-            await captureStore.flush?.();
-          } catch (error) {
-            options.onError?.(error);
-          }
+          await makeDurable();
         }
         // The launch-time dead-sibling scan may still be reading IndexedDB; closing under it would only
         // make it reopen the connection. Wait for it, bounded by the caller's own deadline.
@@ -485,10 +523,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
             ]));
         clearTimeout(timer);
         // Release ONLY when the drain completed (a timed-out upload may still be running here and another
-        // context that saw this instance as dead would upload it again), the recovery has settled, and
-        // nothing launched or stopped again meanwhile.
-        if (drained && recoverySettled && epoch === lifecycleEpoch) {
-          coexistence.release();
+        // context that saw this instance as dead would upload it again) and the recovery has settled.
+        if (drained) {
+          releaseIfSafe();
         }
         if (owned && getCarrierStatus(carrier) === BugseeStatus.Stopping) {
           setCarrierStatus(BugseeStatus.Stopped, carrier);

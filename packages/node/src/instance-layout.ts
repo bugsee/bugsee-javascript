@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { threadId } from 'node:worker_threads';
@@ -78,13 +79,19 @@ export function createInstanceLayout(
   };
 }
 
-/** Create the subtree root and persist `owner.json` (the identity + this launch's start time + SDK version). */
+/**
+ * Create the subtree root and persist `owner.json` (the identity + this launch's start time + SDK version).
+ * A `.stopped` marker left by an earlier clean stop of the same subtree is removed FIRST (R3L-3): this launch is
+ * live in it, and a stale marker would let a sibling judge it recoverable and delete it under the live writer.
+ * (A pinned `instanceIdentity` is the only way two launches share a subtree.)
+ */
 export function writeInstanceOwner(
   layout: InstanceLayout,
   startedAt: number,
   version: string,
 ): void {
   ensureDir(layout.root);
+  rmSync(layout.stoppedFile, { force: true });
   const owner: InstanceOwner = {
     instanceId: layout.instanceId,
     pid: layout.pid,

@@ -80,6 +80,12 @@ export interface NotifyRelayOptions {
   /** Notification id generator. Default `randomId()`. */
   newId?: () => string;
   onError?: (error: unknown) => void;
+  /**
+   * Where a batch that was in a request when {@link NotifyRelay.take} ran goes if it then FAILS (R3L-5): the
+   * relay has been handed over and will not be resumed, so putting it back into its own queue would lose it.
+   * Without a sink the items stay in the queue.
+   */
+  onHandBack?: (items: NotifyItem[]) => void;
   /** The collector answered `403 KillSdk`: the owner should enter its kill state. Called once. */
   onKill?: () => void;
 }
@@ -146,6 +152,8 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   /** A stopped SDK (stop() / kill) sends and retries nothing. Cleared by `resume()` on launch. */
   let stopped = false;
   let killed = false;
+  /** `take()` ran and nothing has resumed the relay: whatever a request still in flight fails to deliver is handed back. */
+  let handedOver = false;
   /** A 429's `retryAfter`, consumed by the next `scheduleRetry`. */
   let retryHintMs: number | undefined;
   /** Consecutive 429 answers; a second one in a row halves the batch (the collector may be refusing its size). */
@@ -244,6 +252,16 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     }
     const wanted = result.retryIds;
     const back = wanted === undefined ? batch : batch.filter((item) => wanted.includes(item.id));
+    if (handedOver && options.onHandBack !== undefined) {
+      if (back.length > 0) {
+        try {
+          options.onHandBack(back);
+        } catch (error) {
+          report(error);
+        }
+      }
+      return false;
+    }
     queue = [...back, ...queue];
     trim();
     return false;
@@ -412,6 +430,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     resume(): void {
       // After a kill verdict the queue is empty and `enqueue` refuses everything, so there is nothing to resume.
       stopped = false;
+      handedOver = false;
       if (queue.length > 0) {
         scheduleFlush();
       }
@@ -424,6 +443,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     take(): NotifyItem[] {
       const taken = queue;
       queue = [];
+      handedOver = true;
       clearFlushTimer();
       clearRetryTimer();
       return taken;

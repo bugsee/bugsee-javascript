@@ -34,6 +34,14 @@ export const BUGSEE_SDK_VERSION = '0.1.0-beta.2';
 
 const CARRIER_PROPERTY = '__BUGSEE__';
 
+/** What a stale client handle needs of the client that owns the process blackout (R3L-4). */
+export interface CarrierBlackoutOwner {
+  /** Start the blackout on the owner (refused by the owner itself when it is not launched). */
+  start(): void;
+  /** Whether the owner is launched, i.e. a forwarded `start()` can take effect. */
+  isLaunched(): boolean;
+}
+
 /** A process-global slot holding one SDK version's singletons. */
 export interface BugseeCarrier {
   /** The SDK version this slot belongs to (=== its key in `__BUGSEE__`). */
@@ -64,10 +72,21 @@ export interface BugseeCarrier {
    * silently ending the blackout there would resume capture of a screen the app asked to hide.
    */
   blackout?: boolean;
+  /**
+   * The client that currently owns the process-wide blackout (R3L-4): the newest one created or launched on
+   * this carrier. Only it may change {@link BugseeCarrier.blackout}; a stale handle's start is forwarded to it.
+   */
+  blackoutOwner?: CarrierBlackoutOwner;
   /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
   relaunching?: boolean;
   /** Notifications the old client could not deliver, waiting for the client `relaunch()` builds (R2L-6). */
   notifyBacklog?: NotifyItem[];
+  /**
+   * The launched client that takes over notifications another client hands back (R3L-5): a late hand-back
+   * after the new client already adopted the backlog goes straight to it instead of parking on the carrier.
+   * `owner` is the registering client's own token, so a client never hands items to itself.
+   */
+  notifyAdopter?: { owner: object; adopt(items: NotifyItem[]): void };
   /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
   pendingLaunch?: Promise<unknown>;
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
@@ -231,7 +250,6 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'globalTarget',
   'global',
   'logger',
-  'instanceIdentity',
   'captureWriter',
   'serverInterceptor',
   'serverInstrumentations',
@@ -328,6 +346,21 @@ export function getCarrierBlackout(globalObj: object = globalThis): boolean {
 /** Record the process-wide blackout state. */
 export function setCarrierBlackout(active: boolean, globalObj: object = globalThis): void {
   getCarrier(globalObj).blackout = active;
+}
+
+/** The client that owns the process-wide blackout, if any client was ever created on this carrier. */
+export function getCarrierBlackoutOwner(
+  globalObj: object = globalThis,
+): CarrierBlackoutOwner | undefined {
+  return getCarrier(globalObj).blackoutOwner;
+}
+
+/** Make `owner` the client that owns the process-wide blackout (the newest created or launched wins). */
+export function claimCarrierBlackoutOwner(
+  owner: CarrierBlackoutOwner,
+  globalObj: object = globalThis,
+): void {
+  getCarrier(globalObj).blackoutOwner = owner;
 }
 
 /** The launch that is still being built (async platforms), if any. */

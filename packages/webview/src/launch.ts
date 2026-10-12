@@ -610,7 +610,22 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
   // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
   let warnedNativeBlackout = false;
+  // Only the client that owns the process may speak for it (R3V-1): one that has been stopped (its stream is
+  // finalized: `bye` was posted) or whose carrier slot another client has taken must not tell native anything.
+  // A launch that has not reached the slot yet still announces (a carried or `startInBlackout` blackout).
+  let torn = false;
+  let ownFacade: unknown;
+  const mayTellNative = (): boolean => {
+    if (torn) {
+      return false;
+    }
+    const current = getCarrierClient<unknown>(carrier);
+    return current === undefined || current === ownFacade;
+  };
   const announceBlackout = (active: boolean): void => {
+    if (!mayTellNative()) {
+      return;
+    }
     bridge.post(encode(blackoutMessage(active, Date.now())));
     const delivered = bridge.available;
     if (warnedNativeBlackout || (delivered && control.config.nativeBlackout)) {
@@ -752,9 +767,11 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The carrier holds this facade, not the client: keep the reference so `stop()` can release the slot only
   // while it is still ours.
   const facade = carrierFacadeFor(client);
+  ownFacade = facade;
   publicClient = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
+      torn = true;
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or

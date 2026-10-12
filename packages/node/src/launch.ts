@@ -1152,27 +1152,47 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // is undelivered (retained bundles, pending incident markers) and remove the rest. A timed-out drain is
   // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
   //
-  // The marker is written only when it can still be TRUE: this is the latest stop (`stopGeneration`), and the
-  // launch-time recovery has settled (it may still be staging bundles into the subtree). A stopped client
-  // never comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
+  // The marker is written only when it can still be TRUE: the drain completed, the launch-time recovery has
+  // settled (it may still be staging bundles into the subtree), and no NEWER client holds the carrier slot (a
+  // relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
+  // marker at that launch, and an old drain finishing late must not put it back — R3L-3). A stopped client never
+  // comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
   // refused — R2L-3): restarting only core would bring capture back with the heartbeat, the exit/signal
   // handlers, the server instrumentation and the carrier slot all still torn down, and the subtree
   // marked recoverable under a live writer. A new client is built by `launch(appToken)` / `relaunch()`.
-  let stopGeneration = 0;
-  const markStopped = (drained: boolean, generation: number): void => {
-    if (
-      !drained ||
-      instanceLayout === undefined ||
-      generation !== stopGeneration ||
-      !recoverySettled
-    ) {
+  //
+  // WHO writes it (R3L-1): the marker follows the ONE shared real drain, not any single stop() call. Every
+  // stop() — including one that timed out and returned false — leaves a background observer on that drain,
+  // and the caller of a stop() that sees the drain finish marks too; whichever gets there first writes, once.
+  let marked = false;
+  const markStopped = (): void => {
+    if (marked || instanceLayout === undefined || !recoverySettled) {
       return;
     }
+    const current = getCarrierClient(carrier);
+    if (current !== undefined && current !== publicClient) {
+      return; // a newer client owns the process now
+    }
+    marked = true;
     try {
       writeFileSecure(instanceLayout.stoppedFile, '');
     } catch (error) {
+      marked = false; // the write failed: a later observer may retry
       options.onError?.(error);
     }
+  };
+  let observingDrain = false;
+  /** Observe the shared real drain once (core hands the same unbounded promise to every `stopCore()`). */
+  const observeDrain = (): void => {
+    if (observingDrain) {
+      return;
+    }
+    observingDrain = true;
+    stopCore().then(
+      (drained) => (drained ? recoveryDone.then(markStopped) : undefined),
+      /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */
+      () => undefined,
+    );
   };
   /** Wait for the launch-time recovery, bounded by the caller's own deadline (a long recovery upload must
    *  not hold up a deadline-bound stop). */
@@ -1193,9 +1213,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     ]);
     clearTimeout(timer);
   };
-  const finishStop = (drained: boolean, generation: number, timeout: number | undefined) =>
+  const finishStop = (drained: boolean, timeout: number | undefined) =>
     (drained ? awaitRecovery(timeout) : Promise.resolve()).then(() => {
-      markStopped(drained, generation);
+      if (drained) {
+        markStopped();
+      }
       return drained;
     });
   const publicClient: Bugsee = {
@@ -1209,9 +1231,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       };
       // A repeat stop() (or one after the collector killed the SDK) has nothing left to tear down; running
       // the teardown again would double-dispose the writer and could evict a relaunched client's slot.
-      const generation = ++stopGeneration;
       if (tornDown) {
-        return stopCore(timeout).then((drained) => finishStop(drained, generation, timeout));
+        const repeat = stopCore(timeout).then((drained) => finishStop(drained, timeout));
+        observeDrain();
+        return repeat;
       }
       tornDown = true;
       const owned = getCarrierClient(carrier) === publicClient;
@@ -1246,9 +1269,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
         installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
       }
       clearCarrierClient(publicClient, carrier);
-      return stopCore(timeout)
-        .then((drained) => finishStop(drained, generation, timeout))
+      const stopping = stopCore(timeout)
+        .then((drained) => finishStop(drained, timeout))
         .finally(settle);
+      observeDrain();
+      return stopping;
     },
   };
   setCarrierClient(publicClient, carrier);

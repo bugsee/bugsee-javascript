@@ -24,6 +24,27 @@ const INTERFACES: Array<[string, string, string]> = [
   ['bugsee', 'src/server-launch.ts', 'BugseeServerLaunchOptions'],
   ['electron', 'src/launch-main.ts', 'LaunchMainOptions'],
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions'],
+  // Framework adapters and the remaining runtimes (R3L-6). The ones that only `extends` a platform interface
+  // add no key, but they are listed so the day one adds an option it is classified here. A name that is a
+  // function resolves to the type of its `options` (second) parameter; a type alias resolves to its object constituents.
+  ['nextjs', 'src/client.ts', 'NextjsClientOptions'],
+  ['nextjs', 'src/server.ts', 'NextjsServerOptions'],
+  ['nextjs', 'src/edge.ts', 'NextjsEdgeOptions'],
+  ['nuxt', 'src/client.ts', 'InstallBugseeClientOptions'],
+  ['nuxt', 'src/nitro.ts', 'InstallBugseeNitroOptions'],
+  ['nuxt', 'src/nitro-edge.ts', 'InstallBugseeNitroEdgeOptions'],
+  ['remix', 'src/client.ts', 'RemixClientOptions'],
+  ['remix', 'src/server.ts', 'RemixServerOptions'],
+  ['sveltekit', 'src/client.ts', 'SvelteKitClientOptions'],
+  ['sveltekit', 'src/server.ts', 'SvelteKitServerOptions'],
+  ['sveltekit', 'src/edge.ts', 'SvelteKitEdgeOptions'],
+  ['astro', 'src/client.ts', 'AstroClientOptions'],
+  ['astro', 'src/server.ts', 'AstroServerOptions'],
+  ['astro', 'src/edge.ts', 'AstroEdgeOptions'],
+  ['cloudflare', 'src/launch-config.ts', 'BugseeWorkerConfig'],
+  ['cloudflare', 'src/launch.ts', 'launch'],
+  ['bun', 'src/launch.ts', 'launch'],
+  ['deno', 'src/launch.ts', 'launch'],
 ];
 
 function optionKeys(pkg: string, file: string, name: string): string[] {
@@ -42,15 +63,42 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
     throw new Error(`cannot read ${target}`);
   }
   const declaration = source.statements.find(
-    (statement): statement is ts.InterfaceDeclaration =>
-      ts.isInterfaceDeclaration(statement) && statement.name.text === name,
+    (
+      statement,
+    ): statement is ts.InterfaceDeclaration | ts.TypeAliasDeclaration | ts.FunctionDeclaration =>
+      (ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement) ||
+        ts.isFunctionDeclaration(statement)) &&
+      statement.name?.text === name,
   );
   if (declaration === undefined) {
     throw new Error(`${name} not found in ${target}`);
   }
-  return checker
-    .getPropertiesOfType(checker.getTypeAtLocation(declaration))
-    .map((property) => property.getName());
+  let types: ts.Type[];
+  if (ts.isFunctionDeclaration(declaration)) {
+    const parameter = declaration.parameters[1];
+    if (parameter === undefined) {
+      throw new Error(`${name} in ${target} takes no options (second) parameter`);
+    }
+    types = [checker.getTypeAtLocation(parameter)];
+  } else {
+    types = [checker.getTypeAtLocation(declaration)];
+  }
+  // A union (a type alias such as the Cloudflare config) contributes its OBJECT members: a string or a callback
+  // carries no option keys. `getNonNullableType` drops the `undefined` of an optional parameter.
+  const objects = types
+    .map((type) => checker.getNonNullableType(type))
+    .flatMap((type) => (type.isUnion() ? type.types : [type]))
+    .filter(
+      (type) =>
+        (type.flags & ts.TypeFlags.Object) !== 0 || (type.flags & ts.TypeFlags.Intersection) !== 0,
+    )
+    .filter((type) => type.getCallSignatures().length === 0);
+  return [
+    ...new Set(
+      objects.flatMap((type) => checker.getPropertiesOfType(type).map((p) => p.getName())),
+    ),
+  ];
 }
 
 /**
@@ -62,11 +110,26 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `bridge`, `post`, `launch`, `onSessionId`,
  *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (Electron has no
  *    `relaunch()`), and keeping them would pin Electron objects on `globalThis` for nothing;
+ *  - `appToken` (the Cloudflare and Nuxt adapters accept it inside their options object) is the token itself,
+ *    which `setCarrierLastLaunch` stores separately as `lastLaunch.appToken`; it is never part of the kept options;
+ *  - `onSpanProcessor` and `setupOtelProvider` (Next.js server) wire the Bugsee span processor into an OTel
+ *    provider: the callback receives the NEW client's processor, and the provider is first-wins, so a relaunch
+ *    re-supplies them with the new options instead of pinning the old callback (and the old processor) alive;
+ *  - `injectTraceMeta` (Nuxt) and `flushTimeoutMs` (Nuxt edge) are adapter behaviour options consumed by the
+ *    adapter's own installer, never by the platform launch a relaunch re-runs;
+ *  - `instanceIdentity` (node) is a per-instance identity: a pinned one must never be shared by two instances,
+ *    so a relaunch builds a fresh one (R3L-3);
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list).
  */
 const RESET_OPTIONS: readonly string[] = [
   'app',
+  'appToken',
+  'flushTimeoutMs',
+  'injectTraceMeta',
+  'instanceIdentity',
+  'onSpanProcessor',
+  'setupOtelProvider',
   'bridge',
   'captureBreadcrumbs',
   'captureInteractions',
@@ -169,5 +232,23 @@ describe('relaunch() option classification (R2P-3)', () => {
     for (const key of ['endpoint', 'appVersion', 'appBuild', 'persist', 'recover']) {
       expect(RELAUNCH_KEPT_OPTIONS).toContain(key);
     }
+  });
+
+  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches (R3L-6)', () => {
+    expect(all.get('onSpanProcessor')).toContain('nextjs:NextjsServerOptions');
+    expect(all.get('setupOtelProvider')).toContain('nextjs:NextjsServerOptions');
+    expect(all.get('injectTraceMeta')).toContain('nuxt:InstallBugseeNitroOptions');
+    expect(all.get('flushTimeoutMs')).toContain('nuxt:InstallBugseeNitroEdgeOptions');
+    expect(all.get('appToken')).toContain('cloudflare:BugseeWorkerConfig');
+    expect(all.get('transport')).toEqual(expect.arrayContaining(['bun:launch', 'deno:launch']));
+    expect(all.get('transport')).toContain('cloudflare:launch');
+    expect(all.get('endpoint')).toEqual(
+      expect.arrayContaining(['astro:AstroServerOptions', 'remix:RemixServerOptions']),
+    );
+  });
+
+  it('does not keep a per-instance identity across a relaunch (R3L-3)', () => {
+    expect(RELAUNCH_KEPT_OPTIONS).not.toContain('instanceIdentity');
+    expect(RESET_OPTIONS).toContain('instanceIdentity');
   });
 });

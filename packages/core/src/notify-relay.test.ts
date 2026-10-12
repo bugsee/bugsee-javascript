@@ -1240,3 +1240,106 @@ describe('take / adopt — the relaunch() hand-over (R2L-6)', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('take() hands back what a request still in flight later fails to deliver (R3L-5)', () => {
+  const inFlight = () => {
+    let settle: (result: NotifyResult) => void = () => {};
+    const send: Send = () =>
+      new Promise<NotifyResult>((resolve) => {
+        settle = resolve;
+      });
+    return { send, settle: (result: NotifyResult) => settle(result) };
+  };
+
+  it('a failed batch that was in flight at take() goes to onHandBack, not back into the dead queue', async () => {
+    const flight = inFlight();
+    const onHandBack = vi.fn();
+    const { relay } = make({ onHandBack }, flight.send);
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(relay.take()).toEqual([]); // it is in a request, not queued
+    flight.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onHandBack).toHaveBeenCalledTimes(1);
+    expect(onHandBack.mock.calls[0]?.[0].map((item: NotifyItem) => item.title)).toEqual(['a']);
+    expect(relay.pending()).toBe(0);
+  });
+
+  it('only the ids the collector asked to retry are handed back', async () => {
+    const flight = inFlight();
+    const onHandBack = vi.fn();
+    const { relay } = make({ onHandBack, flushDelayMs: 1000 }, flight.send);
+    relay.enqueue({ title: 'a' });
+    relay.enqueue({ title: 'b' });
+    await vi.advanceTimersByTimeAsync(1000);
+    relay.take();
+    flight.settle({ outcome: 'retry', retryIds: ['id2'] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onHandBack.mock.calls[0]?.[0].map((item: NotifyItem) => item.title)).toEqual(['b']);
+  });
+
+  it('an urgent send that fails after take() is handed back too', async () => {
+    const flight = inFlight();
+    const onHandBack = vi.fn();
+    const { relay } = make({ onHandBack }, flight.send);
+    relay.enqueue({ title: 'now', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    relay.take();
+    flight.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onHandBack).toHaveBeenCalledTimes(1);
+    expect(relay.pending()).toBe(0);
+  });
+
+  it('a throwing onHandBack sink is reported and never breaks the relay', async () => {
+    const flight = inFlight();
+    const { relay, onError } = make(
+      {
+        onHandBack: () => {
+          throw new Error('sink');
+        },
+      },
+      flight.send,
+    );
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    relay.take();
+    flight.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'sink' }));
+  });
+
+  it('without take(), or after resume(), a failed batch is requeued as before', async () => {
+    const flight = inFlight();
+    const onHandBack = vi.fn();
+    const { relay } = make({ onHandBack }, flight.send);
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    flight.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onHandBack).not.toHaveBeenCalled();
+    expect(relay.pending()).toBe(1);
+
+    const second = inFlight();
+    const again = make({ onHandBack }, second.send);
+    again.relay.enqueue({ title: 'b' });
+    await vi.advanceTimersByTimeAsync(0);
+    again.relay.take();
+    again.relay.resume(); // a re-launch takes the relay back
+    second.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onHandBack).not.toHaveBeenCalled();
+    expect(again.relay.pending()).toBe(1);
+  });
+
+  it('without an onHandBack sink the failed batch stays in the queue (nothing to hand to)', async () => {
+    const flight = inFlight();
+    const { relay } = make({}, flight.send);
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    relay.take();
+    flight.settle({ outcome: 'retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(relay.pending()).toBe(1);
+  });
+});

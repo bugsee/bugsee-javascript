@@ -34,8 +34,11 @@ import { createCaptureCoordinator, type OptionGate } from './capture-coordinator
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import {
+  type CarrierBlackoutOwner,
+  claimCarrierBlackoutOwner,
   getCarrier,
   getCarrierBlackout,
+  getCarrierBlackoutOwner,
   getCarrierLifecycleSlot,
   getCarrierRelaunching,
   setCarrierBlackout,
@@ -424,6 +427,13 @@ export interface InternalBugseeClient extends BugseeClient {
    * surface an application could fake SDK events.
    */
   emitLifecycleEvent(eventType: LifecycleEventType, data?: unknown): void;
+  /**
+   * A blackout raised SILENTLY before `launch()` (`startInBlackout`) owes the application one BlackoutStarted: owe
+   * it. It is announced after Launching/Launched when the client is still launched and still dark, and BEFORE
+   * the BlackoutEnded of a Launching listener that lifts the blackout at once, so Started always precedes Ended
+   * (R3L-7). Without this call a silent hold never announces itself.
+   */
+  deferBlackoutStarted(): void;
 }
 
 /**
@@ -431,7 +441,10 @@ export interface InternalBugseeClient extends BugseeClient {
  * {@link asInternalClient} so application code cannot fake SDK events.
  * @internal
  */
-export type CreatedClient = Omit<InternalBugseeClient, 'emitLifecycleEvent'>;
+export type CreatedClient = Omit<
+  InternalBugseeClient,
+  'emitLifecycleEvent' | 'deferBlackoutStarted'
+>;
 
 /**
  * View a public client through its internal surface. Returns a COPY of the client carrying the unstripped
@@ -454,7 +467,7 @@ export function asInternalClient(client: BugseeClient): InternalBugseeClient {
 const INTERNAL_METHODS = Symbol.for('com.bugsee.internal-client');
 type InternalMethods = Pick<
   InternalBugseeClient,
-  'logException' | 'upload' | 'prepareUpload' | 'emitLifecycleEvent'
+  'logException' | 'upload' | 'prepareUpload' | 'emitLifecycleEvent' | 'deferBlackoutStarted'
 >;
 
 /** A copy of `options` without `keys`; anything that is not an object (null, a string) counts as none. */
@@ -476,8 +489,13 @@ function exposePublicSurface(client: InternalBugseeClient): CreatedClient {
     upload: client.upload,
     prepareUpload: client.prepareUpload,
     emitLifecycleEvent: client.emitLifecycleEvent,
+    deferBlackoutStarted: client.deferBlackoutStarted,
   };
-  const { emitLifecycleEvent: _internalOnly, ...publicMethods } = client;
+  const {
+    emitLifecycleEvent: _internalOnly,
+    deferBlackoutStarted: _alsoInternalOnly,
+    ...publicMethods
+  } = client;
   return {
     ...publicMethods,
     logException: function logException(error, options) {
@@ -705,14 +723,44 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     processCarrier !== undefined && getCarrierBlackout(processCarrier),
   );
   services.addService(defineService(BlackoutToken, () => blackout));
+  // Who may change the PROCESS-wide blackout (R3L-4): the newest client created or launched on the carrier. An
+  // older handle (stopped, or replaced by a relaunch) would otherwise clear the flag under the live client,
+  // so the next relaunch would start un-dark. A client without a carrier is its own owner.
+  const blackoutOwner: CarrierBlackoutOwner = {
+    start: () => {
+      if (launched) {
+        blackout.start();
+      }
+    },
+    isLaunched: () => launched,
+  };
+  const ownsBlackout = (): boolean => {
+    if (processCarrier === undefined) {
+      return true;
+    }
+    const owner = getCarrierBlackoutOwner(processCarrier);
+    return owner === undefined || owner === blackoutOwner;
+  };
+  if (processCarrier !== undefined) {
+    claimCarrierBlackoutOwner(blackoutOwner, processCarrier);
+  }
+  let blackoutStartedOwed = false; // see InternalBugseeClient.deferBlackoutStarted
   blackout.onChange((active) => {
-    if (processCarrier !== undefined) {
+    if (processCarrier !== undefined && ownsBlackout()) {
       setCarrierBlackout(active, processCarrier);
     }
     // A silent change (a launch hold, a handshake release) is bookkeeping the application never asked for, and
     // a blackout can only be ENDED while the client is not launched (R2L-7): that clears the carried state
     // quietly, since nothing is being captured for the events to describe.
     if (launched && !blackout.isChangeSilent()) {
+      if (blackoutStartedOwed) {
+        // The owed announcement is ahead of whatever the application did to the blackout since: an Ended
+        // must never be heard for a blackout whose Started was not (R3L-7).
+        blackoutStartedOwed = false;
+        if (!active) {
+          lifecycle.emit(LifecycleEvents.BlackoutStarted);
+        }
+      }
       lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
     }
   });
@@ -843,6 +891,8 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           clock,
           flushDelayMs: notifyFlushDelayMs,
           onError: onErrorSafe,
+          // A batch still in a request when relaunch() took the queue, failing later (R3L-5).
+          onHandBack: (items) => handBackNotify(items),
           // The relay's own `403 KillSdk` verdict switches the SDK off exactly like a report's.
           onKill: () =>
             enterKillState(
@@ -869,21 +919,28 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
   // relaunch() hands what the old client could not deliver (an offline notify() queue) to the client it builds
-  // (R2L-6). Only while a relaunch is in progress: a plain stop() keeps nothing on the carrier, which sits on
-  // `globalThis` and would otherwise hold user-identifying notifications for a process that never relaunches.
+  // (R2L-6). The decision is taken when stop() is CALLED (`getCarrierRelaunching` is true only for the stop that
+  // relaunch() itself issues), never when the drain finishes: a slow old stop can settle after the new client
+  // is up. Where the items go, in order: the client that has already adopted (it registered as the carrier's
+  // adopter), else the carrier backlog its launch() will drain. A plain stop() keeps nothing on the carrier,
+  // which sits on `globalThis` and would otherwise hold user-identifying notifications for a process that never
+  // relaunches.
+  const notifyOwner = {};
+  const handBackNotify = (items: NotifyItem[]): void => {
+    if (processCarrier === undefined || items.length === 0) {
+      return;
+    }
+    const carrier = getCarrier(processCarrier);
+    const adopter = carrier.notifyAdopter;
+    if (adopter !== undefined && adopter.owner !== notifyOwner) {
+      adopter.adopt(items);
+    } else {
+      carrier.notifyBacklog = [...(carrier.notifyBacklog ?? []), ...items];
+    }
+  };
   const stashNotifyBacklog = (): void => {
-    if (
-      processCarrier !== undefined &&
-      notifyRelay !== undefined &&
-      getCarrierRelaunching(processCarrier)
-    ) {
-      const backlog = notifyRelay.take();
-      if (backlog.length > 0) {
-        getCarrier(processCarrier).notifyBacklog = [
-          ...(getCarrier(processCarrier).notifyBacklog ?? []),
-          ...backlog,
-        ];
-      }
+    if (notifyRelay !== undefined) {
+      handBackNotify(notifyRelay.take());
     }
   };
   const adoptNotifyBacklog = (): void => {
@@ -891,6 +948,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       return;
     }
     const carrier = getCarrier(processCarrier);
+    carrier.notifyAdopter = { owner: notifyOwner, adopt: (items) => notifyRelay.adopt(items) };
     if (carrier.notifyBacklog !== undefined) {
       const backlog = carrier.notifyBacklog;
       carrier.notifyBacklog = undefined;
@@ -1401,6 +1459,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     },
     setLifecycleEventsListener: lifecycle.set,
     emitLifecycleEvent: lifecycle.emit,
+    deferBlackoutStarted(): void {
+      blackoutStartedOwed = true;
+    },
 
     addBreadcrumb(breadcrumb: BreadcrumbInput): void {
       if (killed || !isEnabled(BugseeOption.CaptureBreadcrumbs)) {
@@ -1616,6 +1677,21 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     // Refused while the client is not launched, as on Android: there is nothing to black out, and the
     // BlackoutStarted/Ended events would describe a state that changed nothing.
     startBlackout(): void {
+      if (!ownsBlackout()) {
+        // A stale handle: the blackout belongs to the current client, so the request goes THERE (fail closed:
+        // an app asking for privacy gets it). Nobody launched to take it: say so rather than ignore it.
+        const current = getCarrierBlackoutOwner(processCarrier);
+        if (current?.isLaunched() === true) {
+          current.start();
+        } else {
+          onErrorSafe(
+            new Error(
+              'Bugsee: startBlackout() on a stale client handle, and no client is launched; ignored',
+            ),
+          );
+        }
+        return;
+      }
       if (launched) {
         blackout.start();
       }
@@ -1624,6 +1700,15 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     // Allowed while stopped (R2L-7), unlike start: an app that stopped during a blackout must be able to lift
     // it, or the carried process flag would make the NEXT launch start dark with no event to say so.
     endBlackout(): void {
+      if (!ownsBlackout()) {
+        // Never lifted from a stale handle (R3L-4): that would clear the process flag under the live client.
+        onErrorSafe(
+          new Error(
+            'Bugsee: endBlackout() on a stale client handle ignored; end the blackout through the current client',
+          ),
+        );
+        return;
+      }
       blackout.end();
     },
 
@@ -1676,6 +1761,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       launched = true;
       launching = true;
       stopped = false;
+      if (processCarrier !== undefined) {
+        claimCarrierBlackoutOwner(blackoutOwner, processCarrier);
+      }
       lifecycle.emit(LifecycleEvents.Launching);
       if (mine !== generation) {
         return; // a listener stopped the client before it started
@@ -1712,6 +1800,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }, tickIntervalMs);
       launching = false;
       lifecycle.emit(LifecycleEvents.Launched);
+      if (blackoutStartedOwed) {
+        blackoutStartedOwed = false;
+        if (launched && blackout.isActive()) {
+          lifecycle.emit(LifecycleEvents.BlackoutStarted);
+        }
+      }
     },
 
     stop(timeout?: number): Promise<boolean> {
@@ -1720,6 +1814,8 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         // Never started, or killed (no drain was started): there is nothing left to wait for.
         return stopDrain !== undefined ? boundDrain(stopDrain, timeout) : Promise.resolve(true);
       }
+      // Is this the stop relaunch() issues? Decided NOW: by the time the drain settles the new client may be up.
+      const handsOver = processCarrier !== undefined && getCarrierRelaunching(processCarrier);
       generation += 1;
       const mine = generation;
       launched = false;
@@ -1728,7 +1824,10 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       haltCapture(); // also valid mid-launch: a stop from the Launching listener has nothing started yet
       stopping = true;
       lifecycle.emit(LifecycleEvents.Stopping);
-      const realDrain = startDrain(timeout);
+      // The shared drain is UNBOUNDED (R3L-2): it is the one real drain every stop() answers for, so a first
+      // caller's deadline must not cap it (a repeat stop() could then never report true). Each caller applies
+      // its own timeout only when racing it.
+      const realDrain = startDrain();
       stopDrain = realDrain;
       return boundDrain(realDrain, timeout)
         .finally(() => {
@@ -1739,7 +1838,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
             // A notification still waiting (offline) keeps its place for a re-launch but stops retrying: a
             // stopped SDK must not keep a timer, and so a request, alive.
             notifyRelay?.suspend();
-            stashNotifyBacklog();
+            if (handsOver) {
+              stashNotifyBacklog();
+            }
           }
         })
         .then((drained) => {

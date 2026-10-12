@@ -4,6 +4,7 @@ import {
   type Clock,
   contributeServiceManifest,
   FiltersToken,
+  getCarrierBlackout,
   getCarrierClient,
   LifecycleEvents,
   type Scheduler,
@@ -624,6 +625,63 @@ describe('launch (webview)', () => {
         );
         expect(() => client.startBlackout()).not.toThrow();
         expect(client.isBlackout()).toBe(true);
+      });
+
+      // R3V-1 / R3L-4: only the client that owns the process blackout may change the flag or tell native.
+      describe('a stale handle cannot change the blackout or speak to native (R3V-1)', () => {
+        const startStale = async (darkFirst: boolean) => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const errors: unknown[] = [];
+          const first = launch(
+            'tok',
+            baseOptions({ global: fake.global, carrier, onError: (e) => errors.push(e) }),
+          );
+          if (darkFirst) first.startBlackout();
+          await first.stop();
+          const second = track('tok', baseOptions({ global: fake.global, carrier }));
+          return { carrier, fake, errors, first, second };
+        };
+
+        it('A dark + stop, B launches dark: A.endBlackout() leaves B dark, the flag set and native unmoved', async () => {
+          const { carrier, fake, errors, first, second } = await startStale(true);
+          expect(second.isBlackout()).toBe(true); // carried
+          const before = blackoutMsgs(fake).length;
+          first.endBlackout();
+          expect(second.isBlackout()).toBe(true);
+          expect(getCarrierBlackout(carrier)).toBe(true);
+          expect(blackoutMsgs(fake)).toHaveLength(before); // no `a:false` to the host
+          expect(errors.some((e) => /endBlackout/.test(String(e)))).toBe(true);
+        });
+
+        it('a stale startBlackout() is forwarded to the live client and announced to native once', async () => {
+          const { carrier, fake, first, second } = await startStale(false);
+          first.startBlackout();
+          expect(second.isBlackout()).toBe(true);
+          expect(getCarrierBlackout(carrier)).toBe(true);
+          expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([true]);
+        });
+
+        it('a client whose carrier slot another client has taken tells native nothing', () => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const client = track('tok', baseOptions({ global: fake.global, carrier }));
+          setCarrierClient({ another: 'client' }, carrier);
+          client.startBlackout();
+          expect(blackoutMsgs(fake)).toEqual([]);
+        });
+
+        it('a stopped client that is still the last owner lifts the carried flag quietly, posting nothing after bye', async () => {
+          const carrier = {};
+          const fake = fakeGlobal();
+          const only = launch('tok', baseOptions({ global: fake.global, carrier }));
+          only.startBlackout();
+          await only.stop();
+          const before = fake.msgs().length;
+          only.endBlackout();
+          expect(getCarrierBlackout(carrier)).toBe(false);
+          expect(fake.msgs()).toHaveLength(before);
+        });
       });
     });
 
