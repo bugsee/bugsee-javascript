@@ -620,6 +620,76 @@ describe('createClient — crash.json (SC3)', () => {
     });
   });
 
+  describe('logException domain and skipFrames', () => {
+    const stacked = () => {
+      const err = new Error('boom');
+      err.stack =
+        'Error: boom\n    at wrapper (a.js:1:1)\n    at inner (b.js:2:2)\n    at app (c.js:3:3)';
+      return err;
+    };
+    const run = async (opts: Record<string, unknown>) => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const onError = vi.fn();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment, onError });
+      await client.logException(stacked(), opts);
+      return { crash: crashOf(enqueue.mock.calls[0]?.[0] as Bundle), onError };
+    };
+
+    it('writes exception.domain, the field the Android worker folds into the signature', async () => {
+      const { crash, onError } = await run({ domain: 'checkout ' });
+      expect(crash.exception.domain).toBe('checkout '); // verbatim, not trimmed
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('omits domain when not given', async () => {
+      const { crash } = await run({});
+      expect('domain' in crash.exception).toBe(false);
+      expect(crash.exception.frames.some((f: { hidden?: boolean }) => f.hidden)).toBe(false);
+    });
+
+    it('ignores a non-string or empty domain and warns through onError', async () => {
+      for (const bad of [42, '', {}]) {
+        const { crash, onError } = await run({ domain: bad });
+        expect('domain' in crash.exception).toBe(false);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toContain('domain');
+      }
+    });
+
+    it('marks the top skipFrames frames hidden, so grouping skips them but they stay visible', async () => {
+      const { crash } = await run({ skipFrames: 2 });
+      const f = crash.exception.frames as { trace: string; hidden?: boolean }[];
+      expect(f).toHaveLength(3);
+      expect(f.map((x) => x.hidden)).toEqual([true, true, undefined]);
+    });
+
+    it('skipFrames beyond the frame count hides all of them; 0 hides none', async () => {
+      const all = await run({ skipFrames: 99 });
+      expect(all.crash.exception.frames.every((x: { hidden?: boolean }) => x.hidden)).toBe(true);
+      const none = await run({ skipFrames: 0 });
+      expect(none.crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
+      expect(none.onError).not.toHaveBeenCalled();
+    });
+
+    it('ignores an invalid skipFrames (negative, fractional, non-number) and warns', async () => {
+      for (const bad of [-1, 1.5, '2', Number.NaN]) {
+        const { crash, onError } = await run({ skipFrames: bad });
+        expect(crash.exception.frames.some((x: { hidden?: boolean }) => x.hidden)).toBe(false);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toContain('skipFrames');
+      }
+    });
+
+    it('applies to a non-Error throwable too', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+      await client.logException('str', { domain: 'd', skipFrames: 1 });
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      expect(crash.exception.domain).toBe('d');
+      expect(crash.exception.frames[0].hidden).toBe(true);
+    });
+  });
+
   it('still writes a crash.json for a non-Error logException, with a synthetic exception', async () => {
     // A bundle with no crash.json produced an issue the backend could only answer with "Crash data
     // for the issue was not found" — present, counted, unusable. Non-Error throwables are ordinary

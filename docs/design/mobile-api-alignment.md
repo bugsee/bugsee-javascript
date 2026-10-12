@@ -18,7 +18,7 @@ Each task is test-first with the mutator loop, keeps the coverage gate, and land
 | T5 | Launch state: `getStatus()` with the Stopped/Launching/Launched/Stopping enum, `relaunch(options?)`, `getLaunchOptions()`, `getHostLaunchOptions()`; verify launch → stop → launch works | `getStatus`, `relaunch`, `getLaunchOptions` | |
 | T6 | Missing options: `captureLogsLevel`, `captureBreadcrumbs`, `detectHttpErrors`, `captureNetworkDefaultSanitizer`, `reportDefaultCrashPriority`, `reportDefaultErrorPriority`; `getDefaultNetworkSanitizer()` so a custom filter can reuse the default redaction | `OptionsDescriptors` keys under `com.bugsee.option.*` | canonical keys already exist for some |
 | T7 | `notify(title, body?, severity?, fields?, urgent?)` | `Bugsee.notify` | needs a backend check first: which endpoint carries it, and does the collector accept it from a browser |
-| T8 | `logException` options: `domain`; check what `mergingRules` does on iOS | Android `ExceptionOptions.Domain`, iOS `BugseeExceptionLoggingOptions` | |
+| T8 | `logException` options: `domain`; check what `mergingRules` does on iOS | Android `ExceptionOptions.Domain`, iOS `BugseeExceptionLoggingOptions` | Done: `domain` + `skipFrames` (see T8 findings) |
 | T9 | Browser: persist the user identifier across page loads, as iOS does | iOS `setUserIdentifier` | storage-failure tolerant |
 
 ## Options added by T6
@@ -42,6 +42,31 @@ Invalid values warn through `onError` and fall back to the default.
 `getDefaultNetworkSanitizer()` (exported from `@bugsee/capture` and the `@bugsee/bugsee` entries) returns
 `{ sanitize, sanitizeUrl, sanitizeErrorMessage }`, the same object the built-in sanitizer uses. Call it from inside a
 `setNetworkEventFilter` filter to keep the default redaction.
+
+## T8 findings
+
+Investigated 2026-10 against Android `library/.../reporting/exceptions/`, iOS `BugseeExceptionLoggingOptions.h`,
+`BGSCrashReport.m`, and worker `crash/{android,apple,javascript}.py`, `crash/managed/common.py`.
+
+- **`domain`** (Android `ExceptionOptions.Domain = "domain"`, iOS `exceptionDomain`): a short issue-organising
+  category. Android writes it as `exception.domain` in crash.json (`ExceptionSerializer`); iOS as the error `domain`.
+  The worker folds it into the grouping signature (`android.py:175-179`, `apple.py:370`: "reports with the same
+  domain and stack trace group together") and prefixes the issue summary with `[domain]` (`android.py:251-268`, capped
+  at 150 chars). **Gap:** JavaScript crashes go through `crash/managed/common.py:get_crash_signatures`, which does not
+  read `domain`, and `javascript.py:530` builds its own summary. The SDK now sends `exception.domain` (the Android wire
+  shape); it has no grouping or summary effect until the worker's managed path reads it. Not verified against a
+  running backend.
+- **`skipFrames`** (Android `ExceptionOptions.SkipFrames`, iOS `mergingRules[BugseeMergingRulesSkipFramesKey]`):
+  skips N top frames when computing the crash location/signature; frames stay in the report. Android applies it
+  client-side in `ExceptionSignature`; the worker also reads `exceptionLoggingOptions.mergingRules.skipFrames`
+  (`android.py:111,248`, `apple.py:301,439`), but not on the managed/JS path. JS equivalent: the top N frames of the
+  outermost exception get `hidden: true`, which `managed/common.py:_get_crash_location` already skips. Same
+  semantics, no worker change, trace still shows them. Implemented.
+- **`mergingRules`**: a dictionary whose only key is `skipFrames`. Not added as its own option; `skipFrames` is the
+  flat equivalent (Android's map already uses the flat key).
+- **`includeVideo`**: forces a video-less report. Not applicable: JS has no video; replay is governed by the
+  `replay` launch option. Kept difference.
+- Invalid values (empty/non-string `domain`, non-integer or negative `skipFrames`) are ignored and routed to `onError`.
 
 ## Kept differences (documented, not changed)
 

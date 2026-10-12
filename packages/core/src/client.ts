@@ -37,7 +37,7 @@ import {
   type Client,
   type OptionsContainer,
 } from './contracts';
-import { buildCrashJson, type FrameEnricher } from './crash';
+import { applyExceptionOptions, buildCrashJson, type FrameEnricher } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
@@ -163,6 +163,19 @@ export interface LogExceptionOptions {
   severity?: SeverityName;
   /** Extra labels for the issue. */
   labels?: string[];
+  /**
+   * Exception domain (Android `ExceptionOptions.Domain`, iOS `exceptionDomain`): a short category such as
+   * `checkout` that organises issues. Sent as `crash.json` `exception.domain`. A non-string or empty
+   * value is ignored and reported through `onError`.
+   */
+  domain?: string;
+  /**
+   * Number of top stack frames to leave out of issue grouping (Android `ExceptionOptions.SkipFrames`, iOS
+   * `mergingRules[skipFrames]`). Use it when a wrapper or adapter logs on the app's behalf, so every error
+   * it reports does not group at the wrapper. The frames stay visible in the trace. Must be a non-negative
+   * integer; anything else is ignored and reported through `onError`.
+   */
+  skipFrames?: number;
 }
 
 /**
@@ -1121,6 +1134,30 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
         ...(options.enrichFrames !== undefined ? { enrichFrames: options.enrichFrames } : {}),
         ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
       });
+      const crashOptions: { domain?: string; skipFrames?: number } = {};
+      const domain = exceptionOptions?.domain;
+      if (domain !== undefined) {
+        if (typeof domain === 'string' && domain !== '') {
+          crashOptions.domain = domain;
+        } else {
+          onError(
+            new Error('logException: ignoring invalid `domain` (expected a non-empty string)'),
+          );
+        }
+      }
+      const skipFrames = exceptionOptions?.skipFrames;
+      if (skipFrames !== undefined) {
+        if (Number.isInteger(skipFrames) && skipFrames >= 0) {
+          crashOptions.skipFrames = skipFrames;
+        } else {
+          onError(
+            new Error(
+              'logException: ignoring invalid `skipFrames` (expected a non-negative integer)',
+            ),
+          );
+        }
+      }
+      applyExceptionOptions(crash, crashOptions);
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,

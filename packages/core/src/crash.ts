@@ -16,6 +16,11 @@ export interface CrashFrame {
   data?: { source?: string; member?: string; line?: number; column?: number };
   debug_id?: string;
   /**
+   * Excluded from the grouping location (the worker skips `hidden` frames when it picks the crash
+   * location) while still shown in the trace. Set by `logException({ skipFrames })`.
+   */
+  hidden?: boolean;
+  /**
    * Local variables in scope at this frame — `{ name: stringified-value }`, already scrubbed and capped
    * by the capturing tier. Absent unless the platform captured them.
    */
@@ -51,6 +56,8 @@ export interface CrashProvenance {
 export interface CrashException {
   name: string;
   reason?: string;
+  /** Application-supplied exception domain (`logException({ domain })`; Android `ExceptionOptions.Domain`). */
+  domain?: string;
   frames: CrashFrame[];
   cause?: CrashException;
 }
@@ -291,6 +298,27 @@ function renderThrowable(value: unknown): string {
     }
   }
   return String(value);
+}
+
+/**
+ * Apply the already-validated `logException` options that live in the crash document: stamp `domain` on
+ * the outermost exception and mark its top `skipFrames` frames `hidden` (Android/iOS `skipFrames`: the
+ * frames stay in the trace but stop deciding the grouping location, so a wrapper or adapter does not
+ * collapse every error it reports into one issue). Mutates and returns `crash`.
+ */
+export function applyExceptionOptions(
+  crash: CrashJson,
+  options: { domain?: string; skipFrames?: number },
+): CrashJson {
+  if (options.domain !== undefined) {
+    crash.exception.domain = options.domain;
+  }
+  if (options.skipFrames !== undefined) {
+    for (const frame of crash.exception.frames.slice(0, options.skipFrames)) {
+      frame.hidden = true;
+    }
+  }
+  return crash;
 }
 
 export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson {
