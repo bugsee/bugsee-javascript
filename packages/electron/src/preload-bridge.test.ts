@@ -32,6 +32,58 @@ function fakeElectron() {
   };
 }
 
+describe('registerBugseePreload - onControl unsubscribe (R4V-3)', () => {
+  it('returns an unsubscribe that removes THAT listener from ipcRenderer and silences the handler', () => {
+    const e = fakeElectron();
+    const removed: Array<{ channel: string; listener: unknown }> = [];
+    const ipcRenderer = {
+      ...e.ipcRenderer,
+      removeListener: (channel: string, listener: unknown) => {
+        removed.push({ channel, listener });
+      },
+    };
+    registerBugseePreload({ ...e, ipcRenderer });
+    const handler = vi.fn();
+    const off = e.exposed[0]?.api.onControl(handler);
+    expect(off).toBeTypeOf('function');
+    const listener = e.listeners.get(BUGSEE_CONTROL_CHANNEL);
+    (off as () => void)();
+    expect(removed).toEqual([{ channel: BUGSEE_CONTROL_CHANNEL, listener }]);
+    listener?.({}, '{"k":"control"}'); // a message already in flight
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('unsubscribing is safe, and still silences the handler, where ipcRenderer cannot remove listeners', () => {
+    const e = fakeElectron();
+    registerBugseePreload(e); // no removeListener
+    const handler = vi.fn();
+    const off = e.exposed[0]?.api.onControl(handler) as () => void;
+    expect(() => off()).not.toThrow();
+    e.listeners.get(BUGSEE_CONTROL_CHANNEL)?.({}, '{"k":"control"}');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('two subscriptions are independent: retiring one leaves the other live', () => {
+    const e = fakeElectron();
+    const all: Array<(event: unknown, ...args: unknown[]) => void> = [];
+    const ipcRenderer = {
+      ...e.ipcRenderer,
+      on: (_c: string, l: (event: unknown, ...args: unknown[]) => void) => {
+        all.push(l);
+      },
+    };
+    registerBugseePreload({ ...e, ipcRenderer });
+    const first = vi.fn();
+    const second = vi.fn();
+    const off = e.exposed[0]?.api.onControl(first) as () => void;
+    e.exposed[0]?.api.onControl(second);
+    off();
+    for (const l of all) l({}, 'x');
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith('x');
+  });
+});
+
 describe('registerBugseePreload', () => {
   it('exposes __bugseeElectron with post/sendHello/onControl into the main world', () => {
     const e = fakeElectron();

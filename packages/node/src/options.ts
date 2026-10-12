@@ -1,5 +1,6 @@
 import {
   BOOLEAN_OPTION,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   type OptionDefinition,
 } from '@bugsee/core';
@@ -45,12 +46,15 @@ export const NodePrivacyOption = {
   CaptureSourceContext: 'com.bugsee.option.capture.source-context',
   /** Auto-instrument incoming server requests. Default on; only boolean `false` opts out. */
   InstrumentIncomingRequests: 'com.bugsee.option.server.instrument-incoming-requests',
+  /** Inject `traceparent` on outgoing requests (node's OWN switch; allowlist-gated). Default on; only `true` keeps it on. */
+  PropagateTrace: 'com.bugsee.option.node.propagate-trace',
 } as const;
 
 /**
  * Friendly → canonical definitions. `captureLocalVariables` / `captureSourceContext` accept `true` or an options
  * object (recorded as `true`; the bag itself is read from the host's options): anything else is OFF + reported.
- * `instrumentIncomingRequests` keeps its default (ON) on an invalid value and reports it.
+ * `instrumentIncomingRequests` and `propagateTrace` are ON by default and capture/emit data, so an invalid value is
+ * OFF and reported (R4V-2, R4V-4); only boolean `false` is a deliberate opt-out.
  */
 export const NODE_PRIVACY_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   {
@@ -69,6 +73,12 @@ export const NODE_PRIVACY_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     friendly: 'instrumentIncomingRequests',
     key: NodePrivacyOption.InstrumentIncomingRequests,
     default: true,
-    ...BOOLEAN_OPTION,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'propagateTrace',
+    key: NodePrivacyOption.PropagateTrace,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
   },
 ];

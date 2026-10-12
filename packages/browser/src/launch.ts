@@ -22,7 +22,6 @@ import {
   asInternalClient,
   BlackoutToken,
   BOOLEAN_OPTION,
-  BOOLEAN_OR_BAG_OPTION,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -43,6 +42,7 @@ import {
   createUploadPipeline,
   defineService,
   FAIL_CLOSED_BOOLEAN_OPTION,
+  FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
   getCarrierClient,
   getCarrierPendingLaunch,
@@ -148,9 +148,15 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark" (R3V-2).
     ...FAIL_ON_BOOLEAN_OPTION,
   },
-  // Session replay: on by default, `false` opts out, an object customises it. An invalid scalar keeps the
-  // default (masking is fail-closed regardless) and is reported; it must never throw (R3V-3).
-  { friendly: 'replay', key: REPLAY_OPTION_KEY, default: true, ...BOOLEAN_OR_BAG_OPTION },
+  // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
+  // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported (R4V-2); it must never throw (R3V-3).
+  // Masking is fail-closed regardless.
+  {
+    friendly: 'replay',
+    key: REPLAY_OPTION_KEY,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
+  },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -842,7 +848,7 @@ async function buildLaunch(
   // import resolves a tick after launch; recording starts then. Fire-and-forget (launch returns sync).
   if (replayEnabled && fileEncoders !== undefined) {
     // The bag is read from the host's own options (the resolved record only says "on"); an invalid value
-    // resolved to the default, so anything that is not a plain object is `{}`.
+    // resolved to OFF (never reaching here), so anything that is not a plain object is `{}`.
     const replayOptions: ReplayLaunchOptions =
       typeof options.replay === 'object' &&
       options.replay !== null &&
@@ -850,7 +856,18 @@ async function buildLaunch(
         ? options.replay
         : {};
     const { canvas: canvasOption, ...replayMasking } = replayOptions;
-    const canvasEnabled = canvasOption !== undefined && canvasOption !== false;
+    // Canvas pixels are recorded UNMASKED, so only boolean `true` or a plain object enables the add-on; anything
+    // else (`0`, `null`, `''`, `'false'`, an array) is OFF and reported (R4V-2).
+    const canvasIsBag =
+      typeof canvasOption === 'object' && canvasOption !== null && !Array.isArray(canvasOption);
+    const canvasEnabled = canvasOption === true || canvasIsBag;
+    if (canvasOption !== undefined && canvasOption !== false && !canvasEnabled) {
+      options.onError?.(
+        new Error(
+          'Bugsee: replay.canvas must be a boolean or an options object; canvas replay stays OFF',
+        ),
+      );
+    }
     void import('@bugsee/replay')
       .then(async (m) => {
         // Canvas is an opt-in add-on: lazy-`import()` @bugsee/replay-canvas ONLY when replay.canvas is set,
@@ -858,7 +875,9 @@ async function buildLaunch(
         // replay never loads it.
         const canvas = canvasEnabled
           ? (await import('@bugsee/replay-canvas')).createCanvasRecordConfig(
-              typeof canvasOption === 'object' ? canvasOption : {},
+              canvasIsBag
+                ? (canvasOption as Exclude<typeof canvasOption, boolean | undefined>)
+                : {},
             )
           : undefined;
         m.registerReplay(client, fileEncoders, {
@@ -872,7 +891,13 @@ async function buildLaunch(
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         });
       })
-      .catch((error) => options.onError?.(error));
+      .catch((error) => {
+        try {
+          options.onError?.(error);
+        } catch {
+          // A throwing host sink must never become an unhandled rejection (R4V-10).
+        }
+      });
   }
 
   // Detection providers: window error → crash, unhandledrejection → error.

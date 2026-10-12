@@ -241,6 +241,35 @@ describe('createLocalVariablesCapture', () => {
     });
   });
 
+  // R4V-2 (nested option bag): `includeCaught` collects MORE data (every caught throw pauses the process),
+  // so only boolean `true` enables it; `'false'`, `1`, `null`, `0`, `''` are OFF and reported.
+  it.each([
+    'false',
+    'true',
+    1,
+    null,
+    0,
+    '',
+    {},
+  ])('includeCaught=%j (not boolean true) stays on uncaught-only and reports', (bad) => {
+    const f = fakeSession();
+    const onError = vi.fn();
+    createLocalVariablesCapture({ session: f.session, includeCaught: bad as never, onError });
+    expect(f.posts.find((p) => p.method === 'Debugger.setPauseOnExceptions')?.params).toEqual({
+      state: 'uncaught',
+    });
+    expect(
+      onError.mock.calls.filter((c) => String((c[0] as Error).message).includes('includeCaught')),
+    ).toHaveLength(1);
+  });
+
+  it('includeCaught: false / absent report nothing', () => {
+    const onError = vi.fn();
+    createLocalVariablesCapture({ session: fakeSession().session, includeCaught: false, onError });
+    createLocalVariablesCapture({ session: fakeSession().session, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('asks V8 to PREVIEW each value, so an object arrives unrolled at no extra round-trip', () => {
     // Without `generatePreview` V8 sends only a description and every object renders as the word
     // "Object". Sentry pays a SECOND `Runtime.getProperties` per object-valued local instead; this
@@ -1134,6 +1163,25 @@ describe('createLocalVariablesCapture — report-site capture', () => {
     const f = reportSiteSession({}, { reportSite: false });
     f.capture.captureReportSite(new Error('boom'));
     expect(f.methods()).not.toContain('Debugger.pause');
+  });
+
+  // R4V-2: the report-site pause is default ON inside the opt-in feature; an invalid value is OFF (fail closed)
+  // and reported, never "on because it is truthy" (`'false'`).
+  it.each([
+    'false',
+    'true',
+    0,
+    null,
+    '',
+    1,
+  ])('reportSite=%j (not a boolean) is OFF and reports', (bad) => {
+    const onError = vi.fn();
+    const f = reportSiteSession({}, { reportSite: bad as never, onError });
+    f.capture.captureReportSite(new Error('boom'));
+    expect(f.methods()).not.toContain('Debugger.pause');
+    expect(
+      onError.mock.calls.filter((c) => String((c[0] as Error).message).includes('reportSite')),
+    ).toHaveLength(1);
   });
 
   it('reports a failure to pause instead of throwing into the caller’s catch block', () => {

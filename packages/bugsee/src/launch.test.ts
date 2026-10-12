@@ -673,6 +673,40 @@ describe('bugsee umbrella launch', () => {
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
+  // R4V-10: `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
+  // non-string) value means "no exporter": data is exported only to an explicitly configured endpoint.
+  it.each([
+    '',
+    null,
+    0,
+  ])('otelExportUrl=%j builds NO exporter (nothing is posted to any OTLP endpoint)', async (bad) => {
+    const { scheduler, fire } = fakeScheduler();
+    const calls: string[] = [];
+    const transport = vi.fn<HttpTransport>(async (url: string) => {
+      if (url.endsWith('/v2/sessions')) {
+        return { status: 200, headers: {}, body: jsonBody({ access_token: 'tok' }) };
+      }
+      calls.push(url);
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    });
+    const client = await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          scheduler,
+          transport,
+          performanceFlushIntervalMs: 7777,
+          otelExportUrl: bad as never,
+        }),
+      ),
+    );
+    (client.ext('performance').getActiveSpan() as Transaction).finish();
+    await fire(7777);
+    expect(calls.some((u) => u.endsWith('/v2/performance/transactions'))).toBe(true); // Bugsee still gets it
+    expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
+  });
+
   it('produce-tee: an OTLP failure surfaces to onError, but Bugsee still receives the batch', async () => {
     const { scheduler, fire } = fakeScheduler();
     const onError = vi.fn();

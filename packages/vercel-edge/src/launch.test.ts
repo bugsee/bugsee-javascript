@@ -405,6 +405,43 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     await client.stop?.();
   });
 
+  it.each([
+    ['true'],
+    [1],
+    [null],
+    [0],
+    [''],
+    [{}],
+  ])('an invalid partitionCaptureByTenant %j FAILS ON (partitioned) and is reported (R4V-1)', async (value) => {
+    const errors: Error[] = [];
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: value,
+      carrier: {},
+      onError: (e: Error) => errors.push(e),
+    } as unknown as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeDefined();
+    expect(errors.some((e) => e.message.includes('partitionCaptureByTenant'))).toBe(true);
+    await client.stop?.();
+  });
+
+  it.each([[undefined], [false]])('%j is OFF and reports nothing', async (value) => {
+    const errors: Error[] = [];
+    const client = launchEdge('tok', {
+      partitionCaptureByTenant: value,
+      carrier: {},
+      onError: (e: Error) => errors.push(e),
+    } as unknown as Parameters<typeof launchEdge>[1]);
+    const store = client.getService(
+      (await import('@bugsee/core')).CaptureStoreToken,
+    ) as unknown as { owners?: () => string[] };
+    expect(store.owners).toBeUndefined();
+    expect(errors.some((e) => e.message.includes('partitionCaptureByTenant'))).toBe(false);
+    await client.stop?.();
+  });
+
   it('uses the plain single-tenant store by default (unchanged for Vercel Edge)', async () => {
     const client = launchEdge('tok', { carrier: {} } as Parameters<typeof launchEdge>[1]);
     const store = client.getService(
@@ -504,6 +541,26 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
     // …and the remedy, which is the only part the reader can act on.
     expect(message).toContain('Launch via @bugsee/cloudflare first');
     expect(message).toContain('or do not call launchEdge directly');
+  });
+
+  // R4V-1: an INVALID value asks for partitioning too (it fails ON), so the reuse warning must fire for it as well.
+  it.each([
+    ['true'],
+    [1],
+    [null],
+  ])('also names the loss when the repeat launch passes %j', (value) => {
+    const carrier = {};
+    const errors: unknown[] = [];
+    launchTracked('tok', baseOptions({ carrier }));
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier,
+        partitionCaptureByTenant: value as never,
+        onError: (e) => errors.push(e),
+      }),
+    );
+    expect(errors.map(String).join('\n')).toContain('per-tenant isolation');
   });
 
   it('stays quiet when the reused client DOES partition', () => {

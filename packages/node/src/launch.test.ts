@@ -2213,12 +2213,23 @@ describe('launch — trace propagation (X3)', () => {
     }
   });
 
-  it('propagateTrace:false is the kill-switch — NO decorator wired, no traceparent even in a traced context', async () => {
+  // R4V-4: `propagateTrace` is node's OWN definition (default ON, fail OFF): `'false'`/`0`/`null`/`''` used to
+  // leave propagation ON (a raw `=== false` read). Only boolean `true` or absence keeps it on.
+  it.each([
+    false,
+    'false',
+    0,
+    null,
+    '',
+    'true',
+    1,
+  ])('propagateTrace=%j is the kill-switch — NO decorator wired, no traceparent even in a traced context', async (value) => {
     const { scheduler } = fakeScheduler();
     let init: { headers?: Record<string, string> } | undefined;
     fetchSpy((i) => {
       init = i;
     });
+    const errors: Error[] = [];
     let client: ReturnType<typeof launch> | undefined;
     try {
       client = launchTracked(
@@ -2227,8 +2238,9 @@ describe('launch — trace propagation (X3)', () => {
           scheduler,
           captureNetwork: true,
           capturedDataStore: 'memory',
-          propagateTrace: false,
+          propagateTrace: value as never,
           tracePropagationTargets: ['target.test'],
+          onError: (e: unknown) => errors.push(e as Error),
         }),
       );
       const store = client.getService(RequestContextStoreToken);
@@ -2239,6 +2251,31 @@ describe('launch — trace propagation (X3)', () => {
         );
       });
       expect(init?.headers?.traceparent).toBeUndefined(); // the kill-switch removed the decorator entirely
+      expect(errors.filter((e) => e.message.startsWith('propagateTrace')).length).toBe(
+        value === false ? 0 : 1,
+      );
+    } finally {
+      await client?.stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('propagateTrace:true is accepted without a report', async () => {
+    const { scheduler } = fakeScheduler();
+    const errors: Error[] = [];
+    fetchSpy(() => {});
+    let client: ReturnType<typeof launch> | undefined;
+    try {
+      client = launchTracked(
+        'tok',
+        baseOptions({
+          scheduler,
+          capturedDataStore: 'memory',
+          propagateTrace: true,
+          onError: (e: unknown) => errors.push(e as Error),
+        }),
+      );
+      expect(errors.filter((e) => e.message.startsWith('propagateTrace'))).toEqual([]);
     } finally {
       await client?.stop();
       vi.unstubAllGlobals();

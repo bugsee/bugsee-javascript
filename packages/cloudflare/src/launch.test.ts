@@ -115,4 +115,27 @@ describe('launch (Cloudflare) — tenant partitioning', () => {
       expect.objectContaining({ partitionCaptureByTenant: false }),
     );
   });
+
+  it('an explicit undefined does not override the Cloudflare default (R4V-1)', () => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok', { partitionCaptureByTenant: undefined });
+    expect(spy).toHaveBeenCalledWith(
+      'tok',
+      expect.objectContaining({ partitionCaptureByTenant: true }),
+    );
+  });
+
+  it.each([
+    ['true'],
+    [1],
+    [null],
+    [0],
+    [''],
+  ])('passes an invalid value %j through (edge treats it as ON and reports it)', (value) => {
+    const spy = vi.spyOn(edge, 'launchEdge').mockReturnValue({} as edge.Bugsee);
+    launch('tok', { partitionCaptureByTenant: value as never });
+    const passed = (spy.mock.calls[0]?.[1] as { partitionCaptureByTenant?: unknown })
+      .partitionCaptureByTenant;
+    expect(passed).toBe(value);
+  });
 });

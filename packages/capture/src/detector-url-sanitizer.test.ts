@@ -245,7 +245,6 @@ describe('templatePathSegment: short tokens, card numbers and dot-less e-mail ho
     // lower-case alphanumeric with several separate digit runs
     ['k3j4h5g6f7d8s9a0q1w2', '{token}'],
     ['x9y8z7w6v5u4t3s2r1', '{token}'],
-    ['abcdefgh1abcdefgh2', '{token}'], // exactly two separate digit runs
     // card numbers with separators (13-19 digits)
     ['4111-1111-1111-1111', '{card}'],
     ['4111%201111%201111%201111', '{card}'],
@@ -263,6 +262,7 @@ describe('templatePathSegment: short tokens, card numbers and dot-less e-mail ho
 
   it.each([
     // ordinary segments of the same lengths / shapes stay readable
+    'abcdefgh1abcdefgh2', // two plain words and a number between: reads as words (R4V-5)
     'authentication-v2', // 17, one digit run, two words
     'ecmascript2015modules', // 21, a single digit run
     'ProductCatalogItems', // 19, mixed case, no digit
@@ -320,5 +320,141 @@ describe('R3V-4 rules stay linear: 1,000,000-character adversarial inputs', () =
     templatePathSegment(input.slice(0, 22));
     templatePathSegment(input.slice(0, 200));
     expect(Date.now() - started).toBeLessThan(3000);
+  });
+});
+
+// R4V-5: the 16-23 character `{token}` rule merged ordinary camelCase / versioned route names (every endpoint
+// became one issue). It now needs RANDOMNESS: a segment made of words is an identifier, not a secret.
+describe('templatePathSegment: identifiers that read as words are NOT tokens (R4V-5)', () => {
+  it.each([
+    'getUserDetailsV2',
+    'exportCsvReportV3',
+    'HTML5VideoPlayer2',
+    'Chapter12Section3',
+    'gpt4oMiniPreview',
+    'updateUserEmail2FA',
+    'iso-8859-1-encoding',
+    'covid19-2020-report',
+    'report_2024_q3_final',
+    'v1beta1-2024-q3-api',
+    // longer camelCase names stay as well (the 24+ and 20-21 character rules share the check)
+    'getAllUserNotificationSettingsV2',
+    'getUserNotificationsV2',
+    'getUserDetailsListV2', // 20 characters: the 20-21 character id rule shares the check
+  ])('keeps %j', (segment) => {
+    expect(templatePathSegment(segment)).toBe(segment);
+  });
+
+  it.each([
+    // 128-bit random, base64url (22) and a 17-byte value (23)
+    'qJf3Gm9Yw2LzPv8XtKc1Ra',
+    'aB3dE5gH7jK9mN1pQrStUv',
+    'Xk2Pq9ZrLw7TnVb4YcHs1A',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijk',
+    // 20-21 character ids
+    'V1StGXR8_Z5jdHi6B-myT',
+    // hex 16+
+    '5f2b8c1d9e3a7b40',
+    '5F2B8C1D9E3A7B40AA',
+    // lower-case base36 with several digit runs
+    'k3j4h5g6f7d8s9a0q1w2',
+  ])('still templates the real token %j', (segment) => {
+    expect(templatePathSegment(segment)).toMatch(/^\{(token|id|hex)\}/);
+  });
+
+  it('templates >= 99.8% of 20,000 seeded 128-bit base64url tokens (measured residual: 0.07%)', () => {
+    // mulberry32: a deterministic PRNG so the figure is reproducible, not luck.
+    let state = 0x9e3779b9;
+    const next = (): number => {
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let eligible = 0;
+    let templated = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      let token = '';
+      for (let j = 0; j < 22; j += 1) {
+        token += alphabet.charAt(Math.floor(next() * 64));
+      }
+      if (!/[0-9]/.test(token)) {
+        continue; // a number-free token is out of scope of the rule (the existing "no digit" behaviour)
+      }
+      eligible += 1;
+      if (templatePathSegment(token) !== token) {
+        templated += 1;
+      }
+    }
+    expect(templated / eligible).toBeGreaterThanOrEqual(0.998);
+  });
+
+  // The thresholds are each pinned by a segment that sits just on the token side of one of them.
+  it.each([
+    ['Report1X9Q2K7Z4Detail', 'few of its characters are words (coverage below 60%)'],
+    ['Mini1Page2Show3Menu4', 'no word of 6+ letters'],
+    ['xyReportDetailsq9', 'three stray lower-case letters outside the words'],
+    [
+      'abc1defghijk-2024-final',
+      'a long number-in-word chunk is not a version marker (23 characters)',
+    ],
+    ['V1beta-2024-q3-api-v2', 'a mixed-case number-in-word chunk is not a version marker'],
+    ['a1b2c3-d4e5f6-g7h8i9', 'three number runs in a chunk are not a slug word'],
+  ])('%j is a token: %s', (segment) => {
+    expect(templatePathSegment(segment)).toMatch(/^\{(token|id)\}$/);
+  });
+
+  it('a tilde (a URL-safe token character) is not a slug-word character', () => {
+    expect(templatePathSegment('k3j4~h5g6f7d8s9a0q1w2')).toBe('{token}');
+  });
+
+  it('a number inside a mixed-case word is a token piece, not a version marker', () => {
+    expect(templatePathSegment('V1StGXR8-Z5jdHi6B-myT')).not.toBe('V1StGXR8-Z5jdHi6B-myT');
+  });
+});
+
+describe('templatePathSegment: e-mail uses the LAST @ and ignores dist-tags (R4V-6)', () => {
+  it.each([
+    'react@latest',
+    'pkg@next',
+    'lodash@beta',
+    'vue@alpha',
+    'svelte@canary',
+    'typescript@rc',
+    'esbuild@nightly',
+    'left-pad@stable',
+    'x-lib@experimental',
+    'react@LATEST',
+  ])('keeps the package spec %j', (segment) => {
+    expect(templatePathSegment(segment)).toBe(segment);
+  });
+
+  it.each([
+    ['@alice@example.com', '{email}'],
+    ['%40alice%40example.com', '{email}'],
+    ['a@b@localhost', '{email}'],
+    ['alice@example.com', '{email}'],
+    ['user@intranet', '{email}'],
+    ['user@latestnews', '{email}'], // a host that merely starts with a tag word
+  ])('%j -> %j', (segment, expected) => {
+    expect(templatePathSegment(segment)).toBe(expected);
+  });
+
+  it('a scoped package spec keeps its scope and version tag', () => {
+    expect(sanitizeDetectorUrl('https://cdn.test/npm/@scope/pkg@latest/dist.js')).toBe(
+      'https://cdn.test/npm/@scope/pkg@latest/dist.js',
+    );
+  });
+
+  it('the word check stays linear: one million probes and million-character adversarial segments', () => {
+    const started = Date.now();
+    templatePathSegment('a@'.repeat(500_000));
+    templatePathSegment('Abc1'.repeat(250_000));
+    templatePathSegment('abc-'.repeat(250_000));
+    for (let i = 0; i < 1_000_000; i += 1) {
+      templatePathSegment('getUserDetailsV2'.slice(0, 1 + (i % 16)));
+    }
+    expect(Date.now() - started).toBeLessThan(30_000);
   });
 });

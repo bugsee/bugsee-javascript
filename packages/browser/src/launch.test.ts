@@ -2106,8 +2106,8 @@ describe('launch — session replay (lazy)', () => {
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
   });
 
-  // R3V-3: a malformed `replay` value neither throws (`null` did) nor silently disables: replay stays on at its
-  // fail-closed masking defaults (the app's bag is not honoured: it is not a bag) and `onError` is told.
+  // R4V-2 (product decision): `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
+  // closed) and reported. It never throws (`null` once did). Masking stays fail-closed regardless.
   it.each([
     null,
     0,
@@ -2115,18 +2115,36 @@ describe('launch — session replay (lazy)', () => {
     'false',
     'true',
     1,
-  ])('a malformed replay value %j keeps replay ON with default (fail-closed) masking and reports', async (bad) => {
+  ])('a malformed replay value %j turns replay OFF (not registered) and reports', async (bad) => {
     const onError = vi.fn();
     await launchTracked('tok', domReplayOptions({ replay: bad as never, onError }));
-    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
-    expect(registerReplay.mock.calls[0]?.[2]).toEqual({
-      blackout: expect.any(Object),
-      onError: expect.any(Function),
-    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(registerReplay).not.toHaveBeenCalled();
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
     expect(
       onError.mock.calls.filter((c) =>
         String((c[0] as Error).message).startsWith('replay must be'),
       ),
+    ).toHaveLength(1);
+  });
+
+  // R4V-2: canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
+  it.each([
+    0,
+    null,
+    '',
+    'false',
+    'true',
+    1,
+    [[]],
+  ])('replay.canvas=%j is OFF (add-on not loaded) and reported', async (bad) => {
+    const onError = vi.fn();
+    await launchTracked('tok', domReplayOptions({ replay: { canvas: bad as never }, onError }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    expect((registerReplay.mock.calls[0]?.[2] as { canvas?: unknown }).canvas).toBeUndefined();
+    expect(
+      onError.mock.calls.filter((c) => String((c[0] as Error).message).includes('replay.canvas')),
     ).toHaveLength(1);
   });
 
@@ -2149,6 +2167,33 @@ describe('launch — session replay (lazy)', () => {
     await launchTracked('tok', domReplayOptions({ replay: true, onError }));
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
+  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load (R4V-10)', async () => {
+    registerReplay.mockImplementationOnce(() => {
+      throw new Error('replay boom');
+    });
+    const onError = vi.fn(() => {
+      throw new Error('sink boom');
+    });
+    const unhandled = vi.fn();
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on: (e: string, f: () => void) => void;
+          off: (e: string, f: () => void) => void;
+        };
+      }
+    ).process; // this package has no node types
+    proc.on('unhandledRejection', unhandled);
+    try {
+      await launchTracked('tok', domReplayOptions({ replay: true, onError }));
+      await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      proc.off('unhandledRejection', unhandled);
+    }
   });
 
   it('wires canvas when replay.canvas is set — resolves the config + threads it into registerReplay', async () => {

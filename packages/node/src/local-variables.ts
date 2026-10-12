@@ -287,15 +287,28 @@ export function createLocalVariablesCapture(
   options: LocalVariablesOptions = {},
 ): LocalVariablesCapture {
   const {
-    includeCaught = false,
     maxFrames = 5,
     maxVariables = 20,
     maxValueLength = 120,
     maxCached = 20,
     maxCaughtPerSecond = 50,
-    reportSite: reportSite_enabled = true,
   } = options;
   const onError = options.onError ?? ((): void => {});
+  // Both switches COLLECT data (a process pause per caught throw / per report), so only boolean `true` enables
+  // them; any other non-undefined value (`'false'`, `1`, `null`) is OFF and reported, never truthy-ON (R4V-2).
+  const readSwitch = (name: 'includeCaught' | 'reportSite', fallback: boolean): boolean => {
+    const value: unknown = options[name];
+    if (value === undefined) {
+      return fallback;
+    }
+    if (typeof value !== 'boolean') {
+      onError(new Error(`Bugsee: ${name} must be a boolean, got ${typeof value}; it stays OFF`));
+      return false;
+    }
+    return value;
+  };
+  const includeCaught = readSwitch('includeCaught', false);
+  const reportSite_enabled = readSwitch('reportSite', true);
   const clock = options.clock ?? createSystemClock();
   const scheduler = options.scheduler ?? defaultScheduler;
   const session = options.session;

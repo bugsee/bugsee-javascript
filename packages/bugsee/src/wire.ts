@@ -182,7 +182,12 @@ export function wireUmbrella<C extends BugseeClient>(
   // Resolve the performance.* options the extension owns (friendly → canonical, defaults applied).
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
-    PERFORMANCE_OPTION_DEFINITIONS,
+    // `propagateTrace` is the BROWSER's perf-sourced propagation switch; on Node the `@bugsee/node` launch owns that
+    // option (default ON, invalid => OFF) and reports it, so the umbrella must not judge it a second time with a
+    // contradictory definition ("using false" while node kept propagating: R4V-4).
+    platform.pageload
+      ? PERFORMANCE_OPTION_DEFINITIONS
+      : PERFORMANCE_OPTION_DEFINITIONS.filter((d) => d.friendly !== 'propagateTrace'),
     internals.onError,
   );
 
@@ -200,7 +205,8 @@ export function wireUmbrella<C extends BugseeClient>(
   // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
   const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
   const otlpSend =
-    options.otelExportUrl !== undefined
+    // Only a NON-EMPTY string configures an exporter: `''` would post to the page's own URL (R4V-10).
+    typeof options.otelExportUrl === 'string' && options.otelExportUrl !== ''
       ? createOtlpTraceExporter({
           transport: internals.transport,
           url: options.otelExportUrl,

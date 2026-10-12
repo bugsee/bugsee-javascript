@@ -27,6 +27,9 @@ import { describe, expect, it } from 'vitest';
 //   off      data capture that is ON by default, or collects more: an invalid value is OFF (fail closed)
 //   on       protective (hides/blocks data): an invalid value is ON
 //   default  keeps the option's default (it is the safe side, or not a privacy switch); only the boolean flips it
+// The SAFE side is classified explicitly per option (R4V-1): "OFF unless true" is right for capture, WRONG for an
+// option that PROTECTS (tenant partitioning, canvas blocking, blackout, obscuring), whose invalid value must be ON.
+// Nested option bags (`replay.*`, `captureLocalVariables.*`, `traceResponse.*`) are audited by NESTED below.
 // (WebView/Electron/performance consumers of the same rule are covered by their own package tests.)
 
 const packages = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -50,7 +53,7 @@ const DIRECTIONS: Record<string, Direction> = {
   captureInteractions: 'off',
   captureViewHierarchy: 'off',
   startInBlackout: 'on',
-  replay: 'default', // default ON; masking is fail-closed on its own
+  replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF (R4V-2); masking is fail-closed on its own
   persistUserIdentifier: 'default', // default OFF
   reportSummaryRequired: 'default',
   reportDescriptionRequired: 'default',
@@ -63,7 +66,7 @@ const DIRECTIONS: Record<string, Direction> = {
   detectHangs: 'default', // default ON, a diagnostic
   captureLocalVariables: 'off',
   captureSourceContext: 'off',
-  instrumentIncomingRequests: 'default', // default ON: only boolean false opts out
+  instrumentIncomingRequests: 'off', // default ON, collects request data: an invalid value is OFF (R4V-2)
   // webview
   captureObscuring: 'on',
   // webworker
@@ -72,38 +75,59 @@ const DIRECTIONS: Record<string, Direction> = {
   performanceMonitoring: 'off',
   traceNavigations: 'off',
   traceInteractions: 'off',
-  propagateTrace: 'default', // default OFF (browser): only boolean true opts in
+  // `propagateTrace` exists TWICE with different defaults, so it is keyed by package:
+  'node:propagateTrace': 'off', // node's own definition: default ON, invalid => OFF (R4V-4)
+  'performance:propagateTrace': 'default', // browser perf-sourced: default OFF, only boolean true opts in
 };
 
 /**
- * Boolean-typed interface options that are NOT read through the normaliser, each with why that is safe. Keyed
- * `package:option`. Everything here is either strictly `=== true` (OFF unless boolean true), read through the
- * `resolveFailOnBoolean` helper, or not a privacy switch.
+ * Boolean-typed interface options that are NOT read through the normaliser, each with its SAFE side and why the
+ * raw read is safe. Keyed `package:option`.
+ *   off  capture/collection: invalid is OFF; the read is strictly `=== true` (OFF unless boolean true)
+ *   on   PROTECTS: invalid must be ON; the read is `resolveFailOnBoolean` (or a pass-through of it)
+ *   n/a  not a capture/privacy switch (durability / process policy / UI trigger)
+ * `check` (when present) is a source pattern that MUST appear in the package's non-test sources: it pins the read
+ * that makes the classification true, so changing the read back to `=== true` fails here.
  */
-const RAW_STRICT: Record<string, string> = {
-  'browser:persist': 'read `=== true`: OFF unless boolean true',
-  'browser:recover': 'durability behaviour of already-persisted data, not a capture switch',
-  'browser:holdBlackout':
-    'INTERNAL silent hold, read through resolveFailOnBoolean (invalid => dark)',
-  'electron:holdBlackout':
-    'INTERNAL silent hold, read through resolveFailOnBoolean (invalid => dark)',
-  'electron:persist': 'browser option, read `=== true`',
-  'electron:recover': 'durability behaviour, not a capture switch',
-  'node:recover': 'durability behaviour of already-persisted data, not a capture switch',
-  'node:exitOnUncaught': 'process policy, not a capture switch',
-  'electron:exitOnUncaught': 'node option: process policy, not a capture switch',
-  'node:propagateTrace':
-    'default ON, allowlist-gated (nothing propagates without tracePropagationTargets)',
-  'electron:propagateTrace': 'node option: default ON, allowlist-gated',
-  'webworker:recover': 'durability behaviour, not a capture switch',
-  'vercel-edge:partitionCaptureByTenant': 'read `=== true`: OFF unless boolean true',
-  'webview:reportTrigger': 'enables native report gestures (a UI trigger, no capture)',
-  'bugsee:persist': 'browser option, read `=== true`',
-  'bugsee:recover': 'durability behaviour, not a capture switch',
-  'bugsee:holdBlackout':
-    'INTERNAL silent hold, read through resolveFailOnBoolean (invalid => dark)',
-  'bugsee:exitOnUncaught': 'process policy, not a capture switch',
-  'bugsee:otelConsume': 'read `=== true`: OFF unless boolean true',
+interface RawEntry {
+  safe: 'off' | 'on' | 'n/a';
+  why: string;
+  check?: [pkg: string, pattern: RegExp];
+}
+const RAW_STRICT: Record<string, RawEntry> = {
+  'browser:persist': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
+  'browser:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
+  'browser:holdBlackout': {
+    safe: 'on',
+    why: 'INTERNAL silent hold (invalid => dark)',
+    check: ['browser', /resolveFailOnBoolean\(\s*options\.holdBlackout/],
+  },
+  'electron:holdBlackout': {
+    safe: 'on',
+    why: 'INTERNAL hold, forwarded to the browser read above',
+  },
+  'electron:persist': { safe: 'off', why: 'browser option, read `=== true`' },
+  'electron:recover': { safe: 'n/a', why: 'durability behaviour' },
+  'node:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
+  'node:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
+  'electron:exitOnUncaught': { safe: 'n/a', why: 'node option: process policy' },
+  'webworker:recover': { safe: 'n/a', why: 'durability behaviour' },
+  'vercel-edge:partitionCaptureByTenant': {
+    safe: 'on',
+    why: 'PROTECTS (cross-tenant isolation): resolveFailOnBoolean + onError (R4V-1)',
+    check: ['vercel-edge', /resolveFailOnBoolean\(\s*options\.partitionCaptureByTenant/],
+  },
+  'cloudflare:partitionCaptureByTenant': {
+    safe: 'on',
+    why: 'default ON applied only for `undefined`, AFTER the spread; invalid values reach the edge read',
+    check: ['cloudflare', /options\.partitionCaptureByTenant === undefined\s*\?\s*true/],
+  },
+  'webview:reportTrigger': { safe: 'n/a', why: 'enables native report gestures (a UI trigger)' },
+  'bugsee:persist': { safe: 'off', why: 'browser option, read `=== true`' },
+  'bugsee:recover': { safe: 'n/a', why: 'durability behaviour' },
+  'bugsee:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
+  'bugsee:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
+  'bugsee:otelConsume': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
 };
 
 /** Which packages' definitions a launch-options interface can see. */
@@ -114,6 +138,8 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['browser', 'src/launch.ts', 'BugseeLaunchOptions', ['core', 'browser']],
   ['webworker', 'src/launch.ts', 'BugseeWorkerLaunchOptions', ['core', 'webworker']],
   ['vercel-edge', 'src/launch.ts', 'BugseeEdgeLaunchOptions', ['core', 'vercel-edge']],
+  // Cloudflare re-uses the edge interface (imported), so the checker resolves it through the import alias.
+  ['cloudflare', 'src/launch.ts', 'BugseeEdgeLaunchOptions', ['core', 'vercel-edge']],
   ['webview', 'src/launch.ts', 'BugseeWebViewLaunchOptions', ['core', 'webview']],
   ['bugsee', 'src/launch.ts', 'BugseeLaunchOptionsWithPerformance', UMBRELLA],
   ['bugsee', 'src/server-launch.ts', 'BugseeServerLaunchOptions', UMBRELLA],
@@ -121,7 +147,11 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions', ['core', 'browser']],
 ];
 
-function booleanKeys(pkg: string, file: string, name: string): string[] {
+function interfaceOf(
+  pkg: string,
+  file: string,
+  name: string,
+): { checker: ts.TypeChecker; declaration: ts.InterfaceDeclaration } {
   const root = join(packages, pkg);
   const configPath = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
   if (configPath === undefined) {
@@ -133,21 +163,66 @@ function booleanKeys(pkg: string, file: string, name: string): string[] {
   const program = ts.createProgram([target], { ...parsed.options, noEmit: true });
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(target);
-  const declaration = source?.statements.find(
+  let declaration = source?.statements.find(
     (statement): statement is ts.InterfaceDeclaration =>
       ts.isInterfaceDeclaration(statement) && statement.name.text === name,
   );
   if (declaration === undefined) {
+    // Not declared here: follow an import of that name to its declaration (the Cloudflare entry).
+    const aliased = source?.statements
+      .filter(ts.isImportDeclaration)
+      .flatMap((statement) => {
+        const bindings = statement.importClause?.namedBindings;
+        return bindings !== undefined && ts.isNamedImports(bindings) ? [...bindings.elements] : [];
+      })
+      .find((element) => element.name.text === name);
+    const symbol =
+      aliased === undefined
+        ? undefined
+        : checker.getAliasedSymbol(checker.getSymbolAtLocation(aliased.name) as ts.Symbol);
+    declaration = symbol?.declarations?.find(ts.isInterfaceDeclaration);
+  }
+  if (declaration === undefined) {
     throw new Error(`${name} not found in ${target}`);
   }
+  return { checker, declaration };
+}
+
+const isBooleanLike = (checker: ts.TypeChecker, symbol: ts.Symbol, at: ts.Node): boolean => {
+  const type = checker.getTypeOfSymbolAtLocation(symbol, at);
+  const parts = type.isUnion() ? type.types : [type];
+  return parts.some((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0);
+};
+
+function booleanKeys(pkg: string, file: string, name: string): string[] {
+  const { checker, declaration } = interfaceOf(pkg, file, name);
   return checker
     .getPropertiesOfType(checker.getTypeAtLocation(declaration))
-    .filter((property) => {
-      const type = checker.getTypeOfSymbolAtLocation(property, declaration);
-      const parts = type.isUnion() ? type.types : [type];
-      return parts.some((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0);
-    })
+    .filter((property) => isBooleanLike(checker, property, declaration))
     .map((property) => property.getName());
+}
+
+/** `parent.child` for every boolean-typed property of an OBJECT-typed option (an options bag), one level deep. */
+function nestedBooleanKeys(pkg: string, file: string, name: string): string[] {
+  const { checker, declaration } = interfaceOf(pkg, file, name);
+  const found: string[] = [];
+  for (const property of checker.getPropertiesOfType(checker.getTypeAtLocation(declaration))) {
+    const type = checker.getTypeOfSymbolAtLocation(property, declaration);
+    for (const part of type.isUnion() ? type.types : [type]) {
+      const isBag =
+        (part.flags & ts.TypeFlags.Object) !== 0 &&
+        checker.getSignaturesOfType(part, ts.SignatureKind.Call).length === 0 &&
+        !checker.isArrayType(part);
+      if (isBag) {
+        for (const child of checker.getPropertiesOfType(part)) {
+          if (isBooleanLike(checker, child, declaration)) {
+            found.push(`${property.getName()}.${child.getName()}`);
+          }
+        }
+      }
+    }
+  }
+  return found;
 }
 
 const SPREADS: Record<string, Direction | 'plain'> = {
@@ -220,6 +295,9 @@ function definitionsOf(pkg: string): Definition[] {
 }
 
 const definitions = ALL.flatMap(definitionsOf);
+/** The documented direction: a `package:option` entry wins over the plain `option` one. */
+const declared = (definition: Definition): Direction | undefined =>
+  DIRECTIONS[`${definition.pkg}:${definition.friendly}`] ?? DIRECTIONS[definition.friendly];
 const directionOf = (definition: Definition): Direction | undefined =>
   definition.spreads.map((name) => SPREADS[name]).find((d): d is Direction => d !== undefined);
 
@@ -237,9 +315,9 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
       const direction = directionOf(definition);
       if (direction === undefined) {
         problems.push(`${definition.pkg}:${definition.friendly} has no shared normaliser`);
-      } else if (DIRECTIONS[definition.friendly] !== direction) {
+      } else if (declared(definition) !== direction) {
         problems.push(
-          `${definition.pkg}:${definition.friendly} is ${direction} but DIRECTIONS says ${DIRECTIONS[definition.friendly]}`,
+          `${definition.pkg}:${definition.friendly} is ${direction} but DIRECTIONS says ${declared(definition)}`,
         );
       }
     }
@@ -247,7 +325,7 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
   });
 
   it('DIRECTIONS names no option that no longer exists', () => {
-    const names = new Set(definitions.map((d) => d.friendly));
+    const names = new Set(definitions.flatMap((d) => [d.friendly, `${d.pkg}:${d.friendly}`]));
     expect(Object.keys(DIRECTIONS).filter((name) => !names.has(name))).toEqual([]);
   });
 
@@ -272,6 +350,134 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
       'read these through a shared normaliser (packages/core/src/options.ts) or list them in RAW_STRICT with a reason',
     ).toEqual([]);
     expect(Object.keys(RAW_STRICT).filter((key) => !usedRaw.has(key))).toEqual([]);
+  });
+
+  it('every RAW_STRICT classification that names a read is still true in the source', () => {
+    const missing: string[] = [];
+    for (const [key, entry] of Object.entries(RAW_STRICT)) {
+      if (entry.check === undefined) {
+        continue;
+      }
+      const [pkg, pattern] = entry.check;
+      const found = sourceFiles(join(packages, pkg, 'src')).some((file) =>
+        pattern.test(readFileSync(file, 'utf8')),
+      );
+      if (!found) {
+        missing.push(`${key}: ${String(pattern)} not found in packages/${pkg}/src`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('a protecting (safe: on) option is never classified as a capture (safe: off) one', () => {
+    // The R4V-1 error was exactly this: a protecting option filed under "OFF unless true".
+    const protecting = Object.entries(RAW_STRICT)
+      .filter(([, e]) => e.safe === 'on')
+      .map(([k]) => k);
+    expect(protecting.sort()).toEqual(
+      [
+        'browser:holdBlackout',
+        'bugsee:holdBlackout',
+        'cloudflare:partitionCaptureByTenant',
+        'electron:holdBlackout',
+        'vercel-edge:partitionCaptureByTenant',
+      ].sort(),
+    );
+  });
+
+  // R4V-2: the flat table above cannot see an option READ INSIDE a bag (`replay.canvas`, `blockAllCanvas`,
+  // `captureLocalVariables.includeCaught`): a raw `options.replay.canvas` read dodged it, and `'false'` / `0`
+  // enabled canvas pixel recording. Every boolean-typed property of every option BAG is therefore classified
+  // here with its safe side AND pinned to the source read that makes the classification true.
+  const NESTED: Record<
+    string,
+    { safe: 'off' | 'on'; why: string; check: [pkg: string, pattern: RegExp] }
+  > = {
+    'replay.maskAllText': {
+      safe: 'on',
+      why: 'masking: invalid keeps the (ON) default',
+      check: ['replay', /readBoolean\(source, 'maskAllText', true\)/],
+    },
+    'replay.maskAllInputs': {
+      safe: 'on',
+      why: 'masking: invalid keeps the (ON) default',
+      check: ['replay', /readBoolean\(source, 'maskAllInputs', true\)/],
+    },
+    'replay.blockAllMedia': {
+      safe: 'on',
+      why: 'blocking: invalid keeps the (ON) default',
+      check: ['replay', /readBoolean\(source, 'blockAllMedia', true\)/],
+    },
+    'replay.blockAllCanvas': {
+      safe: 'on',
+      why: 'blocking PROTECTS: invalid is ON + onError',
+      check: ['replay', /blockAllCanvasRaw !== false/],
+    },
+    'replay.canvas': {
+      safe: 'off',
+      why: 'records unmasked pixels: only boolean true or a plain object enables it',
+      check: ['browser', /canvasOption === true \|\| canvasIsBag/],
+    },
+    'captureLocalVariables.includeCaught': {
+      safe: 'off',
+      why: 'pauses on every caught throw: only boolean true enables it',
+      check: ['node', /readSwitch\('includeCaught', false\)/],
+    },
+    'captureLocalVariables.reportSite': {
+      safe: 'off',
+      why: 'default ON inside an opt-in feature; invalid is OFF + onError',
+      check: ['node', /readSwitch\('reportSite', true\)/],
+    },
+    'traceResponse.serverTiming': {
+      safe: 'off',
+      why: 'exposes trace ids: strictly `=== true`',
+      check: ['node', /config\.serverTiming === true/],
+    },
+    'traceResponse.traceresponse': {
+      safe: 'off',
+      why: 'exposes trace ids: strictly `=== true`',
+      check: ['node', /config\.traceresponse === true/],
+    },
+    'traceResponse.exposeTraceresponse': {
+      safe: 'off',
+      why: 'widens CORS exposure: strictly `=== true`',
+      check: ['node', /config\.exposeTraceresponse === true/],
+    },
+  };
+  /** Object-typed properties that are injected SEAMS / test doubles, not option bags. */
+  const NOT_BAGS = new Set(['document', 'deviceIdEnv', 'cpuProfiler']);
+
+  it('every boolean inside an option bag is classified in NESTED and its read is pinned in the source', () => {
+    const unclassified = new Set<string>();
+    for (const [pkg, file, name] of INTERFACES) {
+      for (const key of nestedBooleanKeys(pkg, file, name)) {
+        if (!NOT_BAGS.has(key.split('.')[0] as string) && !(key in NESTED)) {
+          unclassified.add(`${pkg}:${name}.${key}`);
+        }
+      }
+    }
+    expect(
+      [...unclassified],
+      'classify the nested option in NESTED (safe side + the source read that implements it)',
+    ).toEqual([]);
+    const unread: string[] = [];
+    for (const [key, entry] of Object.entries(NESTED)) {
+      const [pkg, pattern] = entry.check;
+      const found = sourceFiles(join(packages, pkg, 'src')).some((file) =>
+        pattern.test(readFileSync(file, 'utf8')),
+      );
+      if (!found) {
+        unread.push(`${key}: ${String(pattern)} not found in packages/${pkg}/src`);
+      }
+    }
+    expect(unread).toEqual([]);
+  });
+
+  it('NESTED names no option that no longer exists', () => {
+    const live = new Set(
+      INTERFACES.flatMap(([pkg, file, name]) => nestedBooleanKeys(pkg, file, name)),
+    );
+    expect(Object.keys(NESTED).filter((key) => !live.has(key))).toEqual([]);
   });
 
   describe('behaviour over the whole value set, through the real resolver', () => {

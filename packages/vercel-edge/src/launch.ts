@@ -31,6 +31,7 @@ import {
   type HttpTransport,
   type LifecycleEventsListener,
   type RequestContext,
+  resolveFailOnBoolean,
   resolveLaunchOptions,
   resolveMaxPartitions,
   type Scheduler,
@@ -227,7 +228,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     // partition — e.g. `launchEdge(token)` ran first (it is re-exported by @bugsee/cloudflare) and a
     // Durable Object's lazy launcher then reuses it. The generic message above does not name that
     // consequence, and silence here is how the cross-tenant leak comes back (review pass 2, SEV3 #3).
-    if (options.partitionCaptureByTenant === true) {
+    if (resolveFailOnBoolean(options.partitionCaptureByTenant, false)) {
       // Guarded: this runs inside launch() against a client we did not create — it may lack the service,
       // be mid-teardown, or be a foreign object someone else placed on the carrier. A throw here would
       // break launch() itself, and the SDK crashing the host app at startup is far worse than the missing
@@ -289,7 +290,19 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
-  const partitionByTenant = options.partitionCaptureByTenant === true;
+  // PROTECTS (cross-tenant isolation): only boolean `false`/absent is OFF; any other value (`'true'`, `1`, `null`)
+  // fails ON and is reported (R4V-1).
+  const partitionByTenant = resolveFailOnBoolean(options.partitionCaptureByTenant, false);
+  if (
+    options.partitionCaptureByTenant !== undefined &&
+    typeof options.partitionCaptureByTenant !== 'boolean'
+  ) {
+    options.onError?.(
+      new Error(
+        `Bugsee: partitionCaptureByTenant expected a boolean, got ${typeof options.partitionCaptureByTenant === 'object' ? typeof options.partitionCaptureByTenant : JSON.stringify(options.partitionCaptureByTenant)}; tenant partitioning stays ON`,
+      ),
+    );
+  }
   // The SAME coercion the store applies, so the divisor below and the store's bound can never disagree.
   const maxTenantPartitions = resolveMaxPartitions(options.maxTenantPartitions);
   // A caller-supplied store WINS over the partitioning switch — and that silently reinstates the
