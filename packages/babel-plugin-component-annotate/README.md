@@ -1,21 +1,43 @@
 # @bugsee/babel-plugin-component-annotate
 
-A Babel plugin that annotates each host (lowercase-tag) JSX element with
-`data-bugsee-component="<ComponentName>"` — the name of the enclosing framework component. At capture time
-the `@bugsee/browser` runtime (depth pass D2) reads the nearest annotated ancestor of an interaction/error
-target, so clicks and errors attribute to a **component name** that survives minification (the literal name
-is emitted at build time). Covers the JSX ecosystems (React / Preact / Solid).
+A Babel plugin that labels the DOM elements rendered by your React, Preact or Solid components with the component's name, so Bugsee can attribute clicks and errors to a component even after minification.
+
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
+
+Install this package directly as a dev dependency. It is optional: without it, Bugsee still captures everything, but component names in minified production builds may be mangled. It works with the Bugsee browser SDK (`@bugsee/bugsee`), which reads the label back at runtime.
+
+## Install
+
+```sh
+npm install --save-dev @bugsee/babel-plugin-component-annotate
+# or
+pnpm add -D @bugsee/babel-plugin-component-annotate
+# or
+yarn add -D @bugsee/babel-plugin-component-annotate
+```
+
+Requires `@babel/core` 7 (peer dependency).
+
+## Usage
+
+Add the plugin to your Babel config, or to the Babel options of your bundler.
 
 ```js
-// babel.config.js  (or via your bundler's babel options)
+// babel.config.js
 module.exports = {
   plugins: [['@bugsee/babel-plugin-component-annotate']],
 };
 ```
 
-A component is a PascalCase function/class — a declaration (`function Foo(){}`), a const-assigned expression
-(`const Foo = () => …`), or one wrapped in a single call (`const Foo = memo(...)` / `forwardRef(...)`).
-Component elements (`<Widget/>`) are skipped (the attribute would become a prop, not a DOM attribute); JSX in
-a nested callback (e.g. a `.map`) is attributed to the enclosing component. Known limits: a doubly-wrapped
-component (`memo(forwardRef(...))`) and anonymous default exports are not named. Vue/Svelte Vite plugins are a
-follow-up. See `docs/design/frontend-adapters.md` §7 (the depth pass).
+At build time, each host JSX element (lowercase tag such as `<button>` or `<div>`) gets a `data-bugsee-component="<ComponentName>"` attribute with the name of the component that renders it. A component is a PascalCase function or class, including `const Foo = () => ...` and `const Foo = memo(...)` or `forwardRef(...)`. Component elements (`<Widget />`) are not annotated.
+
+The plugin takes no options. Vue uses a runtime mixin from `@bugsee/vue` instead, and Svelte uses `@bugsee/svelte-plugin-component-annotate`.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/babel-plugin-component-annotate
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.

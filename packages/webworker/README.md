@@ -1,54 +1,68 @@
 # @bugsee/webworker
 
-The Bugsee SDK for **Web Workers** (dedicated / shared) — a DOM-less, browser-family build. See
-`docs/design/sdk-design.md` §3.2/§3.3.
+The Bugsee SDK for Web Workers (dedicated and shared) and Service Workers: console and network capture, and global error and unhandled-rejection reporting, in a worker context that has no DOM.
 
-```ts
-import { launch } from '@bugsee/webworker';
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-const bugsee = launch('<BUGSEE_APP_TOKEN>');
-// captured automatically from here: console output, fetch/WebSocket, and any
-// global `error` / `unhandledrejection` on the worker (reported as a crash / error).
+Install this package directly, and call it from inside the worker script. Your page code keeps using `@bugsee/bugsee`; the worker needs its own launch because it is a separate JavaScript context.
+
+## Install
+
+```sh
+npm install @bugsee/webworker
+# or
+pnpm add @bugsee/webworker
+# or
+yarn add @bugsee/webworker
 ```
 
-**What it captures.** Console output → logs, network (`fetch` + `WebSocket`; `XMLHttpRequest` too in a
-dedicated worker, where it exists), and global `error` → crash + `unhandledrejection` → error on the worker
-`self`. The environment is the browser envelope minus the screen (a worker has `navigator` but no
-`screen`/`window`): `platform.type` is `web-worker` (default) or `service-worker`, with the `navigator`
-cpu/memory in `hardware`.
+## Usage
 
-**Not captured** (DOM-less by nature): clicks/keys/navigation breadcrumbs, the DOM view hierarchy, and
-`performance.memory` traces — all browser/DOM-only. There is no `AsyncLocalStorage` / per-request context in a
-worker (stack-based).
+Web Worker. `launch()` returns the client directly (not a `Promise`):
+
+```ts
+// worker.ts
+import { launch } from '@bugsee/webworker';
+
+const bugsee = launch('YOUR_APP_TOKEN');
+```
+
+It captures console output, `fetch` and `WebSocket` traffic (also `XMLHttpRequest` in dedicated workers), and global `error` and `unhandledrejection` events on the worker.
+
+Not captured, because a worker has no DOM: clicks, key presses, navigation, the view hierarchy and session replay.
 
 ## Service Workers
 
-Pass `platformType: 'service-worker'`. A Service Worker is **terminated when idle and restarted per-event**, so
-it gets two extra pieces (both unneeded for a long-lived Web Worker):
+Pass `platformType: 'service-worker'`. A Service Worker is stopped when idle, so wrap event handlers with `withBugseeEvent`. It hands the upload to `event.waitUntil` so the worker stays alive until a report is sent.
 
 ```ts
+// sw.ts
 import { launch, withBugseeEvent } from '@bugsee/webworker';
 
-const bugsee = launch('<BUGSEE_APP_TOKEN>', { platformType: 'service-worker' });
+const bugsee = launch('YOUR_APP_TOKEN', { platformType: 'service-worker' });
 
-self.addEventListener('fetch', withBugseeEvent(bugsee, (event) => {
-  event.respondWith(handle(event.request));
-}));
+self.addEventListener(
+  'fetch',
+  withBugseeEvent(bugsee, (event) => {
+    event.respondWith(fetch(event.request));
+  }),
+);
 ```
 
-- **`withBugseeEvent`** hands the SDK flush to `event.waitUntil`, keeping the worker alive until an incident's
-  upload completes — the SW analog of the edge SDK's `ctx.waitUntil` (without it a fire-and-forget upload can be
-  dropped when the worker is killed). It never alters your handler's outcome: your error is always the one
-  rethrown, and an SDK-internal failure (or a failed upload) goes to the optional third argument —
-  `withBugseeEvent(bugsee, handler, (error) => console.debug(error))` — instead of failing the event.
-- **Persistence is ON by default** for `service-worker`: a durable **IndexedDB bundle queue** persists each
-  incident bundle before upload and re-uploads any a prior activation left behind (e.g. killed mid-upload) on
-  the next launch — so an assembled crash bundle is never lost to termination. (`persist: false` opts out;
-  `persist: true` turns it on for a Web Worker.)
+`withBugseeEvent` never changes your handler's outcome: your own error is rethrown, and SDK failures go to an optional third argument, `withBugseeEvent(bugsee, handler, (error) => console.debug(error))`.
 
-**Remaining follow-up:** persisting the *rolling* capture buffer across activations (an IndexedDB chunk capture
-store + marker recovery) — only relevant for the rarer cross-activation case; an in-activation incident already
-reports with that activation's capture.
+## Options
 
-A long-lived **dedicated/shared Web Worker** needs neither (it lives for the page's lifetime) and runs
-memory-only by default. Tier 2.
+- `platformType`: `'web-worker'` (default) or `'service-worker'`.
+- `persist`: keep assembled report bundles in IndexedDB and re-upload any that a stopped worker left behind. Default `true` for Service Workers and `false` for Web Workers.
+- `appVersion`, `appBuild`, `appId`: identify your release in reports.
+- `captureLogs`, `captureNetwork`: capture streams, on by default.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/webworker
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.

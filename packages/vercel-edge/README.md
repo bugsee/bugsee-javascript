@@ -1,10 +1,27 @@
 # @bugsee/vercel-edge
 
-The Bugsee SDK for **Vercel Edge** (and the shared composition that `@bugsee/cloudflare` builds on) — a
-V8-isolate, Web-APIs-only runtime (`fetch`/`Request`/`Response`/`crypto.subtle`; no `node:*`). See
-`docs/design/edge-runtime.md`.
+The Bugsee SDK for Vercel Edge Functions and other edge isolate runtimes built on Web APIs only (`fetch`, `Request`, `Response`, `crypto.subtle`; no `node:*`).
+
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
+
+Install this package directly for standalone Vercel Edge functions. On Cloudflare Workers use `@bugsee/cloudflare`, which builds on this package. In a Next.js app use `@bugsee/nextjs`, which dispatches to this package on the Edge runtime for you.
+
+Capture is incident-driven. Data is buffered in memory and uploaded only when an incident happens (a handled `logException`, a thrown handler error, or an unhandled rejection). A clean request uploads nothing.
+
+## Install
+
+```sh
+npm install @bugsee/vercel-edge
+# or
+pnpm add @bugsee/vercel-edge
+# or
+yarn add @bugsee/vercel-edge
+```
+
+## Usage
 
 ```ts
+// api/edge.ts
 import { launch, withBugseeFetch } from '@bugsee/vercel-edge';
 
 const bugsee = launch(process.env.BUGSEE_APP_TOKEN!);
@@ -17,19 +34,22 @@ export default {
 };
 ```
 
-**Incident-driven.** Capture is buffered in memory and uploaded **only on an incident** (a `logException`,
-a thrown handler error, or an `unhandledrejection`) — a clean request uploads nothing (the buffer is discarded
-when the isolate ends). There is no continuous/per-invocation upload and no new backend: an incident produces
-a normal bundle to the same `/upload` endpoint.
+`launch()` returns the client directly (not a `Promise`). `withBugseeFetch` runs each request in its own Bugsee context, captures any error your handler throws and rethrows it (the platform still produces its error response), and flushes the upload through `waitUntil`, because an edge isolate freezes as soon as the response is returned. On Vercel Edge `waitUntil` is found automatically; elsewhere it is read from the `ctx` argument.
 
-**Surviving the isolate freeze.** An edge isolate freezes the instant the `Response` returns, so
-`withBugseeFetch` flushes the upload inside `ctx.waitUntil(client.flush())`. It acquires `waitUntil` from the
-`@vercel/request-context` global symbol on Vercel Edge (which has no `ctx` param) or from the explicit `ctx`
-argument on Cloudflare. A thrown handler error is captured and **rethrown** (the platform still produces its
-error response). `unhandledrejection` is captured too as a safety net (best-effort delivery for rejections
-that fire after the response).
+## Options
 
-**Per-request context.** Each request runs in its own `run()`-scoped `AsyncLocalStorage` context (Vercel Edge
-has it built-in; on Cloudflare add the `nodejs_compat` / `nodejs_als` compatibility flag) so captures correlate
-to the request; it degrades to a single-slot store + a one-time warning when unavailable, and never throws at
-import. Tier 2. Implementation follows `docs/implementation-standards.md`.
+`launch(appToken, options)` accepts, among others:
+
+- `appVersion`, `appBuild`, `appId`: identify your release in reports.
+- `captureLogs`, `captureNetwork`, `captureNetworkBodies`: capture streams, on by default.
+- `maxDataSize`: size of the in-memory capture buffer in megabytes.
+- `maxTenantPartitions`: number of per-tenant capture partitions, used when one isolate serves several tenants.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/vercel-edge
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
