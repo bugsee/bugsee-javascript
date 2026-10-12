@@ -2321,6 +2321,22 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__; // this launch used the REAL globalThis carrier
   });
 
+  it('a seam planted on Object.prototype cannot re-enter through the page-reachable launch()', async () => {
+    const fake = fakeGlobal();
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+    proto.global = fake.global;
+    proto.carrier = {};
+    try {
+      const client = publicLaunch('tok', { captureNetwork: false });
+      expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+      await client.stop();
+    } finally {
+      delete proto.global;
+      delete proto.carrier;
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+    }
+  });
+
   it('a page-supplied fresh carrier (or global) cannot mint a second live client', () => {
     const fake = fakeGlobal();
     const first = track('tok', baseOptions({ global: fake.global, carrier: {} }));

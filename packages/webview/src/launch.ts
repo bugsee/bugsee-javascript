@@ -362,6 +362,17 @@ function bridgeSlotFor(
 /** The launched WebView client — the public SDK surface. */
 export type Bugsee = BugseeClient;
 
+const PAGE_STRIPPED_SEAMS: readonly string[] = [
+  'global',
+  'carrier',
+  'window',
+  'document',
+  'clock',
+  'scheduler',
+  'captureStore',
+  'systemMetricsSampler',
+];
+
 /**
  * Launch the Bugsee WebView SDK. A per-WebView singleton (a repeat call is ignored). Returns the started client.
  *
@@ -371,20 +382,23 @@ export type Bugsee = BugseeClient;
  * client. Tests and embedders that need the seams call {@link launchWithSeams}.
  */
 export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {}): Bugsee {
-  const {
-    global: _global,
-    carrier: _carrier,
-    window: _window,
-    document: _document,
-    clock: _clock,
-    scheduler: _scheduler,
-    captureStore: _captureStore,
-    systemMetricsSampler: _sampler,
-    ...safe
-  } = (
-    typeof options === 'object' && options !== null ? options : {}
-  ) as BugseeWebViewLaunchOptions;
-  return launchWithSeams(appToken, safe);
+  const given = (typeof options === 'object' && options !== null ? options : {}) as Record<
+    string,
+    unknown
+  >;
+  const safe: Record<string, unknown> = {};
+  for (const key of Object.keys(given)) {
+    if (!PAGE_STRIPPED_SEAMS.includes(key)) {
+      safe[key] = given[key];
+    }
+  }
+  // Each seam is set as an OWN `undefined`, which shadows anything planted on `Object.prototype`: the rest of
+  // the launch reads `options.global` etc. through the prototype chain, and a polluted prototype would
+  // otherwise re-introduce the seam this function exists to remove.
+  for (const key of PAGE_STRIPPED_SEAMS) {
+    safe[key] = undefined;
+  }
+  return launchWithSeams(appToken, safe as BugseeWebViewLaunchOptions);
 }
 
 /** {@link launch} with the injectable seams honoured. NOT for page-reachable surfaces (see {@link launch}). */
