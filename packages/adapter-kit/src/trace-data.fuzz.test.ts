@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { getTraceparent, traceMetaEntries, traceMetaTag } from './trace-data';
 
 /**
- * Property-based tests for the trace-data primitive (P5) — the BE→FE continuation capstone. Its output
+ * Property-based tests for the trace-data primitive — the BE→FE continuation capstone. Its output
  * leaves the SDK twice over: as a W3C `traceparent` a peer parser must accept, and as raw HTML injected
  * into an SSR `<head>`. Both are "for any trace" claims, so both are checked as properties:
  *

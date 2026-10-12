@@ -254,14 +254,14 @@ describe('createElectronMainControl', () => {
   });
 });
 
-// The renderer registry must SHRINK (docs/review/electron.md SEV2 #7).
+// The renderer registry must SHRINK.
 //
 // Every window that ever said hello was retained for the process lifetime, pinning destroyed `webContents`
 // objects — and whatever they retain — in the main process. An app that opens and closes windows in a loop
 // leaks monotonically; `rendererCount`, documented as the window count, is wrong after the first close; and
 // every pause/resume/flush/stop iterates a growing set of corpses.
 //
-// The fix hangs off the same lifecycle signal `render-process-gone` already uses for R2: a renderer that is
+// The fix hangs off the same lifecycle signal `render-process-gone` already uses for: a renderer that is
 // gone is no longer a renderer.
 describe('the renderer registry shrinks (SEV2 #7)', () => {
   /** A sender that can be destroyed, the way a real `webContents` is. */

@@ -1,6 +1,6 @@
-// Wire constants (design §8.4, §8). Single source of truth for bundle file names + manifest version.
+// Wire constants. Single source of truth for bundle file names + manifest version.
 
-/** Manifest schema version emitted by the JS SDK (§0.16 / §8). Backend accepts v1 (mobile) + v2. */
+/** Manifest schema version emitted by the JS SDK. Backend accepts v1 (mobile) + v2. */
 export const MANIFEST_VERSION = 2;
 
 /**
@@ -13,17 +13,17 @@ export const MANIFEST_VERSION = 2;
  */
 export const INPUT_STREAM_VERSION = 3;
 
-// Root bundle files (§8.4).
+// Root bundle files.
 export const REQUEST_JSON_FILENAME = 'request.json';
 export const MANIFEST_JSON_FILENAME = 'manifest.json';
 export const APP_TOKEN_FILENAME = 'apptoken';
 
-/** Bundle archive name suffix (§8.3: `<random20>.bundle.zip`). */
+/** Bundle archive name suffix (`<random20>.bundle.zip`). */
 export const BUNDLE_FILE_SUFFIX = '.bundle.zip';
 
 /**
- * Wire file types the JS SDK emits (§8.4). `video` is the mobile-canonical video file — now also emitted
- * by the Electron opt-in pixel-capture source (D8).
+ * Wire file types the JS SDK emits. `video` is the mobile-canonical video file — now also emitted
+ * by the Electron opt-in pixel-capture source.
  *
  * ARCHITECTURE (binding): the `*.user` streams — `events.user`, `traces.user` — carry ONLY data the
  * APPLICATION supplied through `client.event()` / `client.trace()`. SDK-captured data must never be
@@ -49,11 +49,11 @@ export type FileType =
   | 'profile'
   | 'crash';
 
-/** Default filename per file type (§8.4). `attachment` is caller-supplied, so it has no default. */
+/** Default filename per file type. `attachment` is caller-supplied, so it has no default. */
 export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>, string>> = {
   replay: 'replay.bin',
   screenshot: 'screenshot.png',
-  video: 'video.webm', // encoded pixel-capture video — Electron opt-in (D8)
+  video: 'video.webm', // encoded pixel-capture video — Electron opt-in
   // The geometry of the recording over time: the frame each `input` coordinate was measured in, and
   // (web) what part of it the person could see. Version 2 of the stream is one shape for every
   // platform — specs sdk/reporting/bundle/video-aux.md. Named `video.aux` because mobile emits it
@@ -75,7 +75,7 @@ export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>,
   log: 'logs.json',
   'log.internal': 'internal.logs.json',
   network: 'network.json',
-  breadcrumbs: 'breadcrumbs', // NO .json extension — mobile contract (§8.4)
+  breadcrumbs: 'breadcrumbs', // NO .json extension — mobile contract
   performance: 'performance.json',
   profile: 'profile.json', // V8 CPU profile (.cpuprofile object) — node diagnostics
   crash: 'crash.json',
@@ -97,7 +97,7 @@ export const VIDEO_AUX_VERSION = 2;
  * (`'url' | 'route' | 'custom'`, `@bugsee/performance`'s `TransactionNameSource`). Lives here — not in
  * `@bugsee/performance` — because it is a plain wire attribute KEY, not APM logic, and
  * `@bugsee/node/server-instrument.ts` needs to read it off `Transaction.getAttributes()` without pulling
- * in a runtime (value-level) dependency on the opt-in APM extension (design §0.6: performance "tree-shakes
+ * in a runtime (value-level) dependency on the opt-in APM extension (performance "tree-shakes
  * to nothing when unused"). `@bugsee/performance` re-exports this constant for its own consumers.
  */
 export const NAME_SOURCE_ATTRIBUTE = 'bugsee.name_source';

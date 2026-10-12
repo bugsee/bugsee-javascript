@@ -1,9 +1,9 @@
-// @bugsee/replay — the replay encoder (RP3, design D5-revised). Produces `replay.bin`: the gzipped rrweb
+// @bugsee/replay — the replay encoder. Produces `replay.bin`: the gzipped rrweb
 // event stream the dashboard's rrweb player consumes (ungzip → JSON.parse → events).
 //
 // A stateless SYNCHRONOUS function (fflate `gzipSync`) — masking is applied during RECORDING, not encoding,
 // so no options/init are needed, and a one-shot gzip at incident time keeps the bundle assembler pure/sync
-// (D5-revised). Registered as the assembler's `fileEncoders.replay` at launch wiring (RP5).
+// Registered as the assembler's `fileEncoders.replay` at launch wiring.
 import { gzipSync, strToU8 } from 'fflate';
 
 /**

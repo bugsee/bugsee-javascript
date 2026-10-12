@@ -23,7 +23,7 @@ export function registerServer(appToken: string, options: AstroServerOptions = {
   return launch(appToken, options);
 }
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

@@ -1,7 +1,7 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 
-// WebTransport capture SOURCE (design §16.2). WebTransport is browser + Deno, so the wrap installs
+// WebTransport capture SOURCE. WebTransport is browser + Deno, so the wrap installs
 // only when it exists. Each session is instrumented at creation by replacing the constructor with a
 // thin subclass; one id+sequence per session. WebTransport exposes lifecycle as PROMISES rather than
 // events: `ready` resolves when the session opens (→ open) or rejects on failure (→ error); `closed`

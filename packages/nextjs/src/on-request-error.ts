@@ -11,10 +11,10 @@
 // attribution via portable client capture APIs (`event`) — NOT the node-only RequestContextStore.
 //
 // NOTE: `onRequestError` does NOT catch middleware errors (Next bug #83404) — those get their own path
-// (`withBugseeMiddleware`, N5).
+// (`withBugseeMiddleware`).
 //
 // The report itself (event + logException + defensiveness) is the shared `@bugsee/adapter-kit`
-// `reportServerError` (P4) — Next only maps its error context to the capture event.
+// `reportServerError` — Next only maps its error context to the capture event.
 import { reportServerError } from '@bugsee/adapter-kit';
 import type { BugseeClient } from '@bugsee/core';
 

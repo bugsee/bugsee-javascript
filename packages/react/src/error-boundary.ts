@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { type ReactErrorMechanism, reportReactError } from './report';
 
-// The @bugsee/react ERROR SEAM (frontend-adapters D8). `BugseeErrorBoundary` is a class component (only
+// The @bugsee/react ERROR SEAM. `BugseeErrorBoundary` is a class component (only
 // class components can be React error boundaries): it catches a render error in its subtree, reports it
 // via `reportReactError` (component stack linked through `error.cause`), and renders a fallback. The
 // `withBugseeErrorBoundary` HOC wraps any component. React itself is only imported HERE (the structural-peer

@@ -3,13 +3,12 @@
 // This library is VERIFICATION INFRASTRUCTURE, so its failure mode is the one the adversarial review
 // found everywhere: an assertion that silently passes. Every assertion here therefore gets a NEGATIVE
 // test proving it actually fails on the defect it exists to catch — the positive test alone would be
-// exactly the theater we are removing (docs/review/e2e-harnesses.md SEV1 #3/#7/#9).
+// exactly the theater we are removing.
 //
 // The two integrity cases are modelled on REAL confirmed defects:
 //   - core Pass D: a recovered crash bundle declared `profile.json` while the zip held only the
-//     directory-shaped entry `profile.json/` (docs/review/core-D-bundle-upload-recovery.md).
+// directory-shaped entry `profile.json/`.
 //   - capture/node: URL query-string credentials reached the wire unredacted
-//     (docs/review/capture.md, docs/review/node-B-http-server.md).
 import { gzipSync, strToU8, zipSync } from '@bugsee/util';
 import { describe, expect, it } from 'vitest';
 import {

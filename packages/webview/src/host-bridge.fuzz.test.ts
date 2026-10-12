@@ -7,7 +7,7 @@ import { createHostBridge, DEFAULT_MAX_BUFFER } from './host-bridge';
  *
  * Three behaviours here are load-bearing and were unasserted:
  *
- *  - the capture NONCE is stamped onto every envelope, because native rejects anything unstamped (D-A11),
+ * - the capture NONCE is stamped onto every envelope, because native rejects anything unstamped,
  *    and it is spliced by STRING surgery rather than a parse/re-encode, so the guard that makes that safe
  *    has to hold for every input;
  *  - `available` is a PURE read. It used to call `resolve()`, so merely asking "is the bridge there?"

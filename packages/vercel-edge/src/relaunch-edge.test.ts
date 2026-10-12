@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeEdgeLaunchOptions, launchEdge } from './launch';
 import { relaunchEdge, rememberEdgeLaunch } from './relaunch-edge';
 
-// R4H-4 / R5H-4: the edge-entry relaunch seam lives in its own (non-index) module.
+// The edge-entry relaunch seam lives in its own (non-index) module.
 const okTransport = (): HttpTransport =>
   vi.fn(
     async (): Promise<HttpResponse> => ({

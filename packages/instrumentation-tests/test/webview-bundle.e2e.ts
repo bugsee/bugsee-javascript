@@ -1,4 +1,4 @@
-// WebView injectable-bundle guard (slice 6, docs/design/webview-bridge.md D7/§9).
+// WebView injectable-bundle guard.
 //
 // Native ships @bugsee/webview as a SELF-CONTAINED IIFE single-string resource and injects it at document-start;
 // the bundle defines the `BugseeWebView` global (the native bootstrap calls `BugseeWebView.launch`). This guard

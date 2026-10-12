@@ -12,7 +12,7 @@ import {
 import { BugseeOption, logLevelToWire } from '@bugsee/protocol';
 import type { LogLevelName } from '@bugsee/types';
 
-// Runtime-agnostic log capture CONSUMER (design §16.1): subscribes to a log SOURCE and routes each
+// Runtime-agnostic log capture CONSUMER: subscribes to a log SOURCE and routes each
 // LogEvent to the aggregator as a `log` capture entry. The source is any emitter with a 'log' stage —
 // the shared consoleInterceptor, or a platform log source — so this single provider serves every
 // runtime; only the sources vary. Subscribing also drives the source's subscriber-presence activation
@@ -22,12 +22,12 @@ import type { LogLevelName } from '@bugsee/types';
 export type LogSource = EventSubscribable<{ log: LogEvent }>;
 
 /**
- * Encode the log level to its NUMERIC wire value (design §8.9, mobile parity).
+ * Encode the log level to its NUMERIC wire value (mobile parity).
  *
  * `LogEvent.level` is `LogLevelName | LogLevel`, sources emit the friendly NAME, and nothing converted — so
  * every console-captured line reached the backend as `"error"` where the viewer expects `1`.
  * `logLevelToWire` had existed in @bugsee/protocol, exported and unit-tested, with zero callers outside its
- * own test (Wave 5.1).
+ * own test.
  *
  * Applied HERE because the provider is the single point every log entry passes through, and AFTER the user
  * filter: a `logFilter` is customer code written against the documented string levels, so converting first

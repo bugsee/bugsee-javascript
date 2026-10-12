@@ -16,7 +16,7 @@ const { instrumentReactRouter, instrumentRouterMatches, routePatternFromMatches,
 
 // WAVE 2.2 — the host-boundary contract, enforced rather than re-derived.
 //
-// Wave 2.1 established the rule: every host-facing entry point is wrapped, so an SDK-internal failure can
+// established the rule: every host-facing entry point is wrapped, so an SDK-internal failure can
 // never become the application's failure. Nothing enforced it, and the review found the rule applied where
 // someone remembered and skipped where they did not.
 //

@@ -1,6 +1,6 @@
 import { BOOLEAN_OPTION, FAIL_CLOSED_BOOLEAN_OPTION, type OptionDefinition } from '@bugsee/core';
 
-// The @bugsee/performance extension owns its options (design §0.6 — `performance.*` were removed from
+// The @bugsee/performance extension owns its options (`performance.*` were removed from
 // core BugseeOptions). Canonical com.bugsee.option.performance.* identifiers, the typed value contract
 // declaration-merged into @bugsee/protocol's BugseeOptionTypes, and the friendly→canonical definitions
 // the launch / umbrella feeds to the core resolver.
@@ -38,7 +38,7 @@ declare module '@bugsee/protocol' {
 
 /** Friendly → canonical option definitions for the launch resolver. Passive monitoring is on by default. */
 export const PERFORMANCE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
-  // Data capture that is ON by default: an invalid value turns it OFF and is reported (R3V-3), like captureLogs.
+  // Data capture that is ON by default: an invalid value turns it OFF and is reported, like captureLogs.
   {
     friendly: 'performanceMonitoring',
     key: PerformanceOption.Monitoring,

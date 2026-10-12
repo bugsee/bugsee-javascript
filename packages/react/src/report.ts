@@ -6,7 +6,7 @@ import {
   resolveClient,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/react REPORTING core (frontend-adapters D8) — runtime-portable, no React import, so it is
+// The @bugsee/react REPORTING core — runtime-portable, no React import, so it is
 // unit-tested injection-first and reused by the ErrorBoundary, a React-19 global handler, or a direct app
 // call. Links the React component stack to the error via `error.cause` (Sentry-style LinkedErrors), which
 // the core's `logException` surfaces in the report description. The client defaults to the process carrier
@@ -21,8 +21,7 @@ export interface ReportReactErrorOptions extends Omit<ReportErrorOptions, 'label
 }
 
 /**
- * Link a React component stack to an error via `error.cause` (the LinkedErrors convention the design D8
- * prescribes) so it travels with the report (surfaced by the core's `describeError`). DELIBERATELY mutates
+ * Link a React component stack to an error via `error.cause` (the LinkedErrors convention) so it travels with the report (surfaced by the core's `describeError`). DELIBERATELY mutates
  * the caught error's `.cause` — non-destructively: any EXISTING cause is preserved by chaining it behind the
  * component-stack frame, so no information is lost (this is opt-in instrumentation the app added around its
  * own tree, and the original error object is what reaches `logException`, preserving instance-dedup). A
@@ -50,7 +49,7 @@ export function linkComponentStack(error: unknown, componentStack: string | unde
  * Report a React error (from the ErrorBoundary or a direct app call) to the launched Bugsee client, with the
  * component stack linked. The ORIGINAL error object is passed to `logException` (preserving the core's
  * instance-dedup). A no-op when no SDK is launched. (A React-19 `onUncaughtError`/`onCaughtError` global
- * handler that also routes here is a possible later addition — see D8; not built yet.)
+ * handler that also routes here is a possible later addition — see; not built yet.)
  */
 /**
  * Report an error that REACT ROUTER surfaced, from the app's own route error element.

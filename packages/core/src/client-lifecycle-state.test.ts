@@ -11,8 +11,7 @@ import { LifecycleEvents } from './lifecycle-events';
 import { createOptionsContainer } from './options';
 import type { UploadPipeline, UploadResult } from './transport';
 
-// Review round 1, group G1: lifecycle-event delivery (L1, L2), stop generations (L4), the kill state (L12),
-// blackout state (L3, L16, V2), `getLaunchOptions` (L11).
+// Lifecycle-event delivery, stop generations, the kill state, blackout state, and `getLaunchOptions`.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },

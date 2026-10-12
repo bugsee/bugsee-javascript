@@ -23,7 +23,7 @@ export interface RuntimeTarget {
   /** Absolute path to this runtime's entry file (imports the runtime's OWN platform package). */
   entry: string;
   /**
-   * Absolute path to the UMBRELLA entry (Wave 3b.1) — the same file for every runtime, importing
+   * Absolute path to the UMBRELLA entry — the same file for every runtime, importing
    * `@bugsee/bugsee` the way a customer installs it. What varies is which runtime loads it, and therefore
    * which `exports` condition the umbrella resolves through.
    */
@@ -94,7 +94,7 @@ export function runtimeTargets(): RuntimeTarget[] {
 }
 
 /**
- * The runtime's OWN version, read from its binary (Wave 3b.1).
+ * The runtime's OWN version, read from its binary.
  *
  * Needed because Bun and Deno both expose a `process.versions.node` for compatibility, so "not the node
  * version" is not a usable assertion — comparing against the HARNESS's node version passes by accident
@@ -142,7 +142,7 @@ export function runScenarioProcess(
   /** Kill the child and report `timedOut` if it has not exited by then. Used by the process-lifecycle
    *  scenarios, where "exits on its own" IS the assertion — without it a pinned process just stalls. */
   timeoutMs?: number,
-  /** Which entry to boot: the runtime's own platform package (default) or the umbrella (Wave 3b.1). */
+  /** Which entry to boot: the runtime's own platform package (default) or the umbrella. */
   entry: 'platform' | 'umbrella' = 'platform',
 ): Promise<ProcessResult> {
   if (target.bin === undefined) {

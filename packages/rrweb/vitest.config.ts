@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// jsdom — rrweb's record path touches DOM globals on import. Coverage gate per §4 (100% line/fn/stmt).
+// jsdom — rrweb's record path touches DOM globals on import. Coverage gate (100% line/fn/stmt).
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

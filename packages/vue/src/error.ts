@@ -6,7 +6,7 @@ import {
 } from '@bugsee/web-adapter';
 import { vueComponentName } from './component-name';
 
-// The @bugsee/vue ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Vue 3). Hooks Vue's
+// The @bugsee/vue ERROR SEAM (the thin pattern for Vue 3). Hooks Vue's
 // global `app.config.errorHandler(err, instance, info)` and reports the error to the launched Bugsee client.
 // Vue's error context is THIN compared to React's component stack — a short `info` string (where it threw:
 // a lifecycle hook / render / setup) + the failing component's name — so we attach them as searchable LABELS
@@ -72,7 +72,7 @@ const vueDefaultErrorHandler = (err: unknown): void => {
 export function installBugseeErrorHandler(app: VueAppLike, options: VueErrorOptions = {}): void {
   const previous = app.config.errorHandler;
   app.config.errorHandler = (err, instance, info) => {
-    // Contained (Wave 2.1): the component-name lookup and label building run here too, and a throw from any
+    // Contained: the component-name lookup and label building run here too, and a throw from any
     // of it would skip the app's own handler below — turning a recoverable error into an unrecoverable one
     // at exactly the moment the app needs its handler most.
     neverThrow(() => reportVueError(err, { ...options, info, instance }), options.onError);

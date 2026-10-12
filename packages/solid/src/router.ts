@@ -1,9 +1,9 @@
 import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/solid ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On a
+// The @bugsee/solid ROUTER NAMING integration (the two-phase naming seam). On a
 // navigation, @solidjs/router's matched routes carry the parameterized pattern (`/users/:id`); the deepest
 // match's `route.pattern` is the full pattern. Refine the active navigation transaction (opened raw-URL by
-// the F1 navigation source) via the shared `setRouteName` seam. A STRUCTURAL PEER over the match shape (no
+// the navigation source) via the shared `setRouteName` seam. A STRUCTURAL PEER over the match shape (no
 // `@solidjs/router` import) → version-agnostic + unit-testable. Solid Router is reactive (no afterEach hook),
 // so the user wires it in an effect:
 //   const matches = useCurrentMatches();
@@ -32,7 +32,7 @@ export function routePatternFromSolidMatches(
   });
 }
 
-/** Refine the active transaction to the matched route PATTERN (D5 phase-2). Call (in a reactive effect) with
+/** Refine the active transaction to the matched route PATTERN. Call (in a reactive effect) with
  *  `useCurrentMatches()`'s value on each navigation. A no-op when there is no usable pattern. */
 export function setRouteNameFromSolidMatches(
   matches: readonly SolidRouteMatchLike[] | null | undefined,

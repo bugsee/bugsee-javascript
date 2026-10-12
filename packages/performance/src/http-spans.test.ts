@@ -69,7 +69,7 @@ describe('collectHttpSpans', () => {
   it('redacts URL userinfo credentials from the span description (Wave 1.1)', () => {
     // Stripping `?…` removes query secrets but leaves `user:pass@` completely intact, and the span
     // description is uploaded like any other attribute. node:http supports userinfo and it is routine for
-    // private registries and service-to-service calls (docs/review/node-B-http-server.md SEV1 #3).
+    // private registries and service-to-service calls.
     const { source, emit } = fakeNetworkSource();
     const { span, calls } = fakeActive();
     collectHttpSpans({ source, getActiveSpan: () => span as never });
@@ -293,7 +293,7 @@ describe('collectHttpSpans', () => {
 // WAVE 3b.4 — an outgoing call belongs to the request that MADE it.
 //
 // The parent transaction was resolved at COMPLETION time, from a module-scoped single slot that always
-// holds the most-recently-started transaction. On the browser that slot is the design (D12: "the single
+// holds the most-recently-started transaction. On the browser that slot is the design ("the single
 // active slot follows the MOST RECENT"). On Node it is not: `perf.startTransaction` runs once per INCOMING
 // request and a server serves them concurrently, so the slot is "whichever request arrived last" and every
 // outgoing call was parented to it regardless of who made it.

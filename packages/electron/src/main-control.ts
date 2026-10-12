@@ -1,4 +1,4 @@
-// The main-process control manager (E6) — the DOWNstream half of the bridge (main→renderers). Renderers
+// The main-process control manager — the DOWNstream half of the bridge (main→renderers). Renderers
 // stream capture UP (main-receiver.ts); this drives them DOWN. On a renderer `hello` it registers the sender
 // and replies with the owner's `session` id (the handshake), then broadcasts pause/resume/flush/stop control
 // to every registered renderer (reusing the WebView control kinds). Sends are best-effort: a destroyed
@@ -12,7 +12,7 @@ export interface ControlSenderLike {
   id?: number;
   send?(channel: string, raw: string): void;
   /**
-   * Electron `webContents` lifecycle, used to unregister a renderer that is gone (SEV2 #7). Both optional:
+   * Electron `webContents` lifecycle, used to unregister a renderer that is gone. Both optional:
    * the object is host-supplied, and a test double, an older Electron or a proxy may expose neither — such
    * a sender is still registered and still broadcast to, just never pruned early.
    */
@@ -116,7 +116,7 @@ export function createElectronMainControl(
     if (sender === undefined) {
       return;
     }
-    // SEV2 #7 — the registry has to SHRINK. Every window that ever said hello used to be retained for the
+    // the registry has to SHRINK. Every window that ever said hello used to be retained for the
     // process lifetime, pinning destroyed `webContents` (and whatever they retain) in the main process:
     // an app that opens and closes windows leaked monotonically, `rendererCount` was wrong after the first
     // close, and every broadcast walked a growing set of corpses.

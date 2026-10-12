@@ -1,6 +1,6 @@
 import { isSensitiveKey, REDACTED_URL_ENCODED } from './sensitive';
 
-// The shared `key=value&key=value` scanner (design §8.10; Android
+// The shared `key=value&key=value` scanner (Android
 // `NetworkDataSanitizer.redactSensitivePairs` parity). ONE implementation serves both places the shape
 // occurs — a URL query string and a form-urlencoded body — so the two can never drift apart on which
 // keys count as sensitive or what the replacement token is.
@@ -60,7 +60,7 @@ function decodeKey(raw: string): string {
  * second search was NOT bounded by `end`. On a run of separators carrying no `=`, every iteration therefore
  * rescanned to end-of-string: 84 ms at 100 K, 1339 ms at 400 K, 8158 ms at 1 M. That is quadratic, remotely
  * reachable through `sanitizeUrl(event.url)` (no length cap), and it sat under a comment asserting linearity
- * through two review rounds — including the rewrite whose stated purpose was removing a DoS from this file.
+ * through two review passes — including the rewrite whose stated purpose was removing a DoS from this file.
  *
  * On ORDINARY queries the single pass is a wash, not a win. Re-measured per shape at 977 KB, best of 9:
  * segment-dense queries get faster (`a=1&` 13.7 → 8.9 ms, a realistic 4-param query 12.2 → 9.4 ms), and a

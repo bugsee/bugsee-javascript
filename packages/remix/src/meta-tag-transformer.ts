@@ -1,4 +1,4 @@
-// @bugsee/remix — the node stream trace-meta transformer (P5, node half).
+// @bugsee/remix — the node stream trace-meta transformer (node half).
 //
 // Node-only (uses `node:stream`) → exported from `@bugsee/remix/server`. Wire it into the
 // `renderToPipeableStream` pipe in a Node `entry.server.tsx` so the trace `<meta>` is spliced into the

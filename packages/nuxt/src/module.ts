@@ -33,7 +33,7 @@ export interface NuxtLike {
     nitro?: { preset?: string };
   };
   /**
-   * Nuxt's hook bus. `nitro:init` is the first point at which the RESOLVED Nitro preset exists (Wave 4.4);
+   * Nuxt's hook bus. `nitro:init` is the first point at which the RESOLVED Nitro preset exists;
    * optional so a structural Nuxt without it still works, just without the late correction.
    */
   hook?: (name: string, fn: (nitro: NitroLike) => void) => void;
@@ -97,7 +97,7 @@ export function setupBugseeModule(options: ModuleOptions, nuxt: NuxtLike): void 
   // `nitro: { preset }` or passed an explicit override.
   addServerPlugin(isEdgePreset(nuxt.options.nitro?.preset) ? edgePlugin : nodePlugin);
 
-  // …and CORRECTED once the preset is actually resolved (Wave 4.4). Nitro auto-detects it inside
+  // …and CORRECTED once the preset is actually resolved. Nitro auto-detects it inside
   // `createNitro()`, long after modules run — the zero-config path Nuxt's own deployment docs advertise —
   // so on Cloudflare Pages/Workers the check above saw `undefined`, concluded "not edge", and shipped
   // `@bugsee/bugsee/node` into a workerd bundle: fs storage, the worker-thread ANR watchdog and

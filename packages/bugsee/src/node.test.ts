@@ -99,7 +99,7 @@ const base = (over: Partial<BugseeNodeLaunchOptions> = {}): BugseeNodeLaunchOpti
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'process_memory_rss', value: 42 }],
   captureNetwork: false,
-  capturedDataStore: 'memory', // hermetic: stay off the shared default disk root (disk is the default now, D3)
+  capturedDataStore: 'memory', // hermetic: stay off the shared default disk root (disk is the default now)
   clock: fixedClock,
   ...over,
 });
@@ -183,7 +183,7 @@ describe('bugsee node umbrella launch', () => {
     expect(transactionsOf(perfPosts).some((t) => t.name === 'app.start')).toBe(true);
   });
 
-  // R4V-4: node owns `propagateTrace` (default ON, invalid => OFF); the umbrella must not ALSO judge it with the
+  // node owns `propagateTrace` (default ON, invalid => OFF); the umbrella must not ALSO judge it with the
   // browser's performance definition (it logged "using false" while node kept propagating).
   it.each([
     'false',

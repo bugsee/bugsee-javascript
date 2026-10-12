@@ -62,7 +62,7 @@ export type MutationObserverCtor = new (callback: () => void) => MutationObserve
 /**
  * The answer when secure areas CANNOT be computed: obscure the whole frame.
  *
- * Fail-closed policy (Wave 1.4, docs/review/webview.md SEV1 #1). On the advanced path this SDK is the only
+ * Fail-closed policy. On the advanced path this SDK is the only
  * in-WebView mask source — the legacy in-page script is not injected there — so a failure here has no second
  * line of defence and native
  * would render the frame with password / cc-* / `.bugsee-hide` content visible. Returning the LAST KNOWN rects

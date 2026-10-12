@@ -5,7 +5,7 @@ import { createNodeRequestContextStore } from './request-context-store';
 
 const tick = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-// D2 part 2, end to end: the REAL performance controller over the REAL AsyncLocalStorage-backed
+// end to end: the REAL performance controller over the REAL AsyncLocalStorage-backed
 // request-context store, driven the way server-instrument drives it (one `startTransaction` per
 // incoming request, inside that request's context). Two interleaved requests must each keep their
 // own active transaction — under the old process-wide slot the second start overwrote the first

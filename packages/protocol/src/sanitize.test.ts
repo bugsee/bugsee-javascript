@@ -235,7 +235,7 @@ describe('sanitizeJson', () => {
 
   it('replaces the ENTIRE value under a sensitive key with the marker, whatever its type', () => {
     // I briefly changed this to walk the subtree and redact each leaf, so a report could show which fields
-    // existed. That was wrong on three independent counts, all found in review round 5:
+    // existed. That was wrong on three independent counts, all found in:
     //
     //  1. It opened a redaction BYPASS. Walking recurses; a deep body throws RangeError; `sanitizeBody`'s
     //     catch falls to the textual passes; and `JSON_PAIR` cannot match `"password":{` because its value
@@ -243,7 +243,7 @@ describe('sanitizeJson', () => {
     //  2. KEY NAMES became a leak channel. `{"tokens":{"eyJhbGciOiJIUzI1NiJ9.abc":true}}` emits the token,
     //     because the token IS the key. Maps keyed by a secret or an identifier are ordinary.
     //  3. It broke Android parity, which CLAUDE.md makes binding. `NetworkDataSanitizer` does
-    //     `obj.put(key, REDACTED_VALUE)` unconditionally, and sdk-design.md §873 requires the sanitizer's
+    // `obj.put(key, REDACTED_VALUE)` unconditionally, and requires the sanitizer's
     //     output be byte-identical to mobile.
     //
     // Plus `{"token":{}}` came back as `{"token":{}}` — the marker vanished entirely.
@@ -346,7 +346,7 @@ describe('sanitizeBody — JSON that does not parse', () => {
     'stays linear on hostile JSON-shaped input',
     () => {
       // The unanchored form of this pattern put a candidate start at every `"` — 16 ms at 8 KB, 227 ms at
-      // 32 KB. I wrote it that way first, in the same review round that fixed exactly this defect one file
+      // 32 KB. I wrote it that way first, in the same review pass that fixed exactly this defect one file
       // over, which is why it now has a test rather than a comment.
       const build = (n: number): string => `{"${'\\"'.repeat(n)}`; // escaped quotes, never closed
       expectLinearIn(
@@ -822,7 +822,7 @@ describe('gateNetworkBody', () => {
   });
 });
 
-// Wave 1.2 (docs/review/capture.md SEV1 #5). `sanitizeBody` applied the key denylist to JSON media types
+// `sanitizeBody` applied the key denylist to JSON media types
 // ONLY, so the canonical HTML login POST — `new URLSearchParams({username, password})` — was stored in the
 // clear. Worse, @bugsee/capture STAMPS the `application/x-www-form-urlencoded` Content-Type when the caller
 // set none, which is exactly what lets the body past the capture gate. Android has always redacted these
@@ -924,7 +924,7 @@ describe('sanitizeBody — colon-delimited (STOMP / header-style) bodies', () =>
   });
 });
 
-// Review finding (privacy reviewer, SEV1 #1): the form pass ran on ANY non-JSON body containing `=`, so
+// Review finding (privacy reviewer): the form pass ran on ANY non-JSON body containing `=`, so
 // prose whose first `=` was preceded by a denylist substring lost everything after it. Measured across 20
 // real repo files as text/plain bodies: 10 lost >90% of their bytes.
 describe('sanitizeBody — the form pass never eats a body that is not a form', () => {
@@ -954,7 +954,7 @@ describe('sanitizeBody — the form pass never eats a body that is not a form', 
   });
 });
 
-// Round-2 findings against the first attempt at this guard. Each case was measured leaking or being
+// Findings against the first attempt at this guard. Each case was measured leaking or being
 // destroyed before the per-segment rewrite.
 describe('sanitizeBody — the form guard decides PER SEGMENT', () => {
   const leaky: Array<[string, string]> = [

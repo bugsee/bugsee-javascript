@@ -10,7 +10,7 @@ import {
 } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
-// The Elysia adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Elysia adapter.
 // Elysia is a PEER (structural types only). setupElysia adds three hooks over the shared
 // server-instrumentation core (@bugsee/node):
 //   onRequest    — opens the per-request context + http.server transaction via `openServerRequest`
@@ -22,7 +22,7 @@ import { randomId } from '@bugsee/util';
 //                  not error-shape-based, so it does not flow through the span's shouldReport). `set.status`
 //                  is unreliable here, so the txn status is derived from the code.
 //   mapResponse  — fires LAST for BOTH success and error — finishes the transaction with the EXPLICIT
-//                  outcome (decoupled from the recorded status; D10) + the route-parametrized name.
+// outcome (decoupled from the recorded status) + the route-parametrized name.
 // Fully defensive: a failure in any hook never breaks the request.
 
 /** Minimal structural Elysia request (a Fetch Request). */
@@ -131,10 +131,10 @@ interface RequestState {
 /**
  * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
  * registration methods. An unguarded throw here does not cost one report — it stops the application
- * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * this defect is an instance of "features that silently do nothing"; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupElysia(app: ElysiaAppLike, options: ElysiaAdapterOptions = {}): void {
@@ -211,7 +211,7 @@ function setupElysiaUnsafe(app: ElysiaAppLike, options: ElysiaAdapterOptions = {
         return; // already finished (a short-circuited NOT_FOUND), or never opened
       }
       // Prefer a numeric c.set.status, then the code-derived status (e.g. 503), then 200. The OUTCOME is
-      // explicit (D10): a server error finishes ERROR even when the recorded status is not >= 500.
+      // explicit: a server error finishes ERROR even when the recorded status is not >= 500.
       finish(state, c, typeof c.set.status === 'number' ? c.set.status : (state.status ?? 200));
     } catch {
       // never break the response lifecycle

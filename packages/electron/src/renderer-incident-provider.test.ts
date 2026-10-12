@@ -2,7 +2,7 @@ import type { Client, HarvestedDump, ReportingRequest } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { RendererIncidentProvider } from './renderer-incident-provider';
 
-// The main-side submit seam for renderer incidents (R3/R4). It is a conduit, not a detector: registering it
+// The main-side submit seam for renderer incidents. It is a conduit, not a detector: registering it
 // is what makes the feature live, and it is the ONE public path that submits a ReportingRequest without
 // re-filing it through logException (which would turn a renderer crash into a handled, main-stacked error).
 const started = (over: ConstructorParameters<typeof RendererIncidentProvider>[0] = {}) => {

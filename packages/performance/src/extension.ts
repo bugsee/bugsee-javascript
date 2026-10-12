@@ -16,7 +16,7 @@ import type { TransactionWire } from './span';
 import { applySpanFilter } from './span-filter';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
 
-// The @bugsee/performance extension shell (design §0.6/§16). There is no addExtension lifecycle on the
+// The @bugsee/performance extension shell. There is no addExtension lifecycle on the
 // client yet, so the launch / umbrella wires it directly: build it, call setup(client) to register the
 // ext('performance') API (the controller, over the injected clock + a shared store), and stop() to tear
 // it down. setup takes the FULL BugseeClient (not the core minimal `Client` contract) deliberately — it
@@ -46,7 +46,7 @@ export interface PerformanceExtensionOptions {
    * Where the controller's active transaction lives. Default the process-wide single slot (last-started
    * wins) — correct for a browser. A concurrent server passes a per-execution-context store (Node keys
    * it off the AsyncLocalStorage-backed `RequestContext`) so one request never sees another's active
-   * transaction (D2 part 2).
+   * transaction.
    */
   activeSpanStore?: ActiveSpanStore;
   /**
@@ -73,7 +73,7 @@ export interface PerformanceExtension {
   setup(client: BugseeClient): void;
   /**
    * Record an EXTERNALLY-finished transaction (one that did not go through `startTransaction().finish()`
-   * — e.g. the Node `app.start` startup transaction or a consumed OTel span assembled into a §8.8
+   * e.g. the Node `app.start` startup transaction or a consumed OTel span assembled into a
    * transaction). Dual-writes to BOTH sinks — the continuous-upload store AND the incident-bundle capture
    * ring — mirroring what the controller's onFinish does for head-sampled transactions, so these reach
    * `performance.json` too. A no-op on the ring before setup() (the provider does not exist yet).
@@ -86,7 +86,7 @@ export interface PerformanceExtension {
 export function createPerformanceExtension(
   options: PerformanceExtensionOptions = {},
 ): PerformanceExtension {
-  // The sanitizer PROTECTS: only boolean `false` opts out, any other value keeps it on and is reported (R3V-3).
+  // The sanitizer PROTECTS: only boolean `false` opts out, any other value keeps it on and is reported.
   const sanitizeSpans = resolveFailOnBoolean(options.sanitizeSpans, true);
   if (options.sanitizeSpans !== undefined && typeof options.sanitizeSpans !== 'boolean') {
     try {

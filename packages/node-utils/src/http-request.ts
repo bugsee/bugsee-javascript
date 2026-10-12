@@ -3,9 +3,9 @@ import https from 'node:https';
 import { gunzipSync, inflateSync } from 'node:zlib';
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 
-// The Node implementation of core's HttpTransport primitive (design §7.5) — the spine for core's
+// The Node implementation of core's HttpTransport primitive — the spine for core's
 // BugseeApi + BundleUploader. Uses node:http(s) rather than global fetch so proxy agents can be
-// injected later (§5/§6). Advertises gzip/deflate (§8.2) and transparently decompresses the
+// injected later. Advertises gzip/deflate and transparently decompresses the
 // response. Non-2xx statuses resolve normally (the caller maps status → outcome); only network
 // errors and timeouts reject. The transport contract (HttpRequestOptions/HttpResponse) lives in core.
 

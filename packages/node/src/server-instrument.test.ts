@@ -25,7 +25,7 @@ const stashed = (ctx: unknown): unknown =>
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+// member this doesn't implement.
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -138,8 +138,8 @@ describe('openServerRequest', () => {
   });
 
   it('redacts secrets in the request URL before they reach `http.url`', () => {
-    // Wave 1.1. `info.url` is the raw request target, and its own doc comment claimed "the redaction
-    // pipeline scrubs query secrets" — it did not (docs/review/node-B-http-server.md SEV3 #12). This is
+    // `info.url` is the raw request target, and its own doc comment claimed "the redaction
+    // pipeline scrubs query secrets" — it did not. This is
     // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
     // place that has to be right.
     const store = fakeStore();
@@ -272,7 +272,7 @@ describe('openServerRequest', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /o/:id');
   });
 
-  // D2 (round 2) / R3 S1: `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
+  // `getAttributes()` is a REQUIRED, non-throwing member of the real `Span` — no
   // production `Transaction` can throw from it, so `finishWith` reads it directly (no bespoke inner
   // try/catch around just that call), and the outer try/catch is NOT proven through it (a throwing
   // `getAttributes` is not a reachable production trigger). The outer try/catch around the whole
@@ -864,7 +864,7 @@ describe('getActiveServerSpan', () => {
 
 describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return headers)', () => {
   // The span exposes the configured return headers; the CALLER (http patch / native wrap) writes them to
-  // its response object. Default OFF (T9) until the frontend consumes them.
+  // its response object. Default OFF until the frontend consumes them.
   const ownerSpan = (traceResponse?: ServerInstrumentOptions['traceResponse'], txnOver = {}) => {
     const txn = fakeTxn(txnOver);
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => txn) } });
@@ -903,7 +903,7 @@ describe('responseHeaders — BE→FE return path (X4, Profile v1 §12 return he
     });
   });
 
-  // --- F0: cross-origin exposure (so a cross-origin FE can READ the return headers) ---
+  // --- Cross-origin exposure (so a cross-origin FE can READ the return headers) ---
   it('timingAllowOrigin + serverTiming → Timing-Allow-Origin alongside Server-Timing', () => {
     expect(ownerSpan({ serverTiming: true, timingAllowOrigin: '*' }).responseHeaders()).toEqual({
       'Server-Timing': 'traceparent;desc="00-trace-1-span-1-01"',
@@ -1005,7 +1005,7 @@ describe('a throwing RequestContextStore never breaks the request path (F5)', ()
   // whose getCurrent() throws must degrade every server-instrument read to "no active context",
   // never propagate into the request lifecycle.
   // Fully conforming, deliberately NOT cast: tsc rejects this double the moment
-  // RequestContextStore grows a member it does not implement (the R3-7 enforcement net).
+  // RequestContextStore grows a member it does not implement (the enforcement net).
   const throwingStore = (): RequestContextStore => {
     const broken = (): never => {
       throw new Error('custom store broken');
@@ -1061,7 +1061,7 @@ describe('a throwing RequestContextStore never breaks the request path (F5)', ()
   it('a null-returning store degrades every read to "no active context" (never a crash)', () => {
     // A custom binding may return null (the idiomatic absent value) instead of undefined. The raw
     // `stashedOwner`/`refinableSpan` readers only guard undefined, so without normalization a null
-    // would throw a TypeError out of start/open/get — breaking the request path the F5 hardening
+    // would throw a TypeError out of start/open/get — breaking the request path the hardening
     // exists to protect. Same normalization the span store applies at its own boundary.
     const nullStore = (): RequestContextStore => ({
       getCurrent: () => null as unknown as RequestContext,

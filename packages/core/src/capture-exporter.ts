@@ -13,7 +13,7 @@ import type {
 // keeps writing during export — reads the snapshot's records, reconstructs entries (factory(type) +
 // instance deserialize), and RELEASES the snapshot when done (try/finally). stream() reads one-by-one
 // (memory-light); drain() reads all-at-once grouped by file type. The aggregator writes; the exporter
-// reads — the two directions are separate (Android-derived §16).
+// reads — the two directions are separate (Android-derived).
 
 function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEntry {
   const entry = factory(record.type);

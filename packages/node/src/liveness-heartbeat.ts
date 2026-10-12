@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import type { Scheduler } from '@bugsee/core';
 import { writeFileSecure } from '@bugsee/node-utils';
 
-// The liveness heartbeat (design: multi-instance-disk-coexistence.md, D3). While an instance is alive it
+// The liveness heartbeat While an instance is alive it
 // re-writes its `.live` file on an interval, advancing the mtime a peer reads to decide the subtree is still
 // in use. Fully defensive: a touch failure goes to onError, never throwing into the app.
 //
@@ -22,7 +22,7 @@ const DEFAULT_INTERVAL_MS = 10_000;
 
 // The worker's whole job: rewrite one file on an interval. No message passing in either direction — a
 // `message` listener would re-ref the MessagePort and undo the `unref` below, which is precisely how the
-// ANR watchdog once made a default launch() unable to exit (Wave 2.4).
+// ANR watchdog once made a default launch() unable to exit.
 const WORKER_SCRIPT = `
 const start = (wt) => {
   const { workerData } = wt;
@@ -107,7 +107,7 @@ export function startLivenessHeartbeat(deps: LivenessHeartbeatDeps): LivenessHea
     const w = worker;
     // Unref'd HERE rather than only inside the default spawner, so the guarantee holds for any injected
     // carrier and is observable through the seam. An un-unref'd worker makes a default launch() unable to
-    // exit — the Wave 2.4 defect, which was invisible because its test only asserted that unref was called
+    // exit — the defect, which was invisible because its test only asserted that unref was called
     // on a fake, never that the process could still exit.
     try {
       w.unref();

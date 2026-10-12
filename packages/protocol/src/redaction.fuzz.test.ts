@@ -655,7 +655,7 @@ describe('the wire contract', () => {
       'events.system': 'events.system.json',
       'traces.user': 'traces.user.json',
     });
-    // `breadcrumbs` carries NO extension, by mobile contract (§8.4). Pinned as an exception rather than
+    // `breadcrumbs` carries NO extension, by mobile contract. Pinned as an exception rather than
     // waved through by a loose pattern: it looks like an oversight, so the next tidy-up would "fix" it to
     // `breadcrumbs.json` and the backend would stop finding the file.
     expect(DEFAULT_FILENAMES.breadcrumbs).toBe('breadcrumbs');

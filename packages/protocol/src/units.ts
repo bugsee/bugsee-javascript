@@ -1,4 +1,4 @@
-// Wire units (design §8.6). The environment envelope's memory/disk figures are BINARY MEGABYTES on
+// Wire units. The environment envelope's memory/disk figures are BINARY MEGABYTES on
 // every Bugsee SDK — Android's EnvironmentInfoProvider divides the raw byte count by 1024/1024 before
 // putting `platform.memory_total`/`memory_free` on the wire, and the viewer renders those fields by
 // dividing by 1024 again and labelling the result GB. A byte count sent into that pipeline is off by

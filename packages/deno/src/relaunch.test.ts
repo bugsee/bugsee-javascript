@@ -2,7 +2,7 @@ import { setCarrierClient, setCarrierLastLaunch } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // `relaunch` must re-run THIS package's launch (Deno system probe + runtime gates), not the one re-exported from the layer below
-// (review R2D-4). The launch is replaced by a spy; the carrier carries the remembered token like a real one.
+// The launch is replaced by a spy; the carrier carries the remembered token like a real one.
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock('./launch', () => ({ launch }));
 

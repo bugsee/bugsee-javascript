@@ -1,5 +1,5 @@
-// Component-name attribution (frontend-adapters depth pass D2). A build plugin (@bugsee/babel-plugin-
-// component-annotate, D3) stamps each host DOM element with `data-bugsee-component="<ComponentName>"` — the
+// Component-name attribution. A build plugin (@bugsee/babel-plugin-
+// component-annotate) stamps each host DOM element with `data-bugsee-component="<ComponentName>"` — the
 // name of the framework component that rendered it, preserved through minification (the plugin emits the
 // literal name). At capture time we resolve the nearest annotated ancestor of an interaction/input target,
 // so a click/error attributes to a COMPONENT name, not just a DOM selector. Foundation-level (benefits any

@@ -3,7 +3,7 @@ import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseStack } from './stack';
 
-// R3P-1: a non-Error throwable's synthetic stack must start at the APPLICATION on JavaScriptCore too. These
+// a non-Error throwable's synthetic stack must start at the APPLICATION on JavaScriptCore too. These
 // strings were recorded from the macOS `jsc` shell (the engine under Safari and every iOS WebView),
 // 2026-10-12, paths shortened: there is no `at`, frames are `function@location`.
 //   - with Error.captureStackTrace: the boundary and everything above it are already dropped;

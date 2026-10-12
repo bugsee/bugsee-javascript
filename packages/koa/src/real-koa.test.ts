@@ -3,7 +3,7 @@ import Koa from 'koa';
 import { describe, expect, it } from 'vitest';
 import { bugseeKoa } from './middleware';
 
-// Review finding (host-boundary reviewer, SEV1 #2): same defect as express — `info` is built outside
+// Review finding (host-boundary reviewer): same defect as express — `info` is built outside
 // runServerRequest, so a throwing app-supplied `user` extractor 500'd the request on real koa.
 describe('@bugsee/koa against real koa', () => {
   it('serves the route when the app-supplied `user` extractor throws', async () => {

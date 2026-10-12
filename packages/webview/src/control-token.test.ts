@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mintControlToken } from './control-token';
 
-// WAVE 0.3 review round 1, SEV1 — the control token was minted with `randomId()` from @bugsee/util, whose
+// The control token was minted with `randomId()` from @bugsee/util, whose
 // own header says: "Context/correlation ids are NOT security tokens, so the fallback is safe". It is safe
 // for what it was built for and wrong here, for a reason specific to this runtime:
 //

@@ -17,7 +17,7 @@ const { attachBugseeOtelProvider } = vi.hoisted(() => ({
 }));
 vi.mock('./otel-provider', () => ({ attachBugseeOtelProvider }));
 
-// Every processor the umbrella builds, with its ORIGINAL shutdown spied before the adapter wraps it (R4H-9).
+// Every processor the umbrella builds, with its ORIGINAL shutdown spied before the adapter wraps it.
 const { created } = vi.hoisted(() => ({
   created: [] as ReturnType<typeof vi.fn>[],
 }));
@@ -119,7 +119,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(getCarrierClient(carrier)).toBe(second);
     // The plain umbrella relaunch would NOT have wired the processor again: registerServer did.
     expect(onSpanProcessor).toHaveBeenCalledTimes(1);
-    // The provider slot is first-wins and already ours: it is NOT registered a second time (R3P-2).
+    // The provider slot is first-wins and already ours: it is NOT registered a second time.
     expect(attachBugseeOtelProvider).toHaveBeenCalledTimes(1);
     // ... and what the user's own provider got is the SAME stable processor, now bound to the new client.
     expect(onSpanProcessor.mock.calls[0]?.[0]).toBe(attachBugseeOtelProvider.mock.calls[0]?.[0]);
@@ -197,7 +197,7 @@ describe('@bugsee/nextjs/server relaunch', () => {
     expect(a.names()).not.toContain('GET /after-relaunch');
   });
 
-  // --- R4H-3 / R4H-9: delegate lifetime --------------------------------------------------------
+  // --- Delegate lifetime --------------------------------------------------------
   const DELEGATE = Symbol.for('@bugsee/nextjs.spanProcessorDelegate');
   const targetOf = (carrier: object) =>
     (carrier as Record<symbol, { target?: BugseeSpanProcessor } | undefined>)[DELEGATE]?.target;

@@ -1,4 +1,4 @@
-// The pixel-video controller (E8d) — wraps a VideoCaptureSource behind a permission gate and exposes the
+// The pixel-video controller — wraps a VideoCaptureSource behind a permission gate and exposes the
 // report-time snapshot the bundle assembler pulls. The source is a single VideoCaptureSource; the
 // "capturePage + MediaRecorder" combination is composed INTO one source by the adapter (capturePage frames
 // → canvas → MediaRecorder → webm), so the controller stays source-agnostic. `snapshot` is the
@@ -47,7 +47,7 @@ export function createPixelVideoController(
   let offBlackout: (() => void) | undefined;
 
   // The host's sink is arbitrary code: a throwing sink must never skip a `clear()` (pre-blackout frames would
-  // stay buffered), reject `start()`, or escape into the blackout gate's dispatch (R4V-8).
+  // stay buffered), reject `start()`, or escape into the blackout gate's dispatch.
   const report = (error: unknown): void => {
     try {
       options.onError?.(error);

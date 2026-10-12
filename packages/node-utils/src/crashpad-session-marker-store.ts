@@ -2,8 +2,7 @@ import { join } from 'node:path';
 import type { CrashpadSessionMarker } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
-// Node store for the SINGLE crashpad-session marker (native-crash recovery — docs/design/
-// electron-native-crashes.md §6.1). Unlike ReportMarkerStore (a directory of per-incident markers), a
+// Node store for the SINGLE crashpad-session marker (native-crash recovery). Unlike ReportMarkerStore (a directory of per-incident markers), a
 // launch has exactly ONE Crashpad session, so this is a single owner-only (0o600) `crashpad-session.json`
 // under the instance's `incidents/` dir. Persisted at START (links the Crashpad dump dir -> this
 // generation + session); read on the NEXT launch when a DEAD sibling subtree is recovered. A corrupt marker

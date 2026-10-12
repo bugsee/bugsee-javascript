@@ -60,11 +60,11 @@ interface UmbrellaInternals {
   onError: ((error: unknown) => void) | undefined;
   /**
    * Where the performance controller's active transaction lives. The server `launchCore` supplies a
-   * per-request-context store (D2 part 2); the browser passes `undefined` and keeps the single-slot
+   * per-request-context store; the browser passes `undefined` and keeps the single-slot
    * default. REQUIRED-but-nullable rather than optional (R-16): `UmbrellaInternals` is a
    * hand-maintained structural mirror of two independently declared `LaunchInternals`, and an
    * optional field let a platform omit the store with no type error — it would silently fall back to
-   * the single slot, which is the D2 defect. A required key forces every platform to state its choice.
+   * the single slot, which is the defect. A required key forces every platform to state its choice.
    */
   activeSpanStore: ActiveSpanStore | undefined;
 }
@@ -154,7 +154,7 @@ function teeSend(
 }
 
 /**
- * The OTLP endpoint of `otelExportUrl` (R5V-7): a string (trimmed) or a `URL` object (its href). Absent, `null`, an
+ * The OTLP endpoint of `otelExportUrl`: a string (trimmed) or a `URL` object (its href). Absent, `null`, an
  * empty or whitespace-only string mean "no exporter" silently; anything else (a number, an object, ...) is reported
  * and means no exporter either, so nothing is ever posted to an address the host did not give.
  */
@@ -219,7 +219,7 @@ export function wireUmbrella<C extends BugseeClient>(
     options as unknown as Record<string, unknown>,
     // `propagateTrace` is the BROWSER's perf-sourced propagation switch; on Node the `@bugsee/node` launch owns that
     // option (default ON, invalid => OFF) and reports it, so the umbrella must not judge it a second time with a
-    // contradictory definition ("using false" while node kept propagating: R4V-4).
+    // contradictory definition ("using false" while node kept propagating).
     platform.pageload
       ? PERFORMANCE_OPTION_DEFINITIONS
       : PERFORMANCE_OPTION_DEFINITIONS.filter((d) => d.friendly !== 'propagateTrace'),
@@ -232,8 +232,8 @@ export function wireUmbrella<C extends BugseeClient>(
     baseUrl: internals.baseUrl,
     getEnvironment: internals.getEnvironment,
   });
-  // Profile v1 §5: the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
-  // follows telemetry.sdk.language (§4): `webjs` on the browser, `nodejs` on the node-family runtimes
+  // Profile v1: the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
+  // follows telemetry.sdk.language: `webjs` on the browser, `nodejs` on the node-family runtimes
   // (node/bun/deno all run the node umbrella entry, pageload:false). The provider here is `performance`.
   const scopeName = `com.bugsee.${platform.pageload ? 'webjs' : 'nodejs'}/performance`;
   // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
@@ -241,7 +241,7 @@ export function wireUmbrella<C extends BugseeClient>(
   const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
   const otlpUrl = resolveOtlpUrl(options.otelExportUrl, internals.onError);
   const otlpSend =
-    // Only a NON-EMPTY URL configures an exporter: `''` / `'   '` would post to the page's own URL (R4V-10, R5V-7).
+    // Only a NON-EMPTY URL configures an exporter: `''` / `' '` would post to the page's own URL.
     otlpUrl !== undefined
       ? createOtlpTraceExporter({
           transport: internals.transport,
@@ -255,7 +255,7 @@ export function wireUmbrella<C extends BugseeClient>(
       : undefined;
   const send = otlpSend !== undefined ? teeSend(bugseeSend, otlpSend) : bugseeSend;
 
-  // SPA navigation transactions (F1c) — browser only (`platform.pageload`; Node has no History/SPA
+  // SPA navigation transactions — browser only (`platform.pageload`; Node has no History/SPA
   // navigation), opt-out via `traceNavigations: false`. The detector self-skips if the browser globals are
   // absent; wirePerformance subscribes to it (which activates it) and tears it down on stop.
   const navigationSource =
@@ -263,7 +263,7 @@ export function wireUmbrella<C extends BugseeClient>(
       ? browserSources.createNavigationSource?.()
       : undefined;
 
-  // Interaction transactions (F4) — browser only (`platform.pageload`), opt-out via `traceInteractions:
+  // Interaction transactions — browser only (`platform.pageload`), opt-out via `traceInteractions:
   // false`. The Event Timing source self-skips where the API is unsupported; wirePerformance subscribes
   // (activating it) and tears it down on stop.
   const interactionSource =
@@ -271,7 +271,7 @@ export function wireUmbrella<C extends BugseeClient>(
       ? browserSources.createInteractionSource?.()
       : undefined;
 
-  // Pageload trace continuation (D4): on the browser, continue a server-injected `<meta name="traceparent">`
+  // Pageload trace continuation: on the browser, continue a server-injected `<meta name="traceparent">`
   // so the SSR request and the client pageload are one trace (a fresh root if absent/invalid).
   const pageloadContinuation = platform.pageload
     ? browserSources.readMetaTraceContinuation?.()
@@ -311,11 +311,11 @@ export function wireUmbrella<C extends BugseeClient>(
     const endTimestampMs = client.getService(ClockToken).wallNow();
     wired.recordTransaction({
       traceId: defaultTraceId(),
-      spanId: defaultSpanId(), // a real root id — see TransactionWire.spanId (Wave 5.3)
+      spanId: defaultSpanId(), // a real root id — see TransactionWire.spanId
       name: 'app.start',
       operation: 'app.start',
       status: 'OK',
-      sampled: true, // the startup transaction is always recorded + uploaded (Profile v1 §6 sampled flag)
+      sampled: true, // the startup transaction is always recorded + uploaded (Profile v1 sampled flag)
       startTimestampMs: platform.startupAtMs,
       endTimestampMs,
       durationNanos: Math.max(0, Math.round((endTimestampMs - platform.startupAtMs) * 1_000_000)),
@@ -325,7 +325,7 @@ export function wireUmbrella<C extends BugseeClient>(
   }
 
   // Consume (opt-in): hand the user a SpanProcessor to register on their OTel TracerProvider. Consumed
-  // spans are assembled into §8.8 transactions (recordTransaction) and ride the same upload + OTLP tee.
+  // spans are assembled into transactions (recordTransaction) and ride the same upload + OTLP tee.
   let spanProcessor: BugseeSpanProcessor | undefined;
   if (options.otelConsume === true && options.onOtelSpanProcessor !== undefined) {
     spanProcessor = createBugseeSpanProcessor({ onTransaction: wired.recordTransaction });
@@ -337,7 +337,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // seam, propagating the active performance transaction's trace + the `bugsee=` session tracestate.
   // BROWSER ONLY (`platform.pageload`): on Node the `@bugsee/node` launch already wires its OWN
   // per-request-context-sourced decorator, so the umbrella must NOT double-wire. The perf-sourced one
-  // stays browser-only on its own merits even after D2 part 2 made the controller's slot request-scoped
+  // stays browser-only on its own merits even after made the controller's slot request-scoped
   // on Node: it reads whatever transaction is active rather than the request context the node decorator
   // is built on, and it is tied to the OPT-IN APM extension. Same-origin propagates by default; cross-origin only via the
   // allowlist (`tracePropagationTargets`).

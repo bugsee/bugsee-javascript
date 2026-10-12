@@ -85,7 +85,7 @@ describe('convenience per-bundler factories', () => {
 // against an output directory containing no `.map` files at all — real bugsee-cli v0.7.2 exits 10, "no .map
 // source-map files found under: <dir>". Reproduced in the review against real Vite 6.4.3 and 7.3.6.
 //
-// Containing the failure (Wave 7.3) stops it breaking the build, which turns it into the OTHER failure this
+// Containing the failure stops it breaking the build, which turns it into the OTHER failure this
 // remediation is about: a feature that silently does nothing. The wrapper owns the one thing the engine
 // cannot see — the bundler's own configuration — so this is where it has to be fixed.
 describe('the Vite plugin ensures source maps exist (Wave 7.6)', () => {

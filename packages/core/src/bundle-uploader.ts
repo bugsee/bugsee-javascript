@@ -7,7 +7,7 @@ import {
   type PutResult,
 } from './transport';
 
-// The data-plane BundleUploader (design §7.5/§8.3) — platform-agnostic logic over an injected
+// The data-plane BundleUploader — platform-agnostic logic over an injected
 // HttpTransport. It builds the signed-PUT headers (Content-Length, fileName; NO Authorization — the
 // signed URL self-auths — and NO Content-Type, and NO `x-amz-*`, see below) and maps the response to
 // a PutResult: 2xx → ok; a network error (transport reject) → retryable; anything else is classified

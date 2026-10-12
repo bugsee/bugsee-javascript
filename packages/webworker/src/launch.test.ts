@@ -413,7 +413,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // marker swept
   });
 
-  // SEV1 (recovery double-upload). The worker gets the SAME reconciliation as the browser tier (one
+  // (recovery double-upload). The worker gets the SAME reconciliation as the browser tier (one
   // implementation, in `browser-utils`'s `Coexistence`): a sibling killed between the durable stage and the
   // upload settling leaves BOTH a staged bundle and its incident's marker, and that must be ONE upload.
   it('uploads an incident exactly ONCE when a dead sibling left both its staged bundle and its marker', async () => {
@@ -448,7 +448,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     );
   });
 
-  // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
+  // An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
   // activations, so it holds the previous one's staged bundle while that incident's marker still sits in the
   // dead activation's IndexedDB namespace. Replaying it blind and then rebuilding from the marker uploaded
   // the incident twice, with differing payloads.
@@ -478,9 +478,9 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
   });
 
-  // R5-4. The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
+  // The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
   // blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
-  // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
+  // `pipeline: durable ?? baseUploadPipeline` survived every suite across several review passes because every
   // platform test used an accepting transport: the second copy the durable queue stages on the way IN is
   // removed the instant the upload succeeds, so the duplicate never outlives the pass. On a 503 it does —
   // and the next activation uploads that incident twice, from two blobs, with differing payloads.
@@ -519,7 +519,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff described above: the shared
+    // A repeat stop() answers for the REAL drain (2), which is the retry backoff described above: the shared
     // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -620,7 +620,7 @@ describe('launch — capture recovery (#165: persist the rolling buffer)', () =>
   // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
   // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
   // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
-  // could have worked. Before round 6 the test failed on the mutation only incidentally, through the
+  // could have worked. Before the test failed on the mutation only incidentally, through the
   // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
   // that side effect and left the test unable to fail.
   //
@@ -1001,7 +1001,7 @@ describe('launch (webworker)', () => {
     expect(client.getService(BundleStoreToken)).toBeDefined(); // IndexedDB durable queue wired
   });
 
-  // R3V-3: `options.persist ?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
+  // `options.persist?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
   // more data, so only boolean `true` turns it on and any other value is OFF (even on a Service Worker, whose
   // default is on) and is reported.
   it.each([
@@ -1624,7 +1624,7 @@ describe('launch — network capture wiring', () => {
   });
 });
 
-// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+// RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
 describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
   const run = async (withMarker: boolean, siblings = 1) => {
     const idb = new IDBFactory();

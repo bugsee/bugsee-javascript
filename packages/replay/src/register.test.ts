@@ -1,4 +1,4 @@
-// @vitest-environment jsdom -- selector validation (Wave 1.4) needs a DOM to parse against
+// @vitest-environment jsdom -- selector validation needs a DOM to parse against
 import {
   type CaptureDataEntry,
   type CaptureProvider,
@@ -72,7 +72,7 @@ describe('registerReplay', () => {
   });
 
   it('reports a dropped invalid masking selector through the caller onError', () => {
-    // Wave 1.4. Without this wiring the resolver's report has nowhere to go, and a developer's typo'd
+    // Without this wiring the resolver's report has nowhere to go, and a developer's typo'd
     // selector is silently downgraded — which is how the original defect stayed invisible in the first place.
     const errors: unknown[] = [];
     registerReplay(

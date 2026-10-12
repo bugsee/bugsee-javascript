@@ -14,7 +14,7 @@ import {
   useRef,
 } from 'react';
 
-// React render-span profiling (frontend-adapters depth pass D4). `<BugseeProfiler id>` wraps a subtree in
+// React render-span profiling. `<BugseeProfiler id>` wraps a subtree in
 // React's built-in `<Profiler>` and records a `ui.render` child span on the active transaction for each
 // commit — component render performance (mount/update durations) the foundation can't otherwise see. The
 // recording core (`recordReactRenderSpan`) is React-FREE + injection-tested; the component is a thin shell.
@@ -24,7 +24,7 @@ import {
 // this component records ZERO spans in the build customers actually ship. That is React's behaviour, not
 // something this SDK can switch on: it depends on which `react-dom` the APP bundles. A developer wires this,
 // sees spans in development, ships, and gets silence — which is why it is called out here, on the props, and
-// on the HOC rather than left to be discovered (Wave 4.6).
+// on the HOC rather than left to be discovered.
 //
 // Two supported ways to get production render spans:
 //   1. Bundle React's profiling build — alias `react-dom` to `react-dom/profiling` (and

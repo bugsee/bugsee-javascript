@@ -42,7 +42,7 @@ describe('buildWorkerEnvironment', () => {
       probe(),
     );
     // The OS, exactly as the browser tier reports it. `platform` used to carry the WORKER tag and the
-    // raw user agent — the same F-X20 conflation, and a worker's `navigator` is just as readable.
+    // raw user agent — the same conflation, and a worker's `navigator` is just as readable.
     expect(env.platform).toMatchObject({
       type: 'windows',
       version: '10',

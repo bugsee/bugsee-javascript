@@ -1,4 +1,4 @@
-// Absolutization of captured network URLs (protocol + host + port), design §16.1.
+// Absolutization of captured network URLs (protocol + host + port),
 //
 // Every network SOURCE records the target the caller passed, so a same-origin `fetch('/api/x')` was
 // stored as `/api/x` while a cross-origin call was stored as `http://localhost:5398/nope`. Same capture

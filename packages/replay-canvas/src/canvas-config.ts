@@ -1,8 +1,8 @@
-// @bugsee/replay-canvas — the opt-in canvas-replay add-on's option resolver (RPC2). rrweb 2.1.0 records
+// @bugsee/replay-canvas — the opt-in canvas-replay add-on's option resolver. rrweb 2.1.0 records
 // <canvas> content by OPTIONS alone (`recordCanvas` + `sampling.canvas` fps + `dataURLOptions`) — the canvas
 // recorder is already inside the fork's `record` bundle — so this package is a small, PURE options-builder:
 // it resolves friendly canvas options into the `CanvasRecordConfig` seam that @bugsee/replay spreads into
-// rrweb `record()`. No rrweb import, no DOM. See docs/design/replay-canvas.md.
+// rrweb `record()`. No rrweb import, no DOM.
 import type { CanvasRecordConfig } from '@bugsee/replay';
 
 /** Friendly, cheap-by-default canvas-recording options. */

@@ -18,7 +18,7 @@ export type SpawnFn = (
   options: { cwd?: string; env?: EnvRecord; signal?: AbortSignal },
 ) => Promise<SpawnResult>;
 
-/** Default wall-clock budget for one `bugsee-cli` invocation (Wave 7.4). */
+/** Default wall-clock budget for one `bugsee-cli` invocation. */
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
@@ -60,7 +60,7 @@ export interface RunBugseeCliOptions {
   /** Base environment (defaults to `process.env`). */
   env?: EnvRecord;
   /**
-   * Wall-clock budget for the child, in ms. Default 120 000 (Wave 7.4).
+   * Wall-clock budget for the child, in ms. Default 120 000.
    *
    * Without one, the promise settled only on the child's `close`/`error`, so a CLI blocked on a hanging TCP
    * connect — reachable purely through a misconfigured `endpoint` on a firewalled CI network — left the

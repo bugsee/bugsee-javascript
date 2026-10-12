@@ -5,7 +5,7 @@ import {
   reportError,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/svelte ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for SvelteKit). Wraps
+// The @bugsee/svelte ERROR SEAM (the thin pattern for SvelteKit). Wraps
 // SvelteKit's `handleError` hook (the user exports it from `src/hooks.client.ts`): report the thrown error
 // to the launched Bugsee client, labeled with the navigation route id, then DELEGATE to the app's own
 // handleError and forward its return (the `App.Error` shape SvelteKit renders). A STRUCTURAL PEER over the
@@ -46,7 +46,7 @@ export function handleErrorWithBugsee(
   options: SvelteErrorOptions = {},
 ): HandleErrorHook {
   return (input) => {
-    // Contained (Wave 2.1): route extraction reads a framework-supplied object and the report follows, and
+    // Contained: route extraction reads a framework-supplied object and the report follows, and
     // a throw from either used to skip the app's own handleError — which is what SvelteKit renders from.
     //
     // Route extraction gets its OWN guard, separate from the report. The route id is decoration (a

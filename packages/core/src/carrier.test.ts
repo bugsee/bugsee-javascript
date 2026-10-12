@@ -224,7 +224,7 @@ describe('setCarrierLastLaunch', () => {
     expect(getCarrier(g).lastLaunch?.appToken).toBe('tok');
   });
 
-  // L18: the slot lives on globalThis, readable by any script in the process. It keeps only what
+  // the slot lives on globalThis, readable by any script in the process. It keeps only what
   // relaunch() needs to find its way back, never the host's options wholesale.
   it('keeps the integration seams relaunch needs, never a host Bugsee option, header or identifier', () => {
     const g = {};
@@ -249,7 +249,7 @@ describe('setCarrierLastLaunch', () => {
     expect(Object.keys(retained).sort()).toEqual([
       'carrier',
       'clock',
-      'endpoint', // deployment identity (R2P-3): a relaunch must not fall back to the production endpoint
+      'endpoint', // deployment identity: a relaunch must not fall back to the production endpoint
       'onError',
       'scheduler',
       'transport',

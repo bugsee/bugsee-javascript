@@ -1,9 +1,9 @@
 import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/angular ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam).
+// The @bugsee/angular ROUTER NAMING integration (the two-phase naming seam).
 // Angular's activated-route snapshot tree carries the matched route config; walk it to build the
 // parameterized pattern (`/users/:id` — Angular's colon syntax, same as the backend adapters) and refine
-// the active navigation transaction (opened raw-URL by the F1 navigation source) via the shared
+// the active navigation transaction (opened raw-URL by the navigation source) via the shared
 // `setRouteName` seam. A STRUCTURAL PEER over the snapshot/router shapes (no `@angular/router` import) →
 // version-agnostic + unit-testable. The user owns the `NavigationEnd` filter (they have the import),
 // keeping this robust + decoupled — wire once after the router is ready:
@@ -52,7 +52,7 @@ function routePatternFromSnapshotUnsafe(
   return segments.length > 0 ? `/${segments.join('/')}` : undefined;
 }
 
-/** Refine the active transaction to the router's CURRENT activated route pattern (D5 phase-2). Call on each
+/** Refine the active transaction to the router's CURRENT activated route pattern. Call on each
  *  `NavigationEnd`. A no-op when the current route has no usable pattern. */
 export function setRouteNameFromRouter(
   router: AngularRouterLike,

@@ -93,7 +93,7 @@ describe('consumedRootToTransaction', () => {
       ),
     ).toEqual({
       traceId: '0123456789abcdef0123456789abcdef',
-      spanId: 'cccccccccccccccc', // the consumed root's OWN id, preserved (Wave 5.3)
+      spanId: 'cccccccccccccccc', // the consumed root's OWN id, preserved
       name: 'GET /checkout',
       operation: 'GET /checkout',
       status: 'OK',

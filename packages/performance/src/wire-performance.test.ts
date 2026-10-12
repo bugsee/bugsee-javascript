@@ -272,7 +272,7 @@ describe('wirePerformance', () => {
     const wire = serializeTransaction(perf()?.getActiveSpan() as Transaction);
     const httpSpan = wire.spans.find((s) => s.operation === 'http.client');
     expect(httpSpan).toBeDefined();
-    // F3: the FE client span records WHICH backend http.server span handled it (read off the return header).
+    // the FE client span records WHICH backend http.server span handled it (read off the return header).
     expect(httpSpan?.attributes?.['bugsee.server_span_id']).toBe('b7ad6b7169203331');
   });
 
@@ -349,9 +349,9 @@ describe('wirePerformance', () => {
       const wired = wirePerformance(
         base({ client, navigationSource: nav.source, pageload: false }),
       );
-      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' }); // phase 1: raw URL
+      nav.emit({ to: '/users/42', navigationType: 'push', source: 'url' }); // raw URL
       expect((perf()?.getActiveSpan() as Transaction).getName()).toBe('/users/42');
-      perf()?.setRouteName('/users/:id'); // phase 2: a router adapter resolves the route
+      perf()?.setRouteName('/users/:id'); // a router adapter resolves the route
       const active = perf()?.getActiveSpan() as Transaction;
       expect(active.getName()).toBe('/users/:id'); // the in-flight navigation was refined in place
       expect(active.getAttributes()['bugsee.name_source']).toBe('route');

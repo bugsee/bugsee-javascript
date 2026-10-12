@@ -1,7 +1,7 @@
 import { type CaptureProvider, CaptureProviderBase, type EventSubscribable } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
-// Runtime-agnostic SYSTEM EVENTS provider (design §16.1, Android events.system parity). A system event
+// Runtime-agnostic SYSTEM EVENTS provider (Android events.system parity). A system event
 // is a discrete, auto-captured occurrence (process lifecycle, memory pressure, …). While started, the
 // provider subscribes to a system-event SOURCE and routes each event to the aggregator as an
 // 'events.system' entry, stamping it from the clock. The shell is runtime-agnostic; WHICH events exist

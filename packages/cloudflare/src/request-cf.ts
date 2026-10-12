@@ -1,6 +1,6 @@
 import { type AttributeValue, requestAttributes } from '@bugsee/vercel-edge';
 
-// Cloudflare `request.cf` enrichment (docs/design/edge-runtime.md C3, decision D9). Behind the edge, every
+// Cloudflare `request.cf` enrichment. Behind the edge, every
 // incoming fetch Request carries a `cf` object of FREE geo/network metadata. We stamp a CURATED, low-PII subset
 // (the design's colo / country / city / timezone / asn / tls — NOT latitude/longitude) onto the request's
 // context, so a fetch incident report carries where/how the request arrived. Every field is optional (absent in

@@ -7,7 +7,7 @@ import {
   requestHandler,
 } from './middleware';
 
-// Ergonomic one-call setup over the two middlewares (design: docs/design/framework-adapters.md). Express
+// Ergonomic one-call setup over the two middlewares. Express
 // forces the error handler to be registered AFTER the routes (it only catches errors from layers before
 // it). setupExpress installs the request middleware now and, by default, the error handler after the
 // routes via two paths sharing an install-once flag:
@@ -88,10 +88,10 @@ export interface SetupExpressOptions extends ExpressAdapterOptions {
 /**
  * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
  * registration methods. An unguarded throw here does not cost one report — it stops the application
- * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * this defect is an instance of "features that silently do nothing"; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupExpress(app: ExpressApp, options: SetupExpressOptions = {}): void {

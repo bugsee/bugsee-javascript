@@ -1,8 +1,7 @@
-// @bugsee/node — Node platform (tier 2, design §5): http(s) transport, node:fs storage, uncaught/
+// @bugsee/node — Node platform: http(s) transport, node:fs storage, uncaught/
 // unhandledRejection detection, console/network capture. Built test-first per
-// docs/implementation-standards.md.
 
-// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review R2D-4: the
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review: the
 // directly imported platform package exposes the same value surface as the umbrella entries).
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes) — used internally by the
@@ -24,7 +23,7 @@ export {
   neverThrow,
   type ReportAttachmentInput,
 } from '@bugsee/core';
-// R-7/F4: the request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
+// The request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two
 // live stores over the same source alias on it. The launch builds and owns one; hand-wirers must
 // share (not mint per controller) theirs the same way.

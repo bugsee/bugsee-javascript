@@ -1,5 +1,5 @@
 // Runtime detection. Used only for *content* decisions (e.g. "should I open IndexedDB?"),
-// never to pick a transport/storage impl — that is chosen at build time (design §6).
+// never to pick a transport/storage impl — that is chosen at build time.
 // Reads globals through a typed view of globalThis so no DOM/Node lib is pulled in.
 
 interface RuntimeGlobals {

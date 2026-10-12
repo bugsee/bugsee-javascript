@@ -4,7 +4,7 @@ import * as errorMod from './error';
 import { solidErrorHandler } from './error';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — this handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
+// this handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
 // boundary meant to contain the customer's error and takes the fallback UI down with it.
 afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;

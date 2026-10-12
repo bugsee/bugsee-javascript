@@ -19,7 +19,7 @@ const make = (
     ...(onError !== undefined ? { onError } : {}),
   });
 
-// R5V-6. `tracePropagationTargets` decides which THIRD PARTIES receive the trace + session ids.
+// `tracePropagationTargets` decides which THIRD PARTIES receive the trace + session ids.
 describe('createTraceparentDecorator: the allow-list is validated', () => {
   it('an empty string matches nothing (it is a substring of every URL)', () => {
     const d = make(['']);

@@ -24,8 +24,8 @@ import {
   relaunch,
 } from './launch';
 
-// Review round 2, group F1 (node): a stopped client stays stopped (R2L-3), a repeat stop() is the same drain
-// (R2L-1), and RelaunchedAfterCrash only on honest evidence (R2D-2).
+// group (node): a stopped client stays stopped, a repeat stop() is the same drain
+// and RelaunchedAfterCrash only on honest evidence.
 
 const probe: SystemProbe = {
   platformType: () => 'node',

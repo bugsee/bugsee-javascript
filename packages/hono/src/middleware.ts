@@ -2,7 +2,7 @@ import { getCarrierClient, neverThrow } from '@bugsee/core';
 import { type Bugsee, runServerRequest, type ServerInstrumentOptions } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
-// The Hono adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Hono adapter.
 // Hono is a PEER (structural types only). A single middleware over the shared server-instrumentation core:
 //   - opens a per-request context + http.server transaction via `runServerRequest` (run-scoped) — or
 //     REFINES the node:http-layer owner's span when that auto-instrument also runs (first-owner-wins
@@ -43,7 +43,7 @@ export interface HonoAdapterOptions {
   newContextId?: () => string;
   /** Decide whether a thrown error is reported. Default: skip Hono HTTPExceptions, report genuine errors. */
   shouldReport?: (err: unknown) => boolean;
-  /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */
+  /** Where an SDK-internal failure is reported. Never thrown into the request. */
   onError?: (error: unknown) => void;
 }
 
@@ -81,14 +81,14 @@ const toOptions = (options: HonoAdapterOptions): ServerInstrumentOptions => ({
 export function bugseeHono(options: HonoAdapterOptions = {}): HonoMiddleware {
   const opts = toOptions(options);
   return async (c, next) => {
-    // Wave 2.1/2.3 — the request path is inert. Hono's `compose` catches whatever a middleware throws,
+    // the request path is inert. Hono's `compose` catches whatever a middleware throws,
     // assigns it to `c.error` and routes it to `app.onError`, so an SDK fault was laundered into an
     // APPLICATION error and returned as 500. Two of these sites need no SDK bug at all to fire: `user` is an
     // application-supplied callback (`(c) => c.req.header('authorization').split(' ')[1]` throws a TypeError
     // on every unauthenticated request), and header/route reads touch framework internals. Measured against
     // real Hono 4.12.25: a route returning `APP-OK` became `500 Internal Server Error`, and with the app's
     // own `onError` installed it was handed the SDK's internal error while the app's handler never ran
-    // (docs/review/backend-hono-hapi-elysia.md SEV1 #1). Its structural peers hapi and elysia already guard
+    // Its structural peers hapi and elysia already guard
     // exactly these operations and returned 200 under the same probes.
     const info = neverThrow(() => {
       const traceparent = c.req.header('traceparent');

@@ -172,7 +172,7 @@ describe('createObscuringSource', () => {
     src.start();
     win.fire('scroll');
     win.fire('orientationchange');
-    win.fire('load'); // a frame-tree load re-triggers compose (so a static sub-frame re-bubbles — D9)
+    win.fire('load'); // a frame-tree load re-triggers compose (so a static sub-frame re-bubbles)
     doc.fire('focus');
     expect(onChange).toHaveBeenCalledTimes(4);
     src.stop();

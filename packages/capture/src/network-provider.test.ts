@@ -171,10 +171,9 @@ describe('createNetworkCaptureProvider', () => {
     expect(event.custom?.headers).toEqual({ authorization: 'secret-token', accept: 'json' });
   });
 
-  // Wave 1.1. Every network source writes `event.url` verbatim and the provider is the ONE place that
+  // Every network source writes `event.url` verbatim and the provider is the ONE place that
   // redacts — so a secret in the URL reached disk on every transport, and on node:http too (it folds into
-  // this same provider via `additionalSources`). Reproduced end-to-end in docs/review/capture.md SEV1 #4
-  // and docs/review/node-B-http-server.md SEV1 #3.
+  // this same provider via `additionalSources`). Reproduced end-to-end.
   it('redacts a sensitive query value in the captured URL (non-mutating)', async () => {
     const store = mkStore();
     const source = mkSource();

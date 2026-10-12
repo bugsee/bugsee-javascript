@@ -574,7 +574,7 @@ describe('assembleBundle — crash.json', () => {
     const request = createReportingRequest({ source: { type: 'error' }, id: 'r1', crash });
     const z = unzip(assembleBundle(request, new Map(), context()).body);
     expect(z.names).toContain('crash.json');
-    // The written document is the report's crash PLUS the provenance the assembler stamps (Wave 5.4a).
+    // The written document is the report's crash PLUS the provenance the assembler stamps.
     expect(JSON.parse(z.text('crash.json'))).toEqual({
       ...crash,
       source_sdk: 'javascript',
@@ -645,7 +645,7 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
     const bundle = assembleBundle(request, new Map(), context());
     const z = unzip(bundle.body);
     // Native shape (minidumpFile) + the stamped provenance — a JS/Electron Crashpad dump has to route to
-    // the javascript processor exactly like a managed one (Wave 5.4a).
+    // the javascript processor exactly like a managed one.
     expect(JSON.parse(z.text('crash.json'))).toEqual({
       ...nativeCrash,
       source_sdk: 'javascript',

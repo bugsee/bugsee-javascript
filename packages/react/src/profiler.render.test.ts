@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BugseeProfiler } from './profiler';
 
-// WAVE 4.6 (decision D4: "make <BugseeProfiler> actually produce spans in PRODUCTION React builds").
+// Decision: "make <BugseeProfiler> actually produce spans in PRODUCTION React builds".
 //
 // React disables `<Profiler>` in a standard production build — it renders children but never calls
 // `onRender`. So the component recorded ZERO spans in the build customers ship, and no test could see it,

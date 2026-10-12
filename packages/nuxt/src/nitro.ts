@@ -73,7 +73,7 @@ export function installBugseeNitro(
 ): Bugsee {
   const { appToken, launch = nodeLaunch, injectTraceMeta, ...launchOptions } = options;
   // Emits trace ids into every rendered page, so only boolean `true` (or absent) injects: `'false'`, `1`, `0`,
-  // `null` are OFF and reported, never read as "on" (R5V-8).
+  // `null` are OFF and reported, never read as "on".
   const inject = resolveFailClosedBoolean(injectTraceMeta, true);
   if (injectTraceMeta !== undefined && typeof injectTraceMeta !== 'boolean') {
     reportGuarded(
@@ -85,7 +85,7 @@ export function installBugseeNitro(
   }
   const client = launch(appToken, launchOptions);
   // The hooks outlive this client: `relaunch()` stops it and starts another. Resolve the CURRENT client per
-  // invocation (the carrier slot), keeping the launched one as the fallback while the slot is empty (R3P-3).
+  // invocation (the carrier slot), keeping the launched one as the fallback while the slot is empty.
   const current = (): Bugsee => getCarrierClient<Bugsee>(launchOptions.carrier) ?? client;
 
   nitroApp.hooks.hook('error', (error, context) => {

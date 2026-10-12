@@ -10,7 +10,7 @@ import {
 } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
-// The Hapi adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Hapi adapter.
 // Hapi is a PEER (structural types only). setupHapi registers two request-lifecycle extensions over the
 // shared server-instrumentation core (@bugsee/node):
 //   onRequest      — opens the per-request context + http.server transaction via `openServerRequest`
@@ -110,10 +110,10 @@ const toOptions = (options: HapiAdapterOptions): ServerInstrumentOptions => ({
 /**
  * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
  * registration methods. An unguarded throw here does not cost one report — it stops the application
- * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * this defect is an instance of "features that silently do nothing"; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupHapi(server: HapiServerLike, options: HapiAdapterOptions = {}): void {

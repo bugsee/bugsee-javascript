@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': the React adapter is tested injection-first (the ErrorBoundary's lifecycle methods
 // are exercised by direct invocation + element inspection, NOT a react-dom renderer) — the same
 // injection-first discipline as the browser/node tiers.

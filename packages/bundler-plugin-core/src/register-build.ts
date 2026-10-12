@@ -1,13 +1,13 @@
-// Register a JavaScript build with Bugsee — docs/design/web-build-registration.md (slice 3).
+// Register a JavaScript build with Bugsee.
 //
 // Product direction (2026-09-19): a JavaScript build SHOULD register a build, and by default only a
 // release one. The Android Gradle plugin and the iOS agent are the reference, and this follows them:
 //
-//   - ON by default, gated only on "release-like" (D2). The analog of AGP's `!isDebuggable` is the
+// - ON by default, gated only on "release-like". The analog of AGP's `!isDebuggable` is the
 //     bundler's OWN production signal, not minification and not a name match on the output directory.
-//   - Register-only (D5). A JavaScript build has no single artefact to ship, so `bugsee-cli upload build`
+// - Register-only. A JavaScript build has no single artefact to ship, so `bugsee-cli upload build`
 //     runs with no `--artifact` and the CLI sends `request_artifact_upload: false`.
-//   - A failure never fails the build (D4) — reported and contained, like the source-map upload, and
+// - A failure never fails the build — reported and contained, like the source-map upload, and
 //     `failOnError` opts into a hard stop.
 //
 // Runs AFTER the source-map upload and its map deletion, which it can because it reads the build's
@@ -44,7 +44,7 @@ export type RegistrationDecision =
   | { register: true }
   | { register: false; reason: 'disabled' | 'not-release' };
 
-/** D2: decide whether this build registers at all. Pure. */
+/** decide whether this build registers at all. Pure. */
 export function resolveRegistration(
   setting: RegisterBuildSetting,
   bundler: BundlerBuildContext,
@@ -61,7 +61,7 @@ export function resolveRegistration(
 }
 
 /**
- * D3: the build's `package_id` — the `name` of the NEAREST package.json at or above `from`, scope
+ * the build's `package_id` — the `name` of the NEAREST package.json at or above `from`, scope
  * included (`@acme/web-app`). It is only a scoping key for size analysis, so being stable matters more
  * than being reverse-DNS.
  *

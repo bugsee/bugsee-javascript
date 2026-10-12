@@ -2,7 +2,7 @@
 //
 // Reached from `app/entry.client.tsx` (the browser hydration entry). Browser-only (composes the
 // batteries-included browser umbrella + @bugsee/react) → behind the `@bugsee/remix/client` subpath, never
-// the portable `.` or node `./server` entry. Captures the SESSION the server `handleError` bridge (R1)
+// the portable `.` or node `./server` entry. Captures the SESSION the server `handleError` bridge
 // stitches to a failing request.
 
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
@@ -71,7 +71,7 @@ export function captureRemixErrorBoundaryError(
   reportReactError(error, options.getClient !== undefined ? { getClient: options.getClient } : {});
 }
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,

@@ -96,7 +96,7 @@ describe('installPageHideFlush', () => {
   });
 
   it('does not throw back into the browser’s dispatch when the flush fails', () => {
-    // This is a host boundary (Wave 2.1): the listener runs inside the browser's own event dispatch, at
+    // This is a host boundary: the listener runs inside the browser's own event dispatch, at
     // the exact moment the page is going away.
     const onError = vi.fn();
     const win = fakeTarget();

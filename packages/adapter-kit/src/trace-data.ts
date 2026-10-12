@@ -1,4 +1,4 @@
-// @bugsee/adapter-kit — the trace-data primitive (P5): read the active server-request trace as a W3C
+// @bugsee/adapter-kit — the trace-data primitive: read the active server-request trace as a W3C
 // `traceparent`, for injecting into the SSR HTML (`<meta name="traceparent">`) so the client pageload
 // adopts the server trace (BE→FE continuation, the moat's correlation capstone). Shared by every SSR
 // meta-framework adapter (Next.js `generateMetadata`, SvelteKit `transformPageChunk`, Nuxt `render:html`,

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 
-// Synchronous owner-only (0o600/0o700) node:fs helpers (design §3.4: Node storage under tmpdir,
+// Synchronous owner-only (0o600/0o700) node:fs helpers (Node storage under tmpdir,
 // files written mode 0o600). The fs-backed CaptureStore in @bugsee/node builds on these. Sync keeps
 // the impl race-free and simple; reads/lists treat a missing path as empty rather than throwing.
 

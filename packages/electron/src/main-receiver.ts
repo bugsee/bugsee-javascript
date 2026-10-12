@@ -1,4 +1,4 @@
-// The main-process inbound receiver (E3) — the convergence point. Every renderer streams its capture as
+// The main-process inbound receiver — the convergence point. Every renderer streams its capture as
 // encoded wire messages over IPC; the receiver decodes each one and adds it to the MAIN process's capture
 // store, merging all renderers + the main process's own capture into ONE rolling timeline / one bundle.
 // Entry timestamps are already wall-clock unix-ms (shared OS clock), so they're directly comparable across
@@ -33,10 +33,9 @@ export interface ElectronMainReceiverOptions {
   /** Called after each decoded entry is stored (with the originating window id) — a seam for report joins. */
   onEntry?: (entry: DecodedStreamEntry, windowId: number) => void;
   /**
-   * Called with a renderer-forwarded INCIDENT (R3). Routed here WITHOUT touching the capture store: an
+   * Called with a renderer-forwarded INCIDENT. Routed here WITHOUT touching the capture store: an
    * incident is not a captured record, and storing it would put a second, array-shaped `crash.json` in the
    * bundle and pollute every later report in the rolling window
-   * (docs/design/electron-renderer-incident-convergence.md §4.1).
    */
   onReport?: (report: DecodedReport, windowId: number) => void;
   /** Internal-error sink. A failure handling one message must never break the channel. */
@@ -53,9 +52,9 @@ export function createElectronMainReceiver(
   options: ElectronMainReceiverOptions,
 ): ElectronMainReceiver {
   const channel = options.channel ?? BUGSEE_STREAM_CHANNEL;
-  // R5: the whole listener is contained. It runs inside Electron's ipcMain dispatch, so a throw here — a
+  // the whole listener is contained. It runs inside Electron's ipcMain dispatch, so a throw here — a
   // malformed message, a store failure, a user callback that raises — escapes into the host app's IPC
-  // machinery and can take the channel (and with it all renderer capture) down. R3 adds report submission
+  // machinery and can take the channel (and with it all renderer capture) down. The receiver adds report submission
   // inside this listener, which is precisely why the containment lands first.
   const listener = (event: IpcMainEventLike, ...args: unknown[]): void => {
     try {

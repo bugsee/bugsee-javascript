@@ -89,7 +89,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
 
   // What the bundler says about THIS build — whether it is production, and the configuration's name.
   // Vite states it in `configResolved`, before any output is written; Rollup states nothing, and the
-  // run then falls back to NODE_ENV. It decides whether the build registers (register-build.ts, D2).
+  // run then falls back to NODE_ENV. It decides whether the build registers (register-build.ts).
   let viteBuild: BundlerBuildContext = {};
 
   const uploadForOutput = async (
@@ -107,12 +107,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     // rollup/vite hand us the output options; upload after the bundle is on disk.
     vite: {
       /**
-       * Ensure the build actually EMITS the maps this plugin exists to upload (Wave 7.6).
+       * Ensure the build actually EMITS the maps this plugin exists to upload.
        *
        * Vite's `build.sourcemap` defaults to `false`, and nothing here inspected it — so the documented
        * setup (`plugins: [bugseeVitePlugin({ appToken })]` on an ordinary config) drove `bugsee-cli`
        * against a `dist` with no `.map` files at all. Real bugsee-cli v0.7.2 exits 10 on that input, "no
-       * .map source-map files found", which used to abort the build and now (Wave 7.3) merely means the
+       * .map source-map files found", which used to abort the build and now merely means the
        * feature silently does nothing.
        *
        * Returning a PARTIAL config is Vite's own merge protocol — it is deep-merged over the user's, so
@@ -148,7 +148,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // watch mode a stamp from the previous build cannot vouch for this one.
       let preStamped = false;
 
-      // THE SRI FIX (docs/review/cli-js-flows.md §7, option 1). On webpack 5, stamp the debug-ids
+      // THE SRI FIX. On webpack 5, stamp the debug-ids
       // INSIDE the compilation, at a stage after the maps exist and before any integrity hash is
       // taken: SourceMapDevToolPlugin emits maps at PROCESS_ASSETS_STAGE_DEV_TOOLING (500, after
       // minification at 400), and webpack-subresource-integrity hashes at

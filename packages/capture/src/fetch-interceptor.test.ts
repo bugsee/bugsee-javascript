@@ -580,7 +580,7 @@ describe('createFetchInterceptor — response body', () => {
   /**
    * `cancel()` may also return a REJECTED promise (a stream errored while being torn down). Release is
    * best-effort, so the rejection is swallowed — but it must be swallowed, not left unhandled: an
-   * unhandled rejection in a page the SDK merely observes is exactly the kind of noise Wave 2.1 forbids.
+   * unhandled rejection in a page the SDK merely observes is exactly the kind of noise the SDK must never make.
    */
   it('swallows a cancel() that rejects, without an unhandled rejection', async () => {
     // This tier has no Node or DOM lib (it is runtime-portable), so the host hooks come through a cast.

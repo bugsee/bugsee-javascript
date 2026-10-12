@@ -3,7 +3,7 @@ import type { PerformanceFacade } from '@bugsee/performance';
 import { withPerformanceFacade } from './performance-facade';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
-// The shared umbrella launch() for every SERVER runtime — node, bun and deno (Wave 3b.1 / 4.1).
+// The shared umbrella launch() for every SERVER runtime — node, bun and deno.
 //
 // All three run the same composition: a platform `launchCore`, then the on-by-default extensions via
 // `wireUmbrella`. Only the `launchCore` differs, and only in its defaults — Bun swaps in the Bun identity

@@ -31,7 +31,7 @@ export interface RenderSpanInput {
 /** Record one `ui.render` child span on the active transaction. A no-op when no transaction is active (the
  *  render is not part of a captured trace), or when the SDK / performance extension is absent. */
 export function recordRenderSpan(span: RenderSpanInput, options: AdapterClientOptions = {}): void {
-  // Contained (Wave 2.1): called from React's <Profiler onRender>, Angular view hooks and Svelte onMount —
+  // Contained: called from React's <Profiler onRender>, Angular view hooks and Svelte onMount —
   // host render paths, where a throw takes the component tree down with it. `getClient` is a public option
   // that can throw, and so can the perf API. This seam was missed in the first pass.
   neverThrow(() => {

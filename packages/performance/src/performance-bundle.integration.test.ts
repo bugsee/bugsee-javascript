@@ -24,7 +24,7 @@ import { createTransactionStore } from './transaction-store';
 // Cross-package integration (standard #3): the FULL performance.json delivery path with NO fakes for the
 // core pipeline — a real performance transaction is serialized, routed through the real capture provider →
 // real aggregator → real memory CaptureStore (JSON serialize), read back through the real CaptureExporter
-// (JSON deserialize), and assembled by the real bundle assembler. Asserts the §8.8 wire contract end to
+// (JSON deserialize), and assembled by the real bundle assembler. Asserts the wire contract end to
 // end, catching any drift between serializeTransaction and the assembler's `{ transactions: [...] }` wrap.
 
 const clock: Clock = { wallNow: () => 1_700_000_000_000, monotonicNow: () => 0 };

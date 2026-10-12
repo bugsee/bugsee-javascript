@@ -28,7 +28,7 @@ const ZERO_SPAN_ID = '0'.repeat(16);
 /** Extract the BACKEND span id from a W3C `traceparent`-format value `00-<traceId>-<spanId>-<flags>`.
  *  Validated like @bugsee/capture's `parseTraceparent` (lowercase-normalized, reject the `ff` forbidden
  *  version + the all-zero trace/span ids) so a third-party backend's value is handled correctly, not just
- *  the (lowercase, conformant) Bugsee X4 backend. Reimplemented inline — performance has no capture dep.
+ * the (lowercase, conformant) Bugsee backend. Reimplemented inline — performance has no capture dep.
  *  Deliberately does NOT require the `flags` segment (we only need the span id) — slightly MORE lenient
  *  than `parseTraceparent`, which rejects a missing/non-hex flags field; that tolerance is desirable when
  *  reading a return header we did not author. */
@@ -55,14 +55,14 @@ function serverTimingTraceContext(value: string | undefined): string | undefined
 }
 
 /**
- * F3 — the BE→FE RETURN-HEADER reader (the cross-project differentiator). The backend (X4) returns its
+ * the BE→FE RETURN-HEADER reader (the cross-project differentiator). The backend returns its
  * `http.server` span via `traceresponse` and/or `Server-Timing: traceparent;desc="…"`. For an SDK-owned
  * request the response headers are already captured on the `complete` event (`custom.headers`); read the
  * backend span id from them so the FE `http.client` span records which server span handled it — completing
  * the FE↔BE link on the frontend side. The header-NAME match is case-insensitive; prefers `traceresponse`,
  * falls back to `Server-Timing`. Cross-origin this active (header-read) path works for `traceresponse` once
- * F0's ACEH exposes it; `Server-Timing` off `response.headers` is same-origin-only (cross-origin its value
- * is readable only via `PerformanceResourceTiming.serverTiming` + TAO — the deferred passive F3b path). No
+ * The backend's ACEH exposes it; `Server-Timing` off `response.headers` is same-origin-only (cross-origin its value
+ * is readable only via `PerformanceResourceTiming.serverTiming` + TAO — the deferred passive path). No
  * competitor reads this.
  */
 function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): string | undefined {
@@ -81,7 +81,7 @@ function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): 
 }
 
 // PER-TRANSACTION ceiling on http.client spans (symmetric with the resource/long-task caps in page-load,
-// which also reset per transaction): bounds the §8.8 wire of any one long-lived transaction (e.g. the SPA
+// which also reset per transaction): bounds the wire of any one long-lived transaction (e.g. the SPA
 // continuous-transaction mode). The collector is created ONCE per session and serves EVERY transaction
 // (the pageload + each navigation + each interaction), so the budget must be keyed on the active
 // transaction — a single session-wide counter would starve http spans on every transaction after the
@@ -92,8 +92,8 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
   // WAVE 3b.4 — the OWNER is bound when the call starts, not looked up when it finishes.
   //
   // `getActiveSpan()` reads the controller's active-transaction slot. On the browser that slot is a
-  // process-wide single slot by design (D12); on Node the umbrella launch supplies a request-scoped one
-  // (D2 part 2), so the cross-request misattribution this binding was originally written against — A's
+  // process-wide single slot by design; on Node the umbrella launch supplies a request-scoped one
+  // so the cross-request misattribution this binding was originally written against — A's
   // database call landing in B's trace because B started last — can no longer happen on that path.
   //
   // DO NOT conclude the start-time binding is now redundant and revert it. Its premise narrowed; its
@@ -138,14 +138,14 @@ export function collectHttpSpans(deps: HttpSpanCollectorDeps): () => void {
     const recorded = recordedByTxn.get(active) ?? 0;
     if (recorded >= MAX_HTTP_SPANS) return; // this transaction's cap reached → drop the overflow
     recordedByTxn.set(active, recorded + 1);
-    // F3: read the backend's http.server span from the response's return headers (X4) and stamp it on the
+    // read the backend's http.server span from the response's return headers and stamp it on the
     // FE client span — the FE↔BE link completed on the frontend side.
     const backendSpanId = backendSpanIdFromHeaders(e.custom?.headers);
     active.recordChildSpan('http.client', {
       startTimestampMs: start.startTimestampMs,
       endTimestampMs: e.timestamp,
       // Dropping `?…` removes query secrets but NOT a `user:pass@` credential, which node:http fully
-      // supports; the description is uploaded like any other attribute (Wave 1.1).
+      // supports; the description is uploaded like any other attribute.
       description: `${start.method} ${sanitizeUrl(start.url.replace(/[?#].*$/, ''))}`,
       attributes: {
         'http.method': start.method,

@@ -149,7 +149,6 @@ describe('decodeStreamEntry — the renderer trust boundary (fuzz)', () => {
 
   // A payload that cannot be re-serialized must be refused rather than reaching `store.add` with a
   // non-string `serialized`, which would throw out of the ipcMain listener and take the channel down
-  // (docs/review/electron-wave02-review.md SEV1 #1).
   it('refuses a payload that cannot be re-serialized', () => {
     for (const p of [undefined, () => 'fn', Symbol('s')]) {
       const raw = `{"k":"entry","t":"log","s":1,"ts":1,"mono":1,"o":1,"p":${JSON.stringify(p) ?? 'undefined'}}`;

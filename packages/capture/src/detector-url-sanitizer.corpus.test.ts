@@ -8,7 +8,7 @@ import {
 } from './detector-url-corpus.test-d';
 import { templatePathSegment } from './detector-url-sanitizer';
 
-// R5V-1. The word check counted any run of three lower-case letters as a word, so lower-case random tokens (cuid2,
+// The word check counted any run of three lower-case letters as a word, so lower-case random tokens (cuid2,
 // base32, nanoid, ULID, base36) were kept verbatim. A single-case string with no separator is never word-like; a
 // camel/Pascal identifier needs two Title-case pieces that can each be pronounced; a slug needs pronounceable pieces.
 describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1)', () => {
@@ -22,7 +22,7 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
     // English words but no separator and no case change: not provably words (privacy over grouping)
     'getuserdetailsandsettings2',
     'updatenotificationsettings3',
-    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" in R4V-5)
+    'abcdefgh1abcdefgh2', // two plain words with a number between, no separator (was kept as "words" in)
     'CLH3AM4PU0000QFW9RG5D1ZK',
     'GETUSERDETAILSANDSETTINGS2',
   ])('templates the single-case string %j', (segment) => {
@@ -95,7 +95,7 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
   });
 
   // The acceptance numbers. Deterministic: the same seed produces the same tokens, so a figure is a fact, not luck.
-  // Ceilings are the pre-round-4 (a98dabb, no word check at all) keep rates measured on THIS corpus (same seed,
+  // Ceilings are the (a98dabb, no word check at all) keep rates measured on THIS corpus (same seed,
   // 20,000 tokens a bucket), rounded up to 0.05. The word check may not raise a bucket above them (two base62
   // buckets sit one token in 20,000 above the measured a98dabb figure, inside the rounding). Where the review named
   // a figure it is used as is: base36-lower 24-31 <= 0.1%, cuid2 24-31 <= 0.2%, base32-lower 24-31 <= 1%.
@@ -149,7 +149,7 @@ describe('templatePathSegment: lower-case random tokens are never "words" (R5V-1
   });
 });
 
-// R5V-2 / R5V-3.
+// /.
 describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is not an address (R5V-2/3)', () => {
   it.each([
     'react@latest',
@@ -200,7 +200,7 @@ describe('templatePathSegment: e-mail on ANY @, but a version or an @2x asset is
   });
 });
 
-// R5V-10: the cheap pre-round-4 misses.
+// the cheap misses.
 describe('templatePathSegment: addresses, phones and hashed assets (R5V-10)', () => {
   it.each([
     ['10.0.0.1:8080', '{ip}'],

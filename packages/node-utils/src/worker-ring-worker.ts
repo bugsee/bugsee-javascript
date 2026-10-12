@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { createSyncRingWorker, type RingWorker, type RingWorkerArgs } from './capture-ring-writer';
 
-// The off-thread RingWorker (design D6): a worker_threads worker that drains the shared CaptureRing to disk,
+// The off-thread RingWorker: a worker_threads worker that drains the shared CaptureRing to disk,
 // so the host thread NEVER blocks on a write(). It swaps into the CaptureRingWriter's `workerFactory` seam.
 //
 // The worker body is an INLINE eval STRING (it must run without a build step — the monorepo consumes TS
@@ -134,7 +134,7 @@ export function createWorkerThreadRingWorker(
   worker.unref?.(); // never let the I/O worker keep the host process alive
 
   // Block the host thread until the worker has drained up to OUR request token (bounded). Atomics.wait on the
-  // main thread is permitted on node/bun/deno (spike §9.1). Only the rare read/seal/dispose paths call this.
+  // main thread is permitted on node/bun/deno. Only the rare read/seal/dispose paths call this.
   const flushAndWait = (timeoutMs: number): void => {
     const req = Atomics.add(fl, FLUSH_REQ, 1) + 1;
     const deadline = Date.now() + timeoutMs;

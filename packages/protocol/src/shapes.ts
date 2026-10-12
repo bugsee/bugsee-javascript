@@ -1,6 +1,6 @@
 import { REDACTED } from './sensitive';
 
-// Shape-based value redaction (design §8.10): a second pass that redacts values matching known
+// Shape-based value redaction: a second pass that redacts values matching known
 // secret shapes regardless of key name. Applied to network values, error messages, and stack text.
 
 export interface ShapeRedactionOptions {
@@ -65,7 +65,7 @@ const JWT_UNANCHORED = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
  * `sanitizeUrl` into this function silently extended it from 2 call sites to 6 — `sanitizeBody`,
  * `sanitizeJson`, `sanitizeHeaders` and `sanitizeParams` had all called `redactShapes` unbounded. Bodies
  * capture at 20480 bytes by default, so that opened an 8193–20480 byte window in which every JWT shipped in
- * the clear. Two review rounds argued about this number while the scope regression sat untouched.
+ * the clear. Two review passes argued about this number while the scope regression sat untouched.
  *
  * 8 KB because the unanchored pattern still backtracks: ~12 ms at 8 KB, and Node's default `maxHeaderSize`
  * of 16384 is reachable by default through `server-instrument`'s `sanitizeUrl(info.url)`. A real JWT is well

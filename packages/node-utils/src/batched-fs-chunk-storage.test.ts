@@ -415,8 +415,8 @@ describe('createBatchedFsChunkStorage', () => {
 //
 //   appends: 20000 x 425B = 8.1 MiB · writev attempts: 19998 · onError invocations: 19998 · heap: 12.2 MiB
 //
-// This is the DEFAULT node/bun/deno write path, and the design doc binds it the other way —
-// docs/design/server-disk-capture-write-path.md:120 (D2): "fixed ring, drop-oldest under overload (no
+// This is the DEFAULT node/bun/deno write path, and the documented contract binds it the other way —
+// 120: "fixed ring, drop-oldest under overload (no
 // elastic growth)". The Phase-2 ring honours that; the shipped Phase-1 default did not. An SDK that OOMs
 // its host on a full disk alters host behaviour, which this repo treats as a binding prohibition.
 describe('back-pressure on a failing disk (Wave 6.3)', () => {

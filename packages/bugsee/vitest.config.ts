@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': the umbrella wires the browser launch via injected seams (fake transport/window/
 // scheduler/probe), not a real DOM — the same injection-first discipline as the platform tiers.
 export default defineConfig({

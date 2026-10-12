@@ -96,7 +96,7 @@ describe('the output hooks actually drive the upload', () => {
     expect(uploadSpy).not.toHaveBeenCalled();
   });
 
-  // What the BUNDLER says about the build is what decides whether it registers (D2) — the analog of
+  // What the BUNDLER says about the build is what decides whether it registers — the analog of
   // AGP's `isDebuggable`. Each bundler says it differently, so each hook has to pass it on.
   describe('hands the bundler’s own production signal to the run', () => {
     type ConfigResolved = (config: { isProduction: boolean; mode: string }) => void;

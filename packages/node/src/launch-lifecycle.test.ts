@@ -92,7 +92,7 @@ const opts = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => (
 
 const live: Bugsee[] = [];
 afterEach(async () => {
-  await Promise.all(live.splice(0).map((c) => c.stop(100))); // bounded: a repeat stop() now answers for a hung drain (R2L-1)
+  await Promise.all(live.splice(0).map((c) => c.stop(100))); // bounded: a repeat stop() now answers for a hung drain
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -409,7 +409,7 @@ describe('relaunch', () => {
     launch('tok-1', opts({ captureLogs: false, endpoint: 'https://x.test' }));
     const retained = getCarrier().lastLaunch?.options as Record<string, unknown>;
     expect(Object.keys(retained)).not.toContain('captureLogs');
-    expect(retained.endpoint).toBe('https://x.test'); // deployment identity is kept (R2P-3)
+    expect(retained.endpoint).toBe('https://x.test'); // deployment identity is kept
     expect(getCarrier().lastLaunch?.appToken).toBe('tok-1');
   });
 

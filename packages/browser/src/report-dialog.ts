@@ -9,7 +9,7 @@ import { REPORT_DIALOG_CLASS_PREFIX, REPORT_DIALOG_CSS } from './report-dialog-s
 
 // The browser's `showReportDialog()` — the web counterpart of the mobile SDKs' report form (Android
 // `BugReportingActivity`, iOS `BGSReportController`). Same fields, order, strings and validation; shown
-// as a modal over a shaded page rather than full screen. Design: docs/design/report-dialog.md.
+// as a modal over a shaded page rather than full screen.
 //
 // Hard rules this file keeps:
 //   - the UI lives in ONE shadow root on ONE host element, so page CSS cannot accidentally restyle it.

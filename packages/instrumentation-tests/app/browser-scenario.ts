@@ -117,7 +117,7 @@ function type_(field: HTMLInputElement, value: string): void {
 /**
  * The durable-storage battery: `persist` + `recover` against a REAL IndexedDB. Every existing browser
  * persistence test runs on `fake-indexeddb`, so this is the first time the SDK's own IDB code meets the
- * engine's — including the transaction-commit durability semantics the round-7 fix depends on.
+ * engine's — including the transaction-commit durability semantics the fix depends on.
  */
 async function runPersist(collectorUrl: string): Promise<void> {
   const client = await launch('e2e-app-token', {

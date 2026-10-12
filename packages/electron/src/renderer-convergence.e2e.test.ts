@@ -1,12 +1,11 @@
-// R0 — the acceptance test for renderer incident convergence
-// (docs/design/electron-renderer-incident-convergence.md).
+// the acceptance test for renderer incident convergence
 //
-// THE defect (docs/review/electron.md SEV1 #2): a renderer incident assembles a bundle from the STREAMING
+// THE defect: a renderer incident assembles a bundle from the STREAMING
 // capture store — whose stream() yields nothing — and uploads it from the renderer under the renderer
 // client's own session id, while the main session holding every one of that renderer's capture entries
 // records no incident at all. Two sessions: one with an issue and no data, one with the data and no issue.
 //
-// Written FIRST and required to fail before R1-R3. Per the design review this must be non-vacuous in three
+// Written FIRST and required to fail before the fix. This must be non-vacuous in three
 // specific ways, or it would pass straight over the defects the review found:
 //   1. drive the RENDERER through the real report path, not a fake — the existing e2e fakes
 //      @bugsee/browser's launch entirely, which is exactly why the defect shipped;
@@ -50,7 +49,7 @@ describe('R0 — renderer incident convergence', () => {
     joined = [];
   });
 
-  /** Stand-in for what R3 wires: main's join seam, recording every incident forwarded from a renderer. */
+  /** Stand-in for what wires: main's join seam, recording every incident forwarded from a renderer. */
   const startMain = (): void => {
     createElectronMainReceiver({
       ipcMain: ipc.ipcMain as never,
@@ -72,7 +71,7 @@ describe('R0 — renderer incident convergence', () => {
       serialized: '{"message":"renderer-breadcrumb"}',
     });
 
-    // R2 will route this through the renderer's report pipeline. Until then nothing forwards it.
+    // will route this through the renderer's report pipeline. Until then nothing forwards it.
     const incident = {
       source: { type: 'crash', mechanism: 'uncaught' },
       report: { summary: 'renderer boom' },
@@ -84,7 +83,7 @@ describe('R0 — renderer incident convergence', () => {
   });
 
   it('the incident does NOT become a capture entry in the main store', () => {
-    // SEV1-1 from the design review: forwarding the incident as an `entry` would land it in the main rolling
+    // Forwarding the incident as an `entry` would land it in the main rolling
     // capture store, producing a SECOND, array-shaped `crash.json` in the bundle and polluting every
     // subsequent report for the next 60 s. The report transport must bypass the store entirely.
     startMain();
@@ -103,7 +102,7 @@ describe('R0 — renderer incident convergence', () => {
   });
 
   it('preserves the incident mechanism rather than refiling it as a handled error', () => {
-    // SEV1-2: submitting via logException would refile a renderer CRASH as a handled, programmatic error
+    // submitting via logException would refile a renderer CRASH as a handled, programmatic error
     // carrying a main-side stack — destroying the attribution this whole design exists to fix.
     startMain();
     postIncident(ipc.post, {
@@ -114,7 +113,7 @@ describe('R0 — renderer incident convergence', () => {
   });
 
   it('drops a malformed incident rather than submitting it', () => {
-    // Renderer input is untrusted (Wave 0.2 established this for the entry path; the report path is the
+    // Renderer input is untrusted (established this for the entry path; the report path is the
     // same channel from the same untrusted sender).
     startMain();
     ipc.post(JSON.stringify({ k: 'report' })); // no payload
@@ -123,7 +122,7 @@ describe('R0 — renderer incident convergence', () => {
   });
 });
 
-/** Post an incident over the wire the way R2's renderer pipeline will. */
+/** Post an incident over the wire the way the renderer pipeline will. */
 function postIncident(post: (raw: string) => void, incident: unknown): void {
   post(JSON.stringify({ k: 'report', p: incident, ts: 1 }));
 }

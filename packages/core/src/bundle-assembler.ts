@@ -24,7 +24,7 @@ import type { ReportingRequest } from './reporting';
 import type { RequestContext } from './request-context';
 import type { Bundle } from './transport';
 
-// Report assembly (design §7.7 trigger path, §8.4/§8.5 bundle layout, Android CaptureExporter). Turns
+// Report assembly (trigger path, bundle layout, Android CaptureExporter). Turns
 // a ReportingRequest + the captured data (grouped by file type, from CaptureExporter.drain()) into a
 // Bundle: request.json (from the Report + Environment + source mechanism), manifest.json (file
 // inventory + time bounds + attributes), the apptoken file, and one JSON file per captured file-type,
@@ -43,7 +43,7 @@ export interface BundleAssemblyContext {
    */
   userIdentifier?: string | null;
   /**
-   * The active request context captured at report-submit time (framework adapters). When present, its
+   * The active request context captured at report-submit time. When present, its
    * `contextId` becomes request.json `context_id`, and its `user`/`attributes` OVERRIDE the global ones
    * (the report reflects the request it fired in). Absent → global behavior unchanged.
    */
@@ -87,14 +87,13 @@ function fileNameForType(type: FileType): string {
 }
 
 // Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Four exceptions:
-// `performance.json` = `{ transactions: [...] }` (§711/§8.8); `profile.json` = the SINGLE bare V8 CPU
+// `performance.json` = `{ transactions: [...] }`; `profile.json` = the SINGLE bare V8 CPU
 // profile object (.cpuprofile — DevTools/speedscope-loadable); and `input.json` and `video.aux.json`
 // carry the wire spec's own versioned envelope, `{ version, events: [...] }`
 // (`specs/sdk/reporting/bundle/{input,video-aux}.md`). Those two need the version for the same reason:
 // a consumer keys its decoding on it — `button`/`buttonMask`/`metaState`/scroll for `input`, and for
 // `video.aux` whether the frame is in display pixels (version 1) or in the coordinates' own units
-// (version 2), which are the same numbers meaning different things. Binary streams (§8.4:
-// replay/screenshot/attachment) are platform-tier provider concerns; when those land the assembler
+// (version 2), which are the same numbers meaning different things. Binary streams (replay, screenshots, attachments) are platform-tier provider concerns; when those land the assembler
 // branches further (passing a Uint8Array `data` through).
 function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   if (type === 'performance') {
@@ -132,7 +131,7 @@ export function assembleBundle(
   const email =
     report.email ?? (requestContext?.user || undefined) ?? context.userIdentifier ?? undefined;
 
-  // request.json (§8.5): metadata from the Report + the wire source mechanism + the environment.
+  // request.json: metadata from the Report + the wire source mechanism + the environment.
   const requestJson: RequestJson = {
     type: report.type,
     summary: report.summary ?? defaultSummary(report.type),
@@ -146,7 +145,7 @@ export function assembleBundle(
     created_on: new Date(now).toISOString(),
     environment: context.environment,
     ...(requestContext !== undefined ? { context_id: requestContext.contextId } : {}),
-    // The active trace → the cross-project join key on the report envelope (Profile v1 §16, T8).
+    // The active trace → the cross-project join key on the report envelope.
     ...(requestContext?.trace !== undefined
       ? { trace_id: requestContext.trace.traceId, span_id: requestContext.trace.spanId }
       : {}),
@@ -156,7 +155,7 @@ export function assembleBundle(
     ...(report.signatures.length > 0 ? { signatures: report.signatures } : {}),
   };
 
-  // Time bounds (§7.7): earliest captured entry → trigger moment.
+  // Time bounds: earliest captured entry → trigger moment.
   let start = now;
   const files: ManifestFileEntry[] = [];
   const typedFiles: BundleFile[] = [];
@@ -186,7 +185,7 @@ export function assembleBundle(
     typedFiles.push({ name: filename, data });
   }
 
-  // Structured crash detail (§8.4 `crash.json`) — a per-report file (not a rolling capture stream) built
+  // Structured crash detail (`crash.json`) — a per-report file (not a rolling capture stream) built
   // from the thrown Error at report time. The backend crash pipeline reads it for stack symbolication.
   //
   // The `source_*` provenance is stamped HERE rather than in `buildCrashJson`, because this is the one
@@ -201,7 +200,7 @@ export function assembleBundle(
     typedFiles.push({ name: crashFilename, data: JSON.stringify(crash) });
   }
 
-  // Report-level attachments (§8.4 `attachment`) — extra binary/text files written verbatim (e.g. a
+  // Report-level attachments (`attachment`) — extra binary/text files written verbatim (e.g. a
   // harvested native-crash `.dmp` referenced by `crash.minidumpFile`). Listed in the manifest by their own
   // filename so the backend can enumerate them.
   // The name is a zip member name and must be unique among the bundle's members: a clash (a `before` handler

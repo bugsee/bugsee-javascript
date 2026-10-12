@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': browser code is tested via injected seams (fake fetch/window), not a DOM env —
 // the same injection-first discipline as the node tier. (B5's IndexedDB store adds a fake-indexeddb
 // setupFiles, still under 'node'.)

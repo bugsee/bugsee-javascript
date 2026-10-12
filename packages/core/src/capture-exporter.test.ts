@@ -157,9 +157,9 @@ describe('createCaptureExporter — factory', () => {
   });
 });
 
-// S3 (docs/design/cloudflare-tenant-isolation.md §4.3): the exporter scopes the snapshot to one tenant.
+// the exporter scopes the snapshot to one tenant.
 //
-// The partitioned store (S2) can already isolate; this is what ASKS it to. Without the owner reaching
+// The partitioned store can already isolate; this is what ASKS it to. Without the owner reaching
 // snapshot(), every incident still drains every tenant — the leak, unchanged.
 describe('createCaptureExporter — owner-scoped export', () => {
   const snapshotOf = (records: StoredEntry[]) => ({

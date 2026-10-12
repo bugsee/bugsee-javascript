@@ -17,7 +17,7 @@ import { encode, type SecureArea, secureMessage } from './protocol';
 // can keep its whole-page mask current; it also answers native's SYNCHRONOUS pull (`__bugsee_bridge.snapshot()`,
 // called at frame-capture time) with the serialized rects, and the `snapshot` control COMMAND by re-posting them.
 // Declaring the `obscuring` capability tells native this SDK contributes rects; native ADDS them to its own
-// mask and never stands that mask down for the claim (D-A7) — so this channel is what makes the advanced SDK
+// mask and never stands that mask down for the claim — so this channel is what makes the advanced SDK
 // carry its own weight on masking, not what licenses native to stop. Time/seq frame mirrors the
 // report path (Date.now / performance.now / performance.timeOrigin), seq shared so it orders with the stream.
 
@@ -36,8 +36,7 @@ export interface ObscuringChannel {
    * Whether obscuring can actually collect rects right now.
    *
    * Gates the `obscuring` capability in the hello: declaring it tells native this SDK supplies the rects, and
-   * the protocol has no way to retract the claim afterwards (docs/review/webview.md
-   * SEV1 #2). On a page where collection already fails, not declaring it leaves native's legacy masking in
+   * the protocol has no way to retract the claim afterwards. On a page where collection already fails, not declaring it leaves native's legacy masking in
    * place — which is the fail-closed answer.
    */
   probe(): boolean;

@@ -125,7 +125,7 @@ export function collectResourceTiming(env: WebVitalsEnv, transaction: Span): voi
 export interface PageLoadVitalsOptions {
   /** The page name (URL / route) used as the transaction name. */
   name: string;
-  /** Continue a server-injected trace (the `<meta name="traceparent">` pageload continuation, D4) — the
+  /** Continue a server-injected trace (the `<meta name="traceparent">` pageload continuation) — the
    *  pageload adopts this trace id + becomes a child of the server span, so SSR and the client are one trace. */
   continuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
 }

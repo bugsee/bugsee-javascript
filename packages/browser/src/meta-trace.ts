@@ -1,11 +1,11 @@
 import { parseTraceparent } from '@bugsee/capture';
 
-// Pageload trace continuation from a server-injected `<meta name="traceparent">` (frontend-adapters D4).
+// Pageload trace continuation from a server-injected `<meta name="traceparent">`.
 // On a top-level document navigation the browser sends NO trace header, so the SSR/backend instead injects
 // `<meta name="traceparent" content="00-<traceId>-<spanId>-<flags>">` into the rendered HTML (the universal
 // industry pattern — OTel `document-load`, Sentry `getTraceMetaTags()`). On boot the client reads it and
 // CONTINUES that trace for the `pageload` transaction (adopting the trace id + making the pageload a child of
-// the server span, X2 continuation) instead of starting a fresh root — so the SSR request and the client
+// the server span, continuation) instead of starting a fresh root — so the SSR request and the client
 // pageload are one trace. Absent/invalid → undefined (a fresh root). Fully guarded: a hostile document /
 // querySelector / getAttribute must never break launch.
 
@@ -16,7 +16,7 @@ export interface MetaTraceEnv {
   };
 }
 
-/** A continuation the performance controller's `startTransaction({ continuation })` consumes (X2). */
+/** A continuation the performance controller's `startTransaction({ continuation })` consumes. */
 export interface MetaTraceContinuation {
   traceId: string;
   parentSpanId: string;
@@ -38,6 +38,6 @@ export function readMetaTraceContinuation(
   }
   const parsed = parseTraceparent(content);
   if (parsed === undefined) return undefined; // no/invalid traceparent → a fresh root pageload trace
-  // The pageload becomes a CHILD of the server's span, adopting its trace id + sampling decision (D4/X2).
+  // The pageload becomes a CHILD of the server's span, adopting its trace id + sampling decision.
   return { traceId: parsed.traceId, parentSpanId: parsed.spanId, sampled: parsed.sampled };
 }

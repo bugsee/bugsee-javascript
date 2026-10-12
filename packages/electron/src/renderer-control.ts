@@ -1,4 +1,4 @@
-// The renderer-side control dispatcher (E6). The main process drives the renderer DOWN the control channel;
+// The renderer-side control dispatcher. The main process drives the renderer DOWN the control channel;
 // this decodes each control message and applies it locally: pause/resume flip the streaming store's paused
 // flag (dropping the capture stream while backgrounded — incidents still report via the separate report
 // path), flush/stop forward to the renderer client, and `session` delivers the owner's session id (the

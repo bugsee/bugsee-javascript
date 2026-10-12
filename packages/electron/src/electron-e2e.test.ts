@@ -1,4 +1,4 @@
-// E7 — the fake-Electron e2e. Boots the REAL @bugsee/node main (via launchMain, no launch seam) and TWO
+// the fake-Electron e2e. Boots the REAL @bugsee/node main (via launchMain, no launch seam) and TWO
 // renderers over a fake Electron IPC bus (fake ipcMain / per-renderer ipcRenderer+webContents / preload
 // contextBridge / crashReporter), drives capture from both renderers + the main, fires a report, and asserts:
 //   • both renderers learn the SAME owner session via the handshake,
@@ -207,7 +207,7 @@ describe('E7 — Electron main + 2 renderers converge into one session/bundle', 
     const crashStarts: CrashReporterStartOptions[] = [];
     const crashReporter = { start: (o: CrashReporterStartOptions) => crashStarts.push(o) };
 
-    // A pixel-video source (fake capturer + encoder) — proves the opt-in D8 path lands a video.webm.
+    // A pixel-video source (fake capturer + encoder) — proves the opt-in path lands a video.webm.
     const videoSource: VideoCaptureSource = {
       start: () => {},
       stop: () => {},

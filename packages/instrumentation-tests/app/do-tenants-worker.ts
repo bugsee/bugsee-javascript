@@ -1,7 +1,6 @@
-// Fixture Worker for the Durable Object TENANT-ISOLATION e2e (Wave 0.1 S5).
+// Fixture Worker for the Durable Object TENANT-ISOLATION e2e.
 //
-// Reproduces the exact scenario the adversarial review proved on real workerd (docs/review/cloudflare.md
-// SEV1 #2): three Durable Objects for three different tenants, hosted in ONE isolate. A and B each log a
+// Reproduces the exact scenario the adversarial review proved on real workerd: three Durable Objects for three different tenants, hosted in ONE isolate. A and B each log a
 // secret and return cleanly; C logs and then throws, producing an incident bundle. Before the fix, C's
 // bundle contained A's and B's secrets.
 //

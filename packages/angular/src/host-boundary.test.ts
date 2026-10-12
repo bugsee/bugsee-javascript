@@ -5,7 +5,6 @@ import { BugseeErrorHandler, createAngularErrorHandler } from './error';
 import * as renderTracker from './render-tracker';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #1 + #2.
 const throwingClient = () =>
   ({
     logException: () => {

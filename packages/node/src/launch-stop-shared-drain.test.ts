@@ -14,8 +14,8 @@ import {
 } from './launch';
 import { isCleanlyStopped } from './liveness';
 
-// Review round 3 (H1), node half: R3L-1 (the shared stop drain marks the subtree from whichever stop observes it
-// settle, exactly once) and R3L-3 (a relaunch into a pinned subtree is live, not recoverable).
+// node half: the shared stop drain marks the subtree from whichever stop observes it
+// settle, exactly once) and a relaunch into a pinned subtree is live, not recoverable.
 vi.mock('@bugsee/node-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node-utils')>();
   return { ...actual, writeFileSecure: vi.fn(actual.writeFileSecure) };

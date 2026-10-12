@@ -1,5 +1,4 @@
-// @bugsee/web-adapter — shared plumbing for the web framework adapters (tier 4). See
-// docs/design/frontend-adapters.md §7 (the depth pass).
+// @bugsee/web-adapter — shared plumbing for the web framework adapters.
 export type { Bugsee } from '@bugsee/browser';
 export type { PerformanceApi } from '@bugsee/performance';
 // Re-exported so every render-span integration (React Profiler / Vue mixin / Angular tracker / Svelte

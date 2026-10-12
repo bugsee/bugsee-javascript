@@ -286,7 +286,7 @@ describe('resolveLaunchOptions: undefined, validation and normalization (review 
   });
 });
 
-// R2P-4 / R2P-5. Every boolean launch option, every kind of value. The rule (product decision, round 2):
+// Every boolean launch option, every kind of value. The rule (product decision):
 //   - an option that CAPTURES data and is ON by default is FAIL-CLOSED: anything that is not boolean `true`
 //     or `false` turns it OFF and tells `onError` (`0`, `null`, `''` and `'false'` all mean "no" to a human);
 //   - an option that PROTECTS (the default sanitizer) keeps its protective default on an invalid value;
@@ -417,7 +417,7 @@ describe('reportDefaultBugPriority is a COMMON option (R2D-3)', () => {
   });
 });
 
-// R3V-2 / R3V-3. The three normalisers added in round 3, over every kind of value.
+// The three normalisers, over every kind of value.
 describe('round-3 option normalisers', () => {
   const run = (def: OptionDefinition, value: unknown) => {
     const errors: Error[] = [];

@@ -7,7 +7,7 @@ import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOptionsContainer } from './options';
 import type { NotifyItem, NotifyResult, UploadPipeline } from './transport';
 
-// `client.notify()` (T7) through the real client: the launch gate, option parsing, the snapshot taken at
+// `client.notify()` through the real client: the launch gate, option parsing, the snapshot taken at
 // the call, and the flush/stop drain. The relay's own batching and retry rules are in notify-relay.test.ts.
 
 const env: EnvironmentEnvelope = {

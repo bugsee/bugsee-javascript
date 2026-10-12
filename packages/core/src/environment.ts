@@ -1,6 +1,6 @@
 import type { AttributeValue } from '@bugsee/types';
 
-// The single global runtime state holder (Android BugseeEnvironment parity, design §7.2). Bugsee has
+// The single global runtime state holder (Android BugseeEnvironment parity). Bugsee has
 // no "scope" abstraction — one Environment per Client holds all state: the user identifier and custom
 // attributes (→ manifest.attrs) now, and later the app/access token, options and build info, from
 // which the EnvironmentEnvelope wire shape is produced.

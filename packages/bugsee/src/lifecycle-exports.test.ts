@@ -46,7 +46,7 @@ describe('addReportAttachment is re-exported from every umbrella entry', () => {
   }
 });
 
-// The status surface (review L9): getStatus / relaunch / BugseeStatus on EVERY entry, not only the node and
+// The status surface: getStatus / relaunch / BugseeStatus on EVERY entry, not only the node and
 // browser ones, so lifecycle code is portable across runtimes.
 describe('getStatus, relaunch and BugseeStatus are exported from every umbrella entry', () => {
   for (const [name, entry] of Object.entries(entries)) {

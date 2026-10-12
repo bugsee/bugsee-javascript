@@ -12,7 +12,7 @@ import { resetBrowserDeviceIdCache } from './device-id';
 import type { BrowserProbe } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
-// Mobile-parity launch options (T6), end to end through the real browser composition root: the friendly
+// Mobile-parity launch options, end to end through the real browser composition root: the friendly
 // name resolves to the canonical key, reaches `sdk.options` on the wire, and changes what the uploaded
 // bundle contains.
 

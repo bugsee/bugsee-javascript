@@ -32,7 +32,7 @@ export interface WirePerformanceOptions {
   /** Collect the browser pageload transaction + web-vitals. Default true; Node sets false (no pageload
    *  lifecycle — it records its own startup transaction instead). */
   pageload?: boolean;
-  /** Continue a server-injected trace on the pageload (the `<meta name="traceparent">` continuation, D4). */
+  /** Continue a server-injected trace on the pageload (the `<meta name="traceparent">` continuation). */
   pageloadContinuation?: { traceId: string; parentSpanId?: string; sampled?: boolean };
   appVersion?: string;
   appBuild?: string;
@@ -40,10 +40,10 @@ export interface WirePerformanceOptions {
   deviceId?: string;
   /** The network interceptor source for http spans (omitted → no http spans). */
   networkSource?: NetworkSource;
-  /** The browser navigation source (F1c) — drives `navigation` transactions per SPA route change. Omitted →
+  /** The browser navigation source — drives `navigation` transactions per SPA route change. Omitted →
    *  none (e.g. Node, or navigation tracing off). Its activity-keepalive also reuses `networkSource`. */
   navigationSource?: NavigationSource;
-  /** The browser interaction source (F4) — drives `ui.interaction` transactions per qualifying interaction
+  /** The browser interaction source — drives `ui.interaction` transactions per qualifying interaction
    *  (Event Timing). Omitted → none (e.g. Node, or interaction tracing off). Reuses `networkSource` for the
    *  async-tail keepalive; skips when a navigation already owns the active slot (no double-count). */
   interactionSource?: InteractionSource;
@@ -53,7 +53,7 @@ export interface WirePerformanceOptions {
   /**
    * Where the controller's active transaction lives. Default the process-wide single slot. A server
    * launch passes its per-request-context store (via `LaunchInternals`) so concurrent requests stay
-   * isolated (D2 part 2); the browser omits it.
+   * isolated; the browser omits it.
    */
   activeSpanStore?: ActiveSpanStore;
 }
@@ -70,7 +70,7 @@ export interface WiredPerformance {
    */
   flush(): Promise<void>;
   /** Buffer an already-finished transaction (e.g. the Node `app.start` startup transaction, or consumed
-   *  OTel spans assembled into a §8.8 transaction) into BOTH sinks — the continuous uploader AND the
+   * OTel spans assembled into a transaction) into BOTH sinks — the continuous uploader AND the
    *  incident-bundle capture ring (performance.json). Externally sampled — it bypasses head sampling. */
   recordTransaction(transaction: TransactionWire): void;
 }
@@ -110,7 +110,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     });
   }
 
-  // SPA navigation transactions (F1c): each route change opens a `navigation` transaction (idle-finished).
+  // SPA navigation transactions: each route change opens a `navigation` transaction (idle-finished).
   let offNav: (() => void) | undefined;
   if (options.navigationSource !== undefined) {
     offNav = collectNavigations({
@@ -121,7 +121,7 @@ export function wirePerformance(options: WirePerformanceOptions): WiredPerforman
     });
   }
 
-  // Interaction transactions (F4): each qualifying interaction (Event Timing) opens a `ui.interaction`
+  // Interaction transactions: each qualifying interaction (Event Timing) opens a `ui.interaction`
   // transaction (idle-finished), skipped while a navigation owns the active slot (no double-count).
   let offInteractions: (() => void) | undefined;
   if (options.interactionSource !== undefined) {

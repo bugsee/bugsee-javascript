@@ -68,7 +68,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a scoped write SHADOWS the ambient slot — both present reads the scoped one', () => {
-    // The documented precedence (and its inversion, `ambient ?? stashed`, is exactly the D2 hazard).
+    // The documented precedence (and its inversion, `ambient?? stashed`, is exactly the hazard).
     const als = createNodeRequestContextStore();
     const store = createRequestScopedActiveSpanStore(als);
     const ambient = txn('ambient');
@@ -82,7 +82,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a finished scoped transaction does NOT reveal ambient — the slot stays private to the request', () => {
-    // F1 (round 6): after this request's own transaction finished and cleared, a read here must NOT
+    // after this request's own transaction finished and cleared, a read here must NOT
     // fall back to ambient — otherwise a post-finish setRouteName() would rename a FOREIGN live
     // transaction. The fallback is only for contexts that never held a transaction (the still-open
     // outer-scope case); once a context owned one, its slot is private: its own live stash or nothing.
@@ -106,7 +106,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('clearing an ambient transaction from inside a context clears the ambient slot', () => {
-    // SEV2-#1: clear lands where the transaction LIVES (ambient) — not by deleting a nonexistent
+    // Clear lands where the transaction LIVES (ambient) — not by deleting a nonexistent
     // context stash while the finished transaction stays readable everywhere. (Under R-1 the
     // in-context read below is private-empty — this request never stashed — which is exactly why
     // the clear must not depend on observing the transaction first.)
@@ -126,7 +126,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a finished scoped transaction is never read — and never reveals ambient either', () => {
-    // SEV2-#2 readability + round-6 F1 narrowing: a transaction finished outside its originating
+    // Readability and narrowing: a transaction finished outside its originating
     // context (e.g. a response `close` firing after the ALS context exited) leaves a stale stash
     // the store cannot reach to delete — but no read may resurface it, and the owning context's
     // slot stays private afterward (no fallback to ambient, where a rename would mistarget).
@@ -210,7 +210,7 @@ describe('createRequestScopedActiveSpanStore', () => {
     const ctxB = context('B');
     const txnA = txn('A');
     als.run(ctxA, () => store.set(txnA));
-    // B never saw A's transaction: per-request isolation (D2 part 2).
+    // B never saw A's transaction: per-request isolation.
     expect(als.run(ctxB, () => store.get())).toBeUndefined();
     expect(als.run(ctxA, () => store.get())).toBe(txnA);
     // Outside every context the ambient slot is untouched by the stashed write.
@@ -243,7 +243,7 @@ describe('createRequestScopedActiveSpanStore', () => {
     als.run(ctx, () => {
       store.set(scoped);
       store.clear(scoped); // e.g. the scoped transaction finished
-      expect(store.get()).toBeUndefined(); // private slot: empty, NOT the live ambient one (F1)
+      expect(store.get()).toBeUndefined(); // private slot: empty, NOT the live ambient one
     });
     expect(store.get()).toBe(ambient); // the ambient write survived the scoped clear
   });
@@ -269,7 +269,7 @@ describe('createRequestScopedActiveSpanStore', () => {
     // R-1: context-bearing reads are strictly private. Even with a live ambient transaction present,
     // a request that never stashed its own sees nothing here — the old fallback (which handed over
     // the ambient transaction, and let a naming call rename it) had no producer and every such read
-    // is the D2 hazard direction. Ambient serves context-less executions only (pinned below).
+    // is the hazard direction. Ambient serves context-less executions only (pinned below).
     const als = createNodeRequestContextStore();
     const store = createRequestScopedActiveSpanStore(als);
     const ambient = txn('ambient');
@@ -303,7 +303,7 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a context that cannot carry a stash reads nothing — never another execution’s transaction', () => {
-    // F1, now structural (R-1): context-bearing reads are strictly private, so a dropped write
+    // now structural: context-bearing reads are strictly private, so a dropped write
     // leaves reads empty by construction — with a live ambient transaction present, get() still
     // returns nothing here, and a setRouteName() in the frozen request no-ops instead of renaming
     // a FOREIGN transaction.
@@ -381,8 +381,8 @@ describe('createRequestScopedActiveSpanStore', () => {
   });
 
   it('a sealed-after-stash context keeps reading its own live transaction', () => {
-    // The first write succeeded (live T1 stashed), the context sealed after, and only the SECOND
-    // write fails (dropped + warned). Reads still return the request's own live T1 — the failed
+    // The first write succeeded (live stashed), the context sealed after, and only the SECOND
+    // write fails (dropped + warned). Reads still return the request's own live — the failed
     // write changes nothing about what is already stashed.
     const als = createNodeRequestContextStore();
     const store = createRequestScopedActiveSpanStore(als);

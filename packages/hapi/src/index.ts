@@ -1,4 +1,4 @@
-// @bugsee/hapi — Hapi adapter (tier 4, design: docs/design/framework-adapters.md).
+// @bugsee/hapi — Hapi adapter.
 // Lifecycle-extension setup over the per-request context foundation. @hapi/hapi is a PEER (structural
 // types only). Works on node/bun/deno-hosted Hapi (wherever the launched @bugsee/node client provides the
 // context store).

@@ -40,7 +40,7 @@ import { type Interceptor, InterceptorBase } from '@bugsee/core';
 //   - nothing when the new geometry is identical to the last emitted.
 //
 // Observe-only, like every source here: these reads run from listeners the application also uses, so a
-// throwing getter or a refused `addEventListener` must never reach the app (design: "interceptors must
+// throwing getter or a refused `addEventListener` must never reach the app (the rule that "interceptors must
 // not alter app behaviour").
 
 /** The window surface we measure and listen on. `visualViewport` is read from it when not injected. */

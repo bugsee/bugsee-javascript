@@ -1,14 +1,13 @@
-// Wave 2.5 / decision D2 — the SDK must not change how the host process lives and dies.
+// The SDK must not change how the host process lives and dies.
 //
 // Two Node semantics drive everything here:
 //
 //  • Merely REGISTERING an `unhandledRejection` listener disables Node's default disposition, which since
 //    Node 15 is to throw and exit 1. A passive listener therefore turns a crashing service into one that
 //    keeps running and reports exit 0 — supervisors, CI and health checks all read success
-//    (docs/review/node-A-launch.md SEV1 #1, reproduced on Node v24).
+// (reproduced on Node v24).
 //  • Registering an `uncaughtException` listener suppresses Node's default handler, which prints the error
 //    and stack to stderr. Nothing re-printed it, so operators lost the first artifact they reach for
-//    (SEV1 #4).
 //
 // A supervisor cannot tell "the SDK is installed" from "the app is healthy", so the SDK has to reproduce
 // what would have happened without it.
@@ -57,7 +56,7 @@ export function foreignListenerCount(proc: ListenerSource, event: string): numbe
 }
 
 /**
- * How an unhandled promise rejection is disposed of (decision D2).
+ * How an unhandled promise rejection is disposed of.
  *
  * - `preserve` (DEFAULT) — capture it, then reproduce Node's own outcome: print to stderr and exit 1. The
  *   only setting consistent with Bugsee's binding rule that the SDK never alters host behaviour. "Node's
@@ -116,7 +115,7 @@ export function printFatal(label: string, value: unknown, write: (text: string) 
 }
 
 /**
- * Hand a termination signal back to Node's default disposition after Bugsee observed it (Wave 6.1).
+ * Hand a termination signal back to Node's default disposition after Bugsee observed it.
  *
  * Registering ANY listener for SIGTERM/SIGINT/SIGHUP suppresses the default — the process no longer dies.
  * So every Bugsee signal listener has to restore it, and the rule has to hold when SEVERAL are installed
@@ -131,7 +130,7 @@ export function printFatal(label: string, value: unknown, write: (text: string) 
  *  - Several Bugsee handlers → all but the last see a non-empty list and stand down. Exactly one re-raise.
  *  - The host has its own handler → a listener always remains, so Bugsee never re-raises. The host
  *    suppressed the default itself and owns the shutdown; killing its process because Bugsee is installed
- *    would be the Wave 2.5 defect in another costume.
+ * would be the defect in another costume.
  *
  * Supersedes the earlier `listenerCount(signal) === 1` gate, which read "sole handler" from a RAW count and
  * therefore stopped re-raising — hanging the process — as soon as Bugsee installed a second listener.

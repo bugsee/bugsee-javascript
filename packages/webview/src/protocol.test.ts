@@ -267,7 +267,7 @@ describe('parseControl', () => {
   });
 });
 
-// WAVE 0.3 review round 1, SEV1 — the control channel is reachable from the page, so `parseControl` must
+// WAVE 0.3, — the control channel is reachable from the page, so `parseControl` must
 // survive a hostile realm, not merely malformed input.
 describe('parseControl is hostile-realm safe', () => {
   /** Set a key on Object.prototype for one test and always remove it (a leak breaks every later test). */

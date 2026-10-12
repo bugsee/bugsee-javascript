@@ -1,5 +1,4 @@
-// Structured crash.json builder (the JS crash wire contract — docs/design/javascript-application-type.md
-// §5.4). The JS SDK's error reports carry a raw stack STRING in request.json.description; the backend crash
+// Structured crash.json builder. The JS SDK's error reports carry a raw stack STRING in request.json.description; the backend crash
 // pipeline instead needs a structured `crash.json` (Android managed-exception parity) with per-frame
 // `debug_id` (each bundle/chunk its own source-map). This composes the existing `parseV8Stack` +
 // `applyDebugIds` primitives into that container. Runtime-portable: the runtime-specific stack parser +
@@ -72,7 +71,7 @@ export interface CrashJson extends CrashProvenance {
 
 /** The NATIVE crash.json — a Crashpad/native segfault (Electron/Node native addon). The worker keys off
  *  `minidumpFile` (present) and stackwalks the attached `.dmp`; the exception + signal are derived there.
- *  See `docs/design/electron-native-crashes.md`. */
+ * */
 export interface NativeCrashJson extends CrashProvenance {
   exception_type: 'native';
   ndkCrash: true;

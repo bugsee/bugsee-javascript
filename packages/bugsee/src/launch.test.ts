@@ -208,7 +208,7 @@ describe('bugsee umbrella launch', () => {
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
-  // R3V-3: the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
+  // the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
   // OPPOSITE of what the app wrote. Data-collecting switches fail CLOSED: only boolean `true` opts in to what is
   // off by default (propagateTrace), and an invalid value turns off what is on by default (monitoring, navigation,
   // interaction spans); each is reported.
@@ -350,7 +350,7 @@ describe('bugsee umbrella launch', () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
     const client = await track(await launch('tok', base({ carrier: {} })));
-    // The active span is the pageload — which must NOT block interactions (D12).
+    // The active span is the pageload — which must NOT block interactions.
     expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
       'pageload',
     );
@@ -613,7 +613,7 @@ describe('bugsee umbrella launch', () => {
     ).toBeDefined();
   });
 
-  // R5V-6: `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
+  // `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
   it('an empty-string target never reaches a third party, and an invalid entry is reported to onError', async () => {
     let received: { init: unknown } | undefined;
     vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
@@ -711,11 +711,11 @@ describe('bugsee umbrella launch', () => {
       value: { stringValue: TEST_DEVICE_ID },
     });
     expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
-    // Profile v1 §5: the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
+    // Profile v1: the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
-  // R4V-10: `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
+  // `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
   // non-string) value means "no exporter": data is exported only to an explicitly configured endpoint.
   it.each([
     '',
@@ -749,7 +749,7 @@ describe('bugsee umbrella launch', () => {
     expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
   });
 
-  // R5V-7: a `URL` object worked before R4V-10 and was silently ignored after it; whitespace still built an exporter
+  // a `URL` object worked before and was silently ignored after it; whitespace still built an exporter
   // (`fetch('   ')` is the page's own URL); numbers and objects were dropped without a word.
   describe('otelExportUrl forms (R5V-7)', () => {
     async function runWith(

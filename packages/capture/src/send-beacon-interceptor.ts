@@ -2,7 +2,7 @@ import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 import { readSyncRequestBody } from './network-body';
 
-// navigator.sendBeacon capture SOURCE (design §16.2; the mechanism the wire has declared since
+// navigator.sendBeacon capture SOURCE (the mechanism the wire has declared since
 // [wire.ts NetworkMechanism] but nothing implemented). sendBeacon is the standard way an application
 // ships telemetry from `pagehide`/`visibilitychange`, so leaving it uninstrumented was not only a blind
 // spot in the recording: beacon traffic bypassed the user network filter AND the built-in PII sanitizer,
@@ -13,7 +13,7 @@ import { readSyncRequestBody } from './network-body';
 // EventSource siblings. Wrapping is a swap of `navigator.sendBeacon`; the original is put back on
 // deactivate. Installed only while ACTIVE (subscriber-presence / start, via InterceptorBase).
 //
-// Stages (wire contract §8.7 for request/response transports): `before` → `complete`. sendBeacon
+// Stages (wire contract for request/response transports): `before` → `complete`. sendBeacon
 // returns a boolean SYNCHRONOUSLY — the user agent queued the payload, or refused it — and has no
 // response at all: no status, no status text, no response headers, and no way to learn the outcome of
 // the transmission. So `complete` deliberately carries NO `status`: a refusal is not an HTTP failure
@@ -28,8 +28,7 @@ import { readSyncRequestBody } from './network-body';
 // events like any other source. Payloads that are not synchronously readable (Blob / FormData / binary)
 // are reported with the existing `cant_read_data` reason rather than blocked on or guessed at.
 //
-// `size` is intentionally not set — no interceptor in this SDK sets it (docs/design/
-// viewer-wire-compatibility.md §3.5), and the viewer derives it from the body when present.
+// `size` is intentionally not set — no interceptor in this SDK sets it. The viewer derives it from the body when present.
 
 /** `navigator.sendBeacon` — a DOM global this package carries no lib types for, so reach it via casts. */
 type SendBeaconFn = (url: unknown, data?: unknown) => boolean;
@@ -49,7 +48,7 @@ const globalSendBeaconTarget: SendBeaconTarget = {
   },
 };
 
-/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal (§14.6).
+/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal.
  *  A beacon carries no caller headers, so this default never fires in practice — the seam exists so a
  *  platform can self-isolate its own beacons by URL. */
 const hasInternalHeader = (headers: Record<string, string>): boolean =>

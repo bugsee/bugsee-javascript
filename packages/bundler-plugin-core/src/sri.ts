@@ -13,7 +13,7 @@
 // So we look for it and refuse rather than shipping a broken page. Rewriting the hashes is not a
 // safe alternative: `webpack-subresource-integrity` also embeds the lazy chunks' hashes in the
 // runtime chunk (`__webpack_require__.sriHashes`), so patching the HTML alone would still break
-// every dynamic import. See docs/design/source-maps.md and docs/review/cli-js-flows.md §7.
+// every dynamic import.
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
@@ -163,7 +163,7 @@ const SRI_ALGORITHMS = ['sha256', 'sha384', 'sha512'] as const;
 type SriAlgorithm = (typeof SRI_ALGORITHMS)[number];
 
 /**
- * Whether `bytes` would pass `integrity`, by the browser's rule (SRI §3.3.5): unknown algorithms are
+ * Whether `bytes` would pass `integrity`, by the browser's rule (SRI): unknown algorithms are
  * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
  * enough. A value with no algorithm the browser knows means no check at all.
  */

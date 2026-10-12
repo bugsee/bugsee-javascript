@@ -1,4 +1,4 @@
-// The preload bridge (E2). Under Electron's contextIsolation, a renderer's page world can't `require`
+// The preload bridge. Under Electron's contextIsolation, a renderer's page world can't `require`
 // electron, so the renderer→main sink is exposed from the PRELOAD context via contextBridge: it publishes
 // `window.__bugseeElectron.post(raw)` which forwards to the main process over IPC. The app calls
 // `registerBugseePreload(require('electron'))` in its preload — we take `contextBridge`+`ipcRenderer` as
@@ -6,11 +6,11 @@
 
 /** The `window` global key the renderer's `resolveRendererPost` reads (must match launch-renderer.ts). */
 export const BUGSEE_BRIDGE_KEY = '__bugseeElectron';
-/** The IPC channel renderer→main capture is streamed on (must match the main receiver, E3). */
+/** The IPC channel renderer→main capture is streamed on (must match the main receiver). */
 export const BUGSEE_STREAM_CHANNEL = 'bugsee:stream';
-/** The IPC channel renderer→main handshake (`hello`) is sent on (must match the main control manager, E6). */
+/** The IPC channel renderer→main handshake (`hello`) is sent on (must match the main control manager). */
 export const BUGSEE_HELLO_CHANNEL = 'bugsee:hello';
-/** The IPC channel main→renderer control (pause/resume/flush/stop/session) is sent on (must match E6). */
+/** The IPC channel main→renderer control (pause/resume/flush/stop/session) is sent on (must match). */
 export const BUGSEE_CONTROL_CHANNEL = 'bugsee:control';
 
 /** The subset of Electron's `contextBridge` we use. */
@@ -33,7 +33,7 @@ export interface BugseeElectronBridge {
   sendHello(raw: string): void;
   /**
    * Subscribe to main→renderer control messages (pause/resume/flush/stop/session). Returns an UNSUBSCRIBE: a
-   * renderer re-run must be able to retire the previous client's handler, or every message runs twice (R4V-3).
+   * renderer re-run must be able to retire the previous client's handler, or every message runs twice.
    * (An older bridge returns nothing; the renderer then relies on its own stopped-client guard.)
    */
   // biome-ignore lint/suspicious/noConfusingVoidType: an older bridge returns nothing (void) rather than undefined

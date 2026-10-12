@@ -93,7 +93,7 @@ describe('createObscuringComposer — top frame', () => {
     // static page injected after `load` never pushed at all.
     //
     // That still holds under the current Android receiver, by a different route. It no longer masks from
-    // the pushed payload (D-A9 discards it) — it re-pulls `__bugsee_bridge.snapshot()` on receipt. So the
+    // the pushed payload (discards it) — it re-pulls `__bugsee_bridge.snapshot()` on receipt. So the
     // push is the trigger rather than the data, and no initial push is still no initial mask.
     expect(onCompose).toHaveBeenCalledTimes(1);
     expect(onCompose.mock.calls[0]?.[0]).toHaveLength(1);

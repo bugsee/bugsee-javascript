@@ -163,7 +163,7 @@ describe('the spawned CLI is bounded (Wave 7.4)', () => {
 
   it('clears the timer when the child finishes, so nothing keeps the process alive', async () => {
     // A dangling `setTimeout` would hold the event loop open past the build — the same class of defect as
-    // the un-unref'd watchdog worker (Wave 2.4).
+    // the un-unref'd watchdog worker.
     //
     // The previous body counted `getActiveResourcesInfo()` Timeouts before/after and asserted
     // `after <= before` — which is VACUOUS here, because the watchdog is `unref`'d and an unref'd timer is
@@ -242,7 +242,7 @@ describe('spawn options (the security surface)', () => {
   });
 });
 
-// SEV1 — a `bugsee-cli` KILLED BY A SIGNAL was reported as a successful run.
+// a `bugsee-cli` KILLED BY A SIGNAL was reported as a successful run.
 //
 // `node:child_process` emits `close` with `code === null` (and a `signal`) when the child is terminated
 // rather than exited: the Linux OOM killer on a big source-map tree, a cancelled CI job's SIGTERM, a

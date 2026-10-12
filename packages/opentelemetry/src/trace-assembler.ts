@@ -1,9 +1,9 @@
 import type { TransactionWire } from '@bugsee/performance';
 import { type ConsumedSpan, consumedRootToTransaction, consumedSpanToSpanWire } from './from-otlp';
 
-// Phase C2: the trace assembler. OTel spans arrive one-at-a-time (children usually before the root), so
+// The trace assembler. OTel spans arrive one-at-a-time (children usually before the root), so
 // this buffers them by traceId and emits ONE Bugsee transaction when the trace's ROOT span ends — the
-// "root-end + bounded eviction" policy. A span is the root when it has no parent; the C3 bridge normalizes
+// "root-end + bounded eviction" policy. A span is the root when it has no parent; the bridge normalizes
 // a REMOTE parent (a downstream service's local root) to `parentSpanId: undefined`, so this rule stays
 // OTel-agnostic. Bounded: a trace whose root never arrives is dropped after `maxAgeMs`, and the buffer is
 // capped at `maxTraces` (oldest evicted) — so a leaked/never-closed trace can't grow memory unbounded.

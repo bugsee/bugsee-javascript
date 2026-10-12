@@ -1,6 +1,6 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 
-// The browser NAVIGATION SOURCE (frontend-adapters design D2/D10) — an EXTENSIBLE, listenable source of
+// The browser NAVIGATION SOURCE — an EXTENSIBLE, listenable source of
 // SPA navigations. Built-in detection (a route change the browser itself performs): PREFER the new
 // Navigation API (`window.navigation`) when present, listening to its `currententrychange` event — it fires
 // post-commit for EVERY same-document navigation (`pushState`/`replaceState`, fragment, back/forward, AND a

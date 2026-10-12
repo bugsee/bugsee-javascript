@@ -114,7 +114,7 @@ describe('handler attributes — never throw, always carry their marker', () => 
 });
 
 describe('cfAttributes — the request.cf enrichment is curated and type-guarded', () => {
-  // The curated `cf.*` subset. latitude/longitude/postalCode are DELIBERATELY not here (PII, design D9).
+  // The curated `cf.*` subset. latitude/longitude/postalCode are DELIBERATELY not here (PII).
   const ALLOWED = new Set([
     'cf.colo',
     'cf.country',
