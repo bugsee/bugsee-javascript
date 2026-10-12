@@ -267,7 +267,10 @@ describe('measurePair', () => {
   });
 });
 
-describe('expectLinearIn', () => {
+// These tests run the helper against work that is quadratic ON PURPOSE (millions of iterations, measured
+// repeatedly), so a shared CI runner under a parallel coverage run needs far more than the package-wide 30 s.
+// A timeout here is a slow machine, never a verdict: the assertion inside decides.
+describe('expectLinearIn', { timeout: 180_000 }, () => {
   it('accepts work that grows linearly with the input', () => {
     expect(() => expectLinearIn((n) => n, burn, 4_000_000)).not.toThrow();
   });
