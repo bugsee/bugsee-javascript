@@ -1,6 +1,6 @@
 import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/svelte ROUTER NAMING integration (+ the F5/D5 two-phase naming seam). On
+// The @bugsee/svelte ROUTER NAMING integration (and the two-phase naming seam). On
 // a navigation, SvelteKit's navigation target carries the route id (`/users/[id]` — SvelteKit's own
 // parameterized route syntax, already low-cardinality); refine the active navigation transaction (opened
 // raw-URL by the navigation source) via the shared `setRouteName` seam. We DELIBERATELY keep SvelteKit's
@@ -28,7 +28,8 @@ export function routeIdFromNavigation(navigation: AfterNavigateLike): string | u
   });
 }
 
-/** Build an `afterNavigate` callback that refines the active transaction to the navigation's route id. Wire once after mount: `afterNavigate(instrumentSvelteKitNavigation())`. A no-op for a
+/** Build an `afterNavigate` callback that refines the active transaction to the navigation's route id.
+ *  Wire once after mount: `afterNavigate(instrumentSvelteKitNavigation())`. A no-op for a
  *  navigation with no route id. */
 export function instrumentSvelteKitNavigation(
   options: RouteNamingOptions = {},

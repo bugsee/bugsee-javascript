@@ -32,7 +32,7 @@ const SECURE_INPUT = SECURE_INPUT_SELECTOR;
 const HIDE = '.bugsee-hide';
 
 describe('collectSecureAreas', () => {
-  it('collects secure inputs (text) +.bugsee-hide elements (hidden) with viewport rects', () => {
+  it('collects secure inputs (text) + .bugsee-hide elements (hidden) with viewport rects', () => {
     const doc = fakeDoc({ [SECURE_INPUT]: [el(10)], [HIDE]: [el(20)] });
     expect(collectSecureAreas(doc)).toEqual([
       { type: 'text', top: 10, left: 11, bottom: 12, right: 13 },

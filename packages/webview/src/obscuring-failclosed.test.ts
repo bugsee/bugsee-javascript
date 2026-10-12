@@ -8,8 +8,7 @@ import {
   type SecureDocument,
 } from './obscuring-source';
 
-// Wave 1.4 — the obscuring path must fail CLOSED (+ "Obscuring fail-open
-// analysis").
+// The obscuring path must fail CLOSED.
 //
 // `__bugsee_bridge.snapshot()` is the SYNCHRONOUS pull native performs at frame-capture time to learn which
 // rects to mask. On the advanced path this SDK is the ONLY in-WebView mask source — the legacy in-page script
@@ -260,7 +259,7 @@ describe('the composer fails closed too', () => {
   });
 });
 
-// (webview reviewer, /#2/#3). The previous fix hardened the PULL
+// The previous fix hardened the PULL
 // (`__bugsee_bridge.snapshot()`) while leaving the push able to emit nothing — and the push is what a
 // receiver acts on, whichever generation it is: an older one masks from the payload directly, a current
 // one (Android) discards the payload and re-pulls on receipt. Either way a push that fails silently

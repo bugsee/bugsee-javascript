@@ -4,7 +4,7 @@ import * as errorMod from './error';
 import { solidErrorHandler } from './error';
 import * as routerMod from './router';
 
-// this handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
+// This handler is wired into `<ErrorBoundary>` / `catchError`, so a throw escapes the very
 // boundary meant to contain the customer's error and takes the fallback UI down with it.
 afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;

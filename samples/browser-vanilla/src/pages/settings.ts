@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS, loadSettings, relaunchBugsee, saveSettings, type SampleSettings } from '../bugsee-client';
 
-// Every BugseeLaunchOptions / UmbrellaExtensionOptions field, toggled here and re-launched —
+// Every BugseeLaunchOptions / UmbrellaExtensionOptions field, toggled here and re-launched
 // ("launch with the minimum options and with every option set").
 
 type FieldSpec =

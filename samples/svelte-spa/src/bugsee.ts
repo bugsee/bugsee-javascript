@@ -85,7 +85,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   propagateTrace: true,
   tracePropagationTargets: ['/api/'],
 
-  // replay is ON for the whole app with the fail-closed masking defaults.
+  // Replay is ON for the whole app with the fail-closed masking defaults.
   //
   // This line is REDUNDANT and kept only for readability. Session replay is now ON BY DEFAULT in
   // `@bugsee/browser` (`launch.ts`: `options.replay !== false && domDocument !== undefined`) — recording
@@ -109,7 +109,7 @@ declare global {
     __bugseeTee?: {
       getCapturedBundles: typeof getCapturedBundles;
       clearCapturedCalls: typeof clearCapturedCalls;
-      /** wire evidence: decode ONE uploaded bundle's `replay.bin` on demand (see bugsee-transport.ts). */
+      /** Wire evidence: decode ONE uploaded bundle's `replay.bin` on demand (see bugsee-transport.ts). */
       inspectReplay: typeof inspectReplay;
     };
   }
@@ -119,7 +119,7 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * the minimum option set — this object contributes NOTHING, so every capture/behaviour option is
+ * The minimum option set — this object contributes NOTHING, so every capture/behaviour option is
  * left at its SDK default.
  *
  * It is NOT a literal `launch(token, {})`, and the Scenario panel must not claim it is: it is fed to
@@ -151,7 +151,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */

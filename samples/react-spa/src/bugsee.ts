@@ -72,7 +72,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   onError: reportInternalError,
 };
 
-/** the minimum viable launch — nothing but the token. Used by the Scenario panel to prove the SDK
+/** The minimum viable launch — nothing but the token. Used by the Scenario panel to prove the SDK
  *  works with every option left at its default. */
 export const MINIMAL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {};
 
@@ -98,7 +98,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */

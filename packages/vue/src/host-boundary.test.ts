@@ -7,7 +7,7 @@ import { installBugseeErrorHandler } from './error';
 import * as renderMixin from './render-mixin';
 import * as routerMod from './router';
 
-// and its: "no test
+// Host-boundary containment. A review found that "no test
 // in any of the four packages ever injects an SDK client that throws — and the two mutations encoding that
 // gap survived". Measured against real vue@3.5.38, an SDK throw here turned a customer error that the app's
 // own errorHandler fully recovered from into a throw out of `app.mount()` and an empty DOM.

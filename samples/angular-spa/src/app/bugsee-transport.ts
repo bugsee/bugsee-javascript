@@ -66,7 +66,7 @@ export interface ParsedBundleSummary {
   // a `traces.user` one (`packages/core/src/client.ts:603-624`), which the bundle assembler serializes
   // as `events.user.json` / `traces.user.json` (`packages/protocol/src/constants.ts:39-42`, arrays of
   // the raw payloads). Parsed here so `s3-event`/`s3-trace` can assert on the UPLOADED bundle instead
-  // of reducing to `isLaunched()` — the same gap `s6-console`'s wire half closed for.
+  // of reducing to `isLaunched()` — the same gap `s6-console`'s wire half closed for console capture.
   userEvents?: Array<{ name?: string; params?: Record<string, unknown> }>;
   userTraces?: Array<{ name?: string; value?: unknown }>;
 }

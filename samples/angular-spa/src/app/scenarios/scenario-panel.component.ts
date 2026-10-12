@@ -59,7 +59,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   readonly filtersInstalled = signal(false);
   readonly filterLog = signal<string[]>([]);
 
-  // ---- Settings-style attribute inputs used by nothing here; lives in settings.component.ts ----
+  // ---- Settings-style attribute inputs used by nothing here; identity settings live in settings.component.ts ----
 
   ngOnInit(): void {
     this.#unsubscribeInternalErrors = onInternalError((e) =>
@@ -75,6 +75,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.statuses.update((prev) => ({ ...prev, [id]: { text, ok } }));
   }
 
+  // ------------------------------------------------------------------------------------------ Launch & lifecycle
   async flush(): Promise<void> {
     const ok = await this.client?.flush(5000);
     this.setStatus('s1-flush', `flush() -> ${ok}`, ok === true);
@@ -109,6 +110,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s1-full', 'relaunched with every option set');
   }
 
+  // ------------------------------------------------------------------------------------------ Manual telemetry
   log(level: 'error' | 'warning' | 'info' | 'debug' | 'verbose'): void {
     this.client?.log(`sample log at level=${level}`, level);
     this.setStatus('s3-log', `log("...", "${level}")`);
@@ -140,6 +142,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s3-crumb', 'addBreadcrumb({type, category, message, level, data})');
   }
 
+  // ------------------------------------------------------------------------------------------ Exceptions
   async logError(): Promise<void> {
     const r = await this.client?.logException(new Error('S4: logException(new Error(...))'));
     this.setStatus('s4-error', `logException(Error) -> ok=${r?.ok}`, r?.ok === true);
@@ -204,6 +207,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s4-storm', `fired 200 logException calls in ${(performance.now() - start).toFixed(1)}ms — app still responsive`);
   }
 
+  // ------------------------------------------------------------------------------------------ Crashes
   throwUncaught(): void {
     this.setStatus('s5-uncaught', 'thrown via setTimeout — check window.onerror capture');
     setTimeout(() => {
@@ -216,6 +220,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     Promise.reject(new Error('S5: unhandled promise rejection'));
   }
 
+  // ------------------------------------------------------------------------------------------ Console capture
   consoleCall(method: 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace'): void {
     // eslint-disable-next-line no-console
     console[method](`S6: console.${method} from the scenario panel`, { at: Date.now() });
@@ -230,6 +235,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s6', 'console.log(circular object)');
   }
 
+  // ------------------------------------------------------------------------------------------ Network capture
   async s7Get(): Promise<void> {
     const body = await scenarioApi.get();
     this.setStatus('s7', `GET /scenario/get -> ${JSON.stringify(body)}`);
@@ -335,6 +341,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     es.onerror = () => es.close();
   }
 
+  // ------------------------------------------------------------------------------------------ Filters & redaction
   installFilters(): void {
     const c = getClient();
     if (!c) return;
@@ -430,6 +437,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     });
   }
 
+  // ------------------------------------------------------------------------------------------ Performance
   manualTransaction(): void {
     const perf = this.client?.ext('performance');
     if (!perf) return this.setStatus('s9', 'performance ext not registered', false);
@@ -450,7 +458,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   /** `performanceSampleRate: 0` — checkable at LOCAL level without a second relaunch pair beyond the
-   * ones the panel already has (relaunch six times between them): relaunch with rate 0, start a
+   * ones the panel already has (the launch-lifecycle and replay controls relaunch six times between them): relaunch with rate 0, start a
    *  transaction, and read `isSampled()` straight off it — `createRateSampler` (`@bugsee/performance`)
    *  guarantees `rate <= 0` always decides unsampled, no RNG involved. Restores FULL_LAUNCH_OPTIONS
    *  (rate 1) afterward so nothing downstream in the sweep runs unsampled. */
@@ -515,6 +523,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     );
   }
 
+  // ------------------------------------------------------------------------------------------ Session replay
   async replayDefaults(): Promise<void> {
     await relaunch({ ...FULL_LAUNCH_OPTIONS, replay: true });
     this.setStatus('s11', 'relaunched with replay: true (fail-closed defaults: maskAllText/maskAllInputs/blockAllMedia)');
@@ -569,6 +578,7 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s11', 'relaunched with the FULL_LAUNCH_OPTIONS baseline (no replay key — replay records by DEFAULT)');
   }
 
+  // ------------------------------------------------------------------------------------------ Persistence & recovery
   crashAndReload(): void {
     void this.client?.logException(new Error('S12: persist+recover across a hard reload'));
     setTimeout(() => window.location.reload(), 5);

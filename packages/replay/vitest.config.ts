@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// jsdom — replay touches DOM/rrweb. Coverage gate per (100% line/fn/stmt, >=90% branch).
+// jsdom — replay touches DOM/rrweb. Coverage gate: 100% line/fn/stmt, >=90% branch.
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

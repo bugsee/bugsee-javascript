@@ -71,7 +71,7 @@ export const scenarioApi = {
     // Nothing listens on 5399 — a genuine connection-refused, not a fabricated error.
     fetch('http://localhost:5399/nope'),
   getSlow: (ms: number): Promise<Response> => fetch(`${BASE}/scenario/slow?ms=${ms}`),
-  // network-filter fixtures: a secret header + a secret body field the filter must strip/redact
+  // Network-filter fixtures: a secret header + a secret body field the filter must strip/redact
   // before the event reaches the capture ring, and a URL the filter vetoes outright.
   postSecret: (): Promise<Response> =>
     fetch(`${BASE}/scenario/echo`, {
@@ -99,7 +99,7 @@ export const scenarioApi = {
    * `navigator.sendBeacon` — the network transport `@bugsee/capture` gained a dedicated interceptor for
    * (`packages/capture/src/send-beacon-interceptor.ts`, wired into `installNetworkCapture`). It is inert
    * unless an app actually calls it, and this sample called it nowhere, so the leaf had ZERO coverage
-   * here: claimed to exercise the network umbrella while one of its transports was never touched.
+   * here: the network umbrella was claimed to be exercised while one of its transports was never touched.
    *
    * BOTH payload branches are fired, because the interceptor treats them differently and only one of
    * them can carry a body into the bundle:

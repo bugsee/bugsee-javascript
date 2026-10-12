@@ -214,11 +214,10 @@ describe('resolveEdgeStore', () => {
   });
 });
 
-// S4: the per-invocation context carries the TENANT.
+// The per-invocation context carries the TENANT.
 //
 // `contextId` is per-invocation; `owner` is the tenant, so a Durable Object's rolling window stays
-// per-tenant and its incident bundle cannot pick up another DO's capture (SEV1
-// #2, proven on real workerd).
+// per-tenant and its incident bundle cannot pick up another DO's capture (proven on real workerd).
 describe('runInEdgeContext — owner (tenant key)', () => {
   it('puts the supplied owner on the context the handler runs in', async () => {
     const { client, store } = fakeClient();

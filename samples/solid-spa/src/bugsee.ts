@@ -75,7 +75,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
 };
 
 /**
- * the minimum viable launch. Used by the Scenario panel to prove the SDK works with every option
+ * The minimum viable launch. Used by the Scenario panel to prove the SDK works with every option
  * left at its default.
  *
  * NOT literally `launch(token, {})` at the wire, and the docs must not claim it is: `relaunch()` below
@@ -115,7 +115,7 @@ export function getClient(): Bugsee | undefined {
 }
 
 /**
- * call `launch()` again on the SAME carrier the app already launched on. Per the design contract
+ * Call `launch()` again on the SAME carrier the app already launched on. Per the design contract
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */

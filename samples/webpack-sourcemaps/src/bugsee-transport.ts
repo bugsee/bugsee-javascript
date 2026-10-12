@@ -127,7 +127,7 @@ function parseBundle(body: Uint8Array, forSeq: number): ParsedBundleSummary | un
   try {
     const files = unzipSync(body) as Record<string, Uint8Array>;
     const summary: ParsedBundleSummary = { files: Object.keys(files) };
-    // keep the raw bytes only — decoding happens in getReplayDigest(), on demand. See ReplayDigest.
+    // Keep the raw bytes only — decoding happens in getReplayDigest(), on demand. See ReplayDigest.
     const replayFile = files['replay.bin'];
     if (replayFile !== undefined) {
       replayBlobs.set(forSeq, replayFile);

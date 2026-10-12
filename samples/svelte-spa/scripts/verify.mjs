@@ -341,8 +341,8 @@ async function main() {
     duplicateStatus ?? '',
   );
 
-  // manual telemetry — no direct wire signal exists for these (they're captured into the local ring,
-  // not individually reported), so the real, obtainable assertion is: no throw. below independently
+  // Manual telemetry — no direct wire signal exists for these (they're captured into the local ring,
+  // not individually reported), so the real, obtainable assertion is: no throw. The crash checks below independently
   // proves this same page-error mechanism DOES detect a real failure (a positive control for this
   // negative one).
   newPageErrors();
@@ -364,7 +364,7 @@ async function main() {
   await click(page, 's3-breadcrumb');
   record('s3-breadcrumb', 'addBreadcrumb() — every field', newPageErrors() === 0);
 
-  // exceptions. Each control is matched to ITS OWN uploaded bundle by `request.json.summary`, not to
+  // Exceptions. Each control is matched to ITS OWN uploaded bundle by `request.json.summary`, not to
   // "some issue call arrived in my window" — see the note on `bySummary` above for why a window is not
   // enough. A bundle PUT also implies the `/v2/issues` call that minted its presigned URL succeeded, so
   // this is strictly stronger evidence than the call-count form it replaced, not just better scoped.
@@ -412,7 +412,7 @@ async function main() {
   record('s4-dedupe', 'same instance twice — should dedupe (exactly 1 uploaded bundle, not 0 and not 2)', dedupeBundles.length === 1, `${dedupeBundles.length} uploaded bundle(s)`);
   // s4-storm runs LAST (deliberately) — see the note by the storm block at the bottom of this script.
 
-  // crashes
+  // Crashes
   sinceCheckpoint();
   newPageErrors();
   await click(page, 's5-uncaught', { wait: 0 });
@@ -420,7 +420,7 @@ async function main() {
   // `newPageErrors() > 0 || uncaughtCalls.some(isIssueCall)`, and `s5Uncaught` throws inside a
   // `setTimeout`, so Playwright's own `pageerror` event ALWAYS fires: the left disjunct was
   // tautologically true, short-circuited, and the SDK was never required to do anything at all. The
-  // page-error count is kept as reported DETAIL (it is a genuine positive control for the /
+  // page-error count is kept as reported DETAIL (it is a genuine positive control for the manual-telemetry and console
   // no-throw checks elsewhere), never as an alternative to the evidence.
   const uncaughtBundle = await waitForBundle(bySummary('S5: uncaught exception outside any try/catch'));
   const uncaughtPageErrors = newPageErrors();
@@ -428,7 +428,7 @@ async function main() {
   await click(page, 's5-rejection', { wait: 0 });
   record('s5-rejection', 'unhandled promise rejection — its own bundle reaches the wire', (await waitForBundle(bySummary('S5: unhandled promise rejection'))) !== undefined);
 
-  // console
+  // Console
   newPageErrors();
   for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
     await click(page, `s6-${m}`, { wait: 100 });
@@ -436,7 +436,7 @@ async function main() {
   await click(page, 's6-circular');
   record('s6-console', 'console.* incl. multi-arg + circular object (no throw from the interceptor)', newPageErrors() === 0);
 
-  // network — one real assertion per control (reading the exact body the app read off `s7-status`),
+  // Network — one real assertion per control (reading the exact body the app read off `s7-status`),
   // not one decorative assertion covering all eleven.
   await click(page, 's7-get');
   let s7Text = await page.locator('[data-testid="s7-status"]').textContent();
@@ -533,7 +533,7 @@ async function main() {
   // alone. Everything asserted below was already sitting unzipped in the SAME probe bundle the checks
   // above read; none of it costs an extra report or an extra request.
 
-  // at wire depth. `launch(FULL_LAUNCH_OPTIONS)` was asserted only by `isLaunched()` being true — the
+  // Launch at wire depth. `launch(FULL_LAUNCH_OPTIONS)` was asserted only by `isLaunched()` being true — the
   // options themselves are echoed back in `environment.sdk.options` under their canonical
   // `com:bugsee:option:*` identifiers (the dotted names sent colon-separated, since the server treats
   // dots as nesting). The three NUMERIC ones are what make this check bite: they carry this sample's
@@ -567,7 +567,7 @@ async function main() {
       probeRequest?.environment?.sdk?.type === 'javascript',
     JSON.stringify({ app: probeRequest?.environment?.app, sdk: { version: probeRequest?.environment?.sdk?.version, type: probeRequest?.environment?.sdk?.type } }),
   );
-  // at wire depth: `s2-set-user-id` asserted only that the SDK's own GETTER echoed the value back,
+  // Identity at wire depth: `s2-set-user-id` asserted only that the SDK's own GETTER echoed the value back,
   // which a client that stored it and never sent it would pass. It travels as `request.json.email`.
   //
   // The expected value is the SAMPLE's identifier, not the one the block set: the relaunch controls
@@ -580,7 +580,7 @@ async function main() {
     probeRequest?.email === 'sample-user@bugsee.dev',
     JSON.stringify({ email: probeRequest?.email ?? null }),
   );
-  // at wire depth: the breadcrumbs file was read by exactly one check (the redaction check), so the
+  // Breadcrumbs at wire depth: the breadcrumbs file was read by exactly one check (the redaction check), so the
   // every-field crumb this run adds was never actually verified to survive the trip. Asserted field by
   // field — a crumb that arrived with only its message would otherwise read as a pass.
   const everyFieldCrumb = probeBundle?.bundle?.breadcrumbs?.find((c) => c.message === 'S3: addBreadcrumb every field');
@@ -692,7 +692,7 @@ async function main() {
       wsEntries.some((n) => n.type === 'message' && n.direction === 'in'),
     `${wsEntries.length} ws entries: ${JSON.stringify(wsEntries.map((n) => `${n.type}/${n.direction ?? '-'}`))}`,
   );
-  // SSE, mirroring the WebSocket check above. the SSE control is verified locally (the app's own "event #5"
+  // SSE, mirroring the WebSocket check above. The SSE control is verified locally (the app's own "event #5"
   // status line) and nothing over-claimed — but the probe bundle DOES carry `mechanism: "sse"` entries,
   // so a total loss of EventSource capture was invisible at this depth. It no longer is.
   //
@@ -856,7 +856,7 @@ async function main() {
     JSON.stringify({ body: noTypeEntry?.custom?.body, no_body_reason: noTypeEntry?.custom?.no_body_reason }),
   );
 
-  // filters
+  // Filters
   await click(page, 's8-install');
   sinceCheckpoint();
   await click(page, 's8-network', { wait: 500 });
@@ -912,8 +912,8 @@ async function main() {
   // required argument. This check was the one place that rule was missing. Measured on a
   // real mutate bundle, `/api/scenario/echo` produces BOTH of these and the url+body predicate alone
   // matched both:
-  // [before] headers:["Content-Type","traceparent","tracestate"] body:'{"ssn":"[REDACTED]","note":": …"}'
-  // [complete] override:true, headers:[RESPONSE headers] body:'{"received":{"ssn":"[REDACTED]","note":": …"}}'
+  //   [before]   headers:["Content-Type","traceparent","tracestate"]  body:'{"ssn":"[REDACTED]","note":"S8: …"}'
+  //   [complete] override:true, headers:[RESPONSE headers]            body:'{"received":{"ssn":"[REDACTED]","note":"S8: …"}}'
   // The header half is what makes that fatal: `!('x-secret' in headers)` on the `complete` entry reads the
   // RESPONSE headers (access-control-allow-origin, content-type, date, …), which never carried `x-secret`
   // at all — so "the UPLOADED bundle has the x-secret header dropped" would be satisfied by an entry that
@@ -990,7 +990,7 @@ async function main() {
 
   await click(page, 's8-uninstall');
 
-  // performance
+  // Performance
   newPageErrors();
   await click(page, 's9-manual-transaction', { wait: 400 });
   record('s9-manual-transaction', 'manual transaction + every SpanStatus child span (no throw)', newPageErrors() === 0);
@@ -1023,7 +1023,7 @@ async function main() {
     `${sampledOneNames.length} transactions reached the wire in this window`,
   );
 
-  // outbound trace propagation (no two-hop counterpart needed; only the trace_id JOIN would need
+  // Outbound trace propagation (no two-hop counterpart needed; only the trace_id JOIN would need
   // one). Verified locally via the purpose-built /api/scenario/echo-headers endpoint.
   await click(page, 's10-propagation');
   const s10StatusText = await page.locator('[data-testid="s10-status"]').textContent();
@@ -1059,7 +1059,7 @@ async function main() {
     s10ExcludeText ?? '',
   );
 
-  // session replay
+  // Session replay
   newPageErrors();
   // NOTE the wording: `replay: true` no longer TURNS ON anything — recording is the default now, and this
   // row only says the explicit form is still accepted and selects the fail-closed masking defaults. What
@@ -1162,7 +1162,7 @@ async function main() {
   //
   //  PRESENT (the recorder was live, on THAT screen, capturing both text and input events at the moment
   //           the secrets were not captured):
-  // -PLAIN-TEXT-CONTROL — an un-marked text node in the same drawer. It is only recordable
+  //    S11-PLAIN-TEXT-CONTROL   — an un-marked text node in the same drawer. It is only recordable
   //                               because this session runs `maskAllText: false`; with the fail-closed
   //                               default ON, every text absence below would be true for free and the
   //                               two text selectors would be untestable.
@@ -1197,7 +1197,7 @@ async function main() {
   // This is a known SDK defect, and this check does NOT pin it. `.bugsee-unmask` is honoured only on the
   // FULL-SNAPSHOT path — rrweb's live input observer is never handed `unmaskInputSelector` and masks
   // purely off `maskInputOptions` — so a value TYPED during recording is masked regardless of the mark,
-  // and ` -UNMASKED-INPUT-VALUE` does not appear in the decoded stream today.
+  // and `S11-UNMASKED-INPUT-VALUE` does not appear in the decoded stream today.
   //
   // Asserting that absence, plus the 24-star run, as facts, would pin
   // the DEFECT: the day the fork honours the mark on the incremental path, a check literally titled
@@ -1395,7 +1395,7 @@ async function main() {
   // Debug affordance (same shape as DEBUG_S12 below): dump every bundle summary the tee has recorded so
   // far. Used when writing/maintaining the bundle-summary-scoped checks above — those match on the exact
   // `request.json.summary` string the SDK actually writes, and this is how you find out what that is
-  // without guessing. Runs before the storm, which floods the tee with 100+ identical `: storm N`
+  // without guessing. Runs before the storm, which floods the tee with 100+ identical `S4: storm N`
   // entries.
   if (process.env.DEBUG_BUNDLES) {
     const dumped = await page.evaluate(() => window.__bugseeTee?.getCapturedBundles() ?? []);
@@ -1403,7 +1403,7 @@ async function main() {
     for (const b of dumped) console.log(JSON.stringify(b.bundle?.request?.summary ?? null));
   }
 
-  // storm — deliberately last (before the final flush/ probe): 200 logException calls in ~1s
+  // Storm — deliberately last (before the final flush and persistence probe): 200 logException calls in ~1s
   // must rate-limit rather than drop the app, and stay responsive.
   //
   // BUDGET, DERIVED FROM THE WORK REQUESTED — not an arbitrary constant. Two stacked fixed waits
@@ -1416,12 +1416,12 @@ async function main() {
   // was in this script's budget, not in the SDK.
   //
   // So the budget is computed from what the storm ASKS the SDK to do, the way samples/fastify-api's
-  // .dedupe budget is derived from its route's requested work rather than left on a flat default:
+  // The dedupe route's budget is derived from its route's requested work rather than left on a flat default:
   //   * `STORM_ATTEMPTS`      — the literal loop count in ScenarioPage.svelte's `s4Storm`.
   //   * `STORM_ADMIT_CEILING` — the most the capture rate limiter can let through (~100 reports / 60s). The admitted count is what actually has to
   //                             DRAIN, and it can never exceed this.
   //   * `PER_REPORT_BUDGET_MS`— per-admitted-report drain cost. Each admitted report is two serial
-  // round trips to real staging (POST /v2/issues, then the signed PUT),
+  //                             round trips to real staging (POST /v2/issues, then the signed PUT),
   //                             pipelined across reports. MEASURED on this sample across ELEVEN runs
   //                             against real staging: 827, 828, 865, 831, 845, 836, 839, 845, 798,
   //                             837, 787 ms/report (worst 865). Set to 1750, ~2x that worst — headroom for

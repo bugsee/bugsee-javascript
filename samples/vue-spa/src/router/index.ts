@@ -23,7 +23,7 @@ const router = createRouter({
   ],
 });
 
-// @bugsee/vue router naming (route naming + the vue-spa "beyond the catalog" item): every navigation
+// @bugsee/vue router naming (route naming plus the vue-spa extras): every navigation
 // transaction gets refined from the raw URL to the matched route PATTERN — `/recipes/:id`, never
 // `/recipes/tomato-basil-soup`. Call once, here, right after createRouter().
 instrumentVueRouter(router);

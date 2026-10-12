@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
 
-// @bugsee/remix ships a per-runtime entry split so no runtime's code leaks into another's graph
+// @bugsee/remix ships a per-runtime entry split so no runtime's code leaks into another's graph:
 // `index` (portable — the handleError bridge, used in
 // entry.server on node OR edge) + `server` (node-only composition) + `client` (browser-only: browser
 // launch + @bugsee/react, imported from entry.client.tsx).

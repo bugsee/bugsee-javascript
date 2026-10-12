@@ -612,7 +612,7 @@ async function main() {
   await click(page, 's3-breadcrumb');
   record('s3-breadcrumb', 'addBreadcrumb() — every field, no throw', newPageErrors() === 0);
 
-  // exceptions
+  // Exceptions
   sinceCheckpoint();
   await click(page, 's4-error', { wait: 0 });
   record('s4-error', 'logException(new Error)', (await waitForCalls(isIssueCall)).some((c) => isIssueCall(c) && c.ok));
@@ -638,9 +638,9 @@ async function main() {
   await click(page, 's1-flush', { wait: 1500 });
   const s1flushCleanStatus = await statusText('s1-flush');
   record('s1-flush-clean', 'flush(5000) drains pending uploads under normal load', Boolean(s1flushCleanStatus?.includes('flush() -> true')), s1flushCleanStatus ?? '');
-  // s4-storm (200 logException calls) is run LAST — see the note by the -storm block below.
+  // s4-storm (200 logException calls) is run LAST — see the note by the storm block below.
 
-  // crashes
+  // Crashes
   sinceCheckpoint();
   await click(page, 's5-uncaught', { wait: 0 });
   const uncaughtCalls = await waitForCalls(isIssueCall);
@@ -648,7 +648,7 @@ async function main() {
   await click(page, 's5-rejection', { wait: 0 });
   record('s5-rejection', 'unhandled promise rejection', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
-  // console
+  // Console
   newPageErrors();
   for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
     await click(page, `s6-${m}`, { wait: 120 });
@@ -656,7 +656,7 @@ async function main() {
   await click(page, 's6-circular');
   record('s6-console', 'console.* incl. multi-arg + circular object, no throw (esp. the circular reference)', newPageErrors() === 0);
 
-  // network — reads back the app's OWN status line after each call, so this also proves the
+  // Network — reads back the app's OWN status line after each call, so this also proves the
   // "interceptors don't alter app behaviour" binding principle (the app read the real response).
   newPageErrors();
   await click(page, 's7-get');
@@ -703,7 +703,7 @@ async function main() {
 
   // `navigator.sendBeacon` — a transport `@bugsee/capture` has a dedicated interceptor for
   // (`send-beacon-interceptor.ts`, wired into `installNetworkCapture`) and that this sample called
-  // NOWHERE, so it had zero coverage while claimed to sweep the network umbrella.
+  // NOWHERE, so it had zero coverage while the scenario claimed to sweep the network umbrella.
   //
   // A beacon has no response to read back, so the LOCAL half asserts the UA's own booleans (derived
   // from sendBeacon's return value, not an unconditionally-printed string). The wire half asserts the
@@ -843,7 +843,7 @@ async function main() {
   // own upload and assert the bundle" — no S8 row used it, even though the machinery
   // (uploadedBundles) is shared with S11. This check reads `network.json` OUT of the bundle
   // the s8-report-mutate report uploaded and asserts, on the real uploaded bytes:
-  // POSITIVE CONTROL — network.json exists, is non-empty, and carries the traffic at all (without
+  //   POSITIVE CONTROL — network.json exists, is non-empty, and carries the traffic at all (without
   //   this the three absence terms below would pass on an empty file);
   //   the vetoed URL (`veto-me`) is ABSENT — the SDK really honoured the filter's `null`;
   //   the redacted body field and the dropped secret header are ABSENT, and the filter's replacement
@@ -899,7 +899,7 @@ async function main() {
 
   await click(page, 's8-uninstall');
 
-  // performance
+  // Performance
   sinceCheckpoint();
   // WIRE, not the status line: `finished OK` is printed unconditionally by the click handler
   // (ScenarioPage.tsx's control), so matching on it proved only that the handler ran to its last
@@ -1239,7 +1239,7 @@ async function main() {
 
   // S12 — deliberately run BEFORE the S4 storm (the double-upload defect): the storm is designed to
   // exceed the capture rate limiter's ~100/60s budget, so running it FIRST starves the very recovery
-  // this check exists to confirm (a real isolated run produced ZERO /v2/issues calls for when the
+  // this check exists to confirm (a real isolated run produced ZERO /v2/issues calls for the persistence scenario when the
   // storm ran first).
   //
   // The expected count is TWO, asserted exactly. The double-upload defect is NOT a nondeterministic race:
@@ -1260,7 +1260,7 @@ async function main() {
   // against an SDK where the defect had actually been FIXED (1 real S12 upload + 1 contaminant = 2).
   // The drain is what keeps S12's own count clean: wait for bugsee traffic to go fully quiet AFTER the
   // relaunch (so arm-global's own report AND anything the relaunch recovered from it are already counted
-  // and discarded here) and only then open 's window. This is NOT hypothetical — the drain measured
+  // and discarded here) and only then open the persistence scenario's window. This is NOT hypothetical — the drain measured
   // FOUR issue calls on this sample, i.e. arm-global really does leave recoverable work behind. The
   // drained count is printed in the detail below so it stays visible rather than silent.
   const preS12Drain = (await waitForQuiet({ quietMs: 2500, timeout: 20_000 })).filter(isIssueCall);
@@ -1278,7 +1278,7 @@ async function main() {
     `isLaunched() after reload -> ${relaunchedText}; ${recoveryCalls.length} /v2/issues call(s) recovered this incident; ${preS12Drain.length} pre-window issue call(s) drained before opening it (arm-global's own report plus whatever the following relaunch recovered from it — measured 4 on this sample, which is exactly why this drain exists: without it those calls could land inside S12's window and hold the "=== 2" pin green against a FIXED SDK)`,
   );
 
-  // storm — run AFTER (see above), not before it. 200 logException calls in ~1s must
+  // Storm — run AFTER the persistence scenario (see above), not before it. 200 logException calls in ~1s must
   // rate-limit rather than drop the app; its rate-limit window lingering afterward is fine since
   // nothing that still needs the capture budget runs after it.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
@@ -1355,7 +1355,7 @@ async function main() {
       }
       // Retry only while the POSITIVE CONTROL has not landed yet (backend processing lag). Once it has,
       // the window has demonstrably been indexed, so a still-absent veto message is a real absence.
-      // The grace period is really the sweep itself: this query runs at the END, ~150 s after the
+      // The grace period is really the sweep itself: this query runs at the END, ~150 s after the S8
       // block, and the veto click is only ~1 s after the mutate click it is compared against — so a
       // backend that has indexed the mutate report has had 150 s to index anything from 1 s later. The
       // retry loop only matters when staging is unusually slow.

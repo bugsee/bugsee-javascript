@@ -5,7 +5,7 @@
 //
 // Ingesting a metric whose value crosses ALERT_THRESHOLD makes a REAL outbound call to the third-party
 // alert webhook (src/third-party.ts) — this is what exercises network capture and
-// (distributed tracing) as a side effect of genuine application behaviour, not a synthetic scenario
+// distributed tracing as a side effect of genuine application behaviour, not a synthetic scenario
 // route.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireBearerAuth } from '../auth';

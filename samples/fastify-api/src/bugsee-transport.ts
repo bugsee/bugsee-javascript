@@ -202,7 +202,7 @@ function parseBundle(body: Uint8Array): ParsedBundleSummary | undefined {
 //    as `{ status: 3xx, body: <the redirect body> }` and is handed to core verbatim. That difference
 //    is not cosmetic: `packages/core/src/bundle-uploader.ts:42-45` maps any non-2xx below 500 to
 //    `{ ok:false, retryable:false }`, so under the REAL transport a 3xx from the collector — or a
-// region-redirecting S3 presigned PUT — is a PERMANENT, non-retryable upload failure, while a
+//    region-redirecting S3 presigned PUT — is a PERMANENT, non-retryable upload failure, while a
 //    following tee would quietly turn the same response into a success and hide the bug this sample
 //    exists to catch. `redirect: 'manual'` is therefore set explicitly: undici then resolves the 3xx
 //    itself, status and all, matching `http.request`. (Not observed against staging — no hop in this

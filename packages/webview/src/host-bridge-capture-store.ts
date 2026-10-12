@@ -22,7 +22,7 @@ export interface HostBridgeCaptureStoreOptions {
   seq?: () => number;
   /** Whether capture forwarding is paused (native pause/resume — backgrounded WebView). Default never. */
   paused?: () => boolean;
-  /** redaction provenance: did a JS-side filter run on an entry of this type? Stamped as `red`. Default no. */
+  /** Redaction provenance: did a JS-side filter run on an entry of this type? Stamped as `red`. Default no. */
   redactedFor?: (type: FileType) => boolean;
 }
 
@@ -33,7 +33,7 @@ export function createHostBridgeCaptureStore(opts: HostBridgeCaptureStoreOptions
   const { bridge } = opts;
   return createStreamingCaptureStore({
     post: (raw) => bridge.post(raw),
-    // provenance (`redacted`) is carried through by the core store per the injected redactedFor.
+    // Provenance (`redacted`) is carried through by the core store per the injected redactedFor.
     encodeEntry: (e) => encode(entryMessage(e)),
     now: opts.now,
     timeOrigin: opts.timeOrigin,

@@ -2,7 +2,7 @@
 // types) is imported from @bugsee/fastify itself — see packages/fastify/src/index.ts — so this file
 // never imports @bugsee/bugsee directly. The one exception is @bugsee/node, added as a direct
 // dependency purely to reach RequestContextStoreToken for the per-request-attribute concurrency
-// scenario (+ the framework-adapter concurrency contract) — @bugsee/fastify does not re-export that
+// scenario (and the framework-adapter concurrency contract) — @bugsee/fastify does not re-export that
 // token.
 import { type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 import { type Bugsee, launch } from '@bugsee/fastify';
@@ -66,7 +66,7 @@ export function launchPrimary(): Bugsee {
     captureWriter: 'inline',
     recover: true,
 
-    // Distributed tracing (+ the outbound-call scenarios).
+    // Distributed tracing (and the outbound-call scenarios).
     propagateTrace: true,
     tracePropagationTargets: [`127.0.0.1:${process.env.THIRD_PARTY_PORT ?? '5405'}`], // narrow on purpose: see verify.ts's exclude control
     traceResponse: { serverTiming: true, traceresponse: true, exposeTraceresponse: true },

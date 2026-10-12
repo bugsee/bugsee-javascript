@@ -40,8 +40,8 @@ function expectOk(status: number, expected: number | number[]): boolean {
  * staging, not a mock.
  *
  * A route that asks the SDK to do timed work must be given MORE than the time it asks for — see the
- * `timeoutMs` override at the .flush call site. This used to be a flat 10s for every route while
- * .flush requested a 15s flush, so the client aborted five seconds before the server could
+ * `timeoutMs` override at the flush call site. This used to be a flat 10s for every route while
+ * the flush route requested a 15s flush, so the client aborted five seconds before the server could
  * legitimately answer, and the resulting failure was indistinguishable from a real flush defect.
  */
 const DEFAULT_HIT_TIMEOUT_MS = 10_000;
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     await hit('S4.cause', 'POST', '/scenarios/s4/cause');
     await hit('S4.options', 'POST', '/scenarios/s4/options');
     await hit('S4.dedupe', 'POST', '/scenarios/s4/dedupe');
-    // .storm runs LAST — see below. It fires 200 exceptions at once and the SDK's capture rate
+    // The storm scenario runs LAST — see below. It fires 200 exceptions at once and the SDK's capture rate
     // limiter admits 100 per 60s, by design, so a storm in the MIDDLE of the sweep spends the whole
     // window's budget and starves every scenario that follows it. That is the SDK protecting itself
     // correctly; it was this harness measuring inside a window it had already spent.
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
       ok: concurrencyOk,
     });
 
-    // ---- storm, last: it deliberately spends the rate-limit window (see above) ----
+    // ---- Storm, last: it deliberately spends the rate-limit window (see above) ----
     await hit('S4.storm', 'POST', '/scenarios/s4/storm');
 
     // ---- flush + let the async pipeline drain ----

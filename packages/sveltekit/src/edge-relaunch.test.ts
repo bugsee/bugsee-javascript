@@ -52,7 +52,7 @@ describe('@bugsee/sveltekit/edge relaunch', () => {
     expect(getStatus(carrier)).toBe(BugseeStatus.Launched);
   });
 
-  // R4H-4: the install-time seam is the DEFAULT for a plain `relaunch()` (an explicit argument still wins).
+  // The install-time seam is the DEFAULT for a plain `relaunch()` (an explicit argument still wins).
   it('a plain relaunch() re-runs the custom launch the entry was INSTALLED with', async () => {
     const carrier = {};
     const custom = vi.fn((token: string, options: Parameters<typeof launchEdge>[1]) => {

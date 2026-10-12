@@ -10,7 +10,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).toContain(MEDIA_SELECTOR); // blockAllMedia
   });
 
-  it('wires the.bugsee-unmask /.bugsee-show opt-out selectors', () => {
+  it('wires the .bugsee-unmask / .bugsee-show opt-out selectors', () => {
     const m = resolveReplayMaskingOptions();
     expect(m.unmaskTextSelector).toContain('.bugsee-unmask');
     expect(m.unmaskInputSelector).toContain('.bugsee-unmask');
@@ -137,7 +137,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).toContain('[data-bugsee-block]');
   });
 
-  it('blocks ALL canvas when blockAllCanvas is set (strict opt-in-per-canvas via.bugsee-show)', () => {
+  it('blocks ALL canvas when blockAllCanvas is set (strict opt-in-per-canvas via .bugsee-show)', () => {
     const m = resolveReplayMaskingOptions({ blockAllCanvas: true });
     expect(m.blockSelector).toContain(CANVAS_SELECTOR); // 'canvas' added to the block set
     expect(m.unblockSelector).toContain('.bugsee-show'); // opted-in canvases un-block via the existing selector

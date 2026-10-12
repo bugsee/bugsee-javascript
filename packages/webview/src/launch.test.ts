@@ -622,7 +622,7 @@ describe('launch (webview)', () => {
         expect(errors.some((e) => /not delivered|no native bridge/i.test(String(e)))).toBe(true);
       });
 
-      // (a): a blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
+      // A blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
       // native must still be told, and after `hello` (a receiver has no session to attach it to before that).
       it('a carried blackout is posted to native right after hello', () => {
         const carrier = {};
@@ -663,7 +663,7 @@ describe('launch (webview)', () => {
         expect(errors.filter((e) => /blackout/i.test(String(e)))).toEqual([]);
       });
 
-      // (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
+      // The "native has not declared support" warning is judged AFTER native had a chance to answer
       // the handshake, not at the instant of the (launch-time) announcement.
       it('a carried blackout does not warn before the control reply, nor after a reply declaring support', () => {
         const carrier = {};
@@ -929,7 +929,7 @@ describe('launch (webview)', () => {
       'SpiderMonkey (Firefox)',
       'applicationCode@https://app.example.com/main.js:12:30\nasync*go@https://app.example.com/main.js:20:11',
     ],
-  ])('crash.json frames are parsed from a %s stack, not left empty (R3P-1)', async (_engine, stack) => {
+  ])('crash.json frames are parsed from a %s stack, not left empty', async (_engine, stack) => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));
     const error = new Error('non-v8-stack');
@@ -1963,14 +1963,14 @@ describe('sub-frame obscuring failures never escape launch()', () => {
   });
 });
 
-// WAVE 0.3 / — the control global's BINDING is closed, not just its object.
+// The control global's BINDING is closed, not just its object.
 //
-// (b): `global.__bugsee_bridge = Object.freeze({…})` froze the OBJECT while leaving the BINDING
+// `global.__bugsee_bridge = Object.freeze({…})` froze the OBJECT while leaving the BINDING
 // `{writable:true, configurable:true}`. A page script replaced the whole binding with
 // `{control(){}, snapshot(){return '[]'}}`; native's frame-capture pull then returned no rects while real
 // secure areas existed, so password / cc-* fields rendered legibly in the captured video — and native had
 // already stood its own masking script down, because declaring the `obscuring` capability is what tells it
-// to. (a) is the same binding used the other way: any script could call `control('{…"command":
+// to. The same binding can be used the other way: any script could call `control('{…"command":
 // "stop"}')` and tear the SDK down silently.
 //
 // Closing the binding needs NO protocol change, which is why it ships ahead of the token work.
@@ -2027,7 +2027,7 @@ describe('the __bugsee_bridge binding is not replaceable', () => {
     // A non-configurable binding cannot be deleted, so teardown switches the object to an inert state and a
     // later launch reuses the same binding. `'[]'` is the right inert snapshot: native pulls it at
     // frame-capture time, and returning nothing would throw into evaluateJavascript — the fail-open shape
-    // already fixed once as.
+    // already fixed once.
     const fake = fakeGlobal();
     const carrier = {};
     // A document WITH a secure element, so "inert" is distinguishable from "nothing to report". Without it
@@ -2065,7 +2065,7 @@ describe('the __bugsee_bridge binding is not replaceable', () => {
   });
 });
 
-// WAVE 0.3 / +, end to end through the real launch: the token is published on `hello`, and once
+// End to end through the real launch: the token is published on `hello`, and once
 // native proves it knows it, the page can no longer drive the SDK. The unit tests in
 // host-bridge-control.test.ts cover the state machine; these assert the WIRING, which is what a page script
 // actually meets.
@@ -2125,7 +2125,7 @@ describe('the control channel authenticates end to end', () => {
   });
 
   it('mints a token with CSPRNG shape, not a guessable one', () => {
-    // SEV1: the only assertions here were "non-empty string" and "different per launch", both of
+    // The only assertions here were "non-empty string" and "different per launch", both of
     // which a module-level counter (`bugsee-1`, `bugsee-2`, …) satisfies. Nothing stands between the page
     // and the control channel except the token being unguessable, and `admits` has no attempt limit — so
     // the FORMAT is pinned, and control-token.test.ts pins the source of the bytes.
@@ -2135,7 +2135,7 @@ describe('the control channel authenticates end to end', () => {
   });
 
   it('withholds the token when no native sink is attached yet', () => {
-    // SEV1: with no sink, `hello` goes into the host bridge's backlog and is delivered to
+    // With no sink, `hello` goes into the host bridge's backlog and is delivered to
     // whichever sink turns up later — which can be a page script. Publishing the token there would hand
     // the attacker an authenticated channel AND let it arm the latch, locking real native out.
     const global: {
@@ -2244,7 +2244,7 @@ describe('the control global when the page got there first', () => {
   });
 });
 
-// WAVE 0.3 — three defects in the same seam: the slot, the latch, and teardown.
+// Three defects in the same seam: the slot, the latch, and teardown.
 describe('the control surface fails closed and cannot be reset by the page', () => {
   const preOwn = (global: object): void => {
     Object.defineProperty(global, '__bugsee_bridge', {
@@ -2283,7 +2283,7 @@ describe('the control surface fails closed and cannot be reset by the page', () 
   });
 
   it('a stale stop() does not kill a NEWER session', () => {
-    // SEV2: the slot is shared per-global, and stop reverted it with no ownership check. A framework
+    // The slot is shared per-global, and stop reverted it with no ownership check. A framework
     // that unmounts late (or a plain double-stop) therefore made the LIVE session's control dead and
     // posted a spurious `bye` while capture was still flowing.
     const fake = fakeGlobal();
@@ -2445,11 +2445,11 @@ describe('the control surface fails closed and cannot be reset by the page', () 
 //  - N hellos per WebView. The protocol is ONE session per WebView, so N frames announcing themselves is
 //    N sessions' worth of handshakes for one. (The sharper version of this — whichever frame's hello
 //    native LATCHED decided the retained token and the obscuring capability — is gone: native retains
-// nothing from a hello and mints its own secret, and `caps` decides nothing.)
+//    nothing from a hello and mints its own secret, and `caps` decides nothing.)
 //  - A sub-frame can never RECEIVE control: `evaluateJavascript` targets the top frame, so a sub-frame
 //    that opened a session cannot be paused, flushed or stopped.
 //  - Each frame keeps its own `seq` counter from 0, so entries from different frames collide in ordering.
-// D9 exists to keep Bugsee OUT of third-party content (66). Running full capture in
+//  - The design keeps Bugsee OUT of third-party content: running full capture in
 //    every injected frame is the opposite of that.
 describe('a sub-frame contributes obscuring only (document-start step 1)', () => {
   /** A window that reports itself as a SUB-frame (top is some other window). */
@@ -2540,7 +2540,7 @@ describe('a sub-frame contributes obscuring only (document-start step 1)', () =>
 // The whole point of a sub-frame running the composer: its secure views must still reach native. The
 // composer unit tests cover the re-mapping arithmetic; NOTHING covered the chain through `launch()`, which
 // is exactly the path the sub-frame change touched. This closes that.
-describe('secure views from a SUB-frame still reach native (chain, through launch)', () => {
+describe('secure views from a SUB-frame still reach native (the frame chain, through launch)', () => {
   /** A document with one secure input of its own AND one <iframe> whose contentWindow is `childWin`. */
   const topDocument = (childWin: object) => {
     const iframe = {
@@ -2618,7 +2618,7 @@ describe('secure views from a SUB-frame still reach native (chain, through launc
   });
 });
 
-describe('webview', () => {
+describe('webview launch lifecycle', () => {
   it('a stale stop() leaves a NEWER launch its carrier slot and its repeat-launch handle', async () => {
     const fake = fakeGlobal();
     const carrier = {};

@@ -197,7 +197,7 @@ async function main() {
   const dupStatus = await page.locator('[data-testid="s1-duplicate-launch"]').locator('xpath=following-sibling::p').first().textContent();
   record('s1-duplicate-launch', 'second launch() on the same carrier is ignored', Boolean(dupStatus?.includes('true')), dupStatus ?? '');
 
-  // manual telemetry
+  // Manual telemetry
   for (const level of ['error', 'warning', 'info', 'debug', 'verbose']) {
     await click(page, `s3-log-${level}`, { wait: 150 });
   }
@@ -210,7 +210,7 @@ async function main() {
   await click(page, 's3-breadcrumb');
   record('s3-breadcrumb', 'addBreadcrumb() — every field', true);
 
-  // exceptions
+  // Exceptions
   sinceCheckpoint();
   // The first report since the relaunch also creates the session, so it is the slowest of the group —
   // which is precisely why waiting for the evidence beats guessing a window for it.
@@ -236,7 +236,7 @@ async function main() {
   // stack intermittently produced no issue call for ~10-15s after the storm — not a real bug, just this
   // script's own scenarios competing for the same rate-limit budget).
 
-  // crashes
+  // Crashes
   sinceCheckpoint();
   await click(page, 's5-uncaught', { wait: 0 });
   const uncaughtCalls = await waitForCalls(isIssueCall);
@@ -244,14 +244,14 @@ async function main() {
   await click(page, 's5-rejection', { wait: 0 });
   record('s5-rejection', 'unhandled promise rejection', (await waitForCalls(isIssueCall)).some(isIssueCall));
 
-  // console
+  // Console
   for (const m of ['log', 'info', 'warn', 'error', 'debug', 'trace']) {
     await click(page, `s6-${m}`, { wait: 120 });
   }
   await click(page, 's6-circular');
   record('s6-console', 'console.* incl. multi-arg + circular object', true);
 
-  // network
+  // Network
   await click(page, 's7-get');
   await click(page, 's7-post-json');
   await click(page, 's7-post-text');
@@ -264,7 +264,7 @@ async function main() {
   await click(page, 's7-sse', { wait: 1500 });
   record('s7-network', 'fetch/XHR/SSE GET/POST/4xx/5xx/connfail/large-body/no-content-type', true);
 
-  // filters
+  // Filters
   await click(page, 's8-install');
   sinceCheckpoint();
   await click(page, 's8-network', { wait: 500 });
@@ -277,7 +277,7 @@ async function main() {
   record('s8-filters', 'network/log/breadcrumb/report before-mutate/before-veto', true, `${filterCalls.length} issue calls while filters installed (veto should reduce this)`);
   await click(page, 's8-uninstall');
 
-  // performance
+  // Performance
   sinceCheckpoint();
   await click(page, 's9-manual-transaction', { wait: 400 });
   record('s9-manual-transaction', 'manual transaction + every SpanStatus child span', true);
@@ -325,7 +325,7 @@ async function main() {
   await page.goto(`${BASE}/board/board-1`, { waitUntil: 'networkidle' });
   record('react-router-navigation', 'data-router navigation to /board/:id', page.url().includes('/board/board-1'));
 
-  // session replay — each control relaunches the SDK (fresh carrier) with a different replay option
+  // Session replay — each control relaunches the SDK (fresh carrier) with a different replay option
   // set. No throw is the LOCAL-level bar; MCP cannot show replay contents (documented gap).
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   newPageErrors(); // reset the checkpoint
@@ -366,7 +366,7 @@ async function main() {
     `bugsee's fallback shown=${globalFallback === 1}, react-router's own fallback shown=${reactRouterOwnFallback === 1}, issue calls in window=${globalReportCalls.length} (diagnostic only)`,
   );
 
-  // storm — deliberately last (see the note by s4-dedupe above): 200 logException calls in ~1s must
+  // Storm — deliberately last (see the note by s4-dedupe above): 200 logException calls in ~1s must
   // rate-limit rather than drop the app, and its rate-limit window lingering afterward no longer affects
   // any other check since nothing follows it but flush + the reload.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });

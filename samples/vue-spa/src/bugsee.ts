@@ -12,7 +12,7 @@ const params = new URLSearchParams(window.location.search);
 const perfSampleRateParam = params.get('perf');
 const performanceSampleRate =
   perfSampleRateParam === '0' ? 0 : perfSampleRateParam === '1' ? 1 : undefined;
-// `?minimal=1` exercises the "launch with the minimum options" leg of — everything else in this file
+// `?minimal=1` exercises the "launch with the minimum options" leg of the launch scenario — everything else in this file
 // exercises "launch with every option set".
 const minimalLaunch = params.get('minimal') === '1';
 

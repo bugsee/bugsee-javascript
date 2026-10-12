@@ -232,7 +232,7 @@ function wire(): void {
   const q = <T extends HTMLElement = HTMLElement>(testid: string): T | null =>
     container!.querySelector<T>(`[data-testid="${testid}"]`);
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Launch & lifecycle -----------------------------------------------------------------------
   q('s1-flush')?.addEventListener('click', async () => {
     const ok = await getClient()?.flush(5000);
     setStatus('s1-flush', `flush -> ${String(ok)}`, ok === true);
@@ -252,7 +252,7 @@ function wire(): void {
     rerenderIsLaunched();
   });
   q('s1-stop')?.addEventListener('click', async () => {
-    // requires stop(timeout) exercised DIRECTLY, not only indirectly inside relaunch() (which calls
+    // The launch scenario requires stop(timeout) exercised DIRECTLY, not only indirectly inside relaunch() (which calls
     // it as an implementation detail of switching option sets).
     const stopped = await getClient()?.stop(2000);
     const launchedAfterStop = getClient()?.isLaunched();
@@ -267,7 +267,7 @@ function wire(): void {
     rerenderIsLaunched();
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Identity & attributes --------------------------------------------------------------------
   q('s2-set-user')?.addEventListener('click', () => {
     getClient()?.setUserIdentifier('scenario-panel-user@bugsee.dev');
     setStatus('s2-set-user', `getUserIdentifier() -> ${getClient()?.getUserIdentifier()}`);
@@ -368,7 +368,7 @@ function wire(): void {
     );
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Exceptions -------------------------------------------------------------------------------
   q('s4-error')?.addEventListener('click', () => {
     void getClient()
       ?.logException(new Error('S4: logException(new Error(...))'))
@@ -418,7 +418,7 @@ function wire(): void {
       // immediately — NOT a pacing/minimum-interval scheme). To
       // measure the cap EXACTLY (100 admitted / 100 refused out of 200), relaunch immediately before
       // firing so the window starts empty — a shared client would already have consumed some of its
-      // quota from earlier / / / logException calls in this same sweep.
+      // quota from earlier identity, exception, filter and persistence logException calls in this same sweep.
       await relaunch(FULL_LAUNCH_OPTIONS);
       rerenderIsLaunched();
       const c = getClient();
@@ -452,7 +452,7 @@ function wire(): void {
     })();
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Crashes ---------------------------------------------------------------------------------
   q('s5-uncaught')?.addEventListener('click', () => {
     setStatus('s5-uncaught', 'throwing outside any try/catch…');
     setTimeout(() => {
@@ -464,7 +464,7 @@ function wire(): void {
     void Promise.reject(new Error('S5: unhandled promise rejection'));
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Console capture -------------------------------------------------------------------------
   q('s6-console')?.addEventListener('click', () => {
     console.log('S6: console.log', { a: 1 });
     console.info('S6: console.info');
@@ -486,7 +486,7 @@ function wire(): void {
     setStatus('s6-circular', `console.log(circular) threw: ${threw}`, !threw);
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Network capture --------------------------------------------------------------------------
   q('s7-get')?.addEventListener('click', async () => {
     const res = await fetch('/api/scenario/text');
     const text = await res.text();
@@ -555,7 +555,7 @@ function wire(): void {
     ws.onmessage = (ev) => setStatus('s7-ws', `WS message: ${String(ev.data).slice(0, 60)}`);
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Filters & redaction ----------------------------------------------------------------------
   q('s8-install')?.addEventListener('click', () => {
     installFilters();
     setStatus('s8-network', 'filters installed');
@@ -595,7 +595,7 @@ function wire(): void {
       .then(() => setStatus('s8-report-veto', 'call returned (issue should NOT appear)'));
   });
 
-  // ---- -----------------------------------------------------------------------------------
+  // ---- Performance ------------------------------------------------------------------------------
   q('s9-manual-transaction')?.addEventListener('click', () => {
     // Every SDK call below is optional-chained (ext('performance') CAN legitimately be undefined —
     // e.g. if the extension failed to register), so the status must be derived from what the SDK
@@ -644,7 +644,7 @@ function wire(): void {
     setStatus('s9-sample-rate-1', `relaunched, isLaunched: ${String(getClient()?.isLaunched())}`, getClient()?.isLaunched() === true);
   });
 
-  // ---- ----------------------------------------------------------------------------------
+  // ---- Persistence & recovery -------------------------------------------------------------------
   q('s12-crash-and-reload')?.addEventListener('click', () => {
     // Real persist+recover (S12: "data captured before a hard termination still arrives on the
     // NEXT start"), not a control that AWAITED logException() (whose

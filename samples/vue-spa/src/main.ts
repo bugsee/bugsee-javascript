@@ -16,7 +16,7 @@ launchBugsee();
 
 const app = createApp(App);
 
-// The Vue error seam (+ the vue-spa "beyond the catalog" items): app.config.errorHandler catches
+// The Vue error seam (plus the vue-spa extras): app.config.errorHandler catches
 // render errors, lifecycle-hook errors, event-handler errors, watcher errors, and (unhandled) async
 // component/Suspense errors — see src/components/ErrorLab.vue for one trigger per surface.
 //

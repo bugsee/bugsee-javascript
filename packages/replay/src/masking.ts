@@ -1,4 +1,4 @@
-// @bugsee/replay — the fail-closed masking config (design D3 /). Maps Bugsee's
+// @bugsee/replay — the fail-closed masking config. Maps Bugsee's
 // privacy-first ReplayOptions onto rrweb's `record()` masking/blocking surface. Privacy is THE risk surface,
 // so this is a pure, exhaustively-tested function.
 //
@@ -8,8 +8,7 @@
 // conventions (`.bugsee-mask`/`[data-bugsee-mask]`, `.bugsee-block`, `.bugsee-ignore`) are additive to
 // rrweb's `rr-*` defaults.
 //
-// Wave 1.3/1.4 rewrote three things that made "fail-closed" untrue in practice
-// (/#2/#3, /#10/#11):
+// Three behaviours were rewritten because they made "fail-closed" untrue in practice:
 //
 //  1. THE SENSITIVE FLOOR IS ENFORCED IN THE SELECTOR, not in `maskInputOptions`. rrweb resolves an input's
 //     value as `unmaskInputSelector.matches(el) ? raw : maskInputValue(…)` — the un-mask check comes FIRST
@@ -57,7 +56,7 @@ const BUGSEE_IGNORE = '.bugsee-ignore,[data-bugsee-ignore]';
  * alone, because rrweb decides which API each selector goes through:
  *
  *   .bugsee-mask   → maskTextSelector      SUBTREE
- * bugsee-mask → maskAttributeFn SUBTREE (this file; it was element-only until)
+ *   .bugsee-mask   → maskAttributeFn       SUBTREE  (this file; it was element-only until a later fix)
  *   .bugsee-block  → blockSelector         SUBTREE
  *   .bugsee-unmask → unmaskTextSelector    SUBTREE
  *   .bugsee-unmask → unmaskInputSelector   ELEMENT ONLY  ← rrweb uses matches()
