@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import process from 'node:process';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
@@ -196,6 +197,15 @@ export interface BugseeLaunchOptions {
   unhandledRejections?: UnhandledRejectionMode;
   /** Capture request/response bodies (bounded read). Default true. */
   captureNetworkBodies?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true. A
+   * `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+  /** Capture breadcrumbs (`addBreadcrumb` and adapter-supplied ones). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
@@ -222,6 +232,12 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /** Report failed outbound HTTP exchanges (status >= 400, or no response) as `error` reports. Default false. */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with: `verylow | low | medium | high | critical | blocker`. Default `blocker`. */
+  reportDefaultCrashPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
   /** Detect main-thread/event-loop hangs and report them (Android BugseeDetectionHang). Default true. */
   detectHangs?: boolean;
   /**
@@ -792,6 +808,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   // and never goes through `logException`, so a client-configured enricher was skipped for every
   // uncaught crash — the one case local variables exist for.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc, enrichFrames));
+  // Failed outbound HTTP exchanges → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   if ((options.unhandledRejections ?? 'preserve') !== 'none') {
     client.addDetectionProvider(createUnhandledRejectionProvider(proc, enrichFrames));
   }

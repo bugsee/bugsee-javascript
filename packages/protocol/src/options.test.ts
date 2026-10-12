@@ -94,6 +94,19 @@ describe('BugseeOption canonical identifiers', () => {
     );
   });
 
+  // Added for mobile parity (T6): byte for byte Android's `Options.*` strings.
+  it('match the Android log-level, breadcrumb, http-error and default-priority identifiers', () => {
+    expect(BugseeOption.CaptureLogsLevel).toBe('com.bugsee.option.capture.logs.level');
+    expect(BugseeOption.CaptureBreadcrumbs).toBe('com.bugsee.option.capture.breadcrumbs');
+    expect(BugseeOption.DetectHttpErrors).toBe('com.bugsee.option.detect.http-errors');
+    expect(BugseeOption.ReportingDefaultCrashPriority).toBe(
+      'com.bugsee.option.reporting.defaults.crash-priority',
+    );
+    expect(BugseeOption.ReportingDefaultErrorPriority).toBe(
+      'com.bugsee.option.reporting.defaults.error-priority',
+    );
+  });
+
   it('are all namespaced under com.bugsee.option. and unique', () => {
     const keys = Object.values(BugseeOption);
     expect(keys.every((k) => k.startsWith('com.bugsee.option.'))).toBe(true);

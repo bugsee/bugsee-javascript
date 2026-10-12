@@ -77,4 +77,24 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   { friendly: 'captureSystemEvents', key: BugseeOption.CaptureSystemEvents, default: true },
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true },
   { friendly: 'maxRecordingTime', key: BugseeOption.Duration, default: 60 },
+  // Mobile-parity options (Android OptionsDescriptors). `captureBreadcrumbs` deliberately defaults to TRUE
+  // here although mobile defaults it to false — see docs/design/mobile-api-alignment.md, Kept differences.
+  { friendly: 'captureLogsLevel', key: BugseeOption.CaptureLogsLevel, default: 'verbose' },
+  { friendly: 'captureBreadcrumbs', key: BugseeOption.CaptureBreadcrumbs, default: true },
+  { friendly: 'detectHttpErrors', key: BugseeOption.DetectHttpErrors, default: false },
+  {
+    friendly: 'captureNetworkDefaultSanitizer',
+    key: BugseeOption.CaptureNetworkDefaultSanitizer,
+    default: true,
+  },
+  {
+    friendly: 'reportDefaultCrashPriority',
+    key: BugseeOption.ReportingDefaultCrashPriority,
+    default: 'blocker',
+  },
+  {
+    friendly: 'reportDefaultErrorPriority',
+    key: BugseeOption.ReportingDefaultErrorPriority,
+    default: 'high',
+  },
 ];

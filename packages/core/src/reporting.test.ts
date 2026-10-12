@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CrashJson } from './crash';
-import { createReportingRequest, type ReportingTriggerType } from './reporting';
+import {
+  createReportingRequest,
+  hasDefaultSeverity,
+  parseSeverityName,
+  type ReportingTriggerType,
+} from './reporting';
 
 describe('createReportingRequest', () => {
   it('carries the source and uses a given id for both request and report', () => {
@@ -71,6 +76,17 @@ describe('createReportingRequest', () => {
     expect(req.report.severity).toBe('medium');
   });
 
+  it('marks a report whose severity was derived (not given) so a configured default can replace it', () => {
+    const derived = createReportingRequest({ source: { type: 'crash' }, id: 'x' });
+    const explicit = createReportingRequest({
+      source: { type: 'crash' },
+      severity: 'blocker',
+      id: 'y',
+    });
+    expect(hasDefaultSeverity(derived.report)).toBe(true);
+    expect(hasDefaultSeverity(explicit.report)).toBe(false);
+  });
+
   it('passes through summary, description, email, labels and signatures', () => {
     const req = createReportingRequest({
       source: { type: 'code_upload' },
@@ -110,5 +126,19 @@ describe('createReportingRequest', () => {
   it('leaves the mechanism undefined when the source does not provide one', () => {
     const req = createReportingRequest({ source: { type: 'shake' }, id: 'x' });
     expect(req.source.mechanism).toBeUndefined();
+  });
+});
+
+describe('parseSeverityName', () => {
+  it.each(['verylow', 'low', 'medium', 'high', 'critical', 'blocker'])('accepts %s', (name) => {
+    expect(parseSeverityName(name)).toBe(name);
+  });
+
+  it('forgives case and surrounding space', () => {
+    expect(parseSeverityName(' Critical ')).toBe('critical');
+  });
+
+  it.each(['urgent', '', 3, undefined, null])('rejects %j', (value) => {
+    expect(parseSeverityName(value)).toBeUndefined();
   });
 });

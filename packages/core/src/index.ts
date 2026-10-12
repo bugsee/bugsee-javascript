@@ -181,6 +181,7 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from './lifecycle-events';
+export { isLogLevelEnabled, parseLogLevelName } from './log-level';
 export {
   createMemoryCaptureStore,
   type MemoryCaptureStoreOptions,
@@ -221,6 +222,8 @@ export {
 } from './report-marker-store';
 export {
   createReportingRequest,
+  hasDefaultSeverity,
+  parseSeverityName,
   type Report,
   type ReportAttachment,
   type ReportAttachmentInput,

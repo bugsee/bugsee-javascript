@@ -3,6 +3,9 @@
 // adds launch() = the platform composition root + the on-by-default extensions (@bugsee/performance:
 // web-vitals + transactions + http spans) wired in. See docs/design/sdk-design.md §5.
 export type { ReportDialogOptions, ReportDialogStrings } from '@bugsee/browser';
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // Manual-instrumentation argument types — the curated public surface every adapter re-exports so users
 // can type their own event()/addBreadcrumb()/logException() calls without reaching into @bugsee/core.
 export type {

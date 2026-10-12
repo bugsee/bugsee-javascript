@@ -1,6 +1,9 @@
 // bugsee — the NODE entry (selected via the package `exports` "node" condition). Re-exports the Node SDK
 // surface + the umbrella launch() (Node composition root + on-by-default extensions). See ./node.
 
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // Manual-instrumentation argument types — the curated public surface every adapter re-exports so users
 // can type their own event()/addBreadcrumb()/logException() calls without reaching into @bugsee/core.
 export type {

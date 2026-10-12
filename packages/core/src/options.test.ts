@@ -113,6 +113,21 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     expect(byFriendly.get('maxRecordingTime')?.key).toBe(BugseeOption.Duration);
   });
 
+  it('maps the mobile-parity options (T6) to their canonical identifiers and defaults', () => {
+    const expected: Array<[string, string, unknown]> = [
+      ['captureLogsLevel', BugseeOption.CaptureLogsLevel, 'verbose'],
+      ['captureBreadcrumbs', BugseeOption.CaptureBreadcrumbs, true],
+      ['detectHttpErrors', BugseeOption.DetectHttpErrors, false],
+      ['captureNetworkDefaultSanitizer', BugseeOption.CaptureNetworkDefaultSanitizer, true],
+      ['reportDefaultCrashPriority', BugseeOption.ReportingDefaultCrashPriority, 'blocker'],
+      ['reportDefaultErrorPriority', BugseeOption.ReportingDefaultErrorPriority, 'high'],
+    ];
+    for (const [friendly, key, def] of expected) {
+      expect(byFriendly.get(friendly)?.key).toBe(key);
+      expect(byFriendly.get(friendly)?.default).toBe(def);
+    }
+  });
+
   it('defaults capture/detect toggles on and the recording duration to 60s', () => {
     expect(byFriendly.get('captureLogs')?.default).toBe(true);
     expect(byFriendly.get('detectCrashes')?.default).toBe(true);
@@ -137,6 +152,12 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
       [BugseeOption.CaptureSystemEvents]: true,
       [BugseeOption.DetectCrash]: true,
       [BugseeOption.Duration]: 60,
+      [BugseeOption.CaptureLogsLevel]: 'verbose',
+      [BugseeOption.CaptureBreadcrumbs]: true,
+      [BugseeOption.DetectHttpErrors]: false,
+      [BugseeOption.CaptureNetworkDefaultSanitizer]: true,
+      [BugseeOption.ReportingDefaultCrashPriority]: 'blocker',
+      [BugseeOption.ReportingDefaultErrorPriority]: 'high',
     });
   });
 });
