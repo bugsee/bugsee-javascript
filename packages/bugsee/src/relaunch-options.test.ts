@@ -47,6 +47,9 @@ const INTERFACES: Array<[string, string, string]> = [
   ['deno', 'src/launch.ts', 'launch'],
 ];
 
+// One program per target file (building it is the expensive step on a shared CI runner).
+const programs = new Map<string, ts.Program>();
+
 function optionKeys(pkg: string, file: string, name: string): string[] {
   const root = join(packages, pkg);
   const configPath = ts.findConfigFile(root, ts.sys.fileExists, 'tsconfig.json');
@@ -56,7 +59,11 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
   const target = join(root, file);
-  const program = ts.createProgram([target], { ...parsed.options, noEmit: true });
+  let program = programs.get(target);
+  if (program === undefined) {
+    program = ts.createProgram([target], { ...parsed.options, noEmit: true });
+    programs.set(target, program);
+  }
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(target);
   if (source === undefined) {
@@ -204,7 +211,8 @@ const RESET_OPTIONS: readonly string[] = [
   'video',
 ];
 
-describe('relaunch() option classification (R2P-3)', () => {
+// Builds a TypeScript program per platform interface: far slower on a shared CI runner than locally.
+describe('relaunch() option classification (R2P-3)', { timeout: 180_000 }, () => {
   const all = new Map<string, string[]>();
   for (const [pkg, file, name] of INTERFACES) {
     for (const key of optionKeys(pkg, file, name)) {

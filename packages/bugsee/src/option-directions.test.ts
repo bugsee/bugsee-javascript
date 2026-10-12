@@ -147,6 +147,8 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions', ['core', 'browser']],
 ];
 
+const programs = new Map<string, ts.Program>();
+
 function interfaceOf(
   pkg: string,
   file: string,
@@ -160,7 +162,13 @@ function interfaceOf(
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
   const target = join(root, file);
-  const program = ts.createProgram([target], { ...parsed.options, noEmit: true });
+  // One program per target file for the whole file: building a TypeScript program is the expensive step (seconds
+  // on a shared CI runner), and several tests read the same interfaces.
+  let program = programs.get(target);
+  if (program === undefined) {
+    program = ts.createProgram([target], { ...parsed.options, noEmit: true });
+    programs.set(target, program);
+  }
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(target);
   let declaration = source?.statements.find(
@@ -301,7 +309,11 @@ const declared = (definition: Definition): Direction | undefined =>
 const directionOf = (definition: Definition): Direction | undefined =>
   definition.spreads.map((name) => SPREADS[name]).find((d): d is Direction => d !== undefined);
 
-describe('every boolean launch option has an explicit, tested fail direction (R3V-3)', () => {
+// Reads many TypeScript programs from source: seconds locally, a minute on a shared CI runner. A timeout is a slow
+// machine, never a verdict.
+describe('every boolean launch option has an explicit, tested fail direction (R3V-3)', {
+  timeout: 180_000,
+}, () => {
   it('finds the definitions it is meant to audit (guards the scanner itself)', () => {
     const names = definitions.map((d) => d.friendly);
     for (const expected of ['captureLogs', 'startInBlackout', 'captureObscuring', 'persist']) {
