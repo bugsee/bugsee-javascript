@@ -1,11 +1,11 @@
 import { strToU8, zipSync } from '@bugsee/util';
 
-// Bundle ZIP assembly (design §7.7 trigger path, §8.4 layout). Given the root-level files the
+// Bundle ZIP assembly for the trigger path. Given the root-level files the
 // pipeline has already serialized (request.json, manifest.json, apptoken, and the typed buffer
 // files), produce the `*.bundle.zip` byte payload for the signed-URL PUT.
 
 export interface BundleFile {
-  /** Root-level filename within the zip (§8.4). */
+  /** Root-level filename within the zip. */
   name: string;
   /** File content; strings are UTF-8 encoded, byte arrays are stored as-is. */
   data: Uint8Array | string;

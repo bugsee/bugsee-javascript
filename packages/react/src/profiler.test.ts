@@ -148,7 +148,7 @@ describe('recordReactRenderSpan', () => {
 describe('BugseeProfiler', () => {
   // The direct-call test that lived here — `BugseeProfiler({...})` invoked as a plain function, asserting
   // `element.type === Profiler` and driving `props.onRender` by hand — became invalid when the component
-  // gained hooks for the production fallback (Wave 4.6 / D4): calling a hook component outside a renderer
+  // gained hooks for the production fallback: calling a hook component outside a renderer
   // throws "Invalid hook call".
   //
   // Its three assertions are all covered by `profiler.render.test.ts`, which renders through real react-dom

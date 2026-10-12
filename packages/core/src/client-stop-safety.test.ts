@@ -18,9 +18,9 @@ import type { ReportingRequest } from './reporting';
 import type { NotifyItem, NotifyResult, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
 
-// Review round 2, group F1 (core half): stop() safety (R2L-1), ReportHandler.after on injected pipelines
-// (R2L-2), refusing launch() on a stopped platform client (R2L-3), blackout end while stopped (R2L-7),
-// the kill-state generation (R2L-13) and the notify backlog handover across relaunch() (R2L-6).
+// Core half: stop() safety, ReportHandler.after on injected pipelines
+// refusing launch() on a stopped platform client, blackout end while stopped,
+// the kill-state generation and the notify backlog handover across relaunch().
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },

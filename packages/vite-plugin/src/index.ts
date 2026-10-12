@@ -1,6 +1,5 @@
 // @bugsee/vite-plugin — the Vite entry over @bugsee/bundler-plugin-core. At build end it drives `bugsee-cli`
 // to inject debug-IDs, upload the source-maps, and delete the client `.map`s (privacy). See
-// docs/design/source-maps.md.
 //
 //   import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 //   export default defineConfig({ plugins: [bugseeVitePlugin({ appToken: '…' })] });

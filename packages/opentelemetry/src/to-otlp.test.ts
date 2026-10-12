@@ -223,7 +223,7 @@ describe('transactionToOtlpSpans', () => {
         { key: 'bugsee.span.status', value: { stringValue: 'ERROR' } },
       ],
       status: { code: OtlpStatusCode.ERROR, message: 'ERROR' },
-      flags: 1, // the trace's sampled bit (§8), mirrored onto every span
+      flags: 1, // the trace's sampled bit, mirrored onto every span
     });
   });
 
@@ -360,7 +360,7 @@ describe('toOtlpExportRequest', () => {
     expect(rs?.resource.attributes).toEqual([
       { key: 'service.name', value: { stringValue: 'web' } },
       { key: 'host', value: { intValue: '2' } },
-      // Profile v1 §4 fixed constants, always present (after the caller's resource).
+      // Profile v1 fixed constants, always present (after the caller's resource).
       { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
       { key: 'bugsee.profile.version', value: { stringValue: '1' } },
     ]);
@@ -376,7 +376,7 @@ describe('toOtlpExportRequest', () => {
   it('defaults the scope name/resource and omits the scope version when not given', () => {
     const req = toOtlpExportRequest([txn()]);
     const rs = req.resourceSpans[0];
-    // No caller resource → still the Profile v1 §4 fixed constants.
+    // No caller resource → still the Profile v1 fixed constants.
     expect(rs?.resource.attributes).toEqual([
       { key: 'telemetry.sdk.name', value: { stringValue: 'bugsee' } },
       { key: 'bugsee.profile.version', value: { stringValue: '1' } },

@@ -1,13 +1,13 @@
 // @bugsee/webview — the advanced JS SDK for embedded native WebViews (Android-first).
-// docs/design/webview-bridge.md. It reuses @bugsee/browser capture but swaps the CaptureStore for a
+// It reuses @bugsee/browser capture but swaps the CaptureStore for a
 // HostBridgeCaptureStore that streams each entry across the WebView boundary to the hosting native Bugsee SDK
 // (native is the ring buffer + the bundler). `launch(appToken, options)` returns the started client; it opens a
 // `hello` handshake, streams console→log + network capture across the bridge, and exposes `__bugsee_bridge`
-// for native→JS control (incl. a synchronous secure-area `snapshot()` pull). Obscuring (D10 — secure-area pixel
+// for native→JS control (incl. a synchronous secure-area `snapshot()` pull). Obscuring (secure-area pixel
 // masking rects) is built in so the advanced SDK fully replaces the legacy masking script. Redaction provenance
-// (D3) + the IIFE build + the e2e conformance harness land in later slices.
+// + the IIFE build + the e2e conformance harness land in later slices.
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports, EXCEPT
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports, EXCEPT
 // `getStatus` and `relaunch`, deliberately absent here. In a WebView the process carrier holds only a
 // resolver-only FACADE of the client (see launch.ts: native, not the page, is the owner of the session), which
 // has no status to read and no remembered launch to re-run, so a process-level `getStatus()` would throw and

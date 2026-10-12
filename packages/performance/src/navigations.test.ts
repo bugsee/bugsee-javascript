@@ -36,7 +36,7 @@ function fakeTimer() {
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`). Left as a bare object literal
 // assigned to a `Transaction`-typed const, tsc's missing-property check on a fresh object literal rejects
 // this double at authoring time (a CI gate) the moment `Transaction` grows a member it does not implement.
-// R5-8: these three were the last casts left, and they sit in the package that OWNS the interface.
+// these three were the last casts left, and they sit in the package that OWNS the interface.
 const fakeTxn = (): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -69,7 +69,7 @@ function fakeApi() {
       return t;
     }),
     getActiveSpan: (): Span | undefined => undefined,
-    setActiveTransactionName: () => {}, // unused by the navigation collector (the seam is F5/controller)
+    setActiveTransactionName: () => {}, // unused by the navigation collector (the seam is the controller)
     setRouteName: () => {},
   };
   return { api, started };
@@ -122,7 +122,7 @@ describe('collectNavigations', () => {
     });
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.source', 'url'); // detection axis
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.type', 'push');
-    expect(started[0]?.setAttribute).toHaveBeenCalledWith('bugsee.name_source', 'url'); // phase-1 naming (D5)
+    expect(started[0]?.setAttribute).toHaveBeenCalledWith('bugsee.name_source', 'url'); // naming
   });
 
   it('finishes the PREVIOUS navigation when a new one starts (a view is superseded)', () => {

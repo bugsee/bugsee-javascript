@@ -34,7 +34,7 @@ const fakeScheduler = () => {
 
 describe('startLivenessHeartbeat', () => {
   // These three cover the FALLBACK carrier — the scheduler interval used where a runtime has no
-  // worker_threads. Since Wave 6.6 the default carrier is a worker thread, so they opt in explicitly rather
+  // worker_threads. Since the default carrier is a worker thread, so they opt in explicitly rather
   // than silently testing a path production no longer takes.
   it('creates the .live file immediately and schedules the interval (default 10s)', () => {
     const liveFile = join(mkDir(), '.live');

@@ -3,9 +3,9 @@ import { serviceToken } from '@bugsee/service';
 import type { EventSubscribable } from './emitter';
 import type { ReportingRequest } from './reporting';
 
-// The Android-derived extension contracts (design §16.2). Sources (Interceptor / adapters via
+// The Android-derived extension contracts. Sources (Interceptor / adapters via
 // OperationDispatcher) emit to hubs; consumers (CaptureProvider / DetectionProvider) and feature
-// modules (Extension) plug in through these seams (§16.3). Type-only; validated by contracts.test-d.ts.
+// modules (Extension) plug in through these seams. Type-only; validated by contracts.test-d.ts.
 //
 // Operation / OperationObserver are unspecified in the design, so they get MINIMAL cross-runtime base
 // shapes (adapters refine them), matching the InputEvent approach. Detection submits a
@@ -13,7 +13,7 @@ import type { ReportingRequest } from './reporting';
 
 /**
  * A build-injected / framework-adapter operation (DB, HTTP, file, …) fed in via OperationDispatcher
- * for APM and custom observers to consume (§4.1#4, §16). Minimal base; adapters refine `data`.
+ * for APM and custom observers to consume. Minimal base; adapters refine `data`.
  */
 export interface Operation {
   /** Operation kind, e.g. 'http' | 'db' | 'file' (adapter-defined). */
@@ -28,7 +28,7 @@ export interface Operation {
 
 export type OperationObserver = (operation: Operation) => void;
 
-/** Bridge for external libs / build-time injection; fans out operations to its own observers (§16.2). */
+/** Bridge for external libs / build-time injection; fans out operations to its own observers. */
 export interface OperationDispatcher {
   /** Subscribe an observer; returns an unsubscribe function. */
   registerObserver(observer: OperationObserver): () => void;
@@ -37,7 +37,7 @@ export interface OperationDispatcher {
 }
 
 /**
- * A source that owns a runtime hook and emits captured events to its listeners (§16.2). It is a
+ * A source that owns a runtime hook and emits captured events to its listeners. It is a
  * listenable emitter: by extending {@link EventSubscribable} it lets other components subscribe to its
  * processing STAGES (`StageMap` maps stage name → payload — e.g. the network interceptor keys by
  * NetworkStage) through the contract alone, without the concrete impl. Observe-only: the contract
@@ -91,7 +91,6 @@ export interface StoredEntry {
    * single-tenant path, where partitioning is a no-op.
    *
    * Exists because Durable Objects for different tenants share one isolate, one client and one capture ring
-   * (docs/design/cloudflare-tenant-isolation.md).
    */
   owner?: string;
 }
@@ -118,13 +117,13 @@ export interface CaptureStore {
    *
    * `options.owner` scopes the snapshot to ONE tenant. Stores that do not partition may ignore it; the
    * partitioned store uses it to keep one Durable Object's incident bundle free of every other tenant's
-   * capture (docs/design/cloudflare-tenant-isolation.md).
+   * capture.
    */
   snapshot(options?: { owner?: string }): CaptureSnapshot;
   /** Discard all live records. */
   clear(): void;
   /**
-   * Commit everything captured so far (Wave 6.2). Optional, and present only on stores whose backing
+   * Commit everything captured so far. Optional, and present only on stores whose backing
    * write is DEFERRED — an in-memory store has nothing pending, and a store that advertised a no-op flush
    * would turn `store.flush?.()` from a real question into a meaningless one.
    *
@@ -176,7 +175,7 @@ export interface CaptureExporter {
   /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
   stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry>;
-  /** Snapshot the store, read + deserialize all entries grouped by file type, then release (§7.7).
+  /** Snapshot the store, read + deserialize all entries grouped by file type, then release.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
   drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>>;
 }
@@ -190,9 +189,9 @@ export interface CaptureExporter {
  * source(s) separately. Deliberately a subset of {@link Client} that EXCLUDES the registration seams.
  */
 export interface CaptureProviderInit {
-  /** Operation bridge for adapters/build injection (§16.2). */
+  /** Operation bridge for adapters/build injection. */
   readonly operations: OperationDispatcher;
-  /** The single data adapter the provider pushes captured entries to (§7.7). */
+  /** The single data adapter the provider pushes captured entries to. */
   readonly captureAggregator: CaptureAggregator;
 }
 
@@ -222,7 +221,7 @@ export interface OptionsContainer {
 export type ControllingOption = keyof BugseeOptionTypes | (string & Record<never, never>);
 
 /**
- * Capture-pipeline data source (§16.2), Android BugseeCaptureDataProvider parity. Lifecycle splits
+ * Capture-pipeline data source, Android BugseeCaptureDataProvider parity. Lifecycle splits
  * dependency wiring from per-launch configuration:
  * - init(init): ONCE at registration — capture the pipeline deps (hubs/operations/aggregator).
  * - start(options): per launch — (re)configure from launch options, subscribe to its hub, and
@@ -230,8 +229,7 @@ export type ControllingOption = keyof BugseeOptionTypes | (string & Record<never
  *   (stop→start) across launches without re-init.
  * - stop(): unsubscribe / release hooks (the subscription, not a detached aggregator, is the gate).
  *
- * NB: this follows Android (works on CaptureDataEntry objects), not the design doc §16.2 sketch's
- * per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
+ * NB: this follows Android (works on CaptureDataEntry objects), rather than per-provider `wireFileType`/`filename`/`serialize`. File type lives on CaptureDataEntry.type and
  * serialization lives on the entry itself (serialize/deserialize).
  */
 export interface CaptureProvider {
@@ -246,7 +244,7 @@ export interface CaptureProvider {
   stop(): void;
 }
 
-/** Decides when to assemble & upload a report (§16.2). */
+/** Decides when to assemble & upload a report. */
 export interface DetectionProvider {
   name: string;
   /** The launch option that gates this detector; when its option is false, the detector is skipped. */
@@ -256,7 +254,7 @@ export interface DetectionProvider {
   stop(): void;
 }
 
-/** Feature module — registers providers, hub listeners, services, buffers, hooks (§16.2). */
+/** Feature module — registers providers, hub listeners, services, buffers, hooks. */
 export interface Extension {
   readonly name: string;
   setup(client: Client): void;
@@ -264,14 +262,13 @@ export interface Extension {
 }
 
 /**
- * The provider/extension-facing kernel surface (§16.3 registration seams). This is intentionally a
- * MINIMAL subset of the full §7.1 Client and is grown to the complete public API when the Client
- * implementation lands (task 8). The contracts above pass it to start()/setup().
+ * The provider/extension-facing kernel surface (registration seams). This is intentionally a
+ * MINIMAL subset of the full Client. The contracts above pass it to start()/setup().
  */
 export interface Client {
-  /** Operation bridge for adapters/build injection (§16.2). */
+  /** Operation bridge for adapters/build injection. */
   readonly operations: OperationDispatcher;
-  /** The single data adapter providers push captured entries to (§7.7). */
+  /** The single data adapter providers push captured entries to. */
   readonly captureAggregator: CaptureAggregator;
   /** Register a capture data source (Android addProvider). */
   addCaptureProvider(provider: CaptureProvider): void;

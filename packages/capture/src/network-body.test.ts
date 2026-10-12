@@ -87,7 +87,7 @@ describe('decodeUtf8', () => {
   });
 
   it('reassembles a multibyte sequence genuinely split across two chunks before decoding', () => {
-    // '€' is 3 UTF-8 bytes (E2 82 AC); split across two chunks. decodeUtf8 concatenates into one
+    // '€' is 3 UTF-8 bytes (82 AC); split across two chunks. decodeUtf8 concatenates into one
     // buffer before decoding, so the character is recovered (per-chunk decode would yield U+FFFD).
     const bytes = new TE().encode('€');
     expect(decodeUtf8([bytes.slice(0, 2), bytes.slice(2)])).toBe('€');

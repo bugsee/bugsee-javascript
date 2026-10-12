@@ -5,7 +5,7 @@ import type { ActivityEntry, Expense, ExpenseStatus, NewExpenseInput } from './e
 
 // Every call below goes through Angular's HttpClient with the DEFAULT (XHR) backend — see
 // app.config.ts's `provideHttpClient()` (no `withFetch()`). This is deliberately a DIFFERENT capture
-// code path from `fetch()` (§5.6 "beyond the catalog": "HttpClient (XHR) network capture, which is a
+// code path from `fetch()` ("beyond the catalog": "HttpClient (XHR) network capture, which is a
 // different code path from fetch"), exercised here by the app's real CRUD flows.
 @Injectable({ providedIn: 'root' })
 export class ExpenseService {

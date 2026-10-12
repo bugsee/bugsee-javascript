@@ -25,8 +25,7 @@ import {
 import { recoverSiblingBundleQueue } from './recover-dead-instances';
 import { createWebLockLiveness, type LockManagerLike } from './web-lock-liveness';
 
-// The browser/worker multi-instance IndexedDB coexistence root (docs/design/browser-multi-instance-
-// coexistence.md). IndexedDB is origin-scoped, so N tabs + the page's workers all share it; this gives each
+// The browser/worker multi-instance IndexedDB coexistence root. IndexedDB is origin-scoped, so N tabs + the page's workers all share it; this gives each
 // launch its OWN per-instance namespace (a `"<instanceId>/"` key prefix) inside per-APP-TOKEN databases, has
 // it hold ONE Web Lock for its lifetime (liveness), and — after launch — recovers ONLY DEAD siblings'
 // leftover data (under each sibling's lock so concurrent peers don't double-recover). It covers, per
@@ -216,7 +215,7 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
       // directly (no re-persist into our queue) + run its capture/marker recovery. Per-sibling failures are
       // isolated so one bad sibling doesn't abort the others.
       //
-      // SEV1 (recovery double-upload): those two legs can both hold the SAME incident. `client.ts`'s
+      // (recovery double-upload): those two legs can both hold the SAME incident. `client.ts`'s
       // submitReport writes an incident's report marker before assembly and clears it only once the upload
       // SETTLES, while the durable queue stages the assembled bundle before that upload — a tab/worker
       // killed inside that window leaves both. Core's `createMarkerAwareBundleReplay` reconciles them PER

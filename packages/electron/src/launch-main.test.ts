@@ -48,7 +48,7 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
       if (token === BlackoutToken) return blackout;
       return undefined;
     }),
-    // The real client has this (client.ts:493); the fake lacked it, which is why wiring R3's detection
+    // The real client has this (client.ts:493); the fake lacked it, which is why wiring the detection
     // provider surfaced here rather than in production.
     addDetectionProvider: vi.fn(),
     stop,
@@ -301,7 +301,7 @@ describe('launchMain', () => {
 });
 
 describe('launchMain — renderer incidents are WIRED end to end', () => {
-  // The code review's SEV1-1: R2 stopped renderers uploading, but nothing on the main side received or
+  // The code review found stopped renderers uploading, but nothing on the main side received or
   // submitted the forwarded incident, so renderer incidents were silently DESTROYED while the app was told
   // `{ok:true}` — strictly worse than the defect being fixed. These tests exist so that cannot recur: they
   // fail if launchMain stops passing `onReport`, or stops registering the provider that submits it.

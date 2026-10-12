@@ -28,7 +28,7 @@ describe('relaunchWith', () => {
     const result = await relaunchWith(launch, undefined, g);
     expect(result).toBe(next);
     expect(order).toEqual(['stop', 'launch']);
-    expect(launch).toHaveBeenCalledWith('tok', { clock: 'c' }); // only the seams are retained (L18)
+    expect(launch).toHaveBeenCalledWith('tok', { clock: 'c' }); // only the seams are retained
   });
 
   it('uses NEW options when given, and works with no client running', async () => {

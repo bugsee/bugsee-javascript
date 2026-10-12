@@ -231,7 +231,7 @@ describe('@bugsee/deno launch', () => {
       });
       // Proves finishWith actually ran end to end (not just the pre-finish header write): a
       // non-conforming double with no getAttributes() degrades finishWith silently (TypeError swallowed
-      // by its own try/catch), so finish()/setName() never run — see R3-7.
+      // by its own try/catch), so finish()/setName() never run.
       expect(txn.setName).toHaveBeenCalledWith('GET /x');
       expect(txn.finish).toHaveBeenCalledWith('OK');
     } finally {

@@ -8,7 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // `relaunch` must re-run THE CLOUDFLARE launch (workers identity, AsyncLocalStorage, tenant partitioning), not
-// the plain edge one re-exported from `@bugsee/vercel-edge` (review R2D-4). The Cloudflare `launch` is replaced
+// the plain edge one re-exported from `@bugsee/vercel-edge`. The Cloudflare `launch` is replaced
 // by a spy that forwards to the real edge launch; the first client is a real one so the carrier holds a real
 // remembered token and a real client to stop.
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));

@@ -1,7 +1,7 @@
 // bugsee
-// Umbrella package; the batteries-included entry (Tier 5). It re-exports the platform SDK surface and
+// Umbrella package; the batteries-included entry. It re-exports the platform SDK surface and
 // adds launch() = the platform composition root + the on-by-default extensions (@bugsee/performance:
-// web-vitals + transactions + http spans) wired in. See docs/design/sdk-design.md §5.
+// web-vitals + transactions + http spans) wired in.
 export type { ReportDialogOptions, ReportDialogStrings } from '@bugsee/browser';
 // The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
 // default sanitizer rather than layering on it).

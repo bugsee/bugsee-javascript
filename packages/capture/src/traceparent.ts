@@ -8,11 +8,10 @@ import {
   setTracestateEntry,
 } from './tracestate';
 
-// Phase D: the W3C trace-context propagation transformer — a RequestDecorator (the T seam's first
+// the W3C trace-context propagation transformer — a RequestDecorator (its first
 // consumer) that injects `traceparent` on outgoing requests so a frontend trace links to the backend
 // trace (the Next.js / SSR story). The trace context comes from the Bugsee active transaction (its
 // traceId/spanId are already W3C-shaped) — no @opentelemetry/* dependency. See
-// docs/design/opentelemetry-integration.md.
 //
 // SECURITY: same-origin requests propagate by default; CROSS-ORIGIN requests are propagated ONLY when the
 // URL matches an explicit `allowlist` — injecting `traceparent` to a third party would leak the trace
@@ -38,7 +37,7 @@ export interface TraceparentDecoratorOptions {
   resolveOrigin?: (url: string, base: string) => string | undefined;
   /**
    * The Bugsee `tracestate` payload to propagate alongside `traceparent` (record flag + the originating
-   * session-correlation id; cross-project-tracing.md T4/T7). Absent or empty → no `tracestate` is added.
+   * session-correlation id. Absent or empty → no `tracestate` is added.
    * On a forwarding hop this carries the INBOUND originator's state (so the originating session id flows
    * through unchanged), set as the `bugsee=` vendor entry on any tracestate already on the outgoing request.
    */
@@ -131,7 +130,7 @@ const headerValue = (
 type AllowTarget = (url: string) => boolean;
 
 /**
- * Validate `tracePropagationTargets` ONCE (R5V-6): it decides which third parties receive the trace and session
+ * Validate `tracePropagationTargets` ONCE: it decides which third parties receive the trace and session
  * ids, so a value that cannot be understood must send to NOBODY and say so. A non-array is ignored (reported); an
  * entry that is neither a string nor a RegExp is skipped (reported); an empty string is dropped (`''` is a
  * substring of every URL: `process.env.TARGETS.split(',')` with the variable unset); a `/g` or `/y` RegExp is
@@ -207,7 +206,7 @@ export function createTraceparentDecorator(options: TraceparentDecoratorOptions)
     const result: Record<string, string> = {
       traceparent: `${W3C_VERSION}-${span.getTraceId()}-${span.getSpanId()}-${flags}`,
     };
-    // Bugsee vendor tracestate (T4/T7): set our `bugsee=` entry on any tracestate already on the request,
+    // Bugsee vendor tracestate: set our `bugsee=` entry on any tracestate already on the request,
     // preserving other vendors + moving ours to the front. Skipped when there is no Bugsee state to carry.
     const bugseeState = options.getBugseeState?.();
     if (bugseeState !== undefined) {

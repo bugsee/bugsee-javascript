@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(here);
 
 /** Bump a small on-disk counter each process start — becomes `appBuild`, so runs are distinguishable
- *  in the Bugsee dashboard (§3 convention: appVersion + appBuild identify issues). */
+ * in the Bugsee dashboard (convention: appVersion + appBuild identify issues). */
 function nextBuildNumber(): string {
   const path = join(root, 'data', 'build-counter.json');
   const dir = dirname(path);
@@ -43,10 +43,10 @@ export function loadProfile(name: string): Record<string, unknown> {
 }
 
 /**
- * Wire-level (§4 depth 2) evidence: a passthrough wrapper around the REAL node-utils transport that
+ * Wire-level (depth 2) evidence: a passthrough wrapper around the REAL node-utils transport that
  * appends every request/response the SDK's own control-plane + upload client makes to an ndjson file.
  * Used by scripts/verify.ts to prove "the right thing left the process" even where the backend cannot
- * be asserted directly (see FINDINGS.md — the staging 'javascript' app-type gap blocks live
+ * be asserted directly (see — the staging 'javascript' app-type gap blocks live
  * confirmation via MCP). Enabled by setting BUGSEE_WIRE_LOG to a file path.
  */
 function wireLoggingTransport(logPath: string): BugseeNodeLaunchOptions['transport'] {

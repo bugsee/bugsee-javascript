@@ -1,11 +1,11 @@
 import type { LogLevel } from '@bugsee/protocol';
 import type { LogLevelName } from '@bugsee/types';
 
-// Cross-runtime event payload types (design §10/§16). These are the shapes that capture SOURCES
+// Cross-runtime event payload types. These are the shapes that capture SOURCES
 // (interceptors / log sources) emit and CONSUMERS observe. There is no central hub: sources are
 // listenable emitters subscribed to directly (see InterceptorBase / emitter.ts).
 
-/** A captured log line (design §10) — the payload a log source (e.g. the console interceptor) emits. */
+/** A captured log line — the payload a log source (e.g. the console interceptor) emits. */
 export interface LogEvent {
   timestamp: number;
   level: LogLevelName | LogLevel;
@@ -14,7 +14,7 @@ export interface LogEvent {
   message: string;
 }
 
-/** A breadcrumb payload (design §10). Lives here (a leaf) so filter types can reference it cycle-free. */
+/** A breadcrumb payload. Lives here (a leaf) so filter types can reference it cycle-free. */
 export interface Breadcrumb {
   type?: string;
   category?: string;

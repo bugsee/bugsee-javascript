@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
-// `notify()` (T7) end to end through the real Node composition root: POST /v2/notifications over the same
+// `notify()` end to end through the real Node composition root: POST /v2/notifications over the same
 // transport as the session/issue calls, authenticated by the app token in the body.
 
 const probe: SystemProbe = {

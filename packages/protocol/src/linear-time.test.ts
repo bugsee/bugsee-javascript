@@ -248,7 +248,7 @@ describe('measurePair', () => {
     const CHEAP = 40_000;
     const DEAR = 800_000;
     // Comfortably more calls than one batch needs to reach the sample floor, and comfortably fewer
-    // than three batches make — so round 1 is entirely cheap and rounds 2 and 3 entirely dear.
+    // than three batches make — so is entirely cheap and rounds 2 and 3 entirely dear.
     const FIRST_BATCH_CALLS = 4_000;
 
     const reference = timePerCall(() => burn(CHEAP));

@@ -51,7 +51,7 @@ describe('withBugsee', () => {
     const res = await handler.fetch?.(request, {}, ctx);
     expect(await res?.text()).toBe('ok');
     expect(attrs?.['http.url']).toBe('/p/1'); // shared route attrs
-    expect(attrs?.['cf.colo']).toBe('SJC'); // C3 request.cf enrichment flows through withBugsee
+    expect(attrs?.['cf.colo']).toBe('SJC'); // request.cf enrichment flows through withBugsee
     expect(attrs?.['cf.country']).toBe('US');
     expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
     expect(flush).toHaveBeenCalledTimes(1);

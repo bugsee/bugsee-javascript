@@ -1,4 +1,4 @@
-// The "source-map half" deliverable (docs/samples/PLAN.md §5.7e): throw from the PRODUCTION
+// The "source-map half" deliverable: throw from the PRODUCTION
 // (minified, hidden-source-map) build and let the SDK report it, so a human/agent can then check via
 // MCP (list_issues/get_issue on SWEBPACK) that the stack resolved to original TS sources + line
 // numbers, not minified bundle locations.

@@ -4,7 +4,7 @@ import { launchApp } from './bugsee';
 import { initRouter } from './router.svelte';
 import './app.css';
 
-// S1: launch() once, at app bootstrap — every scenario after this reads the same client via getClient().
+// launch() once, at app bootstrap — every scenario after this reads the same client via getClient().
 launchApp();
 initRouter();
 

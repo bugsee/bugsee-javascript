@@ -1,6 +1,6 @@
 import { getClient } from '../bugsee-client';
 
-// Live order-status feed over Server-Sent Events (EventSource) — a real S7 capture source, and a
+// Live order-status feed over Server-Sent Events (EventSource) — a real capture source, and a
 // genuinely useful page (you placed an order, here is what happens to it).
 
 export function renderOrders(container: HTMLElement, params: Record<string, string>): void {

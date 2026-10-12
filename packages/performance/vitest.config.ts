@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

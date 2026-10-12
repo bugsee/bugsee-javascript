@@ -86,7 +86,7 @@ describe('componentAnnotatePlugin', () => {
     // babel reuses one plugin instance across a multi-file build, but creates a fresh `PluginPass` per
     // FILE — and the component stack hangs off that state, so an aborted transform (component pushed,
     // then a throw before exit pops it) cannot leak into the next file. (An earlier revision reset a
-    // per-instance closure in `pre()`; that is what the SEV1 re-entrancy suite below replaced.)
+    // per-instance closure in `pre()`; that is what the re-entrancy suite below replaced.)
     const instance = componentAnnotatePlugin({ types: babelTypes });
     const boom = () => ({
       visitor: {
@@ -218,7 +218,7 @@ describe('TypeScript (.tsx)', () => {
   });
 });
 
-// SEV2 #1 — a peer plugin's nested `transformSync` wiped the shared stack.
+// A peer plugin's nested `transformSync` wiped the shared stack.
 //
 // `pre()` resets a closure held per plugin INSTANCE, but babel calls it per File. The
 // `babel-plugin-macros` / `preval` / `codegen` family transforms code mid-traversal, which re-enters this
@@ -250,7 +250,7 @@ describe('re-entrancy: a peer plugin transforming mid-traversal', () => {
   });
 });
 
-// SEV1 — a NAMED FUNCTION/CLASS EXPRESSION was not recognised as a component, so `export default
+// A NAMED FUNCTION/CLASS EXPRESSION was not recognised as a component, so `export default
 // memo(function Card() { … })` and `export default forwardRef(function Input(props, ref) { … })` — two of
 // the shapes React's own documentation shows — produced ZERO annotations. `componentNameOf` fell back to
 // `node.id` only for a *declaration*; a named expression with no enclosing `const` had a PascalCase id

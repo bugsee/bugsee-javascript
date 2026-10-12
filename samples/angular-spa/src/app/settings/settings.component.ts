@@ -20,8 +20,8 @@ function parseAttrValue(type: AttrType, raw: string): AttributeValue {
 
 /**
  * Settings page — a genuine app feature (display name, a personal-access-token field) that happens to
- * be the natural home for S2 (identity + attributes): setting a display name IS `setUserIdentifier`,
- * and the PAT field is also the masking target for S11 replay (`maskAllInputs`).
+ * be the natural home for (identity + attributes): setting a display name IS `setUserIdentifier`,
+ * and the PAT field is also the masking target for replay (`maskAllInputs`).
  */
 @Component({
   selector: 'app-settings',

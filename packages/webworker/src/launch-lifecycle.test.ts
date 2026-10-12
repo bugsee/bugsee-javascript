@@ -18,7 +18,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeWorkerLaunchOptions, launch } from './launch';
 
-// Lifecycle parity with the browser/node tiers (review L7/L9): the carrier slot is cleared only by the
+// Lifecycle parity with the browser/node tiers: the carrier slot is cleared only by the
 // client that still owns it, the coexistence lock + IndexedDB handles are released on stop (only when
 // that is safe), the introspectable launch options work, and the status/relaunch state is recorded.
 
@@ -233,7 +233,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     const stopping = client.stop();
     await stopping;
     await vi.waitFor(() => expect(held.size).toBe(0));
-    // The caller path and the drain observer (R4L-4) each commit once, and BOTH while the lock is still held.
+    // The caller path and the drain observer each commit once, and BOTH while the lock is still held.
     expect(order).toEqual(['flush(held=1)', 'flush(held=1)']);
   });
 

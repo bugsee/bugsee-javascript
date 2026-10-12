@@ -7,7 +7,7 @@ import {
 } from './obscuring-source';
 import type { SecureArea } from './protocol';
 
-// Sub-frame secure-rect COMPOSITION (docs/design/webview-bridge.md D9/D10 — the open frame-attribution item).
+// Sub-frame secure-rect COMPOSITION (— the open frame-attribution item).
 // A WebView can host (cross-origin) sub-frames, each injected with its own SDK. The native mask is composed over
 // the WHOLE page, so the TOP frame must report the UNION of every frame's secure rects (in top-document
 // coordinates) — otherwise sub-frame fields go unmasked. Ported from the legacy `VIEWS_BUBBLE` mechanism:
@@ -72,7 +72,7 @@ export function createObscuringComposer(opts: {
   onCompose?: (areas: SecureArea[]) => void;
   /** MutationObserver constructor; injectable for tests. */
   mutationObserver?: MutationObserverCtor;
-  /** Where a collection/compose failure is reported (Wave 1.4). */
+  /** Where a collection/compose failure is reported. */
   onError?: (error: unknown) => void;
 }): ObscuringComposer {
   const { document, window, isTopFrame, onCompose } = opts;
@@ -231,7 +231,7 @@ export function createObscuringComposer(opts: {
       //
       // The push must still be correct, and must still fail CLOSED, for both receiver generations. An
       // older one masks from it directly (`BridgeSecureSink.setSecureAreas` replaces the stored rects). A
-      // current one (Android D-A9) discards the payload and treats the message purely as a freshness
+      // current one (Android) discards the payload and treats the message purely as a freshness
       // signal that triggers `requestSnapshot` — so a push that never arrives is a pull that never
       // happens, and the mask goes stale either way.
       try {

@@ -1,6 +1,6 @@
 // @bugsee/electron/main — the main-process entry. Imports @bugsee/node (never @bugsee/browser), so it's safe
-// in the Node main process. See docs/design/electron.md.
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface as `@bugsee/bugsee/node`, thin
+// in the Node main process.
+// API parity with the umbrella entries: the same VALUE surface as `@bugsee/bugsee/node`, thin
 // re-exports of the same functions. `relaunch` is deliberately NOT offered: `launchMain` needs the app's
 // `ipcMain` (and `app` / `crashReporter`), which are not retained launch seams, and every launch registers a
 // receiver + control channel on it; a relaunch would stack a second set of handlers on the same `ipcMain`.

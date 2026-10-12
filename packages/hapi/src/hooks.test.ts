@@ -18,7 +18,7 @@ const h: HapiToolkitLike = { continue: CONTINUE };
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+// member this doesn't implement.
 const fakeTxn = (over: Partial<Transaction> = {}): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -182,7 +182,7 @@ describe('setupHapi extensions', () => {
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
-  // F-4 (round-2 D2): a manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // A manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
   // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
   // with the automatic route-derived name. This exercises the check against a Transaction double whose
   // getAttributes() actually reports the stamp, not one that omits the method entirely.

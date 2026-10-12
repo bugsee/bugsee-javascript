@@ -1,7 +1,6 @@
 import type { CaptureSnapshot, StoredEntry } from './contracts';
 
-// The storage seam beneath the chunk-based capture store (design: durable-as-captured, metadata-only in
-// memory; Android `CaptureFileStorage` analog). The ChunkCaptureStore keeps only a part metadata INDEX
+// The storage seam beneath the chunk-based capture store (metadata-only in memory; Android `CaptureFileStorage` analog). The ChunkCaptureStore keeps only a part metadata INDEX
 // in RAM and writes every entry through to a ChunkBackend — in-memory (ephemeral), filesystem (node),
 // or IndexedDB (browser). Writes are SYNC-ISSUE / async-complete: openPart/appendEntry/closePart return
 // immediately so the sync CaptureStore contract holds; a durable backend may complete the write
@@ -60,7 +59,7 @@ export interface ChunkBackend {
   /** Every generation with persisted parts (recovery). */
   listGenerations(): number[] | Promise<number[]>;
   /**
-   * Commit everything captured so far (Wave 6.2). Optional: only a backend that DEFERS physical writes has
+   * Commit everything captured so far. Optional: only a backend that DEFERS physical writes has
    * anything to commit, and one that writes synchronously must not advertise a guarantee it does not add.
    *
    * A durable backend keeps `appendEntry` non-blocking by queueing the write, so at any instant some

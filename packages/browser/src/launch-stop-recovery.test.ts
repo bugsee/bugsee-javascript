@@ -7,7 +7,7 @@ import { resetBrowserDeviceIdCache } from './device-id';
 import type { BrowserProbe } from './environment';
 import { type BugseeLaunchOptions, launch } from './launch';
 
-// L7: stop() must not release the instance lock / IndexedDB while the launch-time recovery is still
+// stop() must not release the instance lock / IndexedDB while the launch-time recovery is still
 // running (it may be reading or writing), and must release once it has settled.
 vi.mock('@bugsee/replay', () => ({ registerReplay: vi.fn() }));
 vi.mock('@bugsee/core', async (importOriginal) => {

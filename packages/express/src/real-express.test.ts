@@ -19,7 +19,7 @@ const fetchWithDeadline = (
   init?: Parameters<typeof fetch>[1],
 ): ReturnType<typeof fetch> => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
 
-// Review finding (host-boundary reviewer, SEV1 #2): express builds its request `info` — including the
+// Review finding (host-boundary reviewer): express builds its request `info` — including the
 // APPLICATION-supplied `user` callback — OUTSIDE runServerRequest, so the engine guard added in c90a06a
 // could not see it. Measured on real express before the fix: `500`, the app's own error middleware handed a
 // Bugsee-internal TypeError, and the route handler never ran.

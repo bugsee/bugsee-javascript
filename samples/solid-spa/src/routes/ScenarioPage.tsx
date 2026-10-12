@@ -35,7 +35,7 @@ export default function ScenarioPage(): JSX.Element {
   const [statuses, setStatus] = useStatuses();
   const client = () => getClient();
 
-  // ---- S4 exception dedupe fixture -----------------------------------------------------------
+  // ---- exception dedupe fixture -----------------------------------------------------------
   const sharedError = new Error('shared instance — logException twice must dedupe');
 
   // ---- Solid-specific: ThrowingWidget demo state ----------------------------------------------
@@ -49,7 +49,7 @@ export default function ScenarioPage(): JSX.Element {
     return api.getIssueOrThrow('does-not-exist-404');
   });
 
-  // ---- S8 filters toggle -----------------------------------------------------------------------
+  // ---- filters toggle -----------------------------------------------------------------------
   const [filtersInstalled, setFiltersInstalled] = createSignal(false);
   const [filterLog, setFilterLog] = createSignal<string[]>([]);
 
@@ -79,7 +79,7 @@ export default function ScenarioPage(): JSX.Element {
         `network: ${event.url} — droppedSecretHeader=${hadSecretHeader} redactedSsn=${hadSsn}`,
         ...prev.slice(0, 39),
       ]);
-      // Finding C (FINDINGS.md — re-graded to a DOCS gap, not a defect): the default PII sanitizer never
+      // Finding C (re-graded to a DOCS gap, not a defect): the default PII sanitizer never
       // runs once ANY network filter is installed (packages/capture/src/network-provider.ts:151-160 — a
       // user filter REPLACES it, not composes with it; the comment at :137-139 in the same function names
       // this the deliberate "Android XOR rule"). This filter's own logic never touches the URL, so a
@@ -96,7 +96,7 @@ export default function ScenarioPage(): JSX.Element {
         setFilterLog((prev) => [`network: VETOED ${event.url}`, ...prev.slice(0, 39)]);
         return null;
       }
-      // F-1 (FINDINGS.md, re-graded major): demonstrates the per-ENTRY (not per-REQUEST) veto hole.
+      // F-1 (re-graded major): demonstrates the per-ENTRY (not per-REQUEST) veto hole.
       // This rule vetoes on a REQUEST-BODY marker that is only populated on the `before` NetworkStage
       // (packages/capture/src/fetch-interceptor.ts:360-370). The SAME logical request also produces a
       // `complete` stage-entry carrying the RESPONSE headers/body (packages/capture/src/fetch-
@@ -229,7 +229,7 @@ export default function ScenarioPage(): JSX.Element {
             onClick={async () => {
               // A genuine standalone stop(), not just the one relaunch() runs internally
               // (src/bugsee.ts's relaunch). Reads isLaunched() FRESH here (not via the `is-launched`
-              // span above, which Solid only evaluates once at mount — see FINDINGS.md).
+              // span above, which Solid only evaluates once at mount).
               const before = client()?.isLaunched();
               const ok = await client()?.stop(2000);
               const after = client()?.isLaunched();
@@ -760,7 +760,7 @@ export default function ScenarioPage(): JSX.Element {
             addBreadcrumb() with secret data
           </button>
           {/* Both report-handler controls are GUARDED on filtersInstalled(), like "Uninstall filters"
-              above — round-4 finding R4-1. Without the guard the VETO button is clickable before
+              above. Without the guard the VETO button is clickable before
               "Install filters" (or after "Uninstall filters"), in which case no report handler exists,
               nothing vetoes the report, and an exception whose own message says "must never arrive"
               uploads legitimately: that is exactly how SSOLID-82 (`6a8f5dcbd58badbb34924a7a`,
@@ -841,7 +841,7 @@ export default function ScenarioPage(): JSX.Element {
               // this is a deterministic, wire-verifiable check: start it, rename it, finish it — see
               // scripts/verify.mjs's `waitForPerfTransactions` for the uploaded-name assertion. This is
               // the DIRECT-call primitive, with no @solidjs/router timing race — contrast with the LIVE
-              // router wiring (RootLayout.tsx's RouteNameSync), which IS racy — see FINDINGS.md finding A.
+              // router wiring (RootLayout.tsx's RouteNameSync), which IS racy — see A.
               const perf = client()?.ext('performance');
               if (!perf) return setStatus('s9-route', 'performance ext not registered', false);
               const tx = perf.startTransaction({ name: 'scenario.route_name_demo', operation: 'custom' });
@@ -1037,7 +1037,7 @@ export default function ScenarioPage(): JSX.Element {
               // 'enqueue']), so a reload timed at the ORIGINAL 5ms lands before the durable queue owns
               // anything: only the report marker survives, only core's recoverReports leg runs, and the
               // result is always exactly ONE upload. 5ms was the one timing that could never expose
-              // FINDINGS.md finding B — and no real user reloads 5ms after a crash. Measured on this
+              // B — and no real user reloads 5ms after a crash. Measured on this
               // sample: 5ms -> 1 upload (2/2 runs); 40ms -> 2 (2/2); 250ms -> 2 (3/3).
               void client()?.logException(new Error('S12: persist+recover across a hard reload'));
               setTimeout(() => window.location.reload(), 250);
@@ -1127,7 +1127,7 @@ export default function ScenarioPage(): JSX.Element {
               // scripts/verify.mjs's `waitForPerfTransactions`. This is the DIRECT-call primitive, with
               // no @solidjs/router timing race — contrast with the LIVE reactive wiring
               // (RootLayout.tsx's RouteNameSync), which IS racy and does NOT reliably land — see
-              // FINDINGS.md finding A / the `solid-route-name-wire` check.
+              // A / the `solid-route-name-wire` check.
               const perf = client()?.ext('performance');
               if (!perf) return setStatus('s-pattern', 'performance ext not registered', false);
               const tx = perf.startTransaction({ name: 'scenario.route_name_matches_demo', operation: 'custom' });

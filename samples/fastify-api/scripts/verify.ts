@@ -31,16 +31,16 @@ interface Result {
    *  numbers, and for most rows this stays pure diagnostics.
    *
    *  THE RULE, deliberately stated WITHOUT a census of who currently obeys it. This comment has now
-   *  gone stale twice — first claiming "nothing asserts on it", then claiming "TWO checks do, S1.flush
-   *  and S4.dedupe, the latter measuring ~13-14s" — and both times it went stale in the very round
-   *  that changed the checks it was describing (round 5 moved S1.flush's assertion onto the route's own
+   * gone stale twice — first claiming "nothing asserts on it", then claiming "TWO checks do, .flush
+   * and .dedupe, the latter measuring ~13-14s" — and both times it went stale in the very round
+   * that changed the checks it was describing (moved .flush's assertion onto the route's own
    *  `flushMs`; the dedupe route's own record has long since moved off 13-14s). A count and a timing
    *  cannot be kept true from here, so neither is recorded here any more.
    *
    *  What IS invariant: `ms` is this harness's clock for a WHOLE HTTP round trip, so it is only an
    *  UPPER bound on whatever the route did inside it. A check may assert on `ms` ONLY when no narrower
    *  measurement of the quantity it claims exists. The moment a route can measure the operation itself
-   *  and return it (S1.flush's `flushMs` is the worked example), the check MUST read that field and not
+   * and return it (.flush's `flushMs` is the worked example), the check MUST read that field and not
    *  this one — otherwise delay landing anywhere else in the request satisfies the assertion. Every
    *  check that does assert on a duration carries its own justification, its own bound, and its own
    *  appended observation record at its own call site; that is the only place those numbers live. */
@@ -58,9 +58,9 @@ function expectOk(status: number, expected: number | number[]): boolean {
 /**
  * Default client-side budget for one scenario route. Generous: these routes talk to REAL staging, not
  * a mock. Any route that asks the SDK for TIMED work must be given a budget that EXCEEDS what it
- * requests — see samples/FINDINGS.md F-X19 for why a flat budget shorter than the requested work
+ * requests — see for why a flat budget shorter than the requested work
  * reads a correctly-working flush as a failure. Two routes qualify and both pass their own budget
- * rather than this default: S1.flush (`FLUSH_TIMEOUT_MS + 5s`) and S4.dedupe (`DEDUPE_TIMEOUT_MS`,
+ * rather than this default: .flush (`FLUSH_TIMEOUT_MS + 5s`) and .dedupe (`DEDUPE_TIMEOUT_MS`,
  * one awaited report = at least two 30s-bounded transport calls, each retried up to 3x — see that
  * constant's own comment). Every other route only asks the app for work the SDK does off the response
  * path, and 10s is ample for those.
@@ -241,17 +241,16 @@ async function main(): Promise<void> {
     );
     // A genuine Fastify SCHEMA validation failure (missing "value") — never thrown by our own code.
     // Fastify-specific: does this go through Bugsee's onError hook the same way a thrown error would?
-    // See FINDINGS.md.
     await hit('api.validation-4xx', 'POST', '/api/v1/metrics', 400, {
       method: 'POST',
       headers: { ...auth.headers, 'content-type': 'application/json' },
       body: JSON.stringify({ name: `bad.${RUN_MARKER}` }),
     });
     // PAGINATION. scenarios.md's cross-cutting row is "**Pagination** + per-metric aggregation —
-    // Local, verified", and round 6 closed only the aggregation half: this row asserted the hardcoded
+    // Local, verified", and closed only the aggregation half: this row asserted the hardcoded
     // 200 with no `page`/`pageSize` at all, so the envelope `{items,page,pageSize,total,totalPages}`
     // (src/plugins/metrics.ts:75-80, src/store.ts:69-79) was produced and read by nothing, and
-    // `parsePagination`'s clamping (:37-41) was never exercised with a non-default value. Round 6
+    // `parsePagination`'s clamping (:37-41) was never exercised with a non-default value.
     // rejected exactly the "at Local depth a 200 suffices" reasoning for the aggregation half of this
     // same row, so it is rejected here too.
     //
@@ -365,7 +364,7 @@ async function main(): Promise<void> {
       headers: { ...auth.headers, 'x-admin-key': 'admin-dev-key' },
     });
 
-    // ---- S1 Launch & lifecycle ----
+    // ---- Launch & lifecycle ----
     // The route answers `{isLaunched: client().isLaunched()}` and that boolean was going unread for
     // four rounds: only the hardcoded 200 was asserted, so `isLaunched()` regressing to `false` (or to
     // any non-boolean) would have left this row green while `scenarios.md` cited it as "isLaunched()
@@ -383,16 +382,16 @@ async function main(): Promise<void> {
       (s1Relaunch.body as { sameInstance?: boolean } | undefined)?.sameInstance === true,
     );
 
-    // ---- S2 Identity & attributes ----
-    // POSITIVE CONTROL for the attribute getters. `S2.clear-attributes` below is a NEGATIVE pair —
+    // ---- Identity & attributes ----
+    // POSITIVE CONTROL for the attribute getters. ` .clear-attributes` below is a NEGATIVE pair —
     // `afterClearOne === null` and `afterClearAll` empty — and a negative pair alone is satisfied by a
     // `getAttribute()` regressed to always return `undefined` and a `getAllAttributes()` regressed to
     // always return `{}`. Nothing in this gate used to assert either getter returning a VALUE, even
     // though this route already produced all four readings and the sweep threw the body away. This is
-    // the same pairing discipline the S1.flush residual check states for itself further down ("the
+    // the same pairing discipline the .flush residual check states for itself further down ("the
     // negative check alone would pass vacuously"), applied one scenario over.
     //
-    // NOT covered by the S2 wire checks on `manifest.attrs`: those read what the SDK put in the
+    // NOT covered by the wire checks on `manifest.attrs`: those read what the SDK put in the
     // uploaded bundle, a different path from what the getters answer in-process. Both regressions above
     // leave the bundle path untouched.
     const s2Identity = await hit('S2.identity-attributes', 'POST', '/scenarios/s2/identity-attributes');
@@ -445,7 +444,7 @@ async function main(): Promise<void> {
       'S2.clear-attributes: clearAllAttributes() leaves an empty attribute set',
       s2ClearBody?.afterClearAll !== undefined && Object.keys(s2ClearBody.afterClearAll).length === 0,
     );
-    // PLAN §4 S2 asks for all three of setUserIdentifier/getUserIdentifier/clearUserIdentifier, and
+    // PLAN asks for all three of setUserIdentifier/getUserIdentifier/clearUserIdentifier, and
     // `clearUserIdentifier` was neither exercised nor recorded N/A until this fix round (`browser-vanilla`
     // and `react-spa` cover it; `express-api` and `node-service` share the gap this closes here). The
     // route is at the BOTTOM of src/routes/scenarios.ts, below the last throw, so adding it shifted no
@@ -467,16 +466,16 @@ async function main(): Promise<void> {
         s2UserBody.restored === 'sample-user@bugsee.dev',
     );
 
-    // ---- S3 Manual telemetry ----
+    // ---- Manual telemetry ----
     await hit('S3.telemetry', 'POST', '/scenarios/s3/telemetry');
 
-    // ---- S4 Exceptions (storm runs LAST — spends the SDK's own rate-limit budget) ----
+    // ---- Exceptions (storm runs LAST — spends the SDK's own rate-limit budget) ----
     await hit('S4.error-instance', 'POST', '/scenarios/s4/error-instance');
     await hit('S4.non-error', 'POST', '/scenarios/s4/non-error');
     await hit('S4.cause', 'POST', '/scenarios/s4/cause');
     await hit('S4.options', 'POST', '/scenarios/s4/options');
     // BUDGET. This route AWAITS two full `logException()` round trips to REAL staging, so — exactly
-    // like S1.flush — it asks the SDK for TIMED work, and the F-X19 rule applies: the client-side
+    // like .flush — it asks the SDK for TIMED work, and the rule applies: the client-side
     // budget must EXCEED the work the route requests, or a correctly-working SDK reads as a failure.
     // It was nonetheless left on the flat 10s DEFAULT_HIT_TIMEOUT_MS for two rounds, on the reasoning
     // that one observation (the 2026-08-26 pre-fix baseline) was too thin to tune on and that raising
@@ -490,7 +489,7 @@ async function main(): Promise<void> {
     //   2. The blast radius changed. When only an HTTP status was asserted this cost one status row;
     //      since the `r1`/`r2` evidence check below was added it fails a GATE check too — i.e. the
     //      flat budget now turns correct SDK behaviour red.
-    // The budget is therefore derived from what the route REQUESTS, the same way S1.flush's is
+    // The budget is therefore derived from what the route REQUESTS, the same way .flush's is
     // (`FLUSH_TIMEOUT_MS + 5s`). The arithmetic that produced it was right; the JUSTIFICATION printed
     // here for two rounds ("two uploads, each bounded by the tee transport's own 30s") was wrong in
     // BOTH directions, and is restated:
@@ -520,10 +519,10 @@ async function main(): Promise<void> {
     // false` is the SDK's OWN dedup decision (packages/core/src/client.ts's `checkOrSetAlreadyCaught`
     // returns `{ok:false}` for a re-capture of the same thrown object) — the most direct evidence of
     // deduplication this sample can obtain, and it was being produced and thrown away: `hit()` only
-    // asserted HTTP 200, while scenarios.md's S4 dedupe row nonetheless CITED `{r1:{ok:true},
+    // asserted HTTP 200, while scenarios.md's dedupe row nonetheless CITED `{r1:{ok:true},
     // r2:{ok:false}}` as its evidence. The wire check below ("exactly ONE bundle") is the same claim
     // seen from the other end; both together distinguish "deduped" from "the second upload silently
-    // failed". NB: this check inherits S4.dedupe's client-side budget exposure — if the local hit
+    // failed". NB: this check inherits .dedupe's client-side budget exposure — if the local hit
     // aborts at DEDUPE_TIMEOUT_MS the body is undefined and this fails loudly rather than vacuously
     // passing, which is the intended direction (see the budget note above for why that budget is
     // derived from the route's requested work rather than left on the flat default).
@@ -536,30 +535,30 @@ async function main(): Promise<void> {
     //
     // THE CEILING IS A TRIPWIRE, AND IT MUST BE RE-FITTED AS OBSERVATIONS ACCUMULATE. It was first set
     // to 30000 ms on the ground that this was "roughly 2x observed, ample headroom", where "observed"
-    // meant three runs spanning 12755-14255 ms. The very next independent run — the 2026-08-27 round-4
+    // meant three runs spanning 12755-14255 ms. The very next independent run — the 2026-08-27
     // re-review — clocked 18433 ms, OUTSIDE that cited range, leaving only 1.63x of margin on a
-    // provably-correct SDK. That is the F-X19 failure mode this exact route has already hit twice: a
+    // provably-correct SDK. That is the failure mode this exact route has already hit twice: a
     // client-side number fitted to a small sample turning a healthy run red. The number was wrong, not
     // the design.
     //
     // OBSERVATIONS (append to this list, never trim it — the ceiling is only as honest as the record;
     // each run's own value is also recorded as `ms` in `data/verify-run.json`):
     //   12755 ms · 12850 ms · 14255 ms  (2026-08-26, three runs)
-    //   18433 ms                        (2026-08-27, round-4 re-review — escaped the 30000 ms fit)
+    // 18433 ms (2026-08-27, re-review — escaped the 30000 ms fit)
     //   21119 ms · 9458 ms              (2026-08-27, the two validation runs OF the 45000 ms refit)
     //   8629 ms · 8967 ms · 9431 ms · 9522 ms
-    //                                   (2026-08-27, the round-5 re-review's four consecutive sweeps)
+    // (2026-08-27, the re-review's four consecutive sweeps)
     //   8268 ms · 8785 ms · 8776 ms · 9797 ms · 8671 ms
-    //                                   (2026-08-27, the round-6 fix round's sweeps)
+    // (2026-08-27, the fix round's sweeps)
     //   9249 ms · 8518 ms · 8641 ms · 8904 ms · 9289 ms
-    //                                   (2026-08-27, the round-5 FIX round's validation sweeps — the
+    // (2026-08-27, the FIX round's validation sweeps — the
     //                                   2nd through 6th of six. The FIRST of those six also passed
     //                                   161/161, but its `ms` is NOT recorded here: its stdout was
     //                                   tail-truncated before the value was read, and
     //                                   `data/verify-run.json` had already been overwritten by the
     //                                   next run. An observation that was not actually read is left
     //                                   out of the record rather than guessed at.)
-    //   9168 ms · 9532 ms · 9122 ms    (2026-08-27, the round-7 fix round's sweeps — the first of the
+    // 9168 ms · 9532 ms · 9122 ms (2026-08-27, the fix round's sweeps — the first of the
     //                                   three run with `data/` deleted beforehand, which is why it is
     //                                   also the first observation taken against an empty store.)
     // Twenty-three observations, spread 8268-21119 ms: a 2.56x run-to-run swing on healthy staging,
@@ -589,7 +588,7 @@ async function main(): Promise<void> {
       dedupeBody?.r1?.ok === true && dedupeBody.r2?.ok === false,
     );
 
-    // ---- S5 Crashes (in-request) ----
+    // ---- Crashes (in-request) ----
     await hit('S5.route-throw', 'GET', '/scenarios/s5/route-throw', 500);
     await hit('S5.hook-throw', 'GET', '/scenarios/s5/hook-throw', 500);
     await hit('S5.async-throw', 'GET', '/scenarios/s5/async-throw', 500);
@@ -597,10 +596,10 @@ async function main(): Promise<void> {
     await hit('S5.timeout-throw', 'POST', '/scenarios/s5/timeout-throw', 202);
     await hit('S5.unhandled-rejection', 'POST', '/scenarios/s5/unhandled-rejection', 202);
 
-    // ---- S6 Console capture ----
+    // ---- Console capture ----
     await hit('S6.console', 'POST', '/scenarios/s6/console');
 
-    // ---- S7 Network capture ----
+    // ---- Network capture ----
     // These three asserted only the app's own hardcoded 200 for six rounds, while scenarios.md claimed
     // "body read correctly by the app" / "JSON body round-trips" / "text body round-trips" — the same
     // defect class their direct siblings (4xx/5xx/connection-failure/large-body/no-content-type) were
@@ -682,14 +681,14 @@ async function main(): Promise<void> {
       noContentTypeBody?.contentType === null && noContentTypeBody.text === 'no content type here',
     );
 
-    // ---- S8 Filters & redaction ----
+    // ---- Filters & redaction ----
     await hit('S8.log-redaction', 'POST', '/scenarios/s8/log-redaction');
     await hit('S8.breadcrumb-drop', 'POST', '/scenarios/s8/breadcrumb-drop');
     await hit('S8.report-mutate', 'POST', '/scenarios/s8/report-mutate');
     await hit('S8.report-veto', 'POST', '/scenarios/s8/report-veto');
     const s8NetworkFilter = await hit('S8.network-filter', 'POST', '/scenarios/s8/network-filter');
     // The route reports whether `setNetworkEventFilter`'s callback was ever INVOKED (it flips a flag
-    // inside the filter). Without this, every S8.network-filter wire check below is consistent with a
+    // inside the filter). Without this, every .network-filter wire check below is consistent with a
     // filter that was installed but never called — the header simply never having been sent — and
     // scenarios.md cited `filterInvoked: true` as evidence while nothing read it.
     wireCheck(
@@ -697,7 +696,7 @@ async function main(): Promise<void> {
       (s8NetworkFilter.body as { filterInvoked?: boolean } | undefined)?.filterInvoked === true,
     );
 
-    // ---- S9 Performance / APM ----
+    // ---- Performance / APM ----
     const s9ManualSpan = await hit('S9.manual-span', 'POST', '/scenarios/s9/manual-span');
     const manualSpanBody = s9ManualSpan.body as
       | { transactionName?: string; traceId?: string }
@@ -710,7 +709,7 @@ async function main(): Promise<void> {
     );
     await hit('S9.route-name', 'POST', '/scenarios/s9/route-name');
 
-    // ---- S10 Distributed tracing ----
+    // ---- Distributed tracing ----
     const s10Outbound = await hit('S10.outbound-trace', 'GET', '/scenarios/s10/outbound-trace');
     const outboundBody = s10Outbound.body as { traceparentReceivedByThirdParty?: string } | undefined;
     wireCheck(
@@ -721,7 +720,7 @@ async function main(): Promise<void> {
         ),
     );
 
-    // ---- S12 Persistence info ----
+    // ---- Persistence info ----
     await hit('S12.info', 'GET', '/scenarios/s12/info');
 
     // ---- route naming (nested-plugin regression check + real admin route) ----
@@ -770,7 +769,7 @@ async function main(): Promise<void> {
       ms: Math.max(...concurrencyResults.map((r) => r.ms)),
     });
 
-    // ---- S4 storm, last: it deliberately spends the rate-limit window ----
+    // ---- storm, last: it deliberately spends the rate-limit window ----
     const s4Storm = await hit('S4.storm', 'POST', '/scenarios/s4/storm');
     const stormBody = s4Storm.body as { responsivenessMs?: number; stillResponsive?: boolean } | undefined;
     wireCheck(
@@ -804,7 +803,7 @@ async function main(): Promise<void> {
     // left the gate green.
     //
     // What is asserted is deliberately NOT `flushed === true`. This flush is placed LAST on purpose —
-    // after S4.storm's 200 `logException` calls and the 50-way concurrency batch — so it meets a real
+    // after .storm's 200 `logException` calls and the 50-way concurrency batch — so it meets a real
     // ~100-bundle backlog, and `false` is the honest, reproducible outcome here: `drainPending`
     // (packages/core/src/client.ts:440-447) races the drain against `sleep(timeout)`. Moving the flush
     // to a low-load point would let it assert `true`, at the cost of no longer exercising the case
@@ -816,26 +815,26 @@ async function main(): Promise<void> {
     // stopping marginally before, the SDK's own internal timer.
     //
     // ==> THE OBSERVATION RECORD FOR THIS CHECK LIVES HERE, AND ONLY HERE. APPEND TO IT, NEVER TRIM IT
-    // (same discipline as the S4.dedupe ceiling above; each run's round trip is also in
+    // (same discipline as the .dedupe ceiling above; each run's round trip is also in
     // `data/verify-run.json` as `ms`, but the flush's OWN duration is only ever printed in the label
-    // below, so it has to be copied here by hand or it is lost). Before round 6 this record had THREE
+    // below, so it has to be copied here by hand or it is lost). Before this record had THREE
     // homes and they had already drifted: this comment said "two independent sweeps at ~15003 ms",
     // forty lines further down it said "both observed runs came in at 15002/15004", and
     // `scenarios.md` called the same outcome "three-times-reproduced". Two of those three retellings
     // described the SAME two runs and no third value was ever recorded anywhere. The duplicate figures
-    // forty lines down are gone, and `scenarios.md`'s S1-flush row now points here instead of
+    // forty lines down are gone, and `scenarios.md`'s -flush row now points here instead of
     // restating them.
-    //   15002 ms · 15004 ms   (2026-08-27, the round-5 fix round — the pair every earlier retelling
+    // 15002 ms · 15004 ms (2026-08-27, the fix round — the pair every earlier retelling
     //                          was describing. That round ran six sweeps and appended none of the
     //                          other four: a value that was not actually read is left out of the
     //                          record rather than guessed at.)
     //   15000 ms · 14999 ms · 14999 ms
-    //                         (2026-08-27, the round-6 review's three sweeps. Two of the three land
+    // (2026-08-27, the review's three sweeps. Two of the three land
     //                          BELOW the 15000 ms bound — that is the route's own clock being
     //                          marginally tighter than the SDK's internal timer, exactly what the
     //                          500 ms slack exists to absorb, NOT a flush that under-spent.)
     //   15000 ms · 15000 ms · 15001 ms · 15000 ms · 14999 ms
-    //                         (2026-08-27, the round-6 fix round's sweeps.) How many sweeps a round ran
+    // (2026-08-27, the fix round's sweeps.) How many sweeps a round ran
     //                          and what they SCORED is deliberately NOT recorded here: those numbers
     //                          live in scenarios.md's GATE-COUNT HOME, which states that they appear
     //                          exactly once in this sample, and a copy here would falsify that the next
@@ -843,7 +842,7 @@ async function main(): Promise<void> {
     //                          it already records two numbers that went stale in the round that changed
     //                          them. The DURATIONS are the record this home owns; the gate is not.
     //   15000 ms · 15000 ms · 15000 ms
-    //                         (2026-08-27, the round-7 fix round's sweeps. The first of the three ran
+    // (2026-08-27, the fix round's sweeps. The first of the three ran
     //                          against a DELETED `data/` — an empty store changes nothing about the
     //                          flush, as expected, and it is recorded so that is on the record rather
     //                          than assumed.)
@@ -876,7 +875,7 @@ async function main(): Promise<void> {
     // harness's wall clock for the entire HTTP round trip. Asserting on the round trip measured the
     // wrong quantity: it is only an UPPER bound on the flush, so a no-op `flush()` returning `false`
     // in 0 ms would still satisfy the invariant as long as >= 14.5 s of delay occurred ANYWHERE else
-    // in that request — and this check deliberately runs at peak load, right after the S4 storm and
+    // in that request — and this check deliberately runs at peak load, right after the storm and
     // the 50-way concurrency batch, which is precisely when such delay is available. Since guarding a
     // no-op flush is the entire reason this check exists, it reads the flush's own duration.
     const flushBody = s1Flush.body as { flushed?: boolean; flushMs?: number } | undefined;
@@ -933,7 +932,7 @@ async function main(): Promise<void> {
 
     // ---- wire-only assertions on the tee'd bundles ----
     console.log('\n== wire-level checks (from the tee transport) ==');
-    // Closes the S1.flush residual (see that check's comment above for the full reasoning and for why
+    // Closes the .flush residual (see that check's comment above for the full reasoning and for why
     // the "it would need a route change" blocker recorded there did not hold). `bundles.length` is the
     // SETTLED count: the drain loop above only returns once the tee's count has been stable for three
     // 5 s ticks. The assertion is an implication, so it is vacuously true on the `false` branch every
@@ -958,7 +957,7 @@ async function main(): Promise<void> {
         .length === 1,
     );
 
-    // ---- S5: process-level crashes must carry the RIGHT report `type` — "crash" (detectCrashes /
+    // ----: process-level crashes must carry the RIGHT report `type` — "crash" (detectCrashes /
     // uncaughtException) vs "error" (unhandledRejections:'warn') — not just a 202 the route hardcodes
     // regardless of whether anything was ever reported at all.
     const timeoutThrowBundle = bundles.find((b) =>
@@ -976,7 +975,7 @@ async function main(): Promise<void> {
       unhandledRejectionBundle?.bundle?.request?.type === 'error',
     );
 
-    // ---- S8.log-redaction: a POSITIVE control alongside the negative check below. The negative check
+    // ---- .log-redaction: a POSITIVE control alongside the negative check below. The negative check
     // alone (no SECRET_LOG_VALUE anywhere) passes vacuously if setLogEventFilter regressed to DROPPING
     // the entry entirely, or if this bundle simply never uploaded — neither of those is "redaction
     // working". Assert the redacted FORM actually reached logs.json.
@@ -998,7 +997,7 @@ async function main(): Promise<void> {
       !bundles.some((b) => String(b.bundle?.request?.summary ?? '').includes('VETO_ME')),
     );
 
-    // ---- S3/S6: logs.json actually carries the manual telemetry (not just "a report arrived") ----
+    // ---- /: logs.json actually carries the manual telemetry (not just "a report arrived") ----
     const s3Bundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s3-${RUN_MARKER}`),
     );
@@ -1020,9 +1019,9 @@ async function main(): Promise<void> {
       ) && s6Messages.some((m) => m.includes('s6-circular')),
     );
 
-    // ---- S8.breadcrumb-drop: the filtered breadcrumb array itself, not just "a report arrived" ----
+    // ---- .breadcrumb-drop: the filtered breadcrumb array itself, not just "a report arrived" ----
     // NOTE: breadcrumbs are a ROLLING trail (like network — not reset per report), so this bundle can
-    // legitimately also carry earlier scenarios' own breadcrumbs (e.g. S3's `s3-breadcrumb-*`, or an
+    // legitimately also carry earlier scenarios' own breadcrumbs (e.g. the `s3-breadcrumb-*`, or an
     // earlier run's own "kept" one) if they fall inside the same recording window. The real assertion
     // is therefore "THIS run's kept breadcrumb survived, and no secret-category breadcrumb EVER appears
     // in ANY bundle from this run" — not an exact count on one bundle (confirmed against a live run: an
@@ -1038,7 +1037,7 @@ async function main(): Promise<void> {
         !bundles.some((b) => (b.bundle?.breadcrumbs ?? []).some((c) => c.category === 'secret')),
     );
 
-    // ---- S7: network.json is actually present with real entries (not asserted anywhere before this) ----
+    // ----: network.json is actually present with real entries (not asserted anywhere before this) ----
     //
     // RUN SCOPING. `recover: true` + on-disk capture means a PRIOR run's undelivered report can be
     // recovered at launch and uploaded through THIS run's tee, landing in `bundles`. Every check that
@@ -1093,10 +1092,10 @@ async function main(): Promise<void> {
       largeBodyEntry?.custom?.no_body_reason === 'size_too_large',
     );
 
-    // ---- S10: tracePropagationTargets, the EXCLUDE half ----
+    // ----: tracePropagationTargets, the EXCLUDE half ----
     // `propagateTrace` + `tracePropagationTargets` is a two-sided contract: listed targets GET a
     // `traceparent`, unlisted ones must NOT. Only the include half was ever checked (the third party
-    // echoes the header back, asserted at S10.outbound-trace and on the filtered network entry above),
+    // echoes the header back, asserted at .outbound-trace and on the filtered network entry above),
     // and the exclude half could not have been checked, because the list carried a catch-all
     // `/127\.0\.0\.1/` regex alongside the exact `127.0.0.1:<third-party-port>` string — and every
     // outbound call this sample makes goes to 127.0.0.1. The regex matched all of them, so "only
@@ -1104,7 +1103,7 @@ async function main(): Promise<void> {
     // scenarios.md read "Local — verified".
     //
     // The regex is gone (src/bugsee.ts:71 now lists exactly one target) and the app's existing call to
-    // `http://127.0.0.1:1/unreachable` (S7.connection-failure) is now a genuine NON-listed target: same
+    // `http://127.0.0.1:1/unreachable` (.connection-failure) is now a genuine NON-listed target: same
     // client, same run, same interceptor, differing from the listed target ONLY in being absent from
     // the list. Its captured 'before' entry must carry no `traceparent`/`tracestate`, while the
     // `/echo-headers` entry asserted below (`'traceparent' in filteredEntry.custom.headers`) shows the
@@ -1137,7 +1136,7 @@ async function main(): Promise<void> {
         ),
     );
 
-    // ---- S8.network-filter: compare the FILTERED call against an unfiltered control call ----
+    // ---- .network-filter: compare the FILTERED call against an unfiltered control call ----
     const networkFilterBundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s8-network-filter-${RUN_MARKER}`),
     );
@@ -1178,7 +1177,7 @@ async function main(): Promise<void> {
       controlEntry?.custom?.headers?.['content-type'] === 'application/json',
     );
     // Global negative: the secret must not survive ANYWHERE in ANY uploaded bundle's network trail —
-    // the same positive-plus-negative pairing S8.log-redaction uses. The per-entry check above cannot
+    // the same positive-plus-negative pairing .log-redaction uses. The per-entry check above cannot
     // see a leak into some other entry (a redirect hop, the 'complete' stage, another bundle's copy of
     // the rolling trail).
     wireCheck(
@@ -1257,7 +1256,7 @@ async function main(): Promise<void> {
     // the sweep. This run's own third-party mock (plain `node:http`, i.e. the pure fallback path)
     // demonstrates the shape: it produced `GET /not-found`, `GET /boom`, `GET /large`, `POST /alert`.
     // So the assertion moved to a route that DOES carry parameters, and asserts EQUALITY (not
-    // `includes`) against the merged two-level pattern — exactly the form round 3 gave the
+    // `includes`) against the merged two-level pattern — exactly the form gave the
     // adapter-alone check. A concrete-URL fallback would read
     // `GET /api/v1/metrics/admin/series/latency.<marker>/summary` and fail this.
     const ADMIN_PATTERN = 'GET /api/v1/metrics/admin/series/:name/summary';
@@ -1286,13 +1285,13 @@ async function main(): Promise<void> {
 
     // ---- F-3: custom setErrorHandler rewrote the response to 200 — does onError still report it? ----
     // Identifier note: this check, its label and its comment named "F-2" for three rounds, but
-    // `FINDINGS.md` has NO F-2 heading — that finding was folded into F-3 as its illustration
-    // (FINDINGS.md:123, "was filed separately as F-2"), so the printed gate label pointed readers at a
+    // NO F-2 heading — that finding was folded into F-3 as its illustration
+    // (123, "was filed separately as F-2"), so the printed gate label pointed readers at a
     // section that does not exist. `scenarios.md:244` already said this correctly; this did not.
     // A REAL, recorded check (not a printed observation): this is the class of check the 2026-08-23
     // review found sitting outside the pass/fail gate entirely. It asserts today's actual (buggy)
     // behaviour, so it will FLIP TO FAIL the day @bugsee/fastify gains a `shouldReport` seam that lets
-    // an app opt this case out — that flip is the point, see FINDINGS.md F-3.
+    // an app opt this case out — that flip is the point, see
     const customHandlerBundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s14-custom-handler-throw-${RUN_MARKER}`),
     );
@@ -1303,7 +1302,7 @@ async function main(): Promise<void> {
 
     // ---- F-1: does a genuine Fastify SCHEMA VALIDATION 4xx (never thrown by app code) get reported? ----
     // Same discipline as F-3 above: asserts today's actual behaviour, so it fails the day
-    // @bugsee/fastify's onError hook starts filtering by status (defaultShouldReport) — see FINDINGS.md.
+    // @bugsee/fastify's onError hook starts filtering by status (defaultShouldReport) — see
     // Scoped to THIS run via `http.url` (which carries the `?marker=` every `hit()` appends —
     // server-instrument.ts:259 stamps `sanitizeUrl(info.url)`, query included, and a live run confirms
     // the marker survives). The summary alone is Fastify's own validation message and carries no
@@ -1325,7 +1324,7 @@ async function main(): Promise<void> {
     //   (a) Of the checks that select from `bundles` — the stale-bundle hazard's actual surface,
     //       since `bundles` is the only thing a recovered previous-run report can land in — every
     //       check that POSITIVELY selects a bundle is run-scoped: by a summary marker, by `http.url`,
-    //       or, for the two S7 network checks, by narrowing to this run's bundles first. The
+    // or, for the two network checks, by narrowing to this run's bundles first. The
     //       remainder of the bundle-selecting checks are global NEGATIVES ("no bundle anywhere
     //       contains X"), which a recovered stale bundle can only make stricter, never falsely green.
     //   (b) Three positive selectors are NEITHER run-scoped nor negatives — the two route-naming
@@ -1425,7 +1424,7 @@ async function main(): Promise<void> {
     adapterAloneParsed.contextIdCount === 1,
   );
 
-  // ---- performanceSampleRate: 0 must suppress EVERY transaction on the wire (S9) ----
+  // ---- performanceSampleRate: 0 must suppress EVERY transaction on the wire ----
   console.log('\n== sample-rate child process (performanceSampleRate: 0) ==');
   const SAMPLE_RATE_PORT = '5408';
   const sampleRateChild = await runChild('scripts/sample-rate-child.ts', [SAMPLE_RATE_PORT, RUN_MARKER]);

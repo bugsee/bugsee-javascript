@@ -14,7 +14,7 @@ import {
   type RequestDecoratorRegistry,
 } from './request-decorator';
 
-// Cross-runtime fetch capture SOURCE (design §16.2): wraps `fetch` and emits NetworkEvents per stage
+// Cross-runtime fetch capture SOURCE: wraps `fetch` and emits NetworkEvents per stage
 // (before → complete | error). global `fetch` is universal (browser/workers/Node≥18/Bun/Deno/edge),
 // and wrapping it is the same technique everywhere, so this is shared. The wrap is installed only
 // while ACTIVE (subscriber-presence / explicit start, via InterceptorBase) and removed when idle.
@@ -22,7 +22,7 @@ import {
 // Metadata-first: url / method / request+response headers / status / timing. Request/response BODIES
 // are deferred (body capture, size limits, content-type rules are a follow-up). Sanitization is the
 // consumer's job (networkProvider) — the interceptor emits raw events. SDK self-isolation skips the
-// SDK's own outbound requests (X-Bugsee-Internal, §14.6). Subscribe via on('complete', …) / onAny.
+// SDK's own outbound requests (X-Bugsee-Internal). Subscribe via on('complete', …) / onAny.
 
 // `fetch` is a DOM/Node lib global; this package carries no such lib types, so reach it via casts.
 type FetchFn = (input: unknown, init?: unknown) => Promise<unknown>;
@@ -210,7 +210,7 @@ const requestHeaders = (input: unknown, init: unknown): Record<string, string> =
   return {};
 };
 
-/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal (§14.6). */
+/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal. */
 const hasInternalHeader = (headers: Record<string, string>): boolean =>
   Object.keys(headers).some((key) => key.toLowerCase() === 'x-bugsee-internal');
 

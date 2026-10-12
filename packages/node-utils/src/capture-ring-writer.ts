@@ -12,13 +12,13 @@ import {
 } from './capture-ring-drainer';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
-// CaptureRingWriter — the Phase-2 ChunkStorage over the shared CaptureRing + a RingWorker (design D6/D7).
+// CaptureRingWriter — the ChunkStorage over the shared CaptureRing + a RingWorker.
 // It is a drop-in for the Phase-1 batched writer (identical on-disk layout + tab-frame), but the per-entry
 // HOT path encodes the frame IN PLACE into the shared ring (zero-copy) and a WORKER drains it to disk off
 // the host thread. The worker OWNS all data-file fds (deno can't inherit the main's fds), so the main talks
 // to it by path-derived `pathId` (in the ring) + a tiny control surface (flushAndWait / closeChunk / closeAll
 // / stop). The infrequent main-thread parts — meta writes, reads, directory listing/removal — stay on the
-// main thread (D4); reads/seals first flush-and-ack so the worker's writes are on disk.
+// main thread; reads/seals first flush-and-ack so the worker's writes are on disk.
 
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;
@@ -91,7 +91,7 @@ function pathForId(
   const name = fileTypes[typeIndexOfPathId(pathId)];
   // A corrupted frame header decodes to a type index past the end of `fileTypes`. Unguarded, this called
   // `join(..., undefined)` — a TypeError thrown inside the drainer's write path, which then retried the
-  // same frame forever and pinned the ring (Wave 6.7). Naming it makes the drainer drop the frame instead.
+  // same frame forever and pinned the ring. Naming it makes the drainer drop the frame instead.
   if (name === undefined) {
     throw new UnusableFrameError(`unknown capture file type for pathId ${pathId}`);
   }
@@ -203,7 +203,7 @@ export function createCaptureRingWriter(
     write(g, c, file, dataStr): void {
       try {
         ensureDir(chunkDir(g, c));
-        writeFile(filePath(g, c, file), dataStr); // meta / replace — main thread (D4)
+        writeFile(filePath(g, c, file), dataStr); // meta / replace — main thread
       } catch (error) {
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
       }

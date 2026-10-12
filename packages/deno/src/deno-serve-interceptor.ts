@@ -5,12 +5,12 @@ import {
   wrapFetchHandler,
 } from '@bugsee/node';
 
-// Native Deno.serve instrumentation (design: docs/design/incoming-server-instrumentation.md §5.3). Replaces
+// Native Deno.serve instrumentation. Replaces
 // `Deno.serve` to wrap its handler — across all overloads: `Deno.serve(handler)`,
 // `Deno.serve(options, handler)`, and `Deno.serve({ handler, ... })` — via the shared `wrapFetchHandler`,
 // so idiomatic Deno.serve apps (which bypass node:http) get a per-request context + http.server
 // transaction. Self-skips when `Deno` is absent (e.g. unit tests on Node). A throw escaping the handler is
-// captured + re-thrown (Deno turns it into a 500), verified by the §8.0 spike on Deno 2.8.
+// captured + re-thrown (Deno turns it into a 500), verified on Deno 2.8.
 
 type DenoHandler = FetchHandler<[info?: unknown]>;
 interface DenoServeOptions {

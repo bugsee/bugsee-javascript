@@ -1,6 +1,6 @@
-// Cyclic ring buffer (design §7.7): one per wire file-type, bounded by a fixed capacity. New items
+// Cyclic ring buffer: one per wire file-type, bounded by a fixed capacity. New items
 // evict the oldest (FIFO) once full. The trigger path snapshot-copies a buffer and clears it for the
-// next bundle (§7.7 atomicity), so `drain` copies-then-empties atomically.
+// next bundle (atomicity), so `drain` copies-then-empties atomically.
 //
 // Retention note: slots are bounded by `capacity` and reused on the next push after clear/drain, so
 // drained references are reclaimed on reuse — no unbounded growth, hence no explicit slot-nulling.

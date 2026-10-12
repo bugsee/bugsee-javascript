@@ -9,10 +9,10 @@ import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
 vi.mock('@bugsee/replay', () => ({ registerReplay: vi.fn() }));
 
-// Review round 3 (H1), browser half: R3L-1. The instance lock and IndexedDB handles are released when the ONE
+// Browser half: the instance lock and IndexedDB handles are released when the ONE
 // shared real stop drain settles true, from whichever stop() observes it (exactly once), even after a stop(timeout)
 // gave up.
-// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work (R4L-4).
+// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work.
 let releaseThrows = false;
 vi.mock('@bugsee/browser-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/browser-utils')>();
@@ -203,7 +203,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     client.notify('cannot be delivered');
     expect(await client.stop()).toBe(false);
     // The observer hangs off the same promise stop() just returned, and a FALSE drain does no I/O: a few
-    // microtask turns run every continuation it could have (no wall-clock sleep, R4H-8).
+    // microtask turns run every continuation it could have (no wall-clock sleep).
     await microtasks();
     expect(locks.held.size).toBe(1);
   });

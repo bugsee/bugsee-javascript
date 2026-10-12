@@ -11,7 +11,7 @@ import { resetBrowserDeviceIdCache } from './device-id';
 import type { BrowserProbe } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
-// `notify()` (T7) end to end through the real browser composition root: it reaches the collector's
+// `notify()` end to end through the real browser composition root: it reaches the collector's
 // POST /v2/notifications through the SAME transport as the session and issue calls, authenticated by the
 // app token in the body (no session), and the friendly `notifyFlushDelay` option reaches the relay.
 

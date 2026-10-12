@@ -1,11 +1,11 @@
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-// Where the Node SDK stores captured data (server write-path P1, D3). On servers (node/bun/deno) durable
+// Where the Node SDK stores captured data (server write-path). On servers (node/bun/deno) durable
 // disk capture is the DEFAULT — opt-out, not opt-in — so a crash/OOM that beats the bundle assembly still
 // delivers the last recording window on the next launch. `'memory'` opts out to the legacy in-RAM path.
 // When disk is on but no `dataDir` was given, the data lives under `os.tmpdir()/bugsee/<appTokenHash>`
-// (sdk-design §12.5) with the per-instance subtree (multi-instance-disk-coexistence) layered under. The
+// (sdk-) with the per-instance subtree layered under. The
 // per-APP-TOKEN segment scopes recovery + the sibling sweep to THIS app, so two different Bugsee apps
 // sharing a host never recover/delete each other's data through the wrong app token. An explicit `dataDir`
 // overrides the location entirely.

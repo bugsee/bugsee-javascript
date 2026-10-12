@@ -171,8 +171,8 @@ describe('createPerformanceController', () => {
   it('setActiveTransactionName refines the active transaction name + stamps the provenance (D5)', () => {
     const store = createTransactionStore();
     const api = createPerformanceController({ clock: fixedClock, store });
-    const txn = api.startTransaction({ name: '/users/42', operation: 'navigation' }); // phase 1: raw URL
-    api.setActiveTransactionName('/users/:id', { source: 'route' }); // phase 2: resolved route
+    const txn = api.startTransaction({ name: '/users/42', operation: 'navigation' }); // raw URL
+    api.setActiveTransactionName('/users/:id', { source: 'route' }); // resolved route
     expect(txn.getName()).toBe('/users/:id');
     expect(txn.getAttributes()['bugsee.name_source']).toBe('route');
   });
@@ -233,7 +233,7 @@ describe('createPerformanceController — the injectable active-span store (D2 p
 
   it('getActiveSpan reads LIVE from the injected store — a write after construction is visible', () => {
     // A snapshot-at-construction (`const cached = store.get()` in createPerformanceController) would
-    // pass a pre-seeded read yet break the whole D2 premise (the request-scoped store changes value
+    // pass a pre-seeded read yet break the whole premise (the request-scoped store changes value
     // per async context with no controller involvement). So the external write lands AFTER construction.
     const store = createTransactionStore();
     const activeSpanStore = createSingleSlotActiveSpanStore();

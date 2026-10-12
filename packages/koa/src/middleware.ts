@@ -7,7 +7,7 @@ import {
 } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
-// The Koa adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Koa adapter.
 // Koa is a PEER (structural types only). A single middleware over the shared server-instrumentation core:
 // Koa's compose propagates a downstream throw up through `await next()`, so the middleware catches it,
 // REPORTS it (per Koa's status-based policy), then RE-THROWS untouched — Koa's onerror still formats the

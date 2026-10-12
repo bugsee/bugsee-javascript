@@ -6,7 +6,7 @@ import type { RequestDecoratable, RequestDecorator } from './request-decorator';
 const isDecoratable = (source: NetworkSource): source is NetworkSource & RequestDecoratable =>
   typeof (source as Partial<RequestDecoratable>).addRequestDecorator === 'function';
 
-// Umbrella network SOURCE (design §16): a composite interceptor that aggregates the per-mechanism
+// Umbrella network SOURCE: a composite interceptor that aggregates the per-mechanism
 // network interceptors (fetch/xhr/ws/sse/webtransport) into ONE subscribable stream — so a consumer
 // (the networkProvider, APM, user code) subscribes ONCE for ALL network events instead of to N
 // sources. Each NetworkEvent carries a unique id + sequence, so a subscriber can still pick out a

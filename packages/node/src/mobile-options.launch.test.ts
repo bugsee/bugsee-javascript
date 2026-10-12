@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
-// Mobile-parity launch options (T6), end to end through the real Node composition root: the friendly name
+// Mobile-parity launch options, end to end through the real Node composition root: the friendly name
 // resolves to the canonical key, reaches `sdk.options` on the wire, and changes what is uploaded.
 
 const probe: SystemProbe = {

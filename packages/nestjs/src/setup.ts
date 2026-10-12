@@ -7,7 +7,7 @@ import type { NestAdapterOptions } from './shared';
 
 // One-call setup for @bugsee/nestjs. Call it in main.ts after NestFactory.create(...). It installs the
 // per-request context middleware plus the chosen error/APM seam(s) over the foundation. By default it
-// uses the non-intrusive interceptor (the studied trade-off lives in docs/design/framework-adapters.md):
+// uses the non-intrusive interceptor (the studied trade-off lives in):
 //   setupNest(app)                              // interceptor: handler/service/pipe errors + APM
 //   setupNest(app, { errorCapture: 'filter' })  // global filter: ALSO guard/pipe errors (broadest)
 //   setupNest(app, { errorCapture: 'both' })    // both, deduped (an error seen by both reports once)
@@ -39,10 +39,10 @@ export interface NestApp {
 /**
  * CONTAINED. This runs at SERVER BOOTSTRAP, walking a host-supplied app/server object and calling its
  * registration methods. An unguarded throw here does not cost one report — it stops the application
- * starting at all, which is the most severe form of the failure Wave 2.1 exists to prevent.
+ * starting at all, which is the most severe form of the failure this guard exists to prevent.
  *
  * The failure is routed to `onError`, NOT swallowed. Containing a bootstrap failure silently would trade
- * this defect for the one Wave 4 is about ("features that silently do nothing"); reporting it keeps the
+ * this defect is an instance of "features that silently do nothing"; reporting it keeps the
  * app alive AND tells anyone who wired a sink that instrumentation did not install.
  */
 export function setupNest(app: NestApp, options: SetupNestOptions = {}): void {

@@ -15,7 +15,7 @@ import { instrumentEdgeClass } from './instrument-class';
 import { type BugseeWorkerConfig, createLazyLauncher } from './launch-config';
 import { cloudflareRequestAttributes } from './request-cf';
 
-// The unified Cloudflare Workers instrumentation wrapper (docs/design/edge-runtime.md C2). Cloudflare module
+// The unified Cloudflare Workers instrumentation wrapper. Cloudflare module
 // Workers export a handler OBJECT (`export default { fetch, scheduled, queue, email, tail }`); each method is a
 // distinct invocation type, and the non-fetch ones have NO incoming Request, so a fetch-only SDK misses cron /
 // queue / email / tail entirely. `withBugsee` wraps every PRESENT method so it runs in its own Bugsee context

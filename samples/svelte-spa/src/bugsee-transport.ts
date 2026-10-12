@@ -3,15 +3,15 @@
 // staging endpoint verbatim, via the browser's own `fetch`, while recording a parsed summary of each
 // call locally. That local record is what lets scripts/verify.mjs assert on things the MCP surface
 // does not expose — the exact UPLOADED bundle contents (redaction, labels, dedupe) — the "wire"
-// verification depth from docs/samples/PLAN.md §4/§6.6, instead of only asserting on the Scenario
+// verification depth from, instead of only asserting on the Scenario
 // panel's OWN filter-callback log having run (which proves the callback fired, not that the SDK
-// actually applied its return value to what got uploaded — see FINDINGS.md's S8 note).
+// actually applied its return value to what got uploaded — see 's note).
 //
 // It rewrites nothing — every call is forwarded byte-for-byte to the real endpoint, and the response is
 // returned to the SDK unmodified. The one way it is not invisible: recording costs work. The unzip +
 // JSON.parse of each uploaded bundle is therefore deliberately deferred OFF the awaited path (see
 // `scheduleParse` below) so the SDK's upload promise resolves on the same schedule it would with the
-// real transport; doing it inline made ~100 synchronous unzips run on the main thread during the S4
+// real transport; doing it inline made ~100 synchronous unzips run on the main thread during the
 // storm, delaying every resolve.
 import { gunzipSync, strFromU8, unzipSync } from '@bugsee/util';
 
@@ -32,7 +32,7 @@ export type HttpTransport = (url: string, options?: HttpRequestOptions) => Promi
 
 export interface ParsedBundleSummary {
   files: string[];
-  /** Compressed size of `replay.bin` when the bundle carries one (S11 wire evidence). Cheap: this is the
+  /** Compressed size of `replay.bin` when the bundle carries one (wire evidence). Cheap: this is the
    *  entry length off the unzip, NOT a gunzip — decoding is deferred to `inspectReplay` so a 200-report
    *  storm does not pay for ~100 gunzip+JSON.parse round trips it will never be asked about. */
   replayBytes?: number;
@@ -64,7 +64,7 @@ export interface CapturedCall {
   bundle?: ParsedBundleSummary;
 }
 
-// Generous headroom — the S4 storm alone can produce well over a hundred admitted reports in one sweep.
+// Generous headroom — the storm alone can produce well over a hundred admitted reports in one sweep.
 const MAX_RECORDS = 2000;
 const records: CapturedCall[] = [];
 let seq = 0;
@@ -84,10 +84,10 @@ function parseBundle(seq: number, body: Uint8Array): ParsedBundleSummary | undef
   try {
     const files = unzipSync(body) as Record<string, Uint8Array>;
     const summary: ParsedBundleSummary = { files: Object.keys(files) };
-    // S11 (session replay). `replay.bin` is the gzipped rrweb event stream
+    // (session replay). `replay.bin` is the gzipped rrweb event stream
     // (packages/replay/src/encoder.ts). Recorded here so verify.mjs can assert on the RECORDING — that it
     // exists, that it decodes to real rrweb events, and what text those events do and do not contain —
-    // instead of stopping at "the relaunch didn't throw", which is all five S11 checks used to assert and
+    // instead of stopping at "the relaunch didn't throw", which is all five checks used to assert and
     // which stays green with replay recording entirely dead.
     const replayFile = files['replay.bin'];
     if (replayFile !== undefined) {
@@ -180,13 +180,13 @@ export function createTeeTransport(): HttpTransport {
     records.push(record);
     if (records.length > MAX_RECORDS) records.shift();
     if (kind === 'bundle-upload' && options.body !== undefined) {
-      // Parse the REQUEST body being PUT to the presigned S3 url, not the response — S3's PUT response
+      // Parse the REQUEST body being PUT to the presigned S3 url, not the response — the PUT response
       // body is empty on success (a peer sample caught this: parsing the response silently produced 0
       // bundles, which is exactly the "everything still reads green" failure mode this wire-level check
       // exists to avoid).
       //
       // Deferred, not inline: unzipping + JSON.parsing every bundle synchronously here ran ~100 times on
-      // the main thread during the S4 storm, BEFORE the SDK's own upload promise resolved — so every
+      // the main thread during the storm, BEFORE the SDK's own upload promise resolved — so every
       // upload resolved later under the tee than it would in production. `record` is pushed first and
       // its `bundle` filled in a moment later; `getCapturedBundles()` skips records that aren't parsed
       // yet and verify.mjs's `waitForBundle` polls, so the only visible effect is a slightly later match.
@@ -220,7 +220,7 @@ export interface ReplayInspection {
    *  3 = IncrementalSnapshot). A recording with no FullSnapshot cannot be replayed at all. */
   events: number;
   eventTypes: number[];
-  /** For each needle: whether it appears anywhere in the decoded rrweb JSON. This is what turns S11 from
+  /** For each needle: whether it appears anywhere in the decoded rrweb JSON. This is what turns from
    *  "the option was accepted" into "the recording actually redacted the secret" — and, via the un-masked
    *  needles, into a discriminating check rather than a vacuous one (see verify.mjs's s11-replay-masking-wire). */
   hits: Record<string, boolean>;

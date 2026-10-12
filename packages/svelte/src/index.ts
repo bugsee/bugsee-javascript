@@ -1,5 +1,5 @@
-// @bugsee/svelte — SvelteKit adapter (tier 4). Error seam (handleError hook) + navigation naming.
-// See docs/design/frontend-adapters.md §7. Structural peer — no svelte/@sveltejs/kit import.
+// @bugsee/svelte — SvelteKit adapter. Error seam (handleError hook) + navigation naming.
+// Structural peer — no svelte/@sveltejs/kit import.
 // v1: client error + routing only (server hooks + component depth are follow-ups / the shared depth pass).
 
 // Single-install re-export: surface the full public SDK (launch, Bugsee, options + manual-API

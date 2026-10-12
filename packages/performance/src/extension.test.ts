@@ -270,7 +270,7 @@ describe('createPerformanceExtension — the span filter reaches CONSUMED spans'
   });
 });
 
-// R3V-3: `sanitizeSpans ?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
+// `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
 describe('createPerformanceExtension — sanitizeSpans is fail-on (R3V-3)', () => {
   const SQL = "SELECT * FROM users WHERE email = 'a@b.com'";

@@ -3,9 +3,9 @@
 // N1b-1 already exposes the Bugsee SpanProcessor for coexistence (pass it to `@vercel/otel`'s
 // `registerOTel({ spanProcessors })`). N1b-2 adds the TRULY zero-config path: when NO OTel provider is
 // registered, stand up our own with the Bugsee processor so Next.js emits its built-in spans and we
-// consume them — no user OTel setup at all (the D4 differentiator; beats Sentry's manual opt-in).
+// consume them — no user OTel setup at all (the differentiator; beats Sentry's manual opt-in).
 //
-// Competitor-grounded mechanism (design D4.1): the OTel global tracer-provider slot is single-owner /
+// Competitor-grounded mechanism: the OTel global tracer-provider slot is single-owner /
 // FIRST-WINS (`setGlobalTracerProvider` returns `false` if one exists) and `getTracerProvider()` hands
 // back a Proxy with no `addSpanProcessor` — so we register ONLY when the slot is free and NEVER clobber a
 // pre-existing `@vercel/otel`. Mirrors @vercel/otel's own choice of `BasicTracerProvider`. The OTel SDK is
@@ -69,7 +69,7 @@ export async function attachBugseeOtelProvider(
   options: AttachOtelProviderOptions = {},
 ): Promise<OtelProviderOutcome> {
   // Zero-config OTel installs a process-wide provider that consumes every span, so only boolean `true` (or absent)
-  // sets it up: `'false'`, `0`, `null`, `1` are OFF and reported, never read as "on" (R5V-8).
+  // sets it up: `'false'`, `0`, `null`, `1` are OFF and reported, never read as "on".
   if (!resolveFailClosedBoolean(options.setupOtelProvider, true)) {
     if (options.setupOtelProvider !== false) {
       reportGuarded(

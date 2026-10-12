@@ -338,11 +338,11 @@ describe('launchEdge', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// Wave 0.1a (docs/review/REMEDIATION-PLAN.md): supplying AsyncLocalStorage explicitly.
+// supplying AsyncLocalStorage explicitly.
 //
 // The adversarial review proved on real workerd 1.20260722.1 that `globalThis.AsyncLocalStorage` does NOT
 // exist on Cloudflare under ANY compatibility flag — it is reachable only as an export of
-// `node:async_hooks` (docs/review/cloudflare.md SEV1 #3). The probe therefore always misses there, so
+// `node:async_hooks`. The probe therefore always misses there, so
 // per-request context is permanently degraded to the single-slot fallback and reports carry no
 // contextId. The edge tier cannot import `node:async_hooks` itself without breaking the bundle for
 // deployments that lack the flag, so the store must be INJECTABLE: the user imports AsyncLocalStorage in
@@ -379,9 +379,9 @@ describe('launchEdge — asyncLocalStorage injection', () => {
   });
 });
 
-// S4.5 (docs/design/cloudflare-tenant-isolation.md): the partitioned store must actually be WIRED IN.
+// the partitioned store must actually be WIRED IN.
 //
-// S1-S4 built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
+// Earlier changes built the owner key, the partitioned store, the scoped drain and the DO stamping — but nothing
 // selected the partitioned store, so the whole chain was inert. This is the switch.
 describe('launchEdge — partitionCaptureByTenant', () => {
   it('keeps tenants apart in the capture store when enabled', async () => {
@@ -427,7 +427,7 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     await client.stop?.();
   });
 
-  // R5V-4 / R5V-5: the warning must survive a host sink that throws, and describe ANY value without throwing
+  // The warning must survive a host sink that throws, and describe ANY value without throwing
   // (JSON.stringify throws on a BigInt and prints `undefined` for a Symbol or a function).
   it.each([
     [10n, '10n'],
@@ -508,10 +508,10 @@ describe('launchEdge — partitionCaptureByTenant', () => {
   });
 });
 
-// Fixes for the adversarial review of this session's changes (docs/review/session-changes-review.md).
+// Fixes from an adversarial review.
 describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
   it('divides the byte budget across partitions instead of replicating it', async () => {
-    // SEV1 #2: giving each partition the full maxDataSize put 9 x 10 MB against a 128 MB isolate
+    // giving each partition the full maxDataSize put 9 x 10 MB against a 128 MB isolate
     // (measured 116 MB heap). The total must stay within maxDataSize however many tenants appear.
     const sizes: Array<number | undefined> = [];
     const core = await import('@bugsee/core');
@@ -546,7 +546,7 @@ describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
   });
 
   it('reports through onError when an explicit captureStore silently disables isolation', () => {
-    // SEV2 #6: the override wins over the switch, reinstating the cross-tenant leak with no diagnostic.
+    // the override wins over the switch, reinstating the cross-tenant leak with no diagnostic.
     const errors: unknown[] = [];
     const inert = {
       add: () => {},
@@ -580,7 +580,7 @@ describe('launchEdge — tenant partitioning bounds + diagnostics', () => {
 
 describe('launchEdge — reused non-partitioned client diagnostic', () => {
   it('names the isolation loss when a partitioning launch reuses a non-partitioned client', () => {
-    // Review pass 2 SEV3 #3: `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
+    // `launchEdge(token)` runs first (it is re-exported by @bugsee/cloudflare),
     // then a Durable Object's lazy launcher reuses that carrier client — which does not partition. The
     // only signal was the generic "called more than once", which does not mention the leak.
     const carrier = {};
@@ -599,7 +599,7 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
     expect(message).toContain('or do not call launchEdge directly');
   });
 
-  // R4V-1: an INVALID value asks for partitioning too (it fails ON), so the reuse warning must fire for it as well.
+  // an INVALID value asks for partitioning too (it fails ON), so the reuse warning must fire for it as well.
   it.each([
     ['true'],
     [1],
@@ -632,7 +632,7 @@ describe('launchEdge — reused non-partitioned client diagnostic', () => {
 });
 
 describe('launchEdge — the partition bound and the budget divisor cannot disagree', () => {
-  // Review pass 2-fixes SEV2 #1: the store coerced maxPartitions but launchEdge's divisor used the RAW
+  // The store coerced maxPartitions but launchEdge's divisor used the RAW
   // value, so `0` restored a full budget per partition (the 90 MB blow-up) and `NaN` produced a NaN budget
   // that disabled the byte cap outright. Both now route through the one exported coercion.
   const budgetsFor = async (maxTenantPartitions: unknown): Promise<number[]> => {
@@ -938,7 +938,7 @@ describe('launchEdge — injected seams reach their destination', () => {
     expect(message).toContain('asyncLocalStorage: new AsyncLocalStorage()');
     expect(message).toContain('node:async_hooks');
     expect(message).toContain('nodejs_compat');
-    // The correction that took a real workerd investigation to establish (SEV1 #3) — losing it sends the
+    // The correction that took a real workerd investigation to establish — losing it sends the
     // reader back to probing a global that will never be there.
     expect(message).toContain('NOT exist on workerd under any flag');
   });

@@ -1,12 +1,12 @@
 import type { FileType } from '@bugsee/protocol';
 import type { CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
 
-// Per-tenant partitioned CaptureStore (Wave 0.1 S2, docs/design/cloudflare-tenant-isolation.md).
+// Per-tenant partitioned CaptureStore.
 //
 // WHY. Durable Objects for different tenants are hosted in ONE JS isolate, and the carrier enforces one
 // client per isolate (launch returns the existing one) while interceptors dedupe globally — so per-DO
 // clients are impossible and every tenant's capture lands in one ring. Proven on real workerd: tenant C's
-// incident bundle carried tenant A's and B's secrets (docs/review/cloudflare.md SEV1 #2).
+// incident bundle carried tenant A's and B's secrets.
 //
 // HOW. One underlying store per owner, composed rather than reimplemented — each partition is a full chunk
 // store with its own window and byte cap, so a noisy tenant can no longer evict a quiet tenant's data from
@@ -50,7 +50,7 @@ const EVICTED_TRACKING_FACTOR = 4;
  * (`@bugsee/vercel-edge`'s launch divides `maxDataSize` by `bound + 1`). When only the store coerced,
  * the two disagreed: `maxPartitions: 0` left the divisor at 0 → full budget per partition, resurrecting
  * the 90 MB blow-up the division exists to prevent, and `NaN` produced a NaN budget that disabled the byte
- * cap entirely (both proven empirically — docs/review/pass2-fixes-review.md SEV2 #1). One function, one
+ * cap entirely (both proven empirically). One function, one
  * answer, used by both sides.
  */
 export function resolveMaxPartitions(requested: number | undefined): number {
@@ -70,7 +70,7 @@ export function createPartitionedCaptureStore(
   //
   // BOUNDED, deliberately. An unbounded set here is a monotone leak on an isolate churning through
   // short-lived per-user Durable Objects: ~101 B of heap per distinct owner, forever, against the same
-  // 128 MB ceiling this whole partitioning effort exists to respect (review pass 2, SEV2 #1 — a leak the
+  // 128 MB ceiling this whole partitioning effort exists to respect (a leak the
   // first round of fixes introduced while removing another). Beyond the cap the oldest key is dropped: the
   // only loss is diagnostic precision for a long-departed tenant, which is worth far less than the memory.
   const evicted = new Set<string>();
@@ -126,7 +126,7 @@ export function createPartitionedCaptureStore(
   ];
 
   /**
-   * The partitions a snapshot may read. **Fail closed in BOTH directions** (§4.4).
+   * The partitions a snapshot may read. **Fail closed in BOTH directions**.
    *
    * - A tenant-scoped snapshot sees ONLY that tenant: never another's, and never the unattributed default
    *   (which, on a multi-tenant isolate, may hold any tenant's capture).

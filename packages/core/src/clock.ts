@@ -1,6 +1,6 @@
 import { serviceToken } from '@bugsee/service';
 
-// Clock model (design §7.7). Two distinct time sources, injectable so downstream components can use
+// Clock model. Two distinct time sources, injectable so downstream components can use
 // a deterministic fake in tests:
 //   - wallNow():      Date.now() unix-ms, for wire `timestamp` fields (matches mobile).
 //   - monotonicNow(): performance.now() + performance.timeOrigin, for INTERNAL ordering & durations
@@ -32,7 +32,7 @@ export function createSystemClock(): Clock {
   //
   // Unlike the browser UI-breadcrumb source (and the render-timing helpers below the core tier), a literal
   // `0` is NOT special-cased here: monotonicNow() is consumed only as a DIFFERENCE of two readings
-  // (RateLimiter interval math, Span duration math — see `docs/design/sdk-design.md` §7.7) and never
+  // (RateLimiter interval math, Span duration math) and never
   // surfaced as an absolute wire timestamp, so a constant `0` offset cancels exactly and is fully usable.
   const usable = !!perf && typeof perf.now === 'function' && Number.isFinite(perf.timeOrigin);
   const monotonicNow = usable

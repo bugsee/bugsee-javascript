@@ -9,10 +9,10 @@ import { createMemoryChunkBackend } from './memory-chunk-backend';
 // browser (IndexedDB) ship the same chunk store over a durable backend.
 
 export interface MemoryCaptureStoreOptions {
-  /** Recording window in ms (design maxRecordingTime): keep only the last N ms. Default 60_000. */
+  /** Recording window in ms (maxRecordingTime): keep only the last N ms. Default 60_000. */
   maxRecordingTimeMs?: number;
   /**
-   * Byte ceiling (design maxDataSize) on the total UTF-8 size of stored records; oldest closed parts
+   * Byte ceiling (maxDataSize) on the total UTF-8 size of stored records; oldest closed parts
    * are evicted once it is exceeded. Default undefined = unbounded (only the time window applies).
    */
   maxDataSizeBytes?: number;

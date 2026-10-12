@@ -50,7 +50,7 @@ describe('neverThrow — synchronous containment', () => {
 describe('neverThrow — asynchronous containment', () => {
   it('never leaves a rejection unhandled, and still reports it', async () => {
     // The idiomatic `void client.logException(...)` turns a rejection into an unhandled rejection in the
-    // HOST process a tick later — which on Node is a crash again now that Wave 2.5 restored the default
+    // HOST process a tick later — which on Node is a crash again now that the default has been restored
     // disposition. A boundary guard that only catches synchronous throws would miss it entirely.
     // core declares no Node/DOM lib, so the runtime is reached through a cast (repo convention).
     const g = globalThis as unknown as {

@@ -1,6 +1,6 @@
 import { getClient } from '../bugsee-client';
 
-// Support chat over a real WebSocket (server/api-plugin.ts echoes back) — S7's WebSocket capture path.
+// Support chat over a real WebSocket (server/api-plugin.ts echoes back) — 's WebSocket capture path.
 
 export function renderChat(container: HTMLElement): void {
   container.innerHTML = `

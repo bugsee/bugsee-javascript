@@ -1,6 +1,6 @@
 import type { Provider, Service, ServiceToken } from '@bugsee/service';
 
-// The token-typed service facade over the generic @bugsee/service container (design §7.4/§302). The
+// The token-typed service facade over the generic @bugsee/service container. The
 // Client's per-process ServiceContainer is the "internal aggregated object" (BugseeInternal parity);
 // these methods resolve/register by a contract's ServiceToken, so a platform/extension package supplies
 // an impl and core resolves it WITHOUT importing the concrete impl — the token carries the type. Lives

@@ -6,9 +6,9 @@ const reply = (m: Omit<ControlMessage, 'k' | 'b'>): string =>
   JSON.stringify({ b: PROTOCOL_VERSION, k: 'control', ...m });
 
 describe('createBridgeControl', () => {
-  // D-A10 — a NATIVE-minted secret closes the channel from the first message.
+  // a NATIVE-minted secret closes the channel from the first message.
   //
-  // `token` (D-A1) is minted by JS and published in `hello`, which means a page script can mint one too and
+  // `token` is minted by JS and published in `hello`, which means a page script can mint one too and
   // native cannot tell the two apart. It is why the channel has to start OPEN and wait to latch: until a
   // correctly-tokened message proves native speaks the new protocol, nothing can be rejected. During that
   // window — and FOREVER when `mintControlToken` returns undefined because no CSPRNG is present — a page
@@ -110,23 +110,23 @@ describe('createBridgeControl', () => {
   });
 });
 
-// WAVE 0.3 / D-A1 + D-A2 — the inbound control channel is authenticated by a per-session token.
+// The inbound control channel is authenticated by a per-session token.
 //
-// SEV1-4(a): `parseControl` authenticated NOTHING, so any script in the page could call
+// `parseControl` authenticated NOTHING, so any script in the page could call
 // `__bugsee_bridge.control('{"b":1,"k":"control","command":"pause"}')` to silently stop capture, or
 // `"stop"` to tear the SDK down permanently — with nothing logged and native never told the pause was not
-// its own. Closing the binding (D-A3) stops the object being REPLACED; it does not stop it being CALLED.
+// its own. Closing the binding stops the object being REPLACED; it does not stop it being CALLED.
 //
-// The token is minted in JS and published once, on `hello` (D-A1). It is deliberately never repeated on
+// The token is minted in JS and published once, on `hello`. It is deliberately never repeated on
 // later outbound messages: that is precisely what stops a script which taps the bridge AFTER launch — the
-// real SEV1-3 threat, an ad tag loading late — from ever learning it.
+// real threat, an ad tag loading late — from ever learning it.
 //
-// Enforcement is a ONE-WAY UPGRADE (D-A2): the channel starts unauthenticated and the first correctly-tokened
+// Enforcement is a ONE-WAY UPGRADE: the channel starts unauthenticated and the first correctly-tokened
 // message flips it closed forever. A page script cannot force the flip (it needs the token) nor undo it.
 //
 // This whole path is now the FALLBACK, reached only when native injected no nonce. A current native receiver
 // mints its own secret and the channel is closed from the first message with no open window — see the
-// `with a native-minted secret` block above (D-A10).
+// `with a native-minted secret` block above.
 describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   const TOKEN = 'tok-abc123';
   const raw = (msg: Record<string, unknown>): string =>
@@ -160,7 +160,7 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   });
 
   it('keeps accepting tokened control AFTER the latch arms — native is not locked out', () => {
-    // Round 1, SEV1: every tokened test sent exactly ONE message, so `if (tok === token &&
+    // Every tokened test sent exactly ONE message, so `if (tok === token &&
     // !authenticated)` — one word — locked native permanently out of its own channel and the whole suite
     // stayed green. Native sends many control messages per session (pause on background, flush before a
     // frame, stop on teardown); the second must work as well as the first.
@@ -185,7 +185,7 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
 
   it('does not apply CONFIG from a rejected message either, not just commands', () => {
     // Suppression is the headline, but config is the quieter one: flipping `reportTrigger` from the page
-    // makes the WebView open native bug reports at will (the D5 gate).
+    // makes the WebView open native bug reports at will (the gate).
     const control = createBridgeControl({ token: TOKEN, reportTrigger: false });
     control.control(raw({ tok: TOKEN, command: 'flush' })); // upgrade
     control.control(raw({ config: { reportTrigger: true }, session: 'hijacked' }));
@@ -224,7 +224,7 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   });
 });
 
-// WAVE 0.3 review round 1 — the rejection report is itself page-reachable, so it needs the same treatment
+// The rejection report is itself page-reachable, so it needs the same treatment
 // as any other host callback.
 describe('createBridgeControl — the rejection report is contained and bounded', () => {
   const TOKEN = 'tok-abc123';
@@ -239,7 +239,7 @@ describe('createBridgeControl — the rejection report is contained and bounded'
 
   it('does not let a THROWING onError escape into evaluateJavascript', () => {
     // `control()` is called by native through `evaluateJavascript`. An exception crossing that boundary is
-    // the SEV1-1 fail-open shape (native gets an error instead of a result at frame-capture time), and
+    // the fail-open shape (native gets an error instead of a result at frame-capture time), and
     // `onError` is arbitrary host code — a dev-mode assert, a logger with a throwing toJSON.
     const control = upgraded({
       onError: () => {
@@ -251,7 +251,7 @@ describe('createBridgeControl — the rejection report is contained and bounded'
 
   it('reports at most ONCE, however many times the page calls it', () => {
     // A page script can loop on `__bugsee_bridge.control(...)`, allocating an Error per call into the
-    // host's error sink. D-A4 refused to report sink swaps for precisely this reason; the same rule has
+    // host's error sink. refused to report sink swaps for precisely this reason; the same rule has
     // to hold here or the two decisions in one wave contradict each other.
     const onError = vi.fn();
     const control = upgraded({ onError });

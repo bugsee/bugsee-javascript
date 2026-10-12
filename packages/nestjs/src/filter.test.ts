@@ -40,7 +40,7 @@ const req = (over: Partial<NestHttpRequest> = {}): NestHttpRequest => ({
 
 describe('BugseeExceptionFilter', () => {
   // Stub the real BaseExceptionFilter.catch so the unit test does not need a running Nest http adapter;
-  // the real super.catch delegation (response preservation) is proven by the integration test (S6).
+  // the real super.catch delegation (response preservation) is proven by the integration test.
   let superCatch: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     superCatch = vi

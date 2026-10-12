@@ -126,7 +126,7 @@ export interface TargetDescriptor {
   text?: string;
   /** A one-level CSS-ish selector hint (tag#id.class). */
   selector?: string;
-  /** The nearest annotated framework component name (`data-bugsee-component`, D2) — not PII (the component
+  /** The nearest annotated framework component name (`data-bugsee-component`) — not PII (the component
    *  name, never a value), so it is reported even for a masked target. */
   component?: string;
   /** True when the element was fully masked (sensitive field / mask-selector subtree); no value-bearing fields. */
@@ -183,7 +183,7 @@ export function describeTarget(node: unknown, maskSelector: string): TargetDescr
   const el = (node ?? undefined) as ElementLike | undefined;
   const tag = typeof el?.tagName === 'string' ? el.tagName.toLowerCase() : undefined;
   if (el === undefined || tag === undefined) return {};
-  const component = componentNameFromElement(node); // D2: nearest data-bugsee-component (not PII)
+  const component = componentNameFromElement(node); // nearest data-bugsee-component (not PII)
   const type = typeof el.type === 'string' ? el.type : undefined;
   // Two independent reasons to mask: the app marked this subtree hidden, or the field holds secret
   // content by the SHARED definition (@bugsee/core's SENSITIVE_INPUT_MATCHERS — the same list
@@ -749,7 +749,7 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   /**
    * Re-point the source at a NEW client's blackout gate. The source is carrier-shared and outlives the
    * client that created it, so a relaunch must hand it the new client's gate; otherwise it keeps reading
-   * the dead client's state (R2V-3). Pending wheel deltas are dropped; a live subscription is moved.
+   * the dead client's state. Pending wheel deltas are dropped; a live subscription is moved.
    */
   bindBlackout(gate: BlackoutGate | undefined): void {
     this.#offBlackout?.();

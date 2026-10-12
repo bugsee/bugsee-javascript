@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { decodeReport } from './protocol';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 
-// R2 (docs/design/electron-renderer-incident-convergence.md §4.1). The renderer must FORWARD incidents to
-// main, never upload them itself — see docs/review/electron.md SEV1 #2.
+// The renderer must FORWARD incidents to
+// main, never upload them itself.
 const request = (over: Partial<ReportingRequest> = {}): ReportingRequest =>
   ({
     source: { type: 'crash', mechanism: 'uncaught' },
@@ -60,7 +60,7 @@ describe('createElectronRendererReportPipeline', () => {
   });
 
   it('never posts anything resembling a capture entry', () => {
-    // Design review SEV1-1: an incident forwarded as an `entry` lands in main's capture store and yields a
+    // An incident forwarded as an `entry` lands in main's capture store and yields a
     // second, array-shaped crash.json that pollutes every later bundle for the rolling window.
     const { p, posted } = pipeline();
     void p.report(request());

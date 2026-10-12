@@ -296,7 +296,7 @@ describe('createPixelVideoController - blackout (privacy: fail closed)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
-  // R4V-8: the HOST's onError sink is arbitrary code. When it throws while reporting a failing `source.stop`, the
+  // the HOST's onError sink is arbitrary code. When it throws while reporting a failing `source.stop`, the
   // `clear` must STILL run (otherwise the pre-blackout frames, which may show the sensitive screen, stay buffered)
   // and nothing may escape into the blackout gate's dispatch.
   it('a throwing onError sink cannot keep pre-blackout frames: stop fails AND the sink throws, clear still runs', async () => {

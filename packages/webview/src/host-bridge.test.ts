@@ -76,9 +76,9 @@ describe('createHostBridge', () => {
   });
 });
 
-// WAVE 0.3 / D-A4 — the sink is pinned on FIRST resolve (docs/design/webview-bridge-auth.md).
+// WAVE 0.3 / — the sink is pinned on FIRST resolve.
 //
-// SEV1-3: `resolve()` re-read `global.BugseeBridge` inside every `post()`, so any script loading after the
+// `resolve()` re-read `global.BugseeBridge` inside every `post()`, so any script loading after the
 // SDK — an ad tag, an analytics snippet, a chat widget — could assign its own `{post}` and receive 100% of
 // subsequent capture: console logs, full request URLs, request/response bodies. The SDK kept working, so
 // nothing looked wrong. It is a data-exfiltration primitive with the SDK as the collector, and it is not
@@ -148,7 +148,7 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
   });
 
   it('reading `available` does not pin — the pin happens at the first message', () => {
-    // `available` used to call resolve(), so a mere read pinned the sink. Round 1 flagged the mutating
+    // `available` used to call resolve(), so a mere read pinned the sink. An earlier review flagged the mutating
     // getter; it now reports without binding anything. Pinning happens at the first message instead —
     // which in `launch()` is the synchronous hello, so no page script can run in between.
     //
@@ -169,7 +169,7 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
   });
 
   it('keeps sending to the pinned METHOD after the page overwrites `post` on the object', () => {
-    // Round 1, SEV2: pinning the OBJECT still dereferenced `.post` on every send, so a page script could
+    // Pinning the OBJECT still dereferenced `.post` on every send, so a page script could
     // leave the binding alone — the thing pinning watches — and just overwrite the method:
     //   window.BugseeBridge.post = evil
     // and receive the entire capture stream. The bound method is captured once instead.
@@ -204,7 +204,7 @@ describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
   });
 
   it('hands the whole BACKLOG to whichever sink pins first — which is why secrets must not be buffered', () => {
-    // Round 1 raised this as a token leak. Verified precisely: pinning and draining happen in the SAME
+    // This was raised as a token leak. Verified precisely: pinning and draining happen in the SAME
     // synchronous `post()`, so nothing can interleave between them, and re-reading the global at drain
     // time is not separately exploitable. The real hazard is upstream and is REAL: anything already in the
     // buffer is delivered to whatever sink turns up later. `hello` is the first message, so if it carried
@@ -303,7 +303,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 
   it('keeps delivering to the pinned sink after the page swaps window.webkit', () => {
-    // The SEV1-3 tap, in its iOS shape. `window.webkit` is an ordinary page-visible object, so a script
+    // The tap, in its iOS shape. `window.webkit` is an ordinary page-visible object, so a script
     // that runs after the SDK can replace the whole tree and receive 100% of subsequent capture — logs,
     // request URLs, bodies — with the SDK still apparently working. Pinning the bound method on first
     // resolve is what makes the swap unobservable.
@@ -324,7 +324,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 
   it('keeps sending to the pinned METHOD after the page overwrites postMessage', () => {
-    // The same round-1 SEV2 hole as Android's: pinning the OBJECT would still dereference `.postMessage`
+    // The same hole as Android's: pinning the OBJECT would still dereference `.postMessage`
     // on every send, so leaving the tree alone and overwriting just the method reroutes the stream.
     const real: string[] = [];
     const attacker: string[] = [];
@@ -375,7 +375,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 
   it('stamps the capture nonce over the WebKit sink too', () => {
-    // D-A11 is enforced at the single stamping choke point, so it must hold for every transport. A sink
+    // is enforced at the single stamping choke point, so it must hold for every transport. A sink
     // that bypassed it would have 100% of its capture dropped by native as forged.
     const posted: string[] = [];
     createHostBridge({ global: withWebkit((r) => posted.push(r)), nonce: 'n-ios' }).post(

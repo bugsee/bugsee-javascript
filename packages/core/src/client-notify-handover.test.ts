@@ -13,7 +13,7 @@ import { createMemoryCaptureStore } from './memory-capture-store';
 import { relaunchWith } from './relaunch';
 import type { NotifyItem, NotifyResult, UploadPipeline } from './transport';
 
-// Review round 3 (H1): R3L-5 / R3P-4. The notify hand-over of relaunch(): a batch in flight at take() that later
+// The notify hand-over of relaunch(): a batch in flight at take() that later
 // fails, a late old-stop `.finally`, and the relaunch failure path.
 
 const getEnvironment = (): EnvironmentEnvelope => ({

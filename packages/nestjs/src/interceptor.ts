@@ -29,7 +29,7 @@ import {
 // `reportErrorOnce` (NOT the span's captureError) because the cross-seam `both`-mode dedup (the shared
 // WeakSet) is a Nest-specific concern the core span does not model.
 //
-// Coverage (empirically verified, see docs/design/framework-adapters.md): catchError sees errors from the
+// Coverage (empirically verified): catchError sees errors from the
 // route handler, services, pipes, and HttpExceptions — i.e. essentially all real unhandled bugs. It does
 // NOT see errors thrown in GUARDS or MIDDLEWARE (they run before the interceptor's stream is subscribed);
 // that gap is the reason to opt into the global filter (errorCapture: 'filter' | 'both').

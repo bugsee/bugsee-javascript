@@ -1,6 +1,6 @@
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 
-// The browser implementation of core's HttpTransport primitive (design §7.5) — the fetch analog of
+// The browser implementation of core's HttpTransport primitive — the fetch analog of
 // node-utils `httpRequest`. Wraps the platform `fetch`; non-2xx statuses RESOLVE (the caller maps
 // status → outcome), only network errors and timeouts reject. Unlike the node transport it does NOT
 // touch Accept-Encoding or decompress: the browser owns content negotiation and decodes the body

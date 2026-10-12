@@ -54,7 +54,7 @@ describe('createFileCaptureStore — add + snapshot', () => {
       e: null,
       b: 0,
     });
-    store.tick(11_000); // closes part 0
+    store.tick(11_000); // closes
     expect(JSON.parse(storage.read(G, 0, 'meta') as string)).toEqual({
       n: 0,
       s: 10_000,
@@ -77,7 +77,7 @@ describe('createFileCaptureStore — add + snapshot', () => {
   it('ignores a chunk the store does not track (a leftover/evicted part of this generation)', async () => {
     const storage = createInMemoryChunkStorage();
     const store = mk(storage);
-    store.add(rec('log', 10_000)); // part 0 (active)
+    store.add(rec('log', 10_000)); // (active)
     storage.append(G, 99, 'log', '99\t{}\n'); // a chunk the store doesn't track
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });
@@ -97,18 +97,18 @@ describe('createFileCaptureStore — tick rotation + cleanup', () => {
   it('deletes the chunk dirs of parts outside the recording window on tick', async () => {
     const storage = createInMemoryChunkStorage();
     const store = mk(storage, { maxRecordingTimeMs: 2000 }); // cutting = now - 3000
-    store.add(rec('log', 10_000)); // part 0
-    store.tick(11_000); // part 0 closes @11000, part 1 opens
-    store.add(rec('log', 11_000)); // part 1
-    store.tick(15_000); // cutting 12000 → part 0 (end 11000) evicted, its chunk removed
-    expect(storage.chunks(G)).not.toContain(0); // part 0's chunk gone
+    store.add(rec('log', 10_000));
+    store.tick(11_000); // closes @11000, opens
+    store.add(rec('log', 11_000));
+    store.tick(15_000); // cutting 12000 → (end 11000) evicted, its chunk removed
+    expect(storage.chunks(G)).not.toContain(0); // chunk gone
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 11_000)]);
   });
 
   it('keeps a part whose end is exactly at the cutting edge (strict <)', async () => {
     const store = mk(createInMemoryChunkStorage(), { maxRecordingTimeMs: 2000 });
     store.add(rec('log', 10_000));
-    store.tick(12_000); // part 0 end = 12000
+    store.tick(12_000); // end = 12000
     store.tick(15_000); // cutting 12000; 12000 is NOT < 12000 → kept
     expect((await store.snapshot().drainAll()).get('log')).toEqual([rec('log', 10_000)]);
   });

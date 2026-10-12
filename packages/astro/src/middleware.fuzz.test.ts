@@ -3,7 +3,7 @@
 //
 // Two untrusted inputs meet here: the request URL (attacker-controlled) and the downstream `Response`
 // (whatever the app's routes, endpoints and adapters return, at any status, with any content type, at any
-// point in a streaming/caching chain). The Wave 4.5 regression came from exactly this space — a 304 with
+// point in a streaming/caching chain). The regression came from exactly this space — a 304 with
 // `content-type: text/html` reached the reconstruct and turned every cached page into a 500 — so the
 // invariants are stated over the WHOLE status × content-type space rather than the handful of shapes that
 // happened to be in the example tests.
@@ -41,7 +41,7 @@ function makeResponse(status: number, body: string, contentType?: string): Respo
 }
 
 describe('injectTraceIntoResponse — properties', () => {
-  // The Wave 4.5 class, generalized: no status, and no content type, may turn a working response into a
+  // The class, generalized: no status, and no content type, may turn a working response into a
   // thrown error. An adapter that breaks the response is worse than an adapter that injects nothing.
   it('never throws, for any constructible status × content-type (the 304 class, generalized)', async () => {
     await fc.assert(

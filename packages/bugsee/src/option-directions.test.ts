@@ -14,7 +14,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { createSharedProgram, TS_PROGRAM_TEST_TIMEOUT_MS } from './ts-program-cache.test-helper';
 
-// R3V-3. EVERY boolean-typed launch option of EVERY platform has an explicit fail direction, and that direction is
+// EVERY boolean-typed launch option of EVERY platform has an explicit fail direction, and that direction is
 // pinned HERE. The test reads three things STATICALLY (so a future option cannot dodge it):
 //   1. every boolean-typed property of every launch-options interface (the TypeScript checker, as
 //      relaunch-options.test.ts does);
@@ -28,7 +28,7 @@ import { createSharedProgram, TS_PROGRAM_TEST_TIMEOUT_MS } from './ts-program-ca
 //   off      data capture that is ON by default, or collects more: an invalid value is OFF (fail closed)
 //   on       protective (hides/blocks data): an invalid value is ON
 //   default  keeps the option's default (it is the safe side, or not a privacy switch); only the boolean flips it
-// The SAFE side is classified explicitly per option (R4V-1): "OFF unless true" is right for capture, WRONG for an
+// The SAFE side is classified explicitly per option: "OFF unless true" is right for capture, WRONG for an
 // option that PROTECTS (tenant partitioning, canvas blocking, blackout, obscuring), whose invalid value must be ON.
 // Nested option bags (`replay.*`, `captureLocalVariables.*`, `traceResponse.*`) are audited by NESTED below.
 // (WebView/Electron/performance consumers of the same rule are covered by their own package tests.)
@@ -54,7 +54,7 @@ const DIRECTIONS: Record<string, Direction> = {
   captureInteractions: 'off',
   captureViewHierarchy: 'off',
   startInBlackout: 'on',
-  replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF (R4V-2); masking is fail-closed on its own
+  replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF; masking is fail-closed on its own
   persistUserIdentifier: 'default', // default OFF
   reportSummaryRequired: 'default',
   reportDescriptionRequired: 'default',
@@ -67,7 +67,7 @@ const DIRECTIONS: Record<string, Direction> = {
   detectHangs: 'default', // default ON, a diagnostic
   captureLocalVariables: 'off',
   captureSourceContext: 'off',
-  instrumentIncomingRequests: 'off', // default ON, collects request data: an invalid value is OFF (R4V-2)
+  instrumentIncomingRequests: 'off', // default ON, collects request data: an invalid value is OFF
   // webview
   captureObscuring: 'on',
   // webworker
@@ -77,7 +77,7 @@ const DIRECTIONS: Record<string, Direction> = {
   traceNavigations: 'off',
   traceInteractions: 'off',
   // `propagateTrace` exists TWICE with different defaults, so it is keyed by package:
-  'node:propagateTrace': 'off', // node's own definition: default ON, invalid => OFF (R4V-4)
+  'node:propagateTrace': 'off', // node's own definition: default ON, invalid => OFF
   'performance:propagateTrace': 'default', // browser perf-sourced: default OFF, only boolean true opts in
 };
 
@@ -169,7 +169,7 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['bugsee', 'src/server-launch.ts', 'BugseeServerLaunchOptions', UMBRELLA],
   ['electron', 'src/launch-main.ts', 'LaunchMainOptions', ['core', 'node']],
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions', ['core', 'browser']],
-  // Framework adapters that read an option of their OWN (R5V-8): `setupOtelProvider` was `=== false` and
+  // Framework adapters that read an option of their OWN: `setupOtelProvider` was `=== false` and
   // `injectTraceMeta` was truthy, so `'false'` / `0` / `null` kept them ON or flipped them the wrong way.
   ['nextjs', 'src/server.ts', 'NextjsServerOptions', UMBRELLA],
   ['nuxt', 'src/nitro.ts', 'InstallBugseeNitroOptions', UMBRELLA],
@@ -406,7 +406,7 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
   });
 
   it('a protecting (safe: on) option is never classified as a capture (safe: off) one', () => {
-    // The R4V-1 error was exactly this: a protecting option filed under "OFF unless true".
+    // The error was exactly this: a protecting option filed under "OFF unless true".
     const protecting = Object.entries(RAW_STRICT)
       .filter(([, e]) => e.safe === 'on')
       .map(([k]) => k);
@@ -423,7 +423,7 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
     );
   });
 
-  // R4V-2: the flat table above cannot see an option READ INSIDE a bag (`replay.canvas`, `blockAllCanvas`,
+  // the flat table above cannot see an option READ INSIDE a bag (`replay.canvas`, `blockAllCanvas`,
   // `captureLocalVariables.includeCaught`): a raw `options.replay.canvas` read dodged it, and `'false'` / `0`
   // enabled canvas pixel recording. Every boolean-typed property of every option BAG is therefore classified
   // here with its safe side AND pinned to the source read that makes the classification true.

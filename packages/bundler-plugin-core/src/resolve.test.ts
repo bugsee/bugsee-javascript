@@ -144,7 +144,7 @@ describe('failOnError / onError plumbing (Wave 7)', () => {
 //
 // `writeBundle` fires once per OUTPUT. A multi-output config whose entries resolve to the same directory —
 // `output: [{ dir: 'dist' }, { file: 'dist/legacy.js' }]`, both `dist` — starts two concurrent pipelines
-// over one tree: one can be deleting maps (step 3) while the other is still reading them (steps 1-2).
+// over one tree: one can be deleting maps while the other is still reading them (steps 1-2).
 describe('one pipeline per output directory (Wave 7.5)', () => {
   /** An upload we can hold open, so overlap is observable rather than a race. */
   const held = () => {
@@ -737,7 +737,7 @@ describe('stripSourcesContent', () => {
   });
 });
 
-// Web-build registration (docs/design/web-build-registration.md, slice 3). The public option bag is
+// Web-build registration. The public option bag is
 // where a team decides, so each part of the decision has to be reachable from it.
 describe('resolvePluginOptions — build registration', () => {
   it("registers release builds by default — Android's and iOS's own default", () => {

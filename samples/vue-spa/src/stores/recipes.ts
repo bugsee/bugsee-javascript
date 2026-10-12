@@ -3,7 +3,7 @@ import type { Recipe } from '../data/recipes';
 
 // The Pinia store backing the recipe list/detail/editor — real state, real CRUD against the local API
 // (src/api/server-plugin.ts). Every network call here is plain `fetch`, so it is exercised by @bugsee/vue's
-// re-exported @bugsee/browser network capture (S7) as a side effect of the app just working normally.
+// re-exported @bugsee/browser network capture as a side effect of the app just working normally.
 
 export interface RecipesState {
   recipes: Recipe[];

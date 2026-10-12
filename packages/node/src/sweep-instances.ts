@@ -2,14 +2,14 @@ import { join } from 'node:path';
 import { listFiles, remove } from '@bugsee/node-utils';
 import { pidAlive, readLiveMtimeMs, readOwner } from './liveness';
 
-// Age-based (TTL) hygiene sweep for default-on-disk capture (server write-path P1, D3). With disk capture
+// Age-based (TTL) hygiene sweep for default-on-disk capture (server write-path). With disk capture
 // the DEFAULT, abandoned per-instance subtrees would otherwise accumulate under `os.tmpdir()/bugsee/<hash>`
 // — runs that crashed and never relaunched. Multi-instance recovery already reclaims FRESH dead siblings
 // (recover-then-remove); this sweep is the last-resort reaper for the truly abandoned: a subtree whose
 // owning process is dead AND whose newest activity is older than the TTL is removed outright (its very-old
 // capture is discarded, not recovered — an accepted tradeoff). A live owner is not touched in practice
 // because a live instance heartbeats, so it never ages out — but a LIVE PID alone no longer protects a
-// subtree (Wave 6.6), since recovery now deliberately keeps alive-pid siblings and a recycled pid would
+// subtree, since recovery now deliberately keeps alive-pid siblings and a recycled pid would
 // otherwise be un-reclaimable forever. The shape regex below is a cheap first filter, NOT the
 // safety boundary (it also matches e.g. a `2024-01-02` date dir): the real guard is that a subtree is
 // reclaimed ONLY when it carries a valid `owner.json` (the Bugsee marker), so a foreign directory is never
@@ -63,7 +63,7 @@ export function sweepAgedInstances(options: SweepInstancesOptions): void {
       if (owner === undefined) {
         continue;
       }
-      // A LIVE pid used to stop the sweep unconditionally. Since Wave 6.6 recovery deliberately keeps an
+      // A LIVE pid used to stop the sweep unconditionally. Since recovery deliberately keeps an
       // alive-pid main-thread sibling however stale its heartbeat — so a frozen process no longer has its
       // capture deleted underneath it — this sweep is the only thing left that can free a subtree whose pid
       // was RECYCLED by an unrelated process. Age alone would not justify that: a live instance whose

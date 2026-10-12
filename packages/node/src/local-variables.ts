@@ -298,10 +298,10 @@ export function createLocalVariablesCapture(
     maxCached = 20,
     maxCaughtPerSecond = 50,
   } = options;
-  // Every report goes through the guard: a sink that throws (or rejects) must not break launch, nor a pause handler (R5V-4).
+  // Every report goes through the guard: a sink that throws (or rejects) must not break launch, nor a pause handler.
   const onError = (error: unknown): void => reportGuarded(options.onError, error);
   // Both switches COLLECT data (a process pause per caught throw / per report), so only boolean `true` enables
-  // them; any other non-undefined value (`'false'`, `1`, `null`) is OFF and reported, never truthy-ON (R4V-2).
+  // them; any other non-undefined value (`'false'`, `1`, `null`) is OFF and reported, never truthy-ON.
   const readSwitch = (name: 'includeCaught' | 'reportSite', fallback: boolean): boolean => {
     const value: unknown = options[name];
     if (value === undefined) {

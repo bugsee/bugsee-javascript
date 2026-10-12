@@ -29,8 +29,7 @@ describe('X2 — edge bundle-size guard', () => {
   //
   // @bugsee/cloudflare: exactly `node:async_hooks`, and nothing else. globalThis.AsyncLocalStorage does not
   // exist on workerd under ANY compatibility flag, so this is the only route to per-request context there —
-  // which is why `nodejs_compat` is a documented REQUIREMENT of the package (Wave 0.1 S0,
-  // docs/design/cloudflare-tenant-isolation.md §7). The allowlist is deliberately EXACT rather than relaxed
+  // which is why `nodejs_compat` is a documented REQUIREMENT of the package. The allowlist is deliberately EXACT rather than relaxed
   // to "any node import": a second builtin creeping in would still fail here.
   const ALLOWED_NODE_IMPORTS: Record<string, string[]> = {
     '@bugsee/vercel-edge': [],
@@ -110,7 +109,6 @@ describe('X3 — real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () 
   // each session/issue/manifest/request.json and RECORDS failures; that recording is inert unless a suite
   // reads it, and until now only the node/bun/deno suite did. A wire break on the EDGE assembler — a
   // different assembler from the node one — would have been recorded and silently discarded
-  // (docs/review/session-integration-review.md SEV2 #1).
   it('none of the edge upload paths violate the upload contract', () => {
     assertNoContractViolations(collector);
   });

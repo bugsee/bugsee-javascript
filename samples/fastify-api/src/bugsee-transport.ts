@@ -2,12 +2,11 @@
 // recording a parsed summary of each call locally. That local record is what lets `pnpm verify` and
 // the agent assert on things the MCP surface does not expose (redacted network bodies, the exact
 // bundle contents, per-request attributes) — the "wire" verification depth from
-// docs/samples/PLAN.md §4.
 //
 // It rewrites no REQUEST the SDK makes. samples/express-api found three wire-contract SDK defects (a
 // hardcoded `x-client-type: web`, the unparsed `{ok, result}` response envelope, and an
 // `x-amz-checksum-sha256` header the presigned S3 url was never signed for) that once required
-// workarounds here; all three are fixed in @bugsee/core (see samples/FINDINGS.md F-X2/F-X10 and
+// workarounds here; all three are fixed in @bugsee/core (see
 // packages/core/src/bugsee-api.ts / bundle-uploader.ts) and this sample was built AFTER those fixes
 // landed, so it never carried them. If a request rewrite is ever needed here, that is itself a new
 // finding — this sample has stopped testing what a customer actually runs.
@@ -44,7 +43,7 @@ export interface CapturedCall {
   requestHeaders: Record<string, string>;
   /** Parsed bundle contents (bundle-upload calls only) — file list + the fields verification cares about. */
   bundle?: ParsedBundleSummary;
-  /** Parsed /v2/performance/transactions body (performance calls only) — the wire-only S9 evidence. */
+  /** Parsed /v2/performance/transactions body (performance calls only) — the wire-only evidence. */
   transactions?: Array<{ name: string; op?: string; status?: string; spanCount?: number }>;
 }
 
@@ -60,7 +59,7 @@ export interface ParsedBundleSummary {
   attrs?: Record<string, unknown>;
 }
 
-// Generous headroom: a single verify.ts run can produce well over a hundred issues (the S4 storm
+// Generous headroom: a single verify.ts run can produce well over a hundred issues (the storm
 // scenario alone logs 200), each worth ~2 HTTP calls (issue create + bundle PUT) plus periodic
 // performance/session calls.
 const MAX_RECORDS = 5000;
@@ -204,7 +203,7 @@ function parseBundle(body: Uint8Array): ParsedBundleSummary | undefined {
 //    as `{ status: 3xx, body: <the redirect body> }` and is handed to core verbatim. That difference
 //    is not cosmetic: `packages/core/src/bundle-uploader.ts:42-45` maps any non-2xx below 500 to
 //    `{ ok:false, retryable:false }`, so under the REAL transport a 3xx from the collector — or a
-//    region-redirecting S3 presigned PUT — is a PERMANENT, non-retryable upload failure, while a
+// region-redirecting S3 presigned PUT — is a PERMANENT, non-retryable upload failure, while a
 //    following tee would quietly turn the same response into a success and hide the bug this sample
 //    exists to catch. `redirect: 'manual'` is therefore set explicitly: undici then resolves the 3xx
 //    itself, status and all, matching `http.request`. (Not observed against staging — no hop in this

@@ -3,7 +3,7 @@ import * as middlewareMod from './middleware';
 import { bugseeHono } from './middleware';
 import * as setupMod from './setup';
 
-// Wave 2.1/2.3 — docs/review/backend-hono-hapi-elysia.md SEV1 #1. Hono's `compose` catches whatever a
+// Hono's `compose` catches whatever a
 // middleware throws, assigns it to `c.error` and routes it to `app.onError` — so an SDK fault was laundered
 // into an APPLICATION error and returned to the client as 500. Measured against real Hono 4.12.25.
 const ctx = (over: Record<string, unknown> = {}) =>

@@ -131,8 +131,7 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   vi.restoreAllMocks();
-  // The default-global test installs globalThis.__bugsee_bridge on a NON-CONFIGURABLE binding (Wave 0.3 /
-  // D-A3), so it cannot be deleted — `delete` here used to be the cleanup and now throws. It does not need
+  // The default-global test installs globalThis.__bugsee_bridge on a NON-CONFIGURABLE binding, so it cannot be deleted — `delete` here used to be the cleanup and now throws. It does not need
   // to be: `stop()` above puts the session inert, which is the state a fresh launch starts from anyway.
 });
 
@@ -186,7 +185,7 @@ describe('launch (webview)', () => {
         'network',
         'traces.system',
       ].sort(),
-    ); // the full declared capability set (drives D10 negotiation) — dropping any one fails this.
+    ); // the full declared capability set (drives negotiation) — dropping any one fails this.
     // `input` joined it when SDK-captured interactions moved off `events.user`: native routes records
     // by fileType, so an undeclared stream is a stream native was never told to expect.
     expect(typeof hello.session).toBe('string');
@@ -209,7 +208,7 @@ describe('launch (webview)', () => {
     // capture store, the obscuring channel and the report pipeline against one `global`; if any of them
     // reached for the Android interface directly rather than going through the host bridge, this fails.
     //
-    // The nonce assertion is the load-bearing half: native drops every unstamped message (D-A11), so a
+    // The nonce assertion is the load-bearing half: native drops every unstamped message, so a
     // transport that reached the wire without passing the stamping choke point would produce a session in
     // which 100% of WebView capture is silently discarded — the failure mode hardest to notice in the field.
     const posted: string[] = [];
@@ -282,7 +281,7 @@ describe('launch (webview)', () => {
     //   c.setLogEventFilter(() => null);                             // suppress
     //   c.stop();                                                    // kill
     //
-    // none of which needs a sink to shadow, a race to win, or the D-A10 control secret — it walks around
+    // none of which needs a sink to shadow, a race to win, or the control secret — it walks around
     // every defence the bridge has. So the carrier gets a resolver-only facade.
     const carrier = {} as { __BUGSEE__?: Record<string, { client?: Record<string, unknown> }> };
     const client = track('tok', baseOptions({ carrier }));
@@ -623,7 +622,7 @@ describe('launch (webview)', () => {
         expect(errors.some((e) => /not delivered|no native bridge/i.test(String(e)))).toBe(true);
       });
 
-      // R3V-5 (a): a blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
+      // (a): a blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
       // native must still be told, and after `hello` (a receiver has no session to attach it to before that).
       it('R3V-5: a carried blackout is posted to native right after hello', () => {
         const carrier = {};
@@ -635,7 +634,7 @@ describe('launch (webview)', () => {
         expect(blackoutMsgs(fake)[0]?.a).toBe(true);
       });
 
-      // R4L-3: native resets the JS-reported flag on `bye`/`hello`, so the state is ALWAYS restated after `hello`,
+      // native resets the JS-reported flag on `bye`/`hello`, so the state is ALWAYS restated after `hello`,
       // `a:false` included: a client that never posts it can leave native paused for a session that is not dark.
       it('R4L-3: the current state is posted after hello even when no blackout is in force (a:false)', () => {
         const { fake } = bootWith({ carrier: {} });
@@ -664,7 +663,7 @@ describe('launch (webview)', () => {
         expect(errors.filter((e) => /blackout/i.test(String(e)))).toEqual([]);
       });
 
-      // R3V-5 (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
+      // (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
       // the handshake, not at the instant of the (launch-time) announcement.
       it('R3V-5: a carried blackout does not warn before the control reply, nor after a reply declaring support', () => {
         const carrier = {};
@@ -706,7 +705,7 @@ describe('launch (webview)', () => {
         );
       });
 
-      // R4V-9: a legacy receiver that never answers the handshake used to leave the judgement pending for ever
+      // a legacy receiver that never answers the handshake used to leave the judgement pending for ever
       // (one blackout change, no reply): the integrator was never told the native video keeps running.
       describe('R4V-9: the "native has not declared support" judgement is bounded', () => {
         const notDeclared = (errors: unknown[]): number =>
@@ -766,7 +765,7 @@ describe('launch (webview)', () => {
         expect(client.isBlackout()).toBe(true);
       });
 
-      // R3V-1 / R3L-4: only the client that owns the process blackout may change the flag or tell native.
+      // /: only the client that owns the process blackout may change the flag or tell native.
       describe('a stale handle cannot change the blackout or speak to native (R3V-1)', () => {
         const startStale = async (darkFirst: boolean) => {
           const carrier = {};
@@ -1207,7 +1206,7 @@ describe('launch (webview)', () => {
       expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // pull returns empty when off
     });
 
-    // R3V-3: `captureObscuring ?? true` made `0`, `''` and `null` (nullish aside) switch the masking OFF. It is a
+    // `captureObscuring?? true` made `0`, `''` and `null` (nullish aside) switch the masking OFF. It is a
     // PROTECTIVE option, so an invalid value keeps it ON (fail-on) and tells onError; only boolean false opts out.
     it.each([
       0,
@@ -1494,7 +1493,7 @@ describe('launch (webview)', () => {
     expect(() => repeat.event('still allowed')).not.toThrow();
   });
 
-  // R4L-6 (= R4V-7): a page must not gain control over REDACTION. Ending a blackout un-redacts the visual capture
+  // a page must not gain control over REDACTION. Ending a blackout un-redacts the visual capture
   // and a lifecycle listener observes the session's internals; `startBlackout` only fails closed, so it stays.
   it('R4L-6: a repeat launch cannot end the blackout or install a lifecycle listener, but may still start one', () => {
     const onError = vi.fn();
@@ -1524,7 +1523,7 @@ describe('launch (webview)', () => {
     expect(said('startBlackout')).toBe(false);
   });
 
-  // R5L-1: the facade is built from an explicit allow-list, and the lifecycle slot is not page-writable.
+  // the facade is built from an explicit allow-list, and the lifecycle slot is not page-writable.
   it('R5L-1: page script cannot install a lifecycle listener through the carrier', () => {
     const carrier = {};
     const owner: string[] = [];
@@ -1654,7 +1653,7 @@ describe('launch (webview)', () => {
     expect(inert.getAllAttributes?.()).toEqual({});
   });
 
-  // R3V-7: the inert client lacked `startBlackout`/`endBlackout`/`isBlackout`/`getStatus`/
+  // the inert client lacked `startBlackout`/`endBlackout`/`isBlackout`/`getStatus`/
   // `setLifecycleEventsListener` (and whatever else the real client grew): the TypeError this fallback exists to
   // prevent. The whole surface of a real client must exist, and the blackout/status ones must report, not throw.
   it('R3V-7: the inert client has EVERY method of a real client; blackout/status/listener calls report through onError', async () => {
@@ -1790,7 +1789,7 @@ describe('launch (webview)', () => {
   it('defaults the global to globalThis and the scheduler to global timers', () => {
     // No `global` and no `scheduler` injected → exercises both defaults. stop() (afterEach) clears the
     // real tick timer; globalThis.__bugsee_bridge is NOT cleared — the binding is non-configurable by
-    // design (Wave 0.3 / D-A3), so it persists and goes inert instead.
+    // design, so it persists and goes inert instead.
     const client = track('tok', { captureNetwork: false, carrier: {} });
     expect(client.isLaunched()).toBe(true);
     expect(typeof (globalThis as { __bugsee_bridge?: unknown }).__bugsee_bridge).toBe('object');
@@ -1802,7 +1801,7 @@ describe('launch (webview)', () => {
     const client = launch('tok', baseOptions({ global: fake.global, carrier }));
     await client.stop();
     expect(fake.msgs().some((m) => m.k === 'bye')).toBe(true); // teardown signalled to native
-    // The binding is non-configurable (Wave 0.3 / D-A3) so it cannot be removed; INERT is the teardown
+    // The binding is non-configurable so it cannot be removed; INERT is the teardown
     // state instead — which is the stronger property anyway, since a removable global was replaceable.
     expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]');
     const again = track('tok', baseOptions({ global: fake.global, carrier }));
@@ -1964,14 +1963,14 @@ describe('sub-frame obscuring failures never escape launch()', () => {
   });
 });
 
-// WAVE 0.3 / D-A3 — the control global's BINDING is closed, not just its object.
+// WAVE 0.3 / — the control global's BINDING is closed, not just its object.
 //
-// SEV1-4(b): `global.__bugsee_bridge = Object.freeze({…})` froze the OBJECT while leaving the BINDING
+// (b): `global.__bugsee_bridge = Object.freeze({…})` froze the OBJECT while leaving the BINDING
 // `{writable:true, configurable:true}`. A page script replaced the whole binding with
 // `{control(){}, snapshot(){return '[]'}}`; native's frame-capture pull then returned no rects while real
 // secure areas existed, so password / cc-* fields rendered legibly in the captured video — and native had
 // already stood its own masking script down, because declaring the `obscuring` capability is what tells it
-// to. SEV1-4(a) is the same binding used the other way: any script could call `control('{…"command":
+// to. (a) is the same binding used the other way: any script could call `control('{…"command":
 // "stop"}')` and tear the SDK down silently.
 //
 // Closing the binding needs NO protocol change, which is why it ships ahead of the token work.
@@ -2028,7 +2027,7 @@ describe('the __bugsee_bridge binding is not replaceable (Wave 0.3)', () => {
     // A non-configurable binding cannot be deleted, so teardown switches the object to an inert state and a
     // later launch reuses the same binding. `'[]'` is the right inert snapshot: native pulls it at
     // frame-capture time, and returning nothing would throw into evaluateJavascript — the fail-open shape
-    // already fixed once as SEV1-1.
+    // already fixed once as.
     const fake = fakeGlobal();
     const carrier = {};
     // A document WITH a secure element, so "inert" is distinguishable from "nothing to report". Without it
@@ -2056,7 +2055,7 @@ describe('the __bugsee_bridge binding is not replaceable (Wave 0.3)', () => {
 
     // The relaunched session must be reachable THROUGH the original binding — otherwise "inert" would mean
     // "permanently dead" and native could never drive a second launch. Proven by an OBSERVABLE effect of a
-    // control message (the D5 report gate flipping on), not by the call not throwing: an inert no-op also
+    // control message (the report gate flipping on), not by the call not throwing: an inert no-op also
     // does not throw, so that would assert nothing.
     await again.logException(new Error('while-gated'));
     expect(fake.msgs().some((m) => m.k === 'report')).toBe(false);
@@ -2066,7 +2065,7 @@ describe('the __bugsee_bridge binding is not replaceable (Wave 0.3)', () => {
   });
 });
 
-// WAVE 0.3 / D-A1 + D-A2, end to end through the real launch: the token is published on `hello`, and once
+// WAVE 0.3 / +, end to end through the real launch: the token is published on `hello`, and once
 // native proves it knows it, the page can no longer drive the SDK. The unit tests in
 // host-bridge-control.test.ts cover the state machine; these assert the WIRING, which is what a page script
 // actually meets.
@@ -2077,7 +2076,7 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
   };
 
   it('never puts a NATIVE-minted nonce on the wire, and mints no token of its own', () => {
-    // D-A10. The whole value of a native-minted secret is that the page never sees it. Publishing it in
+    // The whole value of a native-minted secret is that the page never sees it. Publishing it in
     // `hello` — which is what the JS-minted token must do, so native can learn it — would hand it to
     // whatever sink is listening, including a page script that shadowed the bridge before us. Native
     // already has this one, so there is nobody to publish it to.
@@ -2126,7 +2125,7 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
   });
 
   it('mints a token with CSPRNG shape, not a guessable one', () => {
-    // Round 1, SEV1: the only assertions here were "non-empty string" and "different per launch", both of
+    // The only assertions here were "non-empty string" and "different per launch", both of
     // which a module-level counter (`bugsee-1`, `bugsee-2`, …) satisfies. Nothing stands between the page
     // and the control channel except the token being unguessable, and `admits` has no attempt limit — so
     // the FORMAT is pinned, and control-token.test.ts pins the source of the bytes.
@@ -2136,7 +2135,7 @@ describe('the control channel authenticates end to end (Wave 0.3)', () => {
   });
 
   it('withholds the token when no native sink is attached yet', () => {
-    // Round 1, SEV1: with no sink, `hello` goes into the host bridge's backlog and is delivered to
+    // With no sink, `hello` goes into the host bridge's backlog and is delivered to
     // whichever sink turns up later — which can be a page script. Publishing the token there would hand
     // the attacker an authenticated channel AND let it arm the latch, locking real native out.
     const global: {
@@ -2245,7 +2244,7 @@ describe('the control global when the page got there first (Wave 0.3)', () => {
   });
 });
 
-// WAVE 0.3 review round 1 — three defects in the same seam: the slot, the latch, and teardown.
+// WAVE 0.3 — three defects in the same seam: the slot, the latch, and teardown.
 describe('the control surface fails closed and cannot be reset by the page (round 1)', () => {
   const preOwn = (global: object): void => {
     Object.defineProperty(global, '__bugsee_bridge', {
@@ -2255,7 +2254,7 @@ describe('the control surface fails closed and cannot be reset by the page (roun
   };
 
   it('does NOT declare `obscuring` when the control binding could not be installed', () => {
-    // SEV1: `caps` was computed from the obscuring probe alone. A page script that pre-owns the name makes
+    // `caps` was computed from the obscuring probe alone. A page script that pre-owns the name makes
     // defineProperty throw, so the SDK holds no control surface — but it still told native "I mask
     // sensitive pixels myself", and native then DROPS its own masking script. Result: nothing masks, and
     // password fields render legibly in the captured video. The same fail-closed rule the probe already
@@ -2284,7 +2283,7 @@ describe('the control surface fails closed and cannot be reset by the page (roun
   });
 
   it('a stale stop() does not kill a NEWER session', () => {
-    // SEV2: the slot is shared per-global, and stop() reverted it with no ownership check. A framework
+    // the slot is shared per-global, and stop() reverted it with no ownership check. A framework
     // that unmounts late (or a plain double-stop) therefore made the LIVE session's control dead and
     // posted a spurious `bye` while capture was still flowing.
     const fake = fakeGlobal();
@@ -2389,7 +2388,7 @@ describe('the control surface fails closed and cannot be reset by the page (roun
   });
 
   it('a page-forced RELAUNCH cannot un-latch the control channel', async () => {
-    // SEV2: `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
+    // `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
     // whose singleton guard reads a mutable carrier field. So the page could clear the carrier, relaunch,
     // and get a fresh unlatched channel — defeating "one-way" entirely. The latch belongs to the GLOBAL.
     //
@@ -2446,11 +2445,11 @@ describe('the control surface fails closed and cannot be reset by the page (roun
 //  - N hellos per WebView. The protocol is ONE session per WebView, so N frames announcing themselves is
 //    N sessions' worth of handshakes for one. (The sharper version of this — whichever frame's hello
 //    native LATCHED decided the retained token and the obscuring capability — is gone: native retains
-//    nothing from a hello and mints its own secret, D-A10, and `caps` decides nothing, D-A7.)
+// nothing from a hello and mints its own secret, and `caps` decides nothing.)
 //  - A sub-frame can never RECEIVE control: `evaluateJavascript` targets the top frame, so a sub-frame
 //    that opened a session cannot be paused, flushed or stopped.
 //  - Each frame keeps its own `seq` counter from 0, so entries from different frames collide in ordering.
-//  - D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66). Running full capture in
+// - exists to keep Bugsee OUT of third-party content (66). Running full capture in
 //    every injected frame is the opposite of that.
 describe('a sub-frame contributes obscuring only (document-start step 1)', () => {
   /** A window that reports itself as a SUB-frame (top is some other window). */

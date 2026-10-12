@@ -4,7 +4,7 @@
 // through to `default`, i.e. the BROWSER entry — IndexedDB, DOM, a page lifecycle — none of which exists on
 // workerd, Vercel Edge, or in a Web Worker. Bun and Deno were worse than that: they set `node`, so they
 // resolved the Node SDK and silently lost their own composition (measured through the real runtimes in
-// Wave 3b.1: Bun 1.3.14 reporting as `node` 24.3.0, and `Bun.serve` left uninstrumented entirely).
+// Bun 1.3.14 reporting as `node` 24.3.0, and `Bun.serve` left uninstrumented entirely.
 //
 // The lesson from that is why this file exists: an `exports` entry is only as good as the resolution that
 // selects it, and nothing had ever exercised the selection. esbuild's `conditions` is a real resolver

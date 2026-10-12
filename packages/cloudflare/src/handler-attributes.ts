@@ -1,7 +1,7 @@
 import type { AttributeValue } from '@bugsee/vercel-edge';
 import type { MessageBatch, ScheduledController, TraceItem } from './cloudflare-types';
 
-// Per-handler-type context attributes for the non-fetch Cloudflare triggers (docs/design/edge-runtime.md C2).
+// Per-handler-type context attributes for the non-fetch Cloudflare triggers.
 // Keys follow OTel FaaS conventions (`faas.trigger`, `faas.cron`, `messaging.*`) plus a `cloudflare.handler`
 // marker so an incident report names WHICH trigger fired (`faas.trigger` alone can't tell email from tail).
 // PII-safe: no email addresses, no message bodies/payloads. Defensive — a malformed trigger arg degrades to the

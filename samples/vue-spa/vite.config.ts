@@ -5,7 +5,7 @@ import { recipeApiPlugin } from './src/api/server-plugin';
 
 export default defineConfig(({ mode }) => {
   // Bridge the plain (unprefixed) BUGSEE_* names required by the samples convention
-  // (docs/samples/PLAN.md §3) into import.meta.env.VITE_* so client code can read them, without
+  // into import.meta.env.VITE_* so client code can read them, without
   // renaming the .env file itself.
   const env = loadEnv(mode, process.cwd(), '');
 

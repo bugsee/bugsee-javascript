@@ -1,4 +1,4 @@
-// S12 persistence & recovery, disk-capture flavour: SIGKILL the service mid-capture, then restart it
+// persistence & recovery, disk-capture flavour: SIGKILL the service mid-capture, then restart it
 // pointed at the SAME dataDir and confirm the pending report is recovered + uploaded. Node process
 // management (spawn/kill), so it runs as its own script rather than an HTTP route.
 import { spawn } from 'node:child_process';

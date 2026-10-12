@@ -1,14 +1,14 @@
 import type { CaptureProvider, CaptureProviderInit, OptionsContainer } from './contracts';
 
-// Capture-provider lifecycle manager (design §16.3, Android BugseeCaptureCoordinator parity). Holds
+// Capture-provider lifecycle manager (Android BugseeCaptureCoordinator parity). Holds
 // the capture-pipeline init (hubs/operations/aggregator) and injects it into each provider ONCE at
 // registration (Android constructs providers with the init); then start(options) starts every
 // enabled provider for the launch (the provider subscribes to its hub and buffers entries), stop()
 // stops the started ones, and providers may be added after start. The trigger-time buffer→serialize
-// wiring lives in the event pipeline (§7.7).
+// wiring lives in the event pipeline.
 //
 // Deterministic by design: a throwing provider.start propagates. The Client wraps start() to honor
-// the "launch never throws" guarantee (§15.1).
+// the "launch never throws" guarantee.
 
 /** Returns whether a launch option (by key) is enabled. */
 export type OptionGate = (option: string) => boolean;

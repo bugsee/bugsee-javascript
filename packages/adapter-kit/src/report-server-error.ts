@@ -1,4 +1,4 @@
-// @bugsee/adapter-kit — the server-error bridge (P4): stitch a framework's server-side throw to the
+// @bugsee/adapter-kit — the server-error bridge: stitch a framework's server-side throw to the
 // active Bugsee session. Shared by every SSR meta-framework adapter (Next.js `onRequestError`, SvelteKit
 // `handleError`, Remix `handleError`, Nuxt `nitroApp.hooks('error')`, Astro middleware catch) — each maps
 // its framework's error context to a capture `event`, then delegates the reporting here.

@@ -1,4 +1,4 @@
-// Property tests for the node SSR stream transformer (R3, node half).
+// Property tests for the node SSR stream transformer (node half).
 //
 // The transformer sits in the middle of React's `renderToPipeableStream` pipe, so it handles EVERY byte the
 // framework streams to the client. Two contracts matter more than the injection itself:

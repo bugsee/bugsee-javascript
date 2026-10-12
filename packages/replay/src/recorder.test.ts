@@ -430,7 +430,7 @@ describe('createReplayCaptureProvider', () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
-    // R3V-8: the bound-reached report went to the raw sink, so a THROWING onError escaped before `record()` ran and
+    // the bound-reached report went to the raw sink, so a THROWING onError escaped before `record()` ran and
     // left replay off until the next cycle (and the report would repeat or be lost).
     it('a throwing onError sink cannot leave replay off: the restart still happens, DOM-only', () => {
       const gate = createBlackoutState();

@@ -5,7 +5,7 @@ import {
   reportError,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/solid ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Solid). Solid catches
+// The @bugsee/solid ERROR SEAM (the thin pattern for Solid). Solid catches
 // render/reactive errors via the built-in `<ErrorBoundary>` component and the `onError(handler)` /
 // `catchError(fn, handler)` primitives — all of which hand a plain `error` to a USER callback. So (unlike
 // React) we don't ship a boundary component; we provide the reporter the user wires into Solid's own seam:
@@ -31,11 +31,11 @@ export function reportSolidError(error: unknown, options: SolidErrorOptions = {}
 /** Build an error handler `(error) => void` to wire into Solid's `onError` / `catchError` / an
  *  `<ErrorBoundary>` fallback. */
 export function solidErrorHandler(options: SolidErrorOptions = {}): (error: unknown) => void {
-  // Contained (Wave 2.1): this is wired into `<ErrorBoundary>` / `catchError`, so a throw here escapes the
+  // Contained: this is wired into `<ErrorBoundary>` / `catchError`, so a throw here escapes the
   // boundary that was supposed to contain the customer's error and takes the fallback UI down with it.
   // Today this guard is REDUNDANT — `reportSolidError` only forwards to the already-guarded `reportError`,
   // with no pre-report work of its own (unlike vue's component-name lookup, svelte's route read or angular's
-  // error unwrapping), so a mutation removing it is not observable. It stays because the Wave 2.1 rule is
+  // error unwrapping), so a mutation removing it is not observable. It stays because the rule is
   // "every host-facing entry point is wrapped", enforced by construction rather than re-derived per adapter:
   // the day this function gains any pre-work, the guard is already in place.
   return (error) => {

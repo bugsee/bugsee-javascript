@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-// The node-family upload-checksum digest (docs/design/sdk-design.md §8.3).
+// The node-family upload-checksum digest.
 //
 // `@bugsee/util`'s `sha256Hex` is WebCrypto-only, because util is tier-0 and ships inside every browser and
 // edge bundle, where any `node:crypto` specifier breaks the build. The one supported runtime without global

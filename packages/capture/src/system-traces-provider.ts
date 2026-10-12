@@ -1,7 +1,7 @@
 import { type CaptureProvider, CaptureProviderBase, type Scheduler } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 
-// Runtime-agnostic SYSTEM TRACES provider (design §16.1, Android traces.system parity). A trace is a
+// Runtime-agnostic SYSTEM TRACES provider (Android traces.system parity). A trace is a
 // named value sampled over TIME. While started, it periodically calls an injected `sample()` and routes
 // each {name, value} to the aggregator as a `traces.system` entry. The shell is runtime-agnostic; WHAT
 // to sample (process memory/cpu/event-loop lag on Node; performance.memory on browser) is the injected

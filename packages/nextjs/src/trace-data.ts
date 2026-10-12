@@ -5,10 +5,10 @@
 // `<meta name="traceparent">` on pageload and adopts that trace id — so the initial page's CLIENT session
 // and the SSR SERVER request become ONE trace (BE→FE continuation). Combined with the FE→BE header
 // propagation the platform launches already wire, this closes the loop: the client session and the server
-// throw the N3 `onRequestError` bridge reports share a single trace.
+// throw the `onRequestError` bridge reports share a single trace.
 //
 // RUNTIME-PORTABLE: runs in `generateMetadata()` on the node OR edge server runtime. The trace read +
-// traceparent formatting is the shared `@bugsee/adapter-kit` `traceMetaEntries` (P5) — Next just re-exports
+// traceparent formatting is the shared `@bugsee/adapter-kit` `traceMetaEntries` — Next just re-exports
 // it under the framework-idiomatic name. Fully defensive — never throws out of `generateMetadata`.
 import { type TraceDataOptions, traceMetaEntries } from '@bugsee/adapter-kit';
 

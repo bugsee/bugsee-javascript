@@ -1,4 +1,4 @@
-// @bugsee/koa — Koa middleware adapter (tier 4, design: docs/design/framework-adapters.md).
+// @bugsee/koa — Koa middleware adapter.
 // A single middleware over the per-request context foundation. koa is a PEER (structural types only).
 // Works on node/bun/deno-hosted Koa (wherever the launched @bugsee/node client provides the context store).
 

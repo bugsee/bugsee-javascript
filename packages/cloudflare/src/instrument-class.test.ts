@@ -172,7 +172,7 @@ describe('instrumentEdgeClass', () => {
     // Wrapped on the SUBCLASS PROTOTYPE, never as an own property of the instance. These three lines used
     // to assert `Object.hasOwn(instance, …) === true`, i.e. they pinned the defect: an own property shadows
     // the prototype method out of Cloudflare's RPC surface, which made every instrumented method uncallable
-    // over RPC (docs/review/cloudflare.md SEV1 #1, reproduced on real workerd).
+    // over RPC (reproduced on real workerd).
     const proto = Object.getPrototypeOf(instance) as object;
     expect(Object.hasOwn(instance, 'fetch')).toBe(false); // NOT an own property…
     expect(Object.hasOwn(proto, 'fetch')).toBe(true); // …wrapped on the prototype instead
@@ -228,7 +228,7 @@ describe('instrumentEdgeClass', () => {
   });
 });
 
-// The RPC surface (docs/review/cloudflare.md SEV1 #1), pinned structurally.
+// The RPC surface, pinned structurally.
 //
 // `instrumentRpcMethods` is a documented opt-in that DELETED the customer's RPC surface: Cloudflare
 // dispatches RPC by looking methods up on the PROTOTYPE, and the wrapper was assigned as an own property

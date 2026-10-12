@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { mintControlToken } from './control-token';
 
 /**
- * Property-based tests for the control token (webview-bridge-auth.md D-A1).
+ * Property-based tests for the control token.
  *
  * The attacker here is a script in the SAME REALM as the SDK, so every decision in this function is a
  * security decision, and the module's own header explains why each one is load-bearing:

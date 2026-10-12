@@ -1,4 +1,4 @@
-// @bugsee/express — Express middleware adapter (tier 4, design: docs/design/framework-adapters.md).
+// @bugsee/express — Express middleware adapter.
 // Opt-in middlewares over the per-request context foundation. express is a PEER dependency.
 
 // Single-install re-export: surface the full public SDK (launch, Bugsee, options + manual-API

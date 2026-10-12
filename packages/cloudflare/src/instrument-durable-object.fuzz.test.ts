@@ -14,7 +14,7 @@ import * as cfLaunch from './launch';
  * The owner is derived from `ctx.id.toString()` — a value supplied entirely by workerd (or, in a test/stub/
  * future-runtime, by anything at all). It is also the value the partitioned capture store keys a tenant's
  * rolling window on, which is what stops one Durable Object's incident bundle from carrying another
- * customer's capture (docs/review/cloudflare.md SEV1 #2). So it has two hard invariants:
+ * customer's capture. So it has two hard invariants:
  *
  *   1. Deriving it must NEVER throw — it runs in the DO constructor, and a throw there takes down every
  *      construction of that Durable Object, not merely one capture partition.

@@ -1,4 +1,4 @@
-// The IIFE entry for the SELF-CONTAINED injectable single-string build (docs/design/webview-bridge.md D7/§9).
+// The IIFE entry for the SELF-CONTAINED injectable single-string build.
 // Native ships this bundle as a resource and injects it at document-start; the bundler's `globalName` turns these
 // named exports into the `BugseeWebView` global, and the native bootstrap activates the SDK from native-pushed
 // config via `BugseeWebView.launch(appToken, options)`. This is a THIN entry — npm/ESM consumers import the

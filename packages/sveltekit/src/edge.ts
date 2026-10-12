@@ -34,7 +34,7 @@ export interface SvelteKitEdgeOptions extends BugseeEdgeLaunchOptions {
 export function registerServerEdge(appToken: string, options: SvelteKitEdgeOptions = {}): Bugsee {
   const { launch = launchEdge, ...launchOptions } = options;
   const client = launch(appToken, launchOptions);
-  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch() (R4H-4)
+  rememberEdgeLaunch(launch, launchOptions.carrier); // the default for a plain relaunch()
   return client;
 }
 
@@ -74,7 +74,7 @@ export function createEdgeHandle(options: CreateEdgeHandleOptions = {}): SvelteK
   // import, a throwing getter). This handle wraps EVERY SSR request, so an unguarded throw here would turn
   // the whole site into a 500 — the SDK breaking the app it exists to observe. A failed resolve degrades to
   // "not launched", exactly like a `getClient` that returns undefined. (Same shape as the @bugsee/react
-  // `report.ts` and hono `options.user` findings.)
+  // `report.ts` and hono `options.user`.)
   const resolveClient = (): Bugsee | undefined => {
     try {
       return getClient();
@@ -96,7 +96,7 @@ export function createEdgeHandle(options: CreateEdgeHandleOptions = {}): SvelteK
   };
 }
 
-// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+// API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
 export {
   addReportAttachment,
   BugseeStatus,
@@ -111,8 +111,8 @@ export {
 /**
  * Stop the running client and launch again with the remembered token through the SAME launch seam
  * `registerServerEdge` was installed with (default `launchEdge`), so a custom launch (e.g. Cloudflare's) is re-run
- * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use (R3P-9).
- * That install-time seam is remembered on the carrier and is the DEFAULT here (R4H-4); an explicit `launch`
+ * rather than silently replaced by the plain edge one the `@bugsee/vercel-edge` `relaunch` would use.
+ * That install-time seam is remembered on the carrier and is the DEFAULT here; an explicit `launch`
  * argument wins and is remembered in turn.
  * Bugsee options return to their defaults; integration seams are kept. Rejects when nothing was launched.
  */

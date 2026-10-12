@@ -525,7 +525,7 @@ describe('createBrowserInputSource', () => {
       target.emit('pointerdown', pen());
       target.emit('pointermove', pen()); // identical to the begin
       target.emit('pointermove', pen({ clientX: 12.2 })); // rounds to the same x
-      target.emit('pointermove', pen({ tiltX: 30 })); // L3 angles win, so nothing recorded changed
+      target.emit('pointermove', pen({ tiltX: 30 })); // angles win, so nothing recorded changed
       target.emit('pointermove', pen({ pressure: 0.6 })); // force changed
       target.emit('pointermove', pen({ pressure: 0.6 })); // same as the previous MOVE
       expect(events.map((e) => [e.type, e.force])).toStrictEqual([

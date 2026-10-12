@@ -98,7 +98,7 @@ function nodeImportsOf(metafile: {
 
 // Models a `nodejs_compat`-enabled Worker for the VM smoke. @edge-runtime/vm is a bare WinterCG isolate with
 // no node builtins, but @bugsee/cloudflare legitimately imports `node:async_hooks` (the ONLY route to
-// AsyncLocalStorage on workerd — Wave 0.1 S0). Without this the smoke would test an environment Cloudflare
+// AsyncLocalStorage on workerd. Without this the smoke would test an environment Cloudflare
 // users never deploy to. A single-slot stand-in is enough here: the smoke asserts the assembled SDK RUNS and
 // uploads; real ALS propagation is proven on real workerd by the miniflare e2e.
 const NODEJS_COMPAT_SHIM = `

@@ -72,7 +72,7 @@ describe('withBugseeEvent', () => {
   });
 });
 
-// HOST-BOUNDARY CONTAINMENT (the Wave 2.1 rule `neverThrow` exists for, and which the edge sibling already
+// HOST-BOUNDARY CONTAINMENT (the rule `neverThrow` exists for, and which the edge sibling already
 // applies at the same seam — vercel-edge/src/edge-context.ts:80).
 //
 // `withBugseeEvent` wraps the APPLICATION's Service Worker handler, so the customer's own error is in

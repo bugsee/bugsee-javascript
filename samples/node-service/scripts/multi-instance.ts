@@ -1,4 +1,4 @@
-// S12 multi-instance coexistence: 3 worker_threads + a second OS process, all launched against ONE
+// multi-instance coexistence: 3 worker_threads + a second OS process, all launched against ONE
 // shared dataDir. Proves (a) concurrent aggregators don't corrupt each other's on-disk subtree while
 // all alive, and (b) killing one (the process, for a fast pid-death liveness signal — see
 // packages/node/src/liveness.ts) lets a freshly-launched instance recover its pending report with

@@ -1,4 +1,4 @@
-// Fixture Worker for the Durable Object RPC e2e (docs/review/cloudflare.md SEV1 #1).
+// Fixture Worker for the Durable Object RPC e2e.
 //
 // `instrumentRpcMethods` is a documented, advertised opt-in. On real workerd it did not merely fail to
 // instrument — it DELETED the user's RPC surface: `stub.increment()` threw "The RPC receiver does not

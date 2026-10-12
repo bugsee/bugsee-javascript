@@ -3,7 +3,7 @@
 A genuinely working, no-framework web shop (Vite + TypeScript + plain DOM) that exercises the Bugsee
 browser SDK end to end: `@bugsee/bugsee` (browser entry), `@bugsee/browser`, `@bugsee/replay`,
 `@bugsee/replay-canvas`, `@bugsee/performance`, `@bugsee/opentelemetry`, `@bugsee/webworker`. This is
-the **reference sample** for every other web sample in `samples/` — see `docs/samples/PLAN.md`.
+the **reference sample** for every other web sample in `samples/`.
 
 ## Run it
 
@@ -51,7 +51,7 @@ A small but real shop:
 - **Settings** (`/#/settings`) — every `BugseeLaunchOptions` field, individually toggleable, with an
   "Apply & relaunch" that calls `stop()` then `launch()` again.
 - **Scenario panel** (`/#/scenarios`) — one button per catalog scenario (S1–S14), each calling the real
-  SDK API and showing its own local-level result; see `scenarios.md`.
+  SDK API and showing its own local-level result.
 - A **Service Worker** (`src/sw/service-worker.ts`) caches the app shell and runs its own
   `@bugsee/webworker` session, with `withBugseeEvent` wrapping its fetch/sync handlers.
 
@@ -75,36 +75,9 @@ For the record, what they were and where they were fixed: the hardcoded `x-clien
 the unparsed `{ok, result}` response envelope with its snake_case ids, and the `x-amz-checksum-sha256`
 header that invalidated the presigned PUT's own signature — all in `@bugsee/core` (`0318229`,
 `84976f7`); the missing `publishConfig` on the replay packages (`3921760`); and the collector's CORS
-policy, fixed in appserver and **confirmed deployed on staging** (`samples/FINDINGS.md` F-X10, which
+policy, fixed in appserver and **confirmed deployed on staging** (which
 records the preflight evidence).
 
 If you are building the next web sample: you need none of this. Point `endpoint` at the collector and
 the browser reaches it, exactly as a customer's page does.
-
-## Scenario coverage
-
-See `scenarios.md` for the full table (every scenario id → control → expected → verified/unverified
-with evidence). Headline numbers from this pass:
-
-- **48/48** local-level checks pass via `pnpm verify` (10 whole-app checks + 38 scenario-panel
-  controls).
-- **12 issues** created and inspected on the real staging backend via
-  `mcp__bugsee-staging__get_issue` during this verification pass (`SBROWSER-1` through `SBROWSER-12`),
-  covering S1, S2, S4 (incl. the nested-cause chain and instance dedupe), S5 (crash vs. handled-error
-  classification), S8 (report-handler mutate vs. veto — confirmed the vetoed report never arrived),
-  S12 (a real kill-and-recover round trip), and S14 (the Web Worker's and Service Worker's own
-  sessions).
-- S7, S9, S11, S13 are **not exposed by the MCP `get_issue` surface** per `docs/samples/PLAN.md` §6
-  step 6 (network entries, performance transactions, replay contents) — those are verified at Local/
-  Wire depth only, honestly, in `scenarios.md`.
-- One backend-visibility gap (`FINDINGS.md` F-6): captured console logs and breadcrumbs never showed
-  up in `get_issue`'s `# Logs` section in any of the issues inspected, despite clear prior activity in
-  the same session.
-
-## Findings
-
-`FINDINGS.md` — six numbered defects (five blockers that together prevented ANY data from reaching
-the backend, one major logs-visibility gap), plus three investigated-and-explained non-findings. Sample
-authors do not fix SDK code; every workaround here is sample-local (`server/`, `vite.config.ts`,
-`src/bugsee-client.ts`) and clearly marked as such.
 

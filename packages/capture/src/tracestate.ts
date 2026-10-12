@@ -1,8 +1,7 @@
 import { utf8ByteLength } from '@bugsee/util';
 
 // W3C `tracestate` codec (https://www.w3.org/TR/trace-context/#tracestate-header) + the Bugsee vendor entry.
-// `tracestate` is the OTel-legal vendor channel that rides alongside `traceparent` (cross-project-tracing.md,
-// T4/T7): a comma-separated, ORDERED (most-recently-mutated first) list of `key=value` members. We parse it
+// `tracestate` is the OTel-legal vendor channel that rides alongside `traceparent`: a comma-separated, ORDERED (most-recently-mutated first) list of `key=value` members. We parse it
 // defensively (skip malformed members, never throw — we're reading headers minted by others), and when we
 // mutate it we move our entry to the front and cap the list, per the spec.
 
@@ -12,7 +11,7 @@ export interface TracestateEntry {
   value: string;
 }
 
-// W3C / Bugsee OTLP Profile v1 §12 (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
+// Cap at 32 entries AND 512 bytes; drop the oldest
 // on overflow. Both caps are pinned so every Bugsee SDK truncates to identical bytes.
 //
 // The byte cap is measured in UTF-8 BYTES, which is what "512 bytes" means on the wire and what a peer
@@ -77,7 +76,7 @@ export function setTracestateEntry(
   return next;
 }
 
-/** The Bugsee `tracestate` payload (cross-project-tracing.md): a record flag + a session-correlation id. */
+/** The Bugsee `tracestate` payload: a record flag + a session-correlation id. */
 export interface BugseeTraceState {
   /** The originator is recording/replaying this trace (distinct from the W3C sampled bit). */
   record?: boolean;

@@ -48,7 +48,7 @@ export interface UploadSourcemapsOptions {
   /** Injectable integrity check for the pre-stamped path (default {@link findIntegrityMismatches}). */
   verifySri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
-   * FAIL the build when `bugsee-cli` fails. Default `false` (Wave 7).
+   * FAIL the build when `bugsee-cli` fails. Default `false`.
    *
    * A telemetry side effect must not be able to break a production deploy: an expired token, a transient
    * network error, a Bugsee outage or a binary missing from PATH used to reject `writeBundle` and abort the
@@ -63,7 +63,7 @@ export interface UploadSourcemapsOptions {
    *
    * Data, not policy: collection is the context-gathering layer's job (`resolve.ts`), this layer only
    * drives `bugsee-cli`. Carried here because this is where it will be handed to the CLI once the
-   * upload wire protocol has a field to put it in — see docs/design/source-maps.md §9.
+   * upload wire protocol has a field to put it in —
    */
   vcs?: VcsMetadata;
 }
@@ -77,7 +77,7 @@ export interface UploadSourcemapsResult {
 }
 
 /**
- * Directories never descended into when deleting `.map` files (Wave 7).
+ * Directories never descended into when deleting `.map` files.
  *
  * A relative `output.file` resolves the output dir to `'.'` — `path.dirname('bundle.js') === '.'`, an
  * entirely ordinary Rollup library config — so the walk started at the PROJECT ROOT. With no exclusions it
@@ -244,7 +244,7 @@ export async function uploadSourcemaps(
       : [];
     return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {
-    // A telemetry side effect must not break a production deploy (Wave 7). Reported, never swallowed;
+    // A telemetry side effect must not break a production deploy. Reported, never swallowed;
     // `failOnError` is there for teams that would rather the build stopped.
     if (options.failOnError === true) {
       throw error;

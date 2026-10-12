@@ -1,6 +1,6 @@
 import type { Clock } from './clock';
 
-// Sustained-error-storm self-protection (design §7.7): at most `limit` captures per rolling
+// Sustained-error-storm self-protection: at most `limit` captures per rolling
 // `windowMs` window per Client; excess captures are refused (the pipeline drops them with outcome
 // `rate_limit`). Independent of server-side dedup — we still upload what we admit. Uses the clock's
 // MONOTONIC source so a wall-clock adjustment can't widen or collapse the window.
@@ -11,9 +11,9 @@ export interface RateLimiter {
 }
 
 export interface RateLimiterOptions {
-  /** Max admissions per window. Default 100 (§7.7). */
+  /** Max admissions per window. Default 100. */
   limit?: number;
-  /** Rolling window width in ms. Default 60_000 (§7.7). */
+  /** Rolling window width in ms. Default 60_000. */
   windowMs?: number;
 }
 

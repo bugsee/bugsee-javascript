@@ -1,7 +1,7 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig, loadEnv } from 'vite';
 
-// (docs/samples/PLAN.md §3) Read .env into import.meta.env.VITE_* so client code can read it without
+// Read .env into import.meta.env.VITE_* so client code can read it without
 // a bundler-time secret leak — the token is a staging-only app token, never a real secret, but the
 // pattern is the same one every sample follows.
 export default defineConfig(({ mode }) => {

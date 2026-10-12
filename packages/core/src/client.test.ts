@@ -409,10 +409,9 @@ describe('createClient — capture entry points', () => {
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  // The wire level is NUMERIC (design §8.9, mobile parity: 1=Error … 5=Verbose). Wave 5.1 fixed the
-  // console-CAPTURE path and left `client.log()` — the manual API users are told to call — shipping the
-  // string name. These two tests asserted `level: 'info'` and `level: 'error'`, so they pinned the defect
-  // in place; the e2e upload contract added in Wave 3b.2 is what finally named it.
+  // The wire level is NUMERIC (mobile parity: 1=Error … 5=Verbose). `client.log()` — the manual API
+  // users are told to call — once shipped the string name. These two tests asserted `level: 'info'` and
+  // `level: 'error'`, so they pinned the defect in place; the e2e upload contract is what finally named it.
   it('log pushes a log entry whose level is the NUMERIC wire value', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
@@ -607,7 +606,7 @@ describe('createClient — crash.json (SC3)', () => {
       (f: { data?: { member?: string } }) => f.data?.member,
     );
     expect(members).toContain('applicationCode');
-    // R2P-1: the PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
+    // the PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
     expect(members[0]).toBe('applicationCode');
     expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
   });
@@ -1451,7 +1450,7 @@ describe('createClient — lifecycle', () => {
     const drained = await client.stop(50);
     expect(drained).toBe(true);
     expect(provider.stop).toHaveBeenCalledTimes(1);
-    expect(flush).toHaveBeenCalledWith(undefined); // the shared drain is unbounded (R3L-2); 50 only bounds this wait
+    expect(flush).toHaveBeenCalledWith(undefined); // the shared drain is unbounded; 50 only bounds this wait
     expect(client.isLaunched()).toBe(false);
   });
 
@@ -1712,7 +1711,7 @@ describe('createClient — logException', () => {
     });
     client.launch();
     await client.stop();
-    expect(await client.logException(new Error('after-stop'))).toEqual({ ok: false }); // §1501
+    expect(await client.logException(new Error('after-stop'))).toEqual({ ok: false });
     expect(report).not.toHaveBeenCalled();
     client.launch(); // re-launch restores capture
     expect(await client.logException(new Error('after-relaunch'))).toEqual({ ok: true });
@@ -2204,10 +2203,10 @@ describe('createClient — capture-store tick timer', () => {
   });
 });
 
-// S3 (docs/design/cloudflare-tenant-isolation.md §4.3): an incident drains only the faulting TENANT.
+// an incident drains only the faulting TENANT.
 //
 // The client-level statement of the leak proven on real workerd, where tenant C's bundle carried tenant
-// A's and B's secrets (docs/review/cloudflare.md SEV1 #2). Store, aggregator and exporter are all REAL
+// A's and B's secrets. Store, aggregator and exporter are all REAL
 // here — only the context provider is driven, standing in for per-DO contexts in one isolate.
 describe('createClient — per-tenant capture isolation', () => {
   it('an incident in one tenant enqueues that tenant only', async () => {
@@ -3454,7 +3453,7 @@ describe('createClient — mobile-parity options (T6)', () => {
       expect(severities(report)).toEqual(['high']);
     });
 
-    // R2D-3: Android applies ReportingDefaultBugPriority to EVERY bug report, not only the browser dialog's.
+    // Android applies ReportingDefaultBugPriority to EVERY bug report, not only the browser dialog's.
     const BUG = 'com.bugsee.option.reporting.defaults.bug-priority';
 
     it('applies reportDefaultBugPriority to client.upload() and to a detected bug-type report', async () => {

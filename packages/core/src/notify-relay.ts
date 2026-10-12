@@ -10,8 +10,7 @@ import type { NotifyItem, NotifyResult } from './transport';
 // the app's configured messaging integrations (Slack, webhooks, ...) that skips the bug-report pipeline
 // entirely — no video, logs or events. Messages are queued, sent in batches, and retried with backoff.
 //
-// Mobile persists the queue to disk so a message survives a restart. This relay is IN MEMORY (see
-// docs/design/mobile-api-alignment.md, T7 findings): a page that closes with an unsent message loses it.
+// Mobile persists the queue to disk so a message survives a restart. This relay is IN MEMORY: a page that closes with an unsent message loses it.
 // `flush()` is the mitigation — `client.stop()`/`client.flush()` call it — and the queue survives a
 // stop()/launch() cycle within one page.
 //
@@ -81,7 +80,7 @@ export interface NotifyRelayOptions {
   newId?: () => string;
   onError?: (error: unknown) => void;
   /**
-   * Where a batch that was in a request when {@link NotifyRelay.take} ran goes if it then FAILS (R3L-5): the
+   * Where a batch that was in a request when {@link NotifyRelay.take} ran goes if it then FAILS: the
    * relay has been handed over and will not be resumed, so putting it back into its own queue would lose it.
    * Without a sink the items stay in the queue.
    */

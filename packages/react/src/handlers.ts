@@ -1,6 +1,6 @@
 import { type ReportReactErrorOptions, reportReactError } from './report';
 
-// React-19 root-level error handlers (frontend-adapters depth pass D5). React 19's `createRoot`/`hydrateRoot`
+// React-19 root-level error handlers. React 19's `createRoot`/`hydrateRoot`
 // accept `{ onUncaughtError, onCaughtError }` — the global seam for errors that an `<ErrorBoundary>` does NOT
 // catch (event handlers and effects still reach `onUncaughtError`; a boundary-caught error reaches
 // `onCaughtError`). Routing both to `reportReactError` captures EVERY React error with its component stack,

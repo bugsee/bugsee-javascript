@@ -5,10 +5,10 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeWorkerLaunchOptions, launch } from './launch';
 
-// Review round 3 (H1), webworker half: R3L-1. The instance lock and IndexedDB handles are released when the ONE
+// webworker half:. The instance lock and IndexedDB handles are released when the ONE
 // shared real stop drain settles true, from whichever stop() observes it (exactly once), even after a stop(timeout)
 // gave up.
-// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work (R4L-4).
+// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work.
 let releaseThrows = false;
 vi.mock('@bugsee/browser-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/browser-utils')>();
@@ -180,7 +180,7 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
       const { locks, options } = setup();
       const client = track(options);
       expect(await client.stop()).toBe(false);
-      // A FALSE drain does no further I/O: microtask turns run every continuation the observer could have (R4H-8).
+      // A FALSE drain does no further I/O: microtask turns run every continuation the observer could have.
       for (let i = 0; i < 20; i += 1) await Promise.resolve();
       expect(locks.held.size).toBe(1);
     } finally {

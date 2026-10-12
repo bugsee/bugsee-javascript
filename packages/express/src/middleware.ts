@@ -9,8 +9,7 @@ import {
   type ServerInstrumentOptions,
 } from '@bugsee/node';
 
-// The Express adapter (design: docs/design/framework-adapters.md S6 + incoming-server-instrumentation.md
-// §5.4). Two opt-in middlewares over the shared server-instrumentation core (@bugsee/node):
+// The Express adapter. Two opt-in middlewares over the shared server-instrumentation core (@bugsee/node):
 //   requestHandler() — opens a per-request context + http.server transaction via `runServerRequest`
 //     (run-scoped), continues an inbound W3C trace, refines the route once routing has run, and finishes
 //     on response. When the node:http auto-instrument also owns the request, this REFINES that span
@@ -62,7 +61,7 @@ export interface ExpressAdapterOptions {
   /** Override the report decision. Default: report errors with no status / a 5xx status, skip 4xx —
    *  the same default every other backend adapter uses. */
   shouldReport?: (err: unknown) => boolean;
-  /** Where an SDK-internal failure is reported. Never thrown into the request (Wave 2.1). */
+  /** Where an SDK-internal failure is reported. Never thrown into the request. */
   onError?: (error: unknown) => void;
 }
 

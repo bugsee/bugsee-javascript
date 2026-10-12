@@ -1,4 +1,4 @@
-// Property-based (fuzz) tests for the §8.6 worker environment envelope. Every field here comes from a
+// Property-based (fuzz) tests for the worker environment envelope. Every field here comes from a
 // probe of the host runtime or from caller-supplied launch options, and the whole object is JSON-serialized
 // onto the wire (and keyed on by the backend), so the mapping is exactly the kind of untrusted-input →
 // fixed-schema translation properties are good at: the example tests pin one probe, these pin the mapping

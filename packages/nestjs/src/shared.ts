@@ -4,7 +4,7 @@ import type { PerformanceApi } from '@bugsee/performance';
 import { sanitizeUrl } from '@bugsee/protocol';
 
 // Shared foundation for the @bugsee/nestjs seams (context middleware + interceptor + filter), over the
-// per-request context foundation (design: docs/design/framework-adapters.md). NestJS is a PEER; these
+// per-request context foundation. NestJS is a PEER; these
 // helpers use minimal STRUCTURAL request/response types and reach the client through the same DI seams
 // as @bugsee/express / @bugsee/fastify. Nothing here imports @nestjs/* — the default (interceptor) path
 // stays framework-import-free; only the opt-in filter pulls in @nestjs/core.
@@ -77,7 +77,7 @@ export const buildContext = (
 ): RequestContext => {
   const method = req.method ?? 'GET';
   // Redacted here rather than by @bugsee/node's server-instrument core: Nest builds its own context, so
-  // the raw query would otherwise reach `http.url` in reports and the manifest (Wave 1.1).
+  // the raw query would otherwise reach `http.url` in reports and the manifest.
   const url = sanitizeUrl(req.originalUrl ?? req.url ?? '');
   return {
     contextId: newContextId(),

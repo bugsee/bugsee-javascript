@@ -1,4 +1,4 @@
-// The bundle-assertion library now lives in @bugsee/e2e-kit (Wave V0). Re-exported here so this package's
+// The bundle-assertion library now lives in @bugsee/e2e-kit. Re-exported here so this package's
 // existing `./bundle` imports keep working.
 export {
   assertBundleIntegrity,

@@ -185,7 +185,7 @@ export function createEventLoopWatchdog(deps: EventLoopWatchdogDeps): EventLoopW
       // order is unconditional, so the pin was always installed: with `detectHangs` on by default, every
       // short-lived program that called launch() (a CLI, a migration, a CI job, a cron task) hung forever
       // instead of exiting. This is the same invariant the spawn-time unref documents; it just has to be
-      // restated once the port exists (docs/review/node-C-diagnostics-multiinstance.md SEV1 #1).
+      // restated once the port exists.
       worker.unref();
       timer = scheduler.setInterval(() => {
         Atomics.store(view, 0, BigInt(now()));

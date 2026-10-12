@@ -597,7 +597,7 @@ describe('createCoexistence — capture + marker recovery', () => {
     expect(reports).toHaveBeenCalledTimes(1); // 'msib' (from the working marker db) still recovered
   });
 
-  // SEV1 (recovery double-upload). A tab/worker killed between the durable stage and the upload settling
+  // (recovery double-upload). A tab/worker killed between the durable stage and the upload settling
   // leaves BOTH a staged bundle and its incident's report marker; recovering the two legs independently
   // reported it twice. Reconciliation is PER INCIDENT, on the report id the durable frame carries — the
   // browser and the (service) worker share this one implementation.
@@ -726,7 +726,7 @@ describe('createCoexistence — capture + marker recovery', () => {
       expect(seen?.markers.list().map((m) => m.request.id)).toEqual(['inc1']);
     });
 
-    // R2-1: an explicit `bundleStore` override BYPASSES coexistence, so its blobs live in a store that is
+    // an explicit `bundleStore` override BYPASSES coexistence, so its blobs live in a store that is
     // stable across launches while the incident's marker sits in this dead sibling's namespace. The launch
     // reconciles that store through `reconcileOwnQueue`; whatever it settles with is withheld from the
     // marker leg alongside the coexisting queue's own ids.

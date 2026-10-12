@@ -5,7 +5,7 @@ import { handleErrorWithBugsee } from './error';
 import * as renderSpan from './render-span';
 import * as routerMod from './router';
 
-// Wave 2.1/2.3 — SvelteKit renders its error page from what `handleError` RETURNS, so an SDK throw here does
+// SvelteKit renders its error page from what `handleError` RETURNS, so an SDK throw here does
 // not merely lose a report: it takes the app's error page with it.
 afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;

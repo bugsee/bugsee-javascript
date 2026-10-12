@@ -1,7 +1,7 @@
 import type { AttributeValue, ContextProvider, RequestContext } from '@bugsee/core';
 
 // The EDGE request-context binding — the portable, run()-ONLY counterpart to node's AsyncLocalStorage store
-// (docs/design/edge-runtime.md E2). It realizes the core ContextProvider seam so each request's context
+// It realizes the core ContextProvider seam so each request's context
 // follows its async chain and stays isolated across concurrent requests in one isolate. Two reasons it can't
 // reuse the node store: (1) node statically `import`s `node:async_hooks` (breaks an edge bundle); (2) the
 // WinterCG/Workers AsyncLocalStorage subset has **no `enterWith()`** (nor `disable()`), so this store is

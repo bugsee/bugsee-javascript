@@ -135,7 +135,7 @@ describe('recoverNativeCrashes', () => {
     expect(out.request.type).toBe('crash');
     expect(out.request.severity).toBe(5); // blocker
     // crash.json is the NATIVE shape referencing the attached dump, carrying the provenance the assembler
-    // stamps (Wave 5.4a). This path is the reason provenance matters most: the incident is SYNTHESIZED at
+    // stamps. This path is the reason provenance matters most: the incident is SYNTHESIZED at
     // the next launch from a harvested dump, so nothing about the crashed process is around to identify it
     // — and `source_platform` here is the recovered session's own environment, not the recovering one's.
     expect(JSON.parse(out.text('crash.json'))).toEqual({

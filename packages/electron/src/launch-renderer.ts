@@ -1,12 +1,12 @@
 // launchRenderer — the Electron renderer entry. Runs @bugsee/browser's full capture pipeline, but swaps its
 // CaptureStore for the streaming renderer store so every entry flows UP to the main process instead of
-// buffering + uploading locally (the main process owns the session/bundle). It also completes the E6
+// buffering + uploading locally (the main process owns the session/bundle). It also completes the
 // handshake — sends `hello` up (prompting the owner's `session` reply) and subscribes to main→renderer
 // control (pause/resume drop/restore the UP stream while backgrounded; flush/stop forward to the client).
 // Call it from renderer code:
 //
 //   import { launchRenderer } from '@bugsee/electron/renderer';
-//   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream (D8);
+// await launchRenderer(appToken, {}); // replay is ON by default and rides the same stream;
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import {
@@ -30,7 +30,7 @@ export interface LaunchRendererOptions extends BugseeLaunchOptions {
   post?: (raw: string) => void;
   /** The renderer↔main bridge. Default: the preload-exposed `__bugseeElectron` (lazily resolved). */
   bridge?: BugseeElectronBridge;
-  /** Called with the owner's session id once the handshake completes (E6). */
+  /** Called with the owner's session id once the handshake completes. */
   onSessionId?: (sessionId: string) => void;
   /** Test seam: the browser launch fn (default @bugsee/browser `launchCore`). */
   launch?: BrowserLaunch;
@@ -67,7 +67,7 @@ export function resolveRendererBridge(): BugseeElectronBridge {
   };
 }
 
-// One renderer instance per page (R3V-6). A page can run this entry twice (hot module reload, a second bundle):
+// One renderer instance per page. A page can run this entry twice (hot module reload, a second bundle):
 // two instances would register two competing three-flag blackout handlers over ONE shared blackout state and
 // two control subscriptions. The slot is on `globalThis` (a reloaded module has fresh module variables) and holds
 // the in-flight/finished launch plus, once known, its client so a client main has STOPPED is not handed back.
@@ -95,7 +95,7 @@ export function launchRenderer(
     return existing.launch;
   }
   // A re-run replaces a client main has stopped: retire its control subscription first, so a reply meant for the
-  // NEW session cannot also run the old handler (double onSessionId / BlackoutStarted: R4V-3).
+  // NEW session cannot also run the old handler (double onSessionId / BlackoutStarted).
   existing?.dispose?.();
   const slot: RendererSlot = {
     launch: undefined as unknown as Promise<Bugsee>,
@@ -133,7 +133,7 @@ async function launchRendererOnce(
   });
   // Incidents are FORWARDED to main, never uploaded here: this renderer's capture lives in the main store,
   // so a locally-assembled bundle would be empty and land under a foreign session id
-  // (docs/review/electron.md SEV1 #2). `handshaken` gates delivery — before the session handshake there is
+  // `handshaken` gates delivery — before the session handshake there is
   // no main session to attribute an incident to, so the pipeline reports failure rather than posting into
   // the void. A caller cannot override this: ours is spread AFTER the caller's options, so an override —
   // which would silently restore the broken local-upload path — is simply ignored. (An earlier version also
@@ -167,9 +167,9 @@ async function launchRendererOnce(
   // main's blackout-end ended the app's.
   let hold = true;
   let mainDark = false;
-  // Same rule as the browser launch (R3V-2): the safe side is dark, so any value but boolean `false` is dark. A
+  // Same rule as the browser launch: the safe side is dark, so any value but boolean `false` is dark. A
   // blackout CARRIED over from a previous client (a re-run after main stopped this page's client) is the app's to
-  // lift too: the new client starts in that state and the handshake must not end it (R3V-6).
+  // lift too: the new client starts in that state and the handshake must not end it.
   let appDark =
     resolveFailOnBoolean(
       (browserOptions as { startInBlackout?: unknown }).startInBlackout,
@@ -194,10 +194,10 @@ async function launchRendererOnce(
     }
   };
   // The application's own calls land on the app flag, not on the shared state, WHILE this client is launched.
-  // A client that is not launched (stopped, or replaced by a re-run: R4V-3) is not the owner of the process
+  // A client that is not launched (stopped, or replaced by a re-run) is not the owner of the process
   // blackout, so its calls go to the CORE methods, which know the rules: a stale `startBlackout()` is forwarded
   // to the current client (fail closed), a stale `endBlackout()` is refused and reported, and an owner that is
-  // merely stopped may lift a carried blackout (R2L-7).
+  // merely stopped may lift a carried blackout.
   const coreStartBlackout = client.startBlackout.bind(client);
   const coreEndBlackout = client.endBlackout.bind(client);
   client.startBlackout = (): void => {
@@ -219,7 +219,7 @@ async function launchRendererOnce(
     }
   };
   // Control traffic reaches EVERY handler ever subscribed on this page (an old bridge cannot unsubscribe), so a
-  // handler only acts while ITS client is launched: a stopped client's handler is inert (R4V-3).
+  // handler only acts while ITS client is launched: a stopped client's handler is inert.
   const live = (): boolean => client.isLaunched();
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.

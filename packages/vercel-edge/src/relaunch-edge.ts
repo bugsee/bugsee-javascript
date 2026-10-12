@@ -1,4 +1,4 @@
-// The edge-ENTRY relaunch seam (R4H-4), deliberately NOT exported from the package index (R5H-4): the umbrella's
+// The edge-ENTRY relaunch seam, deliberately NOT exported from the package index: the umbrella's
 // `edge-light` entry and `@bugsee/cloudflare` `export *` the index, and a plain `relaunchEdge()` there would
 // silently re-run `launchEdge`, dropping the umbrella's extensions / the Cloudflare launch. Only the
 // meta-framework edge adapters (`@bugsee/{sveltekit,astro,nuxt}/edge`) import this subpath
@@ -11,7 +11,7 @@ export type EdgeLaunch = (appToken: string, options: BugseeEdgeLaunchOptions) =>
 
 /**
  * Remember the launch function an edge entry was installed with on its carrier (`carrier` default
- * `globalThis`), so {@link relaunchEdge} re-runs the same seam by default (R4H-4).
+ * `globalThis`), so {@link relaunchEdge} re-runs the same seam by default.
  */
 export function rememberEdgeLaunch(launch: EdgeLaunch, carrier?: object): void {
   getCarrier(carrier ?? globalThis).edgeLaunch = launch;

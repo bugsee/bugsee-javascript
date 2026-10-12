@@ -75,7 +75,7 @@ export function resolveUserAttachments(
   generateName: () => string = randomBundleName,
 ): ResolvedUserAttachment[] {
   // The sink is the application's callback: a throw from it must never cost the report these attachments
-  // ride on (R2P-6), whether we are reporting a malformed one or the catch below is.
+  // ride on, whether we are reporting a malformed one or the catch below is.
   const onError = (error: unknown): void => {
     try {
       rawOnError(error);
@@ -204,7 +204,7 @@ export function normalizeReportAttachments(
 /**
  * A COPY of `request` whose attachments have the limits applied, for a request that could not be normalised in
  * place (a handler froze the report). The marker must never encode attachments the limits would drop - 3 x 3 MB
- * is the bound, not "whatever the app attached" (R2P-9). Silent: assembly reports the drops. The request itself
+ * is the bound, not "whatever the app attached". Silent: assembly reports the drops. The request itself
  * is returned when it carries none.
  */
 export function limitAttachmentsForMarker(request: ReportingRequest): ReportingRequest {
@@ -233,7 +233,7 @@ export function limitAttachmentsForMarker(request: ReportingRequest): ReportingR
 }
 
 // The crash is the part of a report an `after` handler most plausibly SCRUBS (frame locals, source context, the
-// cause chain, the message), so it must be in the signature (R4H-1). The WHOLE crash is serialised (R5H-1):
+// cause chain, the message), so it must be in the signature. The WHOLE crash is serialised:
 // listing the fields that matter missed `exception.cause`, `exception.name` and `domain`, so scrubbing a cause
 // chain left the marker holding the unscrubbed one. Measured 0.05 ms for a 10-frame crash and 1.1 ms for a 1 MB one.
 function crashFingerprint(crash: Report['crash']): unknown {
@@ -241,7 +241,7 @@ function crashFingerprint(crash: Report['crash']): unknown {
 }
 
 // A 32-bit FNV-1a over the content plus its length: O(n), allocation-free, so a same-length rewrite (mask with
-// `*`, `fill(0)`) cannot hide behind an unchanged size (R5H-2). A collision needs an edit that keeps both the length
+// `*`, `fill(0)`) cannot hide behind an unchanged size. A collision needs an edit that keeps both the length
 // and the hash (about 1 in 4 billion); the cost of one is a marker that keeps the pre-edit attachment.
 function contentHash(data: Uint8Array | string): string {
   let hash = 0x811c9dc5;

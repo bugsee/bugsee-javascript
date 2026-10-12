@@ -8,11 +8,11 @@ import {
   type RuntimeType,
 } from '@bugsee/protocol';
 
-// Builds the §8.6 environment envelope for Node from process/os. System reads go through an
+// Builds the environment envelope for Node from process/os. System reads go through an
 // injectable SystemProbe so the mapping is testable deterministically; realSystemProbe is the
 // default. Pure given (input, probe) — persistence (device_id generation) is the caller's concern.
 // Canonical (dotted) option keys are translated to colon wire form for sdk.options here, because the
-// server treats dots as nested-document paths (§2.4).
+// server treats dots as nested-document paths.
 
 export interface SystemProbe {
   /** The runtime tag for environment.runtime.type ('node' here; a sibling tier supplies e.g. 'bun'). */

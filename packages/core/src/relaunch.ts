@@ -66,11 +66,11 @@ export async function relaunchWith<
 ): Promise<Client> {
   const timeout = config.stopTimeoutMs ?? DEFAULT_RELAUNCH_STOP_TIMEOUT_MS;
   // Told which host? Use it. Otherwise the host the last launch remembered (`launch(t, { carrier: X })`
-  // followed by a plain `relaunch()`), else the real global (R2L-12).
+  // followed by a plain `relaunch()`), else the real global.
   const globalObj = carrierHost ?? getCarrier().lastHost ?? globalThis;
   const pending = getCarrierPendingLaunch(globalObj);
   if (pending !== undefined) {
-    // Wait for the launch in flight for as long as it takes (R2L-8): the bound is for the OLD client's
+    // Wait for the launch in flight for as long as it takes: the bound is for the OLD client's
     // drain. Giving up here either rejected "before launch()" or raced a second build against it.
     await pending.then(undefined, () => undefined);
   }
@@ -88,9 +88,9 @@ export async function relaunchWith<
     return await launch(last.appToken, { ...keptOptions(last.options), ...options } as Options);
   } catch (error) {
     // The new client never came up, so nothing will adopt what the old one handed over: do not leave user-identifying
-    // notifications parked on `globalThis` until some later, unrelated launch (R3L-5).
+    // notifications parked on `globalThis` until some later, unrelated launch.
     getCarrier(globalObj).notifyBacklog = undefined;
-    bumpCarrierRelaunchEpoch(globalObj); // …and a hand-back still in flight is now stale: dropped, not parked (R4L-2)
+    bumpCarrierRelaunchEpoch(globalObj); // …and a hand-back still in flight is now stale: dropped, not parked
     throw error;
   } finally {
     setCarrierRelaunching(false, globalObj);

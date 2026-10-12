@@ -36,7 +36,7 @@ interface ReportEnvelope {
   };
   /** The per-request context id, present when a request context was active at report time. */
   context_id?: string;
-  /** The W3C trace id the report fired in — the cross-project join key (T8). */
+  /** The W3C trace id the report fired in — the cross-project join key. */
   trace_id?: string;
 }
 /** The shared ParsedBundle, narrowed to this suite's report envelope. */
@@ -44,8 +44,8 @@ type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
 
 interface LogEntry {
   message: string;
-  /** NUMERIC on the wire (design §8.9, mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
-   *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
+  /** NUMERIC on the wire (mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
+   * until, because `logLevelToWire` had no callers — this assertion encoded that defect. */
   level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
   context_id?: string;
@@ -110,9 +110,8 @@ describe.each(
 
     // Every uploaded bundle must be internally consistent: manifest ↔ zip agreement, no declared-but-
     // missing file, no directory-shaped stand-in, no undeclared payload, no empty declared file. Added
-    // in Wave V0 — the review found a recovered crash bundle that declared `profile.json` while the zip
+    // in — the review found a recovered crash bundle that declared `profile.json` while the zip
     // held only `profile.json/`, and no harness assertion could see it
-    // (docs/review/core-D-bundle-upload-recovery.md).
     it('every uploaded bundle is internally consistent (manifest ↔ zip)', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertBundleIntegrity(bundle);
@@ -121,7 +120,7 @@ describe.each(
     // The app token is written to the `apptoken` file by design; it must appear NOWHERE else — not in
     // logs, not in a captured network entry, not in request.json. assertNoSecrets exempts `apptoken`
     // and scans every other entry (binary included), which is the shape of check that would have caught
-    // the confirmed URL-credential leaks (docs/review/capture.md, docs/review/node-B-http-server.md).
+    // the confirmed URL-credential leaks.
     it('never leaks the app token outside the apptoken file', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertNoSecrets(bundle, ['e2e-app-token']);
@@ -130,7 +129,7 @@ describe.each(
     // Every session envelope, issue envelope and bundle manifest/request.json is validated by the mock
     // collector against packages/protocol/upload-contract.schema.json as it arrives. Without this
     // assertion those violations would be recorded and ignored — the review found the collector
-    // "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1 #7).
+    // "validates nothing — it is a byte sink, not a contract".
     it('emits nothing that violates the upload contract', () => {
       assertNoContractViolations(collector);
     });
@@ -416,7 +415,7 @@ describe.each(
         seedPendingBundles,
         `seed left no persisted bundle (${seed.stderr})`,
       ).toBeGreaterThanOrEqual(1);
-      // The recover process never logs this incident itself — so if the collector got nothing in phase 1,
+      // The recover process never logs this incident itself — so if the collector got nothing in,
       // any 'e2e multi-instance incident' it later holds can ONLY have come from cross-process recovery.
       expect(uploadsAfterSeed).toBe(0);
     });
@@ -552,7 +551,7 @@ describe.each(
     });
 
     it('the SAME trace id flows inbound → report → outbound (one distributed transaction)', () => {
-      // (1) The handler's report carries the CONTINUED inbound trace id (X2 continuation + T8 report stamp).
+      // (1) The handler's report carries the CONTINUED inbound trace id (continuation + report stamp).
       const report = bundles.find((b) => b.request.summary === 'e2e propagation handler failure');
       expect(report, `no propagation report delivered (${result.stderr})`).toBeDefined();
       expect((report as ParsedBundle).request.trace_id).toBe('0af7651916cd43dd8448eb211c80319c');
@@ -571,7 +570,7 @@ describe.each(
   });
 
   describe('privacy: URL and body secrets never reach the uploaded bundle', () => {
-    // The regression gate for Wave 1.1/1.2. The original finding was proven by reading the SDK's own
+    // The regression gate for. The original finding was proven by reading the SDK's own
     // dataDir off disk and grepping for markers; this does the same against the delivered bundle, so a
     // future change that unwires any sanitizer fails here even if every unit test still passes.
     let collector: MockCollector;
@@ -611,9 +610,9 @@ describe.each(
     it('leaks no URL query secret, no URL userinfo credential, and no form-body password', () => {
       const probe = bundles.find((b) => b.request.summary === 'e2e privacy probe') as ParsedBundle;
       assertNoSecrets(probe, [
-        'QUERYAPIKEYSECRET', // ?api_key=   — leaked to disk before Wave 1.1
-        'URLUSERINFOSECRET', // user:pass@  — leaked to disk before Wave 1.1 (node-only)
-        'FORMPASSWORDSECRET', // urlencoded body — leaked before Wave 1.2
+        'QUERYAPIKEYSECRET', // ?api_key= — leaked to disk before
+        'URLUSERINFOSECRET', // user:pass@ — leaked to disk before (node-only)
+        'FORMPASSWORDSECRET', // urlencoded body — leaked before
         'AKIAIOSFODNN7EXAMPLE', // shape-matched: no key name to match, only the pattern pass catches it
         'HEADERAUTHSECRET', // control: already redacted
         'JSONBODYSECRET', // control: already redacted

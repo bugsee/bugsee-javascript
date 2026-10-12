@@ -1,4 +1,4 @@
-// The interception-transformer seam (design: docs/design/opentelemetry-integration.md, D6). A capture
+// The interception-transformer seam. A capture
 // interceptor is OBSERVE-ONLY on its own; a request decorator is the explicit, opt-in way the data it
 // pipes through may be altered — today, adding headers to an outgoing request (the OTel `traceparent`
 // propagation transformer is the first consumer). Distinct from redaction filters: redaction transforms

@@ -3,7 +3,7 @@ import { BlackoutToken } from './blackout';
 import { asInternalClient, createClient } from './client';
 import { LifecycleEvents } from './lifecycle-events';
 
-// Review round 3 (H1): R3L-7. A blackout raised silently before launch (`startInBlackout`) owes the application
+// A blackout raised silently before launch (`startInBlackout`) owes the application
 // ONE BlackoutStarted, after Launching: but never after a client that is no longer launched, and never AFTER an
 // Ended that a Launching listener caused.
 

@@ -34,7 +34,7 @@ describe('createMemoryChunkBackend', () => {
 
   it('appendEntry to an unopened part is a no-op but still reports the byte size', () => {
     const b = createMemoryChunkBackend();
-    expect(b.appendEntry(ref(0, 9), rec('x'))).toBe(1); // no part 9 → nothing stored
+    expect(b.appendEntry(ref(0, 9), rec('x'))).toBe(1); // no → nothing stored
     expect(b.listParts(0)).toEqual([]);
   });
 
@@ -46,7 +46,7 @@ describe('createMemoryChunkBackend', () => {
     b.openPart(ref(0, 1), 2000);
     b.appendEntry(ref(0, 1), rec('c'));
     const snap = b.snapshot([
-      { ref: ref(0, 0), count: 1 }, // only the first record of part 0
+      { ref: ref(0, 0), count: 1 }, // only the first record of
       { ref: ref(0, 1), count: 1 },
     ]);
     b.appendEntry(ref(0, 0), rec('after')); // captured after the snapshot

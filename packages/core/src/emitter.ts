@@ -11,7 +11,7 @@
 // listener (un)subscribed mid-dispatch — including a self-removing once() wrapper — is handled right.
 //
 // Subclasses observe listener PRESENCE via the protected onActiveChange hook (fired on the 0↔≥1
-// transition) — this is what lets an interceptor lazily install/remove its global patch (§16).
+// transition) — this is what lets an interceptor lazily install/remove its global patch.
 
 export type EventListener<T> = (payload: T) => void;
 

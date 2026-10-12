@@ -1,7 +1,7 @@
 /**
  * A promise paired with its `resolve`/`reject` controls and a `settled` flag.
  *
- * Used for late-registration (per-Client `ServiceContainer`, design §7.4) and the upload
+ * Used for late-registration (per-Client `ServiceContainer`) and the upload
  * pipeline, where a promise must be created before the code that settles it is reached.
  *
  * Native promises are already idempotent (only the first settlement is observable), so no

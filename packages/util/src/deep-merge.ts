@@ -11,7 +11,7 @@ function isPlainObject(value: unknown): value is PlainObject {
 /**
  * Recursively merges `source` into a shallow copy of `target`. Plain objects are merged
  * key-by-key; everything else (arrays, primitives, class instances, null) from `source`
- * overrides. Inputs are not mutated. Used for scope/attribute/context merging (design §7.2).
+ * overrides. Inputs are not mutated. Used for scope/attribute/context merging.
  *
  * A `__proto__` key in `source` is ignored (never assigned), so untrusted data — e.g. a
  * `JSON.parse`'d attribute/context payload — cannot corrupt the result's prototype or pollute

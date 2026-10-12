@@ -37,7 +37,7 @@ export const PROFILING_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
 
 /**
  * Node-local identifiers for the opt-in enrichment / instrumentation switches that used to be read raw
- * (`captureLocalVariables: 0`, `null`, `''` and `'false'` turned them ON: R3V-3). No cross-SDK identity.
+ * (`captureLocalVariables: 0`, `null`, `''` and `'false'` turned them ON). No cross-SDK identity.
  */
 export const NodePrivacyOption = {
   /** Collect local variables of the crash frames (opt-in: it reads application data). */
@@ -54,7 +54,7 @@ export const NodePrivacyOption = {
  * Friendly → canonical definitions. `captureLocalVariables` / `captureSourceContext` accept `true` or an options
  * object (recorded as `true`; the bag itself is read from the host's options): anything else is OFF + reported.
  * `instrumentIncomingRequests` and `propagateTrace` are ON by default and capture/emit data, so an invalid value is
- * OFF and reported (R4V-2, R4V-4); only boolean `false` is a deliberate opt-out.
+ * OFF and reported; only boolean `false` is a deliberate opt-out.
  */
 export const NODE_PRIVACY_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   {

@@ -1,5 +1,4 @@
-// Web Locks liveness for browser/worker multi-instance IndexedDB coexistence (docs/design/
-// browser-multi-instance-coexistence.md, BD2/BD3) — the browser analog of node's pid-probe + heartbeat, but
+// Web Locks liveness for browser/worker multi-instance IndexedDB coexistence: the browser analog of node's pid-probe + heartbeat, but
 // STRICTLY better: a lock held via `navigator.locks` is auto-released the instant its realm dies (tab close /
 // crash / worker terminate), so there is no staleness window and no PID-reuse ambiguity. The same lock doubles
 // as the recovery CLAIM + serializer: a dead sibling is recovered while HOLDING its lock, so a concurrent peer

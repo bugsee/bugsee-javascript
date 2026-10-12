@@ -8,7 +8,7 @@ import {
   type SecureDocument,
 } from './obscuring-source';
 
-// Wave 1.4 — the obscuring path must fail CLOSED (docs/review/webview.md SEV1 #1 + "Obscuring fail-open
+// the obscuring path must fail CLOSED (+ "Obscuring fail-open
 // analysis").
 //
 // `__bugsee_bridge.snapshot()` is the SYNCHRONOUS pull native performs at frame-capture time to learn which
@@ -210,7 +210,7 @@ describe('the channel — the boundary native actually calls', () => {
   it('probe() reports whether obscuring can actually do its job', () => {
     // What gates the `obscuring` capability: declaring it tells native this SDK supplies the rects, and on
     // the advanced path nothing else does — so it must not be declared on a page where collection is already
-    // failing (SEV1 #2 — the protocol has no way to retract it afterwards).
+    // failing (the protocol has no way to retract it afterwards).
     expect(channel(okDoc()).probe()).toBe(true);
     expect(channel(throwingDoc()).probe()).toBe(false);
   });
@@ -260,10 +260,10 @@ describe('the composer fails closed too', () => {
   });
 });
 
-// Review round 1 (webview reviewer, SEV1 #1/#2/#3). The previous fix hardened the PULL
+// (webview reviewer, /#2/#3). The previous fix hardened the PULL
 // (`__bugsee_bridge.snapshot()`) while leaving the push able to emit nothing — and the push is what a
 // receiver acts on, whichever generation it is: an older one masks from the payload directly, a current
-// one (Android D-A9) discards the payload and re-pulls on receipt. Either way a push that fails silently
+// one (Android) discards the payload and re-pulls on receipt. Either way a push that fails silently
 // leaves the mask stale, so every claim below is about what native actually receives.
 describe('the PUSH path — what native acts on — also fails closed', () => {
   const composerWith = (doc: SecureDocument, onError = vi.fn()) => {
@@ -282,7 +282,7 @@ describe('the PUSH path — what native acts on — also fails closed', () => {
     // injected after `load` never pushed at all.
     //
     // The original framing — "declaring the `obscuring` capability stands native's own masking down" — is
-    // superseded (D-A7). Native never stands its masking down for anything the page claims, because a
+    // superseded. Native never stands its masking down for anything the page claims, because a
     // decision that REDUCES masking cannot be authorised by the party being masked. The initial push still
     // matters for the reason above, not that one.
     const { composer, posted } = composerWith(okDoc([{ top: 5, left: 6, bottom: 7, right: 8 }]));

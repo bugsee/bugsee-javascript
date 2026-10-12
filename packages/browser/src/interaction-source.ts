@@ -2,7 +2,7 @@ import { type BlackoutGate, type Interceptor, InterceptorBase } from '@bugsee/co
 import { componentNameFromElement } from './component-name';
 import { describeTarget } from './input-source';
 
-// The browser INTERACTION SOURCE (frontend-adapters F4 / D6) — an extensible, listenable source of
+// The browser INTERACTION SOURCE — an extensible, listenable source of
 // discrete user interactions derived from the Event Timing API. A `PerformanceObserver({type:'event'})`
 // observes pointer/keyboard events; events of one interaction share an `interactionId` (the INP unit), so
 // we emit ONE `interact` per interaction whose latency passes the threshold. @bugsee/performance turns
@@ -18,7 +18,7 @@ export interface InteractionDetail {
   /** A PII-safe selector label for the target (`describeTarget` — e.g. 'button#submit'); omitted when
    *  the target is gone/not an element. A masked target collapses to its tag only. */
   target?: string;
-  /** The nearest annotated component name for the target (`data-bugsee-component`, D2); omitted when the
+  /** The nearest annotated component name for the target (`data-bugsee-component`); omitted when the
    *  app is not annotated (no build plugin) or the target has no annotated ancestor. */
   component?: string;
   /** The interaction latency (ms) — the Event Timing entry duration (the INP contribution). */
@@ -163,7 +163,7 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
       // Blackout: the id is still consumed above, so a buffered entry cannot be replayed after it ends.
       if (this.#blackout?.isActive() === true || this.#inBlackoutSpan(entry)) continue;
       const target = targetLabel(entry.target, this.#mask);
-      const component = componentNameFromElement(entry.target); // D2: nearest data-bugsee-component
+      const component = componentNameFromElement(entry.target); // nearest data-bugsee-component
       this.emit('interact', {
         interactionType: entry.name,
         ...(target !== undefined ? { target } : {}),

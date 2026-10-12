@@ -1,8 +1,8 @@
 import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/react ROUTER NAMING integration (frontend-adapters D8 + the F5/D5 two-phase naming seam).
+// The @bugsee/react ROUTER NAMING integration (the two-phase naming seam).
 // On a navigation, react-router knows the matched route PATTERN (`/users/:id`); read it from the
-// `matchRoutes()` result and REFINE the active navigation transaction (opened raw-URL by the F1 navigation
+// `matchRoutes()` result and REFINE the active navigation transaction (opened raw-URL by the navigation
 // source) via the shared `setRouteName` seam. A STRUCTURAL PEER over the match shape — no react-router import
 // (the app passes its `matchRoutes(routes, location)` output), so this stays version-agnostic + unit-testable.
 
@@ -27,7 +27,7 @@ export function routePatternFromMatches(
   // `matchRoutes()` back, or hands this public export directly): a non-array is not iterable, and a proxied
   // or exotic match throws on a plain property read. Both escaped into `instrumentRouterMatches`, which is
   // documented as "call on each navigation" and therefore runs inside the app's own navigation effect — so
-  // the SDK broke the host's route change, exactly what Wave 2.1's rule forbids. Failing to NAME a route
+  // the SDK broke the host's route change, exactly what the rule forbids. Failing to NAME a route
   // must cost the name and nothing else.
   return neverThrow(() => {
     if (!matches || matches.length === 0) return undefined;
@@ -47,7 +47,7 @@ export function routePatternFromMatches(
 }
 
 /**
- * react-router glue: refine the active navigation to the matched route PATTERN (D5 phase-2). Call on each
+ * react-router glue: refine the active navigation to the matched route PATTERN. Call on each
  * navigation with `matchRoutes(routes, location)`. A no-op when there is no usable pattern.
  */
 export function instrumentRouterMatches(
@@ -83,7 +83,7 @@ export function instrumentReactRouter(
   // `apply` is guarded separately because the router calls it back on every navigation, long after this
   // function returned. That guard is REDUNDANT TODAY and is kept deliberately: `setRouteName` already
   // contains itself and `routePatternFromMatches` is pure, so a mutation removing this `guarded` survives
-  // the suite — verified, not assumed. It stays because Wave 2.1's rule is enforced by construction at every
+  // the suite — verified, not assumed. It stays because the rule is enforced by construction at every
   // host callback rather than re-derived from what the current callee happens to do (the same reasoning
   // recorded for Solid's seam guard). Anything added to `apply` that is not itself contained needs it.
   const apply = guarded((state: { matches?: readonly RouteMatchLike[] }): void => {

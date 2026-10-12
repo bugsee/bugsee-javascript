@@ -3,16 +3,16 @@ import { launch, type Bugsee } from '@bugsee/vue';
 // The composition root for Bugsee in this sample. Called once from src/main.ts, before the Vue app is
 // created, so every capture source (console/network/crash detection) is live before the app does
 // anything. Every BugseeLaunchOptions field that makes sense for a demo app is set explicitly (rather
-// than left at the default) so the option itself is exercised (S1).
+// than left at the default) so the option itself is exercised.
 //
-// A `?perf=0|1` query param lets the verify sweep exercise `performanceSampleRate` at both ends (S9)
+// A `?perf=0|1` query param lets the verify sweep exercise `performanceSampleRate` at both ends
 // without a second running process — reading location.search here, before launch, is the whole trick.
 
 const params = new URLSearchParams(window.location.search);
 const perfSampleRateParam = params.get('perf');
 const performanceSampleRate =
   perfSampleRateParam === '0' ? 0 : perfSampleRateParam === '1' ? 1 : undefined;
-// `?minimal=1` exercises the "launch with the minimum options" leg of S1 — everything else in this file
+// `?minimal=1` exercises the "launch with the minimum options" leg of — everything else in this file
 // exercises "launch with every option set".
 const minimalLaunch = params.get('minimal') === '1';
 
@@ -43,7 +43,7 @@ export function launchBugsee(): Bugsee {
     appVersion: '1.0.0',
     appBuild: String(import.meta.env.VITE_BUGSEE_APP_BUILD ?? '1'),
 
-    // Capture sources — every one stated explicitly (S1: "every option set").
+    // Capture sources — every one stated explicitly ("every option set").
     captureLogs: true,
     captureNetwork: true,
     captureNetworkBodies: true,
@@ -92,7 +92,7 @@ export function getBugsee(): Bugsee {
 }
 
 /**
- * S1: "a second launch() while launched must be ignored, not duplicated". Returns the SAME client
+ * "a second launch() while launched must be ignored, not duplicated". Returns the SAME client
  * instance both times, and the SDK itself routes a warning to `onError` (see the launch() call above).
  */
 export function attemptRelaunch(): Bugsee {

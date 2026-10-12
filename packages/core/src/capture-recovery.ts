@@ -18,7 +18,7 @@ import {
 // Capture recovery: on the next launch, rebuild + upload a detected-incident report from a PRIOR
 // generation's preserved capture chunks — the gap the durable bundle queue does NOT cover (incident
 // detected, but the process died before its bundle reached the queue). For each pending marker
-// (persisted at incident time — R1), read its generation's chunks via the backend, reassemble the
+// (persisted at incident time), read its generation's chunks via the backend, reassemble the
 // bundle with the marker's incident-time metadata, and enqueue it through the (durable) upload
 // pipeline. A marker + its generation are removed only after delivery succeeds; preserved generations
 // that carry no incident are swept. Pure over injected ports (no fs/runtime), best-effort — every
@@ -29,7 +29,7 @@ import {
  * delivered exactly once. The single definition of that policy — node (`recoverInstances`) and the
  * browser/worker tiers (`browser-utils`'s `Coexistence`) both drive their own queue replay through it.
  *
- * ## Why the two legs collide (the SEV1: `events_count +2` per incident, confirmed on 4 samples)
+ * ## Why the two legs collide (`events_count +2` per incident, confirmed on 4 samples)
  *
  * `client.ts`'s `submitReport` writes an incident's report marker BEFORE assembly and clears it only when
  * the upload SETTLES, while `durable-upload-pipeline.ts` stages the assembled bundle BEFORE that upload.

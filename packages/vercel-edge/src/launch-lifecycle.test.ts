@@ -13,7 +13,7 @@ import { BugseeOption } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Bugsee, type BugseeEdgeLaunchOptions, launchEdge } from './launch';
 
-// Lifecycle parity with the node/browser tiers (review L9): the carrier slot is cleared only by the client
+// Lifecycle parity with the node/browser tiers: the carrier slot is cleared only by the client
 // that still owns it, status and the relaunch record are published, and the introspectable launch options
 // work (they returned {} here).
 

@@ -1,4 +1,4 @@
-// Every /scenarios/* route from docs/samples/PLAN.md §4 (the shared catalog) + §5.14-5.20 (the
+// Every /scenarios/* route from (the shared catalog) + (the
 // framework-backend extras) + fastify-specific hook/plugin surfaces. Each route is deliberately small
 // and does ONE thing so scripts/verify.ts and scenarios.md can point at it 1:1. Routes read a `marker`
 // (query or body) that verify.ts sets to a per-run-unique string, embedded in every message/summary
@@ -30,7 +30,7 @@ export function buildScenariosPlugin() {
       return c;
     };
 
-    // ---------------------------------------------------------------- S1 · Launch & lifecycle
+    // ---------------------------------------------------------------- · Launch & lifecycle
     fastify.get('/s1/status', async (_req, reply) => {
       await reply.send({ isLaunched: client().isLaunched() });
     });
@@ -51,7 +51,7 @@ export function buildScenariosPlugin() {
       await reply.send({ sameInstance: before === after });
     });
 
-    // ---------------------------------------------------------------- S2 · Identity & attributes
+    // ---------------------------------------------------------------- · Identity & attributes
     fastify.post('/s2/identity-attributes', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const c = client();
@@ -94,7 +94,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- S3 · Manual telemetry
+    // ---------------------------------------------------------------- · Manual telemetry
     fastify.post('/s3/telemetry', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const c = client();
@@ -117,7 +117,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- S4 · Exceptions
+    // ---------------------------------------------------------------- · Exceptions
     fastify.post('/s4/error-instance', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       void client().logException(new Error(`s4-error-instance-${marker}`));
@@ -182,7 +182,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- S5 · Crashes
+    // ---------------------------------------------------------------- · Crashes
     fastify.get('/s5/route-throw', async (req: FastifyRequest) => {
       const marker = markerOf(req);
       throw new Error(`s5-route-throw-${marker}`);
@@ -240,7 +240,7 @@ export function buildScenariosPlugin() {
       await reply.status(202).send({ accepted: true, marker });
     });
 
-    // ---------------------------------------------------------------- S6 · Console capture
+    // ---------------------------------------------------------------- · Console capture
     fastify.post('/s6/console', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       // eslint-disable-next-line no-console
@@ -263,7 +263,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- S7 · Network capture
+    // ---------------------------------------------------------------- · Network capture
     fastify.get('/s7/fetch-get', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const r = await fetch(thirdPartyUrl('/ok'));
@@ -333,7 +333,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- S8 · Filters & redaction
+    // ---------------------------------------------------------------- · Filters & redaction
     const SECRET_LOG_MARKER = 'SECRET_LOG_VALUE';
     const VETO_MARKER = 'VETO_ME';
     let filtersInstalled = false;
@@ -425,7 +425,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker, filterInvoked: installed });
     });
 
-    // ---------------------------------------------------------------- S9 · Performance / APM
+    // ---------------------------------------------------------------- · Performance / APM
     fastify.post('/s9/manual-span', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const perf = client().ext('performance');
@@ -453,7 +453,7 @@ export function buildScenariosPlugin() {
       await reply.send({ ok: true, marker });
     });
 
-    // ---------------------------------------------------------------- S10 · Distributed tracing
+    // ---------------------------------------------------------------- · Distributed tracing
     fastify.get('/s10/outbound-trace', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       const r = await fetch(thirdPartyUrl('/alert'), {
@@ -465,7 +465,7 @@ export function buildScenariosPlugin() {
       await reply.send({ marker, traceparentReceivedByThirdParty: body.traceparentSeen });
     });
 
-    // ---------------------------------------------------------------- S12 · Persistence & recovery
+    // ---------------------------------------------------------------- · Persistence & recovery
     fastify.get('/s12/info', async (_req, reply) => {
       await reply.send({
         capturedDataStore: 'disk',
@@ -474,7 +474,7 @@ export function buildScenariosPlugin() {
       });
     });
 
-    // ---------------------------------------------------------------- concurrency (S2 + §5.14-20)
+    // ---------------------------------------------------------------- concurrency
     fastify.get('/concurrency/hit', async (req: FastifyRequest) => {
       const marker = markerOf(req);
       const query = req.query as Record<string, unknown>;
@@ -549,8 +549,8 @@ export function buildScenariosPlugin() {
       await reply.send(getCapturedCalls());
     });
 
-    // ------------------------------------------------- S2 (continued) · clearUserIdentifier
-    // PLACED AT THE VERY END OF THIS FILE ON PURPOSE, far from the S2 block it belongs to. See
+    // ------------------------------------------------- (continued) · clearUserIdentifier
+    // PLACED AT THE VERY END OF THIS FILE ON PURPOSE, far from the block it belongs to. See
     // scenarios.md's fingerprinting note: Bugsee fingerprints an issue on `file:line`, so every
     // throw/`logException` call site above mints its issue at the line it currently occupies, and
     // inserting a route anywhere earlier shifts those lines and re-mints the whole `SFASTIFY` set.
@@ -559,7 +559,7 @@ export function buildScenariosPlugin() {
     // appending here shifts nothing and mints nothing. Anyone moving this route back up beside its
     // siblings pays for it with a fresh set of issue keys.
     //
-    // PLAN §4 S2 asks for `setUserIdentifier`/`getUserIdentifier`/`clearUserIdentifier`. The first two
+    // PLAN asks for `setUserIdentifier`/`getUserIdentifier`/`clearUserIdentifier`. The first two
     // are covered by `/s2/identity-attributes` and by the launch-time call in `src/bugsee.ts`; the
     // third was neither exercised nor recorded N/A until this fix round.
     //

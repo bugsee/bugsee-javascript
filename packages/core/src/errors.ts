@@ -1,9 +1,9 @@
-// Canonical SDK error (design §10). `cause` chains the underlying error. Carried on UploadResult.error
+// Canonical SDK error. `cause` chains the underlying error. Carried on UploadResult.error
 // and thrown from hard-fail paths.
 //
 // TWO DISJOINT NUMERIC NAMESPACES, and conflating them is a data-loss bug: `code` is the HTTP STATUS
 // (`0` when none was reached), while `serverCode` is the COLLECTOR's own code from a `{ ok: false,
-// error: { code } }` envelope — the mobile-parity codes such as 12003/12004 (§7.7) and 14019.
+// error: { code } }` envelope — the mobile-parity codes such as 12003/12004 and 14019.
 //
 // They CAN arrive together. The usual rejection is an error envelope on an HTTP 200, so `code` is 0 and
 // only `serverCode` is set — but the collector can also attach a status to the same envelope, and then

@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // The worker SDK is tested via injected seams (fake self/transport/clock/probe), the injection-first
-// discipline of the browser/node tiers — not a real Worker isolate (X3-style real-runtime smoke is e2e).
+// discipline of the browser/node tiers — not a real Worker isolate (style real-runtime smoke is e2e).
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

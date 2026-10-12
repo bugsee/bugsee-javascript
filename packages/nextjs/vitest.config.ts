@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': the Next.js adapter is tested via injected seams (fake transport/process), the
 // same injection-first discipline as the node/edge tiers — not a real Next.js server.
 export default defineConfig({

@@ -5,7 +5,7 @@ import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { defineConfig, loadEnv } from 'vite';
 
 // A build counter so every production build we upload source maps for is identifiable in the
-// dashboard (README §Run it / scenarios.md S1's appVersion/appBuild requirement). Persisted to a
+// dashboard (README §Run it / scenarios.md 's appVersion/appBuild requirement). Persisted to a
 // dotfile so `pnpm build` run twice in a row produces two distinct appBuild values.
 const buildCounterFile = fileURLToPath(new URL('./.build-counter', import.meta.url));
 function nextBuildCounter(): string {
@@ -33,7 +33,7 @@ export default defineConfig(({ mode, command }) => {
       react({
         babel: {
           // @bugsee/babel-plugin-component-annotate under test: stamps every host JSX element with
-          // data-bugsee-component="<EnclosingComponent>" so @bugsee/browser's D2 runtime can attribute
+          // data-bugsee-component="<EnclosingComponent>" so @bugsee/browser's runtime can attribute
           // clicks/errors to a component name that survives minification.
           plugins: ['@bugsee/babel-plugin-component-annotate'],
         },

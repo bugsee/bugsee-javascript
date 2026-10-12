@@ -46,7 +46,7 @@ describe('buildBrowserEnvironment — platform is the OS, not the runtime', () =
   });
 
   it('reports the host OS and its version, not the sandbox tag and the user agent', () => {
-    // The defect this replaced (samples/FINDINGS.md F-X20): the web tier sent `type: 'web'` and the
+    // The defect this replaced: the web tier sent `type: 'web'` and the
     // WHOLE user-agent string as `version` — the field the backend indexes as `os_version` — so a
     // browser session was the only kind of Bugsee session that named no operating system at all.
     const env = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);

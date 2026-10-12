@@ -1,4 +1,4 @@
-// @bugsee/types — zero-dependency TS types shared across the SDK (design §5, §8.9, §10).
+// @bugsee/types — zero-dependency TS types shared across the SDK.
 // Type-only: no runtime code. Validated by the type-checker via src/index.test-d.ts.
 
 declare const brand: unique symbol;
@@ -6,27 +6,27 @@ declare const brand: unique symbol;
 /** Nominal/branded type: an opaque `T` that can't be mixed with plain `T` or other brands. */
 export type Brand<T, B extends string> = T & { readonly [brand]: B };
 
-// ── Branded identifiers (design §10) ────────────────────────────────────────
+// ── Branded identifiers ────────────────────────────────────────
 export type AppToken = Brand<string, 'AppToken'>;
 export type AccessToken = Brand<string, 'AccessToken'>;
 export type IssueId = Brand<string, 'IssueId'>;
 export type RecordingId = Brand<string, 'RecordingId'>;
 
 // ── Public string unions (string-typed API surface; numeric wire maps live in
-//    @bugsee/protocol — design §8.9). ─────────────────────────────────────────
+// @bugsee/protocol). ─────────────────────────────────────────
 export type LogLevelName = 'error' | 'warning' | 'info' | 'debug' | 'verbose';
-/** `low` is the iOS alias for `verylow`, kept for cross-platform parity (design §8.9). */
+/** `low` is the iOS alias for `verylow`, kept for cross-platform parity. */
 export type SeverityName = 'verylow' | 'medium' | 'high' | 'critical' | 'blocker' | 'low';
 export type IssueType = 'bug' | 'crash' | 'error';
 export type AttributeValue = string | number | boolean | string[];
 
-// ── Cross-package declaration-merge targets (design §5.2, §16.3) ─────────────
+// ── Cross-package declaration-merge targets ─────────────
 // Start empty; each owning package augments these via `declare module '@bugsee/types'`. (Services are
 // resolved by typed ServiceToken values from @bugsee/service, NOT a name→type map.)
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
 export interface NameExtensionMapping {}
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
 export interface NameHookMapping {}
-// Event-hub typing target for `client.hubs.<name>` (design §16.2).
+// Event-hub typing target for `client.hubs.<name>`.
 // biome-ignore lint/suspicious/noEmptyInterface: declaration-merge targets are intentionally empty.
 export interface NameHubMapping {}

@@ -2,12 +2,12 @@ import { createMemoryCaptureStore, type HttpTransport } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 
-// R3V-3. The node options that were read RAW (`!== false`, `=== undefined || === false`): `0`, `null`, `''`,
+// The node options that were read RAW (`!== false`, `=== undefined || === false`): `0`, `null`, `''`,
 // `'false'` turned local-variable capture and source-context capture ON, and `'false'` left incoming-request
 // instrumentation ON. Now every one goes through the shared normaliser:
 //   captureLocalVariables / captureSourceContext (collect MORE data): only `true` or an options object turns
 //     them on; anything else is OFF + onError;
-//   instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError (R4V-2);
+// instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError;
 //   `false` opts out, `true`/absent installs.
 
 const mocks = vi.hoisted(() => ({

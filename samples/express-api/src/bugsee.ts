@@ -1,7 +1,7 @@
 // Bugsee wiring for the Task API. Single-install re-export: everything (launch, manual-API types) is
 // imported from @bugsee/express itself — see packages/express/src/index.ts — so this file never
 // imports @bugsee/bugsee directly. The one exception is @bugsee/node, added as a direct dependency
-// purely to reach RequestContextStoreToken for the per-request-attribute concurrency scenario (S2 +
+// purely to reach RequestContextStoreToken for the per-request-attribute concurrency scenario (+
 // the framework-adapter concurrency contract) — @bugsee/express does not re-export that token.
 import { type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 import { type Bugsee, launch } from '@bugsee/express';
@@ -15,7 +15,7 @@ let primaryClient: Bugsee | undefined;
 
 /**
  * Launches the primary Bugsee client for the Task API process. Exercises every relevant
- * BugseeLaunchOptions field (docs/samples/PLAN.md §5.14-5.20 + the shared catalog S1).
+ * BugseeLaunchOptions field (+ the shared catalog).
  */
 export function launchPrimary(): Bugsee {
   if (primaryClient !== undefined) return primaryClient;
@@ -28,8 +28,8 @@ export function launchPrimary(): Bugsee {
 
   const client = launch(appToken, {
     endpoint,
-    // F-1 WORKAROUND (see FINDINGS.md): the real package version is '0.0.0' (every workspace package
-    // is unversioned pre-publish — see samples/FINDINGS.md F-X2), and staging REJECTS that as
+    // F-1 WORKAROUND: the real package version is '0.0.0' (every workspace package
+    // is unversioned pre-publish), and staging REJECTS that as
     // "no longer supported". Any other version passes the version gate; the x-client-type rewrite in
     // bugsee-transport.ts handles the SECOND blocker that surfaces once this one is out of the way.
     sdkVersion: '1.0.0',
@@ -47,7 +47,7 @@ export function launchPrimary(): Bugsee {
 
     // Crash detection: kept survivable so the long-running verify server doesn't die mid-sweep.
     // exitOnUncaught:true is instead exercised in a disposable CHILD PROCESS — see
-    // scripts/verify.ts (crashChildProcess) and scenarios.md S5.
+    // scripts/verify.ts (crashChildProcess) and scenarios.md.
     detectCrashes: true,
     exitOnUncaught: false,
     unhandledRejections: 'warn',
@@ -70,7 +70,7 @@ export function launchPrimary(): Bugsee {
     captureWriter: 'inline',
     recover: true,
 
-    // Distributed tracing (S10 + the outbound-call scenarios).
+    // Distributed tracing (+ the outbound-call scenarios).
     propagateTrace: true,
     tracePropagationTargets: [`127.0.0.1:${process.env.THIRD_PARTY_PORT ?? '5305'}`, /127\.0\.0\.1/],
     traceResponse: { serverTiming: true, traceresponse: true, exposeTraceresponse: true },

@@ -1,4 +1,4 @@
-// Native crash capture (E5, reworked to harvest-and-bundle — docs/design/electron-native-crashes.md). Electron
+// Native crash capture (reworked to harvest-and-bundle). Electron
 // ships a built-in `crashReporter` (Crashpad/Breakpad) that writes a minidump for EVERY process (main,
 // renderer, GPU, child) with no per-OS native code from us. We start it with `uploadToServer: false` so
 // Crashpad writes dumps to its local database but NEVER uploads them — the SDK harvests the `.dmp`s on the
