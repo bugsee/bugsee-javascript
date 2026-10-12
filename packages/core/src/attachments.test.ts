@@ -322,6 +322,39 @@ describe('normalizeReportAttachments + marker round trip (P1)', () => {
     expect(request.report.userAttachments?.[0]?.data).toBeInstanceOf(Uint8Array);
   });
 
+  it('carries an SDK-internal binary attachment (a native-crash .dmp) across the JSON hop, with no user attachments', () => {
+    const dmp = new Uint8Array([77, 68, 77, 80, 0, 255]);
+    const request = createReportingRequest({
+      source: { type: 'crash' },
+      attachments: [
+        { name: 'crash.dmp', data: dmp },
+        { name: 'note.txt', data: 'text' },
+      ],
+    });
+    const wire = JSON.stringify(encodeRequestForMarker(request));
+    expect(wire).not.toContain('"0":77');
+    const onError = vi.fn();
+    const back = decodeRequestFromMarker(JSON.parse(wire), onError);
+    expect(back.report.attachments?.[0]).toEqual({ name: 'crash.dmp', data: dmp });
+    expect(back.report.attachments?.[1]).toEqual({ name: 'note.txt', data: 'text' });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('decoding survives hostile lists: a non-list, null / primitive elements are dropped, the rest kept', () => {
+    const onError = vi.fn();
+    const request = {
+      source: { type: 'crash' },
+      report: {
+        userAttachments: [null, 7, { name: 'ok', data: 'x' }],
+        attachments: 'nope',
+      },
+    } as never;
+    const back = decodeRequestFromMarker(request, onError);
+    expect(back.report.userAttachments).toEqual([{ name: 'ok', data: 'x' }]);
+    expect(back.report.attachments).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(3);
+  });
+
   it('passes a request with no user attachments through unchanged', () => {
     const request = createReportingRequest({ source: { type: 'code_upload' } });
     expect(encodeRequestForMarker(request)).toBe(request);

@@ -197,6 +197,12 @@ the **byte-identical `p`** (`JSON.stringify({source, report})`). **They are ONE 
 | `profile` | native (JS CPU profile) | deferred |
 | `replay` / `screenshot` / `attachment` | native owns frames | deferred |
 
+**Binary user attachments in a `crash`/report payload.** JSON cannot carry bytes, so a `userAttachments[]` (and
+any SDK `attachments[]`) element whose data is binary is sent as `{ ..., "data": "", "dataBase64": "<base64>" }`;
+string data stays in `data`. A native receiver that wants the bytes must decode `dataBase64` (standard base64);
+one that ignores the field sees an empty string. Native attachment handling is itself still deferred (table above),
+so no receiver reads the field yet.
+
 ### 6.5 Time, session & trace correlation
 
 JS stamps each entry with `ts` (wall) + `mono` (`performance.now()`) + `o` (`timeOrigin`); native maps to its

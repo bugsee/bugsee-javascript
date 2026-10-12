@@ -590,6 +590,22 @@ describe('retry and failure handling', () => {
     expect(titles).not.toContain('d0');
   });
 
+  it('the failed urgent is kept at the cap even when every timestamp is the same millisecond', async () => {
+    let outcome: NotifyResult = SENT;
+    const { relay } = make({ flushDelayMs: 60_000 }, async () => outcome); // the default clock is frozen
+    for (let i = 0; i < 1000; i++) {
+      relay.enqueue({ title: `d${i}` });
+    }
+    outcome = { outcome: 'retry' };
+    relay.enqueue({ title: 'urgent', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    outcome = SENT;
+    await relay.flush();
+    const titles = sends.flat().map((item) => item.title);
+    expect(titles).toContain('urgent');
+    expect(titles).not.toContain('d0');
+  });
+
   it('keeps at most 1000 pending notifications, dropping the oldest', async () => {
     const { relay, onError } = make({}, async () => ({ outcome: 'retry' }));
     for (let i = 0; i < 1005; i++) {

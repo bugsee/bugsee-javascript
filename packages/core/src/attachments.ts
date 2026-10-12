@@ -302,15 +302,26 @@ type MarkerAttachment = ReportAttachmentInput & { dataBase64?: string };
  * application's own choice. Typical attachments (a few KB of state) cost microseconds.
  */
 export function encodeRequestForMarker(request: ReportingRequest): ReportingRequest {
-  const attachments = request.report.userAttachments;
-  if (attachments === undefined) {
+  const { userAttachments, attachments } = request.report;
+  if (userAttachments === undefined && attachments === undefined) {
     return request;
   }
-  const encoded = attachments.map(
-    (a): MarkerAttachment =>
-      typeof a.data === 'string' ? a : { ...a, data: '', dataBase64: toBase64(a.data) },
-  );
-  return { ...request, report: { ...request.report, userAttachments: encoded } };
+  const encode = <T extends { name: string; data: Uint8Array | string }>(
+    list: readonly T[],
+  ): MarkerAttachment[] =>
+    list.map(
+      (a): MarkerAttachment =>
+        typeof a.data === 'string' ? a : { ...a, data: '', dataBase64: toBase64(a.data) },
+    );
+  return {
+    ...request,
+    report: {
+      ...request.report,
+      // SDK-internal attachments (a harvested native-crash `.dmp`) are binary too and cross the same JSON hop.
+      ...(userAttachments !== undefined ? { userAttachments: encode(userAttachments) } : {}),
+      ...(attachments !== undefined ? { attachments: encode(attachments) } : {}),
+    },
+  };
 }
 
 /** Inverse of {@link encodeRequestForMarker}; an attachment whose payload cannot be decoded is dropped to `onError`. */
@@ -318,30 +329,53 @@ export function decodeRequestFromMarker(
   request: ReportingRequest,
   onError: (error: unknown) => void,
 ): ReportingRequest {
-  const attachments = request.report.userAttachments as readonly MarkerAttachment[] | undefined;
-  if (attachments === undefined) {
+  const { userAttachments, attachments } = request.report as {
+    userAttachments?: unknown;
+    attachments?: unknown;
+  };
+  if (userAttachments === undefined && attachments === undefined) {
     return request;
   }
-  const decoded: ReportAttachmentInput[] = [];
-  for (const { dataBase64, ...rest } of attachments) {
-    if (dataBase64 === undefined) {
-      decoded.push(rest);
-      continue;
+  const decode = (list: unknown): ReportAttachmentInput[] => {
+    if (!Array.isArray(list)) {
+      onError(new Error('Recovered attachments dropped: not a list'));
+      return [];
     }
-    if (typeof dataBase64 !== 'string') {
-      // A damaged marker: decoding a number/object would manufacture garbage bytes, not an attachment.
-      onError(
-        new Error(`Recovered attachment ${safeLabel(rest)} dropped: its payload is not a string`),
-      );
-      continue;
+    const decoded: ReportAttachmentInput[] = [];
+    for (const item of list as unknown[]) {
+      // Marker and renderer input is untrusted: one bad element must not cost the whole incident.
+      if (item === null || typeof item !== 'object') {
+        onError(new Error('Recovered attachment dropped: not an object'));
+        continue;
+      }
+      const { dataBase64, ...rest } = item as MarkerAttachment;
+      if (dataBase64 === undefined) {
+        decoded.push(rest);
+        continue;
+      }
+      if (typeof dataBase64 !== 'string') {
+        // A damaged marker: decoding a number/object would manufacture garbage bytes, not an attachment.
+        onError(
+          new Error(`Recovered attachment ${safeLabel(rest)} dropped: its payload is not a string`),
+        );
+        continue;
+      }
+      try {
+        decoded.push({ ...rest, data: fromBase64(dataBase64) });
+      } catch (error) {
+        onError(new Error(`Recovered attachment ${safeLabel(rest)} dropped: ${errorText(error)}`));
+      }
     }
-    try {
-      decoded.push({ ...rest, data: fromBase64(dataBase64) });
-    } catch (error) {
-      onError(new Error(`Recovered attachment ${safeLabel(rest)} dropped: ${errorText(error)}`));
-    }
-  }
-  return { ...request, report: { ...request.report, userAttachments: decoded } };
+    return decoded;
+  };
+  return {
+    ...request,
+    report: {
+      ...request.report,
+      ...(userAttachments !== undefined ? { userAttachments: decode(userAttachments) } : {}),
+      ...(attachments !== undefined ? { attachments: decode(attachments) as never } : {}),
+    },
+  };
 }
 
 /** Append an attachment to a report (the helper form of writing `report.userAttachments` directly). */

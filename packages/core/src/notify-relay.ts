@@ -182,18 +182,24 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     }
   };
 
+  /** Remove and return the oldest item, preferring a non-urgent one: an urgent notification outlives routine ones. */
+  const dropOldest = (): NotifyItem => {
+    const at = queue.findIndex((item) => item.urgent !== true);
+    return queue.splice(at === -1 ? 0 : at, 1)[0] as NotifyItem;
+  };
+
   /** Keep at most MAX_PENDING items and MAX_QUEUE_BYTES bytes, dropping the oldest; and nothing past 72 h. */
   const trim = (): void => {
     dropExpired();
     while (queue.length > MAX_PENDING) {
-      queue.shift();
+      dropOldest();
       report(
         new Error(`notify: more than ${MAX_PENDING} notifications pending; dropped the oldest`),
       );
     }
     let bytes = queue.reduce((sum, item) => sum + sizeOf(item), 0);
     while (bytes > MAX_QUEUE_BYTES && queue.length > 1) {
-      bytes -= sizeOf(queue.shift() as NotifyItem);
+      bytes -= sizeOf(dropOldest());
       report(new Error('notify: more than 1 MB of notifications pending; dropped the oldest'));
     }
   };
@@ -263,7 +269,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
       return false;
     }
     // Back in timestamp order (stable): a failed urgent send is the NEWEST item, so the cap drops the oldest
-    // queued ones, not it.
+    // queued ones, not it. (Timestamps can tie within a millisecond, so `trim` also prefers non-urgent victims.)
     queue = [...back, ...queue].sort((a, b) => a.timestamp - b.timestamp);
     trim();
     return false;
