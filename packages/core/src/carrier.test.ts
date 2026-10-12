@@ -377,7 +377,8 @@ describe('process-level lifecycle listener (L1)', () => {
       setProcessLifecycleEventsListener(owner, g);
       sealCarrierLifecycleSlot(g);
       const slot = getCarrierLifecycleSlot(g);
-      expect(slot.get()).toBe(owner); // the pre-seal listener survived the move
+      expect(slot.get()).toBeNull(); // pre-seal carrier contents are untrusted and discarded
+      setProcessLifecycleEventsListener(owner, g); // the owner installs AFTER the seal
 
       const page = vi.fn();
       expect(() => {
@@ -400,6 +401,21 @@ describe('process-level lifecycle listener (L1)', () => {
       setProcessLifecycleEventsListener(null, g);
       expect(getCarrierLifecycleSlot(g).get()).toBeNull();
       expect(getCarrierLifecycleSlot(g).delivery).toBe(slot.delivery);
+    });
+
+    it('discards a listener/queue PLANTED on the carrier by page script before the seal', () => {
+      const g = {};
+      const planted = vi.fn();
+      const plantedDelivery = { queue: [], delivering: false };
+      getCarrierLifecycleSlot(g); // create the carrier slot, as the host's own getCarrier would
+      const view = pageView(g);
+      view.lifecycleListener = planted;
+      view.lifecycleDelivery = plantedDelivery;
+      sealCarrierLifecycleSlot(g);
+      const slot = getCarrierLifecycleSlot(g);
+      expect(slot.get()).toBeNull();
+      expect(slot.delivery).not.toBe(plantedDelivery);
+      expect(planted).not.toHaveBeenCalled();
     });
 
     it('is idempotent and per carrier', () => {

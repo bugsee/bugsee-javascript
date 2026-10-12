@@ -114,7 +114,8 @@ const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
  * stays in this module's scope, reachable only through the value `launch()` returns — which native's
  * bootstrap holds in a closure the page never sees.
  */
-let launchedClient: Bugsee | undefined;
+const launchedClients = new WeakMap<object, Bugsee>();
+const carrierKey = (carrier: object | undefined): object => carrier ?? globalThis;
 
 // The capture FileTypes this SDK emits — declared in the hello. Native records them nowhere and they decide
 // nothing (D-A7): a claim arriving from the page must never reduce masking. The `obscuring`
@@ -376,7 +377,9 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The carrier holds the FACADE, so its presence is the "already launched" signal; the client to hand
   // back comes from module scope — RESTRICTED, because `launch` is a page global and a repeat call is
   // therefore a page-reachable request for the live client. See `restrictedClientFor`.
-  if (getCarrierClient<unknown>(carrier) !== undefined) {
+  // `launchedClients` is module-private, so it stays set when page script clears the page-writable `carrier.client`.
+  const launchedClient = launchedClients.get(carrierKey(carrier));
+  if (getCarrierClient<unknown>(carrier) !== undefined || launchedClient !== undefined) {
     options.onError?.(
       new Error(
         'Bugsee.launch() called more than once in this WebView; the repeat call is ignored',
@@ -603,7 +606,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     } else {
       publicClient = client;
     }
-    launchedClient = publicClient;
+    launchedClients.set(carrierKey(carrier), publicClient);
     setCarrierClient(carrierFacadeFor(publicClient), carrier);
     return publicClient;
   }
@@ -863,13 +866,13 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
-      // the module's `launchedClient`, of a NEWER launch that has since taken them.
+      // the module's `launchedClients` entry, of a NEWER launch that has since taken them.
       if (getCarrierClient<unknown>(carrier) === facade) {
         setCarrierStatus(BugseeStatus.Stopped, carrier);
       }
       clearCarrierClient(facade, carrier);
-      if (launchedClient === publicClient) {
-        launchedClient = undefined;
+      if (launchedClients.get(carrierKey(carrier)) === publicClient) {
+        launchedClients.delete(carrierKey(carrier));
       }
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
@@ -882,7 +885,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
       return stopCore(timeout);
     },
   };
-  launchedClient = publicClient;
+  launchedClients.set(carrierKey(carrier), publicClient);
   setCarrierClient(facade, carrier);
   setCarrierStatus(BugseeStatus.Launched, carrier); // what a repeat launch from another module copy reports
   return publicClient;

@@ -2302,7 +2302,7 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     ).not.toBe('[]');
   });
 
-  it('a page-forced RELAUNCH cannot un-latch the control channel', () => {
+  it('a page-forced RELAUNCH cannot un-latch the control channel', async () => {
     // SEV2: `authenticated` lived in the per-launch closure, and `BugseeWebView.launch` is a page global
     // whose singleton guard reads a mutable carrier field. So the page could clear the carrier, relaunch,
     // and get a fresh unlatched channel — defeating "one-way" entirely. The latch belongs to the GLOBAL.
@@ -2322,11 +2322,24 @@ describe('the control surface fails closed and cannot be reset by the page (roun
     for (const slot of Object.values(carrier.__BUGSEE__ ?? {})) {
       slot.client = undefined;
     }
-    track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    const relaunched = launch(
+      'tok',
+      baseOptions({ global: fake.global, carrier, onError }),
+    ) as unknown as Record<string | symbol, unknown>;
     expect(
       fake.msgs().filter((m) => m.k === 'hello').length,
-      'the relaunch never happened — the guard swallowed it, so this asserts nothing',
-    ).toBe(2);
+      'the module-private launched marker must refuse the relaunch (no second handshake)',
+    ).toBe(1);
+    // ...and what it hands back is the RESTRICTED facade, never the live client (page-reachable `launch`).
+    expect(Object.getOwnPropertySymbols(relaunched)).toEqual([]);
+    expect(relaunched[Symbol.for('com.bugsee.internal-client')]).toBeUndefined();
+    onError.mockClear();
+    (relaunched.setNetworkEventFilter as (f: unknown) => void)(() => null);
+    (relaunched.setReportHandler as (f: unknown) => void)(() => null);
+    await expect((relaunched.stop as () => Promise<boolean>)()).resolves.toBe(false);
+    expect(onError.mock.calls.map(([e]) => (e as Error).message).join('\n')).toMatch(
+      /`setNetworkEventFilter`[\s\S]*`setReportHandler`[\s\S]*`stop`/,
+    );
 
     onError.mockClear();
     sendControl(fake.global, { command: 'pause' }); // untokened, from the page
@@ -2570,12 +2583,13 @@ describe('review round 2 — F1 (webview)', () => {
     expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
   });
 
-  it('R2L-4: without a carrier option the WebView carrier is globalThis; a listener set before launch sees it', async () => {
+  it('R2L-4: without a carrier option the WebView carrier is globalThis; a listener set BEFORE launch is page-reachable, so it is discarded at the seal', async () => {
+    // The carrier is page-writable until sealed, so a pre-launch listener cannot be told from a planted one.
     const seen: string[] = [];
     setProcessLifecycleEventsListener((type) => seen.push(type));
     const { carrier: _omitted, ...withoutCarrier } = baseOptions();
     const client = launch('tok', withoutCarrier);
-    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    expect(seen).toEqual([]);
     await client.stop();
     setProcessLifecycleEventsListener(null);
     delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;

@@ -343,7 +343,7 @@ const SEALED_LIFECYCLE = new WeakMap<
 /**
  * Take the lifecycle listener slot and its delivery queue OFF the carrier object into module-private state,
  * leaving read-only accessors (no setter, non-configurable) in their place so a write from page script
- * throws (strict) or is ignored (sloppy) and a read sees nothing. Anything already installed is carried over.
+ * throws (strict) or is ignored (sloppy) and a read sees nothing. Anything already on the carrier is DISCARDED (it is page-writable, so untrusted).
  * Idempotent. The owner keeps using {@link getCarrierLifecycleSlot} / {@link setProcessLifecycleEventsListener}.
  */
 export function sealCarrierLifecycleSlot(globalObj: object = globalThis): void {
@@ -352,8 +352,10 @@ export function sealCarrierLifecycleSlot(globalObj: object = globalThis): void {
     return;
   }
   SEALED_LIFECYCLE.set(carrier, {
-    listener: carrier.lifecycleListener ?? null,
-    delivery: carrier.lifecycleDelivery ?? { queue: [], delivering: false },
+    // Never adopt prior carrier values: the carrier is page-reachable, so a listener/queue found there may be
+    // PLANTED by page script before the host launched. Sealing starts from empty state.
+    listener: null,
+    delivery: { queue: [], delivering: false },
   });
   for (const key of ['lifecycleListener', 'lifecycleDelivery'] as const) {
     Object.defineProperty(carrier, key, {
