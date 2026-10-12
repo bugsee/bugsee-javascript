@@ -183,6 +183,7 @@ export function wireUmbrella<C extends BugseeClient>(
   const perf = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     PERFORMANCE_OPTION_DEFINITIONS,
+    internals.onError,
   );
 
   const bugseeSend = createPerformanceSend({
@@ -216,7 +217,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // navigation), opt-out via `traceNavigations: false`. The detector self-skips if the browser globals are
   // absent; wirePerformance subscribes to it (which activates it) and tears it down on stop.
   const navigationSource =
-    platform.pageload && (options.traceNavigations ?? true)
+    platform.pageload && perf.options.get(PerformanceOption.TraceNavigations, true)
       ? browserSources.createNavigationSource?.()
       : undefined;
 
@@ -224,7 +225,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // false`. The Event Timing source self-skips where the API is unsupported; wirePerformance subscribes
   // (activating it) and tears it down on stop.
   const interactionSource =
-    platform.pageload && (options.traceInteractions ?? true)
+    platform.pageload && perf.options.get(PerformanceOption.TraceInteractions, true)
       ? browserSources.createInteractionSource?.()
       : undefined;
 
@@ -296,7 +297,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // is built on, and it is tied to the OPT-IN APM extension. Same-origin propagates by default; cross-origin only via the
   // allowlist (`tracePropagationTargets`).
   let offPropagation: (() => void) | undefined;
-  if (platform.pageload && (options.propagateTrace ?? false)) {
+  if (platform.pageload && perf.options.get(PerformanceOption.PropagateTrace, false)) {
     offPropagation = internals.network.interceptor.addRequestDecorator(
       createTraceparentDecorator({
         getActiveSpan: () => client.ext('performance').getActiveSpan(),

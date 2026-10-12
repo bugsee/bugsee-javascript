@@ -194,8 +194,11 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   `persistUserIdentifier` (`user.persist-identifier`) and `lifecycleEventsListener` (mobile registers its listener
   through `setLifecycleEventsListener` only; the option exists so Launching/Launched are observable, since a
   listener set after `launch()` misses them).
-- **`startBlackout()` before launch** is a no-op (so is `endBlackout()`); use `startInBlackout`. Android
-  behaves the same (`BugseeInternal.startBlackout` logs a warning and returns unless the SDK is started).
+- **`startBlackout()` before launch** is a no-op, as on Android (`BugseeInternal.startBlackout` logs a warning and
+  returns unless the SDK is started); use `startInBlackout`. **`endBlackout()` before launch (or after `stop()`) is
+  a KEPT DIFFERENCE:** Android no-ops, JS clears the carried process-wide blackout flag silently, because the flag
+  outlives a client and an app that stopped during a blackout must be able to lift it (otherwise the next launch
+  starts dark with no event). See `blackout.md`, State rules.
 
 ## Remaining mobile gaps (no JS equivalent yet)
 

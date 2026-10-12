@@ -1,4 +1,4 @@
-import type { OptionDefinition } from '@bugsee/core';
+import { BOOLEAN_OPTION, FAIL_CLOSED_BOOLEAN_OPTION, type OptionDefinition } from '@bugsee/core';
 
 // The @bugsee/performance extension owns its options (design §0.6 — `performance.*` were removed from
 // core BugseeOptions). Canonical com.bugsee.option.performance.* identifiers, the typed value contract
@@ -14,6 +14,12 @@ export const PerformanceOption = {
   UploadMode: 'com.bugsee.option.performance.upload-mode',
   /** Batched-upload flush interval in milliseconds. */
   FlushIntervalMs: 'com.bugsee.option.performance.flush-interval-ms',
+  /** Browser: open a `navigation` transaction per SPA route change. */
+  TraceNavigations: 'com.bugsee.option.performance.trace-navigations',
+  /** Browser: open a `ui.interaction` transaction per qualifying interaction. */
+  TraceInteractions: 'com.bugsee.option.performance.trace-interactions',
+  /** Browser: propagate W3C trace headers on outgoing requests (opt-in). */
+  PropagateTrace: 'com.bugsee.option.performance.propagate-trace',
 } as const;
 
 export type PerformanceUploadMode = 'batched' | 'realtime';
@@ -24,17 +30,45 @@ declare module '@bugsee/protocol' {
     'com.bugsee.option.performance.sample-rate': number;
     'com.bugsee.option.performance.upload-mode': PerformanceUploadMode;
     'com.bugsee.option.performance.flush-interval-ms': number;
+    'com.bugsee.option.performance.trace-navigations': boolean;
+    'com.bugsee.option.performance.trace-interactions': boolean;
+    'com.bugsee.option.performance.propagate-trace': boolean;
   }
 }
 
 /** Friendly → canonical option definitions for the launch resolver. Passive monitoring is on by default. */
 export const PERFORMANCE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
-  { friendly: 'performanceMonitoring', key: PerformanceOption.Monitoring, default: true },
+  // Data capture that is ON by default: an invalid value turns it OFF and is reported (R3V-3), like captureLogs.
+  {
+    friendly: 'performanceMonitoring',
+    key: PerformanceOption.Monitoring,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   { friendly: 'performanceSampleRate', key: PerformanceOption.SampleRate, default: 1 },
   { friendly: 'performanceUploadMode', key: PerformanceOption.UploadMode, default: 'batched' },
   {
     friendly: 'performanceFlushIntervalMs',
     key: PerformanceOption.FlushIntervalMs,
     default: 30000,
+  },
+  {
+    friendly: 'traceNavigations',
+    key: PerformanceOption.TraceNavigations,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
+  {
+    friendly: 'traceInteractions',
+    key: PerformanceOption.TraceInteractions,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
+  // Off by default: only boolean `true` turns it on (an invalid value keeps the default OFF and is reported).
+  {
+    friendly: 'propagateTrace',
+    key: PerformanceOption.PropagateTrace,
+    default: false,
+    ...BOOLEAN_OPTION,
   },
 ];

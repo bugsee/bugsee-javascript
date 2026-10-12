@@ -1,5 +1,6 @@
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  BugseeStatus,
   type CaptureStore,
   type Clock,
   contributeServiceManifest,
@@ -8,6 +9,7 @@ import {
   LifecycleEvents,
   type Scheduler,
   type StoredEntry,
+  setCarrierBlackout,
   setCarrierClient,
   setProcessLifecycleEventsListener,
 } from '@bugsee/core';
@@ -611,6 +613,65 @@ describe('launch (webview)', () => {
         expect(errors.some((e) => /not delivered|no native bridge/i.test(String(e)))).toBe(true);
       });
 
+      // R3V-5 (a): a blackout CARRIED over a relaunch is active from the start, so no onChange ever fires for it:
+      // native must still be told, and after `hello` (a receiver has no session to attach it to before that).
+      it('R3V-5: a carried blackout is posted to native right after hello', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake } = bootWith({ carrier });
+        const kinds = fake.msgs().map((m) => (m as { k: string }).k);
+        expect(kinds.slice(0, 2)).toEqual(['hello', 'blackout']);
+        expect(blackoutMsgs(fake)).toHaveLength(1);
+        expect(blackoutMsgs(fake)[0]?.a).toBe(true);
+      });
+
+      it('R3V-5: no blackout is posted after hello when none is in force', () => {
+        const { fake } = bootWith({ carrier: {} });
+        expect(blackoutMsgs(fake)).toEqual([]);
+      });
+
+      // R3V-5 (c): the "native has not declared support" warning is judged AFTER native had a chance to answer
+      // the handshake, not at the instant of the (launch-time) announcement.
+      it('R3V-5: a carried blackout does not warn before the control reply, nor after a reply declaring support', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake, errors } = bootWith({ carrier });
+        expect(errors).toEqual([]); // judged lazily: the reply may still be in flight
+        sendControl(fake.global, { session: 'native-1', config: { blackout: true } });
+        expect(errors).toEqual([]);
+      });
+
+      it('R3V-5: ... and warns once the reply arrives WITHOUT declaring support', () => {
+        const carrier = {};
+        setCarrierBlackout(true, carrier);
+        const { fake, errors } = bootWith({ carrier });
+        sendControl(fake.global, { session: 'native-1', config: { reportTrigger: false } });
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+        sendControl(fake.global, { session: 'native-1' });
+        expect(errors).toHaveLength(1); // once
+      });
+
+      it('R3V-5: once native HAS replied, the first blackout change is judged at once (nothing left to wait for)', () => {
+        const { fake, client, errors } = bootWith({ carrier: {} });
+        sendControl(fake.global, { session: 'native-1' }); // replied, no blackout support declared
+        client.startBlackout();
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+      });
+
+      it('R3V-5: a SECOND blackout change before any reply stops waiting and warns', () => {
+        const { client, errors } = bootWith({ carrier: {} });
+        client.startBlackout(); // first announcement: deferred to the reply
+        expect(errors).toEqual([]);
+        client.endBlackout(); // native has been silent through two announcements
+        expect(errors.filter((e) => /not declared blackout support/.test(String(e)))).toHaveLength(
+          1,
+        );
+      });
+
       it('a throwing onError never breaks the call', () => {
         const fake = fakeGlobal();
         const client = track(
@@ -985,6 +1046,74 @@ describe('launch (webview)', () => {
       expect(fake.global.__bugsee_bridge?.snapshot()).toBe('[]'); // pull returns empty when off
     });
 
+    // R3V-3: `captureObscuring ?? true` made `0`, `''` and `null` (nullish aside) switch the masking OFF. It is a
+    // PROTECTIVE option, so an invalid value keeps it ON (fail-on) and tells onError; only boolean false opts out.
+    it.each([
+      0,
+      '',
+      'false',
+      'true',
+      1,
+      null,
+    ])('captureObscuring=%j (invalid) keeps obscuring ON and reports', (bad) => {
+      const fake = fakeGlobal();
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(5)] });
+      const onError = vi.fn();
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          document: dom.document as unknown as Document,
+          captureObscuring: bad as never,
+          onError,
+        }),
+      );
+      expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('captureObscuring must be a boolean'),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('captureObscuring=true / absent keep obscuring on without reporting', () => {
+      for (const over of [{ captureObscuring: true }, {}]) {
+        const fake = fakeGlobal();
+        const onError = vi.fn();
+        track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            document: fakeDomDocument().document as unknown as Document,
+            onError,
+            ...over,
+          }),
+        );
+        expect((fake.msgs()[0] as HelloMessage).caps).toContain('obscuring');
+        expect(onError).not.toHaveBeenCalled();
+      }
+    });
+
+    it('a SUB-frame with an invalid captureObscuring still runs its composer (bubbles to the parent)', () => {
+      const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
+      const win = fakeEventTarget();
+      const parentPost = vi.fn();
+      Object.assign(win.target, {
+        self: win.target,
+        top: { other: true },
+        parent: { postMessage: parentPost },
+      });
+      track(
+        'tok',
+        baseOptions({
+          document: dom.document as unknown as Document,
+          window: win.target as unknown as WindowEvents,
+          captureObscuring: 0 as never,
+        }),
+      );
+      expect(parentPost).toHaveBeenCalled();
+    });
+
     it('a SUB-frame does NOT declare `obscuring`/post to native, but BUBBLES its rects to the parent (D9)', () => {
       const fake = fakeGlobal();
       const dom = fakeDomDocument({ [SECURE_INPUT]: [secureEl(1)] });
@@ -1271,6 +1400,72 @@ describe('launch (webview)', () => {
     expect(inert.getUserIdentifier?.()).toBeNull();
     expect(inert.getAttribute?.('k')).toBeUndefined();
     expect(inert.getAllAttributes?.()).toEqual({});
+  });
+
+  // R3V-7: the inert client lacked `startBlackout`/`endBlackout`/`isBlackout`/`getStatus`/
+  // `setLifecycleEventsListener` (and whatever else the real client grew): the TypeError this fallback exists to
+  // prevent. The whole surface of a real client must exist, and the blackout/status ones must report, not throw.
+  it('R3V-7: the inert client has EVERY method of a real client; blackout/status/listener calls report through onError', async () => {
+    const carrier: Record<string, unknown> = {};
+    setCarrierClient({ isLaunched: () => true } as never, carrier);
+    const onError = vi.fn();
+    const inert = launch('tok', baseOptions({ carrier, onError })) as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    const real = track('tok', baseOptions({ carrier: {} })) as unknown as Record<string, unknown>;
+    const missing = Object.keys(real).filter(
+      (key) => typeof real[key] === 'function' && typeof inert[key] !== 'function',
+    );
+    expect(missing).toEqual([]);
+
+    onError.mockClear();
+    expect(() => inert.startBlackout?.()).not.toThrow();
+    expect(() => inert.endBlackout?.()).not.toThrow();
+    expect(inert.isBlackout?.()).toBe(false);
+    expect(inert.getStatus?.()).toBe(BugseeStatus.Launched); // consistent with isLaunched() === true
+    expect(() => inert.setLifecycleEventsListener?.(() => {})).not.toThrow();
+    expect(inert.getLaunchOptions?.()).toEqual({});
+    expect(inert.getHostLaunchOptions?.()).toEqual({});
+    expect(() => inert.setSpanFilter?.(() => null)).not.toThrow();
+    expect(() => inert.notify?.('title')).not.toThrow();
+    expect(() => inert.registerExt?.('performance', {})).not.toThrow();
+    expect(() => inert.addService?.({})).not.toThrow();
+    expect(() => inert.addCaptureProvider?.({})).not.toThrow();
+    expect(() => inert.addDetectionProvider?.({})).not.toThrow();
+    expect(inert.prepareUpload?.()).toBeNull();
+    expect(() => inert.ext?.('performance')).toThrow(/not available/);
+    expect(() => inert.getService?.({})).toThrow(/not available/);
+    expect(() => inert.getServiceProvider?.({})).toThrow(/not available/);
+    inert.startBlackout?.(); // a repeat is not re-reported
+    const messages = onError.mock.calls.map(([e]) => (e as Error).message);
+    for (const method of [
+      'startBlackout',
+      'endBlackout',
+      'setLifecycleEventsListener',
+      'setSpanFilter',
+      'notify',
+      'registerExt',
+      'addService',
+      'addCaptureProvider',
+      'addDetectionProvider',
+      'prepareUpload',
+      'ext',
+      'getService',
+      'getServiceProvider',
+    ]) {
+      expect(
+        messages.filter((m) => m.includes(`\`${method}\``)),
+        method,
+      ).toHaveLength(1);
+    }
+    await expect(inert.logException?.(new Error('x'))).resolves.toEqual({ ok: false });
+    await expect(inert.upload?.()).resolves.toEqual({ ok: false });
+    expect(
+      onError.mock.calls
+        .map(([e]) => (e as Error).message)
+        .filter((m) => /logException|upload/.test(m)),
+    ).toHaveLength(2);
   });
 
   it('the inert client refuses to end a session it does not own', async () => {

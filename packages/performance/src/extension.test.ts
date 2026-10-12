@@ -269,3 +269,66 @@ describe('createPerformanceExtension — the span filter reaches CONSUMED spans'
     expect(captured).toEqual([]);
   });
 });
+
+// R3V-3: `sanitizeSpans ?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
+// sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
+describe('createPerformanceExtension — sanitizeSpans is fail-on (R3V-3)', () => {
+  const SQL = "SELECT * FROM users WHERE email = 'a@b.com'";
+  const run = (sanitizeSpans: unknown, onError = vi.fn()) => {
+    const { client } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension({
+      sanitizeSpans: sanitizeSpans as never,
+      onError,
+    });
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal({
+      traceId: 't',
+      spanId: 's',
+      name: 'pg.query',
+      operation: 'db',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      attributes: { 'db.statement': SQL },
+      spans: [],
+    });
+    return { statement: extension.store.drain()[0]?.attributes?.['db.statement'], onError };
+  };
+
+  it.each([
+    0,
+    '',
+    'false',
+    'true',
+    1,
+    null,
+  ])('sanitizeSpans=%j keeps the sanitizer ON and reports once', (bad) => {
+    const { statement, onError } = run(bad);
+    expect(String(statement)).not.toContain('a@b.com');
+    const messages = onError.mock.calls.map((c) => String((c[0] as Error).message));
+    expect(messages.filter((m) => m.startsWith('sanitizeSpans must be a boolean'))).toHaveLength(1);
+  });
+
+  it('true and absent sanitize silently; boolean false opts out silently', () => {
+    for (const on of [true, undefined]) {
+      const { statement, onError } = run(on);
+      expect(String(statement)).not.toContain('a@b.com');
+      expect(onError).not.toHaveBeenCalled();
+    }
+    const off = run(false);
+    expect(off.statement).toBe(SQL);
+    expect(off.onError).not.toHaveBeenCalled();
+  });
+
+  it('a throwing onError does not break the extension or switch the sanitizer off', () => {
+    const { statement } = run(
+      0,
+      vi.fn(() => {
+        throw new Error('sink');
+      }),
+    );
+    expect(String(statement)).not.toContain('a@b.com');
+  });
+});

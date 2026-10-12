@@ -52,6 +52,11 @@ export function createBridgeControl(opts?: {
    * rather than a possible legacy receiver.
    */
   nativeSecret?: string;
+  /**
+   * Called after an ADMITTED control message that carried the session or config (the handshake reply) was applied.
+   * The launch uses it to judge, only now, whether native declared blackout support.
+   */
+  onApplied?: () => void;
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
   /**
@@ -145,6 +150,9 @@ export function createBridgeControl(opts?: {
       }
       if (msg.config?.blackout !== undefined) {
         config.nativeBlackout = msg.config.blackout === true;
+      }
+      if (msg.session !== undefined || msg.config !== undefined) {
+        opts?.onApplied?.();
       }
       if (msg.command !== undefined) {
         opts?.onCommand?.(msg.command);

@@ -72,6 +72,53 @@ export const FAIL_CLOSED_BOOLEAN_OPTION = {
   expected: 'a boolean',
   invalid: false,
 } as const;
+/**
+ * A boolean option that PROTECTS (it hides or blocks data) where ON is the safe side, e.g. `startInBlackout`,
+ * WebView `captureObscuring`, performance `sanitizeSpans`: an invalid value (`'true'`, `1`, `null`, `0`, ...) turns
+ * it ON and is reported, never silently OFF (review round 3, R3V-2/R3V-3). Only boolean `false` switches it off.
+ */
+export const FAIL_ON_BOOLEAN_OPTION = {
+  normalize: normalizeBoolean,
+  expected: 'a boolean',
+  invalid: true,
+} as const;
+
+/** A plain option bag (`{...}`): an object that is neither `null` nor an array. */
+const isOptionBag = (value: unknown): boolean =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+// An option bag is reduced to `true` (it is the host's way to say "on, configured"): the resolved record stays
+// serialisable (it goes to the wire as sdk.options) and the launch code reads the bag itself from the host's options.
+const normalizeBooleanOrBag = (value: unknown): unknown =>
+  typeof value === 'boolean' ? value : isOptionBag(value) ? true : undefined;
+
+/**
+ * `boolean | {…option bag}` that collects MORE data and is off by default (`captureLocalVariables`,
+ * `captureSourceContext`): only `true` or a bag turns it on; anything else (`0`, `null`, `''`, `'false'`) is OFF
+ * and reported (R3V-3). The bag itself is NOT stored in the resolved record (it is recorded as `true`).
+ */
+export const FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION = {
+  normalize: normalizeBooleanOrBag,
+  expected: 'a boolean or an options object',
+  invalid: false,
+} as const;
+
+/**
+ * `boolean | {…option bag}` that is on by default (browser `replay`, whose masking is fail-closed on its own):
+ * an invalid value keeps the default and is reported; it must never throw (`replay: null`, R3V-3).
+ */
+export const BOOLEAN_OR_BAG_OPTION = {
+  normalize: normalizeBooleanOrBag,
+  expected: 'a boolean or an options object',
+} as const;
+
+/**
+ * The value of a {@link FAIL_ON_BOOLEAN_OPTION} read outside `resolveLaunchOptions` (the Electron renderer reads
+ * the app's raw options): `undefined` is `fallback`, boolean `false` is off, EVERYTHING else is on.
+ */
+export function resolveFailOnBoolean(value: unknown, fallback: boolean): boolean {
+  return value === undefined ? fallback : value !== false;
+}
+
 const boolean = BOOLEAN_OPTION;
 const failClosed = FAIL_CLOSED_BOOLEAN_OPTION;
 const flushDelay = {

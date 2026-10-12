@@ -1,4 +1,10 @@
-import { type BugseeClient, ClockToken, type FilterStore, FiltersToken } from '@bugsee/core';
+import {
+  type BugseeClient,
+  ClockToken,
+  type FilterStore,
+  FiltersToken,
+  resolveFailOnBoolean,
+} from '@bugsee/core';
 import type { ActiveSpanStore } from './active-span-store';
 import {
   createPerformanceCaptureProvider,
@@ -50,7 +56,8 @@ export interface PerformanceExtensionOptions {
   onError?: (error: unknown) => void;
   /**
    * Run the BUILT-IN span sanitizer — SQL literals replaced, model prompts and bodies redacted,
-   * sensitive attribute names removed. Default true.
+   * sensitive attribute names removed. Default true. Only boolean `false` turns it off: any other value
+   * (`0`, `''`, `'false'`, `null`) keeps it ON and is reported through `onError`.
    *
    * An integrator `setSpanFilter` REPLACES it rather than layering, the same XOR the network sanitizer
    * follows: someone who has written a filter has decided what leaves their process.
@@ -79,6 +86,19 @@ export interface PerformanceExtension {
 export function createPerformanceExtension(
   options: PerformanceExtensionOptions = {},
 ): PerformanceExtension {
+  // The sanitizer PROTECTS: only boolean `false` opts out, any other value keeps it on and is reported (R3V-3).
+  const sanitizeSpans = resolveFailOnBoolean(options.sanitizeSpans, true);
+  if (options.sanitizeSpans !== undefined && typeof options.sanitizeSpans !== 'boolean') {
+    try {
+      options.onError?.(
+        new Error(
+          `sanitizeSpans must be a boolean (got ${String(options.sanitizeSpans)}); using true`,
+        ),
+      );
+    } catch {
+      /* a throwing onError must not break launch */
+    }
+  }
   const store =
     options.store ?? createTransactionStore({ maxTransactions: options.maxTransactions });
   // The `performance` capture provider — routes finished transactions into the capture ring (the bundle's
@@ -98,7 +118,7 @@ export function createPerformanceExtension(
       stampDeviceId(transaction),
       filters?.span ?? null,
       (error) => filters?.onError(error),
-      options.sanitizeSpans ?? true,
+      sanitizeSpans,
     );
   return {
     name: 'performance',

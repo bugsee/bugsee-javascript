@@ -10,7 +10,8 @@ import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 // truthiness these used to be wrong in BOTH directions: `persistUserIdentifier: 'false'` persisted PII,
 // `captureInteractions: 0` kept capturing input. The rules, per option:
 //   captureInteractions, captureViewHierarchy (default ON, capture)  -> invalid = OFF (fail-closed) + onError
-//   startInBlackout, persistUserIdentifier, report* UI flags (default OFF) -> only boolean true turns on
+//   startInBlackout (default OFF, but ON is the safe side)             -> invalid = ON (fail-on) + onError (R3V-2)
+//   persistUserIdentifier, report* UI flags (default OFF)              -> only boolean true turns on
 
 const probe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 Chrome/119.0.0.0 Safari/537.36',
@@ -28,6 +29,7 @@ const clients: Bugsee[] = [];
 const start = async (over: Record<string, unknown>) => {
   // One live client per page: a second launch() would hand back the first.
   for (const previous of clients.splice(0)) {
+    previous.endBlackout(); // the blackout flag is process-wide: do not leak it into the next launch
     await previous.stop(50);
   }
   const onError = vi.fn();
@@ -52,6 +54,7 @@ const start = async (over: Record<string, unknown>) => {
 
 afterEach(async () => {
   for (const client of clients.splice(0)) {
+    client.endBlackout();
     await client.stop(50);
   }
 });
@@ -63,7 +66,6 @@ const failClosed: Array<[string, string]> = [
   ['captureViewHierarchy', BugseeOption.CaptureViewHierarchy],
 ];
 const defaultOff: Array<[string, string]> = [
-  ['startInBlackout', BugseeOption.CaptureStartInBlackout],
   ['persistUserIdentifier', BugseeOption.PersistUserIdentifier],
   ['reportSummaryRequired', BugseeOption.ReportingUiSummaryRequired],
   ['reportDescriptionRequired', BugseeOption.ReportingUiDescriptionRequired],
@@ -103,10 +105,74 @@ describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () =>
     }
   });
 
-  it('startInBlackout: "false" does NOT start the page dark; boolean true does', async () => {
-    const { client: off } = await start({ startInBlackout: 'false' });
+  it.each([
+    null,
+    0,
+    '',
+    'false',
+    'true',
+    1,
+    {},
+  ])('startInBlackout=%j (invalid) starts the page DARK and reports (R3V-2, fail-on)', async (bad) => {
+    const { client, onError } = await start({ startInBlackout: bad });
+    expect(client.isBlackout()).toBe(true);
+    expect(client.getLaunchOptions()[BugseeOption.CaptureStartInBlackout]).toBe(true);
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('startInBlackout must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('startInBlackout: boolean false / absent is not dark, boolean true is, none reported', async () => {
+    const { client: absent, onError: e0 } = await start({});
+    expect(absent.isBlackout()).toBe(false);
+    const { client: off, onError: e1 } = await start({ startInBlackout: false });
     expect(off.isBlackout()).toBe(false);
-    const { client: on } = await start({ startInBlackout: true });
+    const { client: on, onError: e2 } = await start({ startInBlackout: true });
     expect(on.isBlackout()).toBe(true);
+    for (const e of [e0, e1, e2]) {
+      expect(e).not.toHaveBeenCalled();
+    }
+  });
+
+  // The INTERNAL silent hold (the Electron renderer's launch hold) is protective too: only boolean false/absent
+  // is "no hold"; anything else holds the page dark.
+  it.each([
+    'yes',
+    'true',
+    1,
+    0,
+    null,
+    '',
+  ])('holdBlackout=%j (invalid) holds the page dark', async (bad) => {
+    const { client } = await start({ holdBlackout: bad });
+    expect(client.isBlackout()).toBe(true);
+  });
+
+  it('holdBlackout: false / absent do not hold', async () => {
+    const { client: off } = await start({ holdBlackout: false });
+    expect(off.isBlackout()).toBe(false);
+    const { client: absent } = await start({});
+    expect(absent.isBlackout()).toBe(false);
+  });
+
+  // R3V-3: `replay` is ON by default and masks fail-closed on its own. A scalar that is not a boolean must
+  // not THROW (`null` did) and must not silently mean "off"; it keeps the default and is reported.
+  it.each([
+    null,
+    0,
+    '',
+    'false',
+    'true',
+    1,
+  ])('replay=%j (invalid) does not throw and reports', async (bad) => {
+    const { client, onError } = await start({ replay: bad });
+    expect(client).toBeDefined();
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('replay must be a boolean or an options object'),
+      ),
+    ).toHaveLength(1);
   });
 });

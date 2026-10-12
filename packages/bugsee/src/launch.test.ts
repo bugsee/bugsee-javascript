@@ -208,6 +208,85 @@ describe('bugsee umbrella launch', () => {
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
+  // R3V-3: the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
+  // OPPOSITE of what the app wrote. Data-collecting switches fail CLOSED: only boolean `true` opts in to what is
+  // off by default (propagateTrace), and an invalid value turns off what is on by default (monitoring, navigation,
+  // interaction spans); each is reported.
+  it.each([
+    0,
+    '',
+    'false',
+    null,
+  ])('performanceMonitoring=%j (invalid) turns performance OFF and reports', async (bad) => {
+    const onError = vi.fn();
+    const client = await track(
+      await launch('tok', base({ carrier: {}, performanceMonitoring: bad as never, onError })),
+    );
+    expect(() => client.ext('performance')).toThrow(/not registered/);
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('performanceMonitoring must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    0,
+    'false',
+  ])('traceInteractions=%j (invalid) does NOT wire interactions', async (bad) => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const onError = vi.fn();
+    const client = await track(
+      await launch('tok', base({ carrier: {}, traceInteractions: bad as never, onError })),
+    );
+    pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('traceInteractions must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([0, 'false'])('traceNavigations=%j (invalid) does NOT patch history', async (bad) => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    vi.stubGlobal('location', { pathname: '/home' });
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    await track(await launch('tok', base({ carrier: {}, traceNavigations: bad as never })));
+    expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState);
+  });
+
+  it.each([
+    0,
+    'false',
+    'true',
+    1,
+    null,
+  ])('propagateTrace=%j (invalid) does NOT propagate (only boolean true opts in)', async (bad) => {
+    let received: { init: unknown } | undefined;
+    vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
+      received = { init };
+      return okResp;
+    });
+    await track(
+      await launch(
+        'tok',
+        base({
+          carrier: {},
+          propagateTrace: bad as never,
+          tracePropagationOrigin: 'https://app.test',
+        }),
+      ),
+    );
+    const init = { method: 'GET' };
+    await globalFetch()('https://app.test/api', init);
+    expect(received?.init).toBe(init);
+  });
+
   it('threads performanceSampleRate into the head sampler (0 → the pageload transaction is unsampled)', async () => {
     const client = await track(
       await launch('tok', base({ carrier: {}, performanceSampleRate: 0 })),

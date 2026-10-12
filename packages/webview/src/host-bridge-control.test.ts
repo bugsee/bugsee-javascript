@@ -301,3 +301,29 @@ describe('control config: native blackout support (R2V-2)', () => {
     expect(c.config.nativeBlackout).toBe(false);
   });
 });
+
+describe('onApplied: the handshake reply has been applied (R3V-5)', () => {
+  const raw = (extra: object) => JSON.stringify({ b: 1, k: 'control', ...extra });
+
+  it('fires after an admitted message carrying the session or a config, with that state already applied', () => {
+    let seen: unknown;
+    const c = createBridgeControl({ onApplied: () => (seen = { ...c.config }) });
+    c.control(raw({ session: 's1', config: { blackout: true } }));
+    expect(seen).toMatchObject({ session: 's1', nativeBlackout: true });
+    seen = undefined;
+    c.control(raw({ session: 's2' }));
+    expect(seen).toMatchObject({ session: 's2' });
+    seen = undefined;
+    c.control(raw({ config: { reportTrigger: true } }));
+    expect(seen).toMatchObject({ reportTrigger: true });
+  });
+
+  it('does NOT fire for a bare command, a foreign message, or a REJECTED message', () => {
+    const onApplied = vi.fn();
+    const c = createBridgeControl({ onApplied, nativeSecret: 'sekrit' });
+    c.control(raw({ command: 'flush', tok: 'sekrit' })); // admitted but carries no session/config
+    c.control('not json');
+    c.control(raw({ session: 'evil', config: { blackout: true } })); // no token: rejected wholesale
+    expect(onApplied).not.toHaveBeenCalled();
+  });
+});

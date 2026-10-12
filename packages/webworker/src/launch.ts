@@ -38,6 +38,7 @@ import {
   createSystemClock,
   createUploadPipeline,
   defineService,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   getCarrierClient,
   getCarrierStatus,
   getOrCreateInterceptor,
@@ -47,6 +48,7 @@ import {
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
+  type OptionDefinition,
   ReportMarkerStoreToken,
   recoverReports,
   resolveLaunchOptions,
@@ -88,9 +90,16 @@ const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
 // Browser/worker capture buffer ceiling (design §966: 10 MB on browser/worker).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
-const WORKER_OPTION_DEFINITIONS = [
+/** Worker-local identifier of the `persist` switch: no cross-SDK identity. */
+const PERSIST_OPTION_KEY = 'com.bugsee.option.worker.persist';
+
+const WORKER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
+  // Persisting writes captured data to IndexedDB, so only boolean `true` turns it on; any other supplied value
+  // (`'false'`, `0`, `null`) is OFF and reported, even on a Service Worker whose default is on (R3V-3). The
+  // default here is only for an ABSENT option; `launch` substitutes the platform default below.
+  { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
 ];
 
 /** A report severity / priority name (the `Severity` scale of the report). */
@@ -241,7 +250,10 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // @bugsee/util the whole time with zero callers (Wave 4.2). An explicit option still wins.
   const platformType: WorkerPlatformType =
     options.platformType ?? (isServiceWorker() ? 'service-worker' : 'web-worker');
-  const persist = options.persist ?? platformType === 'service-worker';
+  const persist =
+    options.persist === undefined
+      ? platformType === 'service-worker'
+      : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
   // Persist the ROLLING capture buffer too (durable IDB chunk store + marker recovery) when persisting and no
   // capture-store override — so a Service Worker killed BEFORE its incident bundle is assembled still delivers
   // the report, rebuilt from its preserved capture chunks, on the next activation. `recoverEnabled` additionally

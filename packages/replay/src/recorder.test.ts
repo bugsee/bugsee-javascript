@@ -430,6 +430,33 @@ describe('createReplayCaptureProvider', () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
+    // R3V-8: the bound-reached report went to the raw sink, so a THROWING onError escaped before `record()` ran and
+    // left replay off until the next cycle (and the report would repeat or be lost).
+    it('a throwing onError sink cannot leave replay off: the restart still happens, DOM-only', () => {
+      const gate = createBlackoutState();
+      const calls: Array<boolean | undefined> = [];
+      const record: ReplayRecordFn = vi.fn((o) => {
+        calls.push(o.recordCanvas);
+        return vi.fn();
+      });
+      const onError = vi.fn(() => {
+        throw new Error('sink exploded');
+      });
+      const provider = createReplayCaptureProvider({
+        record,
+        masking: resolveReplayMaskingOptions(),
+        canvas,
+        blackout: gate,
+        onError,
+      });
+      provider.init(fakeInit().init);
+      provider.start(options());
+      expect(() => cycle(gate, 10)).not.toThrow();
+      expect(calls).toHaveLength(11); // every restart reached record()
+      expect(calls.slice(4).every((c) => c === undefined)).toBe(true); // DOM-only after the bound
+      expect(onError).toHaveBeenCalledTimes(1); // reported once, not on every later start
+    });
+
     it('works without an onError sink', () => {
       const gate = createBlackoutState();
       const record: ReplayRecordFn = vi.fn(() => vi.fn());

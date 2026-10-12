@@ -3,7 +3,7 @@
 //  - the query string, fragment and `user:pass@` credentials are dropped entirely (that is where tokens
 //    live, and keeping them would make every request its own issue);
 //  - path segments that look like identifiers or secrets (numeric ids, UUIDs, long hex, base64/JWT-shaped
-//    tokens, e-mail addresses, short ids, phone numbers, IPs, dates) are templated, so `/users/42/orders/99` and `/users/7/orders/3` are one
+//    tokens, e-mail addresses, short ids, phone numbers, card numbers, IPs, dates) are templated, so `/users/42/orders/99` and `/users/7/orders/3` are one
 //    endpoint and an e-mail address in a path can never reach a summary.
 // Android templates only when a network filter is configured; this SDK templates ALWAYS, because the
 // default-sanitized timeline is not what a detector reads (it sees the raw event) and a templated path is
@@ -32,6 +32,15 @@ const PREFIXED_ID_MIN_LENGTH = 3;
 const FILE_EXTENSION = /^\.[A-Za-z][A-Za-z0-9]{0,4}$/;
 // A slug word: letters with at most two trailing numbers (`v2`), or one or two numbers on their own.
 const SLUG_WORD = /^(?:[A-Za-z]+[0-9]{0,2}|[0-9]{1,2})$/;
+// A payment card number: 13-19 digits (Maestro to the longest PAN) with `-` or ` ` between the groups.
+const CARD_MIN_LENGTH = 13;
+const CARD_MAX_LENGTH = 19;
+// Random tokens shorter than the 24-character floor above (base64url of 12-17 bytes): 16-23 characters.
+const SHORT_TOKEN_MIN_LENGTH = 16;
+const SHORT_TOKEN_MAX_LENGTH = 23;
+const SHORT_TOKEN_CHARS = /^[A-Za-z0-9._~-]+$/; // the length is bounded separately, above
+// A host with no dot (`localhost`, an intranet name): at least two characters, letters/numbers/hyphens.
+const HOST_LABEL = /^[A-Za-z0-9][A-Za-z0-9-]+$/;
 const PHONE_MIN_LENGTH = 7;
 const PHONE_MAX_LENGTH = 15;
 /** No real identifier is this long; a longer segment is a blob (and was never going to be a readable slug). */
@@ -44,7 +53,11 @@ function looksLikeEmail(segment: string): boolean {
   }
   // A dot in the domain part, not adjacent to '@' or the end.
   const dot = segment.indexOf('.', at + 2);
-  return dot > 0 && dot < segment.length - 1;
+  if (dot > 0 && dot < segment.length - 1) {
+    return true;
+  }
+  // Or a dot-less host (`user@localhost`): still an address (R3V-4). One character is not a host (`a@b`).
+  return HOST_LABEL.test(segment.slice(at + 1));
 }
 
 function safeDecode(segment: string): string {
@@ -90,6 +103,38 @@ function looksLikePhone(segment: string): boolean {
   return count >= PHONE_MIN_LENGTH;
 }
 
+/** A card number: 13-19 digits with only `-` / ` ` separators (no `+`, brackets or dots). Linear, no regex. */
+function looksLikeCard(segment: string): boolean {
+  let count = 0;
+  for (let i = 0; i < segment.length; i += 1) {
+    const code = segment.charCodeAt(i);
+    if (code >= 48 && code <= 57) {
+      count += 1;
+      if (count > CARD_MAX_LENGTH) {
+        return false;
+      }
+    } else if (code !== 45 && code !== 32) {
+      return false;
+    }
+  }
+  return count >= CARD_MIN_LENGTH;
+}
+
+/** The number of separate runs of digits in a segment: `k3j4` has two, `2015` has one. Linear. */
+function digitRuns(segment: string): number {
+  let runs = 0;
+  let inRun = false;
+  for (let i = 0; i < segment.length; i += 1) {
+    const code = segment.charCodeAt(i);
+    const isDigit = code >= 48 && code <= 57;
+    if (isDigit && !inRun) {
+      runs += 1;
+    }
+    inRun = isDigit;
+  }
+  return runs;
+}
+
 function looksLikeIp(segment: string): boolean {
   if (IPV4.test(segment)) {
     return true;
@@ -126,6 +171,9 @@ export function templatePathSegment(segment: string): string {
   if (looksLikeIp(segment)) {
     return '{ip}';
   }
+  if (looksLikeCard(decoded)) {
+    return '{card}';
+  }
   if (looksLikePhone(decoded)) {
     return '{phone}';
   }
@@ -160,6 +208,18 @@ export function templatePathSegment(segment: string): string {
     !isSlugLike(segment)
   ) {
     return '{id}';
+  }
+  // A random token of 16-23 characters (base64url of a 12-17 byte value): mixed case with a number, or several
+  // separate number runs. Ordinary words, `authentication-v2` and a lone year (`ecmascript2015modules`) are not.
+  if (
+    segment.length >= SHORT_TOKEN_MIN_LENGTH &&
+    segment.length <= SHORT_TOKEN_MAX_LENGTH &&
+    SHORT_TOKEN_CHARS.test(segment) &&
+    HAS_NUMBER.test(segment) &&
+    !isSlugLike(segment) &&
+    ((HAS_UPPER.test(segment) && HAS_LOWER.test(segment)) || digitRuns(segment) >= 2)
+  ) {
+    return '{token}';
   }
   return segment;
 }

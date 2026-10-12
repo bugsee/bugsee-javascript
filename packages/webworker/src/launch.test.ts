@@ -974,6 +974,41 @@ describe('launch (webworker)', () => {
     expect(client.getService(BundleStoreToken)).toBeDefined(); // IndexedDB durable queue wired
   });
 
+  // R3V-3: `options.persist ?? default` made `'false'` (truthy) PERSIST capture to IndexedDB. Persisting collects
+  // more data, so only boolean `true` turns it on and any other value is OFF (even on a Service Worker, whose
+  // default is on) and is reported.
+  it.each([
+    0,
+    '',
+    'false',
+    'true',
+    1,
+    null,
+  ])('persist=%j (invalid) is OFF even for a service-worker, and reports', (bad) => {
+    const onError = vi.fn();
+    const client = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', persist: bad as never, onError }),
+    );
+    expect(() => client.getService(BundleStoreToken)).toThrow(); // memory-only
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('persist must be a boolean'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('persist: true forces durable storage on a web-worker, false forces memory on a service-worker', () => {
+    expect(
+      track('tok', baseOptions({ persist: true, carrier: {} })).getService(BundleStoreToken),
+    ).toBeDefined();
+    const sw = track(
+      'tok',
+      baseOptions({ platformType: 'service-worker', persist: false, carrier: {} }),
+    );
+    expect(() => sw.getService(BundleStoreToken)).toThrow();
+  });
+
   it('a web-worker defaults persist OFF → no durable BundleStore', () => {
     const client = track('tok', baseOptions()); // default web-worker
     expect(() => client.getService(BundleStoreToken)).toThrow(); // not registered (memory-only)

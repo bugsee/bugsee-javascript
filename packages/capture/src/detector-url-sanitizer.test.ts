@@ -173,8 +173,8 @@ describe('templatePathSegment: short ids, PII-shaped values and dates (R2P-8)', 
     ['abcdefghijklmnopqrst1', 'abcdefghijklmnopqrst1'],
     ['ABCDEFGHIJKLMNOPQRST1', 'ABCDEFGHIJKLMNOPQRST1'],
     ['AbCdEfGhIjKlMnOpQrStU', 'AbCdEfGhIjKlMnOpQrStU'],
-    ['AbCdEfGhIjKlMnOpQrSt1u', 'AbCdEfGhIjKlMnOpQrSt1u'],
-    ['AbCdEfGhIjKlMnOpQr1', 'AbCdEfGhIjKlMnOpQr1'],
+    ['AbCdEfGhIjKlMnOpQrSt1u', '{token}'], // 22 chars: past SHORT_ID, below the 24-char token floor (R3V-4)
+    ['AbCdEfGhIjKlMnOpQr1', '{token}'], // 19 chars, mixed case + a digit (R3V-4)
     ['AbCdEfGhIjKlMnOpQrS1', '{id}'],
     ['AbCdEfGhIjKlMnOpQrSt1', '{id}'],
   ])('boundary: %j -> %j', (segment, expected) => {
@@ -229,5 +229,96 @@ describe('no ReDoS: adversarial 1,000,000-character inputs finish in bounded tim
     expect(templatePathSegment('a'.repeat(5000))).toBe('{token}');
     expect(templatePathSegment('g'.repeat(256))).toBe('g'.repeat(256)); // the cap is exclusive
     expect(templatePathSegment('a'.repeat(257))).toBe('{token}');
+  });
+});
+
+// R3V-4. Leaks the round-2 rules missed: 16-23 character tokens, card numbers with separators, and an address on a
+// dot-less host. Each positive is paired with the ordinary segment it must NOT swallow.
+describe('templatePathSegment: short tokens, card numbers and dot-less e-mail hosts (R3V-4)', () => {
+  it.each([
+    // base64url tokens of 16-23 chars: mixed case + a digit
+    ['aB3dE5gH7jK9mN1pQ', '{token}'], // 17
+    ['aB3dE5gH7jK9mN1pQrS', '{token}'], // 19
+    ['aB3dE5gH7jK9mN1pQrStUv', '{token}'], // 22
+    ['aB3dE5gH7jK9mN1pQrStUvW', '{token}'], // 23
+    ['aB3dE5gH7jK9mN1p', '{token}'], // 16
+    // lower-case alphanumeric with several separate digit runs
+    ['k3j4h5g6f7d8s9a0q1w2', '{token}'],
+    ['x9y8z7w6v5u4t3s2r1', '{token}'],
+    ['abcdefgh1abcdefgh2', '{token}'], // exactly two separate digit runs
+    // card numbers with separators (13-19 digits)
+    ['4111-1111-1111-1111', '{card}'],
+    ['4111%201111%201111%201111', '{card}'],
+    ['4111 1111 1111 1111', '{card}'],
+    ['3782-822463-10005', '{card}'],
+    ['4111-1111-1111-1111-123', '{card}'], // 19 digits
+    ['4111-1111-1111-1', '{card}'], // 13 digits
+    // e-mail addresses on a host without a dot
+    ['user@localhost', '{email}'],
+    ['user%40localhost', '{email}'],
+    ['admin@intranet', '{email}'],
+  ])('%j -> %j', (segment, expected) => {
+    expect(templatePathSegment(segment)).toBe(expected);
+  });
+
+  it.each([
+    // ordinary segments of the same lengths / shapes stay readable
+    'authentication-v2', // 17, one digit run, two words
+    'ecmascript2015modules', // 21, a single digit run
+    'ProductCatalogItems', // 19, mixed case, no digit
+    'abcdefghijklmnop', // 16, no digit
+    'internationalization', // 20
+    'user-profile-settings', // 21, no digit
+    'oauth2-callback-url', // 19, slug
+    'api-v1-v2-compat-layer', // 22, slug of short versioned words
+    'ABCDEFGHIJKLMNOPQRST1', // upper case only
+    // digit runs that are not card numbers
+    '2024-01', // 6
+    '555-123', // 6
+    // one short of each length bound, and a character outside the token alphabet
+    'aB3dE5gH7jK9mN1', // 15 chars
+    'aB3dE5gH7jK9mN1p!', // 17 chars, but not token-shaped
+    // a@b keeps its meaning (a one-character host is not an address)
+    'a@b',
+    '@localhost',
+    'user@',
+    'logo-2x',
+  ])('leaves %j alone', (segment) => {
+    expect(templatePathSegment(segment)).toBe(segment);
+  });
+
+  it('twelve digits with separators are a phone number, not a card', () => {
+    expect(templatePathSegment('1111-1111-1111')).toBe('{phone}');
+  });
+
+  it('a 20-digit run with separators is not a card number (and is a plain number run)', () => {
+    expect(templatePathSegment('4111-1111-1111-1111-1111')).not.toBe('{card}');
+  });
+
+  it('templates all three inside a whole URL', () => {
+    expect(
+      sanitizeDetectorUrl(
+        'https://a.test/pay/4111-1111-1111-1111/by/user@localhost/token/aB3dE5gH7jK9mN1pQrStUv?x=1',
+      ),
+    ).toBe('https://a.test/pay/{card}/by/{email}/token/{token}');
+  });
+});
+
+describe('R3V-4 rules stay linear: 1,000,000-character adversarial inputs', () => {
+  const BIG = 1_000_000;
+  it.each([
+    ['digits and dashes', `${'1-'.repeat(BIG / 2)}`],
+    ['digits and spaces', `${'1 '.repeat(BIG / 2)}`],
+    ['percent-twenty runs', `${'1%20'.repeat(BIG / 4)}`],
+    ['an @ then host chars', `a@${'b'.repeat(BIG)}`],
+    ['many @', `${'a@'.repeat(BIG / 2)}`],
+    ['mixed token run', `${'aB1'.repeat(BIG / 3)}`],
+    ['digit runs split by dash', `${'a1-'.repeat(BIG / 3)}`],
+  ])('%s', (_name, input) => {
+    const started = Date.now();
+    templatePathSegment(input);
+    templatePathSegment(input.slice(0, 22));
+    templatePathSegment(input.slice(0, 200));
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 });

@@ -47,6 +47,7 @@ import {
   LifecycleEvents,
   type LifecycleEventsListener,
   type NativeCrashSource,
+  type OptionDefinition,
   type ReconcileOwnQueue,
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
@@ -100,7 +101,12 @@ import {
   createLocalVariablesCapture,
   type LocalVariablesOptions,
 } from './local-variables';
-import { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+import {
+  NODE_PRIVACY_OPTION_DEFINITIONS,
+  NodePrivacyOption,
+  PROFILING_OPTION_DEFINITIONS,
+  ProfilingOption,
+} from './options';
 import {
   foreignListenerCount,
   markOwnHandler,
@@ -150,10 +156,11 @@ const CAPTURE_FILE_TYPES: readonly string[] = [...Object.keys(DEFAULT_FILENAMES)
 // platform-local because its default differs per runtime (50 MB on Node/Electron vs 10 MB on
 // browser/edge), so it does not belong in COMMON_OPTION_DEFINITIONS; its canonical identifier still
 // lives in @bugsee/protocol (BugseeOption.MaxDataSize) for cross-SDK / wire parity.
-const NODE_OPTION_DEFINITIONS = [
+const NODE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  ...NODE_PRIVACY_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
   { friendly: 'detectHangs', key: BugseeOption.DetectHang, default: true, ...BOOLEAN_OPTION },
@@ -714,36 +721,38 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
 
   // Local variables (opt-in). Built BEFORE the client so its lookup can be handed in as the frame
   // enricher; inert when the runtime has no usable inspector.
-  const localVariables =
-    options.captureLocalVariables === undefined || options.captureLocalVariables === false
-      ? undefined
-      : createLocalVariablesCapture({
-          // This launch's timers, BEFORE the caller's object so an explicitly-passed seam still wins.
-          // The caught-exception throttle measures its backoff on the monotonic clock and recovers on a
-          // scheduler tick; left on the global timers it would ignore a host that injected its own.
-          clock,
-          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-          ...(typeof options.captureLocalVariables === 'object'
-            ? options.captureLocalVariables
-            : {}),
-          ...(typeof options.captureLocalVariables === 'object' &&
-          options.captureLocalVariables.session !== undefined
-            ? {}
-            : { session: createInspectorSession() }),
-          ...(options.onError !== undefined ? { onError: options.onError } : {}),
-        });
+  // Both opt-ins are gated on the RESOLVED value (R3V-3): only `true` or an options object turns them on, and a
+  // malformed value (`null`, `0`, `''`, `'false'`) is off and reported. The bag itself is read from the host's options.
+  const localVariablesBag =
+    typeof options.captureLocalVariables === 'object' && options.captureLocalVariables !== null
+      ? options.captureLocalVariables
+      : undefined;
+  const sourceContextBag =
+    typeof options.captureSourceContext === 'object' && options.captureSourceContext !== null
+      ? options.captureSourceContext
+      : undefined;
+  const localVariables = !resolved.isEnabled(NodePrivacyOption.CaptureLocalVariables)
+    ? undefined
+    : createLocalVariablesCapture({
+        // This launch's timers, BEFORE the caller's object so an explicitly-passed seam still wins.
+        // The caught-exception throttle measures its backoff on the monotonic clock and recovers on a
+        // scheduler tick; left on the global timers it would ignore a host that injected its own.
+        clock,
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        ...(localVariablesBag ?? {}),
+        ...(localVariablesBag?.session !== undefined ? {} : { session: createInspectorSession() }),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      });
 
   // Frame enrichers, in the order their output composes: locals first, then the source those locals
   // belong to. Both opt-in, so the common case wires nothing at all.
   const enrichFrames = composeFrameEnrichers([
     ...(localVariables !== undefined ? [createFrameEnricher(localVariables)] : []),
-    ...(options.captureSourceContext === undefined || options.captureSourceContext === false
+    ...(!resolved.isEnabled(NodePrivacyOption.CaptureSourceContext)
       ? []
       : [
           createSourceContextEnricher({
-            ...(typeof options.captureSourceContext === 'object'
-              ? options.captureSourceContext
-              : {}),
+            ...(sourceContextBag ?? {}),
             ...(options.onError !== undefined ? { onError: options.onError } : {}),
           }),
         ]),
@@ -1118,7 +1127,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // install runs once; uninstalled on stop(). The framework adapters coexist via first-owner-wins
   // re-entrancy (the owner here run-scopes the context + http.server txn; an adapter refines it).
   const serverInstallables: ServerInstallable[] = [];
-  if (options.instrumentIncomingRequests !== false) {
+  if (resolved.isEnabled(NodePrivacyOption.InstrumentIncomingRequests)) {
     serverInstallables.push(
       options.serverInterceptor ??
         createHttpServerInterceptor({

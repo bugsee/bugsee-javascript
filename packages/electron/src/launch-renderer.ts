@@ -9,7 +9,13 @@
 //   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream (D8);
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
-import { asInternalClient, BlackoutToken, LifecycleEvents } from '@bugsee/core';
+import {
+  asInternalClient,
+  BlackoutToken,
+  getCarrierBlackout,
+  LifecycleEvents,
+  resolveFailOnBoolean,
+} from '@bugsee/core';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
@@ -60,10 +66,48 @@ export function resolveRendererBridge(): BugseeElectronBridge {
   };
 }
 
-/** Launch Bugsee in an Electron renderer: capture streams to the main process; main bundles + uploads. */
-export async function launchRenderer(
+// One renderer instance per page (R3V-6). A page can run this entry twice (hot module reload, a second bundle):
+// two instances would register two competing three-flag blackout handlers over ONE shared blackout state and
+// two control subscriptions. The slot is on `globalThis` (a reloaded module has fresh module variables) and holds
+// the in-flight/finished launch plus, once known, its client so a client main has STOPPED is not handed back.
+const RENDERER_SLOT = Symbol.for('bugsee.electron.renderer');
+interface RendererSlot {
+  readonly launch: Promise<Bugsee>;
+  client?: Bugsee;
+}
+
+/**
+ * Launch Bugsee in an Electron renderer: capture streams to the main process; main bundles + uploads.
+ *
+ * Calling it again while this page's client is live (or still launching) is a NO-OP that returns that client; the
+ * repeat call's options are ignored. After main has stopped the client a new call launches a fresh one.
+ */
+export function launchRenderer(
   appToken: string,
   options: LaunchRendererOptions = {},
+): Promise<Bugsee> {
+  const page = globalThis as unknown as Record<symbol, RendererSlot | undefined>;
+  const existing = page[RENDERER_SLOT];
+  if (existing !== undefined && (existing.client === undefined || existing.client.isLaunched())) {
+    return existing.launch;
+  }
+  const slot: RendererSlot = { launch: launchRendererOnce(appToken, options) };
+  page[RENDERER_SLOT] = slot;
+  slot.launch.then(
+    (client) => {
+      slot.client = client;
+    },
+    () => {
+      // Only a launch that has not produced a client can fail, and such a slot is never replaced.
+      delete page[RENDERER_SLOT];
+    },
+  );
+  return slot.launch;
+}
+
+async function launchRendererOnce(
+  appToken: string,
+  options: LaunchRendererOptions,
 ): Promise<Bugsee> {
   const { post, bridge, onSessionId, launch, ...browserOptions } = options;
   const resolved = bridge ?? resolveRendererBridge();
@@ -90,6 +134,7 @@ export async function launchRenderer(
     canDeliver: () => handshaken,
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+  const carriedBlackout = getCarrierBlackout(browserOptions.carrier ?? globalThis);
   const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
@@ -112,7 +157,14 @@ export async function launchRenderer(
   // main's blackout-end ended the app's.
   let hold = true;
   let mainDark = false;
-  let appDark = (browserOptions as { startInBlackout?: unknown }).startInBlackout === true;
+  // Same rule as the browser launch (R3V-2): the safe side is dark, so any value but boolean `false` is dark. A
+  // blackout CARRIED over from a previous client (a re-run after main stopped this page's client) is the app's to
+  // lift too: the new client starts in that state and the handshake must not end it (R3V-6).
+  let appDark =
+    resolveFailOnBoolean(
+      (browserOptions as { startInBlackout?: unknown }).startInBlackout,
+      false,
+    ) || carriedBlackout;
   // What the application has been TOLD (BlackoutStarted/Ended): main's or the app's blackout, never the hold.
   let announced = appDark; // the browser launch announced a startInBlackout itself
   const blackoutState = client.getService(BlackoutToken);
@@ -142,6 +194,13 @@ export async function launchRenderer(
     if (client.isLaunched()) {
       appDark = false;
       apply();
+    } else {
+      // R2L-7: allowed while stopped, quietly, because it is the only way to lift a carried blackout (the next
+      // launch would otherwise start dark with no event). Nothing is captured now, so the hold and the app's own
+      // reason go (main's is re-derived from its own broadcasts, which set it before every apply()).
+      hold = false;
+      appDark = false;
+      blackoutState.end({ silent: true });
     }
   };
 

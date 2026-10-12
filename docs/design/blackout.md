@@ -24,13 +24,17 @@ not know which providers are visual: each visual source is handed the read-only 
 | Electron renderers | The main client's blackout is forwarded to every renderer over the control channel (`blackout-start` / `blackout-end`, and the state rides every `session` handshake reply; a main without a probe says `bo:false`). See "Electron renderers: three reasons to be dark" below. |
 | Electron opt-in pixel video | On start the controller stops the source and CLEARS its buffer (frames just before the blackout are discarded too); snapshots are empty for the span, including one already in flight; the source restarts into an empty buffer at the end. |
 | WebView (JS side) | The input and `ui.*` providers (and the wheel source) take the client's gate like the browser tier. The shared input source is re-bound to the CURRENT client's gate on every launch, so a relaunch does not leave it reading the dead client's state. |
-| WebView (NATIVE host video) | **Not stopped by this SDK alone.** The pixels of a WebView are recorded by the native host (its video / screenshots). Every blackout change is sent over the bridge as a `blackout` message (`{b,k:'blackout',a,ts}`, in `bridge-protocol.schema.json`) and the host must pause AND clear its video while `a` is true, declaring support with `config.blackout: true` in its control reply. Until the host does, or when no native bridge is attached, the first blackout reports through `onError` that the native video is NOT paused. **Follow-up (other repos):** the Android and iOS receivers must handle `k:'blackout'` and declare `config.blackout`; until they ship, a blackout in a WebView protects JS-side capture only. |
+| WebView (NATIVE host video) | **Not stopped by this SDK alone.** The pixels of a WebView are recorded by the native host (its video / screenshots). Every blackout change is sent over the bridge as a `blackout` message (`{b,k:'blackout',a,ts}`, in `bridge-protocol.schema.json`) and the host must pause AND clear its video while `a` is true, declaring support with `config.blackout: true` in its control reply. Until the host does, or when no native bridge is attached, the first blackout reports through `onError` that the native video is NOT paused. **Receiver contract:** (1) a blackout CARRIED over a relaunch is posted right after `hello` (the current state, `a:true`), since no change event exists for it; (2) `a:false` NEVER ends native's OWN blackout: native keeps a separate flag for its own reasons (its own `startBlackout`, a sensitive native screen) and keeps its video paused while EITHER that flag or the JS-reported one is set; (3) the "native has not declared blackout support" warning is judged only after native answered the handshake (the control reply): the first announcement made while no reply has arrived waits for it, and a second change before any reply stops waiting and warns. **Follow-up (other repos):** the Android and iOS receivers must handle `k:'blackout'` and declare `config.blackout`; until they ship, a blackout in a WebView protects JS-side capture only. |
 
 ## State rules
 
-- `startBlackout()` / `endBlackout()` are ignored while the client is not launched (no state change, no events:
-  there is nothing to black out), as on Android. `startBlackout()` before `launch()` is therefore a no-op; use
-  `startInBlackout` for a blackout from the first frame.
+- `startBlackout()` is ignored while the client is not launched (no state change, no events: there is nothing to
+  black out), as on Android; `startBlackout()` before `launch()` is therefore a no-op, use `startInBlackout` for a
+  blackout from the first frame. `endBlackout()` is DIFFERENT: it is honoured while the client is not launched
+  (before the first `launch()` and after `stop()`). It clears the carried process flag silently (no events: nothing
+  is being captured for them to describe), because a blackout that could not be lifted would make the next launch
+  start dark with no event to say why. Android no-ops there; this is a kept difference
+  (`mobile-api-alignment.md`, Kept differences).
 - The state is process-level: it lives on the carrier, so `relaunch()` (a new client) keeps a blackout in force
   silently, and the lifecycle listener does not see a Started/Ended pair for the carry. A carried blackout is
   still ended with `endBlackout()` (also while the client is stopped: the carried flag is cleared silently).
@@ -75,6 +79,13 @@ added or started: nothing visual or interaction-related is captured until `endBl
 It is applied before any provider starts, so no provider can observe an un-darkened moment, and a replay chunk
 that loads later reads the gate as already active.
 
+The safe side is DARK, so the option fails ON: any value that is not boolean `false` (`'true'`, `'false'`, `1`, `0`,
+`null`, `''`, an object) starts the page dark and is reported through `onError`; only `false` / absent start it
+un-darkened. The Electron renderer follows the same rule (and so does the internal launch hold `holdBlackout`).
+Every other privacy option has an explicit fail direction too, pinned by `packages/bugsee/src/option-directions.test.ts`:
+options that collect more data fail OFF, protective ones (`startInBlackout`, WebView `captureObscuring`, performance
+`sanitizeSpans`) fail ON, and the rest keep their default and report.
+
 ## Electron renderers: three reasons to be dark
 
 A renderer is dark while ANY of three independent flags is set, so none can end another's blackout:
@@ -90,6 +101,11 @@ A renderer is dark while ANY of three independent flags is set, so none can end 
    and the app's `endBlackout()` does not end main's.
 
 The application is told (`BlackoutStarted` / `BlackoutEnded`) about the union of 2 and 3 only, never about the hold.
+
+`launchRenderer()` is one instance per page: a second call (a hot reload) while the page's client is live or still
+launching is a no-op returning that client. After main stopped the client a new call launches a fresh one, which
+treats a CARRIED blackout as the app's own (the handshake's `bo:false` does not end it; `endBlackout()` does), and
+`endBlackout()` on a stopped renderer client lifts every reason quietly (same rule as the kernel).
 
 ## Replay marker (viewer follow-up)
 

@@ -2103,6 +2103,30 @@ describe('launch — session replay (lazy)', () => {
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
   });
 
+  // R3V-3: a malformed `replay` value neither throws (`null` did) nor silently disables: replay stays on at its
+  // fail-closed masking defaults (the app's bag is not honoured: it is not a bag) and `onError` is told.
+  it.each([
+    null,
+    0,
+    '',
+    'false',
+    'true',
+    1,
+  ])('a malformed replay value %j keeps replay ON with default (fail-closed) masking and reports', async (bad) => {
+    const onError = vi.fn();
+    await launchTracked('tok', domReplayOptions({ replay: bad as never, onError }));
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({
+      blackout: expect.any(Object),
+      onError: expect.any(Function),
+    });
+    expect(
+      onError.mock.calls.filter((c) =>
+        String((c[0] as Error).message).startsWith('replay must be'),
+      ),
+    ).toHaveLength(1);
+  });
+
   // `replay: false` is now THE errors-only path — it inherits the guarantee the old default carried: no
   // recorder, no replay.bin encoder, and (below) no @bugsee/replay in the bundle at all.
   it('does NOT register replay when replay is `false` — the errors-only opt-out', async () => {
