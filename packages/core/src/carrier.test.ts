@@ -248,6 +248,7 @@ describe('setCarrierLastLaunch', () => {
     expect(Object.keys(retained).sort()).toEqual([
       'carrier',
       'clock',
+      'endpoint', // deployment identity (R2P-3): a relaunch must not fall back to the production endpoint
       'onError',
       'scheduler',
       'transport',
@@ -255,6 +256,17 @@ describe('setCarrierLastLaunch', () => {
     expect(retained.carrier).toBe(g);
     expect(retained.clock).toBe(clock);
     expect(retained.scheduler).toBe(scheduler);
+  });
+
+  it('remembers a custom carrier host on the default slot, and forgets it on the next default launch (R2L-12)', () => {
+    const x = {};
+    setCarrierLastLaunch('tok', { carrier: x }, x);
+    expect(getCarrier().lastHost).toBe(x);
+    setCarrierLastLaunch('tok', {}, undefined);
+    expect(getCarrier().lastHost).toBeUndefined();
+    setCarrierLastLaunch('tok', { carrier: globalThis }, globalThis);
+    expect(getCarrier().lastHost).toBeUndefined();
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
   });
 
   it('retains nothing for absent or non-object options', () => {

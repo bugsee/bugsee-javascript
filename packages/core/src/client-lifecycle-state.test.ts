@@ -263,14 +263,14 @@ describe('L16 — blackout is refused while the client is not launched', () => {
     expect(events).toEqual([]);
   });
 
-  it('endBlackout() after stop() leaves an active blackout alone and says nothing', async () => {
+  it('endBlackout() after stop() ends the blackout quietly (R2L-7: it must be liftable, but nothing is captured to describe)', async () => {
     const client = createClient({ scheduler: noScheduler });
     client.launch();
     client.startBlackout();
     await client.stop();
     const events = listen(client);
     client.endBlackout();
-    expect(client.isBlackout()).toBe(true);
+    expect(client.isBlackout()).toBe(false);
     expect(events).toEqual([]);
   });
 

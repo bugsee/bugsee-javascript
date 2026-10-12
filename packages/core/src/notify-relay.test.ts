@@ -1067,3 +1067,40 @@ describe('collector verdicts: retry-after and kill (P9)', () => {
     expect(relay.pending()).toBe(0);
   });
 });
+
+describe('take / adopt — the relaunch() hand-over (R2L-6)', () => {
+  it('take() removes the queued notifications and cancels the scheduled send', async () => {
+    const { relay, send } = make({ flushDelayMs: 1000 });
+    relay.enqueue({ title: 'a' });
+    relay.enqueue({ title: 'b' });
+    const taken = relay.take();
+    expect(taken.map((item) => item.title)).toEqual(['a', 'b']);
+    expect(relay.pending()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('adopt() puts handed-over items AHEAD of newer ones and sends them', async () => {
+    const donor = make({ flushDelayMs: 1000 });
+    donor.relay.enqueue({ title: 'old' });
+    const handed = donor.relay.take();
+    const { relay } = make({ flushDelayMs: 0 });
+    relay.enqueue({ title: 'newer' });
+    relay.adopt(handed);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sends.flat().map((item) => item.title)).toEqual(['old', 'newer']);
+  });
+
+  it('adopt([]) is a no-op and adopt() after a kill verdict drops everything', async () => {
+    const { relay, send } = make({}, async () => ({ outcome: 'kill' }));
+    relay.adopt([]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(send).not.toHaveBeenCalled();
+    relay.enqueue({ title: 'x' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    relay.adopt([{ id: 'z', timestamp: 1_700_000_000_000, title: 'late' }]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});

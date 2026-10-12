@@ -351,17 +351,49 @@ describe('stop() releases the instance lock and IndexedDB only when it is SAFE t
     await vi.waitFor(() => expect(real.open()).toBe(0));
   });
 
-  it('L7: a client.launch() while the stop is draining keeps the lock (the instance is live again)', async () => {
+  it('R2L-3: a client.launch() while the stop is draining is refused, and the stop still releases the lock', async () => {
+    const locks = realLocks();
+    const onError = vi.fn();
+    const client = await launch(
+      'tok',
+      opts({ persist: true, locks: locks.manager, indexedDB: new IDBFactory(), onError }),
+    );
+    const stopping = client.stop();
+    client.launch(); // core would restart WITHOUT the page-hide flush, the carrier slot or the lock
+    await stopping;
+    expect(client.isLaunched()).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+    await vi.waitFor(() => expect(locks.held.size).toBe(0)); // nothing is writing: safe to release
+  });
+
+  it('R2L-3: after stop(), a refused client.launch() leaves the process free for a NEW client (no two-client state)', async () => {
+    const first = await launch('tok', opts({ onError: () => {} }));
+    await first.stop();
+    first.launch();
+    const second = await track('tok', opts());
+    expect(second).not.toBe(first);
+    expect(getCarrier().client).toBe(second);
+    expect(first.isLaunched()).toBe(false);
+    expect(getStatus()).toBe(BugseeStatus.Launched);
+  });
+
+  it('R2L-1: a hung stop(timeout) then a repeat stop(timeout) keeps the lock: the upload may still run', async () => {
     const locks = realLocks();
     const client = await launch(
       'tok',
-      opts({ persist: true, locks: locks.manager, indexedDB: new IDBFactory() }),
+      opts({
+        persist: true,
+        locks: locks.manager,
+        indexedDB: new IDBFactory(),
+        transport: never(),
+      }),
     );
-    const stopping = client.stop();
-    client.launch();
-    await stopping;
+    void client.logException(new Error('in flight'));
+    expect(await client.stop(30)).toBe(false);
+    expect(await client.stop(30)).toBe(false); // used to answer true at once and release the lock below
     expect(locks.held.size).toBe(1);
-    live.push(client);
   });
 
   it('L14: stop() on a KILLED client still releases the lock and the connections', async () => {
@@ -431,7 +463,7 @@ describe('relaunch', () => {
 
   it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
     const first = await launch('tok-1', opts({ captureLogs: false }));
-    const second = await relaunch(opts());
+    const second = await relaunch();
     live.push(second);
     expect(second).not.toBe(first);
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);

@@ -4,9 +4,12 @@ import {
   type Clock,
   contributeServiceManifest,
   FiltersToken,
+  getCarrierClient,
+  LifecycleEvents,
   type Scheduler,
   type StoredEntry,
   setCarrierClient,
+  setProcessLifecycleEventsListener,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import bridgeSchema from '../bridge-protocol.schema.json' with { type: 'json' };
@@ -1927,5 +1930,82 @@ describe('secure views from a SUB-frame still reach native (D9 chain, through la
     expect(fake.global.__bugsee_bridge?.snapshot()).toBe(
       JSON.stringify([{ type: 'text', top: 2, left: 3, bottom: 4, right: 5 }]),
     );
+  });
+});
+
+describe('review round 2 — F1 (webview)', () => {
+  it('R2L-9: a stale stop() leaves a NEWER launch its carrier slot and its repeat-launch handle', async () => {
+    const fake = fakeGlobal();
+    const carrier = {};
+    const onError = vi.fn();
+    const a = launch('tok', baseOptions({ global: fake.global, carrier }));
+    await a.stop();
+    const b = track('tok', baseOptions({ global: fake.global, carrier, onError }));
+    expect(getCarrierClient(carrier)).toBeDefined();
+
+    await a.stop(); // the stale handle fires again
+
+    expect(
+      getCarrierClient(carrier),
+      'a stale stop() evicted the newer carrier slot',
+    ).toBeDefined();
+    // …and a repeat launch still gets the RESTRICTED live client, not an inert one
+    const repeat = launch('tok', baseOptions({ global: fake.global, carrier, onError }));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(repeat.isLaunched()).toBe(b.isLaunched());
+    expect(repeat.isLaunched()).toBe(true);
+  });
+
+  it('R2L-9: the owning stop() still clears the slot', async () => {
+    const carrier = {};
+    const a = launch('tok', baseOptions({ carrier }));
+    expect(getCarrierClient(carrier)).toBeDefined();
+    await a.stop();
+    expect(getCarrierClient(carrier)).toBeUndefined();
+  });
+
+  it('R2L-3: client.launch() on a stopped WebView client is refused and says so', async () => {
+    const onError = vi.fn();
+    const carrier = {};
+    const client = launch('tok', baseOptions({ carrier, onError }));
+    await client.stop();
+    client.launch();
+    expect(client.isLaunched()).toBe(false);
+    expect(getCarrierClient(carrier)).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+  });
+
+  it('R2L-4: the lifecycleEventsListener option sees Launching and Launched', () => {
+    const seen: string[] = [];
+    track('tok', baseOptions({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+  });
+
+  it('R2L-4: without a carrier option the WebView carrier is globalThis; a listener set before launch sees it', async () => {
+    const seen: string[] = [];
+    setProcessLifecycleEventsListener((type) => seen.push(type));
+    const { carrier: _omitted, ...withoutCarrier } = baseOptions();
+    const client = launch('tok', withoutCarrier);
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    await client.stop();
+    setProcessLifecycleEventsListener(null);
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('R2L-2: ReportHandler.after runs for a WebView report (an injected report pipeline), before it crosses the bridge', async () => {
+    const fake = fakeGlobal();
+    const client = track('tok', baseOptions({ global: fake.global }));
+    const order: string[] = [];
+    client.setReportHandler({
+      after: (request) => {
+        order.push(`after:${fake.msgs().filter((m) => m.k === 'entry' && m.t === 'crash').length}`);
+        request.report.labels = ['from-after'];
+      },
+    });
+    await client.logException(new Error('boom-after'));
+    expect(order).toEqual(['after:0']); // once, and BEFORE the crash entry reached native
+    expect(entriesOfType(fake.msgs(), 'crash').length).toBeGreaterThan(0);
   });
 });

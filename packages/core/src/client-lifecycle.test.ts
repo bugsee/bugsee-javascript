@@ -1,6 +1,6 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createClient } from './client';
+import { asInternalClient, createClient } from './client';
 import { BugseeError } from './errors';
 import { LifecycleEvents } from './lifecycle-events';
 import type { UploadPipeline } from './transport';
@@ -218,8 +218,17 @@ describe('lifecycle events — report pipeline', () => {
 describe('lifecycle events — emitLifecycleEvent hook', () => {
   it('forwards a hook-emitted event with its data to the listener', () => {
     const { client, events } = setup();
-    client.emitLifecycleEvent(LifecycleEvents.BeforeReportShown, { x: 1 });
+    asInternalClient(client).emitLifecycleEvent(LifecycleEvents.BeforeReportShown, { x: 1 });
     expect(events).toEqual([[LifecycleEvents.BeforeReportShown, { x: 1 }]]);
+  });
+
+  it('is NOT on the public surface (R2D-13): app code cannot fake SDK events', () => {
+    const { client, events } = setup();
+    expect('emitLifecycleEvent' in client).toBe(false);
+    expect((client as unknown as Record<string, unknown>).emitLifecycleEvent).toBeUndefined();
+    // …but a platform wrapper that spreads the client still reaches it through the internal view.
+    asInternalClient({ ...client }).emitLifecycleEvent(LifecycleEvents.AfterReportShown);
+    expect(events).toEqual([[LifecycleEvents.AfterReportShown, undefined]]);
   });
 });
 
@@ -278,16 +287,12 @@ describe('ReportHandler.after (Android onAfterReportCreated)', () => {
     expect(after).toHaveBeenCalledTimes(2);
   });
 
-  it('is not run when the report was never created: veto, injected pipeline, nothing to assemble with', async () => {
+  it('is not run when the report was never created: veto, nothing to report with (an injected pipeline DOES run it, R2L-2)', async () => {
     const after = vi.fn();
     // veto
     const vetoed = setup().client;
     vetoed.setReportHandler({ before: () => null, after });
     await vetoed.logException(new Error('boom'));
-    // no pipeline at all (an injected trigger pipeline that never assembles)
-    const injected = createClient({ triggerPipeline: { report: async () => ({ ok: true }) } });
-    injected.setReportHandler({ after });
-    await injected.logException(new Error('boom'));
     // nothing to assemble with
     const bare = createClient();
     bare.setReportHandler({ after });

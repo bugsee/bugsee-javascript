@@ -29,6 +29,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   ReportMarkerStoreToken,
   type Scheduler,
   type StoredEntry,
@@ -1548,5 +1549,65 @@ describe('launch — network capture wiring', () => {
     const existing = getOrCreateInterceptor('console', () => createConsoleInterceptor(), carrier);
     track('tok', baseOptions({ carrier }));
     expect(getCarrier(carrier).interceptors.get('console')).toBe(existing); // same instance, one patch
+  });
+});
+
+// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+  const run = async (withMarker: boolean, siblings = 1) => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, withMarker);
+    if (siblings > 1) await seedSibling(idb, 'deadsib2', 600, { m: 'pre-crash-2' }, withMarker);
+    const seen: string[] = [];
+    track(
+      'tok',
+      baseOptions({
+        transport: uploadTransport(),
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    return seen;
+  };
+
+  it('is emitted once, after Launched, when a dead sibling left an incident marker', async () => {
+    expect(await run(true)).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+      LifecycleEvents.RelaunchedAfterCrash,
+    ]);
+  });
+
+  it('is emitted ONCE however many dead siblings left an incident marker', async () => {
+    const seen = await run(true, 2);
+    expect(seen.filter((type) => type === LifecycleEvents.RelaunchedAfterCrash)).toHaveLength(1);
+  });
+
+  it('is NOT told to a client that has been stopped before the recovery got there', async () => {
+    const idb = new IDBFactory();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const seen: string[] = [];
+    const client = track(
+      'tok',
+      baseOptions({
+        transport: uploadTransport(),
+        platformType: 'service-worker',
+        clock: recoveryClock,
+        indexedDB: idb,
+        locks: fakeWebLocks(),
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await client.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT emitted when the dead sibling left only capture', async () => {
+    expect(await run(false)).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
   });
 });

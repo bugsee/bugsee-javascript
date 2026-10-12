@@ -26,6 +26,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   ReportMarkerStoreToken,
   type StoredEntry,
   serializeBundle,
@@ -2321,5 +2322,88 @@ describe('flush on page hide (Wave 6.2)', () => {
     await launchTracked('tok', baseOptions({ window: win.win, captureStore, onError }));
     expect(() => win.emit('pagehide', {})).not.toThrow();
     expect(onError).toHaveBeenCalled();
+  });
+});
+
+// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+  const run = async (seed: (idb: IDBFactory, locks: LockManagerLike) => Promise<void>) => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    await seed(idb, locks);
+    const seen: string[] = [];
+    const { fn: transport } = recordingTransport();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    // let the dead-sibling recovery finish (its marker is swept when it is done)
+    await new Promise((r) => setTimeout(r, 50));
+    return seen;
+  };
+
+  it('is emitted once, after Launched, when a dead sibling left an incident marker', async () => {
+    const seen = await run(async (idb) => {
+      await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+      await seedSibling(idb, 'deadsib2', 600, { m: 'pre-crash-2' }, true);
+    });
+    expect(seen).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+      LifecycleEvents.RelaunchedAfterCrash,
+    ]);
+  });
+
+  it('is NOT emitted for a dead sibling with capture but no incident marker', async () => {
+    const seen = await run(async (idb) => {
+      await seedSibling(idb, 'deadsib', 500, { m: 'just capture' }, false);
+    });
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT emitted for a LIVE sibling that has an incident marker', async () => {
+    const seen = await run(async (idb, locks) => {
+      createWebLockLiveness(locks).holdSelf(instanceLockName('tok', 'livesib'));
+      await seedSibling(idb, 'livesib', 700, { m: 'live' }, true);
+    });
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+  });
+
+  it('is NOT told to a client that has been stopped before the recovery got there', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const seen: string[] = [];
+    const client = await launchTracked(
+      'tok',
+      baseOptions({
+        transport: recordingTransport().fn,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        lifecycleEventsListener: (type) => seen.push(type),
+      }),
+    );
+    await client.stop(); // the recovery is still reading IndexedDB: it will find the marker after this
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
+    expect(seen).toContain(LifecycleEvents.Stopped);
+  });
+
+  it('is NOT emitted on a first launch with nothing behind it', async () => {
+    expect(await run(async () => {})).toEqual([
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
   });
 });

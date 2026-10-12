@@ -1,4 +1,3 @@
-import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import process from 'node:process';
 import {
@@ -12,6 +11,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
   BUGSEE_SDK_VERSION,
   type BugseeApi,
   type BugseeClient,
@@ -43,6 +43,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   type LifecycleEventsListener,
   type NativeCrashSource,
   type ReconcileOwnQueue,
@@ -749,6 +750,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
+    // stop() tears down what this tier armed (heartbeat, exit/signal handlers, server instrumentation, the
+    // carrier slot), so a stopped client must not be restarted in place: see `markStopped` below (R2L-3).
+    restartable: false,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),
@@ -953,6 +957,13 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
               : {}),
             ...(options.onError !== undefined ? { onError: options.onError } : {}),
             ...(reconcileOwnQueue !== undefined ? { reconcileOwnQueue } : {}),
+            // R2D-2: evidence that the previous run did not stop cleanly. Told only to a client that is
+            // still running: one that has been stopped since has already said Stopped.
+            onCrashEvidence: () => {
+              if (client.isLaunched()) {
+                asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+              }
+            },
           })
       : (): Promise<void> => Promise.resolve();
   // Kept (not `void`ed): stop() must not mark this instance's subtree recoverable while the recovery can
@@ -1138,10 +1149,12 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // is undelivered (retained bundles, pending incident markers) and remove the rest. A timed-out drain is
   // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
   //
-  // The marker is written only when it can still be TRUE: this is the latest stop AND no `client.launch()`
-  // happened since (both are `stopGeneration`: the launch override below bumps it — a relaunch re-opens the
-  // same subtree for a live writer, and marking it would let the next launch claim and DELETE it under that
-  // writer), and the launch-time recovery has settled (it may still be staging bundles into the subtree).
+  // The marker is written only when it can still be TRUE: this is the latest stop (`stopGeneration`), and the
+  // launch-time recovery has settled (it may still be staging bundles into the subtree). A stopped client
+  // never comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
+  // refused — R2L-3): restarting only core would bring capture back with the heartbeat, the exit/signal
+  // handlers, the server instrumentation and the carrier slot all still torn down, and the subtree
+  // marked recoverable under a live writer. A new client is built by `launch(appToken)` / `relaunch()`.
   let stopGeneration = 0;
   const markStopped = (drained: boolean, generation: number): void => {
     if (
@@ -1233,19 +1246,6 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       return stopCore(timeout)
         .then((drained) => finishStop(drained, generation, timeout))
         .finally(settle);
-    },
-    launch(): void {
-      // A relaunch of this client re-opens the subtree for a live writer: retire any in-flight stop's
-      // pending marker and remove one a settled stop already wrote (L5).
-      stopGeneration++;
-      if (instanceLayout !== undefined) {
-        try {
-          rmSync(instanceLayout.stoppedFile, { force: true });
-        } catch (error) {
-          options.onError?.(error);
-        }
-      }
-      client.launch();
     },
   };
   setCarrierClient(publicClient, carrier);

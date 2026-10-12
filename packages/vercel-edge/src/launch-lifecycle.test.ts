@@ -5,7 +5,9 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   relaunchWith,
+  setProcessLifecycleEventsListener,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +29,7 @@ const okTransport = (): HttpTransport =>
 const live: Bugsee[] = [];
 afterEach(async () => {
   await Promise.all(live.splice(0).map((c) => c.stop(0)));
+  delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 const opts = (over: Partial<BugseeEdgeLaunchOptions> = {}): BugseeEdgeLaunchOptions => ({
   transport: okTransport(),
@@ -101,5 +104,64 @@ describe('vercel-edge launch options introspection (L9)', () => {
       [BugseeOption.Duration]: 30,
     });
     expect(client.getHostLaunchOptions()).not.toHaveProperty([BugseeOption.CaptureSystemEvents]);
+  });
+});
+
+describe('R2L-3 — launch() on a stopped edge client is refused', () => {
+  it('reports through onError, starts nothing, leaves the carrier slot free for a NEW client', async () => {
+    const carrier = {};
+    const onError = vi.fn();
+    const first = track(opts({ carrier, onError }));
+    await first.stop();
+    first.launch();
+    expect(first.isLaunched()).toBe(false);
+    expect(getCarrier(carrier).client).toBeUndefined();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+    const second = track(opts({ carrier }));
+    expect(getCarrier(carrier).client).toBe(second);
+  });
+});
+
+describe('R2L-4 — the edge isolate observes its own lifecycle', () => {
+  it('the lifecycleEventsListener option sees Launching and Launched', () => {
+    const seen: string[] = [];
+    track(opts({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+  });
+
+  it('without a carrier option the isolate carrier is globalThis: a listener set BEFORE launch sees it, and survives a relaunch', async () => {
+    const seen: string[] = [];
+    setProcessLifecycleEventsListener((type) => seen.push(type));
+    track({ transport: okTransport(), detectCrashes: false });
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    seen.length = 0;
+    const second = await relaunchWith(launchEdge, {
+      transport: okTransport(),
+      detectCrashes: false,
+    });
+    live.push(second);
+    expect(seen).toEqual([
+      LifecycleEvents.Stopping,
+      LifecycleEvents.Stopped,
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
+  });
+
+  it('a blackout carries across a relaunch instead of ending at the new client', async () => {
+    const carrier = {};
+    const first = track(opts({ carrier }));
+    first.startBlackout();
+    const second = await relaunchWith(launchEdge, opts({ carrier }), carrier);
+    live.push(second);
+    expect(second.isBlackout()).toBe(true);
+  });
+
+  it('RelaunchedAfterCrash is never emitted on an edge isolate (nothing durable to find evidence in)', () => {
+    const seen: string[] = [];
+    track(opts({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).not.toContain(LifecycleEvents.RelaunchedAfterCrash);
   });
 });

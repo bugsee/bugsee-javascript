@@ -29,7 +29,13 @@ import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
-import { getCarrierBlackout, getCarrierLifecycleSlot, setCarrierBlackout } from './carrier';
+import {
+  getCarrier,
+  getCarrierBlackout,
+  getCarrierLifecycleSlot,
+  getCarrierRelaunching,
+  setCarrierBlackout,
+} from './carrier';
 import { type Clock, ClockToken, createSystemClock } from './clock';
 import {
   type CaptureDataEntry,
@@ -309,11 +315,6 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * listener (calling `launch()`, `stop()`, `startBlackout()`...) is queued until the listener returns.
    */
   setLifecycleEventsListener(listener: LifecycleEventsListener | null): void;
-  /**
-   * Emit a lifecycle event from a platform tier that owns the milestone (the browser report dialog
-   * emits BeforeReportShown / AfterReportShown through this). Never throws.
-   */
-  emitLifecycleEvent(eventType: LifecycleEventType, data?: unknown): void;
 
   // Manual capture entry points (Android parity, §7.1). Each pushes a CaptureDataEntry.
   addBreadcrumb(breadcrumb: BreadcrumbInput): void;
@@ -402,7 +403,20 @@ export interface InternalBugseeClient extends BugseeClient {
   logException(error: unknown, options?: InternalLogExceptionOptions): Promise<UploadResult>;
   upload(options?: InternalUploadOptions): Promise<UploadResult>;
   prepareUpload(): InternalPreparedUpload | null;
+  /**
+   * Emit a lifecycle event from a platform tier that owns the milestone (the browser report dialog
+   * emits BeforeReportShown / AfterReportShown through this). Never throws. Internal: on the PUBLIC
+   * surface an application could fake SDK events.
+   */
+  emitLifecycleEvent(eventType: LifecycleEventType, data?: unknown): void;
 }
+
+/**
+ * What `createClient` returns: the internal client WITHOUT `emitLifecycleEvent`, which exists only behind
+ * {@link asInternalClient} so application code cannot fake SDK events.
+ * @internal
+ */
+export type CreatedClient = Omit<InternalBugseeClient, 'emitLifecycleEvent'>;
 
 /**
  * View a public client through its internal surface. A type-level cast only: every client the SDK
@@ -420,7 +434,10 @@ export function asInternalClient(client: BugseeClient): InternalBugseeClient {
 // forging `code_dialog`). `Symbol.for`, so two copies of this module (the ESM and CJS builds) agree on it;
 // an enumerable own property, so a platform wrapper that spreads the client carries it along.
 const INTERNAL_METHODS = Symbol.for('com.bugsee.internal-client');
-type InternalMethods = Pick<InternalBugseeClient, 'logException' | 'upload' | 'prepareUpload'>;
+type InternalMethods = Pick<
+  InternalBugseeClient,
+  'logException' | 'upload' | 'prepareUpload' | 'emitLifecycleEvent'
+>;
 
 /** A copy of `options` without `keys`; anything that is not an object (null, a string) counts as none. */
 function withoutWireOptions<T>(options: T, ...keys: string[]): T | undefined {
@@ -435,14 +452,16 @@ function withoutWireOptions<T>(options: T, ...keys: string[]): T | undefined {
 }
 
 /** The public face of a freshly built client: the same methods, minus the wire-level options. */
-function exposePublicSurface(client: InternalBugseeClient): InternalBugseeClient {
+function exposePublicSurface(client: InternalBugseeClient): CreatedClient {
   const internal: InternalMethods = {
     logException: client.logException,
     upload: client.upload,
     prepareUpload: client.prepareUpload,
+    emitLifecycleEvent: client.emitLifecycleEvent,
   };
+  const { emitLifecycleEvent: _internalOnly, ...publicMethods } = client;
   return {
-    ...client,
+    ...publicMethods,
     logException: (error, options) =>
       internal.logException(error, withoutWireOptions(options, 'mechanism')),
     upload: (options) => internal.upload(withoutWireOptions(options, 'trigger')),
@@ -456,7 +475,7 @@ function exposePublicSurface(client: InternalBugseeClient): InternalBugseeClient
           };
     },
     [INTERNAL_METHODS]: internal,
-  } as InternalBugseeClient;
+  } as CreatedClient;
 }
 
 /**
@@ -581,6 +600,15 @@ export interface CreateClientOptions {
    */
   lifecycleEventsListener?: LifecycleEventsListener;
   /**
+   * Whether `launch()` may start this client again after `stop()`. Default `true` (the bare kernel). The
+   * platform composition roots pass `false`: their `stop()` tears down what the platform armed (exit and
+   * signal handlers, heartbeat, server instrumentation, page-hide flush, the carrier slot), and a bare core
+   * restart would bring capture back WITHOUT any of it (a live instance judged dead, two clients per
+   * process). A refused `launch()` reports through `onError` and changes nothing; build a new client with the
+   * platform's `launch(appToken)` / `relaunch()` instead.
+   */
+  restartable?: boolean;
+  /**
    * Internal error sink (§15.1). Receives provider-start failures (so launch() never throws) and
    * hub-listener / operation-observer failures. Platform tiers wire this to debug.warn. Default no-op.
    */
@@ -594,7 +622,7 @@ interface ReportIdentity {
   userIdentifier: string | null;
 }
 
-export function createClient(options: CreateClientOptions = {}): InternalBugseeClient {
+export function createClient(options: CreateClientOptions = {}): CreatedClient {
   const clock = options.clock ?? createSystemClock();
   const isEnabled = options.isEnabled ?? (() => true);
   const onError = options.onError ?? (() => {});
@@ -657,7 +685,11 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     if (processCarrier !== undefined) {
       setCarrierBlackout(active, processCarrier);
     }
-    lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
+    // A blackout can only be ENDED while the client is not launched (R2L-7): that clears the carried state
+    // quietly, since nothing is being captured for the events to describe.
+    if (launched) {
+      lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
+    }
   });
   // The active-request context provider (framework adapters). When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.
@@ -804,6 +836,35 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
   if (uploadPipeline !== undefined) {
     services.addService(defineService(UploadPipelineToken, () => uploadPipeline));
   }
+  // relaunch() hands what the old client could not deliver (an offline notify() queue) to the client it builds
+  // (R2L-6). Only while a relaunch is in progress: a plain stop() keeps nothing on the carrier, which sits on
+  // `globalThis` and would otherwise hold user-identifying notifications for a process that never relaunches.
+  const stashNotifyBacklog = (): void => {
+    if (
+      processCarrier !== undefined &&
+      notifyRelay !== undefined &&
+      getCarrierRelaunching(processCarrier)
+    ) {
+      const backlog = notifyRelay.take();
+      if (backlog.length > 0) {
+        getCarrier(processCarrier).notifyBacklog = [
+          ...(getCarrier(processCarrier).notifyBacklog ?? []),
+          ...backlog,
+        ];
+      }
+    }
+  };
+  const adoptNotifyBacklog = (): void => {
+    if (processCarrier === undefined || notifyRelay === undefined) {
+      return;
+    }
+    const carrier = getCarrier(processCarrier);
+    if (carrier.notifyBacklog !== undefined) {
+      const backlog = carrier.notifyBacklog;
+      carrier.notifyBacklog = undefined;
+      notifyRelay.adopt(backlog);
+    }
+  };
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
     // The captured data for a report: the exporter's drain plus the report-time snapshot sources (e.g. the
@@ -979,10 +1040,10 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     }, forget);
     return report;
   };
-  // Drain in-flight reports (each resolves post-upload) then any directly-enqueued uploads, bounded
-  // by `timeout` so a hung assemble/upload can't block shutdown. Resolves true if drained in time.
-  const drainPending = (timeout?: number): Promise<boolean> => {
-    const drained = Promise.allSettled([...pendingReports]).then(async () => {
+  // Start draining in-flight reports (each resolves post-upload) then any directly-enqueued uploads. The
+  // returned promise is the REAL drain: it settles when the work does, however long that takes.
+  const startDrain = (timeout?: number): Promise<boolean> =>
+    Promise.allSettled([...pendingReports]).then(async () => {
       // Notifications go out alongside the report uploads; either one still pending makes this false.
       const [uploaded, notified] = await Promise.all([
         uploadPipeline?.flush(timeout) ?? true,
@@ -990,11 +1051,17 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       ]);
       return uploaded && notified;
     });
-    if (timeout === undefined) {
-      return drained;
-    }
-    return Promise.race([drained, sleep(timeout).then(() => false)]);
-  };
+  // Give up on `drained` after `timeout` (resolving false) so a hung assemble/upload can't block shutdown;
+  // the drain itself keeps running. Resolves true if drained in time.
+  const boundDrain = (drained: Promise<boolean>, timeout?: number): Promise<boolean> =>
+    timeout === undefined ? drained : Promise.race([drained, sleep(timeout).then(() => false)]);
+  const drainPending = (timeout?: number): Promise<boolean> =>
+    boundDrain(startDrain(timeout), timeout);
+  // The REAL drain of the latest stop(), kept after it settles (R2L-1): a repeat stop() while it is still
+  // running, or after a bounded stop() gave up on it, must answer for THAT drain. Answering "drained" at once
+  // let a platform mark the instance's data recoverable (node `.stopped`) or release its lock (browser,
+  // worker) while the first stop's upload was still going. Cleared by launch().
+  let stopDrain: Promise<boolean> | undefined;
 
   // Halt the live capture machinery (tick + capture/detection coordinators). Shared by stop() and the
   // kill-state; the caller decides whether to also drain pending uploads.
@@ -1019,6 +1086,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     if (launched) {
       // The same transition a stop() makes, announced the same way (L12): Stopping, then Stopped, with the
       // state already settled when each is delivered. There is no drain to wait for.
+      generation += 1; // a transition like stop(): any drain started before it is stale
       launched = false;
       launching = false;
       haltCapture();
@@ -1101,6 +1169,15 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       } catch (error) {
         onError(error);
         markerDurable = false;
+      }
+    }
+    if (options.triggerPipeline !== undefined) {
+      // An injected pipeline (Electron renderer, WebView) never goes through `assembleReport`, which is where
+      // `after` runs for the built one (R2L-2). The report exists and `before` has had its say: same moment.
+      try {
+        filters.report?.after?.(handled);
+      } catch (error) {
+        onErrorSafe(error);
       }
     }
     const result = track(triggerPipeline?.report(handled) ?? Promise.resolve({ ok: false }));
@@ -1480,10 +1557,10 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       }
     },
 
+    // Allowed while stopped (R2L-7), unlike start: an app that stopped during a blackout must be able to lift
+    // it, or the carried process flag would make the NEXT launch start dark with no event to say so.
     endBlackout(): void {
-      if (launched) {
-        blackout.end();
-      }
+      blackout.end();
     },
 
     isBlackout(): boolean {
@@ -1513,6 +1590,14 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       if (killed || launched) {
         return;
       }
+      if (options.restartable === false && (stopped || stopping)) {
+        onError(
+          new Error(
+            'Bugsee: launch() was called on a client that has been stopped; build a new one with the platform launch(appToken) or relaunch()',
+          ),
+        );
+        return;
+      }
       if (stopping) {
         // A launch while the previous stop() is still draining ends that stop: from here on the client is
         // running, so the stale drain must not report Stopped (or suspend anything) when it finishes (L4).
@@ -1531,7 +1616,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       if (mine !== generation) {
         return; // a listener stopped the client before it started
       }
+      stopDrain = undefined; // this launch starts a fresh life: a repeat stop() answers for ITS drain
       notifyRelay?.resume(); // a stop() suspended it; what was kept goes out now
+      adoptNotifyBacklog();
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {
@@ -1565,7 +1652,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
 
     stop(timeout?: number): Promise<boolean> {
       if (!launched) {
-        return Promise.resolve(true);
+        // Already stopped, or stopping: answer for the drain of THAT stop (R2L-1), within this call's own bound.
+        // Never started, or killed (no drain was started): there is nothing left to wait for.
+        return stopDrain !== undefined ? boundDrain(stopDrain, timeout) : Promise.resolve(true);
       }
       generation += 1;
       const mine = generation;
@@ -1575,7 +1664,9 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       haltCapture(); // also valid mid-launch: a stop from the Launching listener has nothing started yet
       stopping = true;
       lifecycle.emit(LifecycleEvents.Stopping);
-      return drainPending(timeout)
+      const realDrain = startDrain(timeout);
+      stopDrain = realDrain;
+      return boundDrain(realDrain, timeout)
         .finally(() => {
           // Only the LATEST transition owns these: a launch() that superseded this stop has already cleared
           // `stopping`, and its notify relay must keep running (L4).
@@ -1584,6 +1675,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
             // A notification still waiting (offline) keeps its place for a re-launch but stops retrying: a
             // stopped SDK must not keep a timer, and so a request, alive.
             notifyRelay?.suspend();
+            stashNotifyBacklog();
           }
         })
         .then((drained) => {

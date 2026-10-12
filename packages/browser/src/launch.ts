@@ -49,6 +49,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   type LifecycleEventsListener,
   ReportMarkerStoreToken,
   recoverReports,
@@ -638,6 +639,9 @@ async function buildLaunch(
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
+    // stop() tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
+    // stopped client must not be restarted in place (R2L-3): a new one comes from `launch(appToken)`/`relaunch()`.
+    restartable: false,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
       : {}),
@@ -831,8 +835,10 @@ async function buildLaunch(
   // once even when the sibling left BOTH a staged bundle and that incident's marker (the SEV1
   // double-upload — reconciled in browser-utils).
   let recoverySettled = false;
-  // Bumped by every stop() and every client.launch(): a stop may release the instance's lock only if it is
-  // still the latest transition when it gets there (L7).
+  let crashSignalled = false; // RelaunchedAfterCrash is told at most once per launch
+  // Bumped by every stop(): a stop may release the instance's lock only if it is still the latest stop when it
+  // gets there (L7). A stopped client cannot be launched again (`restartable: false`), so a stop is the only
+  // transition that can overtake another.
   let lifecycleEpoch = 0;
   const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
@@ -849,6 +855,13 @@ async function buildLaunch(
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                // R2D-2: a dead sibling that left an incident marker behind never settled that incident, which is
+                // the honest evidence this tier has that the previous run did not end cleanly. (A tab closed
+                // normally after a failed upload leaves one too, so this can over-report; it never invents one.)
+                if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
+                  crashSignalled = true;
+                  asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+                }
                 const backend = createIdbChunkBackend(captureView, {
                   generation: -1,
                   cleanOtherGenerations: false,
@@ -939,7 +952,8 @@ async function buildLaunch(
     setUserIdentifier: (email) => setUserIdentifier(email),
     clearUserIdentifier: () => clearUserIdentifier(),
     sdkVersion: SDK_VERSION,
-    emitLifecycleEvent: (eventType, data) => client.emitLifecycleEvent(eventType, data),
+    emitLifecycleEvent: (eventType, data) =>
+      asInternalClient(client).emitLifecycleEvent(eventType, data),
     ui: {
       summaryRequired: reportUi.get(BugseeOption.ReportingUiSummaryRequired, false),
       descriptionRequired: reportUi.get(BugseeOption.ReportingUiDescriptionRequired, false),
@@ -958,12 +972,6 @@ async function buildLaunch(
     // Android applies `ReportingDefaultBugPriority` to every bug report, not only the dialog's.
     upload: (uploadOptions) =>
       client.upload({ ...uploadOptions, severity: uploadOptions?.severity ?? defaultSeverity }),
-    launch(): void {
-      // A relaunch of this client while a stop is still draining makes the instance live again: its
-      // lock and connections must outlive that stop (L7).
-      lifecycleEpoch++;
-      client.launch();
-    },
     async stop(timeout?: number): Promise<boolean> {
       const wasLaunched = client.isLaunched();
       const epoch = ++lifecycleEpoch;

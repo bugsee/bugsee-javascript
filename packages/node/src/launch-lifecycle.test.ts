@@ -92,7 +92,7 @@ const opts = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => (
 
 const live: Bugsee[] = [];
 afterEach(async () => {
-  await Promise.all(live.splice(0).map((c) => c.stop()));
+  await Promise.all(live.splice(0).map((c) => c.stop(100))); // bounded: a repeat stop() now answers for a hung drain (R2L-1)
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -266,45 +266,42 @@ describe('a clean stop marks its on-disk subtree recoverable, an unclean one doe
     expect(stopped(dir)).toBe(false);
   });
 
-  it('L5: stop() then client.launch() before the drain settles never marks the LIVE subtree', async () => {
-    const dir = dirFor();
-    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
-    const stopping = client.stop();
-    client.launch(); // relaunched before the drain settles: the instance is live again
-    await stopping;
-    expect(client.isLaunched()).toBe(true);
-    expect(stopped(dir)).toBe(false); // a next launch would claim + delete a live writer's subtree
-    live.push(client);
-  });
-
-  it('L5: a client.launch() after a SETTLED stop removes the stale marker', async () => {
-    const dir = dirFor();
-    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
-    await client.stop();
-    expect(stopped(dir)).toBe(true);
-    client.launch();
-    expect(stopped(dir)).toBe(false);
-    live.push(client);
-  });
-
-  it('L5: a failure removing the stale marker on relaunch goes to onError and the launch still proceeds', () => {
+  it('R2L-3: stop() then client.launch() before the drain settles is refused, and the stop still marks its subtree', async () => {
     const dir = dirFor();
     const onError = vi.fn();
     const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED, onError }));
-    mkdirSync(join(subtree(dir), '.stopped')); // a directory cannot be removed as a file
-    client.launch();
-    expect(onError).toHaveBeenCalled();
-    expect(client.isLaunched()).toBe(true);
-    live.push(client);
+    const stopping = client.stop();
+    client.launch(); // refused: the instance is going away, not coming back (core would restart without the heartbeat/handlers)
+    await stopping;
+    expect(client.isLaunched()).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/stopped/) }),
+    );
+    expect(stopped(dir)).toBe(true); // nothing is writing into the subtree any more, so it IS recoverable
   });
 
-  it('L5: a second stop() after a client.launch() marks the subtree again once it drains', async () => {
+  it('R2L-3: a client.launch() after a SETTLED stop is refused and leaves the marker', async () => {
     const dir = dirFor();
-    const client = launch('tok', opts({ dataDir: dir, instanceIdentity: FIXED }));
+    const client = launch(
+      'tok',
+      opts({ dataDir: dir, instanceIdentity: FIXED, onError: () => {} }),
+    );
+    await client.stop();
+    expect(stopped(dir)).toBe(true);
+    client.launch();
+    expect(stopped(dir)).toBe(true);
+    expect(client.isLaunched()).toBe(false);
+  });
+
+  it('R2L-1: a second stop() after a refused client.launch() is the same, already settled, drain', async () => {
+    const dir = dirFor();
+    const client = launch(
+      'tok',
+      opts({ dataDir: dir, instanceIdentity: FIXED, onError: () => {} }),
+    );
     await client.stop();
     client.launch();
-    expect(stopped(dir)).toBe(false);
-    expect(await client.stop()).toBe(true); // a repeat stop takes the already-torn-down path
+    expect(await client.stop()).toBe(true);
     expect(stopped(dir)).toBe(true);
   });
 
@@ -371,7 +368,7 @@ describe('relaunch', () => {
 
   it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
     const first = launch('tok-1', opts({ captureLogs: false }));
-    const second = await relaunch(opts());
+    const second = await relaunch();
     live.push(second);
     expect(second).not.toBe(first);
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
@@ -408,11 +405,11 @@ describe('relaunch', () => {
     ]);
   });
 
-  it('L18: the process carrier retains the integration seams but no host Bugsee option', () => {
+  it('L18: the process carrier retains the integration seams and deployment identity but no host Bugsee option', () => {
     launch('tok-1', opts({ captureLogs: false, endpoint: 'https://x.test' }));
     const retained = getCarrier().lastLaunch?.options as Record<string, unknown>;
     expect(Object.keys(retained)).not.toContain('captureLogs');
-    expect(Object.keys(retained)).not.toContain('endpoint');
+    expect(retained.endpoint).toBe('https://x.test'); // deployment identity is kept (R2P-3)
     expect(getCarrier().lastLaunch?.appToken).toBe('tok-1');
   });
 

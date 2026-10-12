@@ -19,6 +19,7 @@ import {
   installNetworkCapture,
 } from '@bugsee/capture';
 import {
+  asInternalClient,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
   BugseeStatus,
@@ -44,6 +45,8 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
+  type LifecycleEventsListener,
   ReportMarkerStoreToken,
   recoverReports,
   resolveLaunchOptions,
@@ -175,6 +178,14 @@ export interface BugseeWorkerLaunchOptions {
   systemProbe?: WorkerProbe;
   /** Carrier host for the process-global singletons; injectable for tests. Default `globalThis`. */
   carrier?: object;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives a relaunch. `RelaunchedAfterCrash`
+   * is told when the launch recovery finds a dead sibling's unsettled incident marker. The same listener can
+   * be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
   /** Web Locks manager for multi-instance liveness. Default `navigator.locks` (degrades when absent). */
   locks?: LockManagerLike;
   /** IDBFactory for the durable queue; injectable for tests. Default `globalThis.indexedDB`. */
@@ -310,6 +321,15 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
       : createMemoryCaptureStore(storeBounds));
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so a listener set
+    // by option or by `setProcessLifecycleEventsListener` is the same one every client of the worker sees (R2L-4).
+    carrier: carrier ?? globalThis,
+    // stop() releases the carrier slot, the liveness lock and the IndexedDB handles, so a stopped client must
+    // not be restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    restartable: false,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },
@@ -376,6 +396,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // hydrated marker store plus the incidents its bundle-queue leg already settled with, so an incident
   // that left BOTH a staged bundle and a marker (the SEV1 double-upload) is delivered exactly once.
   let recoverySettled = false;
+  let crashSignalled = false; // RelaunchedAfterCrash is told at most once per launch
   const recoveryDone = runLaunchRecovery({
     ...(durable !== undefined ? { queue: durable } : {}),
     // An explicit `bundleStore` bypasses coexistence: it is the integrator's own and stable across
@@ -391,6 +412,12 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
+                // R2D-2: an unsettled incident marker left by a dead sibling is this tier's honest evidence that
+                // the previous activation did not end cleanly (told at most once, to a client still running).
+                if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
+                  crashSignalled = true;
+                  asInternalClient(client).emitLifecycleEvent(LifecycleEvents.RelaunchedAfterCrash);
+                }
                 await recoverReports({
                   backend: createIdbChunkBackend(captureView, {
                     generation: -1,
@@ -416,15 +443,11 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
   // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
   const stopCore = client.stop;
-  // Bumped by every stop() and every client.launch(): a stop may release the instance's lock only if it is
-  // still the latest transition when it gets there.
+  // Bumped by every stop(): a stop may release the instance's lock only if it is still the latest stop when it
+  // gets there. A stopped client cannot be launched again (`restartable: false`).
   let lifecycleEpoch = 0;
   const publicClient: Bugsee = {
     ...client,
-    launch(): void {
-      lifecycleEpoch++;
-      client.launch();
-    },
     async stop(timeout?: number): Promise<boolean> {
       const wasLaunched = client.isLaunched();
       const epoch = ++lifecycleEpoch;
@@ -438,6 +461,15 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         drained = await stopCore(timeout);
         return drained;
       } finally {
+        // Make the data durable first (a launched client only: a killed one has no live store to flush), as the
+        // browser tier does (R2L-10): closing IndexedDB under the capture store's write queue loses its tail.
+        if (wasLaunched) {
+          try {
+            await captureStore.flush?.();
+          } catch (error) {
+            options.onError?.(error);
+          }
+        }
         // The launch-time dead-sibling scan may still be reading IndexedDB; closing under it would only
         // make it reopen the connection. Wait for it, bounded by the caller's own deadline.
         let timer: ReturnType<typeof setTimeout> | undefined;

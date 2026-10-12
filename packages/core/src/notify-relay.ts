@@ -98,6 +98,13 @@ export interface NotifyRelay {
   resume(): void;
   /** Number of notifications not yet delivered: queued, or in a request that has not answered. */
   pending(): number;
+  /**
+   * Remove and return the QUEUED notifications (not the ones in a request that has not answered): the
+   * hand-over of a client that is being replaced by `relaunch()`. Cancels the scheduled send and backoff.
+   */
+  take(): NotifyItem[];
+  /** Put notifications handed over by {@link NotifyRelay.take} ahead of the queue, under the same caps. */
+  adopt(items: readonly NotifyItem[]): void;
 }
 
 const jsonBytes = (item: NotifyItem): number => utf8ByteLength(JSON.stringify(item));
@@ -397,6 +404,23 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
 
     pending(): number {
       return queue.length + inFlightItems;
+    },
+
+    take(): NotifyItem[] {
+      const taken = queue;
+      queue = [];
+      clearFlushTimer();
+      clearRetryTimer();
+      return taken;
+    },
+
+    adopt(items: readonly NotifyItem[]): void {
+      if (killed || items.length === 0) {
+        return;
+      }
+      queue = [...items, ...queue];
+      trim();
+      scheduleFlush();
     },
   };
 }
