@@ -1,5 +1,25 @@
 # @bugsee/core
 
-The SDK kernel (tier 1, design §5/§7/§16): the Client composition root, the single global Environment, event hubs + EventEmitter, the Interceptor/CaptureProvider/DetectionProvider contracts + provider base classes + coordinators, the extension registry, the capture aggregator over a pluggable CaptureStore (ring-buffer-backed in-memory default), the report trigger + upload pipelines, and BundleWriter. Runtime-portable: no DOM/Node/Bun globals are imported unconditionally.
+The kernel of the Bugsee JavaScript SDK: the client, capture aggregation and storage, report and upload pipelines, and the extension registry.
 
-**Status:** implemented (kernel). Built test-first per `docs/implementation-standards.md`. Platform-specific concerns (interceptors/providers, BugseeApi/BundleUploader transports, EnvironmentEnvelope construction) live in the platform tiers.
+Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
+
+This is an internal building block of the Bugsee SDK, not intended to be installed directly. Install the umbrella `@bugsee/bugsee`, or a platform package such as `@bugsee/browser` or `@bugsee/node` instead.
+
+## What it contains
+
+- The `Client` and the launch-option resolver.
+- The capture aggregator, capture stores, bundle writer and durable bundle queue.
+- Trigger and upload pipelines, plus the interceptor and event-emitter base classes.
+- Runtime-portable: it reaches runtime globals only through injected seams, so the same code runs in browsers, Node.js, Bun, Deno and edge runtimes.
+
+Every platform and adapter package (`@bugsee/browser`, `@bugsee/node`, `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, the framework adapters and others) depends on it. Its API is internal and may change between releases.
+
+## Links
+
+- Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/core
+- Bugsee: https://bugsee.com
+
+## License
+
+MIT. See the LICENSE file.
