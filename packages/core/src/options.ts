@@ -103,8 +103,8 @@ export const FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION = {
 } as const;
 
 /**
- * `boolean | {…option bag}` that is on by default (browser `replay`, whose masking is fail-closed on its own):
- * an invalid value keeps the default and is reported; it must never throw (`replay: null`, R3V-3).
+ * `boolean | {…option bag}` whose default is the SAFE side: an invalid value keeps the default and is reported;
+ * it must never throw (`replay: null`, R3V-3).
  */
 export const BOOLEAN_OR_BAG_OPTION = {
   normalize: normalizeBooleanOrBag,

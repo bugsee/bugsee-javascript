@@ -27,9 +27,12 @@ export function launch(appToken: string, options: BugseeEdgeLaunchOptions = {}):
   return launchEdge(appToken, {
     platformType: 'workers',
     asyncLocalStorage: new AsyncLocalStorage(),
-    // Durable Objects for different customers share one isolate and therefore one capture ring; partition
-    // by tenant so an incident in one cannot upload another's data (SEV1 #2).
-    partitionCaptureByTenant: true,
     ...options,
+    // Durable Objects for different customers share one isolate and therefore one capture ring; partition
+    // by tenant so an incident in one cannot upload another's data (SEV1 #2). The default applies ONLY for an
+    // absent/`undefined` value and is placed AFTER the spread: an explicit `{partitionCaptureByTenant: undefined}`
+    // would otherwise override it (R4V-1). Any other value is judged by launchEdge (fail ON + onError).
+    partitionCaptureByTenant:
+      options.partitionCaptureByTenant === undefined ? true : options.partitionCaptureByTenant,
   });
 }

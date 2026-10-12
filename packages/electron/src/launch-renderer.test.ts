@@ -23,7 +23,10 @@ function fakeLaunch() {
     // What the real client does: refused while not launched; the core state change; events from the
     // state change unless it is silent.
     isLaunched: () => true,
-    startBlackout: () => blackout.start(),
+    // The core client's own methods: start is refused while not launched (end is allowed, R2L-7).
+    startBlackout: () => {
+      if (client.isLaunched()) blackout.start();
+    },
     endBlackout: () => blackout.end(),
     isBlackout: () => blackout.isActive(),
     emitLifecycleEvent: (type: string) => lifecycle.push(type.replace(/^.*Blackout/, '')),
@@ -63,6 +66,8 @@ function minimalClient(): Bugsee {
     stop: () => Promise.resolve(true),
     getService: (token: unknown) => (token === BlackoutToken ? blackout : undefined),
     isLaunched: () => true,
+    startBlackout: () => {},
+    endBlackout: () => {},
     emitLifecycleEvent: () => {},
   } as unknown as Bugsee;
 }
@@ -222,7 +227,9 @@ describe('resolveRendererBridge', () => {
     g.__bugseeElectron = {
       post: (raw) => posts.push(raw),
       sendHello: (raw) => hellos.push(raw),
-      onControl: (h) => handlers.push(h),
+      onControl: (h) => {
+        handlers.push(h);
+      },
     };
     const b = resolveRendererBridge();
     b.post('p');
@@ -501,7 +508,9 @@ describe('launchRenderer - one instance per page (R3V-6)', () => {
     const bridge: BugseeElectronBridge = {
       post: () => {},
       sendHello: (raw) => hellos.push(raw),
-      onControl: (h) => handlers.push(h),
+      onControl: (h) => {
+        handlers.push(h);
+      },
     };
     const first = await launchRenderer('tok', { launch: f.launch, bridge });
     const second = await launchRenderer('tok', { launch: f.launch, bridge });
@@ -634,5 +643,121 @@ describe('launchRenderer - invalid startInBlackout is dark (R3V-2)', () => {
       expect(f.blackout.isActive()).toBe(false);
       delete (globalThis as unknown as Record<symbol, unknown>)[RENDERER_SLOT];
     }
+  });
+});
+
+// R4V-3: a renderer re-run (the old client was stopped by main, a new one launched) used to leave the OLD
+// handler subscribed: every control message then ran twice (double onSessionId, BlackoutStarted twice) and a
+// stale `A.startBlackout()` was swallowed while the live client B stayed un-dark.
+describe("launchRenderer - a stopped client's handler is inert after a re-run (R4V-3)", () => {
+  const session = (blackout?: boolean) =>
+    encodeControl({
+      command: 'session',
+      sessionId: 's',
+      ...(blackout !== undefined ? { blackout } : {}),
+    });
+  const stop = (f: ReturnType<typeof fakeLaunch>) => {
+    (f.client as unknown as { isLaunched: () => boolean }).isLaunched = () => false;
+  };
+
+  /** A bridge like Electron's ipcRenderer: every onControl ADDS a listener; the returned fn removes it. */
+  function accumulatingBridge(options: { unsubscribable: boolean }) {
+    const handlers: Array<(raw: string) => void> = [];
+    const bridge: BugseeElectronBridge = {
+      post: () => {},
+      sendHello: () => {},
+      onControl: (handler) => {
+        handlers.push(handler);
+        return options.unsubscribable
+          ? () => {
+              handlers.splice(handlers.indexOf(handler), 1);
+            }
+          : undefined;
+      },
+    };
+    return {
+      bridge,
+      handlers,
+      drive(raw: string): void {
+        for (const handler of [...handlers]) handler(raw);
+      },
+    };
+  }
+
+  it.each([
+    ['a bridge that returns an unsubscribe', true],
+    ['an older bridge that cannot unsubscribe', false],
+  ])('%s: after the re-run one session reply reaches onSessionId once, one BlackoutStarted fires', async (_n, unsubscribable) => {
+    const b = accumulatingBridge({ unsubscribable });
+    const a = fakeLaunch();
+    const aSessions: string[] = [];
+    await launchRenderer('tok', {
+      launch: a.launch,
+      bridge: b.bridge,
+      onSessionId: (id) => aSessions.push(id),
+    });
+    b.drive(session(false));
+    expect(aSessions).toEqual(['s']);
+    stop(a); // main stopped A's client
+    const next = fakeLaunch();
+    const bSessions: string[] = [];
+    await launchRenderer('tok', {
+      launch: next.launch,
+      bridge: b.bridge,
+      onSessionId: (id) => bSessions.push(id),
+    });
+    b.drive(session(true)); // ONE reply from main for the new session
+    expect(bSessions).toEqual(['s']);
+    expect(aSessions).toEqual(['s']); // A heard nothing more
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    expect(next.lifecycle.filter((e) => e === 'Started')).toHaveLength(2); // session bo:true, then start (after end)
+    expect(a.lifecycle.filter((e) => e === 'Started' || e === 'Ended')).toEqual([]);
+    // the stale client's blackout state was never driven by the new session's traffic
+    expect(a.blackout.isActive()).toBe(false); // A's own state, released by ITS handshake, untouched since
+    // the retired handler is really gone from the IPC object where the bridge can unsubscribe
+    expect(b.handlers).toHaveLength(unsubscribable ? 1 : 2);
+  });
+
+  it('a stale handle: startBlackout() forwards to the core method (-> the current client), endBlackout() too', async () => {
+    const f = fakeLaunch();
+    const coreStart = vi.fn();
+    const coreEnd = vi.fn();
+    f.client.startBlackout = coreStart;
+    f.client.endBlackout = coreEnd;
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(session(false));
+    client.startBlackout(); // launched: the renderer's own app flag, the core method is not involved
+    client.endBlackout();
+    expect(coreStart).not.toHaveBeenCalled();
+    expect(coreEnd).not.toHaveBeenCalled();
+    stop(f);
+    client.startBlackout();
+    expect(coreStart).toHaveBeenCalledTimes(1); // core decides: forwards to the live client or reports
+    client.endBlackout();
+    expect(coreEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stopped client ignores pause / flush / stop / session / blackout traffic entirely', async () => {
+    const f = fakeLaunch();
+    const sessions: string[] = [];
+    const b = fakeBridge();
+    await launchRenderer('tok', {
+      launch: f.launch,
+      bridge: b.bridge,
+      onSessionId: (id) => sessions.push(id),
+    });
+    stop(f);
+    f.blackout.end({ silent: true });
+    b.drive(session(true));
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    b.drive(encodeControl({ command: 'flush' }));
+    b.drive(encodeControl({ command: 'stop' }));
+    expect(sessions).toEqual([]);
+    expect(f.blackout.isActive()).toBe(false);
+    expect(f.client.flush).not.toHaveBeenCalled();
+    expect(f.client.stop).not.toHaveBeenCalled();
+    expect(f.lifecycle).toEqual([]);
   });
 });

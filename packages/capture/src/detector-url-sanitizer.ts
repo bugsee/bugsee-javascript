@@ -30,8 +30,19 @@ const ISO_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9:.]+(?:Z|[+-][0-9]{2}:?[
 const PREFIX_HEAD = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
 const PREFIXED_ID_MIN_LENGTH = 3;
 const FILE_EXTENSION = /^\.[A-Za-z][A-Za-z0-9]{0,4}$/;
-// A slug word: letters with at most two trailing numbers (`v2`), or one or two numbers on their own.
-const SLUG_WORD = /^(?:[A-Za-z]+[0-9]{0,2}|[0-9]{1,2})$/;
+// Word-like pieces of an identifier: a Title-cased word (`Details`, `Csv`) or a lower-case word of 3+ letters.
+const WORD_PIECE = /[A-Z][a-z]{2,}|[a-z]{3,}/g;
+// How much of a 16+ character segment must be made of such words before it is an identifier (`getUserDetailsV2`,
+// `HTML5VideoPlayer2`) and not a random token (R4V-5). Measured with seeded random base64url tokens: a 22-character
+// (128-bit) token is kept as a word in ~0.07% of cases and a 16-21 character one in well under 1% (the unavoidable
+// price of not collapsing every camelCase route name; no dictionary is used).
+const WORD_COVERAGE = 0.6;
+const WORD_COVERAGE_LONG = 0.75; // 22 characters and up: where a 128-bit random token lives
+const WORD_COVERAGE_LONG_FROM = 22;
+const WORD_MIN_PIECES = 2; // words of 4+ characters
+const WORD_MIN_LONGEST = 6;
+const MID_DIGIT_WORD_MAX = 8; // `v1beta1`, `covid19x2`: the longest slug word with a number inside it
+const WORD_MAX_STRAY_LOWER = 1; // lower-case letters outside any word (`gpt4oMini`: the `o`)
 // A payment card number: 13-19 digits (Maestro to the longest PAN) with `-` or ` ` between the groups.
 const CARD_MIN_LENGTH = 13;
 const CARD_MAX_LENGTH = 19;
@@ -46,8 +57,22 @@ const PHONE_MAX_LENGTH = 15;
 /** No real identifier is this long; a longer segment is a blob (and was never going to be a readable slug). */
 const MAX_SEGMENT_LENGTH = 256;
 
+/** npm/CDN dist-tags: `react@latest` is a package spec, not an address (R4V-6). */
+const DIST_TAGS = new Set([
+  'latest',
+  'next',
+  'beta',
+  'alpha',
+  'canary',
+  'rc',
+  'nightly',
+  'stable',
+  'experimental',
+]);
+
 function looksLikeEmail(segment: string): boolean {
-  const at = segment.indexOf('@');
+  // The LAST `@` splits local part from host: `@alice@example.com` and `a@b@example.com` are addresses too (R4V-6).
+  const at = segment.lastIndexOf('@');
   if (at <= 0 || at >= segment.length - 1) {
     return false;
   }
@@ -56,8 +81,10 @@ function looksLikeEmail(segment: string): boolean {
   if (dot > 0 && dot < segment.length - 1) {
     return true;
   }
-  // Or a dot-less host (`user@localhost`): still an address (R3V-4). One character is not a host (`a@b`).
-  return HOST_LABEL.test(segment.slice(at + 1));
+  // Or a dot-less host (`user@localhost`): still an address (R3V-4). One character is not a host (`a@b`), and a
+  // dist-tag is a package version, not a host.
+  const host = segment.slice(at + 1);
+  return HOST_LABEL.test(host) && !DIST_TAGS.has(host.toLowerCase());
 }
 
 function safeDecode(segment: string): string {
@@ -68,6 +95,51 @@ function safeDecode(segment: string): string {
   }
 }
 
+/**
+ * A slug word: one or two numbers on their own, up to FOUR digits (`2024`, `8859`), or letters with at most two
+ * separate runs of one or two numbers (`v2`, `covid19`, `q3`), in one case or Title-cased (`Guide`; never `tnLeEum`). A number BETWEEN letters (`v1beta1`) is only a
+ * version marker when the word is short and single-case: `V1StGXR8` and `eyJhbGciOiJIUzI1NiJ9` are token pieces.
+ * Linear, no regex.
+ */
+function isSlugWord(word: string): boolean {
+  let digitRuns = 0;
+  let digits = 0;
+  let upper = 0;
+  let lower = 0;
+  let run = 0;
+  let midDigits = false; // a number that is followed by more letters
+  for (let i = 0; i < word.length; i += 1) {
+    const code = word.charCodeAt(i);
+    if (code >= 48 && code <= 57) {
+      run += 1;
+      digits += 1;
+      if (run === 1) {
+        digitRuns += 1;
+      }
+      if (run > 2 && !(upper + lower === 0 && run <= 4)) {
+        return false;
+      }
+    } else if (code >= 65 && code <= 90) {
+      if (lower > 0) {
+        return false; // an internal capital (`tnLeEumGJ`) is camelCase or random, never a slug word
+      }
+      upper += 1;
+      midDigits = midDigits || run > 0;
+      run = 0;
+    } else if (code >= 97 && code <= 122) {
+      lower += 1;
+      midDigits = midDigits || run > 0;
+      run = 0;
+    } else {
+      return false;
+    }
+  }
+  if (digitRuns > 2) {
+    return false;
+  }
+  return !midDigits || (word.length <= MID_DIGIT_WORD_MAX && (upper === 0 || lower === 0));
+}
+
 /** Three or more plain words (`quick-start-guide-2`): a readable slug, never an id. */
 function isSlugLike(segment: string): boolean {
   let words = 0;
@@ -75,12 +147,51 @@ function isSlugLike(segment: string): boolean {
     if (word === '') {
       continue;
     }
-    if (!SLUG_WORD.test(word)) {
+    if (!isSlugWord(word)) {
       return false;
     }
     words += 1;
   }
   return words >= 3;
+}
+
+/**
+ * Whether a segment READS as an identifier made of words (`getUserDetailsV2`, `HTML5VideoPlayer2`,
+ * `Chapter12Section3`, `gpt4oMiniPreview`) rather than a random token (R4V-5). A random base64url string has
+ * short, case-flipping runs; an identifier is mostly Title/lower-case words of 3+ letters with only digits or an
+ * acronym between them. Requires: enough of the segment covered by such words, two or more words of 4+
+ * characters, one of 6+, and at most one stray lower-case letter outside the words. Linear.
+ */
+function looksLikeWords(segment: string): boolean {
+  let covered = 0;
+  let words = 0;
+  let longest = 0;
+  let last = 0;
+  let stray = 0;
+  const strayLower = (from: number, to: number): void => {
+    for (let i = from; i < to; i += 1) {
+      const code = segment.charCodeAt(i);
+      if (code >= 97 && code <= 122) {
+        stray += 1;
+      }
+    }
+  };
+  for (const match of segment.matchAll(WORD_PIECE)) {
+    const length = match[0].length;
+    covered += length;
+    words += length >= 4 ? 1 : 0;
+    longest = Math.max(longest, length);
+    strayLower(last, match.index);
+    last = match.index + length;
+  }
+  strayLower(last, segment.length);
+  const coverage = segment.length >= WORD_COVERAGE_LONG_FROM ? WORD_COVERAGE_LONG : WORD_COVERAGE;
+  return (
+    covered >= coverage * segment.length &&
+    words >= WORD_MIN_PIECES &&
+    longest >= WORD_MIN_LONGEST &&
+    stray <= WORD_MAX_STRAY_LOWER
+  );
 }
 
 /** A phone number: optional leading `+`, then 7 to 15 numbers with `()-. ` separators. Linear, no regex. */
@@ -197,7 +308,12 @@ export function templatePathSegment(segment: string): string {
       return `${segment.slice(0, sep + 1)}{id}`;
     }
   }
-  if (TOKENISH.test(segment) && HAS_NUMBER.test(segment) && !isSlugLike(segment)) {
+  if (
+    TOKENISH.test(segment) &&
+    HAS_NUMBER.test(segment) &&
+    !isSlugLike(segment) &&
+    !looksLikeWords(segment)
+  ) {
     return '{token}';
   }
   if (
@@ -205,7 +321,8 @@ export function templatePathSegment(segment: string): string {
     HAS_NUMBER.test(segment) &&
     HAS_UPPER.test(segment) &&
     HAS_LOWER.test(segment) &&
-    !isSlugLike(segment)
+    !isSlugLike(segment) &&
+    !looksLikeWords(segment)
   ) {
     return '{id}';
   }
@@ -217,6 +334,7 @@ export function templatePathSegment(segment: string): string {
     SHORT_TOKEN_CHARS.test(segment) &&
     HAS_NUMBER.test(segment) &&
     !isSlugLike(segment) &&
+    !looksLikeWords(segment) &&
     ((HAS_UPPER.test(segment) && HAS_LOWER.test(segment)) || digitRuns(segment) >= 2)
   ) {
     return '{token}';

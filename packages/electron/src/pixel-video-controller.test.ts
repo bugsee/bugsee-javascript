@@ -296,6 +296,68 @@ describe('createPixelVideoController - blackout (privacy: fail closed)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  // R4V-8: the HOST's onError sink is arbitrary code. When it throws while reporting a failing `source.stop`, the
+  // `clear` must STILL run (otherwise the pre-blackout frames, which may show the sensitive screen, stay buffered)
+  // and nothing may escape into the blackout gate's dispatch.
+  it('a throwing onError sink cannot keep pre-blackout frames: stop fails AND the sink throws, clear still runs', async () => {
+    const gate = createBlackoutState();
+    const { source, calls } = sequence();
+    source.stop = () => {
+      throw new Error('stop failed');
+    };
+    const onError = vi.fn(() => {
+      throw new Error('sink failed');
+    });
+    const controller = createPixelVideoController({ source, blackout: gate, onError });
+    await controller.start();
+    expect(() => gate.start()).not.toThrow();
+    expect(calls).toEqual(['start', 'clear']);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(await controller.snapshot(1)).toEqual([]);
+  });
+
+  it('a throwing sink does not break the restart on blackout end either', async () => {
+    const gate = createBlackoutState();
+    const { source, calls } = sequence();
+    const onError = vi.fn(() => {
+      throw new Error('sink failed');
+    });
+    const controller = createPixelVideoController({ source, blackout: gate, onError });
+    await controller.start();
+    gate.start();
+    source.start = () => {
+      throw new Error('restart failed');
+    };
+    expect(() => gate.end()).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(['start', 'stop', 'clear']);
+  });
+
+  it('a throwing sink never rejects start() / stop() / snapshot()', async () => {
+    const onError = vi.fn(() => {
+      throw new Error('sink failed');
+    });
+    const failing = fakeSource();
+    failing.start = () => {
+      throw new Error('start failed');
+    };
+    await expect(createPixelVideoController({ source: failing, onError }).start()).resolves.toBe(
+      undefined,
+    );
+    const stopFails = fakeSource();
+    stopFails.stop = () => {
+      throw new Error('stop failed');
+    };
+    const running = createPixelVideoController({ source: stopFails, onError });
+    await running.start();
+    expect(() => running.stop()).not.toThrow();
+    const snapFails = fakeSource();
+    snapFails.snapshot = () => Promise.reject(new Error('snap failed'));
+    const snapping = createPixelVideoController({ source: snapFails, onError });
+    await snapping.start();
+    await expect(snapping.snapshot(1)).resolves.toEqual([]);
+  });
+
   it('a throwing source.clear routes to onError and the snapshot stays suppressed', async () => {
     const gate = createBlackoutState();
     const onError = vi.fn();

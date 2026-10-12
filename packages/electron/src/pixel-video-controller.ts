@@ -46,11 +46,20 @@ export function createPixelVideoController(
   let blackoutEpoch = 0;
   let offBlackout: (() => void) | undefined;
 
+  // The host's sink is arbitrary code: a throwing sink must never skip a `clear()` (pre-blackout frames would
+  // stay buffered), reject `start()`, or escape into the blackout gate's dispatch (R4V-8).
+  const report = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // swallowed on purpose: there is nowhere left to report to
+    }
+  };
   const guarded = (fn: () => void): void => {
     try {
       fn();
     } catch (error) {
-      options.onError?.(error);
+      report(error);
     }
   };
 
@@ -58,7 +67,8 @@ export function createPixelVideoController(
   const onBlackout = (blackedOut: boolean): void => {
     if (blackedOut) {
       blackoutEpoch += 1;
-      // Independent guards: a throwing stop must not skip the clear (that would keep the frames).
+      // Independent guards (each swallows a throwing source AND a throwing sink): a failing stop must not skip the
+      // clear, or the pre-blackout frames stay buffered.
       guarded(() => options.source.stop());
       guarded(() => options.source.clear());
     } else {
@@ -89,7 +99,7 @@ export function createPixelVideoController(
         active = false; // roll back — never a half-started state
         offBlackout?.();
         offBlackout = undefined;
-        options.onError?.(error);
+        report(error);
       }
     },
     stop(): void {
@@ -102,11 +112,7 @@ export function createPixelVideoController(
       offBlackout = undefined;
       // Robust: a throwing source.stop must not break the client shutdown cascade (launchMain calls this
       // before the real client.stop). Route to onError and continue.
-      try {
-        options.source.stop();
-      } catch (error) {
-        options.onError?.(error);
-      }
+      guarded(() => options.source.stop());
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
       if (!active || options.blackout?.isActive() === true) {
@@ -118,7 +124,7 @@ export function createPixelVideoController(
         // A blackout began while the source was encoding: its result may hold pre-blackout frames.
         return epoch === blackoutEpoch && options.blackout?.isActive() !== true ? entries : [];
       } catch (error) {
-        options.onError?.(error);
+        report(error);
         return [];
       }
     },

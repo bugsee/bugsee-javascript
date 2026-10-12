@@ -157,8 +157,8 @@ describe('browser boolean launch options: invalid values (R2P-4 / R2P-5)', () =>
     expect(absent.isBlackout()).toBe(false);
   });
 
-  // R3V-3: `replay` is ON by default and masks fail-closed on its own. A scalar that is not a boolean must
-  // not THROW (`null` did) and must not silently mean "off"; it keeps the default and is reported.
+  // R3V-3/R4V-2: `replay` is ON by default and collects data. A scalar that is not a boolean must not THROW
+  // (`null` did); it resolves to OFF (fail closed) and is reported.
   it.each([
     null,
     0,

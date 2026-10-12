@@ -60,8 +60,8 @@ export function resolveRendererBridge(): BugseeElectronBridge {
     sendHello(raw: string): void {
       readBridge()?.sendHello?.(raw);
     },
-    onControl(handler: (raw: string) => void): void {
-      readBridge()?.onControl?.(handler);
+    onControl(handler: (raw: string) => void): void | (() => void) {
+      return readBridge()?.onControl?.(handler);
     },
   };
 }
@@ -74,6 +74,8 @@ const RENDERER_SLOT = Symbol.for('bugsee.electron.renderer');
 interface RendererSlot {
   readonly launch: Promise<Bugsee>;
   client?: Bugsee;
+  /** Retires this instance's control subscription (set once launched). */
+  dispose?: () => void;
 }
 
 /**
@@ -91,7 +93,13 @@ export function launchRenderer(
   if (existing !== undefined && (existing.client === undefined || existing.client.isLaunched())) {
     return existing.launch;
   }
-  const slot: RendererSlot = { launch: launchRendererOnce(appToken, options) };
+  // A re-run replaces a client main has stopped: retire its control subscription first, so a reply meant for the
+  // NEW session cannot also run the old handler (double onSessionId / BlackoutStarted: R4V-3).
+  existing?.dispose?.();
+  const slot: RendererSlot = {
+    launch: undefined as unknown as Promise<Bugsee>,
+  };
+  (slot as { launch: Promise<Bugsee> }).launch = launchRendererOnce(appToken, options, slot);
   page[RENDERER_SLOT] = slot;
   slot.launch.then(
     (client) => {
@@ -108,6 +116,7 @@ export function launchRenderer(
 async function launchRendererOnce(
   appToken: string,
   options: LaunchRendererOptions,
+  slot: RendererSlot,
 ): Promise<Bugsee> {
   const { post, bridge, onSessionId, launch, ...browserOptions } = options;
   const resolved = bridge ?? resolveRendererBridge();
@@ -183,11 +192,19 @@ async function launchRendererOnce(
       );
     }
   };
-  // The application's own calls land on the app flag, not on the shared state.
+  // The application's own calls land on the app flag, not on the shared state, WHILE this client is launched.
+  // A client that is not launched (stopped, or replaced by a re-run: R4V-3) is not the owner of the process
+  // blackout, so its calls go to the CORE methods, which know the rules: a stale `startBlackout()` is forwarded
+  // to the current client (fail closed), a stale `endBlackout()` is refused and reported, and an owner that is
+  // merely stopped may lift a carried blackout (R2L-7).
+  const coreStartBlackout = client.startBlackout.bind(client);
+  const coreEndBlackout = client.endBlackout.bind(client);
   client.startBlackout = (): void => {
     if (client.isLaunched()) {
       appDark = true;
       apply();
+    } else {
+      coreStartBlackout();
     }
   };
   client.endBlackout = (): void => {
@@ -195,28 +212,37 @@ async function launchRendererOnce(
       appDark = false;
       apply();
     } else {
-      // R2L-7: allowed while stopped, quietly, because it is the only way to lift a carried blackout (the next
-      // launch would otherwise start dark with no event). Nothing is captured now, so the hold and the app's own
-      // reason go (main's is re-derived from its own broadcasts, which set it before every apply()).
       hold = false;
       appDark = false;
-      blackoutState.end({ silent: true });
+      coreEndBlackout();
     }
   };
+  // Control traffic reaches EVERY handler ever subscribed on this page (an old bridge cannot unsubscribe), so a
+  // handler only acts while ITS client is launched: a stopped client's handler is inert (R4V-3).
+  const live = (): boolean => client.isLaunched();
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.
-  resolved.onControl(
+  const unsubscribe = resolved.onControl(
     createRendererControlHandler({
       setPaused: (p: boolean): void => {
-        paused = p;
+        if (live()) {
+          paused = p;
+        }
       },
       stop: (): void => {
-        void client.stop();
+        if (live()) {
+          void client.stop();
+        }
       },
       flush: (): void => {
-        void client.flush();
+        if (live()) {
+          void client.flush();
+        }
       },
       onSession: (id: string): void => {
+        if (!live()) {
+          return;
+        }
         handshaken = true;
         // The handshake, and only the handshake, releases the launch hold (the reply's blackout state was
         // applied just before this, so a dark owner keeps the renderer dark with no gap).
@@ -227,11 +253,16 @@ async function launchRendererOnce(
       // The owner's blackout (broadcast, and carried by the session reply): applied through the same state
       // service `client.startBlackout()` drives, so every visual/interaction provider follows it.
       onBlackout: (active: boolean): void => {
-        mainDark = active;
-        apply();
+        if (live()) {
+          mainDark = active;
+          apply();
+        }
       },
     }),
   );
+  if (typeof unsubscribe === 'function') {
+    slot.dispose = unsubscribe;
+  }
   resolved.sendHello(encodeHello());
 
   return client;

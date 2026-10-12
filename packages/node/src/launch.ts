@@ -844,7 +844,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // per-request context, default-on but allowlist-gated (no same-origin on a backend). Owns propagation in
   // the base — the OTel extension no longer needs to wire it.
   const propagationDecorator = buildTracePropagationDecorator(requestContextStore, api, {
-    ...(options.propagateTrace !== undefined ? { propagateTrace: options.propagateTrace } : {}),
+    propagateTrace: resolved.isEnabled(NodePrivacyOption.PropagateTrace),
     ...(options.tracePropagationTargets !== undefined
       ? { tracePropagationTargets: options.tracePropagationTargets }
       : {}),

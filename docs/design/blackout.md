@@ -83,8 +83,10 @@ The safe side is DARK, so the option fails ON: any value that is not boolean `fa
 `null`, `''`, an object) starts the page dark and is reported through `onError`; only `false` / absent start it
 un-darkened. The Electron renderer follows the same rule (and so does the internal launch hold `holdBlackout`).
 Every other privacy option has an explicit fail direction too, pinned by `packages/bugsee/src/option-directions.test.ts`:
-options that collect more data fail OFF, protective ones (`startInBlackout`, WebView `captureObscuring`, performance
-`sanitizeSpans`) fail ON, and the rest keep their default and report.
+options that collect more data fail OFF (including default-ON ones such as `replay`, `instrumentIncomingRequests`,
+node `propagateTrace`), protective ones (`startInBlackout`, WebView `captureObscuring`, performance `sanitizeSpans`,
+edge `partitionCaptureByTenant`, replay `blockAllCanvas`) fail ON, and the rest keep their default and report. The
+table also covers NESTED option bags (`replay.*`, `captureLocalVariables.*`, `traceResponse.*`).
 
 ## Electron renderers: three reasons to be dark
 
@@ -105,7 +107,14 @@ The application is told (`BlackoutStarted` / `BlackoutEnded`) about the union of
 `launchRenderer()` is one instance per page: a second call (a hot reload) while the page's client is live or still
 launching is a no-op returning that client. After main stopped the client a new call launches a fresh one, which
 treats a CARRIED blackout as the app's own (the handshake's `bo:false` does not end it; `endBlackout()` does), and
-`endBlackout()` on a stopped renderer client lifts every reason quietly (same rule as the kernel).
+`endBlackout()` on a stopped renderer client that is still the process's blackout owner lifts every reason quietly.
+
+A renderer client that is NOT launched is handled by the CORE methods, never the renderer's own three-flag logic
+(R4V-3): a stale `startBlackout()` is forwarded to the current client (fail closed), a stale `endBlackout()` is refused
+and reported through `onError` (the blackout belongs to the current client). The re-run also retires the old client's
+control subscription (the preload `onControl` returns an unsubscribe), and a stopped client's handler ignores every
+control message even where an older bridge cannot unsubscribe, so one `session` reply reaches the app's
+`onSessionId` once and `BlackoutStarted` fires once.
 
 ## Replay marker (viewer follow-up)
 

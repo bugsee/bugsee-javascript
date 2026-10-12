@@ -7,7 +7,8 @@ import type { SystemProbe } from './environment';
 // instrumentation ON. Now every one goes through the shared normaliser:
 //   captureLocalVariables / captureSourceContext (collect MORE data): only `true` or an options object turns
 //     them on; anything else is OFF + onError;
-//   instrumentIncomingRequests (default ON): an invalid value keeps the default + onError; only `false` opts out.
+//   instrumentIncomingRequests (default ON, collects request data): an invalid value is OFF + onError (R4V-2);
+//   `false` opts out, `true`/absent installs.
 
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(),
@@ -163,10 +164,12 @@ describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError
 describe('instrumentIncomingRequests: only boolean false opts out (R3V-3)', () => {
   const installable = () => ({ install: vi.fn(), uninstall: vi.fn() });
 
-  it.each(INVALID)('instrumentIncomingRequests=%j keeps the default ON and reports', (bad) => {
+  it.each(
+    INVALID,
+  )('instrumentIncomingRequests=%j is OFF (fail closed, R4V-2) and reports', (bad) => {
     const server = installable();
     const { onError } = start({ instrumentIncomingRequests: bad, serverInterceptor: server });
-    expect(server.install).toHaveBeenCalledTimes(1);
+    expect(server.install).not.toHaveBeenCalled();
     expect(reportsFor(onError, 'instrumentIncomingRequests')).toHaveLength(1);
   });
 
