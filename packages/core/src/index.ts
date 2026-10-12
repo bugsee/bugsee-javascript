@@ -52,7 +52,10 @@ export {
   clearCarrierClient,
   contributeServiceManifest,
   getCarrier,
+  getCarrierBlackout,
   getCarrierClient,
+  getCarrierLifecycleSlot,
+  getCarrierPendingLaunch,
   getCarrierStatus,
   getFilters,
   getInternal,
@@ -60,9 +63,12 @@ export {
   getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
+  setCarrierBlackout,
   setCarrierClient,
   setCarrierLastLaunch,
+  setCarrierPendingLaunch,
   setCarrierStatus,
+  setProcessLifecycleEventsListener,
 } from './carrier';
 export type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 export { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-capture-store';
@@ -186,6 +192,7 @@ export {
   LifecycleEvents,
   type LifecycleEventsListener,
   type LifecycleEventType,
+  type LifecycleListenerSlot,
 } from './lifecycle-events';
 export { isLogLevelEnabled, parseLogLevelName } from './log-level';
 export {

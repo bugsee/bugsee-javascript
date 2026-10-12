@@ -41,6 +41,7 @@ import {
   createUploadPipeline,
   defineService,
   getCarrierClient,
+  getCarrierPendingLaunch,
   getCarrierStatus,
   getOrCreateInterceptor,
   getProcessStatus,
@@ -48,6 +49,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type LifecycleEventsListener,
   ReportMarkerStoreToken,
   recoverReports,
   relaunchWith,
@@ -56,6 +58,7 @@ import {
   type Scheduler,
   setCarrierClient,
   setCarrierLastLaunch,
+  setCarrierPendingLaunch,
   setCarrierStatus,
   TransportToken,
   type TriggerPipeline,
@@ -292,6 +295,13 @@ export interface BugseeLaunchOptions {
   recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives `relaunch()`. The same
+   * listener can be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 
   // Injectable seams (advanced / tests) — defaults target the real browser runtime.
   /** HTTP primitive. Default the browser fetch transport. */
@@ -416,8 +426,16 @@ export async function launchCore(
   if (owned) {
     setCarrierStatus(BugseeStatus.Launching, carrier);
   }
+  // The build is async, so `relaunch()` must be able to wait for it: until the client exists there is
+  // nothing on the carrier to stop, and a relaunch that ran now would build a second client (or be handed
+  // this one back with its own options dropped). Registered synchronously, cleared when it settles.
+  const building = buildLaunch(appToken, options);
+  const inFlight = owned ? building.then(noop, noop) : undefined;
+  if (inFlight !== undefined) {
+    setCarrierPendingLaunch(inFlight, carrier);
+  }
   try {
-    const result = await buildLaunch(appToken, options);
+    const result = await building;
     if (result.internals !== undefined) {
       setCarrierLastLaunch(appToken, options, carrier);
       setCarrierStatus(BugseeStatus.Launched, carrier);
@@ -428,8 +446,14 @@ export async function launchCore(
       setCarrierStatus(BugseeStatus.Stopped, carrier);
     }
     throw error;
+  } finally {
+    if (inFlight !== undefined && getCarrierPendingLaunch(carrier) === inFlight) {
+      setCarrierPendingLaunch(undefined, carrier);
+    }
   }
 }
+
+const noop = (): void => {};
 
 async function buildLaunch(
   appToken: string,
@@ -600,6 +624,12 @@ async function buildLaunch(
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
+    // relaunch, which builds a new client.
+    carrier: carrier ?? globalThis,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     launchOptions: resolved.options,
     launchOptionsView: { effective: resolved.canonical, host: resolved.host },

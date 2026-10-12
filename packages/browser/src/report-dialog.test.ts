@@ -1113,6 +1113,46 @@ describe('lifecycle events', () => {
     expect(emit).toHaveBeenCalledTimes(2);
   });
 
+  it('announces AfterReportShown only once the dialog is really gone from the page (L17)', async () => {
+    const hostAtAfter: Array<HTMLElement | null> = [];
+    const emit = vi.fn((type: string) => {
+      if (type === LifecycleEvents.AfterReportShown) hostAtAfter.push(host());
+    });
+    const { show } = harness({ emitLifecycleEvent: emit });
+    const pending = show();
+    send();
+    await pending;
+    expect(hostAtAfter).toEqual([null]);
+  });
+
+  it('reports sent:false when the send came back refused, or threw (L17)', async () => {
+    for (const failure of [
+      async () => ({ ok: false }) as UploadResult,
+      async () => {
+        throw new Error('boom');
+      },
+    ]) {
+      const emit = vi.fn();
+      const h = harness({ emitLifecycleEvent: emit });
+      h.upload.mockImplementation(failure);
+      const pending = h.show();
+      send();
+      await pending;
+      expect(emit).toHaveBeenLastCalledWith(LifecycleEvents.AfterReportShown, { sent: false });
+    }
+  });
+
+  it('still settles when the lifecycle hook throws', async () => {
+    const { show } = harness({
+      emitLifecycleEvent: (type) => {
+        if (type === LifecycleEvents.AfterReportShown) throw new Error('hook');
+      },
+    });
+    const pending = show();
+    send();
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
   it('announces nothing when no dialog is shown (cannot prepare, or SDK not running)', async () => {
     const emit = vi.fn();
     await harness({ emitLifecycleEvent: emit, prepare: () => null }).show();

@@ -7,6 +7,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
@@ -354,7 +355,7 @@ describe('relaunch', () => {
     await expect(relaunch()).rejects.toThrow(/before launch/);
   });
 
-  it('stops the current client, then launches a FRESH one with the same token and options', async () => {
+  it('stops the current client, then launches a FRESH one with the same token and DEFAULT options (L10)', async () => {
     const first = await launch('tok-1', opts({ captureLogs: false }));
     const second = await relaunch();
     live.push(second);
@@ -362,7 +363,45 @@ describe('relaunch', () => {
     expect(first.getStatus()).toBe(BugseeStatus.Stopped);
     expect(second.getStatus()).toBe(BugseeStatus.Launched);
     expect(getStatus()).toBe(BugseeStatus.Launched);
-    expect(second.getHostLaunchOptions()).toHaveProperty([BugseeOption.CaptureLogs], false);
+    // Like Android and iOS: no options means defaults, so the earlier `captureLogs: false` is gone...
+    expect(second.getHostLaunchOptions()).not.toHaveProperty([BugseeOption.CaptureLogs]);
+    // ...and the integration seams are kept (see the transport test below).
+  });
+
+  it('keeps the injected transport across a no-options relaunch (the seam, not a Bugsee option)', async () => {
+    const transport = okTransport();
+    await launch('tok-1', opts({ transport }));
+    const second = await relaunch();
+    live.push(second);
+    vi.mocked(transport).mockClear();
+    second.log('x');
+    await second.upload({ summary: 's' });
+    expect(transport).toHaveBeenCalled();
+  });
+
+  it('the lifecycle listener passed as an option sees Launching/Launched, and survives relaunch (L1)', async () => {
+    const seen: string[] = [];
+    await launch('tok', opts({ lifecycleEventsListener: (type) => seen.push(type) }));
+    expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
+    seen.length = 0;
+    const second = await relaunch();
+    live.push(second);
+    expect(seen).toEqual([
+      LifecycleEvents.Stopping,
+      LifecycleEvents.Stopped,
+      LifecycleEvents.Launching,
+      LifecycleEvents.Launched,
+    ]);
+  });
+
+  it('a blackout in force is still in force on the relaunched client (V2)', async () => {
+    const first = await launch('tok', opts());
+    first.startBlackout();
+    const second = await relaunch();
+    live.push(second);
+    expect(second.isBlackout()).toBe(true);
+    second.endBlackout();
+    expect(second.isBlackout()).toBe(false);
   });
 
   it('uses NEW options when given (they replace the previous host options)', async () => {
@@ -382,5 +421,27 @@ describe('relaunch', () => {
       live.push(next);
       expect(win.total()).toBe(baseline);
     }
+  });
+
+  it('a relaunch during an in-flight launch waits for it, stops that client and builds one with the NEW options (L13)', async () => {
+    const inFlight = launch('tok', opts());
+    const relaunched = relaunch(opts({ maxRecordingTime: 15 }));
+    const first = await inFlight;
+    const second = await relaunched;
+    live.push(second);
+    expect(second).not.toBe(first);
+    expect(first.getStatus()).toBe(BugseeStatus.Stopped);
+    expect(second.getStatus()).toBe(BugseeStatus.Launched);
+    expect(second.getLaunchOptions()[BugseeOption.Duration]).toBe(15);
+  });
+
+  it('records the build as in flight while it runs, clears it when it settles, and ignores a repeat launch (L13)', async () => {
+    const building = launch('tok', opts());
+    expect(getCarrier().pendingLaunch).toBeDefined();
+    live.push(await building);
+    expect(getCarrier().pendingLaunch).toBeUndefined();
+    const repeat = launch('tok', opts());
+    expect(getCarrier().pendingLaunch).toBeUndefined(); // the singleton exists: nothing is being built
+    await repeat;
   });
 });

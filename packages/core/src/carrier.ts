@@ -1,6 +1,7 @@
 import type { Interceptor } from './contracts';
 import { type FilterStore, FiltersToken } from './filters';
 import { BugseeStatus } from './launch-status';
+import type { LifecycleEventsListener, LifecycleListenerSlot } from './lifecycle-events';
 import type { ServiceRegistrar, ServiceResolver } from './services';
 
 /**
@@ -40,6 +41,19 @@ export interface BugseeCarrier {
   status?: BugseeStatus;
   /** The arguments of the last launch that built a client — what `relaunch()` reuses (token + options). */
   lastLaunch?: { appToken: string; options: unknown };
+  /**
+   * The application's lifecycle listener (Android keeps ONE static listener). Process-level so that
+   * Launching/Launched are observable by a listener registered before any client exists, and so it
+   * survives `relaunch()` (a new client has a new emitter, but reads the same slot).
+   */
+  lifecycleListener?: LifecycleEventsListener | null;
+  /**
+   * Whether a blackout is in force. Process-level, like mobile: a relaunch builds a new client, and
+   * silently ending the blackout there would resume capture of a screen the app asked to hide.
+   */
+  blackout?: boolean;
+  /** The launch currently being built (async platforms), so `relaunch()` can wait for it. */
+  pendingLaunch?: Promise<unknown>;
   /** Service manifests contributed by extensions / other packages; run against the launched container. */
   serviceManifests?: ServiceManifest[];
 }
@@ -174,4 +188,51 @@ export function getInternal(globalObj: object = globalThis): ServiceResolver | u
  */
 export function getFilters(globalObj: object = globalThis): FilterStore | undefined {
   return getInternal(globalObj)?.getService(FiltersToken);
+}
+
+/** The carrier's lifecycle-listener slot, in the shape the lifecycle emitter reads and writes. */
+export function getCarrierLifecycleSlot(globalObj: object = globalThis): LifecycleListenerSlot {
+  const carrier = getCarrier(globalObj);
+  return {
+    get: () => carrier.lifecycleListener ?? null,
+    set: (listener) => {
+      carrier.lifecycleListener = listener;
+    },
+  };
+}
+
+/**
+ * Install the process-level lifecycle listener (replacing any previous one; `null` clears it). Callable
+ * BEFORE `launch()`, so Launching and Launched are observable, and it survives `relaunch()`.
+ */
+export function setProcessLifecycleEventsListener(
+  listener: LifecycleEventsListener | null,
+  globalObj: object = globalThis,
+): void {
+  getCarrierLifecycleSlot(globalObj).set(listener);
+}
+
+/** Whether a blackout is in force process-wide. */
+export function getCarrierBlackout(globalObj: object = globalThis): boolean {
+  return getCarrier(globalObj).blackout === true;
+}
+
+/** Record the process-wide blackout state. */
+export function setCarrierBlackout(active: boolean, globalObj: object = globalThis): void {
+  getCarrier(globalObj).blackout = active;
+}
+
+/** The launch that is still being built (async platforms), if any. */
+export function getCarrierPendingLaunch(
+  globalObj: object = globalThis,
+): Promise<unknown> | undefined {
+  return getCarrier(globalObj).pendingLaunch;
+}
+
+/** Record (or, with `undefined`, clear) the launch that is still being built. */
+export function setCarrierPendingLaunch(
+  pending: Promise<unknown> | undefined,
+  globalObj: object = globalThis,
+): void {
+  getCarrier(globalObj).pendingLaunch = pending;
 }

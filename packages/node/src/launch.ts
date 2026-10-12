@@ -42,6 +42,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  type LifecycleEventsListener,
   type NativeCrashSource,
   type ReconcileOwnQueue,
   ReportMarkerStoreToken,
@@ -334,6 +335,13 @@ export interface BugseeLaunchOptions {
   recover?: boolean;
   /** Internal-error sink (provider-start / operation failures). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * The application's lifecycle listener (Android `setLifecycleEventsListener`): Launching, Launched,
+   * Stopping, Stopped, Blackout*, report events. Installed BEFORE the client launches, so Launching and
+   * Launched are observable, and held on the process carrier, so it survives `relaunch()`. The same
+   * listener can be set later with `client.setLifecycleEventsListener(...)`.
+   */
+  lifecycleEventsListener?: LifecycleEventsListener;
 
   // Injectable seams (advanced / tests) — defaults target the real Node runtime.
   /** HTTP primitive. Default node-utils httpRequest. */
@@ -736,6 +744,12 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   ]);
 
   const client = createClient({
+    // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
+    // relaunch, which builds a new client.
+    carrier: carrier ?? globalThis,
+    ...(options.lifecycleEventsListener !== undefined
+      ? { lifecycleEventsListener: options.lifecycleEventsListener }
+      : {}),
     isEnabled: resolved.isEnabled,
     ...(enrichFrames !== undefined ? { enrichFrames } : {}),
     // Called at the boundary of logException, while the caller's catch block is still on the stack —

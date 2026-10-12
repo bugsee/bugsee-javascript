@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
 import { BugseeError } from './errors';
 import { LifecycleEvents } from './lifecycle-events';
-import type { UploadPipeline, UploadResult } from './transport';
+import type { UploadPipeline } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
 
 const getEnvironment = (): EnvironmentEnvelope => ({
@@ -223,54 +223,100 @@ describe('lifecycle events — emitLifecycleEvent hook', () => {
   });
 });
 
-describe('ReportHandler.after', () => {
+describe('ReportHandler.after (Android onAfterReportCreated)', () => {
   const settle = async (): Promise<void> => {
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
   };
 
-  it('runs after the report settles, with the (post-before) request', async () => {
+  it('runs after `before` and BEFORE the report is assembled or uploaded, with the post-before request', async () => {
     const calls: string[] = [];
-    let release: (r: UploadResult) => void = () => {};
-    const { client } = setup(
-      () =>
-        new Promise<UploadResult>((resolve) => {
-          release = resolve;
-        }),
-    );
+    const { client, events } = setup(async () => {
+      calls.push('enqueue');
+      return { ok: true };
+    });
+    client.setLifecycleEventsListener((type) => {
+      if (type === LifecycleEvents.BeforeReportAssembled) calls.push('before-assembled');
+    });
     client.setReportHandler({
       before: (r) => {
         r.report.summary = 'masked';
+        calls.push('before');
         return r;
       },
       after: (r) => {
-        calls.push(r.report.summary ?? '');
+        calls.push(`after:${r.report.summary}`);
       },
     });
-    const pending = client.logException(new Error('boom'));
-    await settle();
-    expect(calls).toEqual([]); // not before the hand-off completes
-    release({ ok: true });
-    await pending;
-    await settle();
-    expect(calls).toEqual(['masked']);
+    await client.logException(new Error('boom'));
+    // `after` runs once assembly is under way but before the bundle exists, so before the upload.
+    expect(calls).toEqual(['before', 'before-assembled', 'after:masked', 'enqueue']);
+    expect(events).toEqual([]); // (the listener above replaced the recording one)
   });
 
-  it('runs for upload() and also after a failed upload', async () => {
-    const after = vi.fn();
-    const { client } = setup(async () => ({ ok: false }));
-    client.setReportHandler({ after });
-    await client.upload({ summary: 's' });
-    await settle();
-    expect(after).toHaveBeenCalledTimes(1);
+  it('may still mutate the report: the assembled bundle carries the change', async () => {
+    const enqueue = vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: true }));
+    const { client } = setup(enqueue);
+    client.setReportHandler({
+      after: (r) => {
+        r.report.summary = 'edited-by-after';
+        r.report.labels.push('late-label');
+      },
+    });
+    await client.logException(new Error('boom'));
+    const bundle = enqueue.mock.calls[0]?.[0];
+    expect(bundle?.request.summary).toBe('edited-by-after');
+    expect(bundle?.request.labels).toContain('late-label');
   });
 
-  it('is not run for a vetoed report', async () => {
+  it('runs once per report, for upload() and detection-triggered reports too', async () => {
     const after = vi.fn();
     const { client } = setup();
-    client.setReportHandler({ before: () => null, after });
-    await client.logException(new Error('boom'));
+    client.setReportHandler({ after });
+    await client.upload({ summary: 's' });
+    expect(after).toHaveBeenCalledTimes(1);
+    await client.logException(new Error('x'));
+    expect(after).toHaveBeenCalledTimes(2);
+  });
+
+  it('is not run when the report was never created: veto, injected pipeline, nothing to assemble with', async () => {
+    const after = vi.fn();
+    // veto
+    const vetoed = setup().client;
+    vetoed.setReportHandler({ before: () => null, after });
+    await vetoed.logException(new Error('boom'));
+    // no pipeline at all (an injected trigger pipeline that never assembles)
+    const injected = createClient({ triggerPipeline: { report: async () => ({ ok: true }) } });
+    injected.setReportHandler({ after });
+    await injected.logException(new Error('boom'));
+    // nothing to assemble with
+    const bare = createClient();
+    bare.setReportHandler({ after });
+    await bare.logException(new Error('boom'));
     await settle();
     expect(after).not.toHaveBeenCalled();
+  });
+
+  it('is not run for a report the queue refuses (overflow)', async () => {
+    const after = vi.fn();
+    let open: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const uploadPipeline: UploadPipeline = {
+      enqueue: async () => {
+        await gate;
+        return { ok: true };
+      },
+      flush: async () => true,
+      drop: vi.fn(),
+    };
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    client.setReportHandler({ after });
+    const results = Array.from({ length: 300 }, (_, i) => client.upload({ summary: `r${i}` }));
+    await settle();
+    open();
+    const settled = await Promise.all(results);
+    const refused = settled.filter((r) => !r.ok).length;
+    expect(refused).toBeGreaterThan(0);
+    expect(after).toHaveBeenCalledTimes(300 - refused);
   });
 
   it('a throwing after never breaks reporting and goes to onError', async () => {
@@ -283,20 +329,21 @@ describe('ReportHandler.after', () => {
       },
     });
     await expect(client.logException(new Error('x'))).resolves.toEqual({ ok: true });
-    await settle();
     expect(onError).toHaveBeenCalledWith(boom);
   });
 
-  it('runs even when the pipeline rejects', async () => {
-    const after = vi.fn();
-    const triggerPipeline: TriggerPipeline = {
-      report: () => Promise.reject(new Error('pipeline')),
-    };
-    const client = createClient({ triggerPipeline });
-    client.setReportHandler({ after });
-    await client.logException(new Error('boom')).catch(() => undefined);
-    await settle();
-    expect(after).toHaveBeenCalledTimes(1);
+  it('a throwing onError sink cannot break reporting either', async () => {
+    const { client } = setup(async () => ({ ok: true }), {
+      onError: () => {
+        throw new Error('sink');
+      },
+    });
+    client.setReportHandler({
+      after: () => {
+        throw new Error('after');
+      },
+    });
+    await expect(client.logException(new Error('x'))).resolves.toEqual({ ok: true });
   });
 
   it('is skipped when the handler has no after', async () => {
@@ -337,7 +384,9 @@ describe('ReportHandler.after', () => {
 
 describe('lifecycle events — blackout', () => {
   it('emits BlackoutStarted then BlackoutEnded on real transitions only', () => {
-    const { client, types } = setup();
+    const { client, types, events } = setup();
+    client.launch();
+    events.length = 0;
     client.startBlackout();
     client.startBlackout();
     client.endBlackout();
@@ -347,6 +396,7 @@ describe('lifecycle events — blackout', () => {
 
   it('reports the new state to the listener through isBlackout()', () => {
     const client = createClient();
+    client.launch();
     const seen: boolean[] = [];
     client.setLifecycleEventsListener((type) => {
       if (type === LifecycleEvents.BlackoutStarted || type === LifecycleEvents.BlackoutEnded) {
