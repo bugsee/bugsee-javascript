@@ -153,7 +153,9 @@ export interface BatchMessage {
  * reply; a receiver that predates it ignores the unknown kind (forward-compatible) and the SDK reports that
  * the native video is NOT paused (docs/design/blackout.md).
  *
- * Receiver contract: (1) a blackout CARRIED over a relaunch is posted right after `hello` (the current state);
+ * Receiver contract: (1) the CURRENT state is ALWAYS posted right after `hello` (`a: true` for a blackout carried over
+ * a relaunch, `a: false` otherwise), and native RESETS its JS-reported flag on `bye` and on `hello`: a torn client
+ * says nothing after its `bye`, so the next session's first message is what restores the truth;
  * (2) `a: false` NEVER ends native's OWN blackout: native keeps a separate flag for its own reasons and stays
  * dark while EITHER that flag or the JS-reported one is set; (3) the SDK judges "native declared no support"
  * only after native answered the handshake (the control reply).

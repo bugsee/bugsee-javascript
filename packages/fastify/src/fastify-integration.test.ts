@@ -125,7 +125,7 @@ describe('fastify adapter — real-server concurrency isolation (e2e)', () => {
           }).then((r) => r.text()),
         ),
       );
-      await client.flush(5000);
+      expect(await client.flush(5000)).toBe(true);
 
       const parsed = bundles.map(parseBundle);
       expect(parsed).toHaveLength(3);
@@ -194,7 +194,7 @@ describe('fastify adapter — F-1/F-3: shouldReport against REAL Fastify Ajv sch
       const boomRes = await fetchWithDeadline(`http://127.0.0.1:${port}/boom`);
       expect(boomRes.status).toBe(500);
 
-      await client.flush(5000);
+      expect(await client.flush(5000)).toBe(true);
       const parsed = bundles.map(parseBundle);
       // ONLY the genuine throw produced an incident — the schema-validation 400 did not (F-1/F-3).
       expect(parsed).toHaveLength(1);

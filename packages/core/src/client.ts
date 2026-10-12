@@ -41,6 +41,7 @@ import {
   getCarrierBlackout,
   getCarrierBlackoutOwner,
   getCarrierLifecycleSlot,
+  getCarrierRelaunchEpoch,
   getCarrierRelaunching,
   setCarrierBlackout,
 } from './carrier';
@@ -930,8 +931,19 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // which sits on `globalThis` and would otherwise hold user-identifying notifications for a process that never
   // relaunches.
   const notifyOwner = {};
+  /** The carrier's failed-relaunch counter when the handing-over stop() was issued (R4L-2). */
+  let handoverEpoch = 0;
   const handBackNotify = (items: NotifyItem[]): void => {
     if (processCarrier === undefined || items.length === 0) {
+      return;
+    }
+    if (getCarrierRelaunchEpoch(processCarrier) !== handoverEpoch) {
+      // The relaunch attempt this hand-over belonged to failed: nobody will adopt these (R4L-2).
+      onErrorSafe(
+        new Error(
+          `notify: dropped ${items.length} notification(s); the relaunch they were handed to failed`,
+        ),
+      );
       return;
     }
     const carrier = getCarrier(processCarrier);
@@ -1730,7 +1742,10 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     },
 
     isBlackout(): boolean {
-      return blackout.isActive();
+      // A stale handle answers with the PROCESS flag (R4L-5): its own state is a stopped client's memory.
+      return !ownsBlackout() && processCarrier !== undefined
+        ? getCarrierBlackout(processCarrier)
+        : blackout.isActive();
     },
 
     getStatus(): BugseeStatus {
@@ -1833,6 +1848,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       }
       // Is this the stop relaunch() issues? Decided NOW: by the time the drain settles the new client may be up.
       const handsOver = processCarrier !== undefined && getCarrierRelaunching(processCarrier);
+      if (handsOver) {
+        handoverEpoch = getCarrierRelaunchEpoch(processCarrier);
+      }
       generation += 1;
       const mine = generation;
       launched = false;

@@ -12,6 +12,24 @@ vi.mock('@bugsee/replay', () => ({ registerReplay: vi.fn() }));
 // Review round 3 (H1), browser half: R3L-1. The instance lock and IndexedDB handles are released when the ONE
 // shared real stop drain settles true, from whichever stop() observes it (exactly once), even after a stop(timeout)
 // gave up.
+// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work (R4L-4).
+let releaseThrows = false;
+vi.mock('@bugsee/browser-utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/browser-utils')>();
+  return {
+    ...actual,
+    createCoexistence: (...args: Parameters<typeof actual.createCoexistence>) => {
+      const real = actual.createCoexistence(...args);
+      return {
+        ...real,
+        release: () => {
+          real.release();
+          if (releaseThrows) throw new Error('release failed');
+        },
+      };
+    },
+  };
+});
 vi.mock('@bugsee/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/core')>();
   return { ...actual, runLaunchRecovery: vi.fn(actual.runLaunchRecovery) };
@@ -81,6 +99,9 @@ const opts = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => (
   },
   ...over,
 });
+const microtasks = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+};
 const live: Bugsee[] = [];
 afterEach(async () => {
   await Promise.all(live.splice(0).map((c) => c.stop(0)));
@@ -181,11 +202,13 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     const client = await track(options);
     client.notify('cannot be delivered');
     expect(await client.stop()).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The observer hangs off the same promise stop() just returned, and a FALSE drain does no I/O: a few
+    // microtask turns run every continuation it could have (no wall-clock sleep, R4H-8).
+    await microtasks();
     expect(locks.held.size).toBe(1);
   });
 
-  it('commits the capture store exactly once per stop, however many paths observe the drain', async () => {
+  it('commits the capture store once on the caller path and once in the observer, and a repeat stop() adds none', async () => {
     const flush = vi.fn(async () => {});
     const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
       flush,
@@ -193,8 +216,62 @@ describe('R3L-1 — the lock is released by whichever stop() observes the shared
     const { locks, options } = setup({ captureStore });
     const client = await track(options);
     expect(await client.stop()).toBe(true);
-    await vi.waitFor(() => expect(locks.held.size).toBe(0));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(() => expect(locks.held.size).toBe(0)); // release is the observer's LAST step
+    expect(flush).toHaveBeenCalledTimes(2);
+    await client.stop();
+    expect(flush).toHaveBeenCalledTimes(2);
+  });
+
+  it('R4L-4: the observer flushes AGAIN after the drain, before it releases (a stop(timeout) had memoized an early flush)', async () => {
+    const g = gated();
+    const seen: number[] = [];
+    let locksRef: ReturnType<typeof realLocks> | undefined;
+    const flush = vi.fn(async () => {
+      seen.push(locksRef?.held.size ?? -1); // the lock count at the moment each flush runs
+    });
+    const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
+      flush,
+    });
+    const { locks, options } = setup({ transport: g.transport, captureStore });
+    locksRef = locks;
+    const client = await track(options);
+    void client.logException(new Error('in flight'));
+    expect(await client.stop(20)).toBe(false); // flush #1 (caller path) happens now, mid-drain
     expect(flush).toHaveBeenCalledTimes(1);
+    g.release();
+    await vi.waitFor(() => expect(locks.held.size).toBe(0));
+    expect(flush).toHaveBeenCalledTimes(2); // the observer re-flushed once the drain's own writes were done
+    expect(seen).toEqual([1, 1]); // …and both ran while the lock was still held
+  });
+
+  it('R4L-4: a throwing onError plus a failing flush cannot become an unhandled rejection, and the lock is still released', async () => {
+    const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
+      flush: async () => {
+        throw new Error('flush failed');
+      },
+    });
+    const onError = vi.fn(() => {
+      throw new Error('sink throws');
+    });
+    const { locks, options } = setup({ captureStore, onError });
+    const client = await track(options);
+    expect(await client.stop()).toBe(true);
+    await vi.waitFor(() => expect(locks.held.size).toBe(0));
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('R4L-4: a release() that throws in the observer is reported, never an unhandled rejection', async () => {
+    const g = gated();
+    const errors: unknown[] = [];
+    const { options } = setup({ transport: g.transport, onError: (e) => errors.push(e) });
+    const client = await track(options);
+    void client.logException(new Error('in flight'));
+    expect(await client.stop(20)).toBe(false); // the caller path gave up: only the observer will release
+    releaseThrows = true;
+    g.release();
+    await vi.waitFor(() =>
+      expect(errors.some((e) => (e as Error).message === 'release failed')).toBe(true),
+    );
+    releaseThrows = false;
   });
 });

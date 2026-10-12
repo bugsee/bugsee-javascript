@@ -66,7 +66,10 @@ describe('R3L-2 — the shared stop drain is not bounded by the first caller', (
     void again.then(() => {
       settled = true;
     });
-    await sleep(40);
+    // The drain is gated on a promise (no timer involved), so "still pending" is decided by microtasks alone:
+    // flush every continuation that could have settled it, deterministically (R4H-8).
+    await tick();
+    await tick();
     expect(settled).toBe(false);
     release(true);
     await expect(again).resolves.toBe(true);

@@ -67,6 +67,20 @@ describe('R3L-4 — a stale handle cannot change the process blackout', () => {
     expect(b.isBlackout()).toBe(true);
     expect(getCarrierBlackout(host)).toBe(true);
     expect(types(events)).toEqual([LifecycleEvents.BlackoutStarted]);
+    expect(a.isBlackout()).toBe(true); // R4L-5: a stale handle answers with the process flag, not its own state
+  });
+
+  it('R4L-5: a stale handle reflects the carrier flag both ways', async () => {
+    const host = {};
+    const a = build(host);
+    a.launch();
+    await a.stop();
+    const b = build(host);
+    b.launch();
+    expect(a.isBlackout()).toBe(false);
+    b.startBlackout();
+    expect(a.isBlackout()).toBe(true);
+    b.endBlackout();
     expect(a.isBlackout()).toBe(false);
   });
 
@@ -154,8 +168,9 @@ describe('R3L-4 — a stale handle cannot change the process blackout', () => {
     a.startBlackout();
     expect(a.isBlackout()).toBe(true);
     expect(getCarrierBlackout(host)).toBe(true);
-    b.startBlackout(); // never launched, stale: refused as before
-    expect(b.isBlackout()).toBe(false);
+    b.startBlackout(); // never launched, stale: forwarded to a (already dark), never applied to b itself
+    expect(getCarrierBlackout(host)).toBe(true);
+    expect(b.isBlackout()).toBe(true); // a stale handle answers with the process flag (R4L-5)
   });
 
   it('a client without a carrier is its own owner', () => {

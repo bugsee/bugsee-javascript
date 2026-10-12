@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { type Bugsee, launch, type NodeRuntime } from '@bugsee/node';
@@ -92,7 +93,7 @@ const get = async (url: string, headers?: Record<string, string>): Promise<strin
   }
 };
 
-function boot(): { url: string; client: Bugsee; bundles: Uint8Array[] } {
+async function boot(): Promise<{ url: string; client: Bugsee; bundles: Uint8Array[] }> {
   const { transport, bundles } = recordingTransport();
   const client = launch('tok', {
     endpoint: 'https://api.test',
@@ -124,38 +125,39 @@ function boot(): { url: string; client: Bugsee; bundles: Uint8Array[] } {
       ctx.body = 'ok';
     }
   });
-  const server = http.createServer(app.callback()).listen(0);
+  const server = http.createServer(app.callback()).listen(0, '127.0.0.1');
   servers.push(server);
+  await once(server, 'listening'); // an explicit host binds asynchronously: `address()` is null until then
   const port = (server.address() as AddressInfo).port;
   return { url: `http://127.0.0.1:${port}`, client, bundles };
 }
 
 describe('@bugsee/koa — real Koa server (e2e)', () => {
   it('reports a handler error (http-error), skips the ok + 404 routes', async () => {
-    const { url, client, bundles } = boot();
+    const { url, client, bundles } = await boot();
     await get(`${url}/handler-error`);
     await get(`${url}/missing`); // Koa default 404 (no throw)
     await get(`${url}/client-error`); // thrown 400 → skipped
     await get(`${url}/ok`);
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
     expect(bundles).toHaveLength(1); // only the genuine handler error
     expect(parseBundle(bundles[0] as Uint8Array).request.source.mechanism).toBe('http-error');
   });
 
   it('preserves the original response (404 stays 404, ok stays ok)', async () => {
-    const { url, client } = boot();
+    const { url, client } = await boot();
     expect((await fetch(`${url}/missing`)).status).toBe(404);
     expect(await (await fetch(`${url}/ok`)).text()).toBe('ok');
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
   });
 
   it('attributes each CONCURRENT request to its own user + contextId with no bleed', async () => {
-    const { url, client, bundles } = boot();
+    const { url, client, bundles } = await boot();
     const users = ['alice@x.com', 'bob@x.com', 'carol@x.com'];
     await Promise.all(
       users.map((user, i) => get(`${url}/work?d=${users.length - 1 - i}`, { 'x-user': user })),
     );
-    await client.flush(5000);
+    expect(await client.flush(5000)).toBe(true);
 
     const parsed = bundles.map(parseBundle);
     expect(parsed).toHaveLength(3);

@@ -474,14 +474,23 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
   // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
   let storeFlushed: Promise<void> | undefined;
+  /** A sink that throws must not turn a background step into an unhandled rejection (R4L-4 / R4H-7). */
+  const reportSafe = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // the host's own sink threw: nothing left to tell
+    }
+  };
+  const flushStore = async (): Promise<void> => {
+    try {
+      await captureStore.flush?.();
+    } catch (error) {
+      reportSafe(error);
+    }
+  };
   const makeDurable = (): Promise<void> => {
-    storeFlushed ??= (async () => {
-      try {
-        await captureStore.flush?.();
-      } catch (error) {
-        options.onError?.(error);
-      }
-    })();
+    storeFlushed ??= flushStore();
     return storeFlushed;
   };
   let observingDrain = false;
@@ -492,12 +501,20 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     observingDrain = true;
     stopCore().then(
       async (drained) => {
-        if (drained) {
+        if (!drained) {
+          return;
+        }
+        try {
           if (wasLaunched) {
-            await makeDurable();
+            // A FRESH flush, not the memoized one (R4L-4): a stop(timeout) that gave up memoized its flush
+            // BEFORE the drain finished, and the drain's own writes (deferred chunk deletes) must be durable
+            // before the connections are released.
+            await flushStore();
           }
           await recoveryDone;
           releaseIfSafe();
+        } catch (error) {
+          reportSafe(error); // a throwing release()/sink is reported, never an unhandled rejection
         }
       },
       /* v8 ignore next -- defensive: the shared drain never rejects (every pipeline flush swallows its failures); the caller's own stop() promise would carry a rejection */

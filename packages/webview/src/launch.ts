@@ -35,7 +35,9 @@ import {
   FAIL_ON_BOOLEAN_OPTION,
   type FilterStore,
   FiltersToken,
+  getCarrierBlackout,
   getCarrierClient,
+  getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
   type LifecycleEventsListener,
@@ -47,6 +49,7 @@ import {
   resolveLaunchOptions,
   type Scheduler,
   setCarrierClient,
+  setCarrierStatus,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
@@ -76,6 +79,8 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 export const SDK_VERSION = BUGSEE_SDK_VERSION;
 
 /** WebView-local identifier of the `captureObscuring` switch: no cross-SDK identity. */
+/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged (R4V-9). */
+const NATIVE_REPLY_DEADLINE_MS = 5000;
 const OBSCURING_OPTION_KEY = 'com.bugsee.option.capture.obscuring';
 
 /** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported (R3V-3). */
@@ -376,7 +381,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     // a value whose first method call is a TypeError. An inert client is diagnosable; a crash is not.
     return launchedClient !== undefined
       ? restrictedClientFor(launchedClient, options.onError)
-      : inertClient(options.onError);
+      : inertClient(options.onError, carrier);
   }
 
   const resolved = resolveLaunchOptions(
@@ -643,7 +648,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   let warnedNativeBlackout = false;
   // Only the client that owns the process may speak for it (R3V-1): one that has been stopped (its stream is
   // finalized: `bye` was posted) or whose carrier slot another client has taken must not tell native anything.
-  // A launch that has not reached the slot yet still announces (a carried or `startInBlackout` blackout).
+  // A launch that has not reached the slot yet still announces (a blackout carried over from an earlier client).
   let torn = false;
   let ownFacade: unknown;
   const mayTellNative = (): boolean => {
@@ -656,8 +661,18 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
   // blackout is announced at launch, before any reply could possibly have arrived): R3V-5.
   let judgementPending = false;
+  // …but not for ever (R4V-9): a legacy receiver that never answers the handshake, with a single blackout change,
+  // would leave the integrator unwarned that the native video keeps running. The wait is bounded; `stop()` judges too.
+  let judgementTimer: unknown;
+  const clearJudgementTimer = (): void => {
+    if (judgementTimer !== undefined) {
+      (globalThis as unknown as { clearTimeout(h: unknown): void }).clearTimeout(judgementTimer);
+      judgementTimer = undefined;
+    }
+  };
   const judge = (): void => {
     judgementPending = false;
+    clearJudgementTimer();
     const delivered = bridge.available;
     if (warnedNativeBlackout || (delivered && control.config.nativeBlackout)) {
       return;
@@ -687,6 +702,14 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     bridge.post(encode(blackoutMessage(active, Date.now())));
     if (bridge.available && !nativeReplied && !judgementPending && !warnedNativeBlackout) {
       judgementPending = true; // wait for the handshake reply; a later change before it forces the judgement
+      const handle = (
+        globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown }
+      ).setTimeout(() => {
+        judgementTimer = undefined;
+        judgeNativeBlackout?.();
+      }, NATIVE_REPLY_DEADLINE_MS);
+      (handle as { unref?: () => void } | null)?.unref?.();
+      judgementTimer = handle;
       return;
     }
     judge();
@@ -800,10 +823,16 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
 
-  // A blackout CARRIED over from a previous client is already in force and never fires `onChange`, so native has
-  // to be told here, after `hello` (R3V-5). Silent no-op when there is none.
+  // The CURRENT state is restated after `hello`, always (R3V-5, R4L-3). A blackout CARRIED over from a previous
+  // client is already in force and never fires `onChange`, so native has to be told. An INACTIVE one is posted
+  // too (`a:false`): native resets the JS-reported flag on `bye`/`hello`, but a torn client whose
+  // `endBlackout()` was suppressed toward native (it had already said `bye`) would otherwise leave an older
+  // receiver paused for this new, un-dark session. Only an active blackout is judged ("native has not declared
+  // support"): nothing is lost by an unheard `a:false`.
   if (blackout.isActive()) {
     announceBlackout(true);
+  } else if (mayTellNative()) {
+    bridge.post(encode(blackoutMessage(false, Date.now())));
   }
 
   client.launch();
@@ -825,10 +854,14 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     ...client,
     stop(timeout?: number): Promise<boolean> {
       torn = true;
+      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now (R4V-9)
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
       // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
       // the module's `launchedClient`, of a NEWER launch that has since taken them.
+      if (getCarrierClient<unknown>(carrier) === facade) {
+        setCarrierStatus(BugseeStatus.Stopped, carrier);
+      }
       clearCarrierClient(facade, carrier);
       if (launchedClient === publicClient) {
         launchedClient = undefined;
@@ -846,6 +879,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   };
   launchedClient = publicClient;
   setCarrierClient(facade, carrier);
+  setCarrierStatus(BugseeStatus.Launched, carrier); // what a repeat launch from another module copy reports
   return publicClient;
 }
 
@@ -904,12 +938,16 @@ function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void)
     },
     addService: (): void => refuse('addService'),
     registerExt: (): void => refuse('registerExt'),
+    // Redaction control (R4L-6 / R4V-7): ending a blackout un-redacts the visual capture and a lifecycle
+    // listener observes the session; a page may do neither. `startBlackout` stays (it only fails closed).
+    endBlackout: (): void => refuse('endBlackout'),
+    setLifecycleEventsListener: (): void => refuse('setLifecycleEventsListener'),
   };
   return { ...client, ...blocked } as unknown as Bugsee;
 }
 
 /** A repeat launch from a module copy that did not perform it: inert, but never `undefined`. */
-function inertClient(onError?: (error: unknown) => void): Bugsee {
+function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugsee {
   neverThrow(
     () =>
       onError?.(
@@ -956,8 +994,13 @@ function inertClient(onError?: (error: unknown) => void): Bugsee {
   return {
     startBlackout: ignored('startBlackout'),
     endBlackout: ignored('endBlackout'),
-    isBlackout: (): boolean => false,
-    getStatus: (): BugseeStatus => BugseeStatus.Launched, // consistent with isLaunched() below
+    // The session belongs to another module copy, but the carrier is shared (R4V-10): read the process flag and
+    // the OWNER's published state instead of claiming "not dark" / "Launched" for ever.
+    isBlackout: (): boolean => getCarrierBlackout(carrier),
+    getStatus: (): BugseeStatus =>
+      getCarrierClient<unknown>(carrier) === undefined
+        ? BugseeStatus.Stopped
+        : getCarrierStatus(carrier),
     getLaunchOptions: (): Record<string, never> => ({}),
     getHostLaunchOptions: (): Record<string, never> => ({}),
     setLifecycleEventsListener: ignored('setLifecycleEventsListener'),
@@ -976,7 +1019,9 @@ function inertClient(onError?: (error: unknown) => void): Bugsee {
     ext: refused('ext'),
     getService: refused('getService'),
     getServiceProvider: refused('getServiceProvider'),
-    isLaunched: (): boolean => true,
+    isLaunched: (): boolean =>
+      getCarrierClient<unknown>(carrier) !== undefined &&
+      getCarrierStatus(carrier) === BugseeStatus.Launched,
     launch: noop,
     stop: async (): Promise<boolean> => false,
     flush: async (): Promise<boolean> => false,

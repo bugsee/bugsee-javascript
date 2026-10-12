@@ -215,9 +215,48 @@ describe('R3L-1 — the .stopped marker follows the shared drain, whichever stop
     } as BugseeLaunchOptions);
     live.push(fresh);
     release(); // the old drain finishes now
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await old.stop()).toBe(true); // resolves when the shared drain (and the marker decision) is done
     expect(existsSync(marker(dir))).toBe(false);
     expect(isCleanlyStopped(subtree(dir))).toBe(false);
+  });
+
+  it('R4L-1: two live launches pinned to ONE subtree (separate carriers): stopping one never marks it, stopping the last does', async () => {
+    const dir = dirFor();
+    const a = launch('tok', opts({ dataDir: dir, transport: async () => ok(), carrier: {} }));
+    const b = launch('tok', opts({ dataDir: dir, transport: async () => ok(), carrier: {} }));
+    live.push(b);
+    expect(await a.stop()).toBe(true);
+    expect(existsSync(marker(dir))).toBe(false); // b is still writing here
+    expect(await b.stop()).toBe(true);
+    expect(existsSync(marker(dir))).toBe(true); // nobody is left
+  });
+
+  it('R4L-1: an UNPINNED relaunch (fresh subtree) still marks the OLD subtree stopped when its late drain finishes', async () => {
+    const dir = dirFor();
+    const { transport, release } = gated();
+    const unpinned = { instanceIdentity: undefined } as Partial<BugseeLaunchOptions>;
+    const old = launch('tok', opts({ dataDir: dir, transport, ...unpinned }));
+    void old.logException(new Error('in flight'));
+    expect(await old.stop(20)).toBe(false); // still draining
+    const fresh = await relaunch({
+      dataDir: dir,
+      transport: async () => ok(),
+      process: fakeProcess(),
+      systemProbe: probe,
+      systemMetricsSampler: () => [],
+      captureNetwork: false,
+      detectCrashes: false,
+      detectHangs: false,
+      stopTimeoutMs: 20,
+    } as BugseeLaunchOptions);
+    live.push(fresh);
+    const roots = readdirSync(dir).filter((name) => /^\d+-\d+-/.test(name));
+    expect(roots.length).toBe(2); // the old subtree and the relaunched one are different roots
+    release();
+    expect(await old.stop()).toBe(true);
+    const marked = roots.filter((name) => existsSync(join(dir, name, '.stopped')));
+    expect(marked.length).toBe(1); // exactly the OLD subtree is recoverable; the live one is not
+    expect(isCleanlyStopped(join(dir, marked[0] as string))).toBe(true);
   });
 });
 

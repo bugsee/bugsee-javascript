@@ -222,16 +222,19 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
 
   it('R2L-10: stop() flushes the capture store BEFORE it closes IndexedDB (a launched client only)', async () => {
     const order: string[] = [];
+    let heldRef: Set<string> | undefined;
     const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
-      flush: async () => void order.push('flush'),
+      flush: async () => void order.push(`flush(held=${heldRef?.size})`),
     });
     const { locks, options } = persisted({ captureStore });
+    heldRef = locks.held;
     const client = track(options);
     const held = locks.held;
     const stopping = client.stop();
     await stopping;
     await vi.waitFor(() => expect(held.size).toBe(0));
-    expect(order).toEqual(['flush']);
+    // The caller path and the drain observer (R4L-4) each commit once, and BOTH while the lock is still held.
+    expect(order).toEqual(['flush(held=1)', 'flush(held=1)']);
   });
 
   it('R2L-10: a flush that throws goes to onError and the stop still completes', async () => {

@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { type Bugsee, launch, type NodeRuntime } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
@@ -130,7 +131,8 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
       res.status(500).json({ ok: false });
     });
 
-    const server = app.listen(0);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening'); // an explicit host binds asynchronously: `address()` is null until then
     try {
       const port = (server.address() as AddressInfo).port;
       const users = ['alice@x.com', 'bob@x.com', 'carol@x.com'];
@@ -142,7 +144,7 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
           }).then((r) => r.text()),
         ),
       );
-      await client.flush(5000);
+      expect(await client.flush(5000)).toBe(true);
 
       const parsed = bundles.map(parseBundle);
       expect(parsed).toHaveLength(3);
@@ -193,7 +195,8 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
       }
     });
 
-    const server = app.listen(0);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening'); // an explicit host binds asynchronously: `address()` is null until then
     try {
       const port = (server.address() as AddressInfo).port;
       // The FIRST request must already be covered by the auto-appended error handler.
@@ -201,7 +204,7 @@ describe('express adapter — real-server concurrency isolation (e2e)', () => {
         headers: { 'x-user': 'dave@x.com' },
       });
       await res.text();
-      await client.flush(5000);
+      expect(await client.flush(5000)).toBe(true);
 
       expect(bundles).toHaveLength(1);
       const bundle = parseBundle(bundles[0] as Uint8Array);

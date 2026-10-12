@@ -93,7 +93,13 @@ import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watc
 import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
-import { createInstanceLayout, type InstanceIdentity, writeInstanceOwner } from './instance-layout';
+import {
+  createInstanceLayout,
+  type InstanceIdentity,
+  isInstanceRootLive,
+  releaseInstanceRoot,
+  writeInstanceOwner,
+} from './instance-layout';
 import { startLivenessHeartbeat } from './liveness-heartbeat';
 import {
   createFrameEnricher,
@@ -1162,8 +1168,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // NOT marked: its upload may still be running in this process, and recovering it now would duplicate it.
   //
   // The marker is written only when it can still be TRUE: the drain completed, the launch-time recovery has
-  // settled (it may still be staging bundles into the subtree), and no NEWER client holds the carrier slot (a
-  // relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
+  // settled (it may still be staging bundles into the subtree), and no OTHER live launch uses the same subtree root
+  // (tracked process-wide by `instance-layout`; a plain relaunch has a FRESH root, so the old one is still
+  // marked — R4L-1; a relaunch into the same PINNED `instanceIdentity` is live in this subtree; `writeInstanceOwner` clears the
   // marker at that launch, and an old drain finishing late must not put it back — R3L-3). A stopped client never
   // comes back to life (core is created `restartable: false`, so `client.launch()` after `stop()` is
   // refused — R2L-3): restarting only core would bring capture back with the heartbeat, the exit/signal
@@ -1178,9 +1185,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     if (marked || instanceLayout === undefined || !recoverySettled) {
       return;
     }
-    const current = getCarrierClient(carrier);
-    if (current !== undefined && current !== publicClient) {
-      return; // a newer client owns the process now
+    if (isInstanceRootLive(instanceLayout)) {
+      return; // another live launch writes into THIS subtree (a pinned identity): not recoverable (R3L-3/R4L-1)
     }
     marked = true;
     try {
@@ -1246,6 +1252,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
         return repeat;
       }
       tornDown = true;
+      if (instanceLayout !== undefined) {
+        releaseInstanceRoot(instanceLayout); // this launch no longer writes into its subtree
+      }
       const owned = getCarrierClient(carrier) === publicClient;
       if (owned) {
         setCarrierStatus(
