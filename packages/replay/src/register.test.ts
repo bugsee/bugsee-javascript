@@ -88,6 +88,34 @@ describe('registerReplay', () => {
     expect(String(errors[0])).toContain('blockSelector');
   });
 
+  it('threads onError into the recorder: canvas given up after repeated blackout restarts is reported (R2V-7)', () => {
+    const blackout = createBlackoutState();
+    const errors: unknown[] = [];
+    const client = fakeClient();
+    const fake = fakeRecord();
+    registerReplay(
+      client,
+      {},
+      {
+        record: fake.record,
+        blackout,
+        onError: (e) => errors.push(e),
+        canvas: {
+          recordCanvas: true,
+          sampling: { canvas: 2 },
+          dataURLOptions: { type: 'image/webp', quality: 0.6 },
+        },
+      },
+    );
+    client.providers[0]?.init(fakeInit());
+    client.providers[0]?.start({} as never);
+    for (let i = 0; i < 6; i++) {
+      blackout.start();
+      blackout.end();
+    }
+    expect(errors.filter((e) => /canvas/i.test(String(e)))).toHaveLength(1);
+  });
+
   it('builds the recorder with the fail-closed masking + checkoutEveryNms (started → rrweb record opts)', () => {
     const client = fakeClient();
     const rec = fakeRecord();

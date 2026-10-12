@@ -1,4 +1,5 @@
 import {
+  bindInputBlackout,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTracesSampler,
@@ -54,7 +55,7 @@ import {
   type ComposerWindow,
   createObscuringComposer,
 } from './obscuring-composer';
-import { byeMessage, encode, helloMessage } from './protocol';
+import { blackoutMessage, byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
@@ -583,11 +584,38 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // The client's blackout gate gates every interaction source below (same as the browser tier): a blacked-out
   // embedded page streams no presses, wheel turns or ui.* breadcrumbs to the host.
   const blackout = client.getService(BlackoutToken);
+  // Tell the NATIVE host. This SDK stops its own capture, but a WebView's pixels are recorded by the host
+  // (video / screenshots), which only it can pause. A message it does not understand is ignored by an older
+  // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
+  // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
+  let warnedNativeBlackout = false;
+  const announceBlackout = (active: boolean): void => {
+    bridge.post(encode(blackoutMessage(active, Date.now())));
+    const delivered = bridge.available;
+    if (warnedNativeBlackout || (delivered && control.config.nativeBlackout)) {
+      return;
+    }
+    warnedNativeBlackout = true;
+    neverThrow(
+      () =>
+        options.onError?.(
+          new Error(
+            delivered
+              ? "Bugsee: the native host has not declared blackout support; the blackout stops WebView capture in JS only and the host app's own video/screenshots are NOT paused"
+              : "Bugsee: blackout not delivered to native (no native bridge attached); the host app's own video/screenshots are NOT paused",
+          ),
+        ),
+      undefined,
+    );
+  };
+  blackout.onChange(announceBlackout);
   const inputSource = getOrCreateInterceptor(
     'webview-input',
     () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
+  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate (R2V-3).
+  bindInputBlackout(inputSource, blackout);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
   // coordinates belong to (`video.aux`) because nothing else knows it; here the native receiver

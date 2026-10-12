@@ -657,7 +657,10 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     if (processCarrier !== undefined) {
       setCarrierBlackout(active, processCarrier);
     }
-    lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
+    // A silent change (a launch hold, a handshake release) is bookkeeping the application never asked for.
+    if (!blackout.isChangeSilent()) {
+      lifecycle.emit(active ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded);
+    }
   });
   // The active-request context provider (framework adapters). When injected, the aggregator stamps each
   // entry's correlation ids and the provider is resolvable process-wide; absent → no-op.

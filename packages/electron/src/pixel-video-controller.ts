@@ -38,6 +38,10 @@ export function createPixelVideoController(
   options: PixelVideoControllerOptions,
 ): PixelVideoController {
   let active = false;
+  // Bumped by every start() and every stop(). A start() whose permission check was still pending when
+  // either happened is stale: it must not start the source (a stop() during the await would otherwise
+  // be followed by capture nobody can stop any more).
+  let generation = 0;
   // Bumped at every blackout start: a snapshot that was in flight across one is discarded.
   let blackoutEpoch = 0;
   let offBlackout: (() => void) | undefined;
@@ -69,10 +73,11 @@ export function createPixelVideoController(
       }
       // Robust: a throwing permission seam or source.start must never reject (the call is floated at launch —
       // an unhandled rejection would destabilize the host). Route to onError and stay inert.
+      const mine = ++generation;
       try {
         const granted = (await options.hasPermission?.()) ?? true;
-        if (!granted) {
-          return; // no permission → stay inert (no capture, snapshots return [])
+        if (!granted || mine !== generation) {
+          return; // no permission, or stopped / superseded meanwhile → stay inert
         }
         active = true;
         // The gate is read in the same synchronous step as the subscription, so no change can slip between.
@@ -88,6 +93,7 @@ export function createPixelVideoController(
       }
     },
     stop(): void {
+      generation += 1; // also cancels a start() still awaiting its permission
       if (!active) {
         return;
       }

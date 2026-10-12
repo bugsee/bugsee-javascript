@@ -20,6 +20,7 @@ export {
   MAX_USER_ATTACHMENTS,
 } from './attachments';
 export {
+  type BlackoutChangeOptions,
   type BlackoutGate,
   type BlackoutState,
   BlackoutToken,

@@ -3,6 +3,7 @@ import { createBlackoutState, InputTool } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type BrowserInputEnv,
+  bindInputBlackout,
   createBrowserInputSource,
   describeTarget,
   HOVER_SAMPLE_INTERVAL_MS,
@@ -1385,6 +1386,100 @@ describe('createBrowserInputSource', () => {
         target.emit('wheel', wheel({ deltaY: 2 }));
         frame.flush();
         expect(events.map((e) => (e as { scrollY: number }).scrollY)).toEqual([1, 2]);
+      });
+
+      describe('bindBlackout (R2V-3: a carrier-shared source follows the current client)', () => {
+        it('an ACTIVE source moves its subscription to the new gate and stops watching the old one', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const oldGate = createBlackoutState();
+          const newGate = createBlackoutState();
+          const source = createBrowserInputSource({
+            target,
+            scheduleFrame: frame.scheduleFrame,
+            blackout: oldGate,
+          });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          bindInputBlackout(source, newGate);
+          oldGate.start(); // the dead client's state must no longer matter
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          frame.flush();
+          expect(events).toHaveLength(1);
+          target.emit('wheel', wheel({ deltaY: 6 })); // pending when the blackout begins and ends
+          newGate.start();
+          newGate.end();
+          frame.flush();
+          expect(events).toHaveLength(1); // 6 cleared at the new gate's edges
+        });
+
+        it('unsubscribes from the OLD gate when rebinding', () => {
+          const target = fakeTarget();
+          const oldGate = createBlackoutState();
+          const unsub = vi.fn();
+          const watched = {
+            isActive: () => oldGate.isActive(),
+            onChange: (l: (a: boolean) => void) => {
+              const u = oldGate.onChange(l);
+              return () => {
+                unsub();
+                u();
+              };
+            },
+          };
+          const source = createBrowserInputSource({ target, blackout: watched });
+          source.onAny(() => {});
+          bindInputBlackout(source, createBlackoutState());
+          expect(unsub).toHaveBeenCalledTimes(1);
+        });
+
+        it('pending deltas are dropped when the gate is replaced', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const source = createBrowserInputSource({ target, scheduleFrame: frame.scheduleFrame });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          bindInputBlackout(source, createBlackoutState());
+          frame.flush();
+          expect(events).toEqual([]);
+        });
+
+        it('binding while INACTIVE subscribes only once the source activates, and not after it deactivates', () => {
+          const target = fakeTarget();
+          const gate = createBlackoutState();
+          const onChange = vi.spyOn(gate, 'onChange');
+          const source = createBrowserInputSource({ target });
+          bindInputBlackout(source, gate);
+          expect(onChange).not.toHaveBeenCalled();
+          const off = source.onAny(() => {});
+          expect(onChange).toHaveBeenCalledTimes(1);
+          off();
+          bindInputBlackout(source, gate);
+          expect(onChange).toHaveBeenCalledTimes(1); // inactive again: no subscription
+        });
+
+        it('binding undefined removes the gate (no subscription, nothing blocked)', () => {
+          const target = fakeTarget();
+          const frame = fakeFrame();
+          const gate = createBlackoutState();
+          const source = createBrowserInputSource({
+            target,
+            scheduleFrame: frame.scheduleFrame,
+            blackout: gate,
+          });
+          const events: unknown[] = [];
+          source.onAny((_s, e) => events.push(e));
+          bindInputBlackout(source, undefined);
+          gate.start();
+          target.emit('wheel', wheel({ deltaY: 5 }));
+          frame.flush();
+          expect(events).toHaveLength(1);
+        });
+
+        it('is a no-op for a source without bindBlackout', () => {
+          expect(() => bindInputBlackout({}, createBlackoutState())).not.toThrow();
+        });
       });
 
       it('unsubscribes from the gate when the source deactivates', () => {

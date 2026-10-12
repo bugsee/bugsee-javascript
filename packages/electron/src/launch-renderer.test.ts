@@ -13,24 +13,55 @@ import { decodeStreamEntry, encodeControl, isHello } from './protocol';
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
   const blackout = createBlackoutState();
+  const lifecycle: string[] = [];
   const client = {
     stop: vi.fn(() => Promise.resolve(true)),
     flush: vi.fn(() => Promise.resolve(true)),
     getService: vi.fn((token: unknown) => (token === BlackoutToken ? blackout : undefined)),
+    // What the real client does: refused while not launched; the core state change; events from the
+    // state change unless it is silent.
+    isLaunched: () => true,
+    startBlackout: () => blackout.start(),
+    endBlackout: () => blackout.end(),
+    isBlackout: () => blackout.isActive(),
+    emitLifecycleEvent: (type: string) => lifecycle.push(type.replace(/^.*Blackout/, '')),
   } as unknown as Bugsee;
+  // The real client emits BlackoutStarted/Ended for non-silent state changes.
+  blackout.onChange((active) => {
+    if (!blackout.isChangeSilent()) lifecycle.push(active ? 'Started' : 'Ended');
+  });
   let received: { appToken: string; options: BugseeLaunchOptions } | undefined;
   const launch = vi.fn(async (appToken: string, options: BugseeLaunchOptions) => {
     received = { appToken, options };
+    // What the real @bugsee/browser launch does with its options: dark BEFORE any provider starts; the hold
+    // is silent, an explicit startInBlackout announces itself after launch.
+    const was = blackout.isActive();
+    if (options.holdBlackout === true || options.startInBlackout === true) {
+      blackout.start({ silent: true });
+    }
+    if (options.startInBlackout === true && !was) lifecycle.push('Started');
     return { client, internals: undefined };
   });
   return {
     launch: launch as never,
     client,
     blackout,
+    lifecycle,
     get received() {
       return received;
     },
   };
+}
+
+/** The least a launched renderer client must offer for launchRenderer's blackout wiring to run. */
+function minimalClient(): Bugsee {
+  const blackout = createBlackoutState();
+  return {
+    stop: () => Promise.resolve(true),
+    getService: (token: unknown) => (token === BlackoutToken ? blackout : undefined),
+    isLaunched: () => true,
+    emitLifecycleEvent: () => {},
+  } as unknown as Bugsee;
 }
 
 /** A fake renderer↔main bridge that records posts/hellos and holds the control handler for driving. */
@@ -214,7 +245,7 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
     let injected: { triggerPipeline?: { report: (r: unknown) => Promise<unknown> } } | undefined;
     const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
-      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+      return { client: minimalClient(), internals: undefined };
     }) as never;
     await launchRenderer('tok', {
       bridge: fakeBridge().bridge,
@@ -229,7 +260,7 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
     let injected: { triggerPipeline?: unknown } | undefined;
     const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
-      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+      return { client: minimalClient(), internals: undefined };
     }) as never;
     await launchRenderer('tok', {
       bridge: fakeBridge().bridge,
@@ -252,7 +283,7 @@ describe('launchRenderer — incidents forward instead of uploading (R2)', () =>
       | undefined;
     const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
-      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+      return { client: minimalClient(), internals: undefined };
     }) as never;
     const harness = fakeBridge();
     await launchRenderer('tok', {
@@ -278,7 +309,7 @@ describe('launchRenderer — default post path', () => {
     let injected: { triggerPipeline: { report: (r: unknown) => Promise<unknown> } } | undefined;
     const fakeLaunch = (async (_t: string, o: never) => {
       injected = o as never;
-      return { client: { stop: () => Promise.resolve(true) }, internals: undefined };
+      return { client: minimalClient(), internals: undefined };
     }) as never;
     const harness = fakeBridge();
     await launchRenderer('tok', { bridge: harness.bridge, launch: fakeLaunch });
@@ -289,49 +320,164 @@ describe('launchRenderer — default post path', () => {
 });
 
 describe('launchRenderer - follows the main blackout (privacy: fail closed)', () => {
-  it('launches blacked out regardless of the caller, so nothing is captured before the handshake', async () => {
+  const session = (blackout?: boolean) =>
+    encodeControl({
+      command: 'session',
+      sessionId: 's',
+      ...(blackout !== undefined ? { blackout } : {}),
+    });
+
+  it('launches in a silent HOLD regardless of the caller, so nothing is captured before the handshake', async () => {
     const f = fakeLaunch();
     await launchRenderer('tok', { launch: f.launch, bridge: fakeBridge().bridge });
-    expect(f.received?.options.startInBlackout).toBe(true);
+    expect(f.received?.options.holdBlackout).toBe(true);
+    expect(f.blackout.isActive()).toBe(true);
     const g = fakeLaunch();
     await launchRenderer('tok', {
       launch: g.launch,
       bridge: fakeBridge().bridge,
-      startInBlackout: false,
-    });
-    expect(g.received?.options.startInBlackout).toBe(true); // a caller cannot switch this off
+      holdBlackout: false,
+    } as never);
+    expect(g.received?.options.holdBlackout).toBe(true); // a caller cannot switch this off
+    expect(g.blackout.isActive()).toBe(true);
   });
 
-  it('a session reply saying main is NOT blacked out releases the launch hold', async () => {
+  it('a session reply saying main is NOT blacked out releases the launch hold, silently', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
-    f.blackout.start(); // what startInBlackout does inside the real browser launch
-    b.drive(encodeControl({ command: 'session', sessionId: 's', blackout: false }));
+    b.drive(session(false));
     expect(f.blackout.isActive()).toBe(false);
+    expect(f.lifecycle).toEqual([]); // no Started before Launching, no Ended on release
   });
 
-  it('a session reply saying main IS blacked out keeps this renderer dark', async () => {
+  it('a session reply WITHOUT a blackout flag still releases the hold (the handshake is the release)', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
-    f.blackout.start();
-    b.drive(encodeControl({ command: 'session', sessionId: 's', blackout: true }));
-    expect(f.blackout.isActive()).toBe(true);
-    b.drive(encodeControl({ command: 'blackout-end' }));
+    b.drive(session());
     expect(f.blackout.isActive()).toBe(false);
   });
 
-  it('blackout-start / blackout-end control commands drive the BlackoutToken state', async () => {
+  it('a session reply saying main IS blacked out keeps this renderer dark with no flicker, announced once', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     const seen: boolean[] = [];
     f.blackout.onChange((a) => seen.push(a));
+    b.drive(session(true));
+    expect(f.blackout.isActive()).toBe(true);
+    expect(seen).toEqual([]); // the hold never opened, even for an instant
+    expect(f.lifecycle).toEqual(['Started']);
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(false);
+    expect(f.lifecycle).toEqual(['Started', 'Ended']);
+  });
+
+  it('blackout-start / blackout-end control commands drive the BlackoutToken state and the events', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(session(false));
+    const seen: boolean[] = [];
+    f.blackout.onChange((a) => seen.push(a));
     b.drive(encodeControl({ command: 'blackout-start' }));
     expect(f.blackout.isActive()).toBe(true);
+    b.drive(encodeControl({ command: 'blackout-start' })); // idempotent
     b.drive(encodeControl({ command: 'blackout-end' }));
     expect(f.blackout.isActive()).toBe(false);
     expect(seen).toEqual([true, false]);
+    expect(f.lifecycle).toEqual(['Started', 'Ended']);
+  });
+
+  it('R2V-1: startBlackout() right after launchRenderer() (before the handshake) survives a bo:false reply', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    client.startBlackout();
+    expect(client.isBlackout()).toBe(true);
+    b.drive(session(false));
+    expect(f.blackout.isActive()).toBe(true); // the app asked for it; main does not get to end it
+    expect(f.lifecycle).toEqual(['Started']); // announced at the app's call, once
+    client.endBlackout();
+    expect(f.blackout.isActive()).toBe(false);
+    expect(f.lifecycle).toEqual(['Started', 'Ended']);
+  });
+
+  it("R2V-1: an app-local blackout is not ended by main's blackout-end, and main's is not ended by endBlackout()", async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(session(false));
+    client.startBlackout();
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(true); // still the app's
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    client.endBlackout();
+    expect(f.blackout.isActive()).toBe(true); // still main's
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(false);
+    expect(f.lifecycle).toEqual(['Started', 'Ended']); // one visible span, not one per source
+  });
+
+  it('R2V-1: an explicit startInBlackout:true survives the handshake (bo:false) and is ended only by endBlackout()', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', {
+      launch: f.launch,
+      bridge: b.bridge,
+      startInBlackout: true,
+    });
+    expect(f.received?.options.startInBlackout).toBe(true);
+    b.drive(session(false));
+    expect(f.blackout.isActive()).toBe(true);
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(true);
+    client.endBlackout();
+    expect(f.blackout.isActive()).toBe(false);
+    expect(f.lifecycle).toEqual(['Started', 'Ended']);
+  });
+
+  it('startBlackout()/endBlackout() on a client that is not launched are refused, as in core', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(session(false));
+    const setLaunched = (v: boolean) => {
+      (f.client as unknown as { isLaunched: () => boolean }).isLaunched = () => v;
+    };
+    setLaunched(false);
+    client.startBlackout();
+    expect(f.blackout.isActive()).toBe(false);
+    setLaunched(true);
+    client.startBlackout();
+    setLaunched(false);
+    client.endBlackout();
+    expect(f.blackout.isActive()).toBe(true);
+  });
+
+  it('control traffic BEFORE the handshake cannot open the hold: a blackout-end (or app endBlackout) leaves it dark', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(encodeControl({ command: 'blackout-start' }));
+    b.drive(encodeControl({ command: 'blackout-end' }));
+    expect(f.blackout.isActive()).toBe(true);
+    client.startBlackout();
+    client.endBlackout();
+    expect(f.blackout.isActive()).toBe(true);
+    b.drive(session(false));
+    expect(f.blackout.isActive()).toBe(false);
+  });
+
+  it('a repeated handshake (reply re-sent) never un-darkens an app blackout', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    b.drive(session(false));
+    client.startBlackout();
+    b.drive(session(false));
+    expect(f.blackout.isActive()).toBe(true);
   });
 });

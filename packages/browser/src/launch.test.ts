@@ -14,6 +14,7 @@ import {
   markerDatabaseName,
 } from '@bugsee/browser-utils';
 import {
+  BlackoutToken,
   type BundleStore,
   BundleStoreToken,
   CaptureStoreToken,
@@ -900,6 +901,61 @@ describe('launch', () => {
         expect(client.getLaunchOptions()).toMatchObject({
           'com.bugsee.option.capture.start-in-blackout': true,
         });
+      });
+
+      it('the blackout is already in force when the FIRST provider starts (R2V-12 / m18)', async () => {
+        const carrier = {};
+        const atStart: boolean[] = [];
+        contributeServiceManifest((registrar) => {
+          // The manifest is handed the client itself at runtime (typed narrowly as a registrar).
+          const internal = registrar as unknown as {
+            addCaptureProvider(provider: unknown): void;
+            isBlackout(): boolean;
+          };
+          internal.addCaptureProvider({
+            name: 'probe',
+            init: () => {},
+            start: () => atStart.push(internal.isBlackout()),
+            stop: () => {},
+          });
+        }, carrier);
+        await launchTracked(
+          'tok',
+          baseOptions({ captureStore: memStore(), startInBlackout: true, carrier }),
+        );
+        expect(atStart).toEqual([true]);
+      });
+
+      it('BlackoutStarted comes AFTER Launching, exactly once, never before it (R2V-11)', async () => {
+        const seen: string[] = [];
+        await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: memStore(),
+            startInBlackout: true,
+            lifecycleEventsListener: (type) => seen.push(type),
+          }),
+        );
+        const names = seen
+          .filter((t) => /Launching|Launched|Blackout/.test(t))
+          .map((t) => t.split('.').at(-1));
+        expect(names).toEqual(['Launching', 'Launched', 'BlackoutStarted']);
+      });
+
+      it('an internal launch HOLD is dark but silent: no event on hold, none on its release', async () => {
+        const seen: string[] = [];
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            captureStore: memStore(),
+            holdBlackout: true,
+            lifecycleEventsListener: (type) => seen.push(type.split('.').at(-1) as string),
+          }),
+        );
+        expect(client.isBlackout()).toBe(true);
+        client.getService(BlackoutToken).end({ silent: true });
+        expect(client.isBlackout()).toBe(false);
+        expect(seen.filter((t) => t.startsWith('Blackout'))).toEqual([]);
       });
 
       it('a non-true value does not black the page out', async () => {

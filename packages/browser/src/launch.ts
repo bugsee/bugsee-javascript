@@ -49,6 +49,7 @@ import {
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
+  LifecycleEvents,
   type LifecycleEventsListener,
   ReportMarkerStoreToken,
   recoverReports,
@@ -74,7 +75,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-import { createBrowserInputSource } from './input-source';
+import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
   createReportDialogLauncher,
@@ -237,6 +238,12 @@ export interface BugseeLaunchOptions {
    * (see `startBlackout()` for exactly what a blackout covers). Default false.
    */
   startInBlackout?: boolean;
+  /**
+   * INTERNAL (the Electron renderer): launch dark like `startInBlackout`, but as a SILENT hold the owner
+   * releases with `getService(BlackoutToken).end({ silent: true })` — no lifecycle event for the hold
+   * itself. Not a Bugsee option and not reported in `sdk.options`.
+   */
+  holdBlackout?: boolean;
   /** Report dialog: the summary must be filled in before Send. Default false (as on mobile). */
   reportSummaryRequired?: boolean;
   /** Report dialog: the description must be filled in. Default false. */
@@ -259,6 +266,11 @@ export interface BugseeLaunchOptions {
    * users sign in on their own device, and call `clearUserIdentifier()` on logout. While off, nothing is
    * written, a value left by an earlier opted-in launch is removed at launch, and `clearUserIdentifier()`
    * always removes it. Storage failures never break the SDK; they go to `onError`.
+   *
+   * "Nothing is written" is about THIS identifier store only. A pending incident marker (the crash-recovery
+   * record in IndexedDB) and a report already assembled into the upload queue keep the `userIdentifier` they
+   * were created with until they are uploaded or expire, and `clearUserIdentifier()` does not rewrite them:
+   * the clear applies to reports created afterwards.
    */
   persistUserIdentifier?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
@@ -672,8 +684,12 @@ async function buildLaunch(
   // event before the app is able to call `startBlackout()` itself. Goes through the state service, the same
   // one `client.startBlackout()` drives; the lifecycle events fire as for any blackout.
   const blackout = client.getService(BlackoutToken);
-  if (resolved.options.get(BugseeOption.CaptureStartInBlackout, false)) {
-    blackout.start();
+  const startInBlackout = resolved.options.get(BugseeOption.CaptureStartInBlackout, false);
+  const wasBlackedOut = blackout.isActive();
+  if (startInBlackout || options.holdBlackout === true) {
+    // SILENT: the client has not launched yet, and a BlackoutStarted that precedes Launching describes a
+    // client the application cannot observe. The event for a real `startInBlackout` is emitted after launch.
+    blackout.start({ silent: true });
   }
 
   // The identifier store. Persistence is OPT-IN (PII): when off the store is still created, but only ever
@@ -735,6 +751,9 @@ async function buildLaunch(
     () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
+  // The source is carrier-shared and may belong to an earlier (relaunched-away) client: bind it to THIS
+  // client's blackout gate, or it keeps reading the dead client's state (R2V-3).
+  bindInputBlackout(inputSource, blackout);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
   // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,
@@ -808,6 +827,11 @@ async function buildLaunch(
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   client.launch();
+  // The deferred event of `startInBlackout`: after Launching, and only when this launch raised the
+  // blackout (a carried one is not a new event). An internal hold never announces itself.
+  if (startInBlackout && !wasBlackedOut && blackout.isActive()) {
+    client.emitLifecycleEvent(LifecycleEvents.BlackoutStarted);
+  }
 
   // Recovery on the next launch. Self's own namespaces are empty (a fresh instanceId per launch), so the
   // prior crashed session is just a DEAD SIBLING — ALL recovery is dead-sibling recovery (BD9), gated by each

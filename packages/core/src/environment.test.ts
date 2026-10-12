@@ -19,6 +19,19 @@ describe('createEnvironment — user identifier', () => {
     expect(env.getUserIdentifier()).toBe('b');
   });
 
+  it.each([
+    [null],
+    [undefined],
+    [42],
+    [{}],
+    [true],
+  ])('a non-string (%s) is a CLEAR, never stored or shipped as an email (R2V-5)', (bad) => {
+    const env = createEnvironment();
+    env.setUserIdentifier('a@b.c');
+    env.setUserIdentifier(bad as unknown as string);
+    expect(env.getUserIdentifier()).toBeNull();
+  });
+
   it('clears back to null', () => {
     const env = createEnvironment();
     env.setUserIdentifier('a');

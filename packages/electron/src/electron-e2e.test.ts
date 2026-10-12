@@ -151,13 +151,31 @@ async function bootRenderer(
   const blackout = createBlackoutState();
   const fakeBrowserLaunch = (async (
     _token: string,
-    options: { captureStore: { add(e: StoredEntry): void }; startInBlackout?: boolean },
+    options: {
+      captureStore: { add(e: StoredEntry): void };
+      startInBlackout?: boolean;
+      holdBlackout?: boolean;
+    },
   ) => {
     injectedStore = options.captureStore;
-    // What the real @bugsee/browser launch does with the option: the blackout is up before any provider.
-    if (options.startInBlackout === true) blackout.start();
+    // What the real @bugsee/browser launch does with the options: the blackout is up before any provider.
+    if (options.startInBlackout === true || options.holdBlackout === true) {
+      blackout.start({ silent: true });
+    }
     const getService = (token: unknown) => (token === BlackoutToken ? blackout : undefined);
-    return { client: { stop, flush, getService }, internals: undefined };
+    return {
+      client: {
+        stop,
+        flush,
+        getService,
+        isLaunched: () => true,
+        startBlackout: () => blackout.start(),
+        endBlackout: () => blackout.end(),
+        isBlackout: () => blackout.isActive(),
+        emitLifecycleEvent: () => {},
+      },
+      internals: undefined,
+    };
   }) as never;
 
   let sessionId: string | undefined;

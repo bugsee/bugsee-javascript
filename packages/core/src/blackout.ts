@@ -20,12 +20,24 @@ export interface BlackoutGate {
   onChange(listener: (active: boolean) => void): () => void;
 }
 
+/** Options of a state change. */
+export interface BlackoutChangeOptions {
+  /**
+   * The change is internal bookkeeping (a launch hold, a handshake release), not something the application
+   * did or should hear about: capture sources still follow it, lifecycle events (BlackoutStarted/Ended)
+   * are NOT emitted for it. A listener that cares reads {@link BlackoutState.isChangeSilent} while handling it.
+   */
+  silent?: boolean;
+}
+
 /** The mutable state the Client drives. */
 export interface BlackoutState extends BlackoutGate {
   /** Begin a blackout (no-op when already active). */
-  start(): void;
+  start(options?: BlackoutChangeOptions): void;
   /** End the blackout (no-op when not active). */
-  end(): void;
+  end(options?: BlackoutChangeOptions): void;
+  /** True while listeners are being told about a change that was requested `silent`. */
+  isChangeSilent(): boolean;
 }
 
 /** The blackout state's identity in the internal container (resolve with `client.getService`). */
@@ -56,7 +68,26 @@ export function createBlackoutState(
   let active = initiallyActive;
   // Subscribed listener -> the last state it was told (or was born into).
   const listeners = new Map<(active: boolean) => void, boolean>();
+  // Whether the change being delivered was requested silently (see BlackoutChangeOptions).
+  let silentChange = false;
   let dispatching = false;
+  // Set once the redelivery cap is hit: the state is pinned ACTIVE for the final delivery and any
+  // set() a listener makes meanwhile is ignored.
+  let forced = false;
+
+  const deliverOnce = (): void => {
+    for (const [listener, told] of [...listeners]) {
+      if (!listeners.has(listener) || told === active) {
+        continue;
+      }
+      listeners.set(listener, active);
+      try {
+        listener(active);
+      } catch (error) {
+        onError?.(error);
+      }
+    }
+  };
 
   const dispatch = (): void => {
     dispatching = true;
@@ -68,9 +99,18 @@ export function createBlackoutState(
           return;
         }
         if (round >= MAX_DELIVERY_ROUNDS) {
+          // FAIL CLOSED: a subscriber (replay!) must never be left believing "not blacked out" while the
+          // state is unsettled. Pin the state ACTIVE and tell every out-of-date listener once, ignoring
+          // whatever the misbehaving listener does meanwhile.
           onError?.(
-            new Error('blackout: a listener keeps toggling the blackout; delivery stopped'),
+            new Error(
+              'blackout: a listener keeps toggling the blackout; the blackout was forced active',
+            ),
           );
+          forced = true;
+          active = true;
+          silentChange = false; // the forced state is something the application must hear about
+          deliverOnce();
           return;
         }
         for (const [listener] of pending) {
@@ -87,14 +127,16 @@ export function createBlackoutState(
       }
     } finally {
       dispatching = false;
+      forced = false;
     }
   };
 
-  const set = (next: boolean): void => {
-    if (active === next) {
+  const set = (next: boolean, options?: BlackoutChangeOptions): void => {
+    if (active === next || forced) {
       return;
     }
     active = next;
+    silentChange = options?.silent === true;
     if (!dispatching) {
       dispatch();
     }
@@ -102,8 +144,9 @@ export function createBlackoutState(
 
   return {
     isActive: () => active,
-    start: () => set(true),
-    end: () => set(false),
+    isChangeSilent: () => silentChange,
+    start: (options) => set(true, options),
+    end: (options) => set(false, options),
     onChange(listener) {
       listeners.set(listener, active);
       return () => {

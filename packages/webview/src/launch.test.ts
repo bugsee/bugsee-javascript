@@ -538,6 +538,121 @@ describe('launch (webview)', () => {
       expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
     });
 
+    describe('the native host is told (R2V-2: its video is paused only by the host)', () => {
+      const blackoutMsgs = (fake: ReturnType<typeof fakeGlobal>) =>
+        fake.msgs().filter((m) => (m as { k: string }).k === 'blackout') as unknown as Array<{
+          a: boolean;
+          ts: number;
+          b: number;
+        }>;
+      const bootWith = (over: Partial<BugseeWebViewLaunchOptions> = {}) => {
+        const fake = fakeGlobal();
+        const errors: unknown[] = [];
+        const client = track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            onError: (e) => errors.push(e),
+            ...over,
+          }),
+        );
+        return { fake, client, errors };
+      };
+
+      it('startBlackout()/endBlackout() cross the bridge as blackout messages, schema-shaped', () => {
+        const { fake, client } = bootWith();
+        client.startBlackout();
+        client.startBlackout(); // idempotent: no second message
+        client.endBlackout();
+        const msgs = blackoutMsgs(fake);
+        expect(msgs.map((m) => m.a)).toEqual([true, false]);
+        expect(msgs[0]?.b).toBe(1);
+        expect(typeof msgs[0]?.ts).toBe('number');
+        expect(bridgeSchema.definitions.blackout.required).toEqual(['b', 'k', 'a', 'ts']);
+      });
+
+      it('warns ONCE through onError while native has not declared blackout support', () => {
+        const { client, errors } = bootWith();
+        client.startBlackout();
+        client.endBlackout();
+        client.startBlackout();
+        const warnings = errors.filter(
+          (e) => /native/i.test(String(e)) && /blackout/i.test(String(e)),
+        );
+        expect(warnings).toHaveLength(1);
+      });
+
+      it('does not warn once native declared blackout support in its control reply', () => {
+        const { fake, client, errors } = bootWith();
+        sendControl(fake.global, { config: { blackout: true } });
+        client.startBlackout();
+        client.endBlackout();
+        expect(errors).toEqual([]);
+        expect(blackoutMsgs(fake).map((m) => m.a)).toEqual([true, false]);
+      });
+
+      it('a native that later withdraws support is warned about again', () => {
+        const { fake, client, errors } = bootWith();
+        sendControl(fake.global, { config: { blackout: true } });
+        client.startBlackout();
+        sendControl(fake.global, { config: { blackout: false } });
+        client.endBlackout();
+        client.startBlackout();
+        expect(errors).toHaveLength(1);
+      });
+
+      it('warns when there is no native bridge to deliver to (the message is buffered, not delivered)', () => {
+        const errors: unknown[] = [];
+        const client = track('tok', baseOptions({ global: {}, onError: (e) => errors.push(e) }));
+        client.startBlackout();
+        expect(errors.some((e) => /not delivered|no native bridge/i.test(String(e)))).toBe(true);
+      });
+
+      it('a throwing onError never breaks the call', () => {
+        const fake = fakeGlobal();
+        const client = track(
+          'tok',
+          baseOptions({
+            global: fake.global,
+            onError: () => {
+              throw new Error('host handler');
+            },
+          }),
+        );
+        expect(() => client.startBlackout()).not.toThrow();
+        expect(client.isBlackout()).toBe(true);
+      });
+    });
+
+    it('R2V-3: a relaunch on the same carrier gates the SHARED input source with the NEW client', async () => {
+      const carrier = {};
+      const doc = fakeEventTarget();
+      const win = fakeEventTarget();
+      const opts = (global: object) =>
+        baseOptions({
+          global,
+          carrier,
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+        });
+      const first = launch('tok', opts(fakeGlobal().global));
+      await first.stop();
+      const fake = fakeGlobal();
+      const second = track('tok', opts(fake.global));
+      second.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      second.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
+    });
+
     it('does not suppress non-visual capture (an app breadcrumb still streams)', () => {
       const { fake, client } = boot();
       client.startBlackout();

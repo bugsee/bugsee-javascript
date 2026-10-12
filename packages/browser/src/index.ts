@@ -39,7 +39,9 @@ export {
   realBrowserProbe,
 } from './environment';
 export {
+  type BlackoutBindable,
   type BrowserInputEnv,
+  bindInputBlackout,
   createBrowserInputSource,
   describeTarget,
   type TargetDescriptor,

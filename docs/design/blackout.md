@@ -15,15 +15,32 @@ not know which providers are visual: each visual source is handed the read-only 
 
 | Source | Behaviour while blacked out |
 |---|---|
-| Session replay (`@bugsee/replay`) | The rrweb recorder is STOPPED (not muted). Restarted at the end with a fresh Meta + FullSnapshot. A blackout in force before the lazy replay chunk loads means it never records. |
-| Input presses / keys (`input.json`) | Dropped at the provider and at the source. |
+| Session replay (`@bugsee/replay`) | The rrweb recorder is STOPPED through its stop handle (its DOM observers are disconnected, not muted). Restarted at the end with a fresh Meta + FullSnapshot. A blackout in force before the lazy replay chunk loads means it never records. With the opt-in canvas add-on rrweb's own canvas recorder leaks a Worker / rAF loops per restart (it cannot be released or paused), so canvas recording is bounded to 4 recorder starts per page; after that replay restarts DOM-only and `onError` says so once. |
+| Input presses / keys (`input.json`) | Dropped at the PROVIDER (at emission). Only the wheel is also gated at the source (below); presses and keys are not gated in the source itself. |
 | Wheel / scroll deltas | Not collected while blacked out; pending (coalesced) deltas are cleared at both edges, so a turn made during a blackout is never flushed after it. |
 | `ui.*` interaction breadcrumbs (focus/change/submit) | Dropped. |
 | View hierarchy (`viewtree.json`) | A report built during a blackout carries none. |
 | Performance interactions (`ui.interaction`, Event Timing) | Dropped when the interaction OVERLAPS a blackout span on the event clock, not merely when it is delivered during one (Event Timing entries arrive late). Spans are kept for 5 minutes (max 64). |
-| Electron renderers | The main client's blackout is forwarded to every renderer over the control channel (`blackout-start` / `blackout-end`, and the state rides every `session` handshake reply). A renderer launches blacked out and is released by the handshake, so nothing is captured before it knows main's state. Renderers apply it through `BlackoutToken`. |
+| Electron renderers | The main client's blackout is forwarded to every renderer over the control channel (`blackout-start` / `blackout-end`, and the state rides every `session` handshake reply; a main without a probe says `bo:false`). See "Electron renderers: three reasons to be dark" below. |
 | Electron opt-in pixel video | On start the controller stops the source and CLEARS its buffer (frames just before the blackout are discarded too); snapshots are empty for the span, including one already in flight; the source restarts into an empty buffer at the end. |
-| WebView | The input and `ui.*` providers (and the wheel source) take the client's gate like the browser tier. |
+| WebView (JS side) | The input and `ui.*` providers (and the wheel source) take the client's gate like the browser tier. The shared input source is re-bound to the CURRENT client's gate on every launch, so a relaunch does not leave it reading the dead client's state. |
+| WebView (NATIVE host video) | **Not stopped by this SDK alone.** The pixels of a WebView are recorded by the native host (its video / screenshots). Every blackout change is sent over the bridge as a `blackout` message (`{b,k:'blackout',a,ts}`, in `bridge-protocol.schema.json`) and the host must pause AND clear its video while `a` is true, declaring support with `config.blackout: true` in its control reply. Until the host does, or when no native bridge is attached, the first blackout reports through `onError` that the native video is NOT paused. **Follow-up (other repos):** the Android and iOS receivers must handle `k:'blackout'` and declare `config.blackout`; until they ship, a blackout in a WebView protects JS-side capture only. |
+
+## State rules
+
+- `startBlackout()` / `endBlackout()` are ignored while the client is not launched (no state change, no events:
+  there is nothing to black out), as on Android. `startBlackout()` before `launch()` is therefore a no-op; use
+  `startInBlackout` for a blackout from the first frame.
+- The state is process-level: it lives on the carrier, so `relaunch()` (a new client) keeps a blackout in force
+  silently, and the lifecycle listener does not see a Started/Ended pair for the carry. A carried blackout is
+  still ended with `endBlackout()` (also while the client is stopped: the carried flag is cleared silently).
+- Listener re-entrancy is bounded. A listener that keeps toggling the blackout from inside its own notification
+  is cut off after 100 rounds and the blackout is FORCED ACTIVE (fail closed): every out-of-date listener,
+  including replay and the carrier writer, is told "active" once, further `start`/`end` calls made by listeners
+  during that final delivery are ignored, and `onError` reports it. The application can end it afterwards.
+- Lifecycle events: `BlackoutStarted` / `BlackoutEnded` are emitted for the application's own transitions only.
+  `startInBlackout` emits `BlackoutStarted` AFTER `Launching` (never before it), and only when that launch raised
+  the blackout. Internal bookkeeping (the Electron launch hold, the handshake release) is silent.
 
 ## What a blackout does NOT stop (be explicit with your users)
 
@@ -55,8 +72,24 @@ capture can begin. The browser launch option `startInBlackout: true`
 (`com.bugsee.option.capture.start-in-blackout`, default `false`) raises the blackout BEFORE any provider is
 added or started: nothing visual or interaction-related is captured until `endBlackout()`.
 
-Electron renderers always launch with it set and are released by the session handshake (main's blackout state).
-If a renderer never completes the handshake (no preload bridge) it stays dark: fail closed.
+It is applied before any provider starts, so no provider can observe an un-darkened moment, and a replay chunk
+that loads later reads the gate as already active.
+
+## Electron renderers: three reasons to be dark
+
+A renderer is dark while ANY of three independent flags is set, so none can end another's blackout:
+
+1. **launch hold** - set at launch (silent, internal option `holdBlackout`), released ONLY by the session
+   handshake. Nothing is captured before the renderer knows main's state. If no handshake ever arrives (no
+   preload bridge) the renderer stays dark: fail closed. `blackout-start` / `blackout-end` / app calls before
+   the handshake cannot open the hold.
+2. **main's state** - `blackout-start` / `blackout-end` and the handshake's `bo`. The reply's `bo` is applied
+   before the hold is released, so a dark main never flickers the renderer light.
+3. **app-local state** - the renderer's own `startBlackout()` / `endBlackout()` and an explicit
+   `startInBlackout: true` (which therefore survives a `bo:false` reply). Main's `blackout-end` does NOT end it,
+   and the app's `endBlackout()` does not end main's.
+
+The application is told (`BlackoutStarted` / `BlackoutEnded`) about the union of 2 and 3 only, never about the hold.
 
 ## Replay marker (viewer follow-up)
 
@@ -64,10 +97,16 @@ At blackout start and end the recorder emits an rrweb custom event (type 5) with
 `payload: { active: true | false }`, so the stream says "recording was suspended here" instead of jumping from
 the last pre-blackout DOM to the post-blackout DOM (which a player shows as a frozen screen). It is backwards
 compatible (players ignore custom events they do not know). **Follow-up (viewer repo):** render a "blacked out"
-overlay between the two markers.
+overlay between the two markers. The end marker is only emitted for a blackout whose start marker was emitted:
+a blackout that began before recording (`startInBlackout`, or before the lazy replay chunk loaded) has no markers
+at all, so the stream never contains an orphan `{active:false}`; the end marker lands BEFORE the fresh snapshot.
 
 ## Known limits
 
 - A blackout begun in an Electron renderer by the app itself is local to that renderer; only main's blackout is
-  forwarded. Main's `blackout-end` also ends a renderer-local one (main is authoritative).
+  forwarded. Main's `blackout-end` does not end a renderer-local one (they are separate flags, above).
 - The webview and webworker tiers do not (yet) offer `startInBlackout`.
+- WebView native video depends on receiver support (above). Electron pixel video is gated in the main process;
+  a pending macOS permission check cannot start the source after `stop()`.
+- Pending incident markers keep the `userIdentifier` they captured; that is an identifier-privacy limit, not a
+  blackout one (see PROGRESS, user identifier persistence).

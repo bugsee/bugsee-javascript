@@ -179,6 +179,87 @@ describe('createBlackoutState — re-entrant toggles (L3)', () => {
     );
   });
 
+  it('at the redelivery cap the state is forced ACTIVE and every listener is told so (fail closed)', () => {
+    const onError = vi.fn();
+    const state = createBlackoutState(onError);
+    const first: boolean[] = [];
+    const replay: boolean[] = [];
+    // The toggler is subscribed FIRST (like the client's own lifecycle listener); the replay-like
+    // subscriber after it. Whatever round the cap lands on, the last state told must be `true`.
+    state.onChange((active) => {
+      first.push(active);
+      if (active) {
+        state.end();
+      } else {
+        state.start();
+      }
+    });
+    state.onChange((active) => replay.push(active));
+    state.start();
+    expect(onError).toHaveBeenCalledTimes(1);
+    // cut off at the documented 100 rounds: 100 rounds, the last of them the forced one
+    expect(first.length).toBe(101);
+    expect(state.isActive()).toBe(true);
+    expect(first.at(-1)).toBe(true);
+    expect(replay.at(-1)).toBe(true);
+  });
+
+  describe('the forced (fail-closed) delivery', () => {
+    const scenario = (removeVictim: boolean) => {
+      const onError = vi.fn();
+      const state = createBlackoutState(onError);
+      const boom = new Error('listener failed in the forced delivery');
+      let offVictim: () => void = () => {};
+      const victim = vi.fn();
+      state.onChange((active) => (active ? state.end() : state.start())); // the toggler
+      state.onChange(() => {
+        // The cap report precedes the forced delivery: from then on this listener fails.
+        if (onError.mock.calls.length > 0) {
+          if (removeVictim) offVictim();
+          throw boom;
+        }
+      });
+      offVictim = state.onChange(victim);
+      state.start();
+      return { onError, boom, victim, state };
+    };
+
+    it('isolates a throwing listener to onError and still tells the listeners after it', () => {
+      const { onError, boom, victim, state } = scenario(false);
+      expect(onError).toHaveBeenCalledWith(boom);
+      expect(state.isActive()).toBe(true);
+      expect(victim).toHaveBeenCalledTimes(1);
+      expect(victim).toHaveBeenCalledWith(true);
+    });
+
+    it('skips a listener that was unsubscribed by an earlier one during it', () => {
+      const { victim, state } = scenario(true);
+      expect(state.isActive()).toBe(true);
+      expect(victim).not.toHaveBeenCalled();
+    });
+  });
+
+  it('a listener that settles within the cap is not reported and ends consistent', () => {
+    const onError = vi.fn();
+    const state = createBlackoutState(onError);
+    const seen: boolean[] = [];
+    let flips = 0;
+    state.onChange((active) => {
+      if (flips < 40) {
+        flips += 1;
+        if (active) {
+          state.end();
+        } else {
+          state.start();
+        }
+      }
+    });
+    state.onChange((active) => seen.push(active));
+    state.start();
+    expect(onError).not.toHaveBeenCalled();
+    expect(state.isActive()).toBe(seen.at(-1));
+  });
+
   it('a listener unsubscribed mid-dispatch is not called afterwards', () => {
     const state = createBlackoutState();
     const second = vi.fn();
@@ -198,5 +279,54 @@ describe('createBlackoutState — re-entrant toggles (L3)', () => {
     expect(listener).not.toHaveBeenCalled();
     state.end();
     expect(listener).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('createBlackoutState — silent transitions (R2V-11)', () => {
+  it('a silent start/end is flagged silent while listeners are told', () => {
+    const state = createBlackoutState();
+    const seen: Array<[boolean, boolean]> = [];
+    state.onChange((active) => seen.push([active, state.isChangeSilent()]));
+    state.start({ silent: true });
+    state.end({ silent: true });
+    expect(seen).toEqual([
+      [true, true],
+      [false, true],
+    ]);
+  });
+
+  it('a normal start/end is not silent, and a silent flag does not stick to the next call', () => {
+    const state = createBlackoutState();
+    const seen: Array<[boolean, boolean]> = [];
+    state.onChange((active) => seen.push([active, state.isChangeSilent()]));
+    state.start({ silent: true });
+    state.end();
+    state.start();
+    expect(seen).toEqual([
+      [true, true],
+      [false, false],
+      [true, false],
+    ]);
+  });
+
+  it('a no-op set (no transition) delivers nothing, silent or not', () => {
+    const state = createBlackoutState();
+    const listener = vi.fn();
+    state.start({ silent: true });
+    state.onChange(listener);
+    state.start({ silent: true });
+    state.start();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('a forced (fail-closed) delivery is never silent', () => {
+    const state = createBlackoutState(vi.fn());
+    const lastSilent: boolean[] = [];
+    state.onChange((active) =>
+      active ? state.end({ silent: true }) : state.start({ silent: true }),
+    );
+    state.onChange(() => lastSilent.push(state.isChangeSilent()));
+    state.start({ silent: true });
+    expect(lastSilent.at(-1)).toBe(false);
   });
 });

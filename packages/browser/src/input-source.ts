@@ -476,8 +476,9 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
   #wheelAccum: WheelAccumulator | null = null;
   #wheelFrameScheduled = false;
   #nextGestureId = 1;
-  readonly #blackout: BlackoutGate | undefined;
+  #blackout: BlackoutGate | undefined;
   #offBlackout: (() => void) | undefined;
+  #activated = false;
 
   // Each handler is wrapped by #dispatch: it builds the entry (returning undefined to skip) inside a
   // try/catch, so a malformed/exotic event, an instrumented DOM target, or an invalid app-supplied
@@ -728,11 +729,31 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
       this.#target?.addEventListener(type, this.#handlers[type], ADD_OPTIONS);
     }
     this.#target?.addEventListener('wheel', this.#onWheel, ADD_OPTIONS);
-    // Both edges drop whatever is pending: deltas turned before the blackout must not surface after it,
-    // and nothing collected around it may be merged into the first post-blackout entry.
+    this.#activated = true;
+    this.#watchBlackout();
+  }
+
+  // Both edges drop whatever is pending: deltas turned before the blackout must not surface after it,
+  // and nothing collected around it may be merged into the first post-blackout entry.
+  #watchBlackout(): void {
     this.#offBlackout = this.#blackout?.onChange(() => {
       this.#wheelAccum = null;
     });
+  }
+
+  /**
+   * Re-point the source at a NEW client's blackout gate. The source is carrier-shared and outlives the
+   * client that created it, so a relaunch must hand it the new client's gate; otherwise it keeps reading
+   * the dead client's state (R2V-3). Pending wheel deltas are dropped; a live subscription is moved.
+   */
+  bindBlackout(gate: BlackoutGate | undefined): void {
+    this.#offBlackout?.();
+    this.#offBlackout = undefined;
+    this.#blackout = gate;
+    this.#wheelAccum = null;
+    if (this.#activated) {
+      this.#watchBlackout();
+    }
   }
 
   protected override onDeactivate(): void {
@@ -752,7 +773,21 @@ class BrowserInputSource extends InterceptorBase<{ input: InputEventDetail }> {
     this.#wheelAccum = null;
     this.#offBlackout?.();
     this.#offBlackout = undefined;
+    this.#activated = false;
   }
+}
+
+/** A carrier-shared input source whose blackout gate can be re-pointed at a newer client. */
+export interface BlackoutBindable {
+  bindBlackout(gate: BlackoutGate | undefined): void;
+}
+
+/**
+ * Hand a (possibly carrier-shared, older) input source the CURRENT client's blackout gate. A no-op for
+ * a source that does not support it (a custom one injected through the carrier).
+ */
+export function bindInputBlackout(source: object, gate: BlackoutGate | undefined): void {
+  (source as Partial<BlackoutBindable>).bindBlackout?.(gate);
 }
 
 export function createBrowserInputSource(

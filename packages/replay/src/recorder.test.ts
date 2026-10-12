@@ -254,6 +254,76 @@ describe('createReplayCaptureProvider', () => {
         expect(markers(added)).toEqual([]);
       });
 
+      it('no ORPHAN end marker: a blackout that began before recording (startInBlackout) ends without one (R2V-12)', () => {
+        const gate = createBlackoutState();
+        gate.start();
+        const { added, provider, rec } = setup(gate);
+        provider.start(options());
+        gate.end();
+        expect(markers(added)).toEqual([]);
+        expect(rec.record).toHaveBeenCalledTimes(1); // recording begins fresh, with no marker needed
+      });
+
+      it('the end marker is emitted only once per start marker (a second end adds none)', () => {
+        const gate = createBlackoutState();
+        const { added, provider } = setup(gate);
+        provider.start(options());
+        gate.start();
+        gate.end();
+        provider.stopBlackout();
+        expect(markers(added)).toEqual([true, false]);
+      });
+
+      it('a finished cycle leaves no stale start flag: a later blackout that never recorded ends without a marker', () => {
+        const gate = createBlackoutState();
+        const { added, provider } = setup(gate);
+        provider.start(options());
+        gate.start();
+        gate.end(); // [true, false]
+        provider.stop();
+        gate.start();
+        provider.start(options()); // born inside a blackout: never records
+        gate.end();
+        expect(markers(added)).toEqual([true, false]);
+      });
+
+      it('a later blackout after an orphan-free cycle marks normally (state does not stick)', () => {
+        const gate = createBlackoutState();
+        gate.start();
+        const { added, provider } = setup(gate);
+        provider.start(options());
+        gate.end();
+        gate.start();
+        gate.end();
+        expect(markers(added)).toEqual([true, false]);
+      });
+
+      it('the end marker lands BEFORE the fresh snapshot the restarted recorder emits (m29)', () => {
+        const gate = createBlackoutState();
+        const order: string[] = [];
+        let first = true;
+        const record: ReplayRecordFn = vi.fn((o) => {
+          // A real recorder emits its opening Meta + FullSnapshot synchronously from record().
+          if (!first) (o.emit as (e: eventWithTime) => void)({ type: 2, timestamp: 9 } as never);
+          first = false;
+          return vi.fn();
+        });
+        const { init, added } = fakeInit();
+        const provider = createReplayCaptureProvider({
+          record,
+          masking: resolveReplayMaskingOptions(),
+          blackout: gate,
+        });
+        provider.init(init);
+        provider.start(options());
+        gate.start();
+        gate.end();
+        for (const e of added) {
+          order.push(String((e.data as { type: number }).type));
+        }
+        expect(order).toEqual(['5', '5', '2']); // start marker, end marker, THEN the snapshot
+      });
+
       it('emits no marker from a provider that was never started', () => {
         const { added, provider } = setup();
         provider.startBlackout();
@@ -302,6 +372,77 @@ describe('createReplayCaptureProvider', () => {
     expect(o?.dataURLOptions).toEqual({ type: 'image/webp', quality: 0.6 });
     expect(o?.maskAllText).toBe(true); // masking still applied alongside canvas
     expect(o?.recordCrossOriginIframes).toBe(false); // canvas does not disturb the other options
+  });
+
+  describe('canvas restarts are bounded (R2V-7: rrweb cannot release canvas workers / rAF loops)', () => {
+    const canvas = {
+      recordCanvas: true as const,
+      sampling: { canvas: 2 },
+      dataURLOptions: { type: 'image/webp', quality: 0.6 },
+    };
+    const cycle = (gate: ReturnType<typeof createBlackoutState>, n: number) => {
+      for (let i = 0; i < n; i++) {
+        gate.start();
+        gate.end();
+      }
+    };
+
+    it('restarts WITH canvas up to the bound, then continues DOM-only and reports once', () => {
+      const gate = createBlackoutState();
+      const calls: Array<boolean | undefined> = [];
+      const record: ReplayRecordFn = vi.fn((o) => {
+        calls.push(o.recordCanvas);
+        return vi.fn();
+      });
+      const onError = vi.fn();
+      const provider = createReplayCaptureProvider({
+        record,
+        masking: resolveReplayMaskingOptions(),
+        canvas,
+        blackout: gate,
+        onError,
+      });
+      provider.init(fakeInit().init);
+      provider.start(options());
+      cycle(gate, 10);
+      // 1 initial + 3 restarts keep canvas; every later start is DOM-only
+      expect(calls.slice(0, 4)).toEqual([true, true, true, true]);
+      expect(calls.slice(4).every((c) => c === undefined)).toBe(true);
+      expect(calls).toHaveLength(11);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(String((onError.mock.calls[0]?.[0] as Error).message)).toMatch(/canvas/i);
+    });
+
+    it('a DOM-only recorder is never limited and never reports', () => {
+      const gate = createBlackoutState();
+      const record: ReplayRecordFn = vi.fn(() => vi.fn());
+      const onError = vi.fn();
+      const provider = createReplayCaptureProvider({
+        record,
+        masking: resolveReplayMaskingOptions(),
+        blackout: gate,
+        onError,
+      });
+      provider.init(fakeInit().init);
+      provider.start(options());
+      cycle(gate, 10);
+      expect(record).toHaveBeenCalledTimes(11);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('works without an onError sink', () => {
+      const gate = createBlackoutState();
+      const record: ReplayRecordFn = vi.fn(() => vi.fn());
+      const provider = createReplayCaptureProvider({
+        record,
+        masking: resolveReplayMaskingOptions(),
+        canvas,
+        blackout: gate,
+      });
+      provider.init(fakeInit().init);
+      provider.start(options());
+      expect(() => cycle(gate, 6)).not.toThrow();
+    });
   });
 
   it('records NO canvas by default — recordCanvas/sampling/dataURLOptions stay absent (DOM-only)', () => {

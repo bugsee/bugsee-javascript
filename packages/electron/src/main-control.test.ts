@@ -61,6 +61,7 @@ describe('createElectronMainControl', () => {
     expect(decodeControl((r.sent[0] as { raw: string }).raw)).toEqual({
       command: 'session',
       sessionId: 'sess-1',
+      blackout: false,
     });
   });
 
@@ -117,6 +118,17 @@ describe('createElectronMainControl', () => {
     const r = fakeSender();
     ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
     expect(decodeControl((r.sent[0] as { raw: string }).raw)?.blackout).toBe(true);
+  });
+
+  it('without an isBlackout probe the reply still states bo:false explicitly (R2V-8)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    const raw = (r.sent[0] as { raw: string }).raw;
+    expect(JSON.parse(raw).bo).toBe(false);
+    expect(decodeControl(raw)?.blackout).toBe(false);
   });
 
   it('ignores a non-hello message on the hello channel (no reply, no registration)', () => {

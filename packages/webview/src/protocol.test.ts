@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   batchMessage,
+  blackoutMessage,
   byeMessage,
   type ControlMessage,
   type EntryMessage,
@@ -357,5 +358,33 @@ describe('parseControl is hostile-realm safe', () => {
     } finally {
       JSON.stringify = original;
     }
+  });
+});
+
+describe('blackoutMessage (R2V-2)', () => {
+  it('builds a versioned blackout message carrying the new state and a timestamp', () => {
+    expect(blackoutMessage(true, 1234)).toEqual({
+      b: PROTOCOL_VERSION,
+      k: 'blackout',
+      a: true,
+      ts: 1234,
+    });
+    expect(blackoutMessage(false, 5)).toEqual({
+      b: PROTOCOL_VERSION,
+      k: 'blackout',
+      a: false,
+      ts: 5,
+    });
+  });
+
+  it('encodes as plain JSON starting with the version member (so the nonce stamp applies)', () => {
+    const raw = encode(blackoutMessage(true, 9));
+    expect(raw.startsWith('{"b":')).toBe(true);
+    expect(JSON.parse(raw)).toEqual({ b: PROTOCOL_VERSION, k: 'blackout', a: true, ts: 9 });
+  });
+
+  it('parseControl accepts a config that declares blackout support', () => {
+    const m = parseControl(JSON.stringify({ b: 1, k: 'control', config: { blackout: true } }));
+    expect(m?.config?.blackout).toBe(true);
   });
 });

@@ -9,7 +9,7 @@
 //   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream (D8);
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
-import { BlackoutToken } from '@bugsee/core';
+import { asInternalClient, BlackoutToken, LifecycleEvents } from '@bugsee/core';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
@@ -98,9 +98,52 @@ export async function launchRenderer(
     // Born dark, released by the handshake. Main owns the blackout: until this renderer has heard the
     // session reply it cannot know whether main is blacked out, and everything captured in that window
     // (replay's opening snapshot, input) would already be in the session. Also after the caller's options:
-    // a caller must not be able to switch the fail-closed start off.
-    startInBlackout: true,
+    // a caller must not be able to switch the fail-closed start off. A SILENT hold (no lifecycle event):
+    // it is bookkeeping, not a blackout the application asked for. The caller's own `startInBlackout`
+    // passes through untouched in `browserOptions`.
+    holdBlackout: true,
   } as never);
+
+  // THREE separate reasons to be dark, and the renderer is dark while ANY is set:
+  //   - `hold`     the launch hold, released ONLY by the session handshake;
+  //   - `mainDark` main's blackout (blackout-start/end, and the handshake's `bo`);
+  //   - `appDark`  this renderer's own app calling startBlackout()/endBlackout() (or startInBlackout).
+  // One boolean could not tell them apart: a bo:false reply ended a blackout the app had just started, and
+  // main's blackout-end ended the app's.
+  let hold = true;
+  let mainDark = false;
+  let appDark = (browserOptions as { startInBlackout?: unknown }).startInBlackout === true;
+  // What the application has been TOLD (BlackoutStarted/Ended): main's or the app's blackout, never the hold.
+  let announced = appDark; // the browser launch announced a startInBlackout itself
+  const blackoutState = client.getService(BlackoutToken);
+  const apply = (): void => {
+    // Every transition here is silent: this function alone decides which ones the application hears about.
+    if (hold || mainDark || appDark) {
+      blackoutState.start({ silent: true });
+    } else {
+      blackoutState.end({ silent: true });
+    }
+    const visible = mainDark || appDark;
+    if (visible !== announced) {
+      announced = visible;
+      asInternalClient(client).emitLifecycleEvent(
+        visible ? LifecycleEvents.BlackoutStarted : LifecycleEvents.BlackoutEnded,
+      );
+    }
+  };
+  // The application's own calls land on the app flag, not on the shared state.
+  client.startBlackout = (): void => {
+    if (client.isLaunched()) {
+      appDark = true;
+      apply();
+    }
+  };
+  client.endBlackout = (): void => {
+    if (client.isLaunched()) {
+      appDark = false;
+      apply();
+    }
+  };
 
   // Wire main→renderer control, then announce ourselves so the main assigns the session id.
   resolved.onControl(
@@ -116,17 +159,17 @@ export async function launchRenderer(
       },
       onSession: (id: string): void => {
         handshaken = true;
+        // The handshake, and only the handshake, releases the launch hold (the reply's blackout state was
+        // applied just before this, so a dark owner keeps the renderer dark with no gap).
+        hold = false;
+        apply();
         onSessionId?.(id);
       },
       // The owner's blackout (broadcast, and carried by the session reply): applied through the same state
       // service `client.startBlackout()` drives, so every visual/interaction provider follows it.
       onBlackout: (active: boolean): void => {
-        const blackout = client.getService(BlackoutToken);
-        if (active) {
-          blackout.start();
-        } else {
-          blackout.end();
-        }
+        mainDark = active;
+        apply();
       },
     }),
   );

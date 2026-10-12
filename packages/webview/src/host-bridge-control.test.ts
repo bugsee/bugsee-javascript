@@ -57,7 +57,7 @@ describe('createBridgeControl', () => {
 
   it('defaults reportTrigger to false (D5) with no native session yet', () => {
     const bc = createBridgeControl();
-    expect(bc.config).toEqual({ reportTrigger: false });
+    expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
 
   it('seeds reportTrigger from the launch option', () => {
@@ -92,13 +92,13 @@ describe('createBridgeControl', () => {
     const bc = createBridgeControl({ reportTrigger: true });
     bc.control('not json {');
     bc.control(JSON.stringify({ k: 'entry' })); // foreign kind on a shared channel
-    expect(bc.config).toEqual({ reportTrigger: true }); // untouched
+    expect(bc.config).toEqual({ reportTrigger: true, nativeBlackout: false }); // untouched
   });
 
   it('accepts a bare reply (no session/config/command) without changing anything', () => {
     const bc = createBridgeControl();
     bc.control(reply({}));
-    expect(bc.config).toEqual({ reportTrigger: false });
+    expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
 
   it('retains a previously-set session across a later config-only reply (no clobber)', () => {
@@ -284,5 +284,20 @@ describe('createBridgeControl — the rejection report is contained and bounded'
     const second = createBridgeControl({ token: 'a-different-token', auth, onCommand });
     second.control(raw({ command: 'pause' })); // untokened, page-issued
     expect(onCommand, 'a fresh handler started un-latched').not.toHaveBeenCalled();
+  });
+});
+
+describe('control config: native blackout support (R2V-2)', () => {
+  const msg = (config: object) => JSON.stringify({ b: 1, k: 'control', config });
+
+  it('is false until native declares it, and follows later config pushes', () => {
+    const c = createBridgeControl();
+    expect(c.config.nativeBlackout).toBe(false);
+    c.control(msg({ blackout: true }));
+    expect(c.config.nativeBlackout).toBe(true);
+    c.control(msg({ blackout: false }));
+    expect(c.config.nativeBlackout).toBe(false);
+    c.control(msg({ reportTrigger: true })); // an unrelated push leaves it alone
+    expect(c.config.nativeBlackout).toBe(false);
   });
 });

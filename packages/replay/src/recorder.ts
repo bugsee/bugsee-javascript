@@ -42,13 +42,19 @@ export interface ReplayCaptureProviderOptions {
    * because replay is lazy-loaded and can resolve after the app called `startBlackout()`.
    */
   blackout?: BlackoutGate;
+  /** Sink for a recorder-level degradation (canvas recording given up after repeated restarts). */
+  onError?: (error: unknown) => void;
 }
 
 /** A capture provider that also exposes blackout controls (wired to the client `startBlackout`). */
 export interface ReplayRecorder extends CaptureProvider {
   /**
-   * Suspend replay capture (errors/network/logs continue). The rrweb recorder is STOPPED, not merely
-   * muted: no DOM mutation, input value or scroll is observed, buffered or computed for the whole window.
+   * Suspend replay capture (errors/network/logs continue). The rrweb recorder is STOPPED through its stop
+   * handle, not merely muted: its DOM observers (mutation, input, scroll, ...) are disconnected for the whole
+   * window, so nothing from it is emitted or buffered. LIMIT: rrweb's own canvas recorder does not release
+   * everything on stop (an image-bitmap Worker per FPS-sampled start and two requestAnimationFrame loops per
+   * `sampling: 'all'` start stay alive in the fork); they emit nothing into the stream because the stopped
+   * session's `emit` is dead, but they are why canvas restarts are bounded (see `MAX_CANVAS_STARTS`).
    */
   startBlackout(): void;
   /**
@@ -63,6 +69,15 @@ export interface ReplayRecorder extends CaptureProvider {
    */
   stopBlackout(): void;
 }
+
+/**
+ * How many times the recorder may START with canvas recording on (the first start counts). The Bugsee rrweb
+ * fork's canvas recorder leaks a Worker and rAF loops on every start/stop cycle and exposes no way to
+ * release or pause them, so each blackout restart would add more. Past the bound the recorder restarts
+ * DOM-only (canvas contents stop being recorded; the DOM replay and the privacy guarantees are unaffected)
+ * and says so once through `onError`.
+ */
+export const MAX_CANVAS_STARTS = 4;
 
 /** rrweb `EventType.Custom`. */
 const CUSTOM_EVENT_TYPE = 5;
@@ -82,11 +97,19 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
   readonly #canvas: CanvasRecordConfig | undefined;
   readonly #blackout: BlackoutGate | undefined;
   #stop: listenerHandler | undefined;
+  readonly #onError: ((error: unknown) => void) | undefined;
   #blackedOut = false;
   #started = false;
+  // Whether the opening `bugsee.blackout {active:true}` marker of the CURRENT blackout was emitted; the
+  // closing marker is only ever emitted for a blackout that has one, so there is never an orphan `false`.
+  #markedStart = false;
+  #canvasStarts = 0;
+  #canvasDropped = false;
   // Bumped whenever a recording session ends. An `emit` closure belongs to ONE session and is dead after
-  // it: a throttled rrweb callback that fires late from a stopped session (scroll/input sampling) must not
-  // land in the stream after the blackout began — or after the recorder was restarted.
+  // it: a late callback of a stopped session (rrweb throttles scroll/input sampling, and its canvas worker
+  // answers asynchronously) is dropped here, so it cannot land in the stream after the blackout began or
+  // after the recorder was restarted. This guards OUR stream only; it does not make rrweb release a
+  // stopped session's canvas Worker / rAF loops (see MAX_CANVAS_STARTS).
   #session = 0;
   #offBlackout: (() => void) | undefined;
 
@@ -97,6 +120,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     this.#checkoutEveryNms = options.checkoutEveryNms ?? 60_000;
     this.#canvas = options.canvas;
     this.#blackout = options.blackout;
+    this.#onError = options.onError;
   }
 
   protected onStart(): void {
@@ -118,12 +142,29 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     }
   }
 
+  #canvasForThisStart(): CanvasRecordConfig | undefined {
+    if (this.#canvas === undefined || this.#canvasDropped) {
+      return undefined;
+    }
+    if (this.#canvasStarts >= MAX_CANVAS_STARTS) {
+      this.#canvasDropped = true;
+      this.#onError?.(
+        new Error(
+          `replay: canvas recording stopped after ${MAX_CANVAS_STARTS} recorder starts (rrweb cannot release canvas resources on stop); DOM replay continues`,
+        ),
+      );
+      return undefined;
+    }
+    this.#canvasStarts += 1;
+    return this.#canvas;
+  }
+
   #begin(): void {
     const session = this.#session;
     this.#stop = this.#record({
       ...this.#masking,
       // Opt-in canvas options (recordCanvas / sampling.canvas / dataURLOptions); nothing when DOM-only.
-      ...this.#canvas,
+      ...this.#canvasForThisStart(),
       checkoutEveryNms: this.#checkoutEveryNms,
       // Cross-origin iframes are never recorded (privacy); same-origin iframes are blocked via the masking
       // blockSelector (fail-closed, RP1).
@@ -156,6 +197,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     // still live. It is an rrweb custom event (type 5), ignored by players that do not know the tag.
     if (this.#stop !== undefined) {
       this.#mark(true);
+      this.#markedStart = true;
     }
     this.#blackedOut = true;
     this.#halt();
@@ -176,7 +218,10 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
     }
     this.#blackedOut = false;
     if (this.#started) {
-      this.#mark(false); // before the restarted recorder's fresh Meta + FullSnapshot
+      if (this.#markedStart) {
+        this.#mark(false); // before the restarted recorder's fresh Meta + FullSnapshot
+      }
+      this.#markedStart = false;
       this.#begin(); // a restarted recorder opens with a fresh full snapshot
     }
   }

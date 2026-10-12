@@ -478,6 +478,87 @@ describe('relaunch', () => {
     expect(second.isBlackout()).toBe(false);
   });
 
+  describe('the carrier-shared input source follows the CURRENT client blackout (R2V-3)', () => {
+    // A document fake with emit(); wheel frames are driven by hand through requestAnimationFrame.
+    function wheelRig() {
+      const listeners = new Map<string, Set<(event: unknown) => void>>();
+      const document = {
+        addEventListener: (t: string, l: (e: unknown) => void) => {
+          const set = listeners.get(t) ?? new Set();
+          set.add(l);
+          listeners.set(t, set);
+        },
+        removeEventListener: (t: string, l: (e: unknown) => void) => {
+          listeners.get(t)?.delete(l);
+        },
+      };
+      const frames: Array<() => void> = [];
+      vi.stubGlobal('requestAnimationFrame', (cb: () => void) => frames.push(cb));
+      return {
+        document: document as unknown as Document,
+        turn: (deltaY: number) => {
+          for (const l of listeners.get('wheel') ?? []) {
+            l({ deltaX: 0, deltaY, deltaMode: 0, clientX: 1, clientY: 1, buttons: 0 });
+          }
+        },
+        flush: () => {
+          for (const cb of frames.splice(0)) cb();
+        },
+      };
+    }
+    const sourceOf = (carrier: object) =>
+      getCarrier(carrier).interceptors.get('browser-input') as {
+        onAny: (l: (stage: string, e: unknown) => void) => () => void;
+      };
+
+    it('a wheel turn during a blackout begun on the relaunched client is never flushed after it ends', async () => {
+      const carrier = {};
+      const rig = wheelRig();
+      await launch('tok', opts({ carrier, document: rig.document }));
+      const second = await relaunch(opts({ carrier, document: rig.document }));
+      live.push(second);
+      const seen: unknown[] = [];
+      const off = sourceOf(carrier).onAny((_s, e) => seen.push(e));
+      second.startBlackout();
+      rig.turn(40);
+      second.endBlackout();
+      rig.flush();
+      expect(seen).toEqual([]);
+      off();
+    });
+
+    it('a relaunch DURING a blackout still drops wheel turns, and capture resumes after it ends', async () => {
+      const carrier = {};
+      const rig = wheelRig();
+      const first = await launch('tok', opts({ carrier, document: rig.document }));
+      first.startBlackout();
+      const second = await relaunch(opts({ carrier, document: rig.document }));
+      live.push(second);
+      const seen: Array<{ scrollY?: number }> = [];
+      const off = sourceOf(carrier).onAny((_s, e) => seen.push(e as { scrollY?: number }));
+      rig.turn(40);
+      rig.flush();
+      expect(seen).toEqual([]);
+      second.endBlackout();
+      rig.turn(3);
+      rig.flush();
+      expect(seen.map((e) => e.scrollY)).toEqual([3]);
+      off();
+    });
+  });
+
+  it('a relaunch with startInBlackout over a CARRIED blackout does not announce a second BlackoutStarted (R2V-11)', async () => {
+    const seen: string[] = [];
+    const listener = (type: string) => seen.push(type);
+    const first = await launch('tok', opts({ lifecycleEventsListener: listener }));
+    first.startBlackout();
+    seen.length = 0;
+    const second = await relaunch(opts({ startInBlackout: true }));
+    live.push(second);
+    expect(second.isBlackout()).toBe(true);
+    expect(seen).not.toContain(LifecycleEvents.BlackoutStarted);
+  });
+
   it('uses NEW options when given (they replace the previous host options)', async () => {
     await launch('tok', opts({ captureLogs: false }));
     const second = await relaunch(opts({ maxRecordingTime: 15 }));

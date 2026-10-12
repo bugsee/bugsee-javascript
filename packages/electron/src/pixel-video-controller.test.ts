@@ -44,6 +44,44 @@ describe('createPixelVideoController', () => {
     expect(source.started).toBe(true);
   });
 
+  it('R2V-9: a stop() while the permission check is pending means the source never starts', async () => {
+    const source = fakeSource();
+    let grant: (v: boolean) => void = () => {};
+    const controller = createPixelVideoController({
+      source,
+      hasPermission: () => new Promise<boolean>((resolve) => (grant = resolve)),
+    });
+    const started = controller.start();
+    controller.stop(); // client shutting down while macOS is still asking
+    grant(true);
+    await started;
+    expect(source.started).toBe(false);
+    expect(await controller.snapshot(1)).toEqual([]);
+  });
+
+  it('R2V-9: a start() that was overtaken by a newer start() does not start the source twice', async () => {
+    const source = fakeSource();
+    const startSpy = vi.spyOn(source, 'start');
+    const grants: Array<(v: boolean) => void> = [];
+    const controller = createPixelVideoController({
+      source,
+      hasPermission: () => new Promise<boolean>((resolve) => grants.push(resolve)),
+    });
+    const first = controller.start();
+    const second = controller.start();
+    for (const g of grants) g(true);
+    await Promise.all([first, second]);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('R2V-9: stop() then start() again works (the new start is not cancelled by the old stop)', async () => {
+    const source = fakeSource();
+    const controller = createPixelVideoController({ source });
+    controller.stop();
+    await controller.start();
+    expect(source.started).toBe(true);
+  });
+
   it('stays inert (source never starts; snapshot []) when permission is denied', async () => {
     const source = fakeSource();
     const controller = createPixelVideoController({ source, hasPermission: async () => false });

@@ -77,6 +77,7 @@ export function registerReplay(
       : {}),
     ...(options.canvas !== undefined ? { canvas: options.canvas } : {}),
     ...(options.blackout !== undefined ? { blackout: options.blackout } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   client.addCaptureProvider(provider);
   // Register the encoder into the SHARED map the client reads at assembly time (RP5a) — so the next report's

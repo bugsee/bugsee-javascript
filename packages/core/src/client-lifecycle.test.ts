@@ -1,5 +1,7 @@
 import type { EnvironmentEnvelope } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { BlackoutToken } from './blackout';
+import { getCarrierBlackout } from './carrier';
 import { createClient } from './client';
 import { BugseeError } from './errors';
 import { LifecycleEvents } from './lifecycle-events';
@@ -392,6 +394,25 @@ describe('lifecycle events — blackout', () => {
     client.endBlackout();
     client.endBlackout();
     expect(types()).toEqual([LifecycleEvents.BlackoutStarted, LifecycleEvents.BlackoutEnded]);
+  });
+
+  it('a SILENT state change (launch hold / handshake release) emits no lifecycle event but still follows through the carrier', () => {
+    const carrier = {};
+    const client = createClient({ carrier });
+    const events: string[] = [];
+    client.setLifecycleEventsListener((type) => events.push(type));
+    const types = (): string[] => events;
+    client.launch();
+    events.length = 0;
+    const state = client.getService(BlackoutToken);
+    state.start({ silent: true });
+    expect(client.isBlackout()).toBe(true);
+    state.end({ silent: true });
+    expect(types()).toEqual([]);
+    state.start({ silent: true });
+    expect(getCarrierBlackout(carrier)).toBe(true);
+    state.end(); // a normal change after a silent one emits again
+    expect(types()).toEqual([LifecycleEvents.BlackoutEnded]);
   });
 
   it('reports the new state to the listener through isBlackout()', () => {
