@@ -5,8 +5,8 @@ import { widgetShopApiPlugin } from './server/api-plugin.ts';
 export default defineConfig(() => {
   return {
     root: '.',
-    // BUGSEE_APP_TOKEN / BUGSEE_ENDPOINT come from .env per the sample convention
-    // (docs/samples/PLAN.md §3); Vite only exposes VITE_-prefixed vars to client code by default, so
+    // BUGSEE_APP_TOKEN / BUGSEE_ENDPOINT come from .env per the sample convention.
+    // Vite only exposes VITE_-prefixed vars to client code by default, so
     // widen the prefix instead of renaming the documented variable names.
     envPrefix: ['VITE_', 'BUGSEE_'],
     server: { port: 5301, strictPort: true },

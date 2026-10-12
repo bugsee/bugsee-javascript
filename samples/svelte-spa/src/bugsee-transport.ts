@@ -3,9 +3,9 @@
 // staging endpoint verbatim, via the browser's own `fetch`, while recording a parsed summary of each
 // call locally. That local record is what lets scripts/verify.mjs assert on things the MCP surface
 // does not expose — the exact UPLOADED bundle contents (redaction, labels, dedupe) — the "wire"
-// verification depth from docs/samples/PLAN.md §4/§6.6, instead of only asserting on the Scenario
+// verification depth, instead of only asserting on the Scenario
 // panel's OWN filter-callback log having run (which proves the callback fired, not that the SDK
-// actually applied its return value to what got uploaded — see FINDINGS.md's S8 note).
+// actually applied its return value to what got uploaded).
 //
 // It rewrites nothing — every call is forwarded byte-for-byte to the real endpoint, and the response is
 // returned to the SDK unmodified. The one way it is not invisible: recording costs work. The unzip +
@@ -87,7 +87,7 @@ function parseBundle(seq: number, body: Uint8Array): ParsedBundleSummary | undef
     // S11 (session replay). `replay.bin` is the gzipped rrweb event stream
     // (packages/replay/src/encoder.ts). Recorded here so verify.mjs can assert on the RECORDING — that it
     // exists, that it decodes to real rrweb events, and what text those events do and do not contain —
-    // instead of stopping at "the relaunch didn't throw", which is all five S11 checks used to assert and
+    // instead of stopping at "the relaunch didn't throw", which is all five S11 checks asserted and
     // which stays green with replay recording entirely dead.
     const replayFile = files['replay.bin'];
     if (replayFile !== undefined) {
@@ -130,12 +130,12 @@ function parseBundle(seq: number, body: Uint8Array): ParsedBundleSummary | undef
  *  can be made on exactly what the SDK sent, not on the scenario panel's own filter-callback log.
  *
  *  Timeout handling mirrors @bugsee/browser-utils's real `createFetchTransport`
- *  (packages/browser-utils/src/fetch-transport.ts): the same 30s default, the same error shape, and —
- *  since the second review pass — the same SCOPE. The real transport keeps the abort timer armed across
+ *  (packages/browser-utils/src/fetch-transport.ts): the same 30s default, the same error shape, and
+ *  the same SCOPE. The real transport keeps the abort timer armed across
  *  `await response.arrayBuffer()` (its `clearTimeout` is in a `finally` that wraps the body read too),
- *  so a response whose BODY stalls still times out there. An earlier version of this tee cleared the
- *  timer as soon as the headers arrived and then read the body unbounded, which is a strictly weaker
- *  bound than the transport it replaces — the same class of app-behaviour change as the bug before it.
+ *  so a response whose BODY stalls still times out there. A tee that cleared the
+ *  timer as soon as the headers arrived and then read the body unbounded would be a strictly weaker
+ *  bound than the transport it replaces (an app-behaviour change).
  *  Core never actually passes `timeoutMs` (it's declared on `HttpRequestOptions` but every call site
  *  omits it — `bundle-uploader.ts`/`bugsee-api.ts`), so an EARLIER version of this tee that only applied
  *  a timeout when `timeoutMs !== undefined` silently made every SDK call through it UNBOUNDED — a

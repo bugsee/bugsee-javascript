@@ -8,10 +8,9 @@
   // `scenario` gives the local and global callers DISTINCT messages, so an individual captured EVENT is
   // self-describing about which boundary fired it.
   //
-  // It does NOT split them into separate ISSUES, and an earlier version of this comment wrongly claimed
-  // it did. Checked at the backend: both paths still fingerprint to ONE issue (`SSVELTE-108` at the time
-  // of writing — the key is RE-MINTED whenever this file shifts, so re-derive rather than trust it; see
-  // scenarios.md's fingerprint-churn note and its Svelte-specific row) whose `events_count` grows on
+  // It does NOT split them into separate ISSUES. Checked at the backend: both paths still fingerprint to ONE issue (`SSVELTE-108` at the time
+  // of writing — the key is RE-MINTED whenever this file shifts, so re-derive rather than trust it)
+  // whose `events_count` grows on
   // every run of both — Bugsee's error grouping keys off the thrown Error's own stack, which originates
   // at the same `$effect` line below whichever boundary catches it, not off the message text.
   let { armed = false, scenario = 'local' }: { armed?: boolean; scenario?: 'local' | 'global' } = $props();

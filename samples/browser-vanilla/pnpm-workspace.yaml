@@ -59,8 +59,7 @@ overrides:
 # The unpublished @bugsee/* tarballs (version 0.0.0) resolve via `file:` but pnpm 11's supply-chain
 # minimumReleaseAge check still probes the registry BY NAME and 404s (they don't exist on npm at all,
 # being pre-publish local packs) — the check then fails the whole install/deps-status-check rather
-# than skipping a package it can't find. Disabling it here (sample-local only) is the workaround;
-# see samples/FINDINGS.md.
+# than skipping a package it can't find. Disabling it here (sample-local only) is the workaround.
 minimumReleaseAge: 0
 minimumReleaseAgeExclude:
   - vite@8.2.2

@@ -16,7 +16,7 @@ let primaryClient: Bugsee | undefined;
 
 /**
  * Launches the primary Bugsee client for the Metrics Ingest API process. Exercises every relevant
- * BugseeLaunchOptions field (docs/samples/PLAN.md §5.14-5.20 + the shared catalog S1).
+ * BugseeLaunchOptions field (scenario S1).
  */
 export function launchPrimary(): Bugsee {
   if (primaryClient !== undefined) return primaryClient;
@@ -43,13 +43,13 @@ export function launchPrimary(): Bugsee {
 
     // Crash detection: kept survivable so the long-running verify server doesn't die mid-sweep.
     // exitOnUncaught:true is instead exercised in a disposable CHILD PROCESS — see
-    // scripts/crash-child.ts (spawned from scripts/verify.ts) and scenarios.md S5.
+    // scripts/crash-child.ts (spawned from scripts/verify.ts) for scenario S5.
     detectCrashes: true,
     exitOnUncaught: false,
     unhandledRejections: 'warn',
 
     // Hang / ANR detection — a real BugseeLaunchOptions field, free to exercise here too
-    // (node-service is the deep-dive sample for this per PLAN §5.13).
+    // (node-service is the deep-dive sample for this).
     detectHangs: true,
     hangFairMs: 500,
     hangMediumMs: 1500,
@@ -78,7 +78,7 @@ export function launchPrimary(): Bugsee {
     performanceFlushIntervalMs: 2000,
 
     // Incoming-server auto-instrumentation — ON here (the default/coexistence path, first-owner-wins
-    // vs setupFastify's own hooks — see FINDINGS.md / scenarios.md S14). The
+    // vs setupFastify's own hooks, scenario S14). The
     // `instrumentIncomingRequests: false` "adapter alone" path CANNOT be exercised by a second client in
     // THIS process — the node:http patch is process-wide (see scripts/adapter-alone-child.ts's own
     // comment) — so it runs in a separate disposable child process instead.

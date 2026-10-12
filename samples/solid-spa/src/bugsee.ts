@@ -35,8 +35,7 @@ const carrier: object = globalThis;
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The default SDK_VERSION baked into @bugsee/browser (packages/browser/src/launch.ts:79) is the
-  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish — see
-  // samples/FINDINGS.md F-X2). Staging's session endpoint actively REJECTS that version
+  // literal string "0.0.0" (every package in this monorepo is unversioned pre-publish). Staging's session endpoint actively REJECTS that version
   // (UnsupportedSdkError) rather than merely recording it. Override it here so this sample's data
   // can land at all; a real published SDK would carry a real version.
   sdkVersion: '1.0.0',
@@ -65,8 +64,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   performanceMonitoring: true,
   performanceSampleRate: 1,
   // Short enough that `pnpm verify`'s wire-level checks (intercepting POST /v2/performance/transactions)
-  // don't need to wait out the 30s default — see FINDINGS.md finding A and scripts/verify.mjs's
-  // `waitForPerfTransactions`.
+  // don't need to wait out the 30s default. See scripts/verify.mjs's `waitForPerfTransactions`.
   performanceFlushIntervalMs: 1000,
   traceNavigations: true,
   traceInteractions: true,
@@ -83,7 +81,7 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
  * NOT literally `launch(token, {})` at the wire, and the docs must not claim it is: `relaunch()` below
  * always merges `endpoint`, `appId`, `appVersion`, `appBuild`, `onError` (+ `carrier`) UNDER whatever is
  * passed here, so those five are never at their default for this control. `endpoint` is the load-bearing
- * one — a launch without it posts to PRODUCTION, which `docs/samples/PLAN.md` §3 forbids for a sample —
+ * one — a launch without it posts to PRODUCTION, which a sample must never do —
  * and the other four exist so a report from this client is still attributable and its internal errors
  * still reach the panel. Everything else (including `sdkVersion`, `captureNetwork`, `persist`,
  * `performanceMonitoring`, the replay options, …) really is at its default here.
@@ -133,8 +131,7 @@ export function attemptDuplicateLaunch(): { sameInstance: boolean } {
  * observed by actually rebuilding the client. Stops the current client first (draining its pending
  * uploads) so the two clients never race on the same IndexedDB/network resources.
  *
- * Deliberately does NOT relaunch onto a fresh/private carrier object (`carrier = {}`) — see
- * samples/FINDINGS.md F-X21 (found by react-spa): `stop()` clears the carrier's client slot
+ * Deliberately does NOT relaunch onto a fresh/private carrier object (`carrier = {}`): `stop()` clears the carrier's client slot
  * SYNCHRONOUSLY (packages/browser/src/launch.ts) before it awaits the drain, so the "already
  * launched" guard is already satisfied and no second carrier is needed. Relaunching onto a PRIVATE
  * carrier would silently disable every adapter API that resolves the client from `globalThis` by

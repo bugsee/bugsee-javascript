@@ -102,13 +102,12 @@ export const sdkErrors: Array<{ at: number; error: unknown }> = [];
 // This used to be a same-origin relay (`server/bugsee-proxy.ts`) because the collector's CORS policy
 // answered a hardcoded `Access-Control-Allow-Origin: https://appdev.bugsee.com` and omitted the
 // `x-app-token` / `x-bugsee-internal` headers the SDK sends, so no third-party page could reach it
-// at all (samples/FINDINGS.md F-X10). The policy now answers a third-party origin correctly on all
+// at all. The policy now answers a third-party origin correctly on all
 // three ingest routes, and the bundle bucket already allowed a cross-origin PUT, so the relay is gone
 // and this sample exercises the genuine browser->collector hop.
 const ENDPOINT = import.meta.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com';
 
-// See FINDINGS.md F-3 (blocker): every packed package is version 0.0.0 (pre-publish; see the
-// cross-cutting samples/FINDINGS.md F-X2), and the staging backend's `isSupportedSdkVersion` floor for
+// Every packed package is version 0.0.0 (pre-publish), and the staging backend's `isSupportedSdkVersion` floor for
 // the `javascript` umbrella's `browser` runtime is `0.1.0` (appserver config/default.js
 // `cfg.core.sdk.javascript.browser.version.minimum`) — so `env.sdk.version: '0.0.0'` is rejected
 // outright with `UnsupportedSdkError` and no session is ever created. `sdkVersion` is a documented

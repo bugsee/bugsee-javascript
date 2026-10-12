@@ -1,6 +1,6 @@
-// Every /scenarios/* route from docs/samples/PLAN.md §4 (the shared catalog) + §5.14-5.20 (the
-// framework-backend extras). Each route is deliberately small and does ONE thing so scripts/verify.ts
-// and scenarios.md can point at it 1:1. Routes read a `marker` (query or body) that verify.ts sets to a
+// Every /scenarios/* route from the shared catalog and the framework-backend
+// extras. Each route is deliberately small and does ONE thing so scripts/verify.ts
+// can point at it 1:1. Routes read a `marker` (query or body) that verify.ts sets to a
 // per-run-unique string, embedded in every message/summary this scenario produces — that's how
 // verify.ts (and get_issue afterwards) correlates a scenario run to the Bugsee issue(s) it created.
 import { launch } from '@bugsee/express';
@@ -411,11 +411,11 @@ export function buildScenariosRouter(): Router {
     res.json({
       capturedDataStore: 'disk',
       dataDir: process.env.BUGSEE_DATA_DIR ?? '(default os.tmpdir()/bugsee)',
-      note: 'see scenarios.md S12 for the manual SIGKILL-recovery reproduction (needs a process restart).',
+      note: 'the manual SIGKILL-recovery reproduction (S12) needs a process restart.',
     });
   });
 
-  // ---------------------------------------------------------------- concurrency (S2 + §5.14-20)
+  // ---------------------------------------------------------------- concurrency (S2)
   router.get('/concurrency/hit', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const marker = markerOf(req);

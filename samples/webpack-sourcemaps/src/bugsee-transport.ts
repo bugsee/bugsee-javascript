@@ -2,9 +2,9 @@
 // network call to the REAL staging endpoint verbatim, via the browser's own `fetch`, while recording a
 // parsed summary of each call locally. That local record is what lets `scripts/verify.mjs` assert on
 // things the MCP surface does not expose — the exact bundle contents (redaction, labels, dedupe) — the
-// "wire" verification depth from docs/samples/PLAN.md §4/§6.6, instead of only asserting on the
+// "wire" verification depth, instead of only asserting on the
 // SCENARIO PANEL'S OWN callback having run (which proves nothing about what the SDK actually put on the
-// wire — see FINDINGS.md's S8 note).
+// wire).
 //
 // It rewrites nothing: every call is forwarded byte-for-byte to the real endpoint.
 import { gunzipSync, strFromU8, unzipSync } from '@bugsee/util';
@@ -30,13 +30,12 @@ export interface ParsedBundleSummary {
   /** manifest.json's REPORT-LEVEL `attrs` — where the report's attribute snapshot lives (NOT
    *  request.json). That is `ManifestJson.attrs`, `packages/protocol/src/wire.ts:150,154`, written by
    *  `packages/core/src/bundle-assembler.ts:188-196` — NOT the per-FILE `ManifestFileEntry.attrs`
-   *  (`wire.ts:142,146`), which the earlier `wire.ts:141` citation pointed at by mistake (corrected in
-   *  fix round 6, R6-3). Needed to assert S2's "each report carries only the attributes that existed
+   *  (`wire.ts:142,146`). Needed to assert S2's "each report carries only the attributes that existed
    *  at ITS trigger time" at wire depth instead of merely counting calls. */
   attrs?: Record<string, unknown>;
   logMessages?: string[];
-  /** logs.json entries with their LEVEL, not just the message — added for the S6 console wire check
-   *  (fix round 5, R5-1): `console.warn`/`error`/`debug` are claimed to map to distinct captured
+  /** logs.json entries with their LEVEL, not just the message (used by the S6 console wire check):
+   *  `console.warn`/`error`/`debug` are claimed to map to distinct captured
    *  levels (`packages/capture/src/console-interceptor.ts`'s `DEFAULT_LEVELS`), and a message-only
    *  view cannot tell a correct mapping from one that filed everything as `info`. */
   logEntries?: Array<{ message?: string; level?: unknown }>;
@@ -99,7 +98,7 @@ export interface ReplayDigest {
 export interface CapturedCall {
   seq: number;
   /** Wall-clock ms when the call completed — lets a reader tell two SEPARATELY-ASSEMBLED uploads of the
-   *  same incident apart by their spacing (the S12 duplicate-delivery evidence in FINDINGS.md F-3). */
+   *  same incident apart by their spacing (the S12 duplicate-delivery evidence). */
   t: number;
   kind: 'bundle-upload' | 'other';
   method: string;
@@ -218,8 +217,8 @@ export function createTeeTransport(): HttpTransport {
     const record: CapturedCall = { seq: (seq += 1), t: Date.now(), kind, method, url, status: res.status };
     if (kind === 'bundle-upload' && options.body !== undefined) {
       // The zip is the REQUEST body being PUT to the presigned S3 url, not the response (S3's PUT
-      // response body is empty on success — parsing `rawBuf` here was a bug caught during this fix
-      // pass: it silently produced 0 bundles, which is exactly the "everything still reads green"
+      // response body is empty on success — parsing `rawBuf` here would silently produce 0 bundles,
+      // which is exactly the "everything still reads green"
       // failure mode this wire-level check exists to avoid).
       const bodyBytes =
         typeof options.body === 'string' ? new TextEncoder().encode(options.body) : options.body;

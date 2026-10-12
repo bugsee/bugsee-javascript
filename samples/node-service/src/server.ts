@@ -1,7 +1,7 @@
 // The "Link shortener" service — plain node:http, no framework, so @bugsee/node is the subject under
 // test. Real endpoints (create/resolve/stats/dashboard) live alongside a "scenario panel" of HTTP
-// routes (§3 convention: a server sample exposes the panel as routes, not a UI) that exercise every
-// catalog scenario in docs/samples/PLAN.md §4. See scenarios.md for the full id -> route mapping.
+// routes (a server sample exposes the panel as routes, not a UI) that exercise every
+// catalog scenario.
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -158,7 +158,7 @@ function scenarioS3(marker: string, res: import('node:http').ServerResponse): vo
 // Scenario panel — S4 exceptions
 // ---------------------------------------------------------------------------------------------------
 
-// The upload always fails on this staging app-type (see FINDINGS.md — the javascript app-type gate),
+// The upload always fails on this staging app-type (staging's javascript app-type gate),
 // so every logException() runs its FULL internal retry+backoff cycle (tens of seconds) before its
 // promise settles. Scenario endpoints therefore fire-and-forget by default (report accepted=true
 // immediately — matches real "don't block the request on telemetry" usage); pass `?sync=1` to await
@@ -486,7 +486,7 @@ const server = createServer((req, res) => {
         json(res, 200, { hasContext: current !== undefined, contextId: current?.contextId ?? null });
         return;
       }
-      // Per-request context under concurrency (§5.13): the auto-instrumentation (instrumentIncomingRequests)
+      // Per-request context under concurrency: the auto-instrumentation (instrumentIncomingRequests)
       // already opened a per-request context for THIS request before the handler ran; stamp a
       // caller-supplied attribute onto it and fire a report so the report's merged attributes prove
       // isolation across N concurrent requests (no cross-contamination between async call-chains).

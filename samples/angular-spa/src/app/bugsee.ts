@@ -42,8 +42,7 @@ const carrier: object = globalThis;
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
   // The 0.x SDK_VERSION baked into @bugsee/browser is a pre-publish placeholder; staging's session
-  // endpoint has rejected unversioned SDKs before (see samples/react-spa/FINDINGS.md F-2/F-3 —
-  // confirmed cross-cutting in samples/FINDINGS.md). Overriding here matches every other sample's
+  // endpoint has rejected unversioned SDKs before. Overriding here matches every other sample's
   // convention so this sample's own data lands regardless of that in-flight versioning question.
   sdkVersion: '1.0.0',
   appId: 'com.bugsee.sample.angular-spa',
@@ -83,11 +82,10 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   tracePropagationTargets: ['/api/'],
 
   onError: reportInternalError,
-  // Wire-depth verification (PLAN §4/§6.6, item 2 of the fix pass): forwards every SDK call to real
+  // Wire-depth verification: forwards every SDK call to real
   // staging verbatim while recording a parsed copy locally, so scripts/verify.mjs can assert on the
   // ACTUAL uploaded bundle contents (redaction, masking-file presence, dropped over-cap bodies) instead of
-  // only on the Scenario panel's own filter-callback log — see src/app/bugsee-transport.ts and
-  // FINDINGS.md.
+  // only on the Scenario panel's own filter-callback log — see src/app/bugsee-transport.ts.
   transport: createTeeTransport(),
 };
 
@@ -112,10 +110,9 @@ if (typeof window !== 'undefined') {
  * S1: the caller-supplied options are empty — but NOT a truly-minimal launch end to end. `relaunch()`
  * below always injects `endpoint`/`appId`/`appVersion`/`appBuild`/`onError` ahead of whatever is passed
  * here, deliberately: a genuinely-default `endpoint` resolves to Bugsee PRODUCTION, and this sample's
- * data must land on staging only (`docs/samples/PLAN.md` §3). So "relaunch minimal" demonstrates every
+ * data must land on staging only. So "relaunch minimal" demonstrates every
  * OTHER option left at its default (capture toggles, `maxRecordingTime`, `persist`/`recover`, performance
- * sampling, etc.) — not `endpoint`, which can never be defaulted here. See FINDINGS.md for the earlier,
- * incorrect claim that this was a fully-default launch.
+ * sampling, etc.) — not `endpoint`, which can never be defaulted here.
  */
 export const MINIMAL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {};
 
@@ -154,7 +151,7 @@ export function attemptDuplicateLaunch(): { sameInstance: boolean } {
  * Relaunch the SDK against the SAME (global) carrier with a new option set — used by the Scenario
  * panel to exercise option combinations (e.g. replay variants, a minimal launch) that can only be
  * observed by actually rebuilding the client. Stops the current client first (draining its pending
- * uploads). Kept on the GLOBAL carrier deliberately (see samples/react-spa/FINDINGS.md F-X21): every
+ * uploads). Kept on the GLOBAL carrier deliberately: every
  * carrier-resolved adapter API (`reportAngularError`, `createAngularErrorHandler`'s default resolver,
  * `setRouteNameFromRouter`) reads `getCarrierClient()` against `globalThis` by default — moving to a
  * private carrier here would silently break every one of them.

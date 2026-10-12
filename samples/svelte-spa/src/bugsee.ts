@@ -1,6 +1,6 @@
 // The SDK launch/relaunch wiring for the sample. Single place that owns the process-carrier client so
 // every page/component reads the same instance via `getClient()`. Mirrors samples/react-spa/src/bugsee.ts
-// (the wave-1 reference) so the two samples' launch wiring is directly comparable.
+// so the two samples' launch wiring is directly comparable.
 //
 // @bugsee/svelte re-exports the FULL `@bugsee/bugsee` browser umbrella (single-install design), so
 // `launch` here already wires @bugsee/performance (S9) + @bugsee/opentelemetry (S13) on by default —
@@ -48,9 +48,9 @@ const carrier: object = globalThis;
  *  Settings + Scenario pages can display/relaunch against it. */
 export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   endpoint: ENDPOINT,
-  // The default SDK_VERSION baked into @bugsee/browser is the literal string "0.1.0" as of the F-X2
-  // fix (samples/FINDINGS.md), so this override is no longer load-bearing the way it was for react-spa
-  // at build time — kept anyway so this sample is self-describing and immune to a future regression.
+  // @bugsee/browser's SDK_VERSION default was once the literal string "0.1.0" (since fixed upstream), so
+  // this override is no longer load-bearing the way it was for react-spa at build time — kept anyway so
+  // this sample is self-describing and immune to a future regression.
   sdkVersion: '0.1.0',
   appId: 'com.bugsee.sample.svelte-spa',
   appVersion: APP_VERSION,
@@ -77,8 +77,8 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   performanceMonitoring: true,
   performanceSampleRate: 1,
   // Deliberately short (default 30000) so scripts/verify.mjs can observe the continuous
-  // /v2/performance/transactions upload within a single sweep run (PLAN §6.6's "wire" depth) instead of
-  // stopping at "not visible via MCP" — see FIX §8 in the review that drove this.
+  // /v2/performance/transactions upload within a single sweep run (wire-level depth) instead of
+  // stopping at "not visible via MCP".
   performanceFlushIntervalMs: 3000,
   traceNavigations: true,
   traceInteractions: true,
@@ -89,18 +89,16 @@ export const FULL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {
   //
   // This line is REDUNDANT and kept only for readability. Session replay is now ON BY DEFAULT in
   // `@bugsee/browser` (`launch.ts`: `options.replay !== false && domDocument !== undefined`) — recording
-  // is what happens unless you opt OUT with `replay: false`. It was NOT always so: an earlier version of
-  // this sample omitted the key entirely and replay really was off everywhere outside the Scenario
-  // panel's transient S11 relaunches, which is why it was added. Under the current SDK the same effect
+  // is what happens unless you opt OUT with `replay: false`. Under the current SDK the same effect
   // would hold with the line deleted, so do not read it as "this is what enables recording" — the
   // Scenario panel's `s11-replay-default-on` control is the check that pins the default itself.
   replay: true,
 
   onError: reportInternalError,
-  // Wire-depth verification (PLAN §4/§6.6): forwards every SDK call to real staging verbatim while
+  // Wire-depth verification: forwards every SDK call to real staging verbatim while
   // recording a parsed copy locally, so scripts/verify.mjs can assert on the ACTUAL uploaded bundle
   // contents (redaction, labels, dedupe) instead of only on the Scenario panel's own filter-callback
-  // log — see src/bugsee-transport.ts and FINDINGS.md's S8 note.
+  // log (see src/bugsee-transport.ts).
   transport: createTeeTransport(),
 };
 
@@ -169,8 +167,8 @@ export function attemptDuplicateLaunch(): { sameInstance: boolean } {
  * actually rebuilding the client. Stops the current client first (draining its pending uploads) so the
  * two clients never race on the same IndexedDB/network resources.
  *
- * Deliberately reuses `carrier` rather than a fresh private object — see FINDINGS.md's note on
- * `samples/FINDINGS.md` F-X21 (react-spa found that a private relaunch carrier silently disables every
+ * Deliberately reuses `carrier` rather than a fresh private object: a private relaunch carrier
+ * silently disables every
  * carrier-resolved adapter API, including this sample's own `handleAppError`/`reportSvelteError`
  * defaults). `stop()` clears the carrier's client slot synchronously before it awaits the drain, so the
  * "already launched" guard is already satisfied without needing a second carrier.
@@ -178,8 +176,7 @@ export function attemptDuplicateLaunch(): { sameInstance: boolean } {
  * Re-applies the identity + attributes `launchApp()` sets on the first launch (user identifier AND every
  * `setAttribute` call) — a relaunched client is a fresh instance with no state of its own, and a previous
  * version of this function only re-applied `setUserIdentifier`, silently dropping `build`/`sample` off
- * every issue reported after any relaunch (found reviewing scenarios.md's S2 row, which had mis-blamed the
- * gap on an MCP surface limitation instead of this).
+ * every issue reported after any relaunch.
  */
 export async function relaunch(
   options: BugseeLaunchOptionsWithPerformance,

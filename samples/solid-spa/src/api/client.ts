@@ -45,7 +45,7 @@ export const api = {
   updateIssue: (id: string, patch: Partial<Issue>): Promise<Issue> =>
     req(`/issues/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   // Deliberately errors for the "not found" case so the sample can demonstrate a createResource
-  // fetcher that throws (docs/samples/PLAN.md §5.5 "an error inside a createResource").
+  // fetcher that throws (an error inside a createResource).
   getIssueOrThrow: (id: string): Promise<Issue> => req(`/issues/${id}`),
   listComments: (issueId: string): Promise<Comment[]> => req(`/issues/${issueId}/comments`),
   addComment: (issueId: string, author: string, body: string): Promise<Comment> =>
@@ -81,7 +81,7 @@ export const scenarioApi = {
     }),
   getVetoTarget: (): Promise<Response> => fetch(`${BASE}/scenario/get?veto-me=1`),
   getEchoHeaders: (): Promise<Record<string, string>> => req('/scenario/echo-headers'),
-  // F-1 (major, see FINDINGS.md): a filter that vetoes on a REQUEST-BODY marker only present on the
+  // Veto hole (major): a filter that vetoes on a REQUEST-BODY marker only present on the
   // `before` NetworkStage. The server's response is a FIXED body unrelated to the request (does not
   // echo it back), so the veto hole is visible without any echo-based confusion.
   postVetoRequestBody: (): Promise<Response> =>
@@ -90,7 +90,7 @@ export const scenarioApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vetoMarker: 'VETO_REQUEST_BODY_FIELD', otherField: 'irrelevant' }),
     }),
-  // Finding C (major, see FINDINGS.md): a sensitive-looking query param the DEFAULT sanitizer would
+  // Sanitizer bypass (major): a sensitive-looking query param the DEFAULT sanitizer would
   // normally redact (packages/protocol/src/url.ts's denylist matches `token`) — demonstrates that
   // installing ANY network filter silently disables that sanitizer entirely.
   getWithSensitiveUrlToken: (): Promise<Response> =>

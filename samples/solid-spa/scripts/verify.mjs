@@ -1,46 +1,43 @@
-// The scripted scenario sweep (docs/samples/PLAN.md §3/§6). Drives the REAL app + REAL SDK headlessly
+// The scripted scenario sweep. Drives the REAL app + REAL SDK headlessly
 // via Playwright: exercises the Bug tracker app itself, then every control in the Scenario panel, and
 // prints a pass/fail table for what could be checked from the browser (LOCAL: no throw / WIRE: the
-// right request left the process). Backend (MCP) verification is a SEPARATE step the build agent runs
-// by hand against the printed evidence — see scenarios.md.
+// right request left the process). Backend (MCP) verification is a SEPARATE step run by hand against
+// the printed evidence.
 //
 // Runs a STOCK Chromium against the real staging collector, no workarounds of any kind (the wire-
-// contract + CORS defects that once blocked every browser sample are fixed — see samples/FINDINGS.md
-// F-X6/F-X10).
+// contract and CORS defects that once blocked every browser sample are fixed).
 //
 // Almost every check below asserts on OBSERVED evidence (a DOM status line, a page error count, an
 // actual network call) — never a bare `true`. Where the BACKEND cannot confirm something at all
 // (S3's log()/event()/trace()/addBreadcrumb(): the SDK demonstrably puts them in the uploaded bundle —
 // logs.json/breadcrumbs/network.json are all present and populated — but no `# Logs` section is ever
-// rendered for them, see samples/FINDINGS.md F-X4, whose open next step this sample closed), the
-// real-but-modest assertion available here is "the call didn't throw"
-// (newPageErrors() === 0), which DOES fail if the call breaks — see samples/FINDINGS.md's F-X21 lesson
-// (a `record(..., true)` sat directly on top of a real defect in react-spa and could never have caught
-// it). ONE check (`s1-flush-post-storm`) is a deliberate exception and says so in its own description:
-// it accepts either boolean outcome because post-storm drain timing is nondeterministic by design.
+// rendered for them), the real-but-modest assertion available here is "the call didn't throw"
+// (newPageErrors() === 0), which DOES fail if the call breaks (a `record(..., true)` sat directly on top
+// of a real defect in react-spa and could never have caught it). ONE check (`s1-flush-post-storm`) is a
+// deliberate exception and says so in its own description: it accepts either boolean outcome because
+// post-storm drain timing is nondeterministic by design.
 //
-// Several checks go past LOCAL to true WIRE level (PLAN §6.6): `waitForPerfTransactions` /
-// `settlePerfTransactions` intercept the actual POST /v2/performance/transactions request bodies (not
-// just the app's own status line) for the manual-transaction check, both route-naming checks (S9 direct
-// call + the LIVE `solid-route-name-wire` defect confirmation) and the `performanceSampleRate: 0` check;
+// Several checks go past LOCAL to true WIRE level: `waitForPerfTransactions` / `settlePerfTransactions`
+// intercept the actual POST /v2/performance/transactions request bodies (not just the app's own status
+// line) for the manual-transaction check, both route-naming checks (S9 direct call + the LIVE
+// `solid-route-name-wire` defect confirmation) and the `performanceSampleRate: 0` check;
 // `apiRequestCalls` intercepts the real outgoing request to the local API server for S7;
 // `uploadedBundles` captures the bundle-upload (S3 PUT) bytes PAIRED WITH THE STATUS S3 RETURNED, so
-// every "the uploaded bundle contains X" row reads an ACCEPTED upload (round-5 R5-1) — its zip central
-// directory for the S11 replay.bin presence/absence pair, and DECOMPRESSED (`zipEntry`, plus
-// `gunzipSync` for `replay.bin`) for the two S8 bundle checks and the two S11 masking checks; and two
+// every "the uploaded bundle contains X" row reads an ACCEPTED upload — its zip central directory for
+// the S11 replay.bin presence/absence pair, and DECOMPRESSED (`zipEntry`, plus `gunzipSync` for
+// `replay.bin`) for the two S8 bundle checks and the two S11 masking checks; and two
 // (`s8-report-veto-backend`, `s8-report-mutate-backend`) go all the way to BACKEND depth by calling the
 // staging MCP endpoint directly.
 //
-// Seven lessons this sweep learned the hard way and now encodes — the first four from rounds 1-3, the
-// last three from round 4:
+// Lessons this sweep learned the hard way and now encodes:
 // (1) never assert on a string the app prints UNCONDITIONALLY — derive the status from the thing being
 //     claimed, or assert on the wire (s1-relaunch-after-stop, s9-manual-transaction);
 // (2) never pre-filter the evidence to the subset a passing run would produce and then assert a property
 //     of that subset — assert over EVERYTHING the action produced (solid-route-name-wire);
 // (3) a number that is COMPUTED and PRINTED is not asserted. s8-filters computed the issue-call count
-//     that scenarios.md cited as the report-veto's whole wire evidence, put it in the detail string, and
+//     that the S8 report-veto row cited as its whole wire evidence, put it in the detail string, and
 //     never read it in the boolean — so a broken veto would have uploaded the vetoed report and the
-//     sweep would still have printed a full pass. If a doc cites a number as evidence, the check has to
+//     sweep would still have printed a full pass. If a row cites a number as evidence, the check has to
 //     assert on it. (Same shape: a substring test loose enough that two different log lines each satisfy
 //     it alone — split it.)
 // (4) a NEGATIVE assertion needs a positive control for the MECHANISM under test, not just for the
@@ -48,33 +45,33 @@
 //     proving only that navigation transactions arrived — all still true with the integration deleted.
 //     It now also requires the misattribution probe to produce a route-named transaction, so removing
 //     the wiring turns the check red instead of leaving it vacuously green.
-// Round 4 added three more, each swept across EVERY check rather than only where it was found:
+// Three more, each swept across EVERY check rather than only where it was found:
 // (5) a check that claims "X never happened" must ask the system that would HOLD X. The S8 report-veto
 //     row claimed "no issue created" while only ever counting browser requests — and a contradicting
-//     issue (SSOLID-82) sat on staging for three review rounds. `s8-report-veto-backend` now queries
-//     staging itself, with the mutate report from the same block as the positive control;
+//     issue (SSOLID-82) sat on staging undetected. `s8-report-veto-backend` now queries staging itself,
+//     with the mutate report from the same block as the positive control;
 // (6) a `waitFor…` helper without `sinceTs` reads the EARLIEST match in the whole run, not this click's.
 //     Every waitForPerfTransactions call now pins it, not just the ones whose name looks ambiguous today
 //     (`/issues/:id` is emitted by the live router wiring as well as by the control that asserts on it);
 // (7) evidence written by the SAMPLE'S OWN callback into the SAMPLE'S OWN DOM is LOCAL evidence, however
-//     specific it reads. Every S8 network row rested on it; PLAN §6.6's prescribed fallback (read the
-//     SDK's own upload) is now used by `s8-network-bundle-wire` and `s8-sanitizer-disabled-bundle-wire`.
-// Round 5 (re-verification against a CHANGED SDK: session replay is now ON BY DEFAULT) added four more,
-// each swept across every check rather than only where it was found:
-// (8) a green check whose SUBJECT moved is not a passing check. `s11-replay-bundle-wire` asserted
-//     "relaunch with explicit masking -> the bundle has replay.bin"; once replay.bin rides EVERY bundle
-//     it stayed green while measuring nothing about the control it named. When a default flips, re-read
-//     what each row's evidence now DISCRIMINATES, not whether it still passes.
+//     specific it reads. Every S8 network row rested on it; reading the SDK's own upload instead is now
+//     used by `s8-network-bundle-wire` and `s8-sanitizer-disabled-bundle-wire`.
+// Four more, from re-verification against a changed SDK (session replay is now ON BY DEFAULT), each
+// swept across every check rather than only where it was found:
+// (8) a green check whose SUBJECT moved is not a passing check. A check that asserted "relaunch with
+//     explicit masking -> the bundle has replay.bin" stayed green once replay.bin rode EVERY bundle while
+//     measuring nothing about the control it named. When a default flips, re-read what each row's
+//     evidence now DISCRIMINATES, not whether it still passes.
 // (9) "the uploaded bundle contains X" is a claim about what the collector ACCEPTED. Every bundle row
-//     teed the REQUEST body, so a wholesale S3 rejection left them all green — proven here by fulfilling
-//     every bundle PUT with 500. The tee is now response-side and 2xx-filtered (R5-1).
+//     teed the REQUEST body, so a wholesale S3 rejection left them all green — proven by fulfilling
+//     every bundle PUT with 500. The tee is now response-side and 2xx-filtered.
 // (10) a masking check with ONE probe string cannot tell replay's snapshot path from its incremental
-//     path, because a relaunch does not reload the page: whatever sits in the field at relaunch is
-//     re-recorded by the full snapshot. This block's first version read the snapshot's copy and reported
-//     the OPPOSITE of the truth about `.bugsee-unmask`. Distinct `…-snap` / `…-typed` probes (R5-3).
+//     path, because a relaunch does not reload the page: whatever is sitting in the field at relaunch is
+//     re-recorded by the full snapshot. A probe reused across both paths reported the OPPOSITE of the
+//     truth about `.bugsee-unmask`, so the two paths use distinct `…-snap` / `…-typed` probes.
 // (11) a check must WAIT for its own evidence, not inherit the slack of an unrelated wait. The S8 bundle
 //     read leaned on a `waitForQuiet()` that settles on /v2/issues traffic and can go quiet before the
-//     S3 PUT is even attempted — observed failing with `0 ACCEPTED bundle(s) … statuses: []` (R5-2).
+//     S3 PUT is even attempted — observed failing with `0 ACCEPTED bundle(s) … statuses: []`.
 import { chromium } from 'playwright';
 import { readFileSync } from 'node:fs';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
@@ -106,10 +103,10 @@ const MCP_URL = process.env.BUGSEE_MCP_URL || dotenv.BUGSEE_MCP_URL || '';
 const APP_KEY = process.env.BUGSEE_APP_KEY || dotenv.BUGSEE_APP_KEY || 'SSOLID';
 
 /** One JSON-RPC call against the Bugsee staging MCP endpoint (streamable HTTP: the response is an SSE
- *  frame carrying a single `data:` line). This is what turns the S8 report-veto row from a W-depth
- *  "no request left the process" claim into a real B-depth "the backend does not have it" claim —
- *  round-4 finding R4-1: the sample never queried staging for the vetoed message, which is why a
- *  contradicting issue (SSOLID-82) sat undetected on the backend for three review rounds. */
+ *  frame carrying a single `data:` line). This is what turns the S8 report-veto row from a
+ *  "no request left the process" claim into a "the backend does not have it" claim —
+ *  the sample never queried staging for the vetoed message, which is why a contradicting issue
+ *  (SSOLID-82) sat undetected on the backend. */
 async function mcp(name, args) {
   const res = await fetch(MCP_URL, {
     method: 'POST',
@@ -125,7 +122,7 @@ async function mcp(name, args) {
 }
 
 // ---- Minimal zip reader ----------------------------------------------------------------------------
-/** Extract one named entry from an uploaded Bugsee bundle (a zip), DECOMPRESSED. PLAN §6.6's prescribed
+/** Extract one named entry from an uploaded Bugsee bundle (a zip), DECOMPRESSED. The
  *  fallback for a capture stream with no MCP surface is "intercept the SDK's own upload and assert the
  *  bundle", which needs the entry's actual CONTENT — a filename match alone (`zipNames`, which reads the
  *  central directory) answers only presence/absence. Used by `s8-network-bundle-wire` and
@@ -218,16 +215,16 @@ async function main() {
     bugseeCalls.push({ url: res.url(), status: res.status(), ok, t: Date.now() });
   });
 
-  // ---- Wire-level capture (PLAN §6.6): the actual request BODIES, not the app's own read-back ------
+  // ---- Wire-level capture: the actual request BODIES, not the app's own read-back ------
   /** Every POST /v2/performance/transactions body, decoded — the wire-level evidence for S9 + the
-   *  solid-route-name-wire check (FINDINGS.md finding A). */
+   *  solid-route-name-wire check. */
   const perfTransactionCalls = [];
   /** Every request to the local `/api/scenario/*` fixture API — proves the REAL request left the
    *  process with the right method/body, not just that the app read back a good response (S7). */
   const apiRequestCalls = [];
   /** Every S3 bundle-upload PUT, paired with the status the collector ACTUALLY returned.
    *
-   *  Teed on RESPONSE, not on request — round-5 finding R5-1, cross-checked from a peer sample that
+   *  Teed on RESPONSE, not on request — cross-checked from a sibling sample that
    *  proved it by fulfilling every non-localhost PUT with 500 and watching all of its bundle rows stay
    *  green. Every check phrased "the UPLOADED bundle contains X" is a claim about what the collector
    *  accepted; reading the request body alone only proves what the SDK SENT, so a wholesale S3 outage
@@ -338,8 +335,7 @@ async function main() {
   /** A bugsee/S3 call that created (or attempted) an issue — the evidence a report left the process. */
   const isIssueCall = (c) => c.url.includes('issues');
 
-  /** Wait until the evidence ARRIVES, instead of for a fixed number of milliseconds — see
-   *  samples/FINDINGS.md F-X19 (a fixed window fails in both directions). */
+  /** Wait until the evidence ARRIVES, instead of for a fixed number of milliseconds. A fixed window fails in both directions. */
   const waitForCalls = async (match, { timeout = 20_000, min = 1, poll = 100 } = {}) => {
     const deadline = Date.now() + timeout;
     for (;;) {
@@ -375,7 +371,7 @@ async function main() {
   /** Fire one report (`reportSolidError`) and return the bundles the collector ACCEPTED for it, plus
    *  every upload status seen (so a run that fails because S3 rejected the PUT says so rather than
    *  reporting a bare "0 bundles"). The general way to get wire-level evidence out of a capture stream
-   *  with no MCP surface — PLAN §6.6's prescribed fallback. Requires the page to be on /scenarios. */
+   *  with no MCP surface. Requires the page to be on /scenarios. */
   const reportAndCollectBundles = async () => {
     const idx = uploadedBundles.length;
     await click(page, 's-report-solid-error', { wait: 0 });
@@ -387,7 +383,7 @@ async function main() {
 
   /** The sample's own `onError` sink, as rendered on /scenarios — empty string when the SDK has raised
    *  no internal diagnostic. Read only into DETAIL strings, never into a boolean: it is the sample's own
-   *  DOM (rule 7) and cannot carry a claim. It exists so that a check going silent is DIAGNOSABLE — an
+   *  DOM and cannot carry a claim. It exists so that a check going silent is DIAGNOSABLE — an
    *  SDK kill-state routes a diagnostic through `onError` and otherwise looks identical to an ordinary
    *  upload stall. */
   const internalErrorsText = async () =>
@@ -494,7 +490,7 @@ async function main() {
   record('s2-attributes', 'setAttribute — string/number/boolean/string[]', Boolean(attrsDump?.includes('gamma')), attrsDump ?? '');
 
   // getAttribute/clearAttribute/clearAllAttributes — previously implemented (SettingsPage.tsx) but
-  // never clicked here, while scenarios.md claimed all 5 methods were covered on one row (overclaim).
+  // never clicked here, although the scenario row claimed all 5 methods were covered (overclaim).
   await page.fill('[data-testid="attr-key"]', 'seats');
   await click(page, 'clear-attribute');
   const attrsDumpAfterClear = await page.locator('[data-testid="attrs-dump"]').textContent();
@@ -513,7 +509,7 @@ async function main() {
     attrsDumpAfterClearAll ?? '',
   );
 
-  // PLAN §4 S2: "attributes set before AND after the triggering event" — previously undisclosed as
+  // Covers "attributes set before AND after the triggering event" — previously undisclosed as
   // unimplemented. Positive control: a real issue call must actually leave the process between the two
   // setAttribute calls, or this proves nothing about ordering.
   sinceCheckpoint();
@@ -523,7 +519,7 @@ async function main() {
   // click handler, which can legitimately lag the wire-level issue call observed above by a couple of
   // seconds (the SDK's internal submit promise doesn't settle in lockstep with the HTTP response) — so
   // poll for it rather than reading once immediately (that raced and read the STALE "clearAllAttributes()"
-  // text from the previous action on a real run; see FINDINGS.md test-quality note).
+  // text from the previous action on a real run).
   const beforeAfterStatus = await waitForLocatorText(
     page.locator('.status-line').first(),
     (text) => Boolean(text?.includes('set-after-event')),
@@ -546,7 +542,7 @@ async function main() {
   // constraints: `src/bugsee.ts`'s MINIMAL_LAUNCH_OPTIONS really is `{}`, but `relaunch()` (bugsee.ts,
   // the `doLaunch` call) always merges in `endpoint`, `appId`, `appVersion`, `appBuild`, `onError` and
   // `carrier` underneath it. `endpoint` in particular is NOT optional here: without it a bare launch
-  // would post to PRODUCTION, which docs/samples/PLAN.md §3 forbids for a sample. So this control
+  // would post to PRODUCTION, which a sample must never do. So this control
   // exercises "every option this sample can leave at its default", not literally `launch(token, {})`.
   // In particular `sdkVersion` IS left at its default ("0.0.0", packages/browser/src/launch.ts) — but
   // this check makes NO claim about what staging does with that: no bugsee call was observed in this
@@ -576,7 +572,7 @@ async function main() {
   record('s1-duplicate-launch', 'second launch() on the same carrier is ignored', Boolean(dupStatus?.includes('true')), dupStatus ?? '');
 
   // S1: stop(timeout) — previously only incidental inside relaunch() (src/bugsee.ts:128), with no
-  // dedicated control or assertion (PLAN §4 S1 row was missing). A standalone click, then restore.
+  // dedicated control or assertion. A standalone click, then restore.
   await click(page, 's1-stop', { wait: 400 });
   const stopStatus = await statusText('s1-stop');
   record(
@@ -598,14 +594,11 @@ async function main() {
   );
 
   // S3 manual telemetry. These stop at LOCAL depth because the BACKEND does not surface captured logs
-  // at all — NOT because "MCP has no per-call surface without a triggering report", which was this
-  // sample's earlier (wrong) explanation. Measured both ways: the uploaded bundle DOES carry logs.json /
+  // at all — NOT because "MCP has no per-call surface without a triggering report", which was an
+  // incorrect explanation. Measured both ways: the uploaded bundle DOES carry logs.json /
   // breadcrumbs / network.json, populated, while get_issue(..., include_logs: {entries: 'all'}) on an
-  // issue from a session with real console activity renders no `# Logs` section at all. That is the
-  // cross-sample finding samples/FINDINGS.md F-X4, whose stated open next step this pass closed — see
-  // scenarios.md's S3 table. So the real-but-modest assertion available here is "the call didn't throw",
-  // which DOES fail if it does (this is what caught this sample's own stale-client-closure bug — see
-  // FINDINGS.md F-3).
+  // issue from a session with real console activity renders no `# Logs` section at all. That is a known gap in what the backend renders. So the real-but-modest assertion available here is "the call didn't throw",
+  // which DOES fail if it does (this is what caught this sample's own stale-client-closure bug).
   newPageErrors();
   for (const level of ['error', 'warning', 'info', 'debug', 'verbose']) {
     await click(page, `s3-log-${level}`, { wait: 150 });
@@ -640,7 +633,7 @@ async function main() {
   // flush() under NORMAL load (a handful of reports so far, well under the capture rate limiter's
   // budget) — this is the real "does flush work" check. The storm-adjacent flush later in this script
   // is deliberately NOT gated on draining true, because a 200-exception storm is designed to exceed the
-  // rate limiter's budget (samples/FINDINGS.md F-X19: ~100 reports per 60s) — a flush(5000) genuinely
+  // rate limiter's budget (~100 reports per 60s) — a flush(5000) genuinely
   // cannot drain that backlog in 5s, and that is correct behaviour, not a defect.
   await click(page, 's1-flush', { wait: 1500 });
   const s1flushCleanStatus = await statusText('s1-flush');
@@ -698,7 +691,7 @@ async function main() {
     `get=${JSON.stringify(s7get)} postJson=${JSON.stringify(s7postJson)} 4xx=${JSON.stringify(s7get4xx)} 5xx=${JSON.stringify(s7get5xx)} large=${JSON.stringify(s7large)} sse=${JSON.stringify(s7sse)}`,
   );
 
-  // WIRE level (PLAN §6.6): the app's status line proves it READ a good response, but not that the
+  // WIRE level: the app's status line proves it READ a good response, but not that the
   // REQUEST that actually left the process carried the right shape. Intercepts the real outgoing POST.
   const echoRequest = apiRequestCalls.find((c) => c.method === 'POST' && c.url.includes('/scenario/echo') && !c.url.includes('echo-'));
   record(
@@ -731,7 +724,7 @@ async function main() {
     `status="${s7beacon ?? ''}"; ${beaconRequests.length} beacon request(s) on the wire (want 2): ${JSON.stringify(beaconRequests.map((c) => c.url))}`,
   );
 
-  // WIRE (PLAN §6.6 fallback): the requests leaving the process only prove sendBeacon still works — they
+  // WIRE (fallback): the requests leaving the process only prove sendBeacon still works — they
   // say nothing about whether the SDK CAPTURED them, and since CDP hides the payload this is the ONLY
   // place the body is observable at all. Read network.json out of an accepted bundle and assert:
   //   - the beacons are captured, tagged `mechanism: "sendBeacon"` (not misfiled as fetch/xhr);
@@ -762,7 +755,7 @@ async function main() {
   );
 
   // S8 filters
-  // Round-4 finding R4-1, first leg: the two report-handler controls must be UNCLICKABLE until the
+  // The two report-handler controls must be UNCLICKABLE until the
   // filters (and with them the report handler that does the vetoing) are installed. Before the guard
   // existed, clicking "should be VETOED" with no handler installed uploaded an exception whose own
   // message reads "must never arrive" — which is how SSOLID-82 reached staging while this sweep printed
@@ -774,7 +767,7 @@ async function main() {
   const mutateDisabledAfter = await page.locator('[data-testid="s8-report-mutate"]').isDisabled();
   record(
     's8-report-controls-guarded',
-    'R4-1: the report-handler controls (mutate + veto) are disabled while no filters are installed and enabled once they are — so the VETO control cannot be fired with no report handler in place, which uploads the very report it exists to prove never arrives',
+    'The report-handler controls (mutate + veto) are disabled while no filters are installed and enabled once they are — so the VETO control cannot be fired with no report handler in place, which uploads the very report it exists to prove never arrives',
     vetoDisabledBefore && mutateDisabledBefore && !vetoDisabledAfter && !mutateDisabledAfter,
     `veto disabled before/after install: ${vetoDisabledBefore}/${vetoDisabledAfter}; mutate: ${mutateDisabledBefore}/${mutateDisabledAfter}`,
   );
@@ -802,8 +795,7 @@ async function main() {
   // report veto: this 8-action block triggers exactly TWO logException calls (`s8-report-mutate`, which
   // must arrive, and `s8-report-veto`, which must not), so exactly one `/v2/issues` call may leave the
   // process. If the veto stopped being honoured this goes to 2 and the check goes red. That count is
-  // the same number scenarios.md's S8 "report handler — veto" row cites as its W-depth evidence; before
-  // this pass it was computed and printed but never asserted on.
+  // the same number the S8 "report handler — veto" row cites as its wire evidence. It was previously computed and printed but never asserted on.
   const filtersOk =
     filterLogText.includes('droppedSecretHeader=true') &&
     filterLogText.includes('redactedSsn=true') &&
@@ -819,52 +811,51 @@ async function main() {
     `${filterCalls.length} issue calls while filters installed (expected exactly 1); filterLog="${filterLogText.slice(0, 300)}"`,
   );
 
-  // F-1 (re-graded major, FINDINGS.md): the veto is per-NetworkStage-entry, not per-request. A rule
+  // Veto hole (major): the veto is per-NetworkStage-entry, not per-request. A rule
   // vetoing on a REQUEST-BODY marker (only present on the `before` stage) must ALSO veto the
   // `complete` stage-entry for the SAME logical request — it does not. Positive control: the `before`
   // entry WAS actually vetoed (proves the rule itself works), while at least one other stage-entry for
   // the same URL leaked through un-vetoed.
   record(
     's8-veto-per-entry-hole',
-    'F-1: a request-body veto rule does NOT veto every stage-entry of the SAME request — the response-carrying complete stage-entry leaks through',
+    'Veto hole: a request-body veto rule does NOT veto every stage-entry of the SAME request — the response-carrying complete stage-entry leaks through',
     filterLogText.includes('VETOED(request-body-rule)') && filterLogText.includes('leaked-despite-veto-intent(request-body-rule)'),
     filterLogText.slice(0, 600),
   );
 
-  // Finding C (FINDINGS.md — re-graded to a DOCS gap, not a defect: the deliberate Android XOR rule,
-  // already triaged as such in docs/review/capture.md:216): installing ANY network filter disables the
+  // Sanitizer bypass (a docs gap, not a defect: the deliberate Android XOR rule,
+  // already triaged as such): installing ANY network filter disables the
   // default PII sanitizer entirely — a sensitive `token=` query param (which the default sanitizer
   // would normally redact) reaches the filter callback completely unredacted. What is open is the
   // public-docs line, not the behaviour.
   record(
     's8-sanitizer-disabled',
-    "Finding C: installing a network filter silently disables the built-in PII sanitizer — a sensitive `token=` query param reaches the filter's view of the URL unredacted",
+    "Sanitizer bypass: installing a network filter silently disables the built-in PII sanitizer — a sensitive `token=` query param reaches the filter's view of the URL unredacted",
     filterLogText.includes('sanitizer-disabled-by-filter') && filterLogText.includes('SUPER_SECRET_TOKEN_VALUE'),
     filterLogText.slice(0, 400),
   );
 
-  // WIRE level for the S8 network rows (round-4 finding R4-5). Every S8 network row above asserts on
+  // WIRE level for the S8 network rows. Every S8 network row above asserts on
   // `filterLogText` — the sample's OWN in-app DOM list, written by the sample's OWN filter callback. That
   // is LOCAL evidence: it proves the callback ran and took a branch, never that the SDK honoured the
   // return value or that the redaction survived into what actually left the process. Network capture has
-  // no MCP surface (samples/FINDINGS.md F-X4), so PLAN §6.6's prescribed fallback is "intercept the SDK's
-  // own upload and assert the bundle" — no S8 row used it before this pass, even though the machinery
-  // (uploadedBundles) was already here for S11. This check reads `network.json` OUT of the bundle
+  // no MCP surface, so the fallback is "intercept the SDK's
+  // own upload and assert the bundle" — no S8 row used it, even though the machinery
+  // (uploadedBundles) is shared with S11. This check reads `network.json` OUT of the bundle
   // the s8-report-mutate report uploaded and asserts, on the real uploaded bytes:
   //   POSITIVE CONTROL — network.json exists, is non-empty, and carries the S8 traffic at all (without
   //   this the three absence terms below would pass on an empty file);
   //   the vetoed URL (`veto-me`) is ABSENT — the SDK really honoured the filter's `null`;
   //   the redacted body field and the dropped secret header are ABSENT, and the filter's replacement
-  //   marker IS present — PLAN §6.4's "anything redacted in S8 is absent", checked on the wire.
-  // ACCEPTED (2xx) bundles only — R5-1: "the uploaded bundle carries X" is a claim about what the
+  //   marker IS present — "anything redacted in S8 is absent", checked on the wire.
+  // ACCEPTED (2xx) bundles only: "the uploaded bundle carries X" is a claim about what the
   // collector took, not about what the SDK put on the wire.
   //
-  // WAIT for the upload rather than reading whatever happens to have landed (round-5 finding R5-2). This
+  // WAIT for the upload rather than reading whatever happens to have landed. This
   // read used to rely on the incidental slack of the `waitForQuiet()` above, which settles on the
-  // /v2/issues traffic and can go quiet BEFORE the S3 PUT is even attempted; a run in this pass caught
+  // /v2/issues traffic and can go quiet BEFORE the S3 PUT is even attempted; a run caught
   // it doing exactly that — `0 ACCEPTED bundle(s) … (upload statuses: [])`, i.e. both S8 bundle rows
-  // failed with nothing to read rather than with a wrong answer. A `waitFor…` is the same fix
-  // samples/FINDINGS.md F-X19 prescribes for fixed windows generally.
+  // failed with nothing to read rather than with a wrong answer. A `waitFor…` is the general fix for fixed windows.
   await waitForAcceptedBundles(s8BundleIdx);
   const s8Bundles = acceptedBundlesSince(s8BundleIdx);
   const s8NetworkJson = s8Bundles.map((b) => zipEntry(b, 'network.json')).filter(Boolean).map((b) => b.toString('utf8'));
@@ -873,7 +864,7 @@ async function main() {
   // Three POSITIVE controls, because every absence term below is vacuously true on an empty or
   // never-captured stream. (a) the secret POST itself IS in the bundle, (b) carrying the filter's own
   // replacement marker — so "the SSN is absent" means REDACTED, not "the request was never captured";
-  // (c) `veto-body-target` IS present (F-1's leaking `complete` stage-entry, same block, same filter) —
+  // (c) `veto-body-target` IS present (the leaking `complete` stage-entry, same block, same filter) —
   // so "veto-me is absent" means VETOED, not "network capture was off".
   const s8SecretPostCaptured = s8NetAll.includes('/api/scenario/echo') && s8NetAll.includes('"method":"POST"');
   const s8RedactionMarker = s8NetAll.includes('[REDACTED]');
@@ -883,7 +874,7 @@ async function main() {
   const s8SecretHeaderAbsent = !s8NetAll.includes('sk_live_should_not_leave_device');
   record(
     's8-network-bundle-wire',
-    "WIRE (PLAN §6.6 fallback, R4-5): read network.json OUT of the bundle the S8 mutate report actually uploaded — the vetoed URL is absent from it, and so are the redacted SSN and the dropped secret header, while the request they came from IS present and carries the filter's [REDACTED] marker. This is the first S8 network evidence that is not the sample's own DOM list",
+    "WIRE (read of the uploaded bundle): read network.json OUT of the bundle the S8 mutate report actually uploaded — the vetoed URL is absent from it, and so are the redacted SSN and the dropped secret header, while the request they came from IS present and carries the filter's [REDACTED] marker. This is the first S8 network evidence that is not the sample's own DOM list",
     s8CarriesTraffic &&
       s8SecretPostCaptured &&
       s8RedactionMarker &&
@@ -894,14 +885,14 @@ async function main() {
     `${s8Bundles.length} ACCEPTED bundle(s) since S8 opened (upload statuses: ${JSON.stringify(bundleStatusesSince(s8BundleIdx))}), ${s8NetworkJson.length} with network.json; entries=${JSON.stringify(s8Bundles.map(zipNames))}; carriesTraffic=${s8CarriesTraffic} secretPostCaptured=${s8SecretPostCaptured} redactionMarker=${s8RedactionMarker} vetoBodyTargetPresent=${s8VetoBodyTargetPresent} vetoAbsent=${s8VetoAbsent} ssnAbsent=${s8SsnAbsent} secretHeaderAbsent=${s8SecretHeaderAbsent}`,
   );
 
-  // Finding C at WIRE depth (R4-5): the `s8-sanitizer-disabled` check above reads the sample's own filter
+  // Sanitizer bypass at WIRE depth: the `s8-sanitizer-disabled` check above reads the sample's own filter
   // log, which only proves the URL reached the CALLBACK unredacted. This proves the unsanitized URL is in
   // what actually LEFT the process — the sanitizer really did not run, rather than running later in the
   // pipeline. Kept as its own check so the claim stays separable from the veto/redaction one above.
   const s8RawTokenInBundle = s8NetAll.includes('token=SUPER_SECRET_TOKEN_VALUE');
   record(
     's8-sanitizer-disabled-bundle-wire',
-    'WIRE (R4-5): Finding C confirmed in the UPLOADED bundle, not just in the filter callback — the `token=` query param the default PII sanitizer would normally redact is in network.json verbatim, because installing a network filter replaced the sanitizer (Android XOR rule)',
+    'WIRE: the sanitizer bypass is confirmed in the UPLOADED bundle, not just in the filter callback — the `token=` query param the default PII sanitizer would normally redact is in network.json verbatim, because installing a network filter replaced the sanitizer (Android XOR rule)',
     s8CarriesTraffic && s8RawTokenInBundle,
     `carriesTraffic=${s8CarriesTraffic} rawTokenInUploadedNetworkJson=${s8RawTokenInBundle}`,
   );
@@ -935,7 +926,7 @@ async function main() {
     `uploaded tx status=${s9WireTx[0]?.status}, child span statuses=[${s9SpanStatuses.join(',')}]`,
   );
   // `sinceTs` on EVERY waitForPerfTransactions call, not just the ones whose name is ambiguous today
-  // (round-4 finding R4-2): without it the helper returns the EARLIEST transaction of that name in the
+  // Without it the helper returns the EARLIEST transaction of that name in the
   // whole run, so the check silently reads someone else's evidence the moment a name stops being unique.
   const s9RouteNameSinceTs = Date.now();
   await click(page, 's9-set-route-name', { wait: 0 });
@@ -947,7 +938,7 @@ async function main() {
     JSON.stringify(routeNamedTx[0] ?? null),
   );
 
-  // performanceSampleRate: 0 (PLAN §4 S9, previously never exercised). Positive control: the SAME
+  // performanceSampleRate: 0 (previously never exercised). Positive control: the SAME
   // primitive (a manual transaction) DOES reach the wire once sampleRate is restored to 1 — otherwise
   // "the unsampled one never arrived" could just mean the wire listener/relaunch was broken. `sinceTs`
   // pins the control to THIS click specifically (not the earlier, already-sampled s9-manual-transaction
@@ -982,12 +973,12 @@ async function main() {
   await click(page, 's-route-pattern');
   const patternStatus = await statusText('s-route-pattern');
   record('solid-route-pattern', 'routePatternFromSolidMatches -> "/issues/:id/comments" (deepest match, already cumulative)', Boolean(patternStatus?.includes('"/issues/:id/comments"')), patternStatus ?? '');
-  // `sinceTs` is LOAD-BEARING here (round-4 finding R4-2), not defensive: unlike `/manual/:demo`,
+  // `sinceTs` is LOAD-BEARING here, not defensive: unlike `/manual/:demo`,
   // `/issues/:id` is NOT unique to this control. The LIVE RouteNameSync wiring emits it too — two real
   // <A> clicks inside the 1s idle window produce {"name":"/issues/:id","op":"navigation","src":"route"},
   // and the app-smoke block at the top of this sweep does exactly that (issue detail, then its Comments
   // tab). Without sinceTs this check reads the EARLIEST `/issues/:id` transaction of the whole run, so
-  // the day finding A is fixed it would assert on app-smoke's navigation instead of on this click and
+  // the day the route-naming defect is fixed it would assert on app-smoke's navigation instead of on this click and
   // pass whether or not setRouteNameFromSolidMatches works at all. Its two nearest siblings already pin
   // sinceTs for this reason; this one did not.
   const matchesSinceTs = Date.now();
@@ -1013,7 +1004,7 @@ async function main() {
   );
 
   // Real navigation-driven route naming (useCurrentMatches + setRouteNameFromSolidMatches, wired
-  // globally in RootLayout.tsx's RouteNameSync) — WIRE-level check for FINDINGS.md finding A.
+  // globally in RootLayout.tsx's RouteNameSync) — WIRE-level check for the route-naming defect.
   // @solidjs/router flushes its reactive `matches()` update (and so the `createEffect` that calls
   // setRouteNameFromSolidMatches) BEFORE committing history (packages/solid/src/router.ts:8-10), so the
   // effect fires — and renames whatever transaction happens to be active — a moment before the real
@@ -1029,13 +1020,13 @@ async function main() {
   // phantom alone. `settlePerfTransactions` also replaces `waitForPerfTransactions` here for the same
   // reason: the latter returns on the FIRST matching POST, which held only the phantom.
   //
-  // SECOND POSITIVE CONTROL (added this pass — the check was otherwise unfalsifiable in the direction
+  // SECOND POSITIVE CONTROL (the check was otherwise unfalsifiable in the direction
   // that matters most): "navigation transactions reached the wire, one is named for issue-2, and none is
   // route-named" is ALL still true if `<RouteNameSync/>` is deleted from RootLayout.tsx outright. That
-  // would make this check — Finding A's regression pin — silently vacuous: it would keep passing against
+  // would make this check — the route-naming regression pin — silently vacuous: it would keep passing against
   // an SDK where the wiring under test isn't even installed. So the check now ALSO requires positive
   // proof that RouteNameSync exists and its effect fires and reaches setRouteName: the misattribution
-  // probe from FINDINGS.md finding A. Two navigations inside the idle-transaction window
+  // probe for this defect. Two navigations inside the idle-transaction window
   // (packages/performance/src/idle-transaction.ts:53, default idleTimeoutMs 1000) — click into an issue,
   // then click its Comments tab ~400ms later — make the SECOND navigation's route pattern land on a
   // transaction started by the FIRST click, producing a bugsee.name_source:'route' transaction. That IS
@@ -1044,9 +1035,7 @@ async function main() {
   // Asserted over EVERY transaction in the control window, not just `operation: 'navigation'` ones —
   // nothing else in this window calls setRouteName, so any route-named transaction is this wiring's work.
   //
-  // WHY THIS STAYS ONE CHECK AND IS NOT SPLIT IN TWO (round-4 review raised the option and left it to
-  // this pass; the previously-stated reason, "keep the count comparable", was documentation cosmetics and
-  // is withdrawn). The technical reason: the two legs are ONE conjoined claim — "the refinement fires,
+  // WHY THIS STAYS ONE CHECK AND IS NOT SPLIT IN TWO. The technical reason: the two legs are ONE conjoined claim — "the refinement fires,
   // and never lands on its own navigation transaction" — and EITHER leg alone is vacuous in exactly the
   // way this whole pass has been eradicating. Split out, the negative leg ("no nav transaction is
   // route-named") passes green on an app with `<RouteNameSync/>` deleted, and the positive leg ("a
@@ -1073,7 +1062,7 @@ async function main() {
   const misattributedTxs = misattributionTxs.filter((t) => t.attributes?.['bugsee.name_source'] === 'route');
   record(
     'solid-route-name-wire',
-    "LIVE router wiring (RouteNameSync) — KNOWN SDK DEFECT (FINDINGS.md finding A): NO navigation transaction a single <A> click produces is ever named by the route pattern — after the wire settles, every one of them still carries bugsee.name_source:'url'. TWO positive controls, so this cannot pass vacuously: (1) navigation transactions DID reach the wire named for issue-2; (2) the misattribution probe (two navigations inside the 1s idle window) DOES produce a bugsee.name_source:'route' transaction, proving RouteNameSync is installed and its effect reaches setRouteName — deleting <RouteNameSync/> takes control (2) to zero and turns this check RED. It also goes RED the day the refinement lands correctly, which is the point",
+    "LIVE router wiring (RouteNameSync) — KNOWN SDK DEFECT: NO navigation transaction a single <A> click produces is ever named by the route pattern — after the wire settles, every one of them still carries bugsee.name_source:'url'. TWO positive controls, so this cannot pass vacuously: (1) navigation transactions DID reach the wire named for issue-2; (2) the misattribution probe (two navigations inside the 1s idle window) DOES produce a bugsee.name_source:'route' transaction, proving RouteNameSync is installed and its effect reaches setRouteName — deleting <RouteNameSync/> takes control (2) to zero and turns this check RED. It also goes RED the day the refinement lands correctly, which is the point",
     liveNavTxs.length > 0 &&
       liveNavTxs.some((t) => t.name.includes('issue-2') || t.name === '/issues/:id') &&
       routeNamedNavTxs.length === 0 &&
@@ -1083,20 +1072,19 @@ async function main() {
 
   // ---- S11 session replay ----------------------------------------------------------------------
   //
-  // Round 5 rebuilt this whole block, because the SDK changed underneath it: replay is now ON BY
+  // This block assumes the current SDK, where replay is now ON BY
   // DEFAULT (`packages/browser/src/launch.ts`: `options.replay !== false && domDocument !== undefined`;
   // `replay: false` is the opt-out, and a DOM-less host self-skips silently in
   // `packages/replay/src/register.ts`). Three consequences, each addressed below:
   //
-  //  (a) the old `s11-replay-bundle-wire` row — "relaunch with explicit masking, then find replay.bin in
-  //      the bundle" — now PASSES FOR THE WRONG REASON. `replay.bin` rides every bundle this sample
+  //  (a) a check that only looked for replay.bin after relaunching with explicit masking now passes for the wrong reason. `replay.bin` rides every bundle this sample
   //      uploads, including the ones the S8 block produces, so finding it after clicking a replay
   //      control no longer says the control did anything at all. It is replaced by a matched PAIR:
   //      `s11-replay-default-on` (no `replay` key anywhere in the options -> replay.bin IS there, which
   //      is the flip itself) and `s11-replay-optout-wire` (`replay: false` -> replay.bin is NOT there,
   //      on a bundle proven non-empty by its other entries). Neither can pass without the other's
   //      opposite outcome being reachable.
-  //  (b) the sample's own `s11-replay-off` control was a lie after the flip: it called
+  //  (b) the sample's own `s11-replay-off` control was misleading once replay became the default: it called
   //      `relaunch(FULL_LAUNCH_OPTIONS)`, which names no `replay` key, so it left replay ON while its
   //      label said "Restore (replay off)". It now really passes `replay: false`, and a separate
   //      `s11-replay-restore` control does the baseline restore.
@@ -1146,11 +1134,10 @@ async function main() {
   // (3) Masking, decoded.
   //
   //     Every probe is plain `[a-z0-9-]`, so JSON encoding cannot turn it into a needle that could never
-  //     match (a peer sample shipped a masking check whose multi-line needle was unmatchable by
+  //     match (a masking check in another sample used a multi-line needle that was unmatchable by
   //     construction — the stream is JSON, so a real newline is stored as backslash-n).
   //
-  //     Probes are also DISTINCT PER RUN AND PER PATH, which the first version of this block got wrong
-  //     and which mattered: a relaunch does not reload the page, so whatever is sitting in an input when
+  //     Probes are also DISTINCT PER RUN AND PER PATH, which matters: a relaunch does not reload the page, so whatever is sitting in an input when
   //     the new recorder takes its FULL SNAPSHOT is recorded by the snapshot path, and re-typing the
   //     same string afterwards makes the two paths indistinguishable. With one probe per run this block
   //     "measured" the incremental path while actually reading the snapshot. `…-snap` values are put in
@@ -1212,19 +1199,19 @@ async function main() {
   // (4) `.bugsee-unmask` on an input, measured per PATH rather than assumed — and this is where the
   //     per-path probes earned themselves.
   //
-  //     Two peer samples independently reported an SDK defect: the mark is honoured only on the
+  //     Two other samples independently reported an SDK defect: the mark is honoured only on the
   //     FULL-SNAPSHOT path, so a value TYPED DURING recording stays masked regardless. It lives in the
   //     rrweb fork rather than in `packages/replay/src/masking.ts`, and it FAILS CLOSED (more masking
-  //     than asked for), so it is documented, not re-diagnosed, here — see FINDINGS.md finding D.
+  //     than asked for), so it is documented, not re-diagnosed, here.
   //
-  //     This sample REPRODUCES it, and the first version of this block very nearly recorded the
-  //     opposite: with one probe string reused across the relaunch, the "typed" needle matched the
+  //     This sample REPRODUCES it, and reusing one probe string across the relaunch very nearly recorded the
+  //     opposite: the "typed" needle matched the
   //     SNAPSHOT's copy of the same string and the run reported the mark working on both paths. Split
   //     into `…-snap` / `…-typed` the answer inverts — snapshot-path visible, typed-path masked — which
-  //     is exactly the peers' finding.
+  //     is exactly what the other samples reported.
   //
   //     The row PINS the observed split, so it turns RED the day the fork starts honouring the mark on
-  //     the incremental path, the same discipline the finding-A and finding-B rows use. Its positive
+  //     the incremental path, the same discipline the route-naming and double-upload rows use. Its positive
   //     control against vacuity is twofold: the snapshot term must be VISIBLE (so the needle is
   //     matchable in this very stream, not just in the masking-OFF control run) and the un-marked
   //     sibling must be masked on both paths (so the stream is really applying masking).
@@ -1232,7 +1219,7 @@ async function main() {
   const unmaskTypedVisible = maskedText.includes(UNMASK_TYPED);
   record(
     's11-unmask-mark-typed-value',
-    'KNOWN SDK DEFECT (FINDINGS.md finding D, fails closed): `.bugsee-unmask` on an input un-masks the value present at FULL-SNAPSHOT time but NOT a value typed during recording — measured with a distinct probe per path in ONE stream (snapshot probe visible = the needle is matchable here; typed probe absent = the defect; un-marked sibling masked on both paths = masking really is applied). Pinned, so it turns RED when the rrweb fork honours the mark on the incremental path too',
+    'KNOWN SDK DEFECT (fails closed): `.bugsee-unmask` on an input un-masks the value present at FULL-SNAPSHOT time but NOT a value typed during recording — measured with a distinct probe per path in ONE stream (snapshot probe visible = the needle is matchable here; typed probe absent = the defect; un-marked sibling masked on both paths = masking really is applied). Pinned, so it turns RED when the rrweb fork honours the mark on the incremental path too',
     maskedText.length > 0 && maskedCarriesDom && unmaskSnapVisible && !unmaskTypedVisible && maskSnapAbsent && maskTypedAbsent,
     `unmask-marked: snapshot-path visible=${unmaskSnapVisible} (want true), typed-during-recording visible=${unmaskTypedVisible} (want false = the defect); un-marked sibling absent on both paths=${maskSnapAbsent && maskTypedAbsent}`,
   );
@@ -1250,27 +1237,27 @@ async function main() {
   const globalFallback = await page.locator('[data-testid="error-fallback"]').count();
   record('solid-error-boundary-global', 'unguarded throw reaches the app-level <ErrorBoundary>', globalFallback === 1);
 
-  // S12 — deliberately run BEFORE the S4 storm (FINDINGS.md finding B): the storm is designed to
+  // S12 — deliberately run BEFORE the S4 storm (the double-upload defect): the storm is designed to
   // exceed the capture rate limiter's ~100/60s budget, so running it FIRST starves the very recovery
   // this check exists to confirm (a real isolated run produced ZERO /v2/issues calls for S12 when the
   // storm ran first).
   //
-  // The expected count is TWO, asserted exactly. FINDINGS.md finding B is NOT a nondeterministic race:
+  // The expected count is TWO, asserted exactly. The double-upload defect is NOT a nondeterministic race:
   // once the reload lands after the durable queue has taken its copy of the bundle (the control now
   // reloads at 250ms — see ScenarioPage.tsx's S12 control for why 5ms could never show this), BOTH
   // recovery legs inside coexistence.recoverDeadSiblings run with no de-duplication between them and the
   // same incident is uploaded twice, every time (5ms -> 1 upload in 2/2 runs; 40ms -> 2 in 2/2; 250ms ->
   // 2 in 3/3). The earlier `>= 1 && <= 2` tolerance could never observe 2 at 5ms, so it was reporting a
   // PASS for the one timing that structurally cannot reproduce the defect. Asserting `=== 2` pins the
-  // real, observed behaviour: 1 means finding B has been FIXED in the SDK (update this check and
-  // FINDINGS.md finding B together), 0 means recovery is broken outright.
+  // real, observed behaviour: 1 means the defect has been FIXED in the SDK (update this check
+  // together), 0 means recovery is broken outright.
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'networkidle' });
   // STRUCTURAL CAVEAT this drain exists to contain: the `arm-global` step immediately above ends with a
   // report whose upload is interrupted mid-flight by THIS `page.goto` — structurally the very same
   // "terminated before the upload settled" shape S12 deliberately exploits. So the launch that follows
   // this goto ALSO runs recovery for arm-global's incident, and any leg of that recovery landing inside
   // S12's window would be miscounted as an S12 delivery — and, worse, could hold the `=== 2` pin green
-  // against an SDK where finding B had actually been FIXED (1 real S12 upload + 1 contaminant = 2).
+  // against an SDK where the defect had actually been FIXED (1 real S12 upload + 1 contaminant = 2).
   // The drain is what keeps S12's own count clean: wait for bugsee traffic to go fully quiet AFTER the
   // relaunch (so arm-global's own report AND anything the relaunch recovered from it are already counted
   // and discarded here) and only then open S12's window. This is NOT hypothetical — the drain measured
@@ -1286,7 +1273,7 @@ async function main() {
   const relaunchedText = await page.locator('[data-testid="is-launched"]').textContent().catch(() => '');
   record(
     's12-persist-recover',
-    'logException then hard-reload at 250ms — the incident IS recovered on the next launch, and (FINDINGS.md finding B, a known SDK defect, deterministic not racy) is uploaded EXACTLY TWICE: once by recoverSiblingBundleQueue re-uploading the durably-queued bundle, once by core recoverReports rebuilding it from the still-open marker. 1 = finding B fixed (update this check); 0 = recovery broken',
+    'logException then hard-reload at 250ms — the incident IS recovered on the next launch, and (a known SDK defect, deterministic not racy) is uploaded EXACTLY TWICE: once by recoverSiblingBundleQueue re-uploading the durably-queued bundle, once by core recoverReports rebuilding it from the still-open marker. 1 = defect fixed (update this check); 0 = recovery broken',
     relaunchedText === 'true' && recoveryCalls.length === 2,
     `isLaunched() after reload -> ${relaunchedText}; ${recoveryCalls.length} /v2/issues call(s) recovered this incident; ${preS12Drain.length} pre-window issue call(s) drained before opening it (arm-global's own report plus whatever the following relaunch recovered from it — measured 4 on this sample, which is exactly why this drain exists: without it those calls could land inside S12's window and hold the "=== 2" pin green against a FIXED SDK)`,
   );
@@ -1317,12 +1304,12 @@ async function main() {
   await browser.close();
 
   // ------------------------------------------------------------------ S8 report handler, BACKEND depth
-  // Round-4 finding R4-1, second leg. Before this pass the S8 "report handler — veto" row was verified at
-  // W depth only ("exactly 1 /v2/issues call left the process for the whole block") and the sample never
+  // The S8 "report handler — veto" row was verified at
+  // wire depth only ("exactly 1 /v2/issues call left the process for the whole block") and the sample never
   // once asked staging whether the vetoed message was there. It was: SSOLID-82 carried
   // `S8: report handler should VETO this — must never arrive`, created 2026-08-26T21:42:34Z, and sat
-  // undetected across three review rounds because the sample's design structurally could not see it.
-  // PLAN §6.3 asks for `list_issues` polling and §6.4 for "anything redacted in S8 is absent" confirmed
+  // undetected because the sample's design structurally could not see it.
+  // Polls `list_issues` and confirms "anything redacted in S8 is absent"
   // on the BACKEND — this is that check.
   //
   // POSITIVE CONTROL, and it is the whole point: the MUTATE report from the SAME block must be FOUND, in
@@ -1332,7 +1319,7 @@ async function main() {
   const MUTATE_MSG = 'S8: report handler should mutate this';
   if (!MCP_URL) {
     const why =
-      'BUGSEE_MCP_URL is not set — the S8 report-veto B-depth check CANNOT run, so "no issue created" is unverified on the backend. Set BUGSEE_MCP_URL (the staging MCP endpoint) in samples/solid-spa/.env; see .env.example. This deliberately FAILS rather than silently skipping: an unverifiable claim is exactly the gap R4-1 was raised for.';
+      'BUGSEE_MCP_URL is not set — the S8 report-veto B-depth check CANNOT run, so "no issue created" is unverified on the backend. Set BUGSEE_MCP_URL (the staging MCP endpoint) in samples/solid-spa/.env; see .env.example. This deliberately FAILS rather than silently skipping: an unverifiable claim is exactly the gap this check exists to close.';
     record('s8-report-veto-backend', 'B: the vetoed report is absent from staging', false, why);
     record('s8-report-mutate-backend', 'B: the mutated report arrived on staging with the added label', false, why);
   } else {
@@ -1377,7 +1364,7 @@ async function main() {
     }
     record(
       's8-report-veto-backend',
-      'B (R4-1): staging has NO issue carrying the vetoed report\'s message anywhere in the window this sweep\'s S8 block opened — queried over every issue updated in that window, with the mutate report from the same block as the positive control that the query can find an S8 report at all',
+      'B: staging has NO issue carrying the vetoed report\'s message anywhere in the window this sweep\'s S8 block opened — queried over every issue updated in that window, with the mutate report from the same block as the positive control that the query can find an S8 report at all',
       Boolean(mutateIssue) && !vetoIssue && !queryError,
       `${candidates.length} issue(s) updated since the S8 window opened; positive control (mutate) found=${mutateIssue?.key ?? 'NO'}; vetoed message found=${vetoIssue?.key ?? 'none (correct)'}${queryError ? `; MCP error: ${queryError}` : ''}`,
     );
@@ -1398,7 +1385,7 @@ async function main() {
     console.log(`${status}  ${r.id.padEnd(width)} ${r.description}${r.detail ? ` — ${r.detail}` : ''}`);
   }
   const failed = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only — see scenarios.md for backend/MCP verification)`);
+  console.log(`\n${results.length - failed.length}/${results.length} passed (LOCAL/WIRE level only — backend/MCP verification is a separate step)`);
   if (pageErrors.length > 0) {
     console.log(`\nUncaught page errors observed (expected for S5): ${pageErrors.length}`);
   }

@@ -10,7 +10,7 @@ import ScenarioPage from './routes/ScenarioPage';
 import NotFoundPage from './routes/NotFoundPage';
 
 /**
- * `@solidjs/router` with NESTED routes (docs/samples/PLAN.md §5.5): `/issues/:id` is a layout route
+ * `@solidjs/router` with NESTED routes: `/issues/:id` is a layout route
  * whose two children — the index (Overview) and `/comments` — render inside it via `props.children`
  * (see IssueDetailPage.tsx). Route-name instrumentation (`setRouteNameFromSolidMatches`) is wired
  * globally in RootLayout.tsx via `useCurrentMatches` — no per-route call needed here, since Solid

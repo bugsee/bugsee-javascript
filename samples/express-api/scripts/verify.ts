@@ -4,8 +4,8 @@
 //
 // This script does NOT talk to the Bugsee staging MCP server (only the agent session has those tools).
 // It writes data/verify-run.json with the run marker + every scenario outcome, which is what the agent
-// cross-references against `list_issues`/`get_issue` afterwards to fill in the BACKEND verification
-// depth recorded in scenarios.md.
+// cross-references against `list_issues`/`get_issue` afterwards to record the BACKEND verification
+// depth for each check.
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
@@ -214,7 +214,7 @@ async function main(): Promise<void> {
     // ---- S10 Distributed tracing ----
     await hit('S10.outbound-trace', 'GET', '/scenarios/s10/outbound-trace');
 
-    // ---- S12 Persistence info (manual repro documented in scenarios.md) ----
+    // ---- S12 Persistence info (manual repro is described in the route note) ----
     await hit('S12.info', 'GET', '/scenarios/s12/info');
 
     // ---- route naming (nested router regression check) ----
@@ -365,7 +365,7 @@ async function main(): Promise<void> {
       .find((t) => t.name.includes(':taskId') || t.name === 'POST /' || t.name === 'GET /:taskId');
     console.log(
       routeNamingTxn !== undefined
-        ? `[observed] a nested-router transaction name on the wire: "${routeNamingTxn.name}" — see FINDINGS.md`
+        ? `[observed] a nested-router transaction name on the wire: "${routeNamingTxn.name}"`
         : '[note] no nested-router transaction observed this run',
     );
   } finally {
@@ -426,8 +426,7 @@ async function main(): Promise<void> {
   // Written HERE, last, and not at the point the wire snapshot is taken. `wireCheck` appends to the
   // same `results` array the local checks use, and both the wire checks and the crash-child checks run
   // after that snapshot — so writing the artifact there recorded the local checks only. The agent
-  // cross-references this file against `list_issues`/`get_issue` to fill in the BACKEND depth in
-  // scenarios.md, which means a check missing from it is a check that silently never gets verified.
+  // cross-references this file against `list_issues`/`get_issue` to fill in the BACKEND depth, which means a check missing from it is a check that silently never gets verified.
   writeFileSync(
     join(ROOT, 'data', 'verify-run.json'),
     JSON.stringify(

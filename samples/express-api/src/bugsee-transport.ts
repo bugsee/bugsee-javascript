@@ -1,13 +1,12 @@
 // A "tee" transport: forwards every SDK network call to the REAL staging endpoint verbatim, while
 // recording a parsed summary of each call locally. That local record is what lets `pnpm verify` and
 // the dashboard assert on things the MCP surface does not expose (redacted network bodies, the exact
-// bundle contents, the trace_id a report carried) — the "wire" verification depth from
-// docs/samples/PLAN.md §4.
+// bundle contents, the trace_id a report carried) — the "wire" verification depth.
 //
-// It rewrites NOTHING. It used to carry three deliberate rewrites, working around SDK defects this
+// It rewrites NOTHING. Earlier versions carried three deliberate rewrites, working around SDK defects this
 // sample found (a hardcoded `x-client-type: web`, the unparsed `{ok, result}` response envelope, and
 // an `x-amz-checksum-sha256` header the presigned S3 url was never signed for). All three are fixed
-// in @bugsee/core; see samples/FINDINGS.md. If a rewrite ever reappears here, the sample has stopped
+// in @bugsee/core. If a rewrite ever reappears here, the sample has stopped
 // testing what a customer actually runs.
 //
 // This is a real HttpTransport (the shape @bugsee/node's `transport` launch option expects), built on
@@ -50,7 +49,7 @@ export interface ParsedBundleSummary {
   breadcrumbs?: unknown[];
   network?: unknown[];
   /** manifest.json `attrs` — where setAttribute()/per-request attributes actually land on the wire
-   *  (NOT on request.json — see samples/express-api/FINDINGS.md). */
+   *  (NOT on request.json). */
   attrs?: Record<string, unknown>;
 }
 

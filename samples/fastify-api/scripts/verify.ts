@@ -3,9 +3,8 @@
 // or contaminate the long-lived server), flushes, and prints a LOCAL + WIRE pass/fail table.
 //
 // This script does NOT talk to the Bugsee staging MCP server (only the agent session has those tools).
-// It writes data/verify-run.json with the run marker + every scenario outcome, which is what the agent
-// cross-references against `list_issues`/`get_issue` afterwards to fill in the BACKEND verification
-// depth recorded in scenarios.md.
+// It writes data/verify-run.json with the run marker + every scenario outcome, which the agent
+// cross-references against `list_issues`/`get_issue` afterwards to fill in the BACKEND verification depth.
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -30,12 +29,8 @@ interface Result {
    *  Budgets are still set from the work a route REQUESTS (see `hit`'s doc comment), never from these
    *  numbers, and for most rows this stays pure diagnostics.
    *
-   *  THE RULE, deliberately stated WITHOUT a census of who currently obeys it. This comment has now
-   *  gone stale twice — first claiming "nothing asserts on it", then claiming "TWO checks do, S1.flush
-   *  and S4.dedupe, the latter measuring ~13-14s" — and both times it went stale in the very round
-   *  that changed the checks it was describing (round 5 moved S1.flush's assertion onto the route's own
-   *  `flushMs`; the dedupe route's own record has long since moved off 13-14s). A count and a timing
-   *  cannot be kept true from here, so neither is recorded here any more.
+   *  THE RULE: this comment keeps no census of which checks obey it, because such a census goes stale
+   *  as soon as a check changes.
    *
    *  What IS invariant: `ms` is this harness's clock for a WHOLE HTTP round trip, so it is only an
    *  UPPER bound on whatever the route did inside it. A check may assert on `ms` ONLY when no narrower
@@ -58,8 +53,8 @@ function expectOk(status: number, expected: number | number[]): boolean {
 /**
  * Default client-side budget for one scenario route. Generous: these routes talk to REAL staging, not
  * a mock. Any route that asks the SDK for TIMED work must be given a budget that EXCEEDS what it
- * requests — see samples/FINDINGS.md F-X19 for why a flat budget shorter than the requested work
- * reads a correctly-working flush as a failure. Two routes qualify and both pass their own budget
+ * requests, because a flat budget shorter than the requested work reads a correctly-working flush as a
+ * failure. Two routes qualify and both pass their own budget
  * rather than this default: S1.flush (`FLUSH_TIMEOUT_MS + 5s`) and S4.dedupe (`DEDUPE_TIMEOUT_MS`,
  * one awaited report = at least two 30s-bounded transport calls, each retried up to 3x — see that
  * constant's own comment). Every other route only asks the app for work the SDK does off the response
@@ -160,8 +155,8 @@ const auth = { headers: { authorization: 'Bearer metrics-api-dev-token' } };
 async function main(): Promise<void> {
   console.log(`== pnpm verify (marker=${RUN_MARKER}) ==`);
 
-  // scenarios.md's cross-cutting table claimed the file-backed store "survives a restart" and NOTHING
-  // performed or asserted a restart — the claim rested on `src/store.ts`'s own header comment. It is
+  // The file-backed store was claimed to "survive a restart", yet nothing performed or asserted a restart:
+  // the claim rested on `src/store.ts`'s own header comment. It is
   // asserted here now, using the restart this sweep already performs: a series is written straight into
   // `data/db.json` BEFORE the server process exists, and the freshly started server (whose MetricsStore
   // hydrates from that file in its constructor) then has to serve it back through the real HTTP API.
@@ -177,12 +172,11 @@ async function main(): Promise<void> {
     { id: `seed1-${RUN_MARKER}`, name: RESTART_SERIES, value: 7, tags: {}, createdAt: new Date().toISOString() },
     { id: `seed2-${RUN_MARKER}`, name: RESTART_SERIES, value: 11, tags: {}, createdAt: new Date().toISOString() },
   );
-  // `data/` is a RUN ARTEFACT — gitignored, so a fresh clone does not have it. Before the restart seed
-  // was added, the first writer of this path was `MetricsStore.save()` (src/store.ts:48), which creates
-  // the directory itself; the seed moved the first write EARLIER than the server that used to create
-  // it, so on a clean checkout `writeFileSync` threw ENOENT before `spawn` ever ran and `pnpm verify`
-  // could not start at all. The seed therefore has to create the directory itself rather than inherit
-  // it from a previous run. Verified by deleting `data/` and running the full sweep, not by reasoning.
+  // `data/` is a RUN ARTEFACT — gitignored, so a fresh clone does not have it. `MetricsStore.save()`
+  // (src/store.ts:48) creates the directory, but only once the server is running, and the seed below writes
+  // this file before the server exists. So the seed has to create the directory itself; otherwise
+  // `writeFileSync` throws ENOENT on a clean checkout before `spawn` ever runs. Verified by deleting `data/`
+  // and running the full sweep, not by reasoning.
   mkdirSync(dirname(DB_PATH), { recursive: true });
   writeFileSync(DB_PATH, JSON.stringify(seedDb, null, 2));
 
@@ -221,12 +215,10 @@ async function main(): Promise<void> {
       headers: { ...auth.headers, 'content-type': 'application/json' },
       body: JSON.stringify({ name: `latency.${RUN_MARKER}`, value: 99 }),
     });
-    // The route answers `{event, alerted, traceparentSeen}` (src/plugins/metrics.ts:56-71) and both of
-    // the interesting fields were going unread — only the hardcoded 201 was asserted — while
-    // scenarios.md cited them ("alerted: true, traceparentSeen a valid W3C header — verified"). A 201
-    // is returned whether or not the webhook call happened at all, so the outbound leg (real network
-    // capture + real trace propagation as a side effect of genuine app behaviour, which is why this
-    // row exists) had no coverage here.
+    // The route answers `{event, alerted, traceparentSeen}` (src/plugins/metrics.ts:56-71). Both of the
+    // interesting fields were going unread, and only the hardcoded 201 was asserted. A 201 is returned whether
+    // or not the webhook call happened at all, so the outbound leg (real network capture + real trace
+    // propagation as a side effect of genuine app behaviour, which is why this row exists) had no coverage.
     const alertingBody = alerting.body as
       | { alerted?: boolean; traceparentSeen?: string | null }
       | undefined;
@@ -241,19 +233,15 @@ async function main(): Promise<void> {
     );
     // A genuine Fastify SCHEMA validation failure (missing "value") — never thrown by our own code.
     // Fastify-specific: does this go through Bugsee's onError hook the same way a thrown error would?
-    // See FINDINGS.md.
     await hit('api.validation-4xx', 'POST', '/api/v1/metrics', 400, {
       method: 'POST',
       headers: { ...auth.headers, 'content-type': 'application/json' },
       body: JSON.stringify({ name: `bad.${RUN_MARKER}` }),
     });
-    // PAGINATION. scenarios.md's cross-cutting row is "**Pagination** + per-metric aggregation —
-    // Local, verified", and round 6 closed only the aggregation half: this row asserted the hardcoded
-    // 200 with no `page`/`pageSize` at all, so the envelope `{items,page,pageSize,total,totalPages}`
-    // (src/plugins/metrics.ts:75-80, src/store.ts:69-79) was produced and read by nothing, and
-    // `parsePagination`'s clamping (:37-41) was never exercised with a non-default value. Round 6
-    // rejected exactly the "at Local depth a 200 suffices" reasoning for the aggregation half of this
-    // same row, so it is rejected here too.
+    // PAGINATION. This row asserted only the hardcoded 200, with no `page`/`pageSize` at all. The envelope
+    // `{items,page,pageSize,total,totalPages}` (src/plugins/metrics.ts:75-80, src/store.ts:69-79) was produced
+    // and read by nothing, and `parsePagination`'s clamping (:37-41) was never exercised with a non-default
+    // value. A 200 alone is not evidence of pagination, so the envelope is asserted here.
     //
     // The series is known EXACTLY — this run ingested 42 then 99 under `latency.<marker>`, in that
     // order, and nothing else writes that name — so every field of every page has one correct value.
@@ -312,8 +300,7 @@ async function main(): Promise<void> {
       `api.list-clamped: pageSize=99999 clamps to the 100 ceiling and page=0 falls back to 1 — got page=${clampedBody?.page}, pageSize=${clampedBody?.pageSize}`,
       clampedBody?.pageSize === 100 && clampedBody.page === 1 && clampedBody.total === 2,
     );
-    // scenarios.md's cross-cutting table claimed "count/sum/avg/min/max correct for a known series" and
-    // this row asserted the hardcoded 200 only — an aggregation regressing to `sum` for `avg`, or to a
+    // This row asserted only the hardcoded 200, so an aggregation regressing to `sum` for `avg`, or to a
     // count of the whole store, would have read green. The series IS known exactly: this run ingested
     // 42 and 99 under `latency.<marker>` above (nothing else writes that name), so every field has one
     // correct value and all five are asserted.
@@ -329,7 +316,7 @@ async function main(): Promise<void> {
         statsBody.min === 42 &&
         statsBody.max === 99,
     );
-    // The restart half of the file-backed-store claim (see the seed written before the server was
+    // The restart half of the file-backed-store check (see the seed written before the server was
     // spawned): this series was on disk before the server process existed, so serving it correctly here
     // means the store hydrated it from `data/db.json` at boot.
     const restartStats = await hit(
@@ -366,12 +353,9 @@ async function main(): Promise<void> {
     });
 
     // ---- S1 Launch & lifecycle ----
-    // The route answers `{isLaunched: client().isLaunched()}` and that boolean was going unread for
-    // four rounds: only the hardcoded 200 was asserted, so `isLaunched()` regressing to `false` (or to
-    // any non-boolean) would have left this row green while `scenarios.md` cited it as "isLaunched()
-    // true - verified". Same class as the `flush()` boolean, `r1`/`r2`, `filterInvoked` and
-    // `transactionNames` fixes: the evidence existed, nothing read it. `/health` returns the same
-    // field and `waitForHealth()` now reads it too (see its own comment).
+    // The route answers `{isLaunched: client().isLaunched()}`. Only the hardcoded 200 was asserted, so
+    // `isLaunched()` regressing to `false` (or to any non-boolean) would have left this row green. `/health`
+    // returns the same field and `waitForHealth()` reads it too (see its own comment).
     const s1Status = await hit('S1.status', 'GET', '/scenarios/s1/status');
     wireCheck(
       'S1.status: the client reports isLaunched() === true',
@@ -387,10 +371,9 @@ async function main(): Promise<void> {
     // POSITIVE CONTROL for the attribute getters. `S2.clear-attributes` below is a NEGATIVE pair —
     // `afterClearOne === null` and `afterClearAll` empty — and a negative pair alone is satisfied by a
     // `getAttribute()` regressed to always return `undefined` and a `getAllAttributes()` regressed to
-    // always return `{}`. Nothing in this gate used to assert either getter returning a VALUE, even
-    // though this route already produced all four readings and the sweep threw the body away. This is
-    // the same pairing discipline the S1.flush residual check states for itself further down ("the
-    // negative check alone would pass vacuously"), applied one scenario over.
+    // always return `{}`. Nothing in this gate asserted either getter returning a VALUE, even though this
+    // route already produced all four readings. A negative pair passes vacuously on its own, so the positive
+    // half is asserted here as well.
     //
     // NOT covered by the S2 wire checks on `manifest.attrs`: those read what the SDK put in the
     // uploaded bundle, a different path from what the getters answer in-process. Both regressions above
@@ -445,11 +428,9 @@ async function main(): Promise<void> {
       'S2.clear-attributes: clearAllAttributes() leaves an empty attribute set',
       s2ClearBody?.afterClearAll !== undefined && Object.keys(s2ClearBody.afterClearAll).length === 0,
     );
-    // PLAN §4 S2 asks for all three of setUserIdentifier/getUserIdentifier/clearUserIdentifier, and
-    // `clearUserIdentifier` was neither exercised nor recorded N/A until this fix round (`browser-vanilla`
-    // and `react-spa` cover it; `express-api` and `node-service` share the gap this closes here). The
-    // route is at the BOTTOM of src/routes/scenarios.ts, below the last throw, so adding it shifted no
-    // fingerprint — see its own comment. Asserted as a full transition, not just the cleared reading:
+    // The S2 scenario calls for all three of setUserIdentifier/getUserIdentifier/clearUserIdentifier. The route
+    // is at the BOTTOM of src/routes/scenarios.ts, below the last throw, so adding it shifted no fingerprint —
+    // see its own comment. Asserted as a full transition, not just the cleared reading:
     // set -> read back -> clear -> read null -> restore. A getter stubbed to always return null would
     // pass the clear half and fail `afterSet`; a `clearUserIdentifier()` regressed to a no-op fails the
     // clear half. The `restored` field is the one that matters for the REST of the sweep — the identity
@@ -475,25 +456,14 @@ async function main(): Promise<void> {
     await hit('S4.non-error', 'POST', '/scenarios/s4/non-error');
     await hit('S4.cause', 'POST', '/scenarios/s4/cause');
     await hit('S4.options', 'POST', '/scenarios/s4/options');
-    // BUDGET. This route AWAITS two full `logException()` round trips to REAL staging, so — exactly
-    // like S1.flush — it asks the SDK for TIMED work, and the F-X19 rule applies: the client-side
-    // budget must EXCEED the work the route requests, or a correctly-working SDK reads as a failure.
-    // It was nonetheless left on the flat 10s DEFAULT_HIT_TIMEOUT_MS for two rounds, on the reasoning
-    // that one observation (the 2026-08-26 pre-fix baseline) was too thin to tune on and that raising
-    // it would hide a genuine slowdown. Two things then falsified that:
-    //   1. It reproduced. The 2026-08-26 VALIDATION run aborted here at 10s again, and again the
-    //      independent wire check for the same scenario ("exactly ONE bundle") PASSED — the SDK
-    //      deduplicated correctly and only this client-side budget was exceeded. Two occurrences on
-    //      the same route make it the route's normal cost range, not an outlier. It is no longer a
-    //      guess either: the re-run with the budget below MEASURED the route at 12850ms (recorded as
-    //      `ms` in data/verify-run.json), i.e. genuinely ~1.3x over the flat 10s it was being given.
-    //   2. The blast radius changed. When only an HTTP status was asserted this cost one status row;
-    //      since the `r1`/`r2` evidence check below was added it fails a GATE check too — i.e. the
-    //      flat budget now turns correct SDK behaviour red.
-    // The budget is therefore derived from what the route REQUESTS, the same way S1.flush's is
-    // (`FLUSH_TIMEOUT_MS + 5s`). The arithmetic that produced it was right; the JUSTIFICATION printed
-    // here for two rounds ("two uploads, each bounded by the tee transport's own 30s") was wrong in
-    // BOTH directions, and is restated:
+    // BUDGET. This route AWAITS two full `logException()` round trips to REAL staging, so, like S1.flush, it
+    // asks the SDK for TIMED work. The client-side budget must EXCEED the work the route requests, or a
+    // correctly-working SDK reads as a failure. A flat 10 s budget aborted this route on a healthy run, even
+    // though the independent wire check for the same scenario ("exactly ONE bundle") still PASSED: the SDK had
+    // deduplicated correctly and only this client-side budget was exceeded. A measured run took 12850 ms
+    // (recorded as `ms` in data/verify-run.json), about 1.3x the flat budget. Raising the budget does not hide a
+    // genuine slowdown, because the explicit `ms` ceiling below catches that. The budget is therefore derived
+    // from what the route REQUESTS, the same way S1.flush's is (`FLUSH_TIMEOUT_MS + 5s`). The justification:
     //   - It is ONE report on the wire, not two. The second `logException` of the same Error instance
     //     short-circuits in `checkOrSetAlreadyCaught` (packages/core/src/client.ts:636-638) and
     //     returns `{ok:false}` BEFORE `submitReport` (:674) — which is precisely what the `r1`/`r2`
@@ -519,9 +489,8 @@ async function main(): Promise<void> {
     // The route AWAITS both `logException()` calls and returns their two `UploadResult`s. `r2.ok ===
     // false` is the SDK's OWN dedup decision (packages/core/src/client.ts's `checkOrSetAlreadyCaught`
     // returns `{ok:false}` for a re-capture of the same thrown object) — the most direct evidence of
-    // deduplication this sample can obtain, and it was being produced and thrown away: `hit()` only
-    // asserted HTTP 200, while scenarios.md's S4 dedupe row nonetheless CITED `{r1:{ok:true},
-    // r2:{ok:false}}` as its evidence. The wire check below ("exactly ONE bundle") is the same claim
+    // deduplication this sample can obtain. `hit()` asserts only HTTP 200, so these fields are checked here.
+    // The wire check below ("exactly ONE bundle") is the same claim
     // seen from the other end; both together distinguish "deduped" from "the second upload silently
     // failed". NB: this check inherits S4.dedupe's client-side budget exposure — if the local hit
     // aborts at DEDUPE_TIMEOUT_MS the body is undefined and this fails loudly rather than vacuously
@@ -534,39 +503,35 @@ async function main(): Promise<void> {
     // is still allowed to run to the 65s budget and complete, so a slowdown is reported as "it worked,
     // but far slower than it should" rather than as an opaque abort with no body.
     //
-    // THE CEILING IS A TRIPWIRE, AND IT MUST BE RE-FITTED AS OBSERVATIONS ACCUMULATE. It was first set
-    // to 30000 ms on the ground that this was "roughly 2x observed, ample headroom", where "observed"
-    // meant three runs spanning 12755-14255 ms. The very next independent run — the 2026-08-27 round-4
-    // re-review — clocked 18433 ms, OUTSIDE that cited range, leaving only 1.63x of margin on a
-    // provably-correct SDK. That is the F-X19 failure mode this exact route has already hit twice: a
-    // client-side number fitted to a small sample turning a healthy run red. The number was wrong, not
-    // the design.
+    // THE CEILING IS A TRIPWIRE, AND IT MUST BE RE-FITTED AS OBSERVATIONS ACCUMULATE. The first fit was made
+    // to three runs spanning 12755-14255 ms, with about 2x of headroom. A run on 2026-08-27 then clocked 18433 ms,
+    // leaving only 1.63x of margin on a provably-correct SDK. A client-side number fitted to a small sample
+    // turned a healthy run red. The number was wrong, not the design.
     //
     // OBSERVATIONS (append to this list, never trim it — the ceiling is only as honest as the record;
     // each run's own value is also recorded as `ms` in `data/verify-run.json`):
     //   12755 ms · 12850 ms · 14255 ms  (2026-08-26, three runs)
-    //   18433 ms                        (2026-08-27, round-4 re-review — escaped the 30000 ms fit)
+    //   18433 ms                        (2026-08-27, escaped the 30000 ms fit)
     //   21119 ms · 9458 ms              (2026-08-27, the two validation runs OF the 45000 ms refit)
     //   8629 ms · 8967 ms · 9431 ms · 9522 ms
-    //                                   (2026-08-27, the round-5 re-review's four consecutive sweeps)
+    //                                   (2026-08-27, four consecutive sweeps)
     //   8268 ms · 8785 ms · 8776 ms · 9797 ms · 8671 ms
-    //                                   (2026-08-27, the round-6 fix round's sweeps)
+    //                                   (2026-08-27, sweeps)
     //   9249 ms · 8518 ms · 8641 ms · 8904 ms · 9289 ms
-    //                                   (2026-08-27, the round-5 FIX round's validation sweeps — the
+    //                                   (2026-08-27, validation sweeps — the
     //                                   2nd through 6th of six. The FIRST of those six also passed
     //                                   161/161, but its `ms` is NOT recorded here: its stdout was
     //                                   tail-truncated before the value was read, and
     //                                   `data/verify-run.json` had already been overwritten by the
     //                                   next run. An observation that was not actually read is left
     //                                   out of the record rather than guessed at.)
-    //   9168 ms · 9532 ms · 9122 ms    (2026-08-27, the round-7 fix round's sweeps — the first of the
+    //   9168 ms · 9532 ms · 9122 ms    (2026-08-27, sweeps — the first of the
     //                                   three run with `data/` deleted beforehand, which is why it is
     //                                   also the first observation taken against an empty store.)
     // Twenty-three observations, spread 8268-21119 ms: a 2.56x run-to-run swing on healthy staging,
     // with NO monotonic trend (the run right after the slowest was the fastest yet, and the seventeen
     // newest all sit at the fast end, 8268-9797 ms). That spread — not any single "2x observed" figure — is what
-    // the ceiling has to clear, and it is exactly what the original 30000 ms fit got wrong by being
-    // derived from three consecutive samples.
+    // the ceiling has to clear, and a fit to three consecutive samples cannot capture it.
     // The 45000 ms fit still stands: 2.13x the worst observation (21119 ms), above the swing the
     // record actually shows, and still under the 65s abort budget so the check stays a diagnosis
     // rather than an abort.
@@ -575,9 +540,8 @@ async function main(): Promise<void> {
     // be widened before it stops discriminating at all, so an observation above ~25 s is a reason to
     // investigate staging latency first, not to refit reflexively.
     //
-    // The LABEL below deliberately does NOT enumerate the observations. That is what went stale: the
-    // printed text said "observed range 12755-14255ms over three runs" while the very next run sat
-    // outside it. The record lives here, in one place, where appending to it is the only edit needed.
+    // The LABEL below deliberately does NOT enumerate the observations. A printed range goes stale as soon as a run
+    // falls outside it. The record lives here, in one place, where appending to it is the only edit needed.
     const DEDUPE_MS_CEILING = 45_000;
     wireCheck(
       `S4.dedupe: the awaited report round trip stayed under its tripwire ceiling (${s4Dedupe.ms}ms, ceiling ${DEDUPE_MS_CEILING}ms — the observation record lives in this check's comment, not in this label)`,
@@ -601,23 +565,21 @@ async function main(): Promise<void> {
     await hit('S6.console', 'POST', '/scenarios/s6/console');
 
     // ---- S7 Network capture ----
-    // These three asserted only the app's own hardcoded 200 for six rounds, while scenarios.md claimed
-    // "body read correctly by the app" / "JSON body round-trips" / "text body round-trips" — the same
-    // defect class their direct siblings (4xx/5xx/connection-failure/large-body/no-content-type) were
-    // fixed for, left standing because the previous round's sweep stopped at the rows the reviewer had
-    // named. `/ok` regressing to a 4xx with a JSON body, or the fetch never reaching the third party
-    // at all, would have left all three green.
+    // These three asserted only the app's own hardcoded 200, although each claims the body was read
+    // correctly ("JSON body round-trips" / "text body round-trips"). The same defect class was already fixed for
+    // their direct siblings (4xx/5xx/connection-failure/large-body/no-content-type). `/ok` regressing to a 4xx
+    // with a JSON body, or the fetch never reaching the third party at all, would have left all three green.
     //
-    // What each route actually RETURNS bounds what can be asserted, and the doc rows were reworded to
-    // match rather than the other way round: `/scenarios/s7/fetch-get` and `/s7/fetch-post-json` return
+    // What each route actually RETURNS bounds what can be asserted:
+    // `/scenarios/s7/fetch-get` and `/s7/fetch-post-json` return
     // the third party's status AND its parsed JSON body (`thirdPartyBody`), so both halves are asserted
     // here; `/s7/fetch-post-text` returns the status only, so only the status is asserted. Deliberate
     // residual, recorded rather than papered over: `src/third-party.ts`'s `/ok` (:51-54) IGNORES the
     // request body — it answers `{ok:true, receivedAt}` to every method — so NOTHING the app can see
     // proves the POST body arrived, and "round-trips" was never a claim this sample could support.
     // Making it supportable would mean echoing the body from `/ok` AND widening the post-text route's
-    // `reply.send` in `src/routes/scenarios.ts`, i.e. editing the fingerprint-sensitive file; the claim
-    // was downgraded to what the evidence carries instead.
+    // `reply.send` in `src/routes/scenarios.ts`, i.e. editing the fingerprint-sensitive file; the assertions
+    // therefore claim only what the evidence carries.
     const s7Get = await hit('S7.fetch-get', 'GET', '/scenarios/s7/fetch-get');
     const s7GetBody = s7Get.body as
       | { thirdPartyStatus?: number; thirdPartyBody?: { ok?: boolean } }
@@ -641,9 +603,7 @@ async function main(): Promise<void> {
     );
     // Both routes return the THIRD PARTY's status and `ok` flag, and both were asserting only the
     // app's own hardcoded 200 — so `/boom` regressing to a 200, or being deleted and falling through
-    // src/third-party.ts's catch-all 404 (:83), would leave the sweep green while scenarios.md
-    // recorded "404/500 from the third party" as verified. Same fix their direct siblings
-    // (connection-failure / large-body / no-content-type) already got. Honest residual on the 4xx
+    // src/third-party.ts's catch-all 404 (:83), would leave the sweep green. Honest residual on the 4xx
     // half only: src/third-party.ts's catch-all ALSO answers 404, so deleting `/not-found` is
     // indistinguishable from it working. The status is still worth asserting (a 4xx becoming a 2xx,
     // or the fetch not reaching the third party at all, is caught), and the 5xx half has no such
@@ -691,7 +651,7 @@ async function main(): Promise<void> {
     // The route reports whether `setNetworkEventFilter`'s callback was ever INVOKED (it flips a flag
     // inside the filter). Without this, every S8.network-filter wire check below is consistent with a
     // filter that was installed but never called — the header simply never having been sent — and
-    // scenarios.md cited `filterInvoked: true` as evidence while nothing read it.
+    // nothing read `filterInvoked: true` to rule that out.
     wireCheck(
       'S8.network-filter: the installed setNetworkEventFilter callback was actually INVOKED (not merely registered)',
       (s8NetworkFilter.body as { filterInvoked?: boolean } | undefined)?.filterInvoked === true,
@@ -799,9 +759,8 @@ async function main(): Promise<void> {
       FLUSH_TIMEOUT_MS + 5_000,
     );
     const bundlesAfterFlush = await bundleCount();
-    // The route returns `flush()`'s own boolean and it was going unread: only the hardcoded 200 was
-    // asserted, so a regression that made `flush()` a no-op returning `false` immediately would have
-    // left the gate green.
+    // The route returns `flush()`'s own boolean, which is asserted below. A regression that made `flush()` a
+    // no-op returning `false` immediately would otherwise leave the gate green.
     //
     // What is asserted is deliberately NOT `flushed === true`. This flush is placed LAST on purpose —
     // after S4.storm's 200 `logException` calls and the 50-way concurrency batch — so it meets a real
@@ -818,58 +777,37 @@ async function main(): Promise<void> {
     // ==> THE OBSERVATION RECORD FOR THIS CHECK LIVES HERE, AND ONLY HERE. APPEND TO IT, NEVER TRIM IT
     // (same discipline as the S4.dedupe ceiling above; each run's round trip is also in
     // `data/verify-run.json` as `ms`, but the flush's OWN duration is only ever printed in the label
-    // below, so it has to be copied here by hand or it is lost). Before round 6 this record had THREE
-    // homes and they had already drifted: this comment said "two independent sweeps at ~15003 ms",
-    // forty lines further down it said "both observed runs came in at 15002/15004", and
-    // `scenarios.md` called the same outcome "three-times-reproduced". Two of those three retellings
-    // described the SAME two runs and no third value was ever recorded anywhere. The duplicate figures
-    // forty lines down are gone, and `scenarios.md`'s S1-flush row now points here instead of
-    // restating them.
-    //   15002 ms · 15004 ms   (2026-08-27, the round-5 fix round — the pair every earlier retelling
-    //                          was describing. That round ran six sweeps and appended none of the
-    //                          other four: a value that was not actually read is left out of the
-    //                          record rather than guessed at.)
+    // below, so it has to be copied here by hand or it is lost). Each observation is recorded once, here.
+    //   15002 ms · 15004 ms   (2026-08-27, the pair the earlier notes were describing. The other four sweeps
+    //                          of that run were not read back, so they are left out rather than guessed at.)
     //   15000 ms · 14999 ms · 14999 ms
-    //                         (2026-08-27, the round-6 review's three sweeps. Two of the three land
-    //                          BELOW the 15000 ms bound — that is the route's own clock being
-    //                          marginally tighter than the SDK's internal timer, exactly what the
-    //                          500 ms slack exists to absorb, NOT a flush that under-spent.)
+    //                         (2026-08-27, three sweeps. Two of the three land BELOW the 15000 ms bound — that
+    //                          is the route's own clock being marginally tighter than the SDK's internal timer,
+    //                          exactly what the 500 ms slack exists to absorb, NOT a flush that under-spent.)
     //   15000 ms · 15000 ms · 15001 ms · 15000 ms · 14999 ms
-    //                         (2026-08-27, the round-6 fix round's sweeps.) How many sweeps a round ran
-    //                          and what they SCORED is deliberately NOT recorded here: those numbers
-    //                          live in scenarios.md's GATE-COUNT HOME, which states that they appear
-    //                          exactly once in this sample, and a copy here would falsify that the next
-    //                          time the gate size moves. This block's own history is the argument —
-    //                          it already records two numbers that went stale in the round that changed
-    //                          them. The DURATIONS are the record this home owns; the gate is not.
+    //                         (2026-08-27, sweeps.) The number of sweeps and their scores are deliberately NOT
+    //                          recorded here, since they go stale whenever the gate size changes. The DURATIONS
+    //                          are the record this block owns.
     //   15000 ms · 15000 ms · 15000 ms
-    //                         (2026-08-27, the round-7 fix round's sweeps. The first of the three ran
-    //                          against a DELETED `data/` — an empty store changes nothing about the
-    //                          flush, as expected, and it is recorded so that is on the record rather
-    //                          than assumed.)
+    //                         (2026-08-27, sweeps. The first of the three ran against a DELETED `data/` — an
+    //                          empty store changes nothing about the flush, as expected, and it is recorded so
+    //                          that is on the record rather than assumed.)
     // Thirteen observations, spanning 14999-15004 ms: every one within 5 ms of the bound, either side. The
     // jitter this check has to tolerate is therefore single-digit milliseconds, so the 500 ms slack
     // sits ~2 orders of magnitude above it while a genuinely no-op `false` (0 ms — or anything under
     // 14.5 s) stays far outside. Widen the slack only if an observation ever approaches it, and append
     // that observation here when you do.
     //
-    // RESIDUAL — NOW CLOSED, recorded because how it was closed matters. The `true` branch used to be
-    // accepted unconditionally with nothing guarding it. An early note excused that by claiming "the
-    // post-flush polling loop below independently proves the bundles do all arrive", which is false:
-    // that loop asserts nothing, and the "50/50 bundles arrived" check reads the settled list after it
-    // and passes with or without this flush. The replacement excuse — "closing it would need the route
-    // to report the pending-bundle count (src/routes/scenarios.ts), which this round deliberately does
-    // not touch" — did not hold either, and was the wrong shape of blocker: `scripts/verify.ts` is
-    // fingerprint-SAFE (scenarios.md's own table says so), and the tee ALREADY publishes the count over
-    // `/scenarios/_debug/bundles`. So the count is now sampled immediately after the flush returns and
-    // again once the drain loop has settled, and the check further below asserts the implication
-    // `flushed === true` ⇒ the settled count did not grow. A `flush()` that answers `true` without
-    // draining leaves the ~100-bundle backlog for the drain loop to upload, which shows up as growth
-    // and fails. The sampling ORDER is what makes that sound: the tee parses each bundle in a
-    // `setImmediate` scheduled AFTER the response is handed back, and the `bundleCount()` fetch is a
-    // whole further HTTP round trip, so every upload that completed before the flush returned is
-    // already parsed and counted by then. The branch remains the one no sweep on record takes (every
-    // full sweep answers `false`), so the guard is written to be correct rather than to be exercised.
+    // The `true` branch is guarded, not accepted unconditionally. The pending-bundle count is sampled
+    // immediately after the flush returns and again once the drain loop has settled, and the check further
+    // below asserts the implication `flushed === true` ⇒ the settled count did not grow. The tee already
+    // publishes that count over `/scenarios/_debug/bundles`, so this script reads it without any route change.
+    // A `flush()` that answers `true` without draining leaves the ~100-bundle backlog for the drain loop to
+    // upload, which shows up as growth and fails. The sampling ORDER is what makes that sound: the tee parses
+    // each bundle in a `setImmediate` scheduled AFTER the response is handed back, and the `bundleCount()` fetch
+    // is a whole further HTTP round trip, so every upload that completed before the flush returned is already
+    // parsed and counted by then. No recorded sweep takes the `true` branch (every full sweep answers `false`),
+    // so the guard is written to be correct rather than to be exercised.
     //
     // The DURATION this asserts on is `flushMs` — measured by the route around the `await
     // client().flush(...)` call itself (src/routes/scenarios.ts) — NOT `s1Flush.ms`, which is this
@@ -888,10 +826,9 @@ async function main(): Promise<void> {
           flushBody.flushMs >= FLUSH_TIMEOUT_MS - 500),
     );
     // A WAIT, NOT A CHECK: this loop lets the SDK finish uploading the backlog so the wire-level
-    // assertions below read a settled bundle list. It asserts nothing itself — an early version of the
-    // flush comment above wrongly cited it as proof of arrival. What DOES use it is the flush's
-    // now-closed residual: the settled count this loop waits for is compared against `bundlesAfterFlush`
-    // below, which is where a `flush()` that answered `true` without draining would show up.
+    // assertions below read a settled bundle list. It asserts nothing itself. The settled count it waits for
+    // is compared against `bundlesAfterFlush` below, which is where a `flush()` that answered `true` without
+    // draining would show up.
     console.log('\ndraining the upload backlog against the real staging endpoint...');
     let lastCount = -1;
     let stableTicks = 0;
@@ -933,11 +870,10 @@ async function main(): Promise<void> {
 
     // ---- wire-only assertions on the tee'd bundles ----
     console.log('\n== wire-level checks (from the tee transport) ==');
-    // Closes the S1.flush residual (see that check's comment above for the full reasoning and for why
-    // the "it would need a route change" blocker recorded there did not hold). `bundles.length` is the
+    // `bundles.length` is the
     // SETTLED count: the drain loop above only returns once the tee's count has been stable for three
     // 5 s ticks. The assertion is an implication, so it is vacuously true on the `false` branch every
-    // sweep on record actually takes — it exists for the branch that would otherwise be unguarded.
+    // recorded sweep actually takes — it exists for the branch that would otherwise be unguarded.
     //
     // MEASURED CAVEAT on `bundlesAfterFlush`, recorded so nobody has to re-derive it. That sample is
     // taken over a whole HTTP round trip, so any upload that COMPLETES during the round trip is counted
@@ -1043,7 +979,7 @@ async function main(): Promise<void> {
     // RUN SCOPING. `recover: true` + on-disk capture means a PRIOR run's undelivered report can be
     // recovered at launch and uploaded through THIS run's tee, landing in `bundles`. Every check that
     // selects a bundle by its summary/`http.url` is scoped by RUN_MARKER for that reason; these two
-    // network checks were not, and a previous round's "every sibling is run-scoped" claim was wrong
+    // network checks were not, and the claim that every sibling is run-scoped was wrong
     // about them. They cannot be scoped the same way: the entries they select are third-party URLs the
     // app builds itself, with no marker in them (`src/routes/scenarios.ts`'s `thirdPartyUrl('/large')`
     // takes no query), so `isThirdPartyPath` — which compares `new URL(raw).pathname` — could not see
@@ -1101,7 +1037,7 @@ async function main(): Promise<void> {
     // `/127\.0\.0\.1/` regex alongside the exact `127.0.0.1:<third-party-port>` string — and every
     // outbound call this sample makes goes to 127.0.0.1. The regex matched all of them, so "only
     // allow-listed targets receive the header" was a claim with no possible negative observation, while
-    // scenarios.md read "Local — verified".
+    // the claim was recorded as verified locally.
     //
     // The regex is gone (src/bugsee.ts:71 now lists exactly one target) and the app's existing call to
     // `http://127.0.0.1:1/unreachable` (S7.connection-failure) is now a genuine NON-listed target: same
@@ -1204,7 +1140,7 @@ async function main(): Promise<void> {
       'S2: attributes set before the event are present in manifest.attrs',
       s2Before?.bundle?.attrs?.str_attr === `hello-${RUN_MARKER}` && s2Before?.bundle?.attrs?.num_attr === 42,
     );
-    // The other half of the claim (scenarios.md): `after_attr` must be ABSENT from the BEFORE bundle,
+    // The other half of the claim: `after_attr` must be ABSENT from the BEFORE bundle,
     // not just present on the after one. Without this half, a regression that snapshotted attributes at
     // UPLOAD time instead of at SUBMIT time (exactly what commit f17baa8 fixed) would stamp `after_attr`
     // on BOTH bundles and the "present after" check below would stay green either way.
@@ -1257,8 +1193,8 @@ async function main(): Promise<void> {
     // the sweep. This run's own third-party mock (plain `node:http`, i.e. the pure fallback path)
     // demonstrates the shape: it produced `GET /not-found`, `GET /boom`, `GET /large`, `POST /alert`.
     // So the assertion moved to a route that DOES carry parameters, and asserts EQUALITY (not
-    // `includes`) against the merged two-level pattern — exactly the form round 3 gave the
-    // adapter-alone check. A concrete-URL fallback would read
+    // `includes`) against the merged two-level pattern — exactly the form the
+    // adapter-alone check uses. A concrete-URL fallback would read
     // `GET /api/v1/metrics/admin/series/latency.<marker>/summary` and fail this.
     const ADMIN_PATTERN = 'GET /api/v1/metrics/admin/series/:name/summary';
     const adminTxn = allTxns.find((t) => t.name === ADMIN_PATTERN);
@@ -1266,7 +1202,7 @@ async function main(): Promise<void> {
       `route naming: the two-level-nested admin plugin recorded the FULL pattern (exact match on "${ADMIN_PATTERN}", got ${JSON.stringify(allTxns.filter((t) => t.name.includes('/api/v1/metrics/admin')).map((t) => t.name))})`,
       adminTxn !== undefined,
     );
-    // ...and the ONE-level-nested case, so README's "at both depths tested" claim has a falsifiable
+    // ...and the ONE-level-nested case, so the claim of coverage at both depths has a falsifiable
     // check behind it at each depth. Same discipline: `/api/v1/metrics/:name/stats` is parameterized, and
     // `api.stats` already hits it with a concrete name, so the fallback form differs from the pattern.
     const STATS_PATTERN = 'GET /api/v1/metrics/:name/stats';
@@ -1284,26 +1220,21 @@ async function main(): Promise<void> {
       singleHitTxns.length === 1,
     );
 
-    // ---- F-3: custom setErrorHandler rewrote the response to 200 — does onError still report it? ----
-    // Identifier note: this check, its label and its comment named "F-2" for three rounds, but
-    // `FINDINGS.md` has NO F-2 heading — that finding was folded into F-3 as its illustration
-    // (FINDINGS.md:123, "was filed separately as F-2"), so the printed gate label pointed readers at a
-    // section that does not exist. `scenarios.md:244` already said this correctly; this did not.
-    // A REAL, recorded check (not a printed observation): this is the class of check the 2026-08-23
-    // review found sitting outside the pass/fail gate entirely. It asserts today's actual (buggy)
-    // behaviour, so it will FLIP TO FAIL the day @bugsee/fastify gains a `shouldReport` seam that lets
-    // an app opt this case out — that flip is the point, see FINDINGS.md F-3.
+    // ---- custom setErrorHandler rewrote the response to 200 — does onError still report it? ----
+    // A REAL, recorded check (not a printed observation). It asserts today's actual (buggy) behaviour, so it
+    // will FLIP TO FAIL the day @bugsee/fastify gains a `shouldReport` seam that lets an app opt this case out.
+    // That flip is the point.
     const customHandlerBundle = bundles.find((b) =>
       String(b.bundle?.request?.summary ?? '').includes(`s14-custom-handler-throw-${RUN_MARKER}`),
     );
     wireCheck(
-      'F-3 (formerly filed as F-2): onError reported the error EVEN THOUGH a custom setErrorHandler rewrote the response to 200',
+      'onError reported the error EVEN THOUGH a custom setErrorHandler rewrote the response to 200',
       customHandlerBundle !== undefined,
     );
 
-    // ---- F-1: does a genuine Fastify SCHEMA VALIDATION 4xx (never thrown by app code) get reported? ----
-    // Same discipline as F-3 above: asserts today's actual behaviour, so it fails the day
-    // @bugsee/fastify's onError hook starts filtering by status (defaultShouldReport) — see FINDINGS.md.
+    // ---- does a genuine Fastify SCHEMA VALIDATION 4xx (never thrown by app code) get reported? ----
+    // Same discipline as the custom-handler check above: asserts today's actual behaviour, so it fails the day
+    // @bugsee/fastify's onError hook starts filtering by status (defaultShouldReport).
     // Scoped to THIS run via `http.url` (which carries the `?marker=` every `hit()` appends —
     // server-instrument.ts:259 stamps `sanitizeUrl(info.url)`, query included, and a live run confirms
     // the marker survives). The summary alone is Fastify's own validation message and carries no
@@ -1311,17 +1242,14 @@ async function main(): Promise<void> {
     // and NO `dataDir` — `.env` sets none, so @bugsee/node's default root applies:
     // `os.tmpdir()/bugsee/<appTokenHash>` (packages/node/src/data-location.ts:7,
     // packages/node/src/launch.ts:433-437), e.g. `/var/folders/.../T/bugsee/<hash>/` on macOS, which
-    // survives every run of this sample. (The repo-local `data/` dir is NOT it — an earlier version of
-    // this comment named it; it holds only the app's own `db.json` and this script's
+    // survives every run of this sample. (The repo-local `data/` dir is NOT it; it holds only the app's own `db.json` and this script's
     // `verify-run.json`, and `/scenarios/s12/info` correctly reports
     // `dataDir: "(default os.tmpdir()/bugsee)"`.) A PREVIOUS run's undelivered report is recovered
     // from that root at launch and uploaded through THIS run's tee, landing in `bundles`. Not observed
     // in a clean run (a drained run leaves nothing behind), so this closes a latent false-PASS — the
     // check could otherwise go green on a stale bundle while this run reported nothing at all.
     //
-    // Scoping status of the sibling checks, ENUMERATED rather than claimed (a previous round claimed
-    // "every sibling is run-scoped" and a re-review found two that were not). Stated precisely, in
-    // two parts, because an earlier version of THIS comment over-generalized the second half:
+    // Scoping status of the sibling checks, ENUMERATED rather than claimed. Stated precisely, in two parts:
     //   (a) Of the checks that select from `bundles` — the stale-bundle hazard's actual surface,
     //       since `bundles` is the only thing a recovered previous-run report can land in — every
     //       check that POSITIVELY selects a bundle is run-scoped: by a summary marker, by `http.url`,
@@ -1340,14 +1268,14 @@ async function main(): Promise<void> {
         String(b.bundle?.attrs?.['http.url'] ?? '').includes(RUN_MARKER),
     );
     wireCheck(
-      'F-1: a schema-validation 400 (never thrown by app code) WAS reported to Bugsee, exactly like a 5xx',
+      'a schema-validation 400 (never thrown by app code) WAS reported to Bugsee, exactly like a 5xx',
       validationBundle !== undefined,
     );
 
     // ---- 4xx must NOT report / 5xx MUST — assert the REPORTING, not just the HTTP status the route
     // hardcodes (a check on the status alone cannot fail even if every error started getting reported,
     // or none did) ----
-    // Marker-scoped for the same reason as the F-1 check above: `http.route` alone would also match a
+    // Marker-scoped for the same reason as the schema-validation check above: `http.route` alone would also match a
     // bundle recovered from a PREVIOUS run. These two fail (rather than falsely pass) in that case, so
     // the exposure is a spurious FAIL rather than a missed regression — still worth closing.
     const routeBundlesThisRun = (route: string): typeof bundles =>
@@ -1399,20 +1327,17 @@ async function main(): Promise<void> {
   // fallback (`GET /nested/items/abc/sub/def`) is the exact shape a route-naming regression
   // produces — an equality check against the pattern form fails on it, and on a missing name.
   //
-  // This REPLACES what was asserted here for three rounds: `routePattern`, which the child reads off
-  // `req.routeOptions.url` — FASTIFY's own property. `@bugsee/fastify` only ever READS it
-  // (`dist/index.js:10`, `var routeOf = (req) => req.routeOptions?.url;`) and never writes it, so
-  // that value is invariant under every Bugsee route-naming regression: it stays the merged pattern
-  // whether the SDK names the transaction correctly, names it by concrete URL, or does not name it
-  // at all. Meanwhile the SDK's real answer was being printed by the child and dropped on the floor
-  // here — while scenarios.md cited it as this row's Wire evidence. Same class as the `r1`/`r2` and
-  // `filterInvoked` checks fixed the previous round: the evidence existed, nothing read it.
+  // The name BUGSEE recorded on its own `http.server` transaction (`transactionNames`) is what is asserted.
+  // The child's `routePattern` is FASTIFY's own value, read from `req.routeOptions.url`: `@bugsee/fastify` only
+  // ever READS that property (`dist/index.js:10`, `var routeOf = (req) => req.routeOptions?.url;`) and never
+  // writes it. Its value is invariant under every Bugsee route-naming regression, so it cannot discriminate
+  // and is kept only as a precondition below.
   wireCheck(
     `adapter alone: BUGSEE named the http.server transaction with the FULL Fastify pattern (got ${JSON.stringify(adapterAloneParsed.transactionNames)})`,
     adapterAloneParsed.transactionNames?.length === 1 &&
       adapterAloneParsed.transactionNames[0] === 'GET /nested/items/:id/sub/:subId',
   );
-  // Kept as a PRECONDITION, not as SDK evidence (see above): it asserts that Fastify itself resolved
+  // Kept as a PRECONDITION, not as SDK evidence: it asserts that Fastify itself resolved
   // the nested-prefix pattern and exposed it on `routeOptions.url` — the input `routeOf` reads. If
   // both this and the check above fail, the sample's own route registration broke; if only the check
   // above fails, the SDK stopped using an input that was there.
@@ -1421,7 +1346,7 @@ async function main(): Promise<void> {
     adapterAloneParsed.routePattern === '/nested/items/:id/sub/:subId',
   );
   wireCheck(
-    'adapter alone: exactly ONE context (PLAN §5.14-20 first-owner-wins, no double-instrumentation)',
+    'adapter alone: exactly ONE context (first-owner-wins, no double-instrumentation)',
     adapterAloneParsed.contextIdCount === 1,
   );
 
@@ -1447,8 +1372,7 @@ async function main(): Promise<void> {
 
   // ---- crash-child processes (exitOnUncaught / unhandledRejections — need a real process exit) ----
   console.log('\n== crash-child processes (exitOnUncaught / unhandledRejections) ==');
-  // `runChild` returns BOTH the exit code and the child's merged stdout/stderr, and until this round
-  // only the code was read. That made the `uncaught-exit` check the weakest in the gate: a child that
+  // `runChild` returns BOTH the exit code and the child's merged stdout/stderr, but the checks read only the code. That made the `uncaught-exit` check the weakest in the gate: a child that
   // died BEFORE `launch()` ever ran — a bad token, a missing .env, an import error — also exits
   // non-zero and read green. `crash-child.ts:27` prints `crash-child ready mode=<mode> marker=<m>`
   // AFTER `launch()` returns, so requiring that line proves the SDK was launched and the exit code

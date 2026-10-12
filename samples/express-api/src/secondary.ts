@@ -3,7 +3,7 @@
 //
 //   1. `instrumentIncomingRequests: false` — the express adapter must still work completely on its
 //      own (exactly one context + one http.server transaction), with node:http's own auto-instrument
-//      OFF (docs/samples/PLAN.md §5.14-5.20).
+//      OFF.
 //   2. The `requestHandler`/`errorHandler` middleware halves used BY HAND, as an alternative to
 //      `setupExpress` (which the primary app uses) — both surfaces the plan asks every backend sample
 //      to cover.
@@ -26,7 +26,7 @@ export function launchSecondary(): Bugsee {
   }
   secondaryClient = launch(appToken, {
     endpoint: process.env.BUGSEE_ENDPOINT ?? 'https://apidev.bugsee.com',
-    sdkVersion: '1.0.0', // F-1 workaround — see src/bugsee.ts + FINDINGS.md
+    sdkVersion: '1.0.0', // version override, see src/bugsee.ts
     appVersion: '1.0.0',
     appBuild: process.env.APP_BUILD ?? '1',
     carrier: SECONDARY_CARRIER,

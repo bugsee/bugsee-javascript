@@ -2,16 +2,15 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium, type Page } from 'playwright';
 
-// `pnpm verify` — the scripted scenario sweep (docs/samples/PLAN.md §6 step 2: "Run each scenario,
-// then flush()"). Drives a REAL browser (headless Chromium) against a REAL local dev server, clicking
+// `pnpm verify` — the scripted scenario sweep ("run each scenario, then flush()"). Drives a REAL browser (headless Chromium) against a REAL local dev server, clicking
 // every control in the Scenario panel exactly as a human would. This script only asserts the LOCAL
-// level (§4 "Verification depth" — did the SDK call not throw, did the app stay usable). The WIRE and
+// level (did the SDK call not throw, did the app stay usable). The WIRE and
 // BACKEND levels are checked separately over the Bugsee staging MCP tools (list_issues/get_issue) by
 // correlating the RUN_ID / marker strings this script prints — MCP is not reachable from a plain node
 // script.
 //
 // This sweep runs a STOCK Chromium: no `--disable-web-security`, no request patching. It used to need
-// the former for the collector's CORS policy (FINDINGS.md F-2 / samples/FINDINGS.md F-X10), which now
+// the former for the collector's CORS policy, which now
 // answers a third-party origin correctly on all three ingest routes — so a browser at localhost:5303
 // reaches staging exactly the way a customer's browser reaches production.
 
@@ -192,7 +191,7 @@ async function runPersistenceAbruptClose(
   await page.goto(`${BASE}/scenarios`, { waitUntil: 'load' });
   await sleep(300);
   // Fire an exception (queues a bundle) then close the context IMMEDIATELY, without waiting for the
-  // upload or calling flush/stop — approximating a hard termination mid-capture (§4 S12).
+  // upload or calling flush/stop — approximating a hard termination mid-capture (scenario S12).
   const marker = `persist-abrupt-${Date.now().toString(36)}`;
   await page.evaluate((m) => {
     // eslint-disable-next-line no-undef
@@ -207,8 +206,8 @@ async function runPersistenceAbruptClose(
   // SDK is per-origin IndexedDB, which Playwright's ephemeral contexts do not share across
   // `newContext()` calls. This leg is therefore LOCAL-only (confirms the abrupt-close path itself does
   // not throw); true cross-restart recovery needs a PERSISTENT profile, which is out of scope for a
-  // headless CI-style sweep — recorded as a verification-depth gap in FINDINGS.md, not claimed here.
-  record('S12-persist', 'capture before abrupt close (no flush/stop)', true, 'context closed mid-request; see FINDINGS.md for the recovery-verification gap');
+  // headless CI-style sweep — recorded as a verification-depth gap, not claimed here.
+  record('S12-persist', 'capture before abrupt close (no flush/stop)', true, 'context closed mid-request; the recovery-verification gap is not covered by this sweep');
   return { marker };
 }
 

@@ -4,7 +4,7 @@ import ErrorLab from '../components/ErrorLab.vue';
 import { attemptRelaunch, getBugsee, RUN_ID, SAMPLE_USER_ID } from '../bugsee';
 import { marker } from '../lib/marker';
 
-// The Scenario panel (docs/samples/PLAN.md §3/§4/§6): one control per scenario in the catalog, plus the
+// The Scenario panel: one control per scenario, plus the
 // vue-specific ones (ErrorLab.vue). Every trigger stamps `marker(scenarioId)` into whatever field is
 // searchable on the resulting issue (a label, a log line, a breadcrumb) so a specific run's result can
 // be told apart from a previous one when polling the backend. `data-testid` attributes let
@@ -271,7 +271,7 @@ function s8ArmFilters(): void {
   c.setNetworkEventFilter((event) => {
     // Redact a header and a body field; veto anything hitting /api/scenarios/veto-me entirely.
     if (event.url.includes('/api/scenarios/veto-me')) return null;
-    console.debug(`network-filter-ran:${RUN_ID}`); // proxy signal — see samples/vue-spa/scenarios.md S8
+    console.debug(`network-filter-ran:${RUN_ID}`); // proxy signal for scenario S8
     return event;
   });
   c.setLogEventFilter((event) => {

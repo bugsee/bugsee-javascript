@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node
-// pnpm verify — the scripted scenario sweep (docs/samples/PLAN.md §6/§7).
+// pnpm verify — the scripted scenario sweep.
 //
 // This script drives the REAL app with a real Chromium (Playwright) against the dev server and
 // exercises: (a) the app itself (every page does real work), and (b) every control in the Scenario
@@ -8,9 +8,8 @@
 // What this script does NOT do: call the Bugsee staging MCP tools. Those are available to the
 // Claude Code agent that built this sample, not to an arbitrary Node script (no query-API credentials
 // are available to the sample itself — only the app token, which is a write-only ingestion
-// credential). Backend-level (§6 step 3/4) verification was performed separately via
-// `mcp__bugsee-staging__list_issues` / `get_issue` while building this sample; results with issue-key
-// evidence are recorded in scenarios.md. This script covers §4's "Local" and, for the network/proxy
+// credential). Backend-level verification was performed separately via
+// `mcp__bugsee-staging__list_issues` / `get_issue` while building this sample. This script covers the "Local" and, for the network/proxy
 // assertions below, "Wire" depths.
 import { chromium, type Page } from 'playwright';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -179,8 +178,8 @@ async function main(): Promise<void> {
     const failedCount = allRows.filter((r) => !r.ok).length;
     console.log(`\n=== TOTAL: ${allRows.length - failedCount}/${allRows.length} passed ===`);
     if (failedCount > 0) {
-      console.log('\nSee scenarios.md for backend-level (MCP) verification of the passing scenarios,');
-      console.log('and FINDINGS.md for known SDK/backend defects (several scenarios are EXPECTED to');
+      console.log('\nBackend-level (MCP) verification of the passing scenarios is done separately.');
+      console.log('Known SDK/backend defects (several scenarios are EXPECTED to');
       console.log('surface a defect in their result text without that being a failure of this script).');
       process.exitCode = 1;
     }
