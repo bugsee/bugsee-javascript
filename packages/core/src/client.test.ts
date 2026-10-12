@@ -2716,6 +2716,63 @@ describe('createClient — upload (manual report)', () => {
       },
     ],
     [
+      'crash cause chain frame locals (R5H-1)',
+      (r: Report) => {
+        const cause = (r.crash as { exception: { cause?: { frames: { variables?: unknown }[] } } })
+          .exception.cause;
+        for (const f of cause?.frames ?? []) delete f.variables;
+      },
+    ],
+    [
+      'crash cause reason (R5H-1)',
+      (r: Report) => {
+        (r.crash as { exception: { cause: { reason: string } } }).exception.cause.reason =
+          'scrubbed';
+      },
+    ],
+    [
+      'crash exception name (R5H-1)',
+      (r: Report) => {
+        (r.crash as { exception: { name: string } }).exception.name = 'Scrubbed';
+      },
+    ],
+    [
+      'crash domain (R5H-1)',
+      (r: Report) => {
+        (r.crash as unknown as { domain: string }).domain = 'scrubbed';
+      },
+    ],
+    [
+      'same-length string attachment (masked with *) (R5H-2)',
+      (r: Report) => {
+        if (r.userAttachments)
+          r.userAttachments[0] = {
+            ...(r.userAttachments[0] as ReportAttachmentInput),
+            data: '***',
+          };
+      },
+    ],
+    [
+      'same-length binary attachment (fill(0)) (R5H-2)',
+      (r: Report) => {
+        const bin = r.userAttachments?.[1]?.data;
+        if (bin instanceof Uint8Array) bin.fill(0);
+      },
+    ],
+    [
+      'SDK attachment removed (R5H-2)',
+      (r: Report) => {
+        r.attachments = undefined;
+      },
+    ],
+    [
+      'SDK attachment bytes zeroed in place, same length (R5H-2)',
+      (r: Report) => {
+        const dmp = r.attachments?.[0]?.data;
+        if (dmp instanceof Uint8Array) dmp.fill(0);
+      },
+    ],
+    [
       'crash exception message',
       (r: Report) => {
         (r.crash as { exception: { reason?: string } }).exception.reason = 'scrubbed';
@@ -2741,8 +2798,15 @@ describe('createClient — upload (manual report)', () => {
             name: 'Error',
             reason: 'boom',
             frames: [{ trace: 'at a' }, { trace: 'at b' }],
+            cause: {
+              name: 'Error',
+              reason: 'inner',
+              frames: [{ trace: 'at c', variables: { password: 'hunter2' } }],
+            },
           },
+          domain: 'orig',
         } as unknown as Report['crash'];
+        request.report.attachments = [{ name: 'crash.dmp', data: new Uint8Array([7, 8, 9]) }];
         return request;
       },
       after: (request) => mutate(request.report),
@@ -2751,7 +2815,10 @@ describe('createClient — upload (manual report)', () => {
       summary: 's',
       description: 'd',
       labels: ['l'],
-      attachments: [{ name: 'a', data: 'xyz' }],
+      attachments: [
+        { name: 'a', data: 'xyz' },
+        { name: 'b', data: new Uint8Array([1, 2, 3]) },
+      ],
     });
     expect(put).toHaveBeenCalledTimes(2);
   });
@@ -2884,6 +2951,41 @@ describe('createClient — upload (manual report)', () => {
     // normalise, limit, copy: nothing was ever handed to the encoder (it would add a 4th report)
     expect(onError).toHaveBeenCalledTimes(3);
     expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report that cannot be copied (no marker persisted) still raises the unrecoverable warning when the upload fails (R5H-3)', async () => {
+    const { store, put, remove } = fakeMarkers();
+    const onError = vi.fn();
+    const client = createClient({
+      uploadPipeline: {
+        enqueue: vi.fn<UploadPipeline['enqueue']>(async () => ({ ok: false })), // retryable, nothing retained
+        flush: vi.fn(async () => true),
+        drop: vi.fn(),
+      },
+      appToken: 'tok',
+      getEnvironment,
+      onError,
+      reportMarkers: { store, generation: 1 },
+    });
+    client.setReportHandler({
+      before: (request) => {
+        Object.freeze(request.report);
+        const hostile = new Proxy(request.report, {
+          ownKeys: () => {
+            throw new Error('hostile ownKeys');
+          },
+        });
+        return { ...request, report: hostile };
+      },
+    });
+    await client.upload({ summary: 'x', attachments: [{ name: 'a', data: 'secret-bytes' }] });
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('unrecoverable') }),
+      ),
+    );
+    expect(put).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('a rejected asynchronous marker rewrite is reported, not unhandled (R2P-7)', async () => {

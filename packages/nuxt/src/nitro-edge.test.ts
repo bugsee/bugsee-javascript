@@ -7,11 +7,13 @@ const { launchEdge, resolveWaitUntil, rememberEdgeLaunch } = vi.hoisted(() => ({
   launchEdge: vi.fn(),
   resolveWaitUntil: vi.fn(),
 }));
+vi.mock('@bugsee/vercel-edge/relaunch-edge', () => ({
+  rememberEdgeLaunch,
+  relaunchEdge: vi.fn(),
+}));
 vi.mock('@bugsee/vercel-edge', () => ({
   launchEdge,
   resolveWaitUntil,
-  rememberEdgeLaunch,
-  relaunchEdge: vi.fn(),
   DEFERRED_FLUSH_TIMEOUT_MS: 10_000, // the real value; this module shares the edge tier's deadline
 }));
 

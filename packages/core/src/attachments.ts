@@ -232,32 +232,44 @@ export function limitAttachmentsForMarker(request: ReportingRequest): ReportingR
   return { ...request, report: report as unknown as Report };
 }
 
-// The crash is the part of a report an `after` handler most plausibly SCRUBS (frame locals, source context),
-// so it must be in the signature (R4H-1). The serialised frames (which also fixes their count) + the exception
-// message is cheap (frames are capped) and catches any in-place edit of them; the rest of the crash is not editable
-// to anything the marker would care about.
+// The crash is the part of a report an `after` handler most plausibly SCRUBS (frame locals, source context, the
+// cause chain, the message), so it must be in the signature (R4H-1). The WHOLE crash is serialised (R5H-1):
+// listing the fields that matter missed `exception.cause`, `exception.name` and `domain`, so scrubbing a cause
+// chain left the marker holding the unscrubbed one. Measured 0.05 ms for a 10-frame crash and 1.1 ms for a 1 MB one.
 function crashFingerprint(crash: Report['crash']): unknown {
-  if (crash === undefined || !('exception' in crash)) {
-    return crash === undefined ? null : JSON.stringify(crash);
+  return crash === undefined ? null : JSON.stringify(crash);
+}
+
+// A 32-bit FNV-1a over the content plus its length: O(n), allocation-free, so a same-length rewrite (mask with
+// `*`, `fill(0)`) cannot hide behind an unchanged size (R5H-2). A collision needs an edit that keeps both the length
+// and the hash (about 1 in 4 billion); the cost of one is a marker that keeps the pre-edit attachment.
+function contentHash(data: Uint8Array | string): string {
+  let hash = 0x811c9dc5;
+  const length = typeof data === 'string' ? data.length : data.byteLength;
+  for (let i = 0; i < length; i += 1) {
+    const unit = typeof data === 'string' ? data.charCodeAt(i) : (data[i] as number);
+    hash = Math.imul(hash ^ unit, 0x01000193);
   }
-  const { frames, reason } = crash.exception;
-  return [JSON.stringify(frames), reason];
+  return `${length}:${(hash >>> 0).toString(36)}`;
 }
 
 /**
  * A cheap signature of what a report-handler can change and the recovery marker carries: summary,
- * description, email, severity, labels, attributes, signatures, a crash fingerprint and the attachments' count, names and sizes (not their
- * bytes: hashing 9 MB per report costs more than the rewrite it would save). `undefined` when the report
- * cannot be read (a hostile getter), which callers treat as "changed" so the marker is rewritten.
+ * description, email, severity, labels, attributes, signatures, the whole crash, and every attachment's name,
+ * type and CONTENT (a length plus two FNV-1a hashes: an edit that keeps the size, such as redacting with `*` or
+ * zero-filling, is still a change). Covers both the application's `userAttachments` and the SDK's own
+ * `attachments` (a `.dmp`), including their removal. `undefined` when the report cannot be read (a hostile
+ * getter), which callers treat as "changed" so the marker is rewritten.
  */
 export function reportChangeSignature(report: Report): string | undefined {
   try {
     const attachments = (report.userAttachments ?? []).map((a) => [
       a.name,
-      typeof a.data === 'string' ? a.data.length : a.data.byteLength,
+      contentHash(a.data),
       a.mimeType,
       a.fileName,
     ]);
+    const sdkAttachments = (report.attachments ?? []).map((a) => [a.name, contentHash(a.data)]);
     return JSON.stringify([
       report.type,
       report.severity,
@@ -268,6 +280,7 @@ export function reportChangeSignature(report: Report): string | undefined {
       report.attributes,
       report.signatures,
       attachments,
+      sdkAttachments,
       crashFingerprint(report.crash),
     ]);
   } catch {

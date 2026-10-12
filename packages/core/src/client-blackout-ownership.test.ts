@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BlackoutToken } from './blackout';
 import {
   claimCarrierBlackoutOwner,
   getCarrierBlackout,
@@ -171,6 +172,9 @@ describe('R3L-4 — a stale handle cannot change the process blackout', () => {
     b.startBlackout(); // never launched, stale: forwarded to a (already dark), never applied to b itself
     expect(getCarrierBlackout(host)).toBe(true);
     expect(b.isBlackout()).toBe(true); // a stale handle answers with the process flag (R4L-5)
+    // R5L-4: b's OWN state (read from its service, not through the carrier-reading isBlackout) stays untouched
+    expect(b.getService(BlackoutToken).isActive()).toBe(false);
+    expect(a.getService(BlackoutToken).isActive()).toBe(true);
   });
 
   it('a client without a carrier is its own owner', () => {

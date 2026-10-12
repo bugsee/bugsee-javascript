@@ -94,6 +94,7 @@ import { createHangDetectionProvider } from './hang-detection-provider';
 import { createNodeHttpInterceptor } from './http-interceptor';
 import { createHttpServerInterceptor, type ServerInstallable } from './http-server-interceptor';
 import {
+  claimInstanceRoot,
   createInstanceLayout,
   type InstanceIdentity,
   isInstanceRootLive,
@@ -1295,6 +1296,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     },
   };
   setCarrierClient(publicClient, carrier);
+  // Live in the subtree only now that nothing after this can throw (R5L-2); `stop()` releases it.
+  if (instanceLayout !== undefined) {
+    claimInstanceRoot(instanceLayout);
+  }
 
   // The internal wiring the umbrella needs (everything not already a DI service). The clock/scheduler are
   // intentionally omitted — they are resolvable via client.getService(ClockToken/SchedulerToken).

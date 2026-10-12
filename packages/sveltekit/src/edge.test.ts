@@ -7,11 +7,13 @@ const { launchEdge, runInEdgeContext } = vi.hoisted(() => ({
   runInEdgeContext: vi.fn((_client: unknown, _opts: unknown, fn: () => unknown) => fn()),
 }));
 const { rememberEdgeLaunch } = vi.hoisted(() => ({ rememberEdgeLaunch: vi.fn() }));
+vi.mock('@bugsee/vercel-edge/relaunch-edge', () => ({
+  rememberEdgeLaunch,
+  relaunchEdge: vi.fn(),
+}));
 vi.mock('@bugsee/vercel-edge', () => ({
   launchEdge,
   runInEdgeContext,
-  rememberEdgeLaunch,
-  relaunchEdge: vi.fn(),
 }));
 const { getCarrierClient } = vi.hoisted(() => ({ getCarrierClient: vi.fn() }));
 // `ContextProviderToken` is a real value import in @bugsee/adapter-kit's trace read, which this suite

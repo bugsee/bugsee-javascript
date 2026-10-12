@@ -1,5 +1,6 @@
 import type { WindowEvents } from '@bugsee/browser';
 import {
+  BUGSEE_SDK_VERSION,
   BugseeStatus,
   type CaptureStore,
   type Clock,
@@ -1516,6 +1517,66 @@ describe('launch (webview)', () => {
     repeat.startBlackout(); // fails closed: allowed
     expect(first.isBlackout()).toBe(true);
     expect(said('startBlackout')).toBe(false);
+  });
+
+  // R5L-1: the facade is built from an explicit allow-list, and the lifecycle slot is not page-writable.
+  it('R5L-1: page script cannot install a lifecycle listener through the carrier', () => {
+    const carrier = {};
+    const owner: string[] = [];
+    const first = track(
+      'tok',
+      baseOptions({ carrier, lifecycleEventsListener: (type) => owner.push(type) }),
+    );
+    const page = vi.fn();
+    const view = (carrier as { __BUGSEE__: Record<string, Record<string, unknown>> }).__BUGSEE__[
+      BUGSEE_SDK_VERSION
+    ] as Record<string, unknown>;
+    try {
+      view.lifecycleListener = page; // what `window.__BUGSEE__[v].lifecycleListener = fn` does
+    } catch {
+      // strict mode throws; sloppy page script is silently ignored — either way nothing is installed
+    }
+    expect(view.lifecycleListener).toBeUndefined();
+    owner.length = 0;
+    first.startBlackout();
+    first.endBlackout();
+    expect(page).not.toHaveBeenCalled();
+    expect(owner).toContain(LifecycleEvents.BlackoutStarted); // the legitimate host listener still hears
+  });
+
+  it('R5L-1: the repeat-launch client is an allow-list: no internal-client brand, no emit, no unstripped wire methods', async () => {
+    const onError = vi.fn();
+    const opts = baseOptions({ onError });
+    track('tok', opts);
+    const repeat = launch('tok', opts) as unknown as Record<string | symbol, unknown>;
+    expect(Reflect.ownKeys(repeat).filter((k) => typeof k === 'symbol')).toEqual([]);
+    expect(Object.getOwnPropertySymbols(repeat)).toEqual([]);
+    expect(repeat.emitLifecycleEvent).toBeUndefined();
+    expect(repeat.deferBlackoutStarted).toBeUndefined();
+    // the page-facing upload strips the wire `trigger`: a forged code_dialog source is not reachable
+    const brand = Symbol.for('com.bugsee.internal-client');
+    expect(repeat[brand]).toBeUndefined();
+    // still a working client for the allowed surface
+    expect(() => (repeat.log as (m: string) => void)('x')).not.toThrow();
+    // methods the old spread passed live are refused now (no capture-provider/ span-filter/ launch control)
+    for (const name of [
+      'setSpanFilter',
+      'addCaptureProvider',
+      'addDetectionProvider',
+      'ext',
+      'launch',
+    ]) {
+      onError.mockClear();
+      try {
+        (repeat[name] as (...a: unknown[]) => unknown)({});
+      } catch {
+        // `ext` throws as well as reports
+      }
+      expect(
+        onError.mock.calls.some(([e]) => e instanceof Error && e.message.includes(`\`${name}\``)),
+      ).toBe(true);
+    }
+    await expect((repeat.upload as () => Promise<unknown>)()).resolves.toBeDefined();
   });
 
   it('a repeat launch cannot end or drain the session the embedder owns', async () => {

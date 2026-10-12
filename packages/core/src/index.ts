@@ -64,6 +64,7 @@ export {
   getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
+  sealCarrierLifecycleSlot,
   setCarrierBlackout,
   setCarrierClient,
   setCarrierLastLaunch,

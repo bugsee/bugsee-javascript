@@ -1304,6 +1304,9 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         }
       }
     }
+    if (markerRequest === undefined) {
+      markerDurable = false; // no marker is persisted at all: the "unrecoverable" warning must still fire (R5H-3)
+    }
     if (reportMarkers !== undefined && markerRequest !== undefined) {
       try {
         const written = reportMarkers.store.put({

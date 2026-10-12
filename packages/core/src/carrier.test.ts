@@ -16,6 +16,7 @@ import {
   getProcessStatus,
   getServiceManifests,
   type ServiceManifest,
+  sealCarrierLifecycleSlot,
   setCarrierBlackout,
   setCarrierClient,
   setCarrierLastLaunch,
@@ -362,6 +363,58 @@ describe('process-level lifecycle listener (L1)', () => {
 
   it('defaults to nothing', () => {
     expect(getCarrierLifecycleSlot({}).get()).toBeNull();
+  });
+
+  describe('sealCarrierLifecycleSlot (R5L-1)', () => {
+    const pageView = (g: object): Record<string, unknown> =>
+      (g as { __BUGSEE__: Record<string, Record<string, unknown>> }).__BUGSEE__[
+        BUGSEE_SDK_VERSION
+      ] as Record<string, unknown>;
+
+    it('moves the listener and delivery queue off the carrier: page writes cannot install a listener', () => {
+      const g = {};
+      const owner = vi.fn();
+      setProcessLifecycleEventsListener(owner, g);
+      sealCarrierLifecycleSlot(g);
+      const slot = getCarrierLifecycleSlot(g);
+      expect(slot.get()).toBe(owner); // the pre-seal listener survived the move
+
+      const page = vi.fn();
+      expect(() => {
+        pageView(g).lifecycleListener = page;
+      }).toThrow(TypeError); // strict mode; sloppy page script is silently ignored
+      expect(pageView(g).lifecycleListener).toBeUndefined();
+      expect(slot.get()).toBe(owner);
+      expect(() => {
+        pageView(g).lifecycleDelivery = { queue: [], delivering: false };
+      }).toThrow(TypeError);
+      expect(pageView(g).lifecycleDelivery).toBeUndefined();
+      expect(Object.getOwnPropertyDescriptor(pageView(g), 'lifecycleListener')?.configurable).toBe(
+        false,
+      );
+
+      // the owner still sets and reads, through the same module-private state, from any later reader
+      const next = vi.fn();
+      slot.set(next);
+      expect(getCarrierLifecycleSlot(g).get()).toBe(next);
+      setProcessLifecycleEventsListener(null, g);
+      expect(getCarrierLifecycleSlot(g).get()).toBeNull();
+      expect(getCarrierLifecycleSlot(g).delivery).toBe(slot.delivery);
+    });
+
+    it('is idempotent and per carrier', () => {
+      const g = {};
+      const other = {};
+      sealCarrierLifecycleSlot(g);
+      const delivery = getCarrierLifecycleSlot(g).delivery;
+      setProcessLifecycleEventsListener(vi.fn(), g);
+      sealCarrierLifecycleSlot(g); // second seal keeps the state
+      expect(getCarrierLifecycleSlot(g).delivery).toBe(delivery);
+      expect(getCarrierLifecycleSlot(g).get()).not.toBeNull();
+      // `other` is not sealed: still an ordinary writable slot
+      setProcessLifecycleEventsListener(vi.fn(), other);
+      expect(pageView(other).lifecycleListener).toBeTypeOf('function');
+    });
   });
 });
 

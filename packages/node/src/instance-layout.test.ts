@@ -2,9 +2,17 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { threadId } from 'node:worker_threads';
+import { getCarrier } from '@bugsee/core';
 import { writeFileSecure } from '@bugsee/node-utils';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createInstanceLayout, type InstanceOwner, writeInstanceOwner } from './instance-layout';
+import {
+  claimInstanceRoot,
+  createInstanceLayout,
+  type InstanceOwner,
+  isInstanceRootLive,
+  releaseInstanceRoot,
+  writeInstanceOwner,
+} from './instance-layout';
 
 const dirs: string[] = [];
 const mkDir = (): string => {
@@ -82,5 +90,21 @@ describe('writeInstanceOwner', () => {
     const layout = createInstanceLayout(mkDir(), { pid: 7, threadId: 1, nonce: () => 'q' });
     expect(() => writeInstanceOwner(layout, 1, '1')).not.toThrow();
     expect(existsSync(layout.stoppedFile)).toBe(false);
+  });
+});
+
+describe('live subtree root count (R5L-2)', () => {
+  it('writing the owner does not register; claim/release count on the DEFAULT carrier (shared by module copies)', () => {
+    const layout = createInstanceLayout(mkDir(), { pid: 1, threadId: 1, nonce: () => 'n' });
+    writeInstanceOwner(layout, 1, '1');
+    expect(isInstanceRootLive(layout)).toBe(false);
+    claimInstanceRoot(layout);
+    claimInstanceRoot(layout);
+    expect(getCarrier().liveInstanceRoots?.get(layout.root)).toBe(2);
+    releaseInstanceRoot(layout);
+    expect(isInstanceRootLive(layout)).toBe(true);
+    releaseInstanceRoot(layout);
+    expect(isInstanceRootLive(layout)).toBe(false);
+    expect(getCarrier().liveInstanceRoots?.has(layout.root)).toBe(false);
   });
 });

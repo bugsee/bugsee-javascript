@@ -15,6 +15,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./relaunch-edge": {
+      "types": "./src/relaunch-edge.ts",
+      "import": "./src/relaunch-edge.ts"
     }
   },
   "files": [
@@ -48,6 +52,16 @@
         "require": {
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
+        }
+      },
+      "./relaunch-edge": {
+        "import": {
+          "types": "./dist/relaunch-edge.d.ts",
+          "default": "./dist/relaunch-edge.js"
+        },
+        "require": {
+          "types": "./dist/relaunch-edge.d.cts",
+          "default": "./dist/relaunch-edge.cjs"
         }
       }
     },

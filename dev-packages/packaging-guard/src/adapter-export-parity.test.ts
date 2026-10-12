@@ -154,3 +154,24 @@ describe('the re-exports are the SAME functions, not look-alikes', () => {
     expect(nextServer.relaunch).not.toBe(umbrellaNode.relaunch);
   });
 });
+
+// FORBIDDEN names (R5H-4). `relaunchEdge` / `rememberEdgeLaunch` are the SEAM of the meta-framework edge adapters
+// (`@bugsee/vercel-edge/relaunch-edge`). They once leaked into `@bugsee/bugsee/edge-light` and `@bugsee/cloudflare`
+// through `export *` from the vercel-edge index, where a plain `relaunchEdge()` silently re-ran `launchEdge` and
+// dropped the umbrella's extensions / the Cloudflare launch. They must never be public on any package entry.
+describe('internal edge relaunch seam names are on NO public entry', () => {
+  const FORBIDDEN = ['relaunchEdge', 'rememberEdgeLaunch'] as const;
+  const entries: Record<string, Record<string, unknown>> = {
+    '@bugsee/bugsee (browser)': umbrellaBrowser,
+    '@bugsee/bugsee (node)': umbrellaNode,
+    '@bugsee/bugsee/edge-light': umbrellaEdge,
+    ...Object.fromEntries(Object.entries(targets).map(([pkg, { entry }]) => [pkg, entry])),
+  };
+  for (const [pkg, entry] of Object.entries(entries)) {
+    for (const name of FORBIDDEN) {
+      it(`${pkg} does not export ${name}`, () => {
+        expect(name in entry).toBe(false);
+      });
+    }
+  }
+});
