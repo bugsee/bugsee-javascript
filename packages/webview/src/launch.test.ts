@@ -20,7 +20,12 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import bridgeSchema from '../bridge-protocol.schema.json' with { type: 'json' };
-import { type BugseeWebViewLaunchOptions, launch, SDK_VERSION } from './launch';
+import {
+  type BugseeWebViewLaunchOptions,
+  launchWithSeams as launch,
+  launch as publicLaunch,
+  SDK_VERSION,
+} from './launch';
 import { SECURE_INPUT_SELECTOR } from './obscuring-source';
 import type {
   BatchMessage,
@@ -2300,6 +2305,20 @@ describe('the control surface fails closed and cannot be reset by the page (roun
       fake.global.__bugsee_bridge?.snapshot(),
       'a stale stop() made the live session inert',
     ).not.toBe('[]');
+  });
+
+  it('the page-reachable launch() ignores every injectable seam, so a fresh global/carrier cannot look like a first launch', async () => {
+    const fake = fakeGlobal();
+    const client = publicLaunch('tok', {
+      global: fake.global,
+      carrier: {},
+      captureNetwork: false,
+    } as BugseeWebViewLaunchOptions);
+    // The seam global was never used: no handshake went to it.
+    expect(fake.msgs().filter((m) => m.k === 'hello')).toHaveLength(0);
+    expect(() => publicLaunch('tok', null as unknown as BugseeWebViewLaunchOptions)).not.toThrow();
+    await client.stop();
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__; // this launch used the REAL globalThis carrier
   });
 
   it('a page-supplied fresh carrier (or global) cannot mint a second live client', () => {

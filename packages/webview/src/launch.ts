@@ -362,8 +362,36 @@ function bridgeSlotFor(
 /** The launched WebView client — the public SDK surface. */
 export type Bugsee = BugseeClient;
 
-/** Launch the Bugsee WebView SDK. A per-WebView singleton (a repeat call is ignored). Returns the started client. */
+/**
+ * Launch the Bugsee WebView SDK. A per-WebView singleton (a repeat call is ignored). Returns the started client.
+ *
+ * This is the PAGE-REACHABLE entry (`BugseeWebView.launch`), so the injectable seams (`global`, `carrier`,
+ * `window`, `document`, `clock`, `scheduler`, `captureStore`, `systemMetricsSampler`) are dropped here: page script
+ * could otherwise pass a fresh `{ global: {}, carrier: {} }` and look like a first launch, minting a second LIVE
+ * client. Tests and embedders that need the seams call {@link launchWithSeams}.
+ */
 export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {}): Bugsee {
+  const {
+    global: _global,
+    carrier: _carrier,
+    window: _window,
+    document: _document,
+    clock: _clock,
+    scheduler: _scheduler,
+    captureStore: _captureStore,
+    systemMetricsSampler: _sampler,
+    ...safe
+  } = (
+    typeof options === 'object' && options !== null ? options : {}
+  ) as BugseeWebViewLaunchOptions;
+  return launchWithSeams(appToken, safe);
+}
+
+/** {@link launch} with the injectable seams honoured. NOT for page-reachable surfaces (see {@link launch}). */
+export function launchWithSeams(
+  appToken: string,
+  options: BugseeWebViewLaunchOptions = {},
+): Bugsee {
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
