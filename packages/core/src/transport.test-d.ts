@@ -42,6 +42,7 @@ const api: BugseeApi = {
   createIssue: async () => issueResult,
   renewUpload: async () => issueResult,
   invalidateSession: () => {},
+  notify: async () => ({ outcome: 'sent' }),
 };
 
 const uploader: BundleUploader = {

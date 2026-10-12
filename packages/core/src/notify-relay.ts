@@ -1,0 +1,307 @@
+import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { severityToWire } from '@bugsee/protocol';
+import type { AttributeValue, SeverityName } from '@bugsee/types';
+import { randomId, utf8ByteLength } from '@bugsee/util';
+import type { Clock } from './clock';
+import { parseSeverityName } from './reporting';
+import type { NotifyItem, NotifyResult } from './transport';
+
+// The `notify()` relay (mobile `Bugsee.notify`, Android `BugseeNotificationRelayCoordinator`): a message to
+// the app's configured messaging integrations (Slack, webhooks, ...) that skips the bug-report pipeline
+// entirely — no video, logs or events. Messages are queued, sent in batches, and retried with backoff.
+//
+// Mobile persists the queue to disk so a message survives a restart. This relay is IN MEMORY (see
+// docs/design/mobile-api-alignment.md, T7 findings): a page that closes with an unsent message loses it.
+// `flush()` is the mitigation — `client.stop()`/`client.flush()` call it — and the queue survives a
+// stop()/launch() cycle within one page.
+//
+// Limits, all from the mobile SDKs: a batch is at most 50 notifications / 256 KB, one notification at most
+// 256 KB, and a failed batch is retried with a 2 s -> 60 s exponential backoff.
+
+const MAX_BATCH_COUNT = 50;
+const MAX_BATCH_BYTES = 256 * 1024;
+const MAX_ITEM_BYTES = 256 * 1024;
+/** In-memory bound; mobile's equivalent is its storage count cap. The oldest message is dropped. */
+const MAX_PENDING = 1000;
+const RETRY_INITIAL_MS = 2000;
+const RETRY_MAX_MS = 60_000;
+
+export interface RelayTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const globalTimers = globalThis as unknown as {
+  setTimeout(cb: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+const defaultTimers: RelayTimers = {
+  setTimeout: (callback, ms) => {
+    const handle = globalTimers.setTimeout(callback, ms);
+    // A pending notification must not keep a Node process alive; no-op in the browser.
+    (handle as { unref?: () => void } | null)?.unref?.();
+    return handle;
+  },
+  clearTimeout: (handle) => globalTimers.clearTimeout(handle),
+};
+
+/** What `notify()` was called with. */
+export interface NotifyInput {
+  title: string;
+  body?: string;
+  severity?: SeverityName;
+  fields?: Record<string, string>;
+  urgent?: boolean;
+}
+
+/** The state stamped onto a notification at the moment `notify()` was called. */
+export interface NotifySnapshot {
+  userIdentifier?: string | null;
+  attributes?: Record<string, AttributeValue>;
+  environment?: EnvironmentEnvelope;
+}
+
+export interface NotifyRelayOptions {
+  /** Deliver one batch. Must not throw; a throw is treated as a transient failure. */
+  send: (items: readonly NotifyItem[]) => Promise<NotifyResult>;
+  clock: Clock;
+  /** Window (ms) after the first notification during which more can join its batch. 0 = this tick. */
+  flushDelayMs: number;
+  /** User / attributes / environment as of the `notify()` call. A throw omits them (-> onError). */
+  snapshot?: () => NotifySnapshot;
+  timers?: RelayTimers;
+  /** Notification id generator. Default `randomId()`. */
+  newId?: () => string;
+  onError?: (error: unknown) => void;
+}
+
+export interface NotifyRelay {
+  /** Validate, snapshot and queue a notification. Never throws; an invalid one is ignored. */
+  enqueue(input: NotifyInput): void;
+  /** Send everything pending now. Resolves true when nothing is left pending. */
+  flush(): Promise<boolean>;
+  /** Cancel the scheduled flush and the backoff; the queue is kept. */
+  suspend(): void;
+  /** Number of notifications not yet delivered: queued, or in a request that has not answered. */
+  pending(): number;
+}
+
+const jsonBytes = (item: NotifyItem): number => utf8ByteLength(JSON.stringify(item));
+
+/** Only string-to-string entries are valid fields; anything else is dropped. */
+function sanitizeFields(fields: unknown): Record<string, string> | undefined {
+  if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === 'string') {
+      out[key] = value;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
+  const { send, clock, flushDelayMs } = options;
+  const timers = options.timers ?? defaultTimers;
+  const newId = options.newId ?? randomId;
+  const report = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // a throwing sink must not break delivery
+    }
+  };
+
+  let queue: NotifyItem[] = [];
+  let flushTimer: unknown = null;
+  let retryTimer: unknown = null;
+  let retryDelay = RETRY_INITIAL_MS;
+  let running: Promise<boolean> | null = null;
+  /** Settles when every urgent send started so far has. A chain, so finished sends are not retained. */
+  let urgentSends: Promise<unknown> = Promise.resolve();
+  let inFlightItems = 0;
+
+  /** Keep at most MAX_PENDING, dropping the oldest. */
+  const trim = (): void => {
+    while (queue.length > MAX_PENDING) {
+      queue.shift();
+      report(
+        new Error(`notify: more than ${MAX_PENDING} notifications pending; dropped the oldest`),
+      );
+    }
+  };
+
+  /** Settle one batch. true = done with it (delivered or dropped); false = some of it must be retried. */
+  const dispatch = async (batch: NotifyItem[], skipAhead: boolean): Promise<boolean> => {
+    const stamped = batch.map(
+      (item): NotifyItem => ({
+        ...item,
+        delivery:
+          skipAhead || (item.urgent !== true && flushDelayMs <= 0) ? 'immediate' : 'deferred',
+      }),
+    );
+    let result: NotifyResult;
+    inFlightItems += batch.length;
+    try {
+      result = await send(stamped);
+    } catch {
+      result = { outcome: 'retry' };
+    } finally {
+      inFlightItems -= batch.length;
+    }
+    if (result.outcome === 'sent') {
+      retryDelay = RETRY_INITIAL_MS;
+      return true;
+    }
+    if (result.outcome === 'rejected') {
+      report(new Error(`notify: the collector rejected ${batch.length} notification(s); dropped`));
+      return true;
+    }
+    const wanted = result.retryIds;
+    const back = wanted === undefined ? batch : batch.filter((item) => wanted.includes(item.id));
+    queue = [...back, ...queue];
+    trim();
+    return false;
+  };
+
+  const takeBatch = (): NotifyItem[] => {
+    let bytes = 0;
+    let count = 0;
+    while (count < queue.length && count < MAX_BATCH_COUNT) {
+      // MAX_ITEM_BYTES <= MAX_BATCH_BYTES, so the first item always fits and a batch is never empty.
+      const size = jsonBytes(queue[count] as NotifyItem);
+      if (bytes + size > MAX_BATCH_BYTES) {
+        break;
+      }
+      bytes += size;
+      count += 1;
+    }
+    return queue.splice(0, count);
+  };
+
+  const drain = async (): Promise<boolean> => {
+    while (queue.length > 0) {
+      if (!(await dispatch(takeBatch(), false))) {
+        scheduleRetry();
+        return false;
+      }
+    }
+    clearRetryTimer(); // everything is out: a backoff armed by an earlier failure has nothing left to do
+    return true;
+  };
+
+  const clearFlushTimer = (): void => {
+    if (flushTimer !== null) {
+      timers.clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  };
+  const clearRetryTimer = (): void => {
+    if (retryTimer !== null) {
+      timers.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const scheduleRetry = (): void => {
+    clearRetryTimer();
+    const wait = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    retryTimer = timers.setTimeout(() => {
+      retryTimer = null;
+      void flush();
+    }, wait);
+  };
+
+  const flush = async (): Promise<boolean> => {
+    clearFlushTimer();
+    running ??= drain().finally(() => {
+      running = null;
+    });
+    const drained = await running;
+    await urgentSends;
+    return drained && queue.length === 0;
+  };
+
+  const scheduleFlush = (): void => {
+    // A backing-off retry already owns the next send; sending newer messages ahead of it would both
+    // hammer a failing endpoint and reorder the queue.
+    if (flushTimer !== null || retryTimer !== null) {
+      return;
+    }
+    flushTimer = timers.setTimeout(() => {
+      flushTimer = null;
+      void flush();
+    }, flushDelayMs);
+  };
+
+  const sendUrgent = (item: NotifyItem): void => {
+    const attempt = dispatch([item], true).then((done) => {
+      if (!done) {
+        scheduleRetry();
+      }
+    });
+    urgentSends = Promise.allSettled([urgentSends, attempt]);
+  };
+
+  return {
+    enqueue(input: NotifyInput): void {
+      if (typeof input.title !== 'string' || input.title.length === 0) {
+        return;
+      }
+      const item: NotifyItem = { id: newId(), timestamp: clock.wallNow(), title: input.title };
+      if (typeof input.body === 'string') {
+        item.body = input.body;
+      }
+      const severity = parseSeverityName(input.severity);
+      if (severity !== undefined) {
+        item.severity = severityToWire(severity);
+      }
+      const fields = sanitizeFields(input.fields);
+      if (fields !== undefined) {
+        item.fields = fields;
+      }
+      if (input.urgent === true) {
+        item.urgent = true;
+      }
+      try {
+        const snapshot = options.snapshot?.();
+        if (snapshot?.userIdentifier) {
+          item.user = { id: snapshot.userIdentifier };
+        }
+        if (snapshot?.attributes && Object.keys(snapshot.attributes).length > 0) {
+          item.attributes = snapshot.attributes;
+        }
+        if (snapshot?.environment !== undefined) {
+          item.environment = snapshot.environment;
+        }
+      } catch (error) {
+        report(error);
+      }
+      if (jsonBytes(item) > MAX_ITEM_BYTES) {
+        report(new Error('notify: notification is larger than 256 KB; ignored'));
+        return;
+      }
+      if (item.urgent === true) {
+        sendUrgent(item);
+        return;
+      }
+      queue.push(item);
+      trim();
+      scheduleFlush();
+    },
+
+    flush,
+
+    suspend(): void {
+      clearFlushTimer();
+      clearRetryTimer();
+    },
+
+    pending(): number {
+      return queue.length + inFlightItems;
+    },
+  };
+}

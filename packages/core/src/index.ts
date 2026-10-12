@@ -202,6 +202,14 @@ export {
   recoverNativeCrashes,
 } from './native-crash-recovery';
 export { guarded, neverThrow } from './never-throw';
+export {
+  createNotifyRelay,
+  type NotifyInput,
+  type NotifyRelay,
+  type NotifyRelayOptions,
+  type NotifySnapshot,
+  type RelayTimers,
+} from './notify-relay';
 export { createOperationDispatcher } from './operation-dispatcher';
 export {
   COMMON_OPTION_DEFINITIONS,
@@ -273,6 +281,8 @@ export type {
   HttpResponse,
   HttpTransport,
   IssueCreateResult,
+  NotifyItem,
+  NotifyResult,
   OutcomeCategory,
   PutBundleOptions,
   PutResult,
