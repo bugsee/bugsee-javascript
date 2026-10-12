@@ -183,7 +183,7 @@ describe('@bugsee/deno launch', () => {
     }
   });
 
-  it('forwards traceResponse → a wrapped Deno.serve response carries the return headers (X4)', async () => {
+  it('forwards traceResponse → a wrapped Deno.serve response carries the return headers', async () => {
     type G = { Deno?: { serve: (...a: unknown[]) => unknown } };
     const calls: unknown[][] = [];
     const realServe = vi.fn((...args: unknown[]) => {

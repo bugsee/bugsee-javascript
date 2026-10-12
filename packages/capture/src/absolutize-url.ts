@@ -89,7 +89,7 @@ export function resolveBaseUrl(
  * Returns `url` UNCHANGED — by identity, never round-tripped — when:
  *
  *  - it already carries a scheme (`http(s):`, `ws(s):` (always absolute), `data:`, `blob:`, `mailto:`,
- * `chrome-extension:`, …). Round-tripping an absolute URL through `new URL.href` would NORMALIZE
+ *    `chrome-extension:`, …). Round-tripping an absolute URL through `new URL().href` would NORMALIZE
  *    it: lowercase the host, append a root `/`, strip a default port, percent-encode. That rewrites URLs
  *    the app never wrote, and it is also why this function is exactly idempotent.
  *  - it is empty. `fetch('')` really does resolve to the base, but an empty captured url is a producer

@@ -224,7 +224,7 @@ describe('setCarrierLastLaunch', () => {
     expect(getCarrier(g).lastLaunch?.appToken).toBe('tok');
   });
 
-  // the slot lives on globalThis, readable by any script in the process. It keeps only what
+  // The slot lives on globalThis, readable by any script in the process. It keeps only what
   // relaunch() needs to find its way back, never the host's options wholesale.
   it('keeps the integration seams relaunch needs, never a host Bugsee option, header or identifier', () => {
     const g = {};

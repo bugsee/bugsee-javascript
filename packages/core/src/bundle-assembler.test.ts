@@ -262,7 +262,7 @@ describe('assembleBundle — manifest.json & files', () => {
 
   // The geometry sidecar is the one stream whose VERSION a consumer has to read: version 1 wrote the
   // frame in display pixels and version 2 writes it in the coordinates' own units, so a bare array —
-  // with no version to read — would leave a consumer guessing which it had
+  // with no version to read — would leave a consumer guessing which it had.
   it('wraps the video.aux file type in the spec envelope, with its version', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       [
@@ -634,7 +634,7 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
   };
   const dmp = new Uint8Array([0x4d, 0x44, 0x4d, 0x50]); // "MDMP" minidump magic
 
-  it('writes a native crash.json + the.dmp attachment (byte-for-byte) + manifest entries', () => {
+  it('writes a native crash.json + the .dmp attachment (byte-for-byte) + manifest entries', () => {
     const request = createReportingRequest({
       source: { type: 'crash', mechanism: 'uncaught' },
       id: 'r1',

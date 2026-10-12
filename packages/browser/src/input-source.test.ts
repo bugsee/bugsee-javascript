@@ -1374,7 +1374,7 @@ describe('createBrowserInputSource', () => {
       ...over,
     });
 
-    describe('blackout (V7: wheel deltas are gated when COLLECTED, and pending ones are cleared)', () => {
+    describe('blackout: wheel deltas are gated when COLLECTED, and pending ones are cleared', () => {
       it('a wheel turn during a blackout is not collected at all (nothing is scheduled)', () => {
         const target = fakeTarget();
         const frame = fakeFrame();

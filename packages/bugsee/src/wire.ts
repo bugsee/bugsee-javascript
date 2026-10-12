@@ -61,7 +61,7 @@ interface UmbrellaInternals {
   /**
    * Where the performance controller's active transaction lives. The server `launchCore` supplies a
    * per-request-context store; the browser passes `undefined` and keeps the single-slot
-   * default. REQUIRED-but-nullable rather than optional (R-16): `UmbrellaInternals` is a
+   * default. REQUIRED-but-nullable rather than optional: `UmbrellaInternals` is a
    * hand-maintained structural mirror of two independently declared `LaunchInternals`, and an
    * optional field let a platform omit the store with no type error — it would silently fall back to
    * the single slot, which is the defect. A required key forces every platform to state its choice.
@@ -232,7 +232,7 @@ export function wireUmbrella<C extends BugseeClient>(
     baseUrl: internals.baseUrl,
     getEnvironment: internals.getEnvironment,
   });
-  // the OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
+  // The OTLP instrumentation scope name is `com.bugsee.<sdk>/<providerId>`. The SDK token
   // follows telemetry.sdk.language: `webjs` on the browser, `nodejs` on the node-family runtimes
   // (node/bun/deno all run the node umbrella entry, pageload:false). The provider here is `performance`.
   const scopeName = `com.bugsee.${platform.pageload ? 'webjs' : 'nodejs'}/performance`;
@@ -241,7 +241,7 @@ export function wireUmbrella<C extends BugseeClient>(
   const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
   const otlpUrl = resolveOtlpUrl(options.otelExportUrl, internals.onError);
   const otlpSend =
-    // Only a NON-EMPTY URL configures an exporter: `''` / `' '` would post to the page's own URL.
+    // Only a NON-EMPTY URL configures an exporter: `''` / `'   '` would post to the page's own URL.
     otlpUrl !== undefined
       ? createOtlpTraceExporter({
           transport: internals.transport,
@@ -337,7 +337,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // seam, propagating the active performance transaction's trace + the `bugsee=` session tracestate.
   // BROWSER ONLY (`platform.pageload`): on Node the `@bugsee/node` launch already wires its OWN
   // per-request-context-sourced decorator, so the umbrella must NOT double-wire. The perf-sourced one
-  // stays browser-only on its own merits even after made the controller's slot request-scoped
+  // stays browser-only on its own merits even though the controller's slot is now request-scoped
   // on Node: it reads whatever transaction is active rather than the request context the node decorator
   // is built on, and it is tied to the OPT-IN APM extension. Same-origin propagates by default; cross-origin only via the
   // allowlist (`tracePropagationTargets`).
@@ -369,7 +369,7 @@ export function wireUmbrella<C extends BugseeClient>(
   // drain runs BEFORE the core drain so a transaction batch and the reports leave in one flush.
   const stopClient = client.stop;
   const flushClient = client.flush;
-  // No guard around it: `uploader.flush` already catches a failed batch into `onError` and drops it, so
+  // No guard around it: `uploader.flush()` already catches a failed batch into `onError` and drops it, so
   // a broken APM upload cannot turn a caller's flush()/stop() into a rejection and cost them the crash
   // report they were flushing. Wrapping it again here would be untestable through this seam.
   const flushExtensions = (): Promise<void> => wired.flush();

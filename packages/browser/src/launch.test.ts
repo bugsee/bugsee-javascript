@@ -829,7 +829,7 @@ describe('launch', () => {
       expect(bundleFiles(1)['viewtree.json']).toBeDefined();
     });
 
-    describe('startInBlackout (V11: a page that loads already blacked out)', () => {
+    describe('startInBlackout: a page that loads already blacked out', () => {
       it('defaults to NOT blacked out', async () => {
         const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
         expect(client.isBlackout()).toBe(false);
@@ -1480,7 +1480,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await vi.waitFor(async () =>
       expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
     );
-    // And the LIVE sibling's marker + capture are completely untouched (the SEV1 fix).
+    // And the LIVE sibling's marker + capture are completely untouched (the double-upload fix).
     expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
     expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
     expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
@@ -1576,7 +1576,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
   // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
   // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
-  // could have worked. Before the test failed on the mutation only incidentally, through the
+  // could have worked. Previously the test failed on the mutation only incidentally, through the
   // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
   // that side effect and left the test unable to fail.
   //
@@ -1621,7 +1621,7 @@ describe('launch — capture recovery (multi-instance)', () => {
 
   // The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
   // blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
-  // `pipeline: durable ?? baseUploadPipeline` survived every suite across several review passes because every
+  // `pipeline: durable ?? baseUploadPipeline` survived every suite across several rounds of review because every
   // platform test used an accepting transport: the second copy the durable queue stages on the way IN is
   // removed the instant the upload succeeds, so the duplicate never outlives the pass. On a 503 it does —
   // and the next page load uploads that incident twice, from two blobs, with differing payloads.
@@ -1661,7 +1661,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop answers for the REAL drain, which is the retry backoff described above: the shared
+    // A repeat stop() answers for the REAL drain, which is the retry backoff described above: the shared
     // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -2106,7 +2106,7 @@ describe('launch — session replay (lazy)', () => {
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
   });
 
-  // (product decision): `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
+  // Product decision: `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
   // closed) and reported. It never throws (`null` once did). Masking stays fail-closed regardless.
   it.each([
     null,
@@ -2128,7 +2128,7 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
-  // canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
+  // Canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
   it.each([
     0,
     null,
@@ -2148,7 +2148,7 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
-  // the canvas warning called the app's sink unguarded, so a sink that rethrows made launch reject.
+  // The canvas warning called the app's sink unguarded, so a sink that rethrows made launch() reject.
   it('a rethrowing onError cannot break launch over an invalid replay.canvas (the add-on stays OFF)', async () => {
     const onError = vi.fn(() => {
       throw new Error('the host sink rethrows');
@@ -2342,7 +2342,7 @@ describe('launch — session replay (lazy)', () => {
   });
 });
 
-// R1: an injectable trigger pipeline.
+// An injectable trigger pipeline.
 //
 // Symmetric with the `captureStore` seam that already exists. @bugsee/electron needs it because a renderer
 // must FORWARD its incidents to the main process rather than assembling a bundle from its streaming store —

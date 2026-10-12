@@ -392,7 +392,7 @@ describe('validation', () => {
     expect(field('summary').getAttribute('aria-invalid')).toBeNull();
   });
 
-  it("does not insist the email is an address— it is the app's user identifier (mobile parity)", async () => {
+  it("does not insist the email is an address — it is the app's user identifier (mobile parity)", async () => {
     const { show, upload } = harness();
     void show();
     type('email', 'user-42');

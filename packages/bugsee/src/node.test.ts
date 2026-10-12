@@ -354,7 +354,7 @@ describe('bugsee node umbrella launch', () => {
     expect(second).toBe(first);
   });
 
-  it('the node LaunchInternals key the umbrella reads is present, at the right type (R-16)', () => {
+  it('the node LaunchInternals key the umbrella reads is present, at the right type', () => {
     // The umbrella reads `internals.activeSpanStore` optionally (the browser omits it), so a rename
     // or drop on the node side would vanish to the single slot with NO type error (no
     // excess-property checking on variables). This fails compilation — not just a test — the day the

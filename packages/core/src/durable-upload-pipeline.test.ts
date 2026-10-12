@@ -691,7 +691,7 @@ describe('retention', () => {
 
   it('reports every retention drop through the pipeline’s outcome channel', async () => {
     // A silently vanishing bundle is indistinguishable from one that was delivered.
-    // Features that quietly do nothing; a retention policy that drops without saying so is the same shape.
+    // Features that quietly do nothing are the failure to avoid; a retention policy that drops without saying so is the same shape.
     let now = 1_000_000;
     const { store } = memStore();
     const { pipeline, drop } = fakePipeline(transient(503));

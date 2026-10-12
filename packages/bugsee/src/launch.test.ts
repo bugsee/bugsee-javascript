@@ -208,7 +208,7 @@ describe('bugsee umbrella launch', () => {
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
-  // the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
+  // The performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
   // OPPOSITE of what the app wrote. Data-collecting switches fail CLOSED: only boolean `true` opts in to what is
   // off by default (propagateTrace), and an invalid value turns off what is on by default (monitoring, navigation,
   // interaction spans); each is reported.
@@ -582,7 +582,7 @@ describe('bugsee umbrella launch', () => {
     await globalFetch()('https://app.test/api', { method: 'GET' });
     const headers = (received?.init as { headers?: Record<string, string> }).headers;
     expect(headers?.traceparent).toBe(`00-${active.getTraceId()}-${active.getSpanId()}-01`);
-    // X3b: the FE now also propagates its session-correlation id (so it floats to the backend).
+    // The FE now also propagates its session-correlation id (so it floats to the backend).
     expect(headers?.tracestate).toMatch(/(^|,)bugsee=r1:s[0-9a-f]+/);
   });
 
@@ -711,7 +711,7 @@ describe('bugsee umbrella launch', () => {
       value: { stringValue: TEST_DEVICE_ID },
     });
     expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
-    // the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
+    // The instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
@@ -749,7 +749,7 @@ describe('bugsee umbrella launch', () => {
     expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
   });
 
-  // a `URL` object worked before and was silently ignored after it; whitespace still built an exporter
+  // A `URL` object worked before and was silently ignored after it; whitespace still built an exporter
   // (`fetch('   ')` is the page's own URL); numbers and objects were dropped without a word.
   describe('otelExportUrl forms', () => {
     async function runWith(

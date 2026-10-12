@@ -521,7 +521,7 @@ describe('relaunch', () => {
     ]);
   });
 
-  it('a blackout in force is still in force on the relaunched client (V2)', async () => {
+  it('a blackout in force is still in force on the relaunched client', async () => {
     const first = await launch('tok', opts());
     first.startBlackout();
     const second = await relaunch();

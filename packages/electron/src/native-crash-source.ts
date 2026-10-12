@@ -10,7 +10,7 @@ import type { CrashpadSessionMarker, HarvestedDump, NativeCrashSource } from '@b
 //
 // v1 SCOPE: harvest ALL completed dumps and attribute them to the marker's session (its generation ties
 // them to the crashed run's capture). Per-dump session matching via minidump annotation parsing (for the
-// rare case of several concurrent dead siblings sharing one app-global Crashpad dir) is deferred (OQ-5);
+// rare case of several concurrent dead siblings sharing one app-global Crashpad dir) is deferred;
 // claim-once (delete on delivery) keeps a dump from being processed twice.
 
 /** The subdir Crashpad finalizes completed minidumps into. `pending`/`new` hold mid-write dumps — skipped. */

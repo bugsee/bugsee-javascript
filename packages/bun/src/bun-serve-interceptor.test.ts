@@ -79,7 +79,7 @@ describe('createBunServeInterceptor', () => {
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
-  it('forwards traceResponse → the wrapped fetch decorates its Response with the return headers (X4)', async () => {
+  it('forwards traceResponse → the wrapped fetch decorates its Response with the return headers', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, served } = fakeBunHost();
     const ic = createBunServeInterceptor({
@@ -109,7 +109,7 @@ describe('createBunServeInterceptor', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — )', async () => {
+  it('writes NO return headers by default (traceResponse off)', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, served } = fakeBunHost();
     const ic = createBunServeInterceptor({ target: host, getClient: () => client });

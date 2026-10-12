@@ -261,7 +261,7 @@ describe('createElectronMainControl', () => {
 // leaks monotonically; `rendererCount`, documented as the window count, is wrong after the first close; and
 // every pause/resume/flush/stop iterates a growing set of corpses.
 //
-// The fix hangs off the same lifecycle signal `render-process-gone` already uses for: a renderer that is
+// The fix hangs off the same lifecycle signal `render-process-gone` already relies on: a renderer that is
 // gone is no longer a renderer.
 describe('the renderer registry shrinks', () => {
   /** A sender that can be destroyed, the way a real `webContents` is. */

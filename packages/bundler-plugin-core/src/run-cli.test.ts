@@ -242,7 +242,7 @@ describe('spawn options (the security surface)', () => {
   });
 });
 
-// a `bugsee-cli` KILLED BY A SIGNAL was reported as a successful run.
+// A `bugsee-cli` KILLED BY A SIGNAL was reported as a successful run.
 //
 // `node:child_process` emits `close` with `code === null` (and a `signal`) when the child is terminated
 // rather than exited: the Linux OOM killer on a big source-map tree, a cancelled CI job's SIGTERM, a

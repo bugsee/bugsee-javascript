@@ -791,7 +791,7 @@ describe('createUploadPipeline + createBugseeApi — the control plane end to en
   //   • A bare 4xx on the control plane is the answer an intermediary gives: a captive portal, a
   //     corporate MITM proxy, a WAF, a stale CDN route, a service worker. None of them read the payload.
   //   • Widening a deletion path on a status is what produced a NEW data-loss path in each of three
-  // consecutive review rounds here (`status >= 500` deleted every 401/408/425/429).
+  //     consecutive rounds of review here (`status >= 500` deleted every 401/408/425/429).
   //
   // The cost of NOT classifying was "retried forever". That cost is now paid for separately, by BOUNDS
   // rather than by verdicts: node sweeps dead subtrees at 7 days, the durable queue's own retention caps

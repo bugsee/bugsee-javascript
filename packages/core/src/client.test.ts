@@ -409,10 +409,10 @@ describe('createClient — capture entry points', () => {
     expect((entry?.data as { timestamp: number }).timestamp).toBe(42);
   });
 
-  // The wire level is NUMERIC (mobile parity: 1=Error … 5=Verbose). Wave 5.1 fixed the
-  // console-CAPTURE path and left `client.log()` — the manual API users are told to call — shipping the
+  // The wire level is NUMERIC (mobile parity: 1=Error … 5=Verbose). The
+  // console-CAPTURE path was fixed and left `client.log()` — the manual API users are told to call — shipping the
   // string name. These two tests asserted `level: 'info'` and `level: 'error'`, so they pinned the defect
-  // in place; the e2e upload contract added in Wave 3b.2 is what finally named it.
+  // in place; the e2e upload contract is what finally named it.
   it('log pushes a log entry whose level is the NUMERIC wire value', async () => {
     const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
     const client = createClient({ captureStore: store, clock: fixedClock(1000) });
@@ -607,7 +607,7 @@ describe('createClient — crash.json', () => {
       (f: { data?: { member?: string } }) => f.data?.member,
     );
     expect(members).toContain('applicationCode');
-    // the PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
+    // The PUBLIC wrapper (`Object.logException`) used to be frame 0. Frame 0 IS the application.
     expect(members[0]).toBe('applicationCode');
     expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
   });
@@ -2204,7 +2204,7 @@ describe('createClient — capture-store tick timer', () => {
   });
 });
 
-// S3: an incident drains only the faulting TENANT.
+// An incident drains only the faulting TENANT.
 //
 // The client-level statement of the leak proven on real workerd, where tenant C's bundle carried tenant
 // A's and B's secrets. Store, aggregator and exporter are all REAL
@@ -2716,7 +2716,7 @@ describe('createClient — upload (manual report)', () => {
       },
     ],
     [
-      'crash cause chain frame locals (R5H-1)',
+      'crash cause chain frame locals',
       (r: Report) => {
         const cause = (r.crash as { exception: { cause?: { frames: { variables?: unknown }[] } } })
           .exception.cause;
@@ -2724,26 +2724,26 @@ describe('createClient — upload (manual report)', () => {
       },
     ],
     [
-      'crash cause reason (R5H-1)',
+      'crash cause reason',
       (r: Report) => {
         (r.crash as { exception: { cause: { reason: string } } }).exception.cause.reason =
           'scrubbed';
       },
     ],
     [
-      'crash exception name (R5H-1)',
+      'crash exception name',
       (r: Report) => {
         (r.crash as { exception: { name: string } }).exception.name = 'Scrubbed';
       },
     ],
     [
-      'crash domain (R5H-1)',
+      'crash domain',
       (r: Report) => {
         (r.crash as unknown as { domain: string }).domain = 'scrubbed';
       },
     ],
     [
-      'same-length string attachment (masked with *) (R5H-2)',
+      'same-length string attachment (masked with *)',
       (r: Report) => {
         if (r.userAttachments)
           r.userAttachments[0] = {
@@ -2753,20 +2753,20 @@ describe('createClient — upload (manual report)', () => {
       },
     ],
     [
-      'same-length binary attachment (fill(0)) (R5H-2)',
+      'same-length binary attachment (fill(0))',
       (r: Report) => {
         const bin = r.userAttachments?.[1]?.data;
         if (bin instanceof Uint8Array) bin.fill(0);
       },
     ],
     [
-      'SDK attachment removed (R5H-2)',
+      'SDK attachment removed',
       (r: Report) => {
         r.attachments = undefined;
       },
     ],
     [
-      'SDK attachment bytes zeroed in place, same length (R5H-2)',
+      'SDK attachment bytes zeroed in place, same length',
       (r: Report) => {
         const dmp = r.attachments?.[0]?.data;
         if (dmp instanceof Uint8Array) dmp.fill(0);
@@ -2778,7 +2778,7 @@ describe('createClient — upload (manual report)', () => {
         (r.crash as { exception: { reason?: string } }).exception.reason = 'scrubbed';
       },
     ],
-  ])('an `after` handler that changes the %s rewrites the marker (R3P-7)', async (_name, mutate) => {
+  ])('an `after` handler that changes the %s rewrites the marker', async (_name, mutate) => {
     const { uploadPipeline } = fakeUpload();
     const { store, put } = fakeMarkers();
     const client = createClient({
@@ -3538,7 +3538,7 @@ describe('createClient — wire-level options are not reachable from the public 
   // What plain JavaScript can do: the type system hides these options, the runtime must too.
   const forge = (value: unknown) => value as never;
 
-  it('upload ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
+  it('upload() ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
     const { client, sentSource } = setup();
     await client.upload(forge({ trigger: 'code_dialog', summary: 's' }));
     expect(sentSource().type).toBe('code_upload');
@@ -3558,13 +3558,13 @@ describe('createClient — wire-level options are not reachable from the public 
     expect(request.labels).toEqual(['a']);
   });
 
-  it('logException ignores a forged `mechanism`', async () => {
+  it('logException() ignores a forged `mechanism`', async () => {
     const { logClient, reportedSource } = setup();
     await logClient.logException(new Error('x'), forge({ mechanism: 'uncaught' }));
     expect(reportedSource()).toEqual({ type: 'error', mechanism: 'programmatic' });
   });
 
-  it('prepareUpload.send ignores a forged `trigger`', async () => {
+  it('prepareUpload().send() ignores a forged `trigger`', async () => {
     const { client, sentSource } = setup();
     await client.prepareUpload()?.send(forge({ trigger: 'code_dialog' }));
     expect(sentSource().type).toBe('code_upload');

@@ -39,7 +39,7 @@ function describeError(value: unknown): { summary: string; description?: string 
   return { summary: String(value) };
 }
 
-/** Structured crash.json (SC3) from a thrown value — `handled: false` (uncaught). A non-Error gets a
+/** Structured crash.json from a thrown value — `handled: false` (uncaught). A non-Error gets a
  *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
 function crashOf(value: unknown): CrashJson {
   return buildCrashJson(value, { parseStack, handled: false });

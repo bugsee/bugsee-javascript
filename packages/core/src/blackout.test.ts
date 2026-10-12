@@ -14,7 +14,7 @@ describe('createBlackoutState', () => {
     expect(state.isActive()).toBe(false);
   });
 
-  it('is idempotent and NOT counted: one end() clears any number of starts', () => {
+  it('is idempotent and NOT counted: one end() clears any number of start()s', () => {
     const state = createBlackoutState();
     const listener = vi.fn();
     state.onChange(listener);

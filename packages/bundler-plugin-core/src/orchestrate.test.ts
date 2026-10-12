@@ -261,7 +261,7 @@ describe('defaultDeleteMapFiles', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('unlinks every.map (recursively), leaves other files, returns the deleted paths', async () => {
+  it('unlinks every .map (recursively), leaves other files, returns the deleted paths', async () => {
     await writeFile(join(dir, 'app.js'), 'x');
     await writeFile(join(dir, 'app.js.map'), '{}');
     const sub = join(dir, 'chunks');

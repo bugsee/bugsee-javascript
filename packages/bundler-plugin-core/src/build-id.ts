@@ -6,7 +6,7 @@
 // generates a random `uuid.v4()` when none is sent, which would make every rebuild a new record.
 //
 // Derived from the build's debug-ids, which is Android's property copied deliberately:
-// `BugseeBuildIdDeriver.deriveFromMappingFile` hashes the mapping.txt, so the id changes whenever the
+// `BugseeBuildIdDeriver.deriveFromMappingFile` hashes R8's mapping.txt, so the id changes whenever the
 // code does and NOT when only the version string does. The debug-ids are the web analog — each is
 // already a UUIDv5 over one bundle's bytes and its map (`bugsee-cli sourcemaps inject`), so the set of
 // them names the build's content exactly, and it is already computed.
@@ -48,7 +48,7 @@ export interface BuildIdentity {
  * walk happened to find the maps in cannot change it.
  *
  * Without any (a build that emitted no maps, or a dry run, where inject writes nothing): from the
- * build's identity, as Android falls back to manifest+variant when wrote no mapping. Still
+ * build's identity, as Android falls back to manifest+variant when R8 wrote no mapping. Still
  * deterministic, so re-registering a version replaces rather than duplicates.
  *
  * The two inputs are prefixed differently so a content-derived id and an identity-derived one can

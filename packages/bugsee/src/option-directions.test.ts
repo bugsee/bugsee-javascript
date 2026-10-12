@@ -115,7 +115,7 @@ const RAW_STRICT: Record<string, RawEntry> = {
   'webworker:recover': { safe: 'n/a', why: 'durability behaviour' },
   'vercel-edge:partitionCaptureByTenant': {
     safe: 'on',
-    why: 'PROTECTS (cross-tenant isolation): resolveFailOnBoolean + onError (R4V-1)',
+    why: 'PROTECTS (cross-tenant isolation): resolveFailOnBoolean + onError',
     check: ['vercel-edge', /resolveFailOnBoolean\(\s*options\.partitionCaptureByTenant/],
   },
   'cloudflare:partitionCaptureByTenant': {
@@ -139,7 +139,7 @@ const RAW_STRICT: Record<string, RawEntry> = {
   'nuxt:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
   'nuxt:partitionCaptureByTenant': {
     safe: 'on',
-    why: 'edge option forwarded to launchEdge, which reads it with resolveFailOnBoolean (R4V-1)',
+    why: 'edge option forwarded to launchEdge, which reads it with resolveFailOnBoolean',
     check: ['vercel-edge', /resolveFailOnBoolean\(\s*options\.partitionCaptureByTenant/],
   },
   'nextjs:setupOtelProvider': {
@@ -423,7 +423,7 @@ describe('every boolean launch option has an explicit, tested fail direction', {
     );
   });
 
-  // the flat table above cannot see an option READ INSIDE a bag (`replay.canvas`, `blockAllCanvas`,
+  // The flat table above cannot see an option READ INSIDE a bag (`replay.canvas`, `blockAllCanvas`,
   // `captureLocalVariables.includeCaught`): a raw `options.replay.canvas` read dodged it, and `'false'` / `0`
   // enabled canvas pixel recording. Every boolean-typed property of every option BAG is therefore classified
   // here with its safe side AND pinned to the source read that makes the classification true.

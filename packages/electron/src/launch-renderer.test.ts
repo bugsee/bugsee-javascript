@@ -422,7 +422,7 @@ describe('launchRenderer - follows the main blackout (privacy: fail closed)', ()
     expect(f.lifecycle).toEqual(['Started', 'Ended']);
   });
 
-  it("an app-local blackout is not ended by main's blackout-end, and main's is not ended by endBlackout", async () => {
+  it("an app-local blackout is not ended by main's blackout-end, and main's is not ended by endBlackout()", async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     const client = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
@@ -646,7 +646,7 @@ describe('launchRenderer - invalid startInBlackout is dark', () => {
   });
 });
 
-// a renderer re-run (the old client was stopped by main, a new one launched) used to leave the OLD
+// A renderer re-run (the old client was stopped by main, a new one launched) used to leave the OLD
 // handler subscribed: every control message then ran twice (double onSessionId, BlackoutStarted twice) and a
 // stale `A.startBlackout()` was swallowed while the live client B stayed un-dark.
 describe("launchRenderer - a stopped client's handler is inert after a re-run", () => {

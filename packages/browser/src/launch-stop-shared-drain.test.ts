@@ -12,7 +12,7 @@ vi.mock('@bugsee/replay', () => ({ registerReplay: vi.fn() }));
 // The browser half: the instance lock and IndexedDB handles are released when the ONE
 // shared real stop drain settles true, from whichever stop() observes it (exactly once), even after a stop(timeout)
 // gave up.
-// The coexistence handle is real except that, on demand, its release throws AFTER doing its work.
+// The coexistence handle is real except that, on demand, its release() throws AFTER doing its work.
 let releaseThrows = false;
 vi.mock('@bugsee/browser-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/browser-utils')>();
@@ -173,7 +173,7 @@ describe('the lock is released by whichever stop() observes the shared drain set
     await vi.waitFor(() => expect(locks.held.size).toBe(0));
   });
 
-  it('a killed client is released by stop(), and a second stop is harmless', async () => {
+  it('a killed client is released by stop(), and a second stop() is harmless', async () => {
     const { locks, options } = setup({ transport: killTransport() });
     const client = await track(options);
     await client.logException(new Error('boom'));

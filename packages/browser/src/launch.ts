@@ -97,7 +97,7 @@ import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
-// @bugsee/browser launch — the browser composition root, the fetch/DOM analog of node's
+// @bugsee/browser launch() — the browser composition root, the fetch/DOM analog of node's
 // launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
 // and the shared capture layer, then starts it:
 //   fetch transport → BugseeApi + BundleUploader → UploadPipeline ─┐
@@ -150,7 +150,7 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     ...FAIL_ON_BOOLEAN_OPTION,
   },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
-  // scalar (`0`, `null`, `''`, `'false'`,...) is OFF and reported; it must never throw.
+  // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported; it must never throw.
   // Masking is fail-closed regardless.
   {
     friendly: 'replay',
@@ -343,8 +343,8 @@ export interface BugseeLaunchOptions {
    * An options object customises it; `false` opts out entirely. Masking is FAIL-CLOSED (mask all
    * text/inputs, block all media) whether or not the option is given.
    *
-   * `@bugsee/replay` is lazy-`import()`ed, so it is a separate chunk that is fetched only when replay runs
-   * `replay: false` therefore keeps the errors-only bundle genuinely free of it.
+   * `@bugsee/replay` is lazy-`import()`ed, so it is a separate chunk that is fetched only when replay runs,
+   * and `replay: false` therefore keeps the errors-only bundle genuinely free of it.
    *
    * An INVALID value (anything but a boolean or a plain options object: `0`, `null`, `''`, `'false'`, an array) is
    * treated as OFF and reported through `onError`: replay captures page content, so it never stays on by accident.
@@ -464,7 +464,7 @@ export interface LaunchInternals {
   /**
    * Where the performance controller's active transaction lives. ALWAYS `undefined` here:
    * the browser keeps the process-wide single slot, which is correct for its one in-flight
-   * navigation/interaction. Declared REQUIRED rather than optional (R-16) so the choice is stated, not
+   * navigation/interaction. Declared REQUIRED rather than optional so the choice is stated, not
    * defaulted — a platform that forgets the field fails to typecheck at `wireUmbrella` instead of
    * silently inheriting a slot that is wrong under concurrency. Typed `undefined` rather than
    * `ActiveSpanStore | undefined` so this package needs no `@bugsee/performance` import.
@@ -706,8 +706,8 @@ async function buildLaunch(
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
-    // stop tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
-    // stopped client must not be restarted in place: a new one comes from `launch(appToken)`/`relaunch`.
+    // stop() tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
+    // stopped client must not be restarted in place: a new one comes from `launch(appToken)`/`relaunch()`.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -921,7 +921,7 @@ async function buildLaunch(
   client.launch();
 
   // Recovery on the next launch. Self's own namespaces are empty (a fresh instanceId per launch), so the
-  // prior crashed session is just a DEAD SIBLING — ALL recovery is dead-sibling recovery (BD9), gated by each
+  // prior crashed session is just a DEAD SIBLING — ALL recovery is dead-sibling recovery, gated by each
   // sibling's Web Lock so a LIVE tab's data is never read, recovered, or swept (this is what closes the
   // multi-tab capture-sweep hazard).
   //
@@ -939,7 +939,7 @@ async function buildLaunch(
   // the durability — kept + retried on failure). The coordinator reads the shared stores directly (no
   // mirror hydration needed) and hands this callback the sibling's hydrated marker store plus the
   // incidents its bundle-queue leg already settled with (`skipReportIds`), so one incident is delivered
-  // once even when the sibling left BOTH a staged bundle and that incident's marker (the
+  // once even when the sibling left BOTH a staged bundle and that incident's marker (the recovery
   // double-upload — reconciled in browser-utils).
   let recoverySettled = false;
   let crashSignalled = false; // RelaunchedAfterCrash is told at most once per launch
@@ -958,7 +958,7 @@ async function buildLaunch(
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
-                // a dead sibling that left an incident marker behind never settled that incident, which is
+                // A dead sibling that left an incident marker behind never settled that incident, which is
                 // the honest evidence this tier has that the previous run did not end cleanly. (A tab closed
                 // normally after a failed upload leaves one too, so this can over-report; it never invents one.)
                 if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
@@ -1017,8 +1017,8 @@ async function buildLaunch(
   );
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
-  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
-  // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop() call. Every
+  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
   // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   let released = false;

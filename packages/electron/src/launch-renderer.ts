@@ -6,7 +6,7 @@
 // Call it from renderer code:
 //
 //   import { launchRenderer } from '@bugsee/electron/renderer';
-// await launchRenderer(appToken, {}); // replay is ON by default and rides the same stream;
+//   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream;
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
 import {
@@ -132,7 +132,7 @@ async function launchRendererOnce(
     paused: () => paused,
   });
   // Incidents are FORWARDED to main, never uploaded here: this renderer's capture lives in the main store,
-  // so a locally-assembled bundle would be empty and land under a foreign session id
+  // so a locally-assembled bundle would be empty and land under a foreign session id.
   // `handshaken` gates delivery — before the session handshake there is
   // no main session to attribute an incident to, so the pipeline reports failure rather than posting into
   // the void. A caller cannot override this: ours is spread AFTER the caller's options, so an override —

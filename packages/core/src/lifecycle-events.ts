@@ -5,7 +5,7 @@
 //
 // Coverage: upload events and `ReportHandler.after` follow the live trigger -> assemble -> upload path.
 // A report delivered another way (durable recovery on the next launch, native-crash harvest, a queue
-// overflow, a WebView/Electron-renderer hand-off) is not announced; see "Kept differences" in
+// overflow, a WebView/Electron-renderer hand-off) is not announced, which differs from mobile on purpose.
 
 import { neverThrow } from './never-throw';
 

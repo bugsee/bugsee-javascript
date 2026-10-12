@@ -11,8 +11,8 @@ import { LifecycleEvents } from './lifecycle-events';
 import { createOptionsContainer } from './options';
 import type { UploadPipeline, UploadResult } from './transport';
 
-// lifecycle-event delivery, stop generations, the kill state,
-// blackout state (L3, L16, V2), `getLaunchOptions` (L11).
+// Lifecycle-event delivery, stop generations, the kill state,
+// blackout state and `getLaunchOptions`.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
@@ -61,7 +61,7 @@ describe('the lifecycle listener is process-level', () => {
     expect(seen).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
   });
 
-  it('the `lifecycleEventsListener` option installs the listener before launch can run', () => {
+  it('the `lifecycleEventsListener` option installs the listener before launch() can run', () => {
     const host = {};
     const seen: string[] = [];
     const client = createClient({

@@ -44,7 +44,7 @@ describe('launch (Cloudflare)', () => {
   });
 });
 
-// S0: AsyncLocalStorage is wired AUTOMATICALLY.
+// AsyncLocalStorage is wired AUTOMATICALLY.
 //
 // `globalThis.AsyncLocalStorage` does not exist on workerd under any compatibility flag — ALS is reachable
 // only via `node:async_hooks` (verified on real workerd). Without this,

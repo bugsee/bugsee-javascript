@@ -116,7 +116,7 @@ export function createElectronMainControl(
     if (sender === undefined) {
       return;
     }
-    // the registry has to SHRINK. Every window that ever said hello used to be retained for the
+    // The registry has to SHRINK. Every window that ever said hello used to be retained for the
     // process lifetime, pinning destroyed `webContents` (and whatever they retain) in the main process:
     // an app that opens and closes windows leaked monotonically, `rendererCount` was wrong after the first
     // close, and every broadcast walked a growing set of corpses.

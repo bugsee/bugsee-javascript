@@ -1,4 +1,4 @@
-// Tests for the per-tenant partitioned capture store (Wave 0.1 S2,
+// Tests for the per-tenant partitioned capture store.
 //
 // The defect this closes was proven on real workerd: Durable Objects for different tenants share one
 // isolate, one client and one capture ring, so tenant C's incident bundle carried tenant A's and B's
@@ -139,7 +139,7 @@ describe('createPartitionedCaptureStore — snapshot isolation (THE fix)', () =>
     expect(seen).toEqual(['a', 'b']);
   });
 
-  it('an UNSCOPED snapshot sees no tenant data at all (the leak that shipped in)', async () => {
+  it('an UNSCOPED snapshot sees no tenant data at all (the leak that originally shipped)', async () => {
     // Originally this returned every partition merged, and that was the whole bug: an owner-less report —
     // withBugsee's fetch wrapper and the on-by-default unhandledrejection net both produce one — took this
     // branch, so a front-handler incident carried every Durable Object's secrets. Reproduced on real
@@ -217,7 +217,7 @@ describe('createPartitionedCaptureStore — lifecycle + bounds', () => {
     expect(made.map((p) => p.ticks)).toEqual([[1234], [1234]]);
   });
 
-  it('clear clears every partition', () => {
+  it('clear() clears every partition', () => {
     const made: Array<ReturnType<typeof fakePartition>> = [];
     const store = createPartitionedCaptureStore({
       createPartition: () => {
@@ -307,7 +307,7 @@ describe('createPartitionedCaptureStore — bounds on the eviction bookkeeping',
 });
 
 describe('releasing a snapshot is contained', () => {
-  it('reports a partition whose release throws instead of propagating into the export path', () => {
+  it('reports a partition whose release() throws instead of propagating into the export path', () => {
     // `release()` runs at the end of a report's export. A throwing partition must surface through onError,
     // not out of the exporter — the same host-boundary rule as everywhere else.
     const errors: unknown[] = [];

@@ -464,7 +464,7 @@ describe('recoverReports', () => {
     expect(pipe.enqueue).not.toHaveBeenCalled();
   });
 
-  // (recovery double-upload): a bundle that already reached the durable queue was staged only AFTER
+  // Recovery double-upload: a bundle that already reached the durable queue was staged only AFTER
   // its incident's marker was written (client.ts submitReport) and cleared only once that upload SETTLED,
   // so a process dying inside that window leaves BOTH traces of the SAME incident. `skipReportIds` is how
   // the bundle-queue leg tells this pass which incidents it already settled with.
