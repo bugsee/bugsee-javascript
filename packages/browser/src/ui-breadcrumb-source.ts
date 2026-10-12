@@ -1,4 +1,5 @@
 import {
+  type BlackoutGate,
   type BreadcrumbInput,
   type CaptureProvider,
   CaptureProviderBase,
@@ -249,16 +250,27 @@ class UiBreadcrumbProvider extends CaptureProviderBase {
   readonly controllingOption = BugseeOption.CaptureInteractions;
   readonly #source: UiBreadcrumbSource;
   readonly #sink: (breadcrumb: BreadcrumbInput) => void;
+  readonly #blackout: BlackoutGate | undefined;
   #off: (() => void) | null = null;
 
-  constructor(source: UiBreadcrumbSource, sink: (breadcrumb: BreadcrumbInput) => void) {
+  constructor(
+    source: UiBreadcrumbSource,
+    sink: (breadcrumb: BreadcrumbInput) => void,
+    blackout?: BlackoutGate,
+  ) {
     super();
     this.#source = source;
     this.#sink = sink;
+    this.#blackout = blackout;
   }
 
   protected onStart(): void {
-    this.#off = this.#source.on('breadcrumb', (crumb) => this.#sink(crumb));
+    this.#off = this.#source.on('breadcrumb', (crumb) => {
+      // Blackout: interaction breadcrumbs (keyboard/focus/change/submit) are visual capture — dropped.
+      if (this.#blackout?.isActive() !== true) {
+        this.#sink(crumb);
+      }
+    });
   }
 
   protected override onStop(): void {
@@ -270,6 +282,7 @@ class UiBreadcrumbProvider extends CaptureProviderBase {
 export function createUiBreadcrumbProvider(
   source: UiBreadcrumbSource,
   sink: (breadcrumb: BreadcrumbInput) => void,
+  blackout?: BlackoutGate,
 ): CaptureProvider {
-  return new UiBreadcrumbProvider(source, sink);
+  return new UiBreadcrumbProvider(source, sink, blackout);
 }

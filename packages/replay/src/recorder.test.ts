@@ -1,4 +1,9 @@
-import type { CaptureDataEntry, CaptureProviderInit } from '@bugsee/core';
+import {
+  type BlackoutGate,
+  type CaptureDataEntry,
+  type CaptureProviderInit,
+  createBlackoutState,
+} from '@bugsee/core';
 import type { eventWithTime, recordOptions } from '@bugsee/rrweb';
 import { describe, expect, it, vi } from 'vitest';
 import { resolveReplayMaskingOptions } from './masking';
@@ -17,6 +22,7 @@ function fakeRecord() {
     stop,
     getOptions: () => options,
     emit: (event: eventWithTime) => (options?.emit as (e: eventWithTime) => void)(event),
+    latestEmit: () => options?.emit as (e: eventWithTime) => void,
   };
 }
 
@@ -99,6 +105,112 @@ describe('createReplayCaptureProvider', () => {
     rec.emit(evt(2)); // captured again
     expect(added).toHaveLength(1);
     expect(added[0]?.timestamp).toBe(2);
+  });
+
+  describe('blackout (privacy: fail closed)', () => {
+    const setup = (blackout?: BlackoutGate) => {
+      const rec = fakeRecord();
+      const { init, added } = fakeInit();
+      const provider = createReplayCaptureProvider({
+        record: rec.record,
+        masking: resolveReplayMaskingOptions(),
+        ...(blackout !== undefined ? { blackout } : {}),
+      });
+      provider.init(init);
+      return { rec, added, provider };
+    };
+
+    it('STOPS the rrweb recorder for the whole blackout rather than only muting it', () => {
+      const { rec, provider } = setup();
+      provider.start(options());
+      provider.startBlackout();
+      expect(rec.stop).toHaveBeenCalledTimes(1);
+      provider.startBlackout(); // idempotent: nothing left to stop
+      expect(rec.stop).toHaveBeenCalledTimes(1);
+      expect(rec.record).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes by RESTARTING rrweb (a fresh Meta + FullSnapshot), never by un-muting the old session', () => {
+      const { rec, provider } = setup();
+      provider.start(options());
+      provider.startBlackout();
+      provider.stopBlackout();
+      expect(rec.record).toHaveBeenCalledTimes(2);
+      provider.stopBlackout(); // not blacked out → no third session
+      expect(rec.record).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops a LATE emit from the pre-blackout session even after the recorder restarted', () => {
+      const { rec, added, provider } = setup();
+      provider.start(options());
+      const stale = rec.latestEmit(); // e.g. a throttled scroll sample that fires after the stop
+      provider.startBlackout();
+      stale(evt(1));
+      provider.stopBlackout();
+      stale(evt(2)); // the old closure stays dead after the restart
+      rec.emit(evt(3));
+      expect(added.map((e) => e.timestamp)).toEqual([3]);
+    });
+
+    it('never records at all when a blackout was already active at start (lazy replay load)', () => {
+      const gate = createBlackoutState();
+      gate.start();
+      const { rec, added, provider } = setup(gate);
+      provider.start(options());
+      expect(rec.record).not.toHaveBeenCalled();
+      expect(added).toHaveLength(0);
+    });
+
+    it('follows the gate: pauses on start, restarts on end, and ignores a repeated notification', () => {
+      const gate = createBlackoutState();
+      const { rec, added, provider } = setup(gate);
+      provider.start(options());
+      rec.emit(evt(1));
+      gate.start();
+      expect(rec.stop).toHaveBeenCalledTimes(1);
+      gate.end();
+      expect(rec.record).toHaveBeenCalledTimes(2);
+      rec.emit(evt(2));
+      expect(added.map((e) => e.timestamp)).toEqual([1, 2]);
+    });
+
+    it('starts the deferred recording when the gate ends a blackout that was active at start', () => {
+      const gate = createBlackoutState();
+      gate.start();
+      const { rec, provider } = setup(gate);
+      provider.start(options());
+      gate.end();
+      expect(rec.record).toHaveBeenCalledTimes(1);
+    });
+
+    it('stop() unsubscribes from the gate, so a stopped provider never starts recording', () => {
+      const real = createBlackoutState();
+      const unsubscribed = vi.fn();
+      const gate: BlackoutGate = {
+        isActive: () => real.isActive(),
+        onChange: (listener) => {
+          const off = real.onChange(listener);
+          return () => {
+            unsubscribed();
+            off();
+          };
+        },
+      };
+      const { rec, provider } = setup(gate);
+      provider.start(options());
+      provider.stop();
+      expect(unsubscribed).toHaveBeenCalledTimes(1);
+      real.start();
+      real.end();
+      expect(rec.record).toHaveBeenCalledTimes(1);
+    });
+
+    it('a manual stopBlackout() on a provider that was never started does not start recording', () => {
+      const { rec, provider } = setup();
+      provider.startBlackout();
+      provider.stopBlackout();
+      expect(rec.record).not.toHaveBeenCalled();
+    });
   });
 
   it('stops the rrweb recorder on stop()', () => {

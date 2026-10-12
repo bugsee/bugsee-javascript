@@ -1,5 +1,10 @@
 // @vitest-environment jsdom -- selector validation (Wave 1.4) needs a DOM to parse against
-import type { CaptureDataEntry, CaptureProvider, CaptureProviderInit } from '@bugsee/core';
+import {
+  type CaptureDataEntry,
+  type CaptureProvider,
+  type CaptureProviderInit,
+  createBlackoutState,
+} from '@bugsee/core';
 import type { eventWithTime, recordOptions } from '@bugsee/rrweb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeReplay } from './encoder';
@@ -51,6 +56,19 @@ describe('registerReplay', () => {
     // The returned recorder exposes the blackout controls (for the caller to wire client.startBlackout).
     expect(typeof recorder.startBlackout).toBe('function');
     expect(typeof recorder.stopBlackout).toBe('function');
+  });
+
+  it('threads the blackout gate into the recorder: a blackout active at registration never records', () => {
+    const blackout = createBlackoutState();
+    blackout.start();
+    const client = fakeClient();
+    const fake = fakeRecord();
+    mustRegister(client, {}, { record: fake.record, blackout });
+    client.providers[0]?.init(fakeInit());
+    client.providers[0]?.start({} as never);
+    expect(fake.record).not.toHaveBeenCalled();
+    blackout.end();
+    expect(fake.record).toHaveBeenCalledTimes(1);
   });
 
   it('reports a dropped invalid masking selector through the caller onError', () => {

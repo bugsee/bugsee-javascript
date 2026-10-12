@@ -6,6 +6,7 @@ import {
   launchCore,
   readMetaTraceContinuation,
 } from '@bugsee/browser';
+import { BlackoutToken } from '@bugsee/core';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
 // The `bugsee` umbrella launch() for the BROWSER — the batteries-included entry. It runs the browser
@@ -35,7 +36,8 @@ export async function launch(
         { pageload: true },
         {
           createNavigationSource: createBrowserNavigationSource,
-          createInteractionSource: createBrowserInteractionSource,
+          createInteractionSource: () =>
+            createBrowserInteractionSource({ blackout: client.getService(BlackoutToken) }),
           readMetaTraceContinuation,
         },
       );

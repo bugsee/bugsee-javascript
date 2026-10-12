@@ -1,4 +1,9 @@
-import type { BreadcrumbInput, CaptureProviderInit, OptionsContainer } from '@bugsee/core';
+import {
+  type BreadcrumbInput,
+  type CaptureProviderInit,
+  createBlackoutState,
+  type OptionsContainer,
+} from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -327,6 +332,24 @@ describe('createUiBreadcrumbProvider', () => {
     expect(target.count('change')).toBe(0); // the source deactivated with its last subscriber
     target.emit('change', { target: el({ tag: 'input', id: 'a' }) });
     expect(sink).toHaveBeenCalledTimes(1); // still 1 — stop() really unsubscribed
+  });
+
+  it('drops breadcrumbs while a blackout is in force and resumes when it ends', () => {
+    const target = fakeTarget();
+    const source = createUiBreadcrumbSource({ target, maskSelector: MASK, now: () => 3 });
+    const sink = vi.fn();
+    const blackout = createBlackoutState();
+    const provider = createUiBreadcrumbProvider(source, sink, blackout);
+    provider.init(init);
+    provider.start(noOptions);
+    const fire = (id: string): void => target.emit('change', { target: el({ tag: 'input', id }) });
+
+    fire('a');
+    blackout.start();
+    fire('b');
+    blackout.end();
+    fire('c');
+    expect(sink.mock.calls.map(([crumb]) => crumb.data['view.id'])).toEqual(['a', 'c']);
   });
 
   it('tolerates a stop() without a start() (idempotent teardown)', () => {
