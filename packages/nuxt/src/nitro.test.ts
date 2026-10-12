@@ -43,7 +43,7 @@ function fakeClient() {
 describe('installBugseeNitro', () => {
   // R3P-3: `relaunch()` stops the launched client and starts another; the hooks installed ONCE at server start
   // must follow it, never keep reporting into the stopped one.
-  it('reports and injects trace meta through the CURRENT carrier client after a relaunch (R3P-3)', () => {
+  it('reports and injects trace meta through the CURRENT carrier client after a relaunch', () => {
     const carrier = {};
     const first = fakeClient();
     const second = fakeClient();
@@ -71,7 +71,7 @@ describe('installBugseeNitro', () => {
     expect(html.head).toEqual(['<meta c2>']);
   });
 
-  it('falls back to the launched client while the carrier slot is empty (R3P-3)', () => {
+  it('falls back to the launched client while the carrier slot is empty', () => {
     const carrier = {};
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
@@ -101,7 +101,7 @@ describe('installBugseeNitro', () => {
     expect(result).toBe(client);
   });
 
-  it('reports a server error (5xx / non-H3) via the Nitro error hook, with route attribution', () => {
+  it('reports a server error (5xx / non-) via the Nitro error hook, with route attribution', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
@@ -116,7 +116,7 @@ describe('installBugseeNitro', () => {
     );
   });
 
-  it('does NOT report an expected H3 client error (statusCode < 500, e.g. 404/422)', () => {
+  it('does NOT report an expected client error (statusCode < 500, e.g. 404/422)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });
@@ -128,7 +128,7 @@ describe('installBugseeNitro', () => {
     expect(client.event).not.toHaveBeenCalled();
   });
 
-  it('DOES report a 5xx H3 error (statusCode >= 500 is a real crash)', () => {
+  it('DOES report a 5xx error (statusCode >= 500 is a real crash)', () => {
     const client = fakeClient();
     const { nitroApp, fireError } = fakeNitro();
     installBugseeNitro(nitroApp, { appToken: 'tok', launch: () => client as never });

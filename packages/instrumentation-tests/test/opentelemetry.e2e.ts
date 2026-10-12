@@ -166,7 +166,7 @@ describe('@bugsee/opentelemetry — a real OTel SDK through the umbrella, end to
         (r) =>
           r.resourceSpans?.flatMap((rs) => rs.scopeSpans?.map((ss) => ss.scope?.name) ?? []) ?? [],
       );
-      // Profile v1 §5: `com.bugsee.<sdk>/<providerId>`, `nodejs` on the node family.
+      // `com.bugsee.<sdk>/<providerId>`, `nodejs` on the node family.
       expect(scopes).toContain('com.bugsee.nodejs/performance');
 
       const resourceKeys = requests.flatMap(

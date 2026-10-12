@@ -1,5 +1,5 @@
 // @bugsee/integration-shims — no-op stand-ins for DOM-only integrations on DOM-less runtimes
-// (design §5, §6 line 372). Some capture integrations exist only with a DOM: viewHierarchyProvider
+// (line 372). Some capture integrations exist only with a DOM: viewHierarchyProvider
 // (DOM snapshot), breadcrumbsProvider (clicks/keys/history), xhrInterceptor. On Cloudflare / Vercel
 // Edge / workers / Node / bun / deno those can't run, so the non-browser platform packages re-export
 // these typed no-ops: user code that references e.g. `viewHierarchyProvider` still type-checks, and
@@ -11,7 +11,7 @@
 // at most once per integration name (Logger.warnOnce). The diagnostic logger and the runtime label
 // are injected by the platform that builds the shim — this package is runtime-agnostic.
 //
-// NOTE: `replay` is intentionally NOT a shim here (design §372). Replay is option-driven, not a
+// NOTE: `replay` is intentionally NOT a shim here. Replay is option-driven, not a
 // user-constructed integration; the `replay` option is simply ignored with a warn on non-browser
 // runtimes, handled where options are resolved — not via a no-op export.
 

@@ -104,7 +104,7 @@ describe('BugseeErrorHandler does not silently delete the app’s error surfacin
 
 // WAVE 2.2 — the enforcement half. The tests above cover the ErrorHandler seam the review named; nothing
 // covered the rest, and nothing failed when a new export arrived without a containment test.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

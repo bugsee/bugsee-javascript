@@ -120,7 +120,7 @@ describe('createElectronMainControl', () => {
     expect(decodeControl((r.sent[0] as { raw: string }).raw)?.blackout).toBe(true);
   });
 
-  it('without an isBlackout probe the reply still states bo:false explicitly (R2V-8)', () => {
+  it('without an isBlackout probe the reply still states bo:false explicitly', () => {
     const ipc = fakeIpcMain();
     const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
     control.start();
@@ -263,7 +263,7 @@ describe('createElectronMainControl', () => {
 //
 // The fix hangs off the same lifecycle signal `render-process-gone` already uses for R2: a renderer that is
 // gone is no longer a renderer.
-describe('the renderer registry shrinks (SEV2 #7)', () => {
+describe('the renderer registry shrinks', () => {
   /** A sender that can be destroyed, the way a real `webContents` is. */
   function destroyableSender(id: number) {
     const sent: Array<{ channel: string; raw: string }> = [];

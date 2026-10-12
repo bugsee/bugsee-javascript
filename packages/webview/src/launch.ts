@@ -68,7 +68,7 @@ import { blackoutMessage, byeMessage, encode, helloMessage } from './protocol';
 import { createRedactionProvenance } from './redaction-provenance';
 import { createWebViewReportPipeline } from './webview-report-pipeline';
 
-// @bugsee/webview launch() — the WebView composition root (docs/design/webview-bridge.md §5/§10). A WebView is a
+// @bugsee/webview launch — the WebView composition root. A WebView is a
 // browser environment whose OUTPUT SINK is the native host, not the network: this reuses @bugsee/browser-family
 // capture (console→log + network in slice 1; full parity in slice 2) over a HostBridgeCaptureStore that STREAMS
 // each entry across the WebView boundary — NO transport / upload pipeline / bundle store / IndexedDB (native is
@@ -80,11 +80,11 @@ import { createWebViewReportPipeline } from './webview-report-pipeline';
 export const SDK_VERSION = BUGSEE_SDK_VERSION;
 
 /** WebView-local identifier of the `captureObscuring` switch: no cross-SDK identity. */
-/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged (R4V-9). */
+/** How long a blackout announcement waits for native's handshake reply before "not declared support" is judged. */
 const NATIVE_REPLY_DEADLINE_MS = 5000;
 const OBSCURING_OPTION_KEY = 'com.bugsee.option.capture.obscuring';
 
-/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported (R3V-3). */
+/** The shared options plus the WebView's own. `captureObscuring` is protective: invalid => ON + reported. */
 const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   {
@@ -298,7 +298,7 @@ const INERT_SESSION: BridgeSession = {
  * page script that pre-owns the name makes `defineProperty` throw, and the SDK must then fail closed
  * rather than advertise a control surface it does not have. `auth` holds the one-way latch at GLOBAL
  * scope, not per-launch: `launch` is itself a page global, so a per-launch latch could be reset simply by
- * relaunching (review round 1).
+ * relaunching.
  */
 interface BridgeSlot {
   session: BridgeSession;
@@ -310,7 +310,7 @@ const BRIDGE_SLOTS = new WeakMap<object, BridgeSlot>();
 
 /**
  * Install `__bugsee_bridge` on a CLOSED binding and return the slot its methods delegate to
- * (Wave 0.3 / D-A3, docs/design/webview-bridge-auth.md).
+ * (Wave 0.3 / D-A3).
  *
  * `Object.freeze(obj)` — what this used to do — protects the object and leaves the binding
  * `{writable: true, configurable: true}`, so a page script could swap the whole thing: `snapshot()` then
@@ -406,7 +406,7 @@ export function launchWithSeams(
   const carrier = options.carrier;
   const global = (options.global ?? globalThis) as { __bugsee_bridge?: unknown };
 
-  // The lifecycle listener must not live on the page-reachable carrier (R5L-1): move it module-private BEFORE
+  // The lifecycle listener must not live on the page-reachable carrier: move it module-private BEFORE
   // anything installs one (the `lifecycleEventsListener` option is installed during client creation below).
   sealCarrierLifecycleSlot(carrier);
 
@@ -438,7 +438,7 @@ export function launchWithSeams(
     WEBVIEW_OPTION_DEFINITIONS,
     options.onError,
   );
-  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON (R3V-3).
+  // Obscuring PROTECTS (it masks secure fields in native's frames): an invalid value keeps it ON.
   const obscuringEnabled = resolved.options.get<boolean>(OBSCURING_OPTION_KEY, true);
 
   const services = createServiceContainer();
@@ -459,7 +459,7 @@ export function launchWithSeams(
   // One per-session monotonic sequence shared by the capture stream + the report path (so seq is global).
   let seqN = 0;
   const seq = (): number => seqN++;
-  // Control state flipped by native commands (§7): `paused` drops the capture stream while backgrounded; flush
+  // Control state flipped by native commands: `paused` drops the capture stream while backgrounded; flush
   // + stop delegate to `publicClient`, assigned at the end of launch — the onCommand closure reads it only when
   // native actually sends a command (always after launch returns). `snapshot` re-pushes the current secure-area
   // rects via the obscuring channel (assigned below; native usually PULLS them synchronously via
@@ -489,7 +489,7 @@ export function launchWithSeams(
   const controlToken =
     nativeSecret === undefined && bridge.available ? mintControlToken() : undefined;
   // Set once native has answered the handshake (the control reply): until then it cannot have declared anything,
-  // so "native has not declared blackout support" is not yet a finding (R3V-5). `judgeNativeBlackout` is bound
+  // so "native has not declared blackout support" is not yet a finding. `judgeNativeBlackout` is bound
   // below, where the blackout state exists.
   let nativeReplied = false;
   let judgeNativeBlackout: (() => void) | undefined;
@@ -550,13 +550,13 @@ export function launchWithSeams(
 
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so the listener is
-    // the same one every client of this WebView sees (R2L-4).
+    // the same one every client of this WebView sees.
     carrier: carrier ?? globalThis,
     // stop() clears the carrier slot and makes the control binding inert, so a stopped client must not be
-    // restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    // restarted in place: a new one comes from `launch(appToken)`.
     restartable: false,
     // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox stack (every iOS
-    // WebView) would ship `frames: []` in crash.json (R3P-1).
+    // WebView) would ship `frames: []` in crash.json.
     stackParser: parseStack,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -615,7 +615,7 @@ export function launchWithSeams(
   //    frame — so a token minted here is unusable, and if native retained it the TOP frame's own control
   //    would be rejected as a mismatch.
   //  - capture: each frame keeps its own `seq` from 0, so entries from different frames collide in
-  //    ordering. And D9 exists to keep Bugsee OUT of third-party content (webview-bridge.md:66) — running
+  // ordering. And D9 exists to keep Bugsee OUT of third-party content (66) — running
   //    a full capture stack inside every ad/OAuth/payment iframe is the opposite of that.
   //  - `client.launch()`: `isLaunched()` stays false, which is truthful. This frame captures nothing.
   //
@@ -696,7 +696,7 @@ export function launchWithSeams(
   // receiver, so the host has to DECLARE support (`config.blackout`); until it has, or when there is no
   // bridge to deliver to at all, say so once: the integrator must know the native video keeps running.
   let warnedNativeBlackout = false;
-  // Only the client that owns the process may speak for it (R3V-1): one that has been stopped (its stream is
+  // Only the client that owns the process may speak for it: one that has been stopped (its stream is
   // finalized: `bye` was posted) or whose carrier slot another client has taken must not tell native anything.
   // A launch that has not reached the slot yet still announces (a blackout carried over from an earlier client).
   let torn = false;
@@ -711,7 +711,7 @@ export function launchWithSeams(
   // The first announcement made while native has not yet answered the handshake is judged when it does (a carried
   // blackout is announced at launch, before any reply could possibly have arrived): R3V-5.
   let judgementPending = false;
-  // …but not for ever (R4V-9): a legacy receiver that never answers the handshake, with a single blackout change,
+  // …but not for ever: a legacy receiver that never answers the handshake, with a single blackout change,
   // would leave the integrator unwarned that the native video keeps running. The wait is bounded; `stop()` judges too.
   let judgementTimer: unknown;
   const clearJudgementTimer = (): void => {
@@ -770,7 +770,7 @@ export function launchWithSeams(
     () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate (R2V-3).
+  // Carrier-shared and possibly created by an earlier client: bind it to THIS client's gate.
   bindInputBlackout(inputSource, blackout);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
@@ -833,13 +833,13 @@ export function launchWithSeams(
   // only once a collection has been PROVEN to work. The claim cannot be retracted — the protocol has no
   // retraction message — so on a page where
   // collection already throws, staying silent leaves native's own masking in place, which is the fail-closed
-  // answer (docs/review/webview.md SEV1 #2).
+  // answer.
   //
   // The probe result gates the CHANNEL as well as the capability. Declaring nothing but starting anyway
   // still put `secure` frames on the wire — messages native never negotiated, on the exact page whose
   // collection was just proven broken. "Staying silent" has to mean silent on the wire, not merely absent
   // from `caps`.
-  // Fail CLOSED on both counts (review round 1). The probe already covered "collection is broken"; the
+  // Fail CLOSED on both counts. The probe already covered "collection is broken"; the
   // second half is that a control surface we do not own is just as disqualifying. Declaring `obscuring` tells
   // native this SDK supplies rects; advertising it while the page owns `__bugsee_bridge` means the rects it
   // expects never arrive, and on the advanced path there is no other in-WebView mask source — so the pixels
@@ -860,7 +860,7 @@ export function launchWithSeams(
   // Open the handshake BEFORE capture starts so it is the first thing native sees. Declaring `caps` is what
   // is recorded nowhere by native and decides nothing (D-A7).
   //
-  // The token rides this message ONLY when a native sink is already attached (review round 1, SEV1). When
+  // The token rides this message ONLY when a native sink is already attached (SEV1). When
   // it is not, `hello` goes into the host bridge's backlog and is delivered to whichever sink turns up
   // later — and a page script can be that sink, which is precisely the tap this whole wave exists to stop.
   // Handing it the token would be worse than sending none: it could then authenticate, arm the one-way
@@ -873,7 +873,7 @@ export function launchWithSeams(
     encode(helloMessage({ sdk: sdkVersion, caps, session: randomId(), token: controlToken })),
   );
 
-  // The CURRENT state is restated after `hello`, always (R3V-5, R4L-3). A blackout CARRIED over from a previous
+  // The CURRENT state is restated after `hello`, always. A blackout CARRIED over from a previous
   // client is already in force and never fires `onChange`, so native has to be told. An INACTIVE one is posted
   // too (`a:false`): native resets the JS-reported flag on `bye`/`hello`, but a torn client whose
   // `endBlackout()` was suppressed toward native (it had already said `bye`) would otherwise leave an older
@@ -904,10 +904,10 @@ export function launchWithSeams(
     ...client,
     stop(timeout?: number): Promise<boolean> {
       torn = true;
-      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now (R4V-9)
+      judgeNativeBlackout?.(); // a judgement still waiting for a reply that never came is made now
       obscuring?.stop(); // detach the secure-area observers/listeners
       bridge.post(encode(byeMessage())); // signal teardown so native can finalize this WebView's stream
-      // Ownership-checked (R2L-9): a late or duplicate stop() from a stale handle must not clear the slot, or
+      // Ownership-checked: a late or duplicate stop from a stale handle must not clear the slot, or
       // the module's `launchedClients` entry, of a NEWER launch that has since taken them.
       if (getCarrierClient<unknown>(carrier) === facade) {
         setCarrierStatus(BugseeStatus.Stopped, carrier);
@@ -920,7 +920,7 @@ export function launchWithSeams(
       }
       // The binding cannot be removed (D-A3) — the session behind it goes inert instead, so a page script
       // cannot drive a stopped SDK and a later launch() can re-point the same binding at a live session.
-      // Only revert if this session is still the CURRENT one (review round 1). The slot is shared per
+      // Only revert if this session is still the CURRENT one. The slot is shared per
       // global, so a late/duplicate stop() from a stale handle would otherwise make a NEWER live session
       // inert — control and the frame-time snapshot dead while capture keeps flowing.
       if (bridgeSlot.session === mySession) {
@@ -1016,11 +1016,11 @@ function restrictedClientFor(client: Bugsee, onError?: (error: unknown) => void)
     },
     addService: (): void => refuse('addService'),
     registerExt: (): void => refuse('registerExt'),
-    // Redaction control (R4L-6 / R4V-7): ending a blackout un-redacts the visual capture and a lifecycle
+    // Redaction control: ending a blackout un-redacts the visual capture and a lifecycle
     // listener observes the session; a page may do neither. `startBlackout` stays (it only fails closed).
     endBlackout: (): void => refuse('endBlackout'),
     setLifecycleEventsListener: (): void => refuse('setLifecycleEventsListener'),
-    // Control the old spread passed through live (R5L-1): provider/filter registration and relaunch control.
+    // Control the old spread passed through live: provider/filter registration and relaunch control.
     setSpanFilter: (): void => refuse('setSpanFilter'),
     addCaptureProvider: (): void => refuse('addCaptureProvider'),
     addDetectionProvider: (): void => refuse('addDetectionProvider'),
@@ -1054,7 +1054,7 @@ function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugs
     undefined,
   );
   const noop = (): void => {};
-  // Every other call is a no-op that SAYS so, once per method (R3V-7): a page can call these at will, so the
+  // Every other call is a no-op that SAYS so, once per method: a page can call these at will, so the
   // report is rate-limited the way every other once-only diagnostic here is.
   const told = new Set<string>();
   const say = (method: string): void => {
@@ -1090,7 +1090,7 @@ function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugs
   return {
     startBlackout: ignored('startBlackout'),
     endBlackout: ignored('endBlackout'),
-    // The session belongs to another module copy, but the carrier is shared (R4V-10): read the process flag and
+    // The session belongs to another module copy, but the carrier is shared: read the process flag and
     // the OWNER's published state instead of claiming "not dark" / "Launched" for ever.
     isBlackout: (): boolean => getCarrierBlackout(carrier),
     getStatus: (): BugseeStatus =>

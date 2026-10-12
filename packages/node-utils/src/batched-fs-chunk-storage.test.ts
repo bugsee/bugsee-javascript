@@ -319,7 +319,7 @@ describe('createBatchedFsChunkStorage', () => {
     s.dispose?.();
   });
 
-  it('A1: creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
+  it('creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
     const root = mkRoot();
     const s = createBatchedFsChunkStorage(root, { highWaterMark: 1024 });
     s.append(GEN, CHUNK, 'log', 'm\n');
@@ -419,7 +419,7 @@ describe('createBatchedFsChunkStorage', () => {
 // docs/design/server-disk-capture-write-path.md:120 (D2): "fixed ring, drop-oldest under overload (no
 // elastic growth)". The Phase-2 ring honours that; the shipped Phase-1 default did not. An SDK that OOMs
 // its host on a full disk alters host behaviour, which this repo treats as a binding prohibition.
-describe('back-pressure on a failing disk (Wave 6.3)', () => {
+describe('back-pressure on a failing disk', () => {
   const enospc = (): WritevFn => () => {
     const error = new Error('ENOSPC: no space left on device') as Error & { code: string };
     error.code = 'ENOSPC';

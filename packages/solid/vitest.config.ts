@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // environment 'node': the Solid adapter is a STRUCTURAL PEER (no solid-js/@solidjs/router import) tested
 // injection-first with plain objects — the same discipline as the other adapters.
 export default defineConfig({

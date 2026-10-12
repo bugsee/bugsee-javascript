@@ -92,7 +92,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // Native-crash harvesting (Electron/Crashpad): when a crashReporter is provided, wire its crash-dumps
   // directory into the node launch so it persists a crashpad-session marker at START and, on the NEXT
-  // launch, harvests + session-stitches a dead run's `.dmp`s (see electron-native-crashes.md §6.1). The
+  // launch, harvests + session-stitches a dead run's `.dmp`s. The
   // reporter itself is started (uploadToServer:false) AFTER launch, below.
   // Hoisted so R4's render-process-gone handler can claim dumps through the SAME seam the next-launch
   // recovery uses — a claim here is what stops recovery re-reporting the crash.
@@ -136,7 +136,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // R3/R4 — the main-side submit path for renderer incidents. Registering this is what makes the feature
   // LIVE: R2 stopped renderers uploading, so without a join here every renderer incident is silently
   // destroyed while the app is told it was delivered — strictly worse than the defect
-  // (docs/review/electron-convergence-code-review.md SEV1-1).
+  // (SEV1-1).
   const incidents = new RendererIncidentProvider({
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
@@ -195,7 +195,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
 
   // Native crashes (all processes): start Electron's crashReporter in harvest mode (uploadToServer:false),
-  // session-correlated. The dumps are harvested + bundled on the next launch (see electron-native-crashes.md).
+  // session-correlated. The dumps are harvested + bundled on the next launch.
   if (crashReporter !== undefined) {
     installNativeCrashReporter({
       crashReporter,

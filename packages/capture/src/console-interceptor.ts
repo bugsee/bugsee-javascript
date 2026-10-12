@@ -9,7 +9,7 @@ import {
 import type { LogLevelName } from '@bugsee/types';
 import { jsonSafeStringify } from '@bugsee/util';
 
-// Cross-runtime console capture SOURCE (design §16.2): patches the global `console` methods, emits a
+// Cross-runtime console capture SOURCE: patches the global `console` methods, emits a
 // LogEvent to client.hubs.log on each call, and calls through to the original so the app's own
 // logging is preserved. `console` is universal across every target runtime, and patching
 // `globalThis.console[method]` is the same technique everywhere, so this lives in the shared
@@ -121,7 +121,7 @@ export interface ConsoleInterceptorOptions {
   /** Parses `Error.stack` into frames for the `console.trace()` call-stack appended to the message
    *  (see {@link appendCallStack}). Default: core's {@link parseV8Stack} (V8 `at fn (loc)` dialect
    *  only). A platform whose runtimes also include Firefox/Safari should inject a dispatching parser
-   *  (e.g. the browser tier's `parseStack`) so the stack is not silently dropped on those engines. */
+   * (e.g. the browser tier's `parseStack`) so the stack is not silently dropped on those engines. */
   stackParser?: (stack: string) => StackFrame[];
 }
 

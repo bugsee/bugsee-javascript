@@ -36,7 +36,7 @@ function fakeTimer() {
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`). Left as a bare object literal
 // assigned to a `Transaction`-typed const, tsc's missing-property check on a fresh object literal rejects
 // this double at authoring time (a CI gate) the moment `Transaction` grows a member it does not implement.
-// R5-8: these three were the last casts left, and they sit in the package that OWNS the interface.
+// these three were the last casts left, and they sit in the package that OWNS the interface.
 const fakeTxn = (operation = 'ui.interaction'): Transaction => {
   const txn: Transaction = {
     getTraceId: () => 'trace-1',
@@ -136,7 +136,7 @@ describe('collectInteractions', () => {
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('ui.interaction_duration_ms', 120);
   });
 
-  it('stamps `ui.component` from the resolved component name (D2), and omits it when absent', () => {
+  it('stamps `ui.component` from the resolved component name, and omits it when absent', () => {
     const source = intSource();
     const { api, started } = fakeApi();
     const t = fakeTimer();
@@ -174,7 +174,7 @@ describe('collectInteractions', () => {
    */
   it('tolerates network activity, a hide, and teardown before the first interaction', () => {
     const source = intSource();
-    // The emitter SWALLOWS a listener throw, so `not.toThrow()` around `emit` cannot see a keepAlive that
+    // The emitter SWALLOWS a listener throw, so `not.toThrow` around `emit` cannot see a keepAlive that
     // blew up on the undefined transaction. The error sink can.
     const listenerErrors: unknown[] = [];
     const network = createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>((e) =>

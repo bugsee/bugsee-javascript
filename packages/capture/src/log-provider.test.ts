@@ -186,7 +186,7 @@ describe('createLogCaptureProvider', () => {
 //
 // Converted at the PROVIDER, which is the single point every log entry passes through, and AFTER the user
 // filter so a `logFilter` still sees the friendly name it was written against.
-describe('log level reaches the wire as a NUMERIC (Wave 5.1)', () => {
+describe('log level reaches the wire as a NUMERIC', () => {
   const named = (level: string): LogEvent =>
     ({ timestamp: 1, level, source: 'console', message: 'm' }) as LogEvent;
 

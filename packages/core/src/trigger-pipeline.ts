@@ -2,7 +2,7 @@ import { BugseeError } from './errors';
 import type { ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
 
-// Trigger orchestration (design §7.7 trigger path / atomicity). Report assembly is serialized: while
+// Trigger orchestration (trigger path / atomicity). Report assembly is serialized: while
 // one bundle is being assembled+enqueued, further requests queue. This is the `alreadyAssembling`
 // guard — concurrent captures during assembly land in the NEXT bundle because each assembly snapshots
 // fresh.

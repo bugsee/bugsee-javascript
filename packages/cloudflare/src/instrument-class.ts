@@ -5,7 +5,7 @@ import {
   runInEdgeContext,
 } from '@bugsee/vercel-edge';
 
-// The shared CLASS-instrumentation core (docs/design/edge-runtime.md C2d). Cloudflare's class-based handlers —
+// The shared CLASS-instrumentation core (C2d). Cloudflare's class-based handlers —
 // Durable Objects and WorkerEntrypoint — differ from module handlers in ONE load-bearing way: they receive
 // their `ctx` (a DurableObjectState / ExecutionContext, both with `waitUntil`) and `env` in the CONSTRUCTOR,
 // not per-method (a method is `fetch(request)`, not `fetch(request, env, ctx)`). So this wraps the CLASS: a
@@ -63,7 +63,7 @@ export function instrumentEdgeClass<C extends AnyClass>(
   awaitFlush = false,
   /** Derives the TENANT key from the constructor's ctx (the Durable Object id). Omitted for
    *  WorkerEntrypoint, which is single-tenant by construction. See
-   *  docs/design/cloudflare-tenant-isolation.md §4.1. */
+   */
   resolveOwner?: (ctx: unknown) => string | undefined,
   /** Further per-invocation settings forwarded verbatim to `runInEdgeContext`. An object rather than
    *  yet another positional, so the next one does not extend this list again. */

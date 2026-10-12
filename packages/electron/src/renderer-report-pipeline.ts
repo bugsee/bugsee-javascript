@@ -1,7 +1,7 @@
 import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from '@bugsee/core';
 import { encodeReport } from './protocol';
 
-// The renderer report path (docs/design/electron-renderer-incident-convergence.md §4.1, slice R2). A
+// The renderer report path (slice R2). A
 // `triggerPipeline` for the core Client: the Client routes EVERY report — detected uncaught error /
 // unhandledrejection, and explicit `logException` — here instead of assembling a bundle and uploading it.
 //
@@ -9,7 +9,7 @@ import { encodeReport } from './protocol';
 // holds nothing. So a renderer that assembled locally produced a bundle whose `stream()` yielded nothing,
 // uploaded under the renderer client's OWN session id, while the main session — which holds every one of that
 // renderer's entries — recorded no incident at all. Two sessions: one with an issue and no data, one with the
-// data and no issue, at exactly the moment that matters (docs/review/electron.md SEV1 #2).
+// data and no issue, at exactly the moment that matters.
 //
 // Main owns delivery from here: it submits the incident against its own session, and assembles the bundle
 // from the store that actually has the capture.

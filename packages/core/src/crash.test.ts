@@ -504,7 +504,7 @@ describe('composeFrameEnrichers', () => {
   });
 });
 
-describe('applyExceptionOptions skipFrames clamp (P5)', () => {
+describe('applyExceptionOptions skipFrames clamp', () => {
   const crashWith = (n: number): CrashJson => {
     const err = errorWith(
       'Error',

@@ -261,7 +261,7 @@ describe('defaultDeleteMapFiles', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('unlinks every .map (recursively), leaves other files, returns the deleted paths', async () => {
+  it('unlinks every.map (recursively), leaves other files, returns the deleted paths', async () => {
     await writeFile(join(dir, 'app.js'), 'x');
     await writeFile(join(dir, 'app.js.map'), '{}');
     const sub = join(dir, 'chunks');
@@ -287,7 +287,7 @@ describe('defaultDeleteMapFiles', () => {
 //
 // All four defects below share that shape, and together they mean the plugin could delete a developer's
 // files, break a production deploy, or hang CI — for a source-map upload.
-describe('the plugin cannot harm the build (Wave 7)', () => {
+describe('the plugin cannot harm the build', () => {
   let root: string;
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'bugsee-harm-'));
@@ -303,7 +303,7 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
     return full;
   };
 
-  describe('SEV1 #3 — recursive *.map deletion in the working tree', () => {
+  describe('recursive *.map deletion in the working tree', () => {
     it('never descends into node_modules', async () => {
       // A relative `output.file` resolves the out dir to '.', so the walk starts at the project root.
       // `path.dirname('bundle.js') === '.'` — an entirely ordinary Rollup library config.
@@ -336,7 +336,7 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
     });
   });
 
-  describe('SEV1 #1 — dryRun aborted the build', () => {
+  describe('dryRun aborted the build', () => {
     it('previews the whole flow, and claims no upload', async () => {
       // The original defect: measured against the real bugsee-cli v0.7.2, `sourcemaps inject --dry-run`
       // wrote nothing, so no map carried a debug_id, and `debug-files upload --dry-run` exited 11 —
@@ -367,7 +367,7 @@ describe('the plugin cannot harm the build (Wave 7)', () => {
     });
   });
 
-  describe('SEV1 #2 — a CLI failure aborted the build', () => {
+  describe('a CLI failure aborted the build', () => {
     const failing = vi.fn(async () => {
       throw new Error('bugsee-cli exited 20');
     });

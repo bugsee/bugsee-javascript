@@ -1,5 +1,5 @@
 // `btoa`/`atob` are Web-standard globals on every target runtime (browser, Node >=16, Bun, Deno,
-// Workers). Accessed through a typed view of globalThis so this tier-0 package needs neither the
+// Workers). Accessed through a typed view of globalThis so this package needs neither the
 // DOM lib nor a global ambient declaration that could leak into consumers' type space.
 const { btoa, atob } = globalThis as unknown as {
   btoa: (data: string) => string;

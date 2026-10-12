@@ -154,7 +154,7 @@ describe('createElectronMainReceiver — report routing + listener containment',
     expect(windowId).toBe(3);
   });
 
-  it('R5: a throwing store never escapes the ipcMain listener', () => {
+  it('a throwing store never escapes the ipcMain listener', () => {
     // The listener runs inside Electron's IPC dispatch; a throw escapes into the host app's machinery and
     // can take the channel — and with it ALL renderer capture — down.
     const { ipcMain, send } = ipc();
@@ -172,7 +172,7 @@ describe('createElectronMainReceiver — report routing + listener containment',
     expect(String(errors[0])).toContain('store boom');
   });
 
-  it('R5: a throwing onReport callback never escapes either', () => {
+  it('a throwing onReport callback never escapes either', () => {
     const { ipcMain, send } = ipc();
     const errors: unknown[] = [];
     createElectronMainReceiver({

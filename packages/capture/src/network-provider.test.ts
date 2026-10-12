@@ -842,7 +842,7 @@ describe('network URL absolutization', () => {
     expect((await emitAndDrain(netEvent({ url: '/api/x' }))).url).toBe('/api/x');
   });
 
-  it('survives a non-string url without dropping the entry', async () => {
+  it('survives an undefined url without dropping the entry', async () => {
     const captured = await withPageRealm('https://app.example.com/', () =>
       emitAndDrain(netEvent({ url: undefined as unknown as string })),
     );

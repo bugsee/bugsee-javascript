@@ -201,7 +201,7 @@ describe('createBugseeMiddleware — trace injection', () => {
 // measured, not assumed. A 304 legally echoes the cached entity's `Content-Type: text/html`, so an ordinary
 // conditional GET reached the reconstruct, threw out of the middleware, and Astro rendered its 500 page.
 // The browser's cached-page path is about as hot as a route gets.
-describe('null-body responses survive trace injection (Wave 4.5)', () => {
+describe('null-body responses survive trace injection', () => {
   // A client whose context provider reports an ACTIVE trace, so `traceMetaTag` really produces a tag.
   // Without this every case takes the `tag === ''` early return and the whole block passes vacuously —
   // which is exactly what my first fixture did, caught by the 200 canary below.

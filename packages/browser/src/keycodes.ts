@@ -4,7 +4,7 @@
 // carries `keyCode: int` and `metaState: int`, iOS's `BGSInputEvent` the same, and the viewer reads those.
 // The web tier used to emit a `key` STRING and four bespoke booleans instead, so a web recording and a
 // mobile one described the same key press in two unrelated vocabularies and nothing downstream could read
-// both (docs/review/OPEN-FINDINGS.md R3-12).
+// both.
 //
 // Every number below was read out of the real `android.view.KeyEvent` in `android.jar` with `javap`, not
 // recalled: this file is a wire contract with another SDK, and a plausible-looking wrong constant would

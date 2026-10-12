@@ -60,7 +60,7 @@ interface WireEntry {
 //
 // Both are therefore validated against a closed set / a numeric check, and a message failing either is
 // DROPPED rather than sanitised: a renderer sending them is misbehaving, and there is no correct entry
-// to recover (docs/review/electron.md SEV1 #1).
+// to recover.
 
 /** Every FileType the SDK emits — the closed set `t` must belong to. */
 const KNOWN_FILE_TYPES: ReadonlySet<string> = new Set<string>([
@@ -114,7 +114,7 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
   }
   // `JSON.stringify(undefined)` returns undefined, NOT a string — so an omitted or unserialisable `p` would
   // break this function's own `payload: string` contract and reach `store.add` with a non-string
-  // `serialized`, throwing out of the ipcMain listener (docs/review/electron-wave02-review.md SEV1 #1).
+  // `serialized`, throwing out of the ipcMain listener.
   // Validate rather than trust the declared type: `p` is untrusted renderer input like every other field.
   const payload = JSON.stringify(message.p);
   if (typeof payload !== 'string') {
@@ -133,7 +133,7 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// The renderer→main REPORT message (docs/design/electron-renderer-incident-convergence.md §4.1).
+// The renderer→main REPORT message.
 //
 // A DEDICATED kind, not an `entry`. The first design draft reused `entry` with `type: 'crash'` to avoid a
 // protocol change — but the codec is same-version by declaration (see the file header), so a new kind costs
@@ -164,7 +164,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * Decode a renderer incident, or `undefined` if it is not a well-formed `report`.
  *
  * Renderer input is UNTRUSTED — the same channel and the same sender as the entry path hardened in Wave 0.2
- * (docs/review/electron.md SEV1 #1). Both halves of the payload must be plain objects; anything else is
+ * Both halves of the payload must be plain objects; anything else is
  * dropped rather than submitted, since a malformed incident has no correct interpretation.
  */
 export function decodeReport(raw: string): DecodedReport | undefined {

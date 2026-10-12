@@ -63,7 +63,7 @@ afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('browser stop() and the launch-time recovery (L7)', () => {
+describe('browser stop() and the launch-time recovery', () => {
   it('keeps the lock while the recovery is still running, bounded by the stop deadline', async () => {
     vi.mocked(runLaunchRecovery).mockImplementationOnce(() => new Promise<void>(() => {}));
     const locks = realLocks();

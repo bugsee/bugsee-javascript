@@ -1,4 +1,4 @@
-// WebView injectable-bundle guard (slice 6, docs/design/webview-bridge.md D7/§9).
+// WebView injectable-bundle guard (slice 6, D7/).
 //
 // Native ships @bugsee/webview as a SELF-CONTAINED IIFE single-string resource and injects it at document-start;
 // the bundle defines the `BugseeWebView` global (the native bootstrap calls `BugseeWebView.launch`). This guard
@@ -6,7 +6,7 @@
 // external, minified, globalName) — an INDEPENDENT re-bundle (matching the edge X2 precedent), not the package's
 // `tsup` output — and asserts the artifact is:
 //   - self-contained AND node-free: the output imports NOTHING — every workspace dep is inlined into the
-//     single string and no node builtin is reachable (tier-0 @bugsee/util is WebCrypto-only), so a WebView
+// single string and no node builtin is reachable (@bugsee/util is WebCrypto-only), so a WebView
 //     needs no loader and no builtins,
 //   - within a size budget (a regression catch — the bundle ships fixed in the native binary, so size matters),
 //   - LOADABLE: it evaluates in a fresh isolate and exposes `BugseeWebView.launch`.
@@ -36,7 +36,7 @@ const RAW_BUDGET = 200 * KB;
 
 const IIFE_ENTRY = fileURLToPath(new URL('../../webview/src/iife.ts', import.meta.url));
 
-describe('slice 6 — @bugsee/webview injectable IIFE bundle guard', () => {
+describe('@bugsee/webview injectable IIFE bundle guard', () => {
   it('bundles self-contained, node-free, and within the size budget', async () => {
     const bundle = await bundleEdgeEntry(IIFE_ENTRY, 'iife', 'BugseeWebView');
 

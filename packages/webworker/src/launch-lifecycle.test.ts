@@ -110,7 +110,7 @@ describe('webworker carrier slot', () => {
   });
 });
 
-describe('webworker launch options introspection (L9)', () => {
+describe('webworker launch options introspection', () => {
   it('getLaunchOptions is host over defaults by canonical key; getHostLaunchOptions only what the host set', () => {
     const client = track(opts({ captureLogs: false, maxRecordingTime: 30 }));
     const effective = client.getLaunchOptions();
@@ -125,7 +125,7 @@ describe('webworker launch options introspection (L9)', () => {
   });
 });
 
-describe('webworker stop() releases the coexistence lock and IndexedDB only when SAFE (L9)', () => {
+describe('webworker stop() releases the coexistence lock and IndexedDB only when SAFE', () => {
   const persisted = (over: Partial<BugseeWorkerLaunchOptions> = {}) => {
     const locks = realLocks();
     return {
@@ -196,7 +196,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     clear.mockRestore();
   });
 
-  it('R2L-3: a client.launch() while the stop drains is refused, and the stop still releases the lock', async () => {
+  it('a client.launch() while the stop drains is refused, and the stop still releases the lock', async () => {
     const onError = vi.fn();
     const { locks, options } = persisted({ onError });
     const client = track(options);
@@ -210,7 +210,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     await vi.waitFor(() => expect(locks.held.size).toBe(0));
   });
 
-  it('R2L-1: a hung stop(timeout) then a repeat stop(timeout) keeps the lock (the upload may still run)', async () => {
+  it('a hung stop(timeout) then a repeat stop(timeout) keeps the lock (the upload may still run)', async () => {
     const { locks, options } = persisted({ transport: () => new Promise(() => {}) });
     const client = track(options);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -220,7 +220,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     expect(locks.held.size).toBe(1);
   });
 
-  it('R2L-10: stop() flushes the capture store BEFORE it closes IndexedDB (a launched client only)', async () => {
+  it('stop() flushes the capture store BEFORE it closes IndexedDB (a launched client only)', async () => {
     const order: string[] = [];
     let heldRef: Set<string> | undefined;
     const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
@@ -237,7 +237,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
     expect(order).toEqual(['flush(held=1)', 'flush(held=1)']);
   });
 
-  it('R2L-10: a flush that throws goes to onError and the stop still completes', async () => {
+  it('a flush that throws goes to onError and the stop still completes', async () => {
     const onError = vi.fn();
     const captureStore = Object.assign(createMemoryCaptureStore({ maxRecordingTimeMs: 1000 }), {
       flush: async () => {
@@ -251,7 +251,7 @@ describe('webworker stop() releases the coexistence lock and IndexedDB only when
   });
 });
 
-describe('R2L-4 — the worker observes its own lifecycle', () => {
+describe('the worker observes its own lifecycle', () => {
   it('the lifecycleEventsListener option sees Launching and Launched', () => {
     const seen: string[] = [];
     track(opts({ lifecycleEventsListener: (type) => seen.push(type) }));

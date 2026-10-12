@@ -8,7 +8,7 @@ import type { NativeCrashJson } from './crash';
 import { createReportingRequest } from './reporting';
 import { isUploadSettled, type UploadPipeline } from './transport';
 
-// Native-crash recovery (session-stitched harvest-and-bundle — docs/design/electron-native-crashes.md §6.1).
+// Native-crash recovery (session-stitched harvest-and-bundle).
 // A native crash (Electron/Crashpad, V8 or native-addon segfault) kills the process INSTANTLY, so no JS
 // detection handler runs and there is NO ReportMarker (those are written by the JS-side incident submit).
 // `recoverReports` only rebuilds ALREADY-detected incidents, so it cannot see a native crash. Instead, at

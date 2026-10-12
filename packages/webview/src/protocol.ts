@@ -1,6 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 
-// The JSON intrinsics, captured at MODULE LOAD (review round 1, SEV1).
+// The JSON intrinsics, captured at MODULE LOAD (SEV1).
 //
 // `JSON.parse` and `JSON.stringify` are page-writable globals. Reading them at call time let a script do:
 //
@@ -16,7 +16,7 @@ import type { FileType } from '@bugsee/protocol';
 const jsonParse = JSON.parse;
 const jsonStringify = JSON.stringify;
 
-// The versioned wire protocol crossing the WebView boundary (docs/design/webview-bridge.md §6). A single,
+// The versioned wire protocol crossing the WebView boundary. A single,
 // transport-agnostic JSON envelope rides whichever channel is available (Android @JavascriptInterface /
 // WebMessageChannel; later iOS/Cordova). Every message carries `b` (the protocol version) — its presence also
 // tags the message as Bugsee's on a shared channel. JS→native: hello | entry | batch | report | secure | blackout | bye.
@@ -151,7 +151,7 @@ export interface BatchMessage {
  * host (its video / screenshots), which only the host can pause. A receiver that supports it MUST stop
  * (clear) its visual capture while `a` is true and declare that with `config.blackout: true` in its control
  * reply; a receiver that predates it ignores the unknown kind (forward-compatible) and the SDK reports that
- * the native video is NOT paused (docs/design/blackout.md).
+ * the native video is NOT paused.
  *
  * Receiver contract: (1) the CURRENT state is ALWAYS posted right after `hello` (`a: true` for a blackout carried over
  * a relaunch, `a: false` otherwise), and native RESETS its JS-reported flag on `bye` and on `hello`: a torn client
@@ -181,7 +181,7 @@ export interface ControlConfig {
   readonly enabledTypes?: readonly FileType[];
   /** Whether the WebView may emit report triggers (D5 — default off). */
   readonly reportTrigger?: boolean;
-  /** Native declares that it applies `blackout` messages to its own visual capture (R2V-2). */
+  /** Native declares that it applies `blackout` messages to its own visual capture. */
   readonly blackout?: boolean;
 }
 
@@ -318,7 +318,7 @@ export function byeMessage(): ByeMessage {
  * = the store's `StoredEntry.serialized`); we splice those bytes in VERBATIM as the raw `p` value rather than
  * `JSON.stringify`-ing them into a quoted string. So the payload is serialized exactly ONCE (by the aggregator)
  * and appears INLINE on the wire (an object/array), letting native parse the whole message once — no nested
- * second parse (docs/design/webview-bridge.md §6.1). `batch` splices each element the same way; `hello`/`bye`
+ * second parse. `batch` splices each element the same way; `hello`/`bye`
  * have no opaque payload, so plain `JSON.stringify`.
  */
 export function encode(
@@ -367,7 +367,7 @@ export function parseControl(raw: string): ControlMessage | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  // Cut the prototype chain BEFORE any field is read (review round 1, SEV1). Every subsequent read —
+  // Cut the prototype chain BEFORE any field is read (SEV1). Every subsequent read —
   // `k`, `b`, `tok`, `command`, `config`, `session` — is a plain property lookup, so without this a single
   // line of page script forges an authenticated message by riding native's own:
   //

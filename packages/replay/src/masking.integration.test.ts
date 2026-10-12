@@ -11,7 +11,7 @@ import { type ReplayClientLike, type ReplayFileEncoders, registerReplay } from '
 // Every masking test in this package used to assert the RESOLVER'S RETURN VALUE ("maskInputOptions equals
 // {password:true}") and the recorder tests drove a FAKE `record`. That is why three fail-open defects
 // survived a suite at 100% coverage: rrweb never consults `maskInputOptions` on the unmask path, so a
-// property of the config object says nothing about what is serialized (docs/review/replay.md SEV1 #1/#2/#3,
+// property of the config object says nothing about what is serialized (/#2/#3,
 // and its "Masking fail-closed audit" table, whose right-hand column is ✗ on every row).
 //
 // These tests read the bytes rrweb actually emits. A guarantee that cannot be observed here is not a
@@ -44,7 +44,7 @@ async function drive(
   // ANTI-VACUITY GUARD, applied to every test that uses this harness.
   //
   // Almost every assertion in this file is `expect(json).not.toContain(secret)`, and an EMPTY payload
-  // satisfies that perfectly. Round 5 proved the risk was live rather than theoretical: gutting the
+  // satisfies that perfectly. proved the risk was live rather than theoretical: gutting the
   // capture (`blockSelector: '*'`) left three of the tests added in 3eb7fa2 still passing against a
   // payload containing nothing at all. They were covered only by positive assertions living in other
   // tests, which is coverage by luck — the canary and the test that needs it must not be separable.
@@ -80,7 +80,7 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
   it('masks a password input marked `.bugsee-unmask`', async () => {
     // The documented invariant: "Password inputs are ALWAYS masked — never unmaskable". rrweb checks the
     // unmask selector FIRST and short-circuits the whole masking call, so reusing the text unmask selector
-    // for inputs silently voided the floor (SEV1 #1, reproduced verbatim before this fix).
+    // for inputs silently voided the floor (reproduced verbatim before this fix).
     const { json } = await drive('<input type="password" class="bugsee-unmask" value="PWSECRET">');
     expect(json).not.toContain('PWSECRET');
   });
@@ -175,7 +175,7 @@ describe('the password / sensitive-input floor is genuinely non-overridable', ()
 });
 
 describe('the sensitive floor holds on the LIVE input path too, with maskAllInputs off', () => {
-  // Review round 1 (replay reviewer, SEV1 #1): this block previously covered ONLY `tel` and `password` —
+  // (replay reviewer): this block previously covered ONLY `tel` and `password` —
   // the two categories that happened to work — while the module header claimed a floor "no option and no
   // DOM marking can lift". `maskInputOptions` is keyed by input TYPE, so it cannot name a field declared
   // sensitive by `autocomplete`, and the fork's live observer gates on that map alone. Those values were
@@ -383,7 +383,7 @@ describe('attribute masking is fail-CLOSED — an allowlist, not an 11-entry den
 
 describe('an invalid caller selector fails CLOSED and never reaches the DOM', () => {
   it('never emits a selector the DOM cannot parse — whatever the caller passes', async () => {
-    // The property that closes docs/review/replay-canvas.md SEV1 #3. rrweb's canvas manager calls its
+    // The property that closes. rrweb's canvas manager calls its
     // block check from INSIDE the patch it installs on `HTMLCanvasElement.prototype.getContext`, and that
     // check is NOT wrapped — so a malformed selector reaching the joined string threw a DOMException out of
     // the host application's own `getContext('2d')` call, before the original method ran. Chart.js,
@@ -421,7 +421,7 @@ describe('an invalid caller selector fails CLOSED and never reaches the DOM', ()
 
   it('keeps media blocked when `blockSelector` is malformed', async () => {
     // One comma-joined string: a single malformed fragment made `matches()` throw for EVERY element, and
-    // rrweb's bare `catch {}` returned "not blocked" — disabling blocking page-wide (SEV1 #3).
+    // rrweb's bare `catch {}` returned "not blocked" — disabling blocking page-wide.
     const { json } = await drive('<img src="https://x.test/secret-photo.png">', {
       blockSelector: 'div[',
     });
@@ -430,7 +430,7 @@ describe('an invalid caller selector fails CLOSED and never reaches the DOM', ()
 
   it('keeps text masked, and does NOT abort the snapshot, when `unmaskTextSelector` is malformed', async () => {
     // Here rrweb's `matches()` is NOT guarded: the SyntaxError escaped into the host page and aborted the
-    // full snapshot, so replay silently produced an unusable stream (SEV2 #10).
+    // full snapshot, so replay silently produced an unusable stream.
     const { json, events } = await drive('<div>VISIBLESECRET</div>', {
       unmaskTextSelector: 'div[',
     });
@@ -503,7 +503,7 @@ describe('masking cannot be downgraded by prototype pollution or a non-boolean',
   });
 });
 
-// THE MUTUAL-MOCKING BLIND SPOT (docs/review/ADVERSARIAL-REVIEW.md, adjudication row).
+// THE MUTUAL-MOCKING BLIND SPOT (adjudication row).
 //
 // Mutating `register.ts` to call `resolveReplayMaskingOptions({})` — i.e. DISCARDING every masking option
 // the caller passed — was undetectable across @bugsee/browser's 208 tests, @bugsee/replay-canvas's 12, AND

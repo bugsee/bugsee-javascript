@@ -2,7 +2,7 @@ import { type CaptureProvider, CaptureProviderBase } from '@bugsee/core';
 import { PerformanceOption } from './options';
 import type { TransactionWire } from './span';
 
-// The `performance` capture provider (design §75): routes FINISHED transactions into the capture ring —
+// The `performance` capture provider: routes FINISHED transactions into the capture ring —
 // the time-windowed data the crash bundle's `performance.json` is assembled from — alongside the
 // continuous /v2/performance/transactions upload (+ OTLP tee) the TransactionStore feeds. Unlike other
 // providers it is NOT subscription-driven; the controller pushes each finished sampled transaction via

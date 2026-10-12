@@ -208,7 +208,7 @@ describe('bugsee umbrella launch', () => {
     expect(() => client.ext('performance')).toThrow(/not registered/); // extension never set up
   });
 
-  // R3V-3: the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
+  // the performance switches were read raw (`?? true` / `?? false`), so `'false'` and `0` meant the
   // OPPOSITE of what the app wrote. Data-collecting switches fail CLOSED: only boolean `true` opts in to what is
   // off by default (propagateTrace), and an invalid value turns off what is on by default (monitoring, navigation,
   // interaction spans); each is reported.
@@ -310,7 +310,7 @@ describe('bugsee umbrella launch', () => {
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
-  it('continues the pageload trace from a server-injected <meta name="traceparent"> (F2/D4)', async () => {
+  it('continues the pageload trace from a server-injected <meta name="traceparent">', async () => {
     vi.stubGlobal('document', {
       querySelector: (s: string) =>
         s === 'meta[name="traceparent"]'
@@ -325,7 +325,7 @@ describe('bugsee umbrella launch', () => {
     expect(active.getTraceId()).toBe('0af7651916cd43dd8448eb211c80319c'); // pageload joined the SSR trace
   });
 
-  it('opens a `navigation` transaction on a real history.pushState (F1 navigation wiring)', async () => {
+  it('opens a `navigation` transaction on a real history.pushState (navigation wiring)', async () => {
     const pushState = vi.fn();
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
     const location = { pathname: '/home' };
@@ -346,7 +346,7 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['nav.source']).toBe('url');
   });
 
-  it('opens a `ui.interaction` transaction on a real Event Timing entry (F4 interaction wiring)', async () => {
+  it('opens a `ui.interaction` transaction on a real Event Timing entry (interaction wiring)', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
     const client = await track(await launch('tok', base({ carrier: {} })));
@@ -395,7 +395,7 @@ describe('bugsee umbrella launch', () => {
     );
   });
 
-  it('exposes the public naming seam: ext(performance).setRouteName refines the active transaction (F5/D5)', async () => {
+  it('exposes the public naming seam: ext(performance).setRouteName refines the active transaction', async () => {
     const client = await track(await launch('tok', base({ carrier: {}, pageName: '/raw' })));
     const perf = client.ext('performance');
     expect((perf.getActiveSpan() as Transaction).getName()).toBe('/raw'); // the active pageload
@@ -613,7 +613,7 @@ describe('bugsee umbrella launch', () => {
     ).toBeDefined();
   });
 
-  // R5V-6: `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
+  // `['']` is a substring of every URL; an invalid list is reported and propagates to nobody cross-origin.
   it('an empty-string target never reaches a third party, and an invalid entry is reported to onError', async () => {
     let received: { init: unknown } | undefined;
     vi.stubGlobal('fetch', async (_i: unknown, init: unknown) => {
@@ -711,11 +711,11 @@ describe('bugsee umbrella launch', () => {
       value: { stringValue: TEST_DEVICE_ID },
     });
     expect(body.resourceSpans[0].scopeSpans[0].spans.length).toBeGreaterThan(0);
-    // Profile v1 §5: the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
+    // the instrumentation scope name is com.bugsee.<sdk>/<provider> — webjs on the browser.
     expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe('com.bugsee.webjs/performance');
   });
 
-  // R4V-10: `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
+  // `otelExportUrl: ''` used to build an exporter that posted to the page's own URL. An empty (or
   // non-string) value means "no exporter": data is exported only to an explicitly configured endpoint.
   it.each([
     '',
@@ -749,9 +749,9 @@ describe('bugsee umbrella launch', () => {
     expect(calls.filter((u) => !u.endsWith('/v2/performance/transactions'))).toEqual([]);
   });
 
-  // R5V-7: a `URL` object worked before R4V-10 and was silently ignored after it; whitespace still built an exporter
+  // a `URL` object worked before and was silently ignored after it; whitespace still built an exporter
   // (`fetch('   ')` is the page's own URL); numbers and objects were dropped without a word.
-  describe('otelExportUrl forms (R5V-7)', () => {
+  describe('otelExportUrl forms', () => {
     async function runWith(
       otelExportUrl: unknown,
     ): Promise<{ otlpUrls: string[]; errors: Error[]; bugseeGotBatch: boolean }> {

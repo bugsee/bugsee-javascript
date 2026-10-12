@@ -42,7 +42,7 @@ import type { ActiveSpanStore, Transaction } from '@bugsee/performance';
 // mis-attributes `server-instrument.ts`'s `http.route` merge and the capture-ring `contextId` for a
 // pipelined request — pre-existing, wider than this seam, tracked separately.
 //
-// Type-only imports: `@bugsee/performance` stays value-free here (R2-8 — a value import would
+// Type-only imports: `@bugsee/performance` stays value-free here (a value import would
 // eagerly load the whole opt-in APM barrel into every `@bugsee/node` consumer).
 
 const ACTIVE_TRANSACTION = Symbol.for('bugsee.performance.activeTransaction');

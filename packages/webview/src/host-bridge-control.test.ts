@@ -55,7 +55,7 @@ describe('createBridgeControl', () => {
     });
   });
 
-  it('defaults reportTrigger to false (D5) with no native session yet', () => {
+  it('defaults reportTrigger to false with no native session yet', () => {
     const bc = createBridgeControl();
     expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
@@ -127,7 +127,7 @@ describe('createBridgeControl', () => {
 // This whole path is now the FALLBACK, reached only when native injected no nonce. A current native receiver
 // mints its own secret and the channel is closed from the first message with no open window — see the
 // `with a native-minted secret` block above (D-A10).
-describe('createBridgeControl — token authentication (Wave 0.3)', () => {
+describe('createBridgeControl — token authentication', () => {
   const TOKEN = 'tok-abc123';
   const raw = (msg: Record<string, unknown>): string =>
     JSON.stringify({ b: 1, k: 'control', ...msg });
@@ -160,7 +160,7 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   });
 
   it('keeps accepting tokened control AFTER the latch arms — native is not locked out', () => {
-    // Round 1, SEV1: every tokened test sent exactly ONE message, so `if (tok === token &&
+    // SEV1: every tokened test sent exactly ONE message, so `if (tok === token &&
     // !authenticated)` — one word — locked native permanently out of its own channel and the whole suite
     // stayed green. Native sends many control messages per session (pause on background, flush before a
     // frame, stop on teardown); the second must work as well as the first.
@@ -224,7 +224,7 @@ describe('createBridgeControl — token authentication (Wave 0.3)', () => {
   });
 });
 
-// WAVE 0.3 review round 1 — the rejection report is itself page-reachable, so it needs the same treatment
+// WAVE 0.3 — the rejection report is itself page-reachable, so it needs the same treatment
 // as any other host callback.
 describe('createBridgeControl — the rejection report is contained and bounded', () => {
   const TOKEN = 'tok-abc123';
@@ -287,7 +287,7 @@ describe('createBridgeControl — the rejection report is contained and bounded'
   });
 });
 
-describe('control config: native blackout support (R2V-2)', () => {
+describe('control config: native blackout support', () => {
   const msg = (config: object) => JSON.stringify({ b: 1, k: 'control', config });
 
   it('is false until native declares it, and follows later config pushes', () => {
@@ -302,7 +302,7 @@ describe('control config: native blackout support (R2V-2)', () => {
   });
 });
 
-describe('onApplied: the handshake reply has been applied (R3V-5)', () => {
+describe('onApplied: the handshake reply has been applied', () => {
   const raw = (extra: object) => JSON.stringify({ b: 1, k: 'control', ...extra });
 
   it('fires after an admitted message carrying the session or a config, with that state already applied', () => {

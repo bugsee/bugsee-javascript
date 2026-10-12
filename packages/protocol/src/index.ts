@@ -1,6 +1,6 @@
 // @bugsee/protocol — canonical wire shapes: types + sanitizer lists + shape redaction + option-key
-// translator + enum maps (design §8). The single source of truth for the wire contract. Tier 0.
-// Serializers + URL/stack scrubbing (§8.10/§14.3) are core-coupled and live in @bugsee/core.
+// translator + enum maps. The single source of truth for the wire contract.
+// Serializers + URL/stack scrubbing are core-coupled and live in @bugsee/core.
 
 export {
   APP_TOKEN_FILENAME,

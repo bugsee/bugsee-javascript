@@ -10,7 +10,7 @@ import {
 } from '@bugsee/node';
 import { randomId } from '@bugsee/util';
 
-// The Hapi adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Hapi adapter.
 // Hapi is a PEER (structural types only). setupHapi registers two request-lifecycle extensions over the
 // shared server-instrumentation core (@bugsee/node):
 //   onRequest      — opens the per-request context + http.server transaction via `openServerRequest`

@@ -75,7 +75,7 @@ afterEach(() => {
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 
-describe('node stop() and the launch-time recovery (L6)', () => {
+describe('node stop() and the launch-time recovery', () => {
   it('waits for the recovery, then marks the subtree', async () => {
     let finish: () => void = () => {};
     vi.mocked(runLaunchRecovery).mockImplementationOnce(

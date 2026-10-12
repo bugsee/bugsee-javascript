@@ -10,7 +10,7 @@ const tick = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(
 // incoming request, inside that request's context). Two interleaved requests must each keep their
 // own active transaction — under the old process-wide slot the second start overwrote the first
 // and a rename in request A landed on request B's transaction.
-describe('request-scoped active span (D2 part 2 integration)', () => {
+describe('request-scoped active span (integration)', () => {
   it('concurrent requests keep their own active transaction; a rename in one never touches the other', async () => {
     const als = createNodeRequestContextStore();
     const txStore = createTransactionStore();
@@ -66,7 +66,7 @@ describe('request-scoped active span (D2 part 2 integration)', () => {
     expect(api.getActiveSpan()).toBeUndefined(); // and it stays cleared outside too
   });
 
-  it('a rename inside a frozen context never touches the ambient transaction (F1)', async () => {
+  it('a rename inside a frozen context never touches the ambient transaction', async () => {
     // End-to-end shape of the finding: the frozen request's own start is dropped, so a setRouteName
     // there must no-op — not rename the unrelated live ambient transaction it would otherwise read
     // through the fallback.

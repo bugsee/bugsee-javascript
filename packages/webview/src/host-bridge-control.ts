@@ -1,7 +1,7 @@
 import { neverThrow } from '@bugsee/core';
 import { type ControlMessage, parseControl } from './protocol';
 
-// The native→JS control entry point (docs/design/webview-bridge.md §7). Native drives the JS SDK by calling
+// The native→JS control entry point. Native drives the JS SDK by calling
 // `__bugsee_bridge.control(raw)` via `evaluateJavascript`; the launch exposes this method on the bridge global.
 // SLICE 1 scope: receive the handshake REPLY and apply its config — the native session id + the `reportTrigger`
 // gate (D5, default off; native may override the launch option). Commands (pause/resume/flush/snapshot/stop)
@@ -14,7 +14,7 @@ export interface BridgeControlConfig {
   session?: string;
   /** Whether the WebView may emit report triggers (D5). Seeded from the launch option; native may override. */
   reportTrigger: boolean;
-  /** Whether native declared (`config.blackout`) that it applies `blackout` messages to its own video (R2V-2). */
+  /** Whether native declared (`config.blackout`) that it applies `blackout` messages to its own video. */
   nativeBlackout: boolean;
 }
 
@@ -60,7 +60,7 @@ export function createBridgeControl(opts?: {
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
   /**
-   * The one-way latch, owned by the CALLER so it can outlive this handler (review round 1).
+   * The one-way latch, owned by the CALLER so it can outlive this handler.
    *
    * It used to be a closure variable here, which made "one-way" true only within a single `launch()` —
    * and `launch` is itself a page global, so a script could relaunch to get an un-latched channel. The

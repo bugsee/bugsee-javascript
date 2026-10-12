@@ -70,7 +70,7 @@ export interface WiredPerformance {
    */
   flush(): Promise<void>;
   /** Buffer an already-finished transaction (e.g. the Node `app.start` startup transaction, or consumed
-   *  OTel spans assembled into a §8.8 transaction) into BOTH sinks — the continuous uploader AND the
+   * OTel spans assembled into a transaction) into BOTH sinks — the continuous uploader AND the
    *  incident-bundle capture ring (performance.json). Externally sampled — it bypasses head sampling. */
   recordTransaction(transaction: TransactionWire): void;
 }

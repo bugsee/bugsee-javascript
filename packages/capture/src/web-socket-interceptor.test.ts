@@ -178,7 +178,7 @@ describe('createWebSocketInterceptor — activation', () => {
 // emitted no `event` field at all, so every frame arrived indistinguishable and outbound traffic rendered
 // as inbound. `direction` stays (it is the more explicit form and the JS side reads it); `event` is what
 // makes the wire match every other Bugsee SDK.
-describe('WebSocket frames carry Android’s `event` sub-type (Wave 5.2)', () => {
+describe('WebSocket frames carry Android’s `event` sub-type', () => {
   const frameOf = (events: Array<[NetworkStage, NetworkEvent]>, dir: string) =>
     events
       .filter(([st]) => st === 'message')

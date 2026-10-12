@@ -15,7 +15,7 @@ import {
   type UploadResult,
 } from './transport';
 
-// UploadPipeline orchestrator (design §7.5/§7.8). Per bundle it runs the 3-call operation
+// UploadPipeline orchestrator. Per bundle it runs the 3-call operation
 // (ensureSession → createIssue → signed PUT), recovers a 403 via renewUpload, retries retryable
 // failures with exponential backoff, invalidates the session before retrying an api rejection (so a
 // stale 401 token is re-acquired — we can't see the status through an opaque rejection), bounds
@@ -29,12 +29,12 @@ export type PipelineOutcome =
 export interface UploadPipelineOptions {
   api: BugseeApi;
   uploader: BundleUploader;
-  /** Max CONCURRENT in-flight operations (§7.8). Default 4. Bundles beyond it WAIT for a slot rather
+  /** Max CONCURRENT in-flight operations. Default 4. Bundles beyond it WAIT for a slot rather
    *  than being refused — it is a concurrency limit, not an admission limit. */
   bufferSize?: number;
   /** Hard cap on bundles waiting for a slot before one is refused. Default 200. */
   maxWaiting?: number;
-  /** Retry attempts for retryable failures (§7.5: max 3). Default 3. */
+  /** Retry attempts for retryable failures (max 3). Default 3. */
   maxRetries?: number;
   /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. Best-effort: a rejection
    *  uploads the bundle without a checksum rather than failing it. */
@@ -43,7 +43,7 @@ export interface UploadPipelineOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Backoff delay for retry `attempt` (1-based). Default util.computeBackoff. */
   computeDelay?: (attempt: number) => number;
-  /** Outcome accounting sink (§7.5). */
+  /** Outcome accounting sink. */
   onOutcome?: (outcome: PipelineOutcome) => void;
 }
 
@@ -222,7 +222,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       lastStatus = put.status;
       lastCause = put.cause;
       if (put.status === 403) {
-        // 403 (signed PUT): renew the signed url once; a second 403 gives up `renew_failed` (§14.8).
+        // 403 (signed PUT): renew the signed url once; a second 403 gives up `renew_failed`.
         if (renewed) {
           return fail(new BugseeError('signed url renew failed', 403), category, 'renew_failed');
         }

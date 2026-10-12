@@ -260,7 +260,7 @@ describe('registerServer', () => {
     expect(perfTransactions(calls).map((t) => t.name)).toContain('GET /api/users');
   });
 
-  it('the surfaced processor forwards every SpanProcessor method to the current client processor (R3P-2)', async () => {
+  it('the surfaced processor forwards every SpanProcessor method to the current client processor', async () => {
     const { fn } = recordingTransport();
     const carrier = {};
     let surfaced: BugseeSpanProcessor | undefined;

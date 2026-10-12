@@ -3,10 +3,10 @@ import { join, sep } from 'node:path';
 import type { ChunkStorage } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
-// Batched Node ChunkStorage (design: docs/design/server-disk-capture-write-path.md, Phase 1). Same directory
+// Batched Node ChunkStorage. Same directory
 // layout as createFsChunkStorage, but the per-entry hot path (`append`) is BUFFERED and coalesced: each data
 // file's pending segments are written in ONE `writevSync` on a high-water mark (or the periodic/crash flush),
-// instead of one open+write+close syscall per entry. The benchmark (design §10) shows this turns a blocking
+// instead of one open+write+close syscall per entry. The benchmark shows this turns a blocking
 // write's multi-second event-loop freeze into a ~10 ms tail at full throughput. Handles are held open for the
 // ACTIVE chunk only (sealed on closePart) so the open-fd count stays bounded to ~one chunk, not the rolling
 // window. A reader (snapshot/recovery) flushes the file first, so it always sees everything captured so far.
@@ -50,7 +50,7 @@ export interface BatchedFsChunkStorageOptions {
    * The retry-without-duplication design keeps the still-unwritten tail buffered so a later retry cannot
    * duplicate an already-written prefix — correct, but it had no ceiling, so a persistently failing disk
    * (ENOSPC / EROFS / EIO / a vanished dataDir) turned every captured entry into permanent memory growth.
-   * `docs/design/server-disk-capture-write-path.md:120` (D2) binds this path to "fixed ring, drop-oldest
+   * `:120` (D2) binds this path to "fixed ring, drop-oldest
    * under overload (no elastic growth)"; this is what makes the shipped default honour it.
    */
   maxBufferedBytes?: number;

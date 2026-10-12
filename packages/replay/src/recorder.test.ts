@@ -254,7 +254,7 @@ describe('createReplayCaptureProvider', () => {
         expect(markers(added)).toEqual([]);
       });
 
-      it('no ORPHAN end marker: a blackout that began before recording (startInBlackout) ends without one (R2V-12)', () => {
+      it('no ORPHAN end marker: a blackout that began before recording (startInBlackout) ends without one', () => {
         const gate = createBlackoutState();
         gate.start();
         const { added, provider, rec } = setup(gate);
@@ -298,7 +298,7 @@ describe('createReplayCaptureProvider', () => {
         expect(markers(added)).toEqual([true, false]);
       });
 
-      it('the end marker lands BEFORE the fresh snapshot the restarted recorder emits (m29)', () => {
+      it('the end marker lands BEFORE the fresh snapshot the restarted recorder emits', () => {
         const gate = createBlackoutState();
         const order: string[] = [];
         let first = true;
@@ -374,7 +374,7 @@ describe('createReplayCaptureProvider', () => {
     expect(o?.recordCrossOriginIframes).toBe(false); // canvas does not disturb the other options
   });
 
-  describe('canvas restarts are bounded (R2V-7: rrweb cannot release canvas workers / rAF loops)', () => {
+  describe('canvas restarts are bounded (: rrweb cannot release canvas workers / rAF loops)', () => {
     const canvas = {
       recordCanvas: true as const,
       sampling: { canvas: 2 },

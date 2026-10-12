@@ -1,7 +1,6 @@
 import type { CrashpadSessionMarker, HarvestedDump } from '@bugsee/core';
 
 // R4 — renderer killed before it could report anything
-// (docs/design/electron-renderer-incident-convergence.md §4.4).
 //
 // A renderer that dies from an OOM, a GPU fault or a native crash never runs the JS that would forward its
 // incident (R2). Main therefore watches `render-process-gone` and synthesises the incident itself, attributed

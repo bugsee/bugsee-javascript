@@ -196,7 +196,7 @@ describe('assembleBundle — manifest.json & files', () => {
     const out = unzip(assembleBundle(request(), captured, context()).body);
     expect(out.names).toContain('input.json');
     expect(out.names).toContain('events.user.json');
-    // `input.json` v3 (specs/sdk/reporting/bundle/input.md): `{ version, events }`, not a bare array — a
+    // `input.json` v3: `{ version, events }`, not a bare array — a
     // consumer keys its button/scroll decoding on `version`.
     expect(JSON.parse(out.text('input.json'))).toEqual({
       version: 3,
@@ -221,7 +221,7 @@ describe('assembleBundle — manifest.json & files', () => {
     ]);
   });
 
-  it('wraps the performance file type as { transactions: [...] } (§8.8), not a bare array', () => {
+  it('wraps the performance file type as { transactions: [...] }, not a bare array', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       [
         'performance',
@@ -243,7 +243,7 @@ describe('assembleBundle — manifest.json & files', () => {
     expect(JSON.parse(out.text('network.json'))).toEqual([{ url: 'u' }]);
   });
 
-  // input.md v3: input.json is `{ version, events }`; version 3 is stamped for THIS stream only — every
+  // v3: input.json is `{ version, events }`; version 3 is stamped for THIS stream only — every
   // other file type is unaffected, whether bare-array (network) or its own wrapper (performance).
   it('stamps input.json with the input-stream version 3, and no other file type', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
@@ -263,7 +263,6 @@ describe('assembleBundle — manifest.json & files', () => {
   // The geometry sidecar is the one stream whose VERSION a consumer has to read: version 1 wrote the
   // frame in display pixels and version 2 writes it in the coordinates' own units, so a bare array —
   // with no version to read — would leave a consumer guessing which it had
-  // (specs sdk/reporting/bundle/video-aux.md).
   it('wraps the video.aux file type in the spec envelope, with its version', () => {
     const captured = new Map<FileType, CaptureDataEntry[]>([
       [
@@ -408,7 +407,7 @@ describe('assembleBundle — request context merge (framework adapters)', () => 
     expect(bundle.request.email).toBe('global@x.com');
   });
 
-  it('carries the active trace_id + span_id on the report (the cross-project join key, T8)', () => {
+  it('carries the active trace_id + span_id on the report (the cross-project join key)', () => {
     const bundle = assembleBundle(
       errReq(),
       new Map(),
@@ -635,7 +634,7 @@ describe('assembleBundle — native crash (minidump + attachments)', () => {
   };
   const dmp = new Uint8Array([0x4d, 0x44, 0x4d, 0x50]); // "MDMP" minidump magic
 
-  it('writes a native crash.json + the .dmp attachment (byte-for-byte) + manifest entries', () => {
+  it('writes a native crash.json + the.dmp attachment (byte-for-byte) + manifest entries', () => {
     const request = createReportingRequest({
       source: { type: 'crash', mechanism: 'uncaught' },
       id: 'r1',

@@ -93,7 +93,7 @@ describe('@bugsee/node public export surface', () => {
     expect(typeof publicApi.launchCore).toBe('function');
   });
 
-  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast (F-6)', () => {
+  it('re-exports HttpTransport (+ its option/response shapes) so a custom transport types without a cast', () => {
     // The `as` casts require the imported types to exist; removing any re-export breaks `tsc --noEmit`.
     const transport = (async () => ({
       status: 200,

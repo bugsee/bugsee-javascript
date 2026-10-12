@@ -134,7 +134,7 @@ export function createWorkerThreadRingWorker(
   worker.unref?.(); // never let the I/O worker keep the host process alive
 
   // Block the host thread until the worker has drained up to OUR request token (bounded). Atomics.wait on the
-  // main thread is permitted on node/bun/deno (spike §9.1). Only the rare read/seal/dispose paths call this.
+  // main thread is permitted on node/bun/deno (spike). Only the rare read/seal/dispose paths call this.
   const flushAndWait = (timeoutMs: number): void => {
     const req = Atomics.add(fl, FLUSH_REQ, 1) + 1;
     const deadline = Date.now() + timeoutMs;

@@ -1,7 +1,7 @@
 // @bugsee/cloudflare — Cloudflare Workers (workerd): the @bugsee/vercel-edge edge composition with the platform
 // identity defaulted to 'workers'. ctx.waitUntil comes from the handler's 3rd arg `(req, env, ctx)`;
 // AsyncLocalStorage needs the `nodejs_compat`/`nodejs_als` compatibility flag (degrades to a single-slot store
-// + one-time warning otherwise). Tier 2. See docs/design/edge-runtime.md (C1) + the README.
+// + one-time warning otherwise). See the README.
 //
 // Re-export the ENTIRE edge surface (withBugseeFetch, buildEdgeEnvironment, createEdgeRequestContextStore,
 // resolveWaitUntil, createEdgeUnhandledRejectionProvider, EdgeContextStoreToken, launchEdge, types) ...

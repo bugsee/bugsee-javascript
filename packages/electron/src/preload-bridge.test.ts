@@ -32,7 +32,7 @@ function fakeElectron() {
   };
 }
 
-describe('registerBugseePreload - onControl unsubscribe (R4V-3)', () => {
+describe('registerBugseePreload - onControl unsubscribe', () => {
   it('returns an unsubscribe that removes THAT listener from ipcRenderer and silences the handler', () => {
     const e = fakeElectron();
     const removed: Array<{ channel: string; listener: unknown }> = [];

@@ -1,4 +1,4 @@
-// @bugsee/core — the SDK kernel (tier 1, design §7/§16): Client, single global Environment, event hubs +
+// @bugsee/core — the SDK kernel: Client, single global Environment, event hubs +
 // EventEmitter, Interceptor/CaptureProvider/DetectionProvider + extension registry, ring buffers,
 // the event/trigger pipeline, and BundleWriter. Built incrementally, test-first.
 
@@ -15,7 +15,7 @@ export {
 } from '@bugsee/service';
 export type { AttributeValue } from '@bugsee/types';
 // Diagnostics helpers for packages that read a host option themselves (framework adapters) and must warn about
-// an invalid value without ever breaking launch (R5V-4/5/8); they live in @bugsee/util.
+// an invalid value without ever breaking launch; they live in @bugsee/util.
 export { describeValue, reportGuarded } from '@bugsee/util';
 export {
   addReportAttachment,

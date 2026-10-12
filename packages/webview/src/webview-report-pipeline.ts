@@ -2,7 +2,7 @@ import { encodeRequestForMarker, type ReportingRequest, type UploadResult } from
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage, reportMessage } from './protocol';
 
-// The WebView report path (docs/design/webview-bridge.md §6.2, D5). A `triggerPipeline` for the core Client:
+// The WebView report path (D5). A `triggerPipeline` for the core Client:
 // the Client routes EVERY report (uncaught error / unhandledrejection detection + explicit `logException`) here
 // instead of assembling + uploading a bundle. Per D5, capture is NEVER gated — every incident ALWAYS streams up
 // as a `crash` ENTRY so native's timeline has it (with the report metadata + stack). The report TRIGGER (telling

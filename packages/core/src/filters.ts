@@ -3,7 +3,7 @@ import { serviceToken } from '@bugsee/service';
 import type { Breadcrumb, LogEvent } from './events';
 import type { ReportingRequest } from './reporting';
 
-// Redaction filters (design §4.1#4 / §7.1; Android EventFilter<T>) — the per-event transform/veto
+// Redaction filters (Android EventFilter<T>) — the per-event transform/veto
 // layer, distinct from the observe-only interceptor subscriptions. The user supplies a function the
 // capture pipeline runs on each event to mutate it or DROP it (return null) before it is buffered.
 // This is the first real SERVICE in the internal container (the `filters` service): the Client (facade)
@@ -46,7 +46,7 @@ export interface FilterableSpan {
  */
 export type SpanFilter = (span: FilterableSpan) => FilterableSpan | null;
 
-/** Report handler (design §7.1): `before` mutates/returns a new request, or null to veto the report. */
+/** Report handler: `before` mutates/returns a new request, or null to veto the report. */
 export interface ReportHandler {
   before?: (request: ReportingRequest) => ReportingRequest | null;
   /**

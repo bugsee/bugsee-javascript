@@ -153,7 +153,7 @@ describe('notify — gating', () => {
     expect(sender).not.toHaveBeenCalled();
   });
 
-  it('a kill-state client does not flush queued notifications either (P4)', async () => {
+  it('a kill-state client does not flush queued notifications either', async () => {
     const { client, sender } = make({
       options: { [FLUSH_DELAY]: 5000 },
       uploadPipeline: {
@@ -172,7 +172,7 @@ describe('notify — gating', () => {
     expect(sender).not.toHaveBeenCalled();
   });
 
-  it('the relay answering 403 KillSdk switches the SDK off like a report verdict (P9)', async () => {
+  it('the relay answering 403 KillSdk switches the SDK off like a report verdict', async () => {
     const onError = vi.fn();
     const send = vi.fn<Sender>(async () => ({ outcome: 'kill' }));
     const { client } = make({ sender: send, onError });
@@ -348,7 +348,7 @@ describe('notify — flush() and stop()', () => {
     expect(send).toHaveBeenCalledTimes(calls);
   });
 
-  it('flush() after stop() sends nothing; a re-launch sends what was kept (P4)', async () => {
+  it('flush() after stop() sends nothing; a re-launch sends what was kept', async () => {
     let online = false;
     const send = vi.fn<Sender>(async (items) => {
       if (!online) {

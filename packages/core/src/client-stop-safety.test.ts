@@ -18,9 +18,9 @@ import type { ReportingRequest } from './reporting';
 import type { NotifyItem, NotifyResult, UploadPipeline, UploadResult } from './transport';
 import type { TriggerPipeline } from './trigger-pipeline';
 
-// Review round 2, group F1 (core half): stop() safety (R2L-1), ReportHandler.after on injected pipelines
-// (R2L-2), refusing launch() on a stopped platform client (R2L-3), blackout end while stopped (R2L-7),
-// the kill-state generation (R2L-13) and the notify backlog handover across relaunch() (R2L-6).
+// Core half: stop safety, ReportHandler.after on injected pipelines
+// refusing launch on a stopped platform client, blackout end while stopped,
+// the kill-state generation and the notify backlog handover across relaunch.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
@@ -80,7 +80,7 @@ const hung = (extra: Partial<CreateClientOptions> = {}) => {
   };
 };
 
-describe('R2L-1 — a repeat stop() is the SAME drain, never "drained" while one is in flight', () => {
+describe('a repeat stop is the SAME drain, never "drained" while one is in flight', () => {
   it('returns a promise that settles only when the first stop() drain does', async () => {
     const { client, release } = hung();
     client.launch();
@@ -99,7 +99,7 @@ describe('R2L-1 — a repeat stop() is the SAME drain, never "drained" while one
     expect(client.getStatus()).toBe(BugseeStatus.Stopped);
   });
 
-  it('after a TIMED-OUT stop(), a repeat stop() waits for the real drain (bounded by its own timeout)', async () => {
+  it('after a TIMED-OUT stop(), a repeat stop waits for the real drain (bounded by its own timeout)', async () => {
     const { client, release } = hung();
     client.launch();
     await expect(client.stop(5)).resolves.toBe(false);
@@ -177,7 +177,7 @@ describe('R2L-1 — a repeat stop() is the SAME drain, never "drained" while one
   });
 });
 
-describe('R2L-2 — ReportHandler.after also runs when a triggerPipeline is injected', () => {
+describe('ReportHandler.after also runs when a triggerPipeline is injected', () => {
   const injected = () => {
     const reported: ReportingRequest[] = [];
     const calls: string[] = [];
@@ -282,7 +282,7 @@ describe('R2L-2 — ReportHandler.after also runs when a triggerPipeline is inje
   });
 });
 
-describe('R2L-3 — `restartable: false` refuses launch() on a stopped client', () => {
+describe('`restartable: false` refuses launch on a stopped client', () => {
   it('reports through onError, starts nothing and keeps the status Stopped', async () => {
     const onError = vi.fn();
     const client = createClient({ scheduler: noScheduler, restartable: false, onError });
@@ -313,7 +313,7 @@ describe('R2L-3 — `restartable: false` refuses launch() on a stopped client', 
     expect(client.getStatus()).toBe(BugseeStatus.Stopped);
   });
 
-  it('still allows the FIRST launch and ignores a repeat launch() while launched without an error', () => {
+  it('still allows the FIRST launch() and ignores a repeat launch while launched without an error', () => {
     const onError = vi.fn();
     const client = createClient({ scheduler: noScheduler, restartable: false, onError });
     client.launch();
@@ -354,7 +354,7 @@ describe('R2L-3 — `restartable: false` refuses launch() on a stopped client', 
   });
 });
 
-describe('R2L-7 — a blackout can be ENDED while stopped (silently), never started', () => {
+describe('a blackout can be ENDED while stopped (silently), never started', () => {
   it('clears the carried process flag and the client state without events, so the next launch is not dark', async () => {
     const host = {};
     const client = createClient({ carrier: host, scheduler: noScheduler });
@@ -392,7 +392,7 @@ describe('R2L-7 — a blackout can be ENDED while stopped (silently), never star
   });
 });
 
-describe('R2L-13 — the kill state is a transition like stop(): a stale drain stays stale', () => {
+describe('the kill state is a transition like stop(): a stale drain stays stale', () => {
   it('a drain from before a relaunch and a kill emits no extra Stopped', async () => {
     const fatal = new BugseeError('off', 0, { fatal: true, serverCode: 99_099 });
     let release: (ok: boolean) => void = () => {};
@@ -427,7 +427,7 @@ describe('R2L-13 — the kill state is a transition like stop(): a stale drain s
   });
 });
 
-describe('R2L-6 — notifications still queued at relaunch() are handed to the new client', () => {
+describe('notifications still queued at relaunch() are handed to the new client', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

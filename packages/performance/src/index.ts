@@ -1,11 +1,10 @@
 // @bugsee/performance
-// APM extension (Tier 3, design §0.6/§16): ext()/registerExt. BUILT: the Span/Transaction model + §8.8
+// APM extension: ext/registerExt. BUILT: the Span/Transaction model +
 // wire, the transaction buffer, the controller (startTransaction/getActiveSpan), the extension shell, the
 // performance.* options, and the full Core Web Vitals capture (LCP/CLS/INP/FCP/TTFB) collected into a
 // pageload transaction. PLANNED: the bundle performance.json emission + the continuous
 // /v2/performance/transactions upload + the umbrella auto-register. Tree-shakes to nothing when unused;
 // the umbrella `bugsee` package auto-registers it (passive web-vitals on by default, span API opt-in).
-// See docs/PROGRESS.md.
 
 export { type ActiveSpanStore, createSingleSlotActiveSpanStore } from './active-span-store';
 export {

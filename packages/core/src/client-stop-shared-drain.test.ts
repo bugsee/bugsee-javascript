@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createClient } from './client';
 import type { UploadPipeline } from './transport';
 
-// Review round 3 (H1): R3L-2. The shared stop drain runs UNBOUNDED; each caller's timeout only bounds its own wait.
+// The shared stop drain runs UNBOUNDED; each caller's timeout only bounds its own wait.
 
 const getEnvironment = (): EnvironmentEnvelope => ({
   platform: { type: 'web', version: '1' },
@@ -46,7 +46,7 @@ const honouring = () => {
   return { client, release: (ok = true) => release(ok), timeouts };
 };
 
-describe('R3L-2 — the shared stop drain is not bounded by the first caller', () => {
+describe('the shared stop drain is not bounded by the first caller', () => {
   it('stop(20) times out, the upload then finishes, and a repeat stop() answers TRUE', async () => {
     const { client, release, timeouts } = honouring();
     client.launch();
@@ -67,7 +67,7 @@ describe('R3L-2 — the shared stop drain is not bounded by the first caller', (
       settled = true;
     });
     // The drain is gated on a promise (no timer involved), so "still pending" is decided by microtasks alone:
-    // flush every continuation that could have settled it, deterministically (R4H-8).
+    // flush every continuation that could have settled it, deterministically.
     await tick();
     await tick();
     expect(settled).toBe(false);

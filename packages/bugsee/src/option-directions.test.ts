@@ -335,7 +335,7 @@ const directionOf = (definition: Definition): Direction | undefined =>
 
 // Reads many TypeScript programs from source: seconds locally, a minute on a shared CI runner. A timeout is a slow
 // machine, never a verdict.
-describe('every boolean launch option has an explicit, tested fail direction (R3V-3)', {
+describe('every boolean launch option has an explicit, tested fail direction', {
   timeout: TS_PROGRAM_TEST_TIMEOUT_MS,
 }, () => {
   it('finds the definitions it is meant to audit (guards the scanner itself)', () => {

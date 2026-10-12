@@ -109,7 +109,7 @@ describe('createBunServeInterceptor', () => {
     });
   });
 
-  it('writes NO return headers by default (traceResponse off — T9)', async () => {
+  it('writes NO return headers by default (traceResponse off — )', async () => {
     const { client } = fakeClient(createNodeRequestContextStore());
     const { host, served } = fakeBunHost();
     const ic = createBunServeInterceptor({ target: host, getClient: () => client });

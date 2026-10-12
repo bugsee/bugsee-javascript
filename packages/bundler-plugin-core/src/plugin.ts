@@ -148,7 +148,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // watch mode a stamp from the previous build cannot vouch for this one.
       let preStamped = false;
 
-      // THE SRI FIX (docs/review/cli-js-flows.md §7, option 1). On webpack 5, stamp the debug-ids
+      // THE SRI FIX (option 1). On webpack 5, stamp the debug-ids
       // INSIDE the compilation, at a stage after the maps exist and before any integrity hash is
       // taken: SourceMapDevToolPlugin emits maps at PROCESS_ASSETS_STAGE_DEV_TOOLING (500, after
       // minification at 400), and webpack-subresource-integrity hashes at

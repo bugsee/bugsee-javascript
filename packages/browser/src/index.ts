@@ -1,8 +1,8 @@
 // @bugsee/browser
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
-// and the launch() composition root. Tier 2. See docs/design/sdk-design.md §5.
+// and the launch composition root.
 
-// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review R2D-4: the
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review: the
 // directly imported platform package exposes the same value surface as the umbrella entries).
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // Public report-attachment input type (T3), so `UploadOptions.attachments` / `ReportHandler.before` code types without reaching into core.

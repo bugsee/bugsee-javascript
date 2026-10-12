@@ -97,7 +97,7 @@ import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
 
-// @bugsee/browser launch() — the browser composition root (design §7.1), the fetch/DOM analog of node's
+// @bugsee/browser launch — the browser composition root, the fetch/DOM analog of node's
 // launch(). It assembles the runtime-agnostic kernel (createClient) with the browser's platform pieces
 // and the shared capture layer, then starts it:
 //   fetch transport → BugseeApi + BundleUploader → UploadPipeline ─┐
@@ -116,7 +116,7 @@ const SDK_VERSION = BUGSEE_SDK_VERSION;
 // the data safe is that it becomes DURABLE, and the next page load recovers it.
 const PAGE_HIDE_FLUSH_MS = 1000;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
-// Browser/edge capture buffer ceiling (design §966: 10 MB on browser, 50 MB on Node).
+// Browser/edge capture buffer ceiling (10 MB on browser, 50 MB on Node).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
@@ -146,11 +146,11 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     friendly: 'startInBlackout',
     key: BugseeOption.CaptureStartInBlackout,
     default: false,
-    // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark" (R3V-2).
+    // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark".
     ...FAIL_ON_BOOLEAN_OPTION,
   },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
-  // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported (R4V-2); it must never throw (R3V-3).
+  // scalar (`0`, `null`, `''`, `'false'`,...) is OFF and reported; it must never throw.
   // Masking is fail-closed regardless.
   {
     friendly: 'replay',
@@ -400,7 +400,7 @@ export interface BugseeLaunchOptions {
    * Exists for hosts where this process is not the uploader. `@bugsee/electron` renderers stream their
    * capture UP to the main process, so a renderer that assembled locally would produce a bundle from a
    * streaming store that yields nothing, under its own session id, while the main session holding all the
-   * capture recorded no incident (docs/design/electron-renderer-incident-convergence.md §4.2).
+   * capture recorded no incident.
    *
    * Symmetric with `captureStore` above — the same shape of seam, for the read side of the same problem.
    */
@@ -541,7 +541,7 @@ async function buildLaunch(
   const win = options.window ?? window;
   const deviceId = await resolveBrowserDeviceId(realDeviceIdEnv(options.deviceIdEnv ?? {}));
 
-  // Bugsee is a per-process singleton (§1497): if a client was already launched (same SDK version on
+  // Bugsee is a per-process singleton: if a client was already launched (same SDK version on
   // the process Carrier), warn and return it rather than building a second client / second handler set.
   const carrier = options.carrier;
   const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
@@ -706,8 +706,8 @@ async function buildLaunch(
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
     carrier: carrier ?? globalThis,
-    // stop() tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
-    // stopped client must not be restarted in place (R2L-3): a new one comes from `launch(appToken)`/`relaunch()`.
+    // stop tears down what this tier armed (the page-hide flush, the carrier slot, the liveness lock), so a
+    // stopped client must not be restarted in place: a new one comes from `launch(appToken)`/`relaunch`.
     restartable: false,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -811,7 +811,7 @@ async function buildLaunch(
     carrier,
   );
   // The source is carrier-shared and may belong to an earlier (relaunched-away) client: bind it to THIS
-  // client's blackout gate, or it keeps reading the dead client's state (R2V-3).
+  // client's blackout gate, or it keeps reading the dead client's state.
   bindInputBlackout(inputSource, blackout);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
@@ -861,7 +861,7 @@ async function buildLaunch(
         : {};
     const { canvas: canvasOption, ...replayMasking } = replayOptions;
     // Canvas pixels are recorded UNMASKED, so only boolean `true` or a plain object enables the add-on; anything
-    // else (`0`, `null`, `''`, `'false'`, an array) is OFF and reported (R4V-2).
+    // else (`0`, `null`, `''`, `'false'`, an array) is OFF and reported.
     const canvasIsBag =
       typeof canvasOption === 'object' && canvasOption !== null && !Array.isArray(canvasOption);
     const canvasEnabled = canvasOption === true || canvasIsBag;
@@ -900,7 +900,7 @@ async function buildLaunch(
         try {
           options.onError?.(error);
         } catch {
-          // A throwing host sink must never become an unhandled rejection (R4V-10).
+          // A throwing host sink must never become an unhandled rejection.
         }
       });
   }
@@ -914,7 +914,7 @@ async function buildLaunch(
   // The deferred event of `startInBlackout`: owed only when this launch raised the blackout (a carried one is
   // not a new event; an internal hold never announces itself). Core announces it after Launching/Launched when
   // the client is still launched and dark, and ahead of the Ended of a Launching listener that lifts the blackout
-  // at once (R3L-7), so the application never hears an Ended without its Started.
+  // at once, so the application never hears an Ended without its Started.
   if (startInBlackout && !wasBlackedOut) {
     asInternalClient(client).deferBlackoutStarted();
   }
@@ -958,7 +958,7 @@ async function buildLaunch(
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
-                // R2D-2: a dead sibling that left an incident marker behind never settled that incident, which is
+                // a dead sibling that left an incident marker behind never settled that incident, which is
                 // the honest evidence this tier has that the previous run did not end cleanly. (A tab closed
                 // normally after a failed upload leaves one too, so this can over-report; it never invents one.)
                 if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
@@ -1017,8 +1017,8 @@ async function buildLaunch(
   );
   // The public client. stop() clears the process Carrier slot so a later launch() starts fresh.
   const stopCore = client.stop;
-  // WHEN the lock is released (R3L-1): it follows the ONE shared real drain, not any single stop() call. Every
-  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
+  // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
   // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   let released = false;
@@ -1029,9 +1029,9 @@ async function buildLaunch(
     }
   };
   // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
-  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
+  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail.
   let storeFlushed: Promise<void> | undefined;
-  /** A sink that throws must not turn a background step into an unhandled rejection (R4L-4 / R4H-7). */
+  /** A sink that throws must not turn a background step into an unhandled rejection. */
   const reportSafe = (error: unknown): void => {
     try {
       options.onError?.(error);
@@ -1063,7 +1063,7 @@ async function buildLaunch(
         }
         try {
           if (wasLaunched) {
-            // A FRESH flush, not the memoized one (R4L-4): a stop(timeout) that gave up memoized its flush
+            // A FRESH flush, not the memoized one: a stop(timeout) that gave up memoized its flush
             // BEFORE the drain finished, and the drain's own writes (deferred chunk deletes) must be durable
             // before the connections are released.
             await flushStore();

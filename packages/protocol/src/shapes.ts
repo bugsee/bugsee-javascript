@@ -1,6 +1,6 @@
 import { REDACTED } from './sensitive';
 
-// Shape-based value redaction (design §8.10): a second pass that redacts values matching known
+// Shape-based value redaction: a second pass that redacts values matching known
 // secret shapes regardless of key name. Applied to network values, error messages, and stack text.
 
 export interface ShapeRedactionOptions {

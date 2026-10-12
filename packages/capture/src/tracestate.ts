@@ -12,7 +12,7 @@ export interface TracestateEntry {
   value: string;
 }
 
-// W3C / Bugsee OTLP Profile v1 §12 (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
+// W3C (normative, cross-SDK): cap at 32 entries AND 512 bytes; drop the oldest
 // on overflow. Both caps are pinned so every Bugsee SDK truncates to identical bytes.
 //
 // The byte cap is measured in UTF-8 BYTES, which is what "512 bytes" means on the wire and what a peer
@@ -77,7 +77,7 @@ export function setTracestateEntry(
   return next;
 }
 
-/** The Bugsee `tracestate` payload (cross-project-tracing.md): a record flag + a session-correlation id. */
+/** The Bugsee `tracestate` payload: a record flag + a session-correlation id. */
 export interface BugseeTraceState {
   /** The originator is recording/replaying this trace (distinct from the W3C sampled bit). */
   record?: boolean;

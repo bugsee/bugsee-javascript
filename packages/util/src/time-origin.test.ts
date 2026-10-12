@@ -53,13 +53,13 @@ describe('resolveTimeOrigin', () => {
     expect(resolveTimeOrigin(hostile)).toBe(1_000_000);
   });
 
-  it('falls back to Date.now() alone when now() itself returns a non-number', () => {
+  it('falls back to Date.now() alone when now itself returns a non-number', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     const hostile = { timeOrigin: undefined, now: () => 'nope' as unknown as number };
     expect(resolveTimeOrigin(hostile)).toBe(1_000_000);
   });
 
-  it('falls back to Date.now() alone when now() returns NaN', () => {
+  it('falls back to Date.now() alone when now returns NaN', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     expect(resolveTimeOrigin({ timeOrigin: undefined, now: () => NaN })).toBe(1_000_000);
   });
@@ -74,7 +74,7 @@ describe('resolveTimeOrigin', () => {
     expect(resolveTimeOrigin({ now: () => 25 })).toBe(999_975);
   });
 
-  it('calls now() as a method on perf (correct `this` binding)', () => {
+  it('calls now as a method on perf (correct `this` binding)', () => {
     const perf = {
       timeOrigin: NaN,
       base: 1_000,

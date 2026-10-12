@@ -3,7 +3,7 @@ import type { FileType } from '@bugsee/protocol';
 import type { HostBridge } from './host-bridge';
 import { encode, entryMessage } from './protocol';
 
-// The `CaptureStore` swap that makes the WebView SDK a pure streaming source (docs/design/webview-bridge.md §5).
+// The `CaptureStore` swap that makes the WebView SDK a pure streaming source.
 // The capture aggregator calls `add(record)` for every serialized capture entry; instead of buffering into a
 // local rolling ring (browser/node) we serialize it to an `entry` envelope and post it across the WebView
 // boundary IMMEDIATELY — NATIVE is the ring buffer + the bundler. So there is no local export: `snapshot()`

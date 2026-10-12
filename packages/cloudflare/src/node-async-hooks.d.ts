@@ -7,7 +7,7 @@
 //
 // Why the dependency exists at all: `globalThis.AsyncLocalStorage` does not exist on workerd under any
 // compatibility flag; ALS is reachable only through `node:async_hooks` (docs/review/cloudflare.md SEV1 #3,
-// docs/design/cloudflare-tenant-isolation.md §7). Requires the `nodejs_compat` flag at deploy time.
+// Requires the `nodejs_compat` flag at deploy time.
 declare module 'node:async_hooks' {
   /** The run()-scoped subset used by the edge context store — no `enterWith`/`disable` (workerd lacks them). */
   export class AsyncLocalStorage<T> {

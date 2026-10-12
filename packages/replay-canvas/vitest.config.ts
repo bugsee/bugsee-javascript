@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // The canvas add-on's option resolver is a PURE options-builder (no DOM/rrweb), so a node env suffices.
-// Coverage gate per docs/implementation-standards.md §4 (100% line/fn/stmt, >=90% branch).
+// Coverage gate per (100% line/fn/stmt, >=90% branch).
 export default defineConfig({
   test: {
     // The runner is far slower than a dev machine — roughly 7-18x under coverage instrumentation — and

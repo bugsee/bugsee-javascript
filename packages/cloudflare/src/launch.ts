@@ -1,7 +1,7 @@
 // REQUIRES the `nodejs_compat` compatibility flag. `globalThis.AsyncLocalStorage` does NOT exist on workerd
 // under any flag — ALS is reachable ONLY through `node:async_hooks` (verified on real workerd 1.20260722.1
 // across the flag x compatibility-date matrix; docs/review/cloudflare.md SEV1 #3). Importing it here is what
-// makes per-request context work with ZERO user code (docs/design/cloudflare-tenant-isolation.md §7); the
+// makes per-request context work with ZERO user code; the
 // same choice @sentry/cloudflare makes, for the same reason. A project without the flag now fails at BUILD
 // with a resolver error instead of building fine and silently losing context isolation.
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -26,7 +26,7 @@ const warnedIsolates = new WeakSet<object>();
 /**
  * `partitionCaptureByTenant: false` is allowed, but on Cloudflare it silently reinstates the cross-tenant leak the
  * default exists to prevent (one isolate, many customers' Durable Objects, one capture ring), so say so, once per
- * isolate (R5V-9). The host's sink may throw: the warning must never break launch (R5V-4).
+ * isolate. The host's sink may throw: the warning must never break launch.
  */
 function warnOnceIfIsolationDisabled(options: BugseeEdgeLaunchOptions): void {
   if (options.partitionCaptureByTenant !== false) {
@@ -58,9 +58,9 @@ export function launch(appToken: string, options: BugseeEdgeLaunchOptions = {}):
     asyncLocalStorage: new AsyncLocalStorage(),
     ...options,
     // Durable Objects for different customers share one isolate and therefore one capture ring; partition
-    // by tenant so an incident in one cannot upload another's data (SEV1 #2). The default applies ONLY for an
+    // by tenant so an incident in one cannot upload another's data. The default applies ONLY for an
     // absent/`undefined` value and is placed AFTER the spread: an explicit `{partitionCaptureByTenant: undefined}`
-    // would otherwise override it (R4V-1). Any other value is judged by launchEdge (fail ON + onError).
+    // would otherwise override it. Any other value is judged by launchEdge (fail ON + onError).
     partitionCaptureByTenant:
       options.partitionCaptureByTenant === undefined ? true : options.partitionCaptureByTenant,
   });

@@ -1,4 +1,4 @@
-// Absolutization of captured network URLs (protocol + host + port), design §16.1.
+// Absolutization of captured network URLs (protocol + host + port).
 //
 // Every network SOURCE records the target the caller passed, so a same-origin `fetch('/api/x')` was
 // stored as `/api/x` while a cross-origin call was stored as `http://localhost:5398/nope`. Same capture
@@ -13,7 +13,7 @@
 // contacted. Every ambiguous case below therefore falls back to the raw string.
 //
 // Lives in `@bugsee/capture`, NOT in `@bugsee/protocol` next to `sanitizeUrl`, deliberately:
-// `@bugsee/protocol` is the tier-0 wire-contract package — pure string work over canonical shapes, with
+// `@bugsee/protocol` is the wire-contract package — pure string work over canonical shapes, with
 // no notion of the environment it runs in. Choosing a base URL is environment SENSING (which realm am I
 // in? is there a document?), which is the capture tier's job, and `new URL` is neither pure-string nor
 // non-throwing, the two properties protocol/url.ts states about itself. The pure half is still split out
@@ -89,7 +89,7 @@ export function resolveBaseUrl(
  * Returns `url` UNCHANGED — by identity, never round-tripped — when:
  *
  *  - it already carries a scheme (`http(s):`, `ws(s):` (always absolute), `data:`, `blob:`, `mailto:`,
- *    `chrome-extension:`, …). Round-tripping an absolute URL through `new URL().href` would NORMALIZE
+ * `chrome-extension:`, …). Round-tripping an absolute URL through `new URL.href` would NORMALIZE
  *    it: lowercase the host, append a root `/`, strip a default port, percent-encode. That rewrites URLs
  *    the app never wrote, and it is also why this function is exactly idempotent.
  *  - it is empty. `fetch('')` really does resolve to the base, but an empty captured url is a producer

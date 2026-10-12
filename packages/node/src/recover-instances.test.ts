@@ -317,7 +317,7 @@ describe('recoverInstances', () => {
     expect(createNodeBundleStore(join(dir, '9-9-dead', 'pending')).list()).toEqual(['b1']);
   });
 
-  // R2-1: an injected `bundleStore` is the integrator's own, stable across launches and outside the
+  // an injected `bundleStore` is the integrator's own, stable across launches and outside the
   // per-instance layout — so it can hold a dead sibling's staged bundle while that sibling's marker is
   // still here. The scan hands each sibling's marker store to `reconcileOwnQueue` and withholds whatever
   // it settled with, so the marker leg does not rebuild the same incident a second time.
@@ -1102,7 +1102,7 @@ describe('recoverInstances', () => {
   });
 });
 
-describe('recoverInstances — evidence that the previous run did not stop cleanly (R2D-2)', () => {
+describe('recoverInstances — evidence that the previous run did not stop cleanly', () => {
   const run = async (dir: string, extra: Partial<Parameters<typeof recoverInstances>[0]> = {}) => {
     const onCrashEvidence = vi.fn();
     await recoverInstances({

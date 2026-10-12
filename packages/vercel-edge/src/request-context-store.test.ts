@@ -50,7 +50,7 @@ describe('createEdgeRequestContextStore', () => {
     expect(c.attributes).toEqual({ a: 1, b: 2 });
   });
 
-  it("the impl's single-slot fallback restores its slot when run()'s fn THROWS (no permanent poisoning)", () => {
+  it("the impl's single-slot fallback restores its slot when run's fn THROWS (no permanent poisoning)", () => {
     vi.stubGlobal('AsyncLocalStorage', undefined); // force the impl's createSingleSlotStore (the real fallback)
     const store = createEdgeRequestContextStore({ logger: { warnOnce: vi.fn() } });
     expect(() =>

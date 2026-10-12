@@ -10,7 +10,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).toContain(MEDIA_SELECTOR); // blockAllMedia
   });
 
-  it('wires the .bugsee-unmask / .bugsee-show opt-out selectors (D3)', () => {
+  it('wires the.bugsee-unmask /.bugsee-show opt-out selectors', () => {
     const m = resolveReplayMaskingOptions();
     expect(m.unmaskTextSelector).toContain('.bugsee-unmask');
     expect(m.unmaskInputSelector).toContain('.bugsee-unmask');
@@ -110,7 +110,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(mask('data-ssn', '123-45-6789', hostile)).toBe('***********');
   });
 
-  it('rejects a selector that `matches()` cannot parse, even if `querySelector` can', () => {
+  it('rejects a selector that `matches` cannot parse, even if `querySelector` can', () => {
     // Validation must use the API rrweb consumes. Measured divergence in jsdom: `div:has(:has(div))` passes
     // querySelector and THROWS in matches() — and rrweb's `matches()` call sites are exactly the fail-open
     // this validation exists to close.
@@ -137,7 +137,7 @@ describe('resolveReplayMaskingOptions — fail-closed defaults', () => {
     expect(m.blockSelector).toContain('[data-bugsee-block]');
   });
 
-  it('blocks ALL canvas when blockAllCanvas is set (strict opt-in-per-canvas via .bugsee-show)', () => {
+  it('blocks ALL canvas when blockAllCanvas is set (strict opt-in-per-canvas via.bugsee-show)', () => {
     const m = resolveReplayMaskingOptions({ blockAllCanvas: true });
     expect(m.blockSelector).toContain(CANVAS_SELECTOR); // 'canvas' added to the block set
     expect(m.unblockSelector).toContain('.bugsee-show'); // opted-in canvases un-block via the existing selector

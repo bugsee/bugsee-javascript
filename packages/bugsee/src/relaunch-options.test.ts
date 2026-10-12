@@ -206,7 +206,7 @@ const RESET_OPTIONS: readonly string[] = [
 ];
 
 // Builds a TypeScript program per platform interface: far slower on a shared CI runner than locally.
-describe('relaunch() option classification (R2P-3)', {
+describe('relaunch() option classification', {
   timeout: TS_PROGRAM_TEST_TIMEOUT_MS,
 }, () => {
   const all = new Map<string, string[]>();
@@ -238,7 +238,7 @@ describe('relaunch() option classification (R2P-3)', {
     }
   });
 
-  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches (R3L-6)', () => {
+  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches', () => {
     expect(all.get('onSpanProcessor')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('setupOtelProvider')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('injectTraceMeta')).toContain('nuxt:InstallBugseeNitroOptions');
@@ -251,7 +251,7 @@ describe('relaunch() option classification (R2P-3)', {
     );
   });
 
-  it('does not keep a per-instance identity across a relaunch (R3L-3)', () => {
+  it('does not keep a per-instance identity across a relaunch', () => {
     expect(RELAUNCH_KEPT_OPTIONS).not.toContain('instanceIdentity');
     expect(RESET_OPTIONS).toContain('instanceIdentity');
   });

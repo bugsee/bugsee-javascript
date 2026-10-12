@@ -1,7 +1,7 @@
 import type { FilterStore } from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 
-// D3 redaction provenance (docs/design/webview-bridge.md §8). Each crossing carries a `red` flag telling native
+// D3 redaction provenance. Each crossing carries a `red` flag telling native
 // whether a JS-side filter PASS ran on it (NOT that content was necessarily changed — a no-op filter still ran).
 // Native ALWAYS re-applies its own canonical filters regardless of `red` (so `red` is provenance-only and never
 // causes native to skip redaction — there is no privacy hazard if it's wrong); `red` just records that the JS

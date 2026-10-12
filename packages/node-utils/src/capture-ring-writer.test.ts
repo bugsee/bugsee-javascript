@@ -314,7 +314,7 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
     s.dispose?.();
   });
 
-  it('A1: creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
+  it('creates data files 0600 + chunk dirs 0700 (no group/other access — captured data is private)', () => {
     const root = mkRoot();
     const s = mk(root);
     s.append(GEN, 0, 'log', 'm\n');
@@ -374,7 +374,7 @@ describe('createSyncRingWorker + CaptureRingWriter', () => {
 //
 // (The worker_threads twin instead concatenates `undefined` into the filename, creating a file literally
 // named `undefined` — the same unvalidated index, a different symptom.)
-describe('a corrupt pathId does not wedge the drainer (Wave 6.7)', () => {
+describe('a corrupt pathId does not wedge the drainer', () => {
   /** A sync ring worker over a fresh root, plus its producer — the real drainer, no mocks. */
   const ringWorker = (onError = vi.fn()) => {
     const root = mkRoot();

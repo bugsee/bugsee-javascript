@@ -1,6 +1,6 @@
 import { type EnvironmentEnvelope, optionsToWire, type RuntimeType } from '@bugsee/protocol';
 
-// The §8.6 environment envelope for edge runtimes (Vercel Edge / Cloudflare Workers). MINIMAL by necessity:
+// The environment envelope for edge runtimes (Vercel Edge / Cloudflare Workers). MINIMAL by necessity:
 // an edge isolate has no os/process/hardware access — no cpu/memory/kernel reads — so we omit the `hardware`
 // bag entirely (it's optional on the wire) and fill only `platform.type`/`version` (both required), the
 // cheap `Intl`-derived utc_offset + locale (available on edge), plus `app` + `sdk`. The runtime exposes no

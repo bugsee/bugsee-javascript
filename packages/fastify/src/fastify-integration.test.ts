@@ -146,7 +146,7 @@ describe('fastify adapter — real-server concurrency isolation (e2e)', () => {
   });
 });
 
-describe('fastify adapter — F-1/F-3: shouldReport against REAL Fastify Ajv schema validation (e2e)', () => {
+describe('fastify adapter: shouldReport against REAL Fastify Ajv schema validation (e2e)', () => {
   it('does not report a genuine Fastify schema-validation 400, but does report a thrown 500', async () => {
     const { transport, bundles } = recordingTransport();
     const client = launch('tok', {

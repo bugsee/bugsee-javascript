@@ -68,7 +68,7 @@ import {
   type WorkerProbe,
 } from './environment';
 
-// @bugsee/webworker launch() — the worker composition root (design §3.2/§3.3): a DOM-LESS browser-family SDK
+// @bugsee/webworker launch — the worker composition root: a DOM-LESS browser-family SDK
 // for Web Workers + Service Workers. It assembles the runtime-agnostic kernel (createClient) with the browser
 // fetch transport + an in-memory capture store + the worker environment, then wires the capture/detection a
 // worker actually supports: console→log + network (fetch/ws; xhr active in a dedicated worker / self-skips in a
@@ -87,7 +87,7 @@ import {
 
 const SDK_VERSION = BUGSEE_SDK_VERSION;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
-// Browser/worker capture buffer ceiling (design §966: 10 MB on browser/worker).
+// Browser/worker capture buffer ceiling (10 MB on browser/worker).
 const DEFAULT_MAX_DATA_SIZE_MB = 10;
 
 /** Worker-local identifier of the `persist` switch: no cross-SDK identity. */
@@ -336,13 +336,13 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
 
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier, so a listener set
-    // by option or by `setProcessLifecycleEventsListener` is the same one every client of the worker sees (R2L-4).
+    // by option or by `setProcessLifecycleEventsListener` is the same one every client of the worker sees.
     carrier: carrier ?? globalThis,
     // stop() releases the carrier slot, the liveness lock and the IndexedDB handles, so a stopped client must
-    // not be restarted in place (R2L-3): a new one comes from `launch(appToken)`.
+    // not be restarted in place: a new one comes from `launch(appToken)`.
     restartable: false,
     // The browser's multi-engine parser: core's default is V8-only, so a Safari/Firefox worker stack would
-    // ship `frames: []` in crash.json (R3P-1).
+    // ship `frames: []` in crash.json.
     stackParser: parseStack,
     ...(options.lifecycleEventsListener !== undefined
       ? { lifecycleEventsListener: options.lifecycleEventsListener }
@@ -429,7 +429,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         ...(recoverEnabled
           ? {
               recoverReportsForSibling: async ({ captureView, markers, skipReportIds }) => {
-                // R2D-2: an unsettled incident marker left by a dead sibling is this tier's honest evidence that
+                // an unsettled incident marker left by a dead sibling is this tier's honest evidence that
                 // the previous activation did not end cleanly (told at most once, to a client still running).
                 if (!crashSignalled && markers.list().length > 0 && client.isLaunched()) {
                   crashSignalled = true;
@@ -459,8 +459,8 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   // The public client. stop() releases the per-worker carrier slot (only if it is still OURS: a late stop()
   // must not take the slot from a client that has since been relaunched) and, once it is SAFE, the
   // coexistence lock + IndexedDB handles: the same contract as the browser tier (review L7/L9).
-  // WHEN the lock is released (R3L-1): it follows the ONE shared real drain, not any single stop() call. Every
-  // stop() leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
+  // WHEN the lock is released: it follows the ONE shared real drain, not any single stop call. Every
+  // stop leaves a background observer on that drain (a stop(timeout) that gave up still gets its release when
   // the upload finishes), and the caller of a stop() that sees the drain finish releases too; whoever is first
   // releases, once. Instances are distinct (their own lock + IndexedDB prefix), so a relaunch needs no guard.
   const stopCore = client.stop;
@@ -472,9 +472,9 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     }
   };
   // Commit the capture store's queued writes ONCE per stop, however many paths (the caller, the background
-  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail (R2L-10).
+  // observer) reach this point: closing IndexedDB under its write queue would lose the queue's tail.
   let storeFlushed: Promise<void> | undefined;
-  /** A sink that throws must not turn a background step into an unhandled rejection (R4L-4 / R4H-7). */
+  /** A sink that throws must not turn a background step into an unhandled rejection. */
   const reportSafe = (error: unknown): void => {
     try {
       options.onError?.(error);
@@ -506,7 +506,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         }
         try {
           if (wasLaunched) {
-            // A FRESH flush, not the memoized one (R4L-4): a stop(timeout) that gave up memoized its flush
+            // A FRESH flush, not the memoized one: a stop(timeout) that gave up memoized its flush
             // BEFORE the drain finished, and the drain's own writes (deferred chunk deletes) must be durable
             // before the connections are released.
             await flushStore();
@@ -538,7 +538,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         return drained;
       } finally {
         // Make the data durable first (a launched client only: a killed one has no live store to flush), as the
-        // browser tier does (R2L-10): closing IndexedDB under the capture store's write queue loses its tail.
+        // browser tier does: closing IndexedDB under the capture store's write queue loses its tail.
         if (wasLaunched) {
           await makeDurable();
         }

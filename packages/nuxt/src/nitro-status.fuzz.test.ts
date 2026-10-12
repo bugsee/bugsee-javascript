@@ -64,7 +64,7 @@ function reportedByEdge(error: unknown): boolean {
 const withStatus = (statusCode: unknown): unknown =>
   Object.assign(new Error('boom'), { statusCode });
 
-describe('H3 status triage — properties', () => {
+describe('status triage — properties', () => {
   it('never reports a numeric status below 500 (expected client errors: 404, 422, …)', () => {
     fc.assert(
       fc.property(fc.integer({ min: -10_000, max: 499 }), (status) => {

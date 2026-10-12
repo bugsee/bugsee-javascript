@@ -86,7 +86,7 @@ describe('recordReactRenderSpan', () => {
     }
   });
 
-  it('falls back to a Date.now()-reconstructed origin when there is no `performance` global AT ALL', () => {
+  it('falls back to a Date.now-reconstructed origin when there is no `performance` global AT ALL', () => {
     // Distinct from the case above: there the global exists and lacks the field; here the whole object is
     // missing, which is the non-browser host this React-free escape hatch is meant to be callable from.
     // Must not throw OUTSIDE `recordRenderSpan`'s own guard — that would escape into React's commit phase.
@@ -242,7 +242,7 @@ describe('withBugseeProfiler', () => {
 // so the resolution is an honest, discoverable escape hatch: `recordReactRenderSpan` is React-free and
 // takes plain numbers, so an app can feed it from `react-dom/profiling` or from timings it already has.
 // These tests exist so that escape hatch cannot be removed or made React-dependent without failing.
-describe('the production escape hatch (Wave 4.6)', () => {
+describe('the production escape hatch', () => {
   it('recordReactRenderSpan works with NO React involved at all', () => {
     const recordChildSpan = vi.fn();
     const client = {

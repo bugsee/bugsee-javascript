@@ -5,7 +5,7 @@ import {
   reportError,
 } from '@bugsee/web-adapter';
 
-// The @bugsee/angular ERROR SEAM (frontend-adapters §7 fan-out — the F6-thin pattern for Angular). Angular
+// The @bugsee/angular ERROR SEAM (fan-out — the F6-thin pattern for Angular). Angular
 // reports uncaught errors through its injectable `ErrorHandler` (`handleError(error)`); the app replaces it
 // via `{ provide: ErrorHandler, useClass: BugseeErrorHandler }`. We report the error to the launched Bugsee
 // client, UNWRAPPING Angular's error wrapper (`error.ngOriginalError`) to the real thrown error, and DELEGATE
@@ -76,7 +76,6 @@ export function createAngularErrorHandler(options: AngularErrorHandlerOptions = 
  * custom `ErrorHandler` lost it silently, and an app that provided none lost Angular's default, which is the
  * only thing that surfaces an uncaught error in the console. Measured against real `@angular/core`: the
  * default prints one `console.error('ERROR', error)`; resolving `BugseeErrorHandler` printed none
- * (docs/review/frontend-adapters-vue-angular-svelte-solid.md SEV1 #2).
  *
  * Angular is a structural peer here — never imported — so its default is reproduced rather than delegated to.
  */

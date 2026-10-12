@@ -251,7 +251,7 @@ describe('createBugseeVueRenderMixin', () => {
     expect(recordChildSpan).not.toHaveBeenCalled();
   });
 
-  it('degrades to a live Date.now() reading — without throwing into Vue — on a host with no `performance`', () => {
+  it('degrades to a live Date.now reading— without throwing into Vue— on a host with no `performance`', () => {
     // The default clock is the only part of this mixin that reads a runtime global, and it reads it from
     // `beforeMount`, which is OUTSIDE the try/catch that guards the after-hooks. On a host that has no
     // `performance` (or a partial one), an unguarded read would throw straight out of a Vue lifecycle hook

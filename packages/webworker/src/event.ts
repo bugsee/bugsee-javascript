@@ -1,7 +1,7 @@
 import { asInternalClient, neverThrow } from '@bugsee/core';
 import type { Bugsee } from './launch';
 
-// Service Worker event flush (design §3.x — the SW analog of the edge ctx.waitUntil). A Service Worker is
+// Service Worker event flush (the SW analog of the edge ctx.waitUntil). A Service Worker is
 // TERMINATED when idle, so a fire-and-forget incident upload can be dropped before it completes. Wrapping a SW
 // event handler hands the SDK flush to `event.waitUntil`, which keeps the worker alive until the upload
 // finishes — the exact isolate-freeze guard the edge SDK uses (vercel-edge wait-until.ts). A dedicated/shared

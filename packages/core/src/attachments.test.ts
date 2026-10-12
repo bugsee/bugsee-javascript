@@ -184,7 +184,7 @@ describe('addReportAttachment', () => {
   });
 });
 
-describe('resolveUserAttachments hardening (P2, P9)', () => {
+describe('resolveUserAttachments hardening', () => {
   it('drops a non-string fileName / mimeType, keeps the attachment, and reports each', () => {
     const onError = vi.fn();
     const out = resolveUserAttachments(
@@ -266,7 +266,7 @@ describe('resolveUserAttachments hardening (P2, P9)', () => {
   });
 });
 
-describe('normalizeReportAttachments + marker round trip (P1)', () => {
+describe('normalizeReportAttachments + marker round trip', () => {
   const binary = new Uint8Array([0, 1, 2, 254, 255]);
 
   it('applies the limits to the report in place, once, at submit time', () => {
@@ -322,7 +322,7 @@ describe('normalizeReportAttachments + marker round trip (P1)', () => {
     expect(request.report.userAttachments?.[0]?.data).toBeInstanceOf(Uint8Array);
   });
 
-  it('carries an SDK-internal binary attachment (a native-crash .dmp) across the JSON hop, with no user attachments', () => {
+  it('carries an SDK-internal binary attachment (a native-crash.dmp) across the JSON hop, with no user attachments', () => {
     const dmp = new Uint8Array([77, 68, 77, 80, 0, 255]);
     const request = createReportingRequest({
       source: { type: 'crash' },
@@ -374,7 +374,7 @@ describe('normalizeReportAttachments + marker round trip (P1)', () => {
   });
 });
 
-describe('a throwing sink never loses the attachments or the report (R2P-6)', () => {
+describe('a throwing sink never loses the attachments or the report', () => {
   const boom = (): never => {
     throw new Error('the app\u2019s onError is broken');
   };
@@ -416,7 +416,7 @@ describe('a throwing sink never loses the attachments or the report (R2P-6)', ()
   });
 });
 
-describe('marker hardening (R2P-9)', () => {
+describe('marker hardening', () => {
   const requestWith = (attachments: unknown) => {
     const request = createReportingRequest({ source: { type: 'code_upload' } });
     request.report.userAttachments = attachments as never;

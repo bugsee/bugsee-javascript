@@ -44,7 +44,7 @@ afterEach(() => {
   vi.stubGlobal('Error', RealError);
 });
 
-describe('logException(non-Error) on JavaScriptCore stacks (R3P-1)', () => {
+describe('logException(non-Error) on JavaScriptCore stacks', () => {
   it('with captureStackTrace: frame 0 is the application function', async () => {
     const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
     (Error as { captureStackTrace?: unknown }).captureStackTrace = (t: { stack?: string }) => {

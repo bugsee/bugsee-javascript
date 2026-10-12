@@ -726,7 +726,7 @@ describe('createCoexistence — capture + marker recovery', () => {
       expect(seen?.markers.list().map((m) => m.request.id)).toEqual(['inc1']);
     });
 
-    // R2-1: an explicit `bundleStore` override BYPASSES coexistence, so its blobs live in a store that is
+    // an explicit `bundleStore` override BYPASSES coexistence, so its blobs live in a store that is
     // stable across launches while the incident's marker sits in this dead sibling's namespace. The launch
     // reconciles that store through `reconcileOwnQueue`; whatever it settles with is withheld from the
     // marker leg alongside the coexisting queue's own ids.

@@ -85,7 +85,7 @@ const CUSTOM_EVENT_TYPE = 5;
  * The tag of the rrweb custom events the recorder emits at the start (`payload.active: true`) and end
  * (`false`) of a blackout, so a player can show "blacked out" instead of a frozen pre-blackout screen.
  * Backwards compatible: players that do not know the tag ignore custom events. The viewer rendering is a
- * follow-up (see docs/design/blackout.md).
+ * follow-up.
  */
 export const BLACKOUT_MARKER_TAG = 'bugsee.blackout';
 
@@ -175,7 +175,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
       // blockSelector (fail-closed, RP1).
       recordCrossOriginIframes: false,
       emit: (event) => {
-        // Blackout suspends VISUAL capture only (design §401 / startBlackout); a stale session is dead.
+        // Blackout suspends VISUAL capture only (/ startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
           this.capture('replay', event.timestamp, event);
         }

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeReport } from './protocol';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 
-// R2 (docs/design/electron-renderer-incident-convergence.md §4.1). The renderer must FORWARD incidents to
+// R2. The renderer must FORWARD incidents to
 // main, never upload them itself — see docs/review/electron.md SEV1 #2.
 const request = (over: Partial<ReportingRequest> = {}): ReportingRequest =>
   ({

@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
 
-// Two build targets (docs/design/webview-bridge.md §9):
+// Two build targets:
 //  1. the dual ESM+CJS npm/ESM entry (baseConfig) — for web apps that detect-and-adapt + tests; deps externalized.
 //  2. the SELF-CONTAINED injectable IIFE single-string (native resource, D7) — bundles every @bugsee/* dep into
 //     one minified script that defines the `BugseeWebView` global (the native bootstrap calls

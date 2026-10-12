@@ -13,7 +13,7 @@ import {
   type RequestDecoratorRegistry,
 } from './request-decorator';
 
-// XMLHttpRequest capture SOURCE (design §16.2). XHR is browser/electron-renderer only, so the wrap is
+// XMLHttpRequest capture SOURCE. XHR is browser/electron-renderer only, so the wrap is
 // installed only when XMLHttpRequest exists (availability-detected) — on other runtimes onActivate is
 // a no-op. Wrapping is done by patching the PROTOTYPE methods (open/setRequestHeader/send) rather than
 // replacing the constructor, so existing XHR instances are unaffected; per-instance state lives in a

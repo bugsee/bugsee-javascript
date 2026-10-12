@@ -1,6 +1,6 @@
 // SM-A4 — capture the build's VCS metadata (primarily the commit SHA) so the backend can fetch a frame's
 // ORIGINAL source from the customer's connected repository when the uploaded source map carries no
-// `sourcesContent`. See docs/design/source-maps.md §9.
+// `sourcesContent`.
 //
 // TWO THINGS THIS DELIBERATELY DOES NOT DO:
 //

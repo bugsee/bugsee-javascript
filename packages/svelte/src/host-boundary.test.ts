@@ -54,7 +54,7 @@ describe('svelte handleError is a contained host boundary', () => {
 
 // WAVE 2.2 — the enforcement half. The tests above cover `handleErrorWithBugsee`, the seam the review named.
 // Nothing covered the rest, and nothing failed when a new export arrived without a containment test.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileClient = (): Bugsee =>
     new Proxy({} as Bugsee, {
       get() {

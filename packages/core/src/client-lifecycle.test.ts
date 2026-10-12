@@ -233,7 +233,7 @@ describe('lifecycle events — emitLifecycleEvent hook', () => {
     expect(events).toEqual([[LifecycleEvents.BeforeReportShown, { x: 1 }]]);
   });
 
-  it('is NOT on the public surface (R2D-13): app code cannot fake SDK events', () => {
+  it('is NOT on the public surface: app code cannot fake SDK events', () => {
     const { client, events } = setup();
     expect('emitLifecycleEvent' in client).toBe(false);
     expect((client as unknown as Record<string, unknown>).emitLifecycleEvent).toBeUndefined();
@@ -298,7 +298,7 @@ describe('ReportHandler.after (Android onAfterReportCreated)', () => {
     expect(after).toHaveBeenCalledTimes(2);
   });
 
-  it('is not run when the report was never created: veto, nothing to report with (an injected pipeline DOES run it, R2L-2)', async () => {
+  it('is not run when the report was never created: veto, nothing to report with (an injected pipeline DOES run it)', async () => {
     const after = vi.fn();
     // veto
     const vetoed = setup().client;

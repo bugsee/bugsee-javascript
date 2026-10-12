@@ -1,9 +1,8 @@
-// @bugsee/node — Node platform (tier 2, design §5): http(s) transport, node:fs storage, uncaught/
+// @bugsee/node — Node platform: http(s) transport, node:fs storage, uncaught/
 // unhandledRejection detection, console/network capture. Built test-first per
-// docs/implementation-standards.md.
 
-// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review R2D-4: the
-// directly imported platform package exposes the same value surface as the umbrella entries).
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter`.
+// A directly imported platform package exposes the same value surface as the umbrella entries.
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes) — used internally by the
 // `transport` launch option (launch.ts) but never re-exported, forcing a consumer wiring a custom

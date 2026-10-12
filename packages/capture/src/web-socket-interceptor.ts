@@ -1,7 +1,7 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 
-// WebSocket capture SOURCE (design §16.2). global WebSocket is broadly available (browser/workers/
+// WebSocket capture SOURCE. global WebSocket is broadly available (browser/workers/
 // Deno/Bun; Node ≥ 22), so the wrap installs only when it exists (availability-detected). Because each
 // connection must be instrumented at CREATION, the wrap replaces the constructor with a thin subclass:
 // its constructor calls through, assigns a per-connection id, emits `before`, and attaches open/message/

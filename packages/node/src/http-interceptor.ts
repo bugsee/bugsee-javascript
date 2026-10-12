@@ -4,7 +4,7 @@ import https from 'node:https';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage, NoBodyReason } from '@bugsee/protocol';
 
-// Node-native HTTP capture SOURCE (design §16.2, mechanism 'http'). Wraps node:http and node:https
+// Node-native HTTP capture SOURCE (mechanism 'http'). Wraps node:http and node:https
 // `request`/`get`; libraries like axios / got / node-fetch issue requests through these and so bypass
 // global `fetch`. Same metadata-first shape as the fetch source — url / method / request+response
 // headers / status / timing; bodies deferred — emitting before → complete | error. The wrap is
@@ -112,7 +112,7 @@ const resolveRequest = (
   };
 };
 
-/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal (§14.6). */
+/** Default self-isolation: skip the SDK's own outbound requests, tagged X-Bugsee-Internal. */
 const hasInternalHeader = (headers: Record<string, string>): boolean =>
   Object.keys(headers).some((key) => key.toLowerCase() === 'x-bugsee-internal');
 

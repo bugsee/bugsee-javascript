@@ -5,7 +5,7 @@ import { type Bugsee, EdgeContextStoreToken } from './launch';
 import type { EdgeRequestContextStore } from './request-context-store';
 import { type EdgeExecutionContext, resolveWaitUntil } from './wait-until';
 
-// The generic edge-invocation core (docs/design/edge-runtime.md E5/C2). EVERY edge handler — fetch, and on
+// The generic edge-invocation core (E5/C2). EVERY edge handler — fetch, and on
 // Cloudflare scheduled/queue/email/tail/Durable-Object/RPC — runs the same shape: open a per-invocation Bugsee
 // context, run the handler INSIDE it (so an incident report is correlated), capture + RETHROW a thrown error,
 // then flush the incident upload via the resolved `waitUntil` so it survives the isolate freeze. This module
@@ -48,7 +48,7 @@ export interface EdgeInvocationOptions {
   /** Tenant key for capture-store partitioning — the DURABLE OBJECT id on Cloudflare. Unlike the
    *  per-invocation `contextId`, this is stable for the tenant, so its rolling window stays its own and an
    *  incident bundle cannot pick up another tenant's capture. Absent for single-tenant handlers (fetch),
-   *  where partitioning is a no-op (docs/design/cloudflare-tenant-isolation.md §4.1). */
+   * where partitioning is a no-op. */
   owner?: string;
   /** AWAIT the flush inside the invocation instead of deferring it to `waitUntil`. Required for Durable Objects:
    *  `DurableObjectState.waitUntil` is a documented NO-OP (it only exists for API compatibility), so the only

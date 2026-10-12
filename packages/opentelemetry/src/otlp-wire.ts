@@ -2,7 +2,7 @@
 // produce path needs). Hand-rolled — no @opentelemetry/* dependency. Per the OTLP/JSON spec, `traceId`/
 // `spanId`/`parentSpanId` are LOWERCASE-HEX strings (the documented exception to the bytes→base64 rule),
 // and uint64 timestamps (`*UnixNano`) are DECIMAL STRINGS (to survive values beyond 2^53). See
-// https://opentelemetry.io/docs/specs/otlp/ and the trace proto.
+// https://opentelemetry.io/ and the trace proto.
 
 /** OTLP `SpanKind`. We emit INTERNAL by default, CLIENT for outgoing-call spans. */
 export const OtlpSpanKind = {
@@ -58,7 +58,7 @@ export interface OtlpSpan {
   endTimeUnixNano: string;
   attributes?: OtlpKeyValue[];
   status?: OtlpStatus;
-  /** W3C trace flags (low 8 bits): bit 0 = sampled. Profile v1 §8: the sampled bit MUST mirror `bugsee.sampled`. */
+  /** W3C trace flags (low 8 bits): bit 0 = sampled.: the sampled bit MUST mirror `bugsee.sampled`. */
   flags?: number;
 }
 

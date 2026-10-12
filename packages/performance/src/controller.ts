@@ -10,7 +10,7 @@ import {
 } from './span';
 import type { TransactionStore } from './transaction-store';
 
-// R2-8: NAME_SOURCE_ATTRIBUTE is a plain wire attribute KEY, not APM logic — it now lives in
+// NAME_SOURCE_ATTRIBUTE is a plain wire attribute KEY, not APM logic — it now lives in
 // @bugsee/protocol (constants.ts) so @bugsee/node's server-instrument.ts can read it off a Transaction's
 // attributes without a runtime (value-level) dependency on this opt-in extension. Re-exported here for
 // every existing @bugsee/performance consumer (this file's own setters below, navigations.ts, index.ts).
@@ -29,7 +29,7 @@ export interface StartTransactionOptions {
   operation: string;
   description?: string;
   /**
-   * Continue an inbound distributed trace (Bugsee OTLP Profile v1 §12; design: cross-project-tracing.md).
+   * Continue an inbound distributed trace.
    * The transaction adopts this W3C `traceId`, makes its root a CHILD of the upstream `parentSpanId`, and
    * adopts the upstream `sampled` decision — so the frontend and this backend transaction are one trace
    * with a real parent/child link. Omitted → a fresh random trace id, no parent, local sampling.
@@ -51,7 +51,7 @@ export interface PerformanceApi {
    * The active span: the most recently STARTED transaction visible to this execution, cleared when it
    * finishes. No span stack — proper async-context nesting is a later slice.
    *
-   * CONCURRENCY (round-2 D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
+   * CONCURRENCY (D2): WHERE the slot lives is injectable (`activeSpanStore`). The DEFAULT is
    * a process-wide single slot (a second `startTransaction` overwrites the first) — correct for a
    * browser's single in-flight navigation/interaction. The Node launch instead supplies per-async-context
    * tracking keyed off the `AsyncLocalStorage`-backed `RequestContext` (the JS equivalent of Android's

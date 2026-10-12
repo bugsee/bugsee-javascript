@@ -1,14 +1,14 @@
 import type { CaptureAggregator, CaptureDataEntry, CaptureStore } from './contracts';
 import type { RequestContext } from './request-context';
 
-// The single data adapter every provider feeds (Android BugseeCaptureAggregator parity, design §7.7).
+// The single data adapter every provider feeds (Android BugseeCaptureAggregator parity).
 // Data flows ONE direction: accept an entry → (optionally stamp the active request context) → transform
 // (entry.serialize()) → route the serialized record to the configurable CaptureStore (in-memory / disk /
 // IndexedDB). Read-back is NOT here — it belongs to the CaptureExporter (capture-exporter.ts).
 
 export interface CaptureAggregatorOptions {
   /**
-   * Reads the active request context (design: framework-adapters.md, "correlation, not isolation"). When
+   * Reads the active request context. When
    * a context is active, each entry's wire payload is stamped with its correlation ids so the recording
    * can later be focused on one request. Absent (default) → no stamping; behavior is byte-identical.
    */

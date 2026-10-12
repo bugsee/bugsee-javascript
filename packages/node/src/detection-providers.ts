@@ -10,7 +10,7 @@ import {
 import { BugseeOption } from '@bugsee/protocol';
 import { markOwnHandler } from './process-policy';
 
-// Node crash/error detection providers (design §3.2 globalErrorInterceptor on Node, §8.5 mechanisms).
+// Node crash/error detection providers (globalErrorInterceptor on Node, mechanisms).
 // Each subscribes to a process event and submits a ReportingRequest via DetectionProviderBase:
 // uncaughtException → crash (mechanism 'uncaught'), unhandledRejection → error (mechanism
 // 'unhandledrejection'). They DETECT + submit only; the flush-then-exit policy (uncaught: flush

@@ -56,7 +56,7 @@ describe('createSystemClock', () => {
     expect(clock.monotonicNow()).toBe(999);
   });
 
-  it('falls back to Date.now() when performance.timeOrigin is NaN (typeof NaN === "number")', () => {
+  it('falls back to Date.now when performance.timeOrigin is NaN (typeof NaN === "number")', () => {
     setPerformance({ now: () => 5, timeOrigin: NaN });
     const clock = createSystemClock();
     vi.spyOn(Date, 'now').mockReturnValue(1234);

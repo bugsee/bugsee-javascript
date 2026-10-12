@@ -87,7 +87,7 @@ describe('createHostBridge', () => {
 //
 // The re-resolution existed for a real reason — native may register the interface AFTER the script starts —
 // so the fix is not to resolve at construction. It is to resolve once, LAZILY, and never look again.
-describe('createHostBridge — the native sink is pinned (Wave 0.3)', () => {
+describe('createHostBridge — the native sink is pinned', () => {
   /** A global whose `BugseeBridge` can be swapped, as a page script would. */
   const swappable = (): {
     global: { BugseeBridge?: { post(raw: string): void } };
@@ -552,7 +552,7 @@ describe('createHostBridge — the WKWebView (iOS) sink', () => {
   });
 });
 
-describe('nonce stamping (D-A11)', () => {
+describe('nonce stamping', () => {
   const sink = (): { got: string[]; global: object } => {
     const got: string[] = [];
     return { got, global: { BugseeBridge: { post: (raw: string) => got.push(raw) } } };

@@ -128,7 +128,7 @@ describe('runBugseeCli', () => {
 // purely through a misconfigured `endpoint`) left `writeBundle` pending until the CI job's own global
 // timeout, burning a runner slot and producing no diagnostic. Measured in the review: a 2.5 s child raced
 // against a 1.2 s timer, and the timer won — nothing bounded the wait.
-describe('the spawned CLI is bounded (Wave 7.4)', () => {
+describe('the spawned CLI is bounded', () => {
   it('aborts and rejects when the child outlives the timeout', async () => {
     const spawn: SpawnFn = (_c, _a, options) =>
       new Promise((_resolve, reject) => {

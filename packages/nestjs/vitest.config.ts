@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Coverage gate per docs/implementation-standards.md §4: 100% line/functions/statements, >=90% branch.
+// Coverage gate: 100% line/functions/statements, >=90% branch.
 // The real-NestJS integration test boots an actual decorated Nest app, so the transform must emit
 // decorator metadata (Nest DI reads design:paramtypes). Vitest 4's oxc transform picks up
 // experimentalDecorators + emitDecoratorMetadata from this package's tsconfig.json directly.

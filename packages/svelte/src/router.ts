@@ -1,6 +1,6 @@
 import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
-// The @bugsee/svelte ROUTER NAMING integration (frontend-adapters §7 + the F5/D5 two-phase naming seam). On
+// The @bugsee/svelte ROUTER NAMING integration (+ the F5/D5 two-phase naming seam). On
 // a navigation, SvelteKit's navigation target carries the route id (`/users/[id]` — SvelteKit's own
 // parameterized route syntax, already low-cardinality); refine the active navigation transaction (opened
 // raw-URL by the F1 navigation source) via the shared `setRouteName` seam. We DELIBERATELY keep SvelteKit's

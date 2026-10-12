@@ -1,4 +1,4 @@
-// @bugsee/replay — the fail-closed masking config (design D3 / sdk-design.md §27#10). Maps Bugsee's
+// @bugsee/replay — the fail-closed masking config (design D3 /). Maps Bugsee's
 // privacy-first ReplayOptions onto rrweb's `record()` masking/blocking surface. Privacy is THE risk surface,
 // so this is a pure, exhaustively-tested function.
 //
@@ -9,7 +9,7 @@
 // rrweb's `rr-*` defaults.
 //
 // Wave 1.3/1.4 rewrote three things that made "fail-closed" untrue in practice
-// (docs/review/replay.md SEV1 #1/#2/#3, SEV2 #4/#10/#11):
+// (/#2/#3, /#10/#11):
 //
 //  1. THE SENSITIVE FLOOR IS ENFORCED IN THE SELECTOR, not in `maskInputOptions`. rrweb resolves an input's
 //     value as `unmaskInputSelector.matches(el) ? raw : maskInputValue(…)` — the un-mask check comes FIRST
@@ -28,7 +28,7 @@
 //     strictest setting.
 //
 // NOTE: upstream rrweb 2.1 has no `maskAllText` boolean (we emulate it with `maskTextSelector: '*'`) and no
-// `unmask`/`unblock` selectors — the Bugsee rrweb fork (docs/design/replay.md §4, Tier 1) adds attribute
+// `unmask`/`unblock` selectors — the Bugsee rrweb fork adds attribute
 // masking + sensitive-input hardening + opt-out selectors; this config stays fail-closed on upstream in the
 // meantime.
 import {
@@ -38,7 +38,7 @@ import {
 import type { recordOptions } from '@bugsee/rrweb';
 
 /** Media/embedded elements blocked (rendered as same-size placeholders, contents not recorded) when
- *  `blockAllMedia`. Includes `iframe` — iframes are never recorded (§27#10). */
+ * `blockAllMedia`. Includes `iframe` — iframes are never recorded. */
 export const MEDIA_SELECTOR = 'img,svg,image,video,audio,object,picture,embed,map,source,iframe';
 
 /** All `<canvas>` elements — blocked (placeholder, contents not recorded) when `blockAllCanvas`, so canvas
@@ -53,11 +53,11 @@ const BUGSEE_IGNORE = '.bugsee-ignore,[data-bugsee-ignore]';
 /**
  * MARK SCOPING — not uniform, and worth knowing before marking a container.
  *
- * Measured against the real rrweb fork (round 5), 4 of 6 consumers walk the subtree and 2 test the element
+ * Measured against the real rrweb fork, 4 of 6 consumers walk the subtree and 2 test the element
  * alone, because rrweb decides which API each selector goes through:
  *
  *   .bugsee-mask   → maskTextSelector      SUBTREE
- *   .bugsee-mask   → maskAttributeFn       SUBTREE  (this file; it was element-only until round 5)
+ * bugsee-mask → maskAttributeFn SUBTREE (this file; it was element-only until)
  *   .bugsee-block  → blockSelector         SUBTREE
  *   .bugsee-unmask → unmaskTextSelector    SUBTREE
  *   .bugsee-unmask → unmaskInputSelector   ELEMENT ONLY  ← rrweb uses matches()
@@ -522,7 +522,7 @@ export function resolveReplayMaskingOptions(
   const maskAllText = readBoolean(source, 'maskAllText', true) || maskText.invalid;
   const maskAllInputs = readBoolean(source, 'maskAllInputs', true) || ignore.invalid;
   const blockAllMedia = readBoolean(source, 'blockAllMedia', true) || block.invalid;
-  // Blocking PROTECTS: an invalid value (`'true'`, `1`, `null`) fails ON and is reported (R4V-2).
+  // Blocking PROTECTS: an invalid value (`'true'`, `1`, `null`) fails ON and is reported.
   const blockAllCanvasRaw = readOwn(source, 'blockAllCanvas');
   const blockAllCanvas = blockAllCanvasRaw === undefined ? false : blockAllCanvasRaw !== false;
   if (blockAllCanvasRaw !== undefined && typeof blockAllCanvasRaw !== 'boolean') {

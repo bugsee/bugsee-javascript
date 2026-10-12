@@ -29,7 +29,7 @@ describe('createCaptureAggregator', () => {
     expect(added).toEqual([{ type: 'network', timestamp: 1, serialized: e.serialize() }]);
   });
 
-  it("routes the entry's OWN serialize() output", () => {
+  it("routes the entry's OWN serialize output", () => {
     const { store, added } = fakeStore();
     const custom: CaptureDataEntry = {
       type: 'log',
@@ -225,10 +225,10 @@ describe('createCaptureAggregator (exporter round-trip)', () => {
   });
 });
 
-// S1 (docs/design/cloudflare-tenant-isolation.md §4.2): the tenant OWNER travels out-of-band.
+// S1: the tenant OWNER travels out-of-band.
 //
 // Durable Objects for different tenants share one isolate, one client and one capture ring, so an incident
-// in one DO uploads every other DO's data (docs/review/cloudflare.md SEV1 #2, proven on real workerd).
+// in one DO uploads every other DO's data (proven on real workerd).
 // Partitioning the store needs an owner key AT WRITE TIME. It cannot be recovered from `context_id`: that is
 // stamped INSIDE entry.data and then serialized, and StoredEntry deliberately keeps queryable fields
 // out-of-band "so ordering/time-bounds need no deserialize" (contracts.ts). So `owner` rides alongside

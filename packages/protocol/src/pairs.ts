@@ -1,6 +1,6 @@
 import { isSensitiveKey, REDACTED_URL_ENCODED } from './sensitive';
 
-// The shared `key=value&key=value` scanner (design §8.10; Android
+// The shared `key=value&key=value` scanner (Android
 // `NetworkDataSanitizer.redactSensitivePairs` parity). ONE implementation serves both places the shape
 // occurs — a URL query string and a form-urlencoded body — so the two can never drift apart on which
 // keys count as sensitive or what the replacement token is.

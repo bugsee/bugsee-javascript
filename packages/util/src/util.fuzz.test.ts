@@ -8,7 +8,7 @@ import { sha256Hex } from './sha256';
 import { utf8ByteLength } from './utf8-byte-length';
 
 /**
- * Property-based tests for the tier-0 primitives.
+ * Property-based tests for the primitives.
  *
  * These are deliberately different in kind from the example-based tests next to them. An example test
  * pins the cases someone THOUGHT of; the interesting failures in this file's targets all live in inputs

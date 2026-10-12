@@ -161,7 +161,7 @@ describe('@bugsee/elysia — real Elysia app (e2e)', () => {
 //
 // The unit suite missed this because it called `mapResponse` by hand; real Elysia short-circuits a
 // NOT_FOUND and never calls it. So the assertion has to come from `app.handle` driving the real pipeline.
-describe('@bugsee/elysia — a 404 finishes its transaction (Wave 6.8)', () => {
+describe('@bugsee/elysia — a 404 finishes its transaction', () => {
   /** Count transactions started vs finished by watching the performance extension. */
   const countingClient = (client: Bugsee) => {
     const perf = client.ext('performance') as unknown as {

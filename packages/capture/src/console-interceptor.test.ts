@@ -198,7 +198,7 @@ describe('createConsoleInterceptor — a hostile argument must not reach the app
   });
 });
 
-describe('createConsoleInterceptor — capture (fires the "log" stage)', () => {
+describe('createConsoleInterceptor— capture (fires the "log" stage)', () => {
   it('fires a LogEvent (mapped level, source "console", formatted message, clock timestamp)', () => {
     fake();
     const ic = createConsoleInterceptor({ now: () => 123 });
@@ -500,7 +500,7 @@ const parseFirefoxSafariStack = (stack: string): StackFrame[] => {
 // `error.stack` comes back in the `fn@loc` dialect, not V8's `at fn (loc)` — so the hardcoded
 // `parseV8Stack` silently parses zero frames and the trace is lost. The fix is an injectable
 // `stackParser` option (defaulting to today's `parseV8Stack`, so behavior is unchanged when unset).
-describe('createConsoleInterceptor — console.trace() stackParser seam (Finding 1)', () => {
+describe('createConsoleInterceptor — console.trace() stackParser seam', () => {
   // A real Firefox/Safari stack, mocked via the same captureStackTrace seam the other fallback tests
   // above use — the interceptor cannot tell a mocked engine dialect from a real one.
   const FIREFOX_STYLE_STACK =

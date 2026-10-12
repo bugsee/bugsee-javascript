@@ -1,5 +1,5 @@
 // @bugsee/logger — the SDK's internal diagnostic logger (the `debug.*` used across the SDK,
-// gated by __BUGSEE_DEBUG__). Standalone (design §5). Distinct from the captured-log pipeline:
+// gated by __BUGSEE_DEBUG__). Standalone. Distinct from the captured-log pipeline:
 // these are SDK self-diagnostics, not user log entries, so the levels differ from LogLevelName.
 
 /** Configured verbosity. `silent` suppresses everything. */

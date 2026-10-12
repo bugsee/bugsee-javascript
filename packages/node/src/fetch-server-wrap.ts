@@ -4,7 +4,7 @@ import {
   type ServerRequestSpan,
 } from './server-instrument';
 
-// Shared fetch-style server instrumentation (design: docs/design/incoming-server-instrumentation.md §5.3).
+// Shared fetch-style server instrumentation.
 // A `Request → Response` handler is the native server shape on Bun (`Bun.serve({fetch})`) and Deno
 // (`Deno.serve(handler)`) — and a future edge/Workers runtime. `wrapFetchHandler` decorates such a handler
 // so it opens a per-request context + an http.server transaction via the shared `runServerRequest` core
@@ -37,7 +37,7 @@ const LIST_RESPONSE_HEADERS = new Set([
   'Access-Control-Expose-Headers',
 ]);
 
-/** Decorate the returned Response with the span's configured return headers (Profile v1 §12). Guarded: a
+/** Decorate the returned Response with the span's configured return headers. Guarded: a
  * Response with no/immutable headers, or a hostile `set`/`append`, must never break the response — the
  * headers are best-effort RUM correlation. Set just before the runtime sends the Response, so streaming is
  * unaffected. List headers are appended (coexist with the app's); singletons are set. */

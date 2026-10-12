@@ -1,7 +1,7 @@
 // A portable correlation/context id: 32 lowercase-hex chars. Prefers the global Web Crypto `randomUUID`
 // (browsers, edge runtimes, Node >= 19); falls back to a NON-crypto id where the global `crypto` is absent
 // (Node < 19 — `globalThis.crypto` is unflagged only on Node 19+). Context/correlation ids are NOT security
-// tokens, so the fallback is safe. Tier-0 + runtime-portable, so it stays a GLOBAL probe — never `node:crypto`,
+// tokens, so the fallback is safe. Runtime-portable, so it stays a GLOBAL probe — never `node:crypto`,
 // which edge runtimes (Cloudflare/Vercel) don't have.
 
 export function randomId(): string {

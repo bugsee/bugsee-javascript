@@ -152,13 +152,13 @@ describe('encodeHello / isHello', () => {
   });
 });
 
-// Wave 0.2 (docs/review/REMEDIATION-PLAN.md) — the renderer is UNTRUSTED input.
+// Wave 0.2 — the renderer is UNTRUSTED input.
 //
 // `decodeStreamEntry` parses JSON that arrives over IPC from a renderer, and the preload deliberately
 // exposes `post()` to the page's main world. XSS in loaded content — or a compromised renderer-side npm
 // dependency — is the standard Electron threat model, so every field here is attacker-controlled.
 //
-// The review proved (docs/review/electron.md SEV1 #1) that `t` was passed through verbatim into
+// The review proved that `t` was passed through verbatim into
 // `store.add({ type })`, reaching `join(chunkDir(...), file)` in the disk-backed chunk store (the DEFAULT
 // on Electron main). A `t` of `../../../../victim/pwned.txt` wrote OUTSIDE the capture root, with
 // attacker-controlled content, append-only — i.e. appending to `~/.zshrc` or any `.js` the app loads is
@@ -220,7 +220,7 @@ describe('decodeStreamEntry — the payload field', () => {
   it('rejects a message with NO payload rather than emitting a non-string one', () => {
     // JSON.stringify(undefined) returns undefined, NOT a string — so an omitted `p` silently broke the
     // decoder's own `payload: string` contract and reached store.add({ serialized: undefined }), throwing
-    // out of the ipcMain listener on the memory store (docs/review/electron-wave02-review.md SEV1 #1).
+    // out of the ipcMain listener on the memory store.
     expect(decodeStreamEntry('{"k":"entry","t":"log"}')).toBeUndefined();
     expect(decodeStreamEntry('{"k":"entry","t":"log","p":null}')?.payload).toBe('null');
   });

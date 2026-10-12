@@ -904,7 +904,7 @@ describe('launch', () => {
         });
       });
 
-      it('the blackout is already in force when the FIRST provider starts (R2V-12 / m18)', async () => {
+      it('the blackout is already in force when the FIRST provider starts', async () => {
         const carrier = {};
         const atStart: boolean[] = [];
         contributeServiceManifest((registrar) => {
@@ -927,7 +927,7 @@ describe('launch', () => {
         expect(atStart).toEqual([true]);
       });
 
-      it('BlackoutStarted comes AFTER Launching, exactly once, never before it (R2V-11)', async () => {
+      it('BlackoutStarted comes AFTER Launching, exactly once, never before it', async () => {
         const seen: string[] = [];
         await launchTracked(
           'tok',
@@ -1105,7 +1105,7 @@ describe('launch', () => {
       }
     ).environment;
     // The OS, derived in-browser — `platform` is no longer the sandbox tag with a UA string for a
-    // version, and the runtime/browser identity has its own blocks (F-X20).
+    // version, and the runtime/browser identity has its own blocks.
     expect(env.platform.type).toBe('macos');
     expect(env.platform.version).toBe('10.15.7');
     expect(env.browser).toEqual({ type: 'Chrome', version: '119.0.0.0' });
@@ -1480,7 +1480,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await vi.waitFor(async () =>
       expect((await siblingGenerations(idb, 'deadsib')).has(500)).toBe(false),
     );
-    // ...and the LIVE sibling's marker + capture are completely untouched (the SEV1 fix).
+    // And the LIVE sibling's marker + capture are completely untouched (the SEV1 fix).
     expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
     expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
     expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
@@ -1576,7 +1576,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   // legs await the SAME call, and when that call is the failing one neither reaches /v2/issues. Deleting
   // the guard changed nothing observable in this fixture — not the session count, not the staged-blob
   // keys, not the marker state — with a failing session OR a succeeding one, so no assertion over it
-  // could have worked. Before round 6 the test failed on the mutation only incidentally, through the
+  // could have worked. Before the test failed on the mutation only incidentally, through the
   // blob deletion that a 403's PERMANENT verdict caused; making control-plane failures retryable removed
   // that side effect and left the test unable to fail.
   //
@@ -1588,7 +1588,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   // `node/src/launch.test.ts` (3). Deleting the guard fails 15 tests across those four packages —
   // counted by deleting it, not estimated.
 
-  // R2-1. An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
+  // An explicit `bundleStore` BYPASSES coexistence: it is the integrator's own store, stable across
   // page loads, so it holds the previous session's staged bundle while that incident's marker still sits in
   // the dead session's IndexedDB namespace. Replaying it blind and then rebuilding from the marker uploaded
   // the incident twice, with DIFFERING payloads (the staged frame vs a freshly assembled zip).
@@ -1619,7 +1619,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     await vi.waitFor(async () => expect(await siblingMarkers(idb, 'deadsib')).toEqual([])); // retired
   });
 
-  // R5-4. The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
+  // The SAME wiring under a RETRYABLE failure — the only condition under which routing a recovered
   // blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
   // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
   // platform test used an accepting transport: the second copy the durable queue stages on the way IN is
@@ -1661,7 +1661,7 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(await siblingMarkers(idb, 'deadsib')).toEqual(['deadsib/inc-deadsib']);
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff described above: the shared
+    // A repeat stop answers for the REAL drain, which is the retry backoff described above: the shared
     // afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -2106,7 +2106,7 @@ describe('launch — session replay (lazy)', () => {
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
   });
 
-  // R4V-2 (product decision): `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
+  // (product decision): `replay` collects data and is ON by default, so an invalid scalar is OFF (fail
   // closed) and reported. It never throws (`null` once did). Masking stays fail-closed regardless.
   it.each([
     null,
@@ -2128,7 +2128,7 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
-  // R4V-2: canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
+  // canvas pixels are unmasked, so ONLY boolean `true` or a plain object enables the add-on.
   it.each([
     0,
     null,
@@ -2148,7 +2148,7 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
-  // R5V-4: the canvas warning called the app's sink unguarded, so a sink that rethrows made launch() reject.
+  // the canvas warning called the app's sink unguarded, so a sink that rethrows made launch reject.
   it('a rethrowing onError cannot break launch over an invalid replay.canvas (the add-on stays OFF)', async () => {
     const onError = vi.fn(() => {
       throw new Error('the host sink rethrows');
@@ -2182,7 +2182,7 @@ describe('launch — session replay (lazy)', () => {
     expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });
 
-  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load (R4V-10)', async () => {
+  it('a throwing onError sink cannot become an unhandled rejection when replay fails to load', async () => {
     registerReplay.mockImplementationOnce(() => {
       throw new Error('replay boom');
     });
@@ -2342,11 +2342,11 @@ describe('launch — session replay (lazy)', () => {
   });
 });
 
-// R1 (docs/design/electron-renderer-incident-convergence.md §4.2): an injectable trigger pipeline.
+// R1: an injectable trigger pipeline.
 //
 // Symmetric with the `captureStore` seam that already exists. @bugsee/electron needs it because a renderer
 // must FORWARD its incidents to the main process rather than assembling a bundle from its streaming store —
-// which yields nothing — and uploading under a foreign session id (docs/review/electron.md SEV1 #2).
+// which yields nothing — and uploading under a foreign session id.
 // @bugsee/webview solves the same problem, but only because it composes its client directly via
 // createClient; a full browser SDK cannot do that without duplicating this entire module.
 describe('launchCore — triggerPipeline seam', () => {
@@ -2388,7 +2388,7 @@ describe('launchCore — triggerPipeline seam', () => {
 // because the failure this fixes was precisely that the SDK listened to `pagehide` and then did nothing
 // with it. Each test observes a real consequence — a store flushed, a listener removed — not the mere
 // presence of a listener.
-describe('flush on page hide (Wave 6.2)', () => {
+describe('flush on page hide', () => {
   /** A capture store that records whether its pending durable writes were committed. */
   const flushableStore = () => {
     const store = memStore();
@@ -2466,8 +2466,8 @@ describe('flush on page hide (Wave 6.2)', () => {
   });
 });
 
-// R2D-2: RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
-describe('launch — RelaunchedAfterCrash needs evidence (R2D-2)', () => {
+// RelaunchedAfterCrash is told only when recovery finds a dead sibling's unsettled incident marker.
+describe('launch — RelaunchedAfterCrash needs evidence', () => {
   const run = async (seed: (idb: IDBFactory, locks: LockManagerLike) => Promise<void>) => {
     const idb = new IDBFactory();
     const locks = fakeWebLocks();

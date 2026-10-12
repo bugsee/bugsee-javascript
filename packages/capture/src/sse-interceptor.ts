@@ -1,7 +1,7 @@
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { NetworkEvent, NetworkStage } from '@bugsee/protocol';
 
-// Server-Sent Events (EventSource) capture SOURCE (design §16.2). EventSource is browser/Deno (and
+// Server-Sent Events (EventSource) capture SOURCE. EventSource is browser/Deno (and
 // Node ≥ very recent), so the wrap installs only when it exists. Each connection is instrumented at
 // creation by replacing the constructor with a thin subclass; one id+sequence per connection. SSE is
 // read-only (server→client), so every message is direction 'in', with `channel` = the event name.

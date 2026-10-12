@@ -34,13 +34,13 @@ describe('parseV8Stack', () => {
     ]);
   });
 
-  it('strips a file:// URL from a frame path (§14.3)', () => {
+  it('strips a file:// URL from a frame path', () => {
     expect(parseV8Stack('    at Object.<anonymous> (file:///app/main.js:1:1)')).toEqual([
       { function: 'Object.<anonymous>', file: '/app/main.js', line: 1, column: 1 },
     ]);
   });
 
-  it('normalizes a webpack:// frame path to a friendly path (§14.3)', () => {
+  it('normalizes a webpack:// frame path to a friendly path', () => {
     expect(parseV8Stack('    at mod (webpack:///./src/app.ts:3:7)')).toEqual([
       { function: 'mod', file: './src/app.ts', line: 3, column: 7 },
     ]);
@@ -229,7 +229,7 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
     }
   });
 
-  it('fallback drops `sdkFrames` frames when the boundary is not the frame the Error is built in (R2P-1)', () => {
+  it('fallback drops `sdkFrames` frames when the boundary is not the frame the Error is built in', () => {
     const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
     (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
     try {
@@ -282,7 +282,7 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
       .map((l) => l.split('@'))
       .map(([fn, file]) => ({ function: fn, file }) as StackFrame);
 
-  it('captures into a plain holder, never re-capturing the Error: JSC ignores a second capture (R3P-1)', () => {
+  it('captures into a plain holder, never re-capturing the Error: JSC ignores a second capture', () => {
     // JavaScriptCore does not re-capture an Error that already has a stack, so frame 0 stayed the SDK
     // frame. A fresh holder object has no stack to keep.
     const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
@@ -320,7 +320,7 @@ describe('callSiteFrames — a stack for a value that never had one', () => {
     }
   });
 
-  it('fallback on a recorded JSC stack drops the SDK frames and leaves the application first (R3P-1)', () => {
+  it('fallback on a recorded JSC stack drops the SDK frames and leaves the application first', () => {
     const original = (Error as { captureStackTrace?: unknown }).captureStackTrace;
     (Error as { captureStackTrace?: unknown }).captureStackTrace = undefined;
     try {

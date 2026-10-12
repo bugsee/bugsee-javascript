@@ -299,7 +299,7 @@ describe('OTLP span emission (fuzz)', () => {
   });
 
   /**
-   * Tree integrity: no span may reference a parent that is not in the batch. The §8.8 wire drops the
+   * Tree integrity: no span may reference a parent that is not in the batch. The wire drops the
    * root's id from its children, so every "dangling" child is remapped — if that remap ever missed, the
    * collector would render an orphan span with no path to the trace root.
    */
@@ -339,7 +339,7 @@ describe('OTLP span emission (fuzz)', () => {
     );
   });
 
-  /** Profile v1 §8: the sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
+  /** the sampled trace-flag bit mirrors the decision, on EVERY span, not just the root. */
   it('mirrors the sampling decision into the trace flags of every span', () => {
     fc.assert(
       fc.property(transactionWire(), (txn) => {

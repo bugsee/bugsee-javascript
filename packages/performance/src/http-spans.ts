@@ -81,7 +81,7 @@ function backendSpanIdFromHeaders(headers: Record<string, string> | undefined): 
 }
 
 // PER-TRANSACTION ceiling on http.client spans (symmetric with the resource/long-task caps in page-load,
-// which also reset per transaction): bounds the §8.8 wire of any one long-lived transaction (e.g. the SPA
+// which also reset per transaction): bounds the wire of any one long-lived transaction (e.g. the SPA
 // continuous-transaction mode). The collector is created ONCE per session and serves EVERY transaction
 // (the pageload + each navigation + each interaction), so the budget must be keyed on the active
 // transaction — a single session-wide counter would starve http spans on every transaction after the

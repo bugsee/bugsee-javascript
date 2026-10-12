@@ -36,7 +36,6 @@ export interface ElectronMainReceiverOptions {
    * Called with a renderer-forwarded INCIDENT (R3). Routed here WITHOUT touching the capture store: an
    * incident is not a captured record, and storing it would put a second, array-shaped `crash.json` in the
    * bundle and pollute every later report in the rolling window
-   * (docs/design/electron-renderer-incident-convergence.md §4.1).
    */
   onReport?: (report: DecodedReport, windowId: number) => void;
   /** Internal-error sink. A failure handling one message must never break the channel. */

@@ -74,7 +74,7 @@ describe('bugseeHono never turns an SDK fault into the response', () => {
 
 // WAVE 2.2 — the enforcement half. The tests above cover the per-request middleware; nothing covered
 // BOOTSTRAP, where a throw stops the app starting rather than costing one report.
-describe('the host-boundary contract (Wave 2.2)', () => {
+describe('the host-boundary contract', () => {
   const hostileApp = (): never =>
     new Proxy({} as never, {
       get() {

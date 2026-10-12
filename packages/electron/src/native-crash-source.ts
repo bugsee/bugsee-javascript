@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join as pathJoin } from 'node:path';
 import type { CrashpadSessionMarker, HarvestedDump, NativeCrashSource } from '@bugsee/core';
 
-// The Electron/Crashpad NativeCrashSource (docs/design/electron-native-crashes.md §6.1). Crashpad writes a
+// The Electron/Crashpad NativeCrashSource. Crashpad writes a
 // finalized minidump per crashed process under `<crashDumpsDir>/completed/*.dmp`. With uploadToServer:false
 // it never uploads them itself — this source harvests those `.dmp`s on the next launch (the SDK bundles +
 // session-stitches each) and claims (deletes) one once its bundle is delivered, so it is never re-uploaded.

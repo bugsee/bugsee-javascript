@@ -103,7 +103,7 @@ describe('buildContext', () => {
     expect(ctx.user).toBe('alice@example.com');
   });
 
-  it('redacts secrets in the request URL before they reach http.url (Wave 1.1)', () => {
+  it('redacts secrets in the request URL before they reach http.url', () => {
     // Nest builds its own context rather than riding @bugsee/node's server-instrument core, so the fix
     // there does not reach it — `originalUrl` carries the raw query into reports and the manifest.
     const ctx = buildContext(

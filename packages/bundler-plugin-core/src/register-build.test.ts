@@ -73,7 +73,7 @@ describe('findPackageName', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('reads the name from the nearest package.json, scope included (D3)', async () => {
+  it('reads the name from the nearest package.json, scope included', async () => {
     await writeFile(join(root, 'package.json'), JSON.stringify({ name: '@acme/web-app' }));
     expect(await findPackageName(root)).toBe('@acme/web-app');
   });
@@ -286,7 +286,7 @@ describe('registerJsBuild', () => {
     await expect(registerJsBuild(base({ appToken: '' }))).rejects.toThrow(/appToken/);
   });
 
-  describe('a failure (D4 — never fails the build by default)', () => {
+  describe('a failure ( — never fails the build by default)', () => {
     const failingRun = (): RegisterJsBuildOptions['run'] =>
       vi.fn(async () => {
         throw new Error('bugsee-cli exited 30: server said no');

@@ -93,7 +93,7 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     });
   });
 
-  it('tolerates a null / undefined event (no `.reason` access throw) — reports String(undefined)', () => {
+  it('tolerates a null / undefined event (no `.reason` access throw)— reports String(undefined)', () => {
     const t = fakeTarget();
     const requests = start(createEdgeUnhandledRejectionProvider(t.target));
     expect(() => t.emit('unhandledrejection', undefined)).not.toThrow();

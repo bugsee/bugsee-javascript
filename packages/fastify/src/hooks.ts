@@ -10,7 +10,7 @@ import {
   type ServerRequestSpan,
 } from '@bugsee/node';
 
-// The Fastify adapter (design: docs/design/framework-adapters.md + incoming-server-instrumentation.md §5.4).
+// The Fastify adapter.
 // Fastify is hook-based, so a single setupFastify(app) call installs lifecycle hooks over the shared
 // server-instrumentation core (@bugsee/node):
 //   onRequest      — open the request context + http.server transaction via `openServerRequest` (enterWith,

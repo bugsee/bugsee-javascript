@@ -44,7 +44,7 @@ type ParsedBundle = SharedParsedBundle & { request: ReportEnvelope };
 
 interface LogEntry {
   message: string;
-  /** NUMERIC on the wire (design §8.9, mobile parity): 1=Error .. 5=Verbose. It shipped as the string name
+  /** NUMERIC on the wire (mobile parity): 1=Error. 5=Verbose. It shipped as the string name
    *  until Wave 5.1, because `logLevelToWire` had no callers — this assertion encoded that defect. */
   level: number;
   /** The context id the entry was stamped with (correlation-by-tagging). */
@@ -112,7 +112,6 @@ describe.each(
     // missing file, no directory-shaped stand-in, no undeclared payload, no empty declared file. Added
     // in Wave V0 — the review found a recovered crash bundle that declared `profile.json` while the zip
     // held only `profile.json/`, and no harness assertion could see it
-    // (docs/review/core-D-bundle-upload-recovery.md).
     it('every uploaded bundle is internally consistent (manifest ↔ zip)', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertBundleIntegrity(bundle);
@@ -121,7 +120,7 @@ describe.each(
     // The app token is written to the `apptoken` file by design; it must appear NOWHERE else — not in
     // logs, not in a captured network entry, not in request.json. assertNoSecrets exempts `apptoken`
     // and scans every other entry (binary included), which is the shape of check that would have caught
-    // the confirmed URL-credential leaks (docs/review/capture.md, docs/review/node-B-http-server.md).
+    // the confirmed URL-credential leaks.
     it('never leaks the app token outside the apptoken file', () => {
       expect(bundles.length).toBeGreaterThan(0);
       for (const bundle of bundles) assertNoSecrets(bundle, ['e2e-app-token']);
@@ -130,7 +129,7 @@ describe.each(
     // Every session envelope, issue envelope and bundle manifest/request.json is validated by the mock
     // collector against packages/protocol/upload-contract.schema.json as it arrives. Without this
     // assertion those violations would be recorded and ignored — the review found the collector
-    // "validates nothing — it is a byte sink, not a contract" (docs/review/e2e-harnesses.md SEV1 #7).
+    // "validates nothing — it is a byte sink, not a contract".
     it('emits nothing that violates the upload contract', () => {
       assertNoContractViolations(collector);
     });
@@ -267,7 +266,7 @@ describe.each(
     it('the AppHang bundle carries a CPU profile whose samples include the blocking frame', () => {
       // THE proof of our native-free "where is the main thread stuck" mechanism: V8 keeps sampling during
       // the stall, so the spinning function (`e2eHangSpin`) appears in the profile attached to the hang
-      // report. This is what justifies NOT adopting a native stack-capture addon (see node-diagnostics.md).
+      // report. This is what justifies NOT adopting a native stack-capture addon.
       //
       // Examined across EVERY hang bundle, not the first one delivered, and that distinction is the whole
       // fix. The watchdog reports once per hang EPISODE and re-arms when the episode ends, so a

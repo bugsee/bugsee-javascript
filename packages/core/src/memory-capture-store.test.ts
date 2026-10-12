@@ -88,7 +88,7 @@ describe('createMemoryCaptureStore — tick rotation + cleanup', () => {
 });
 
 describe('createMemoryCaptureStore — snapshot isolation', () => {
-  it('freezes the snapshot: capture after snapshot() does not change it', async () => {
+  it('freezes the snapshot(): capture after snapshot does not change it', async () => {
     const store = mk();
     store.add(rec('log', 10_000));
     const snap = store.snapshot();

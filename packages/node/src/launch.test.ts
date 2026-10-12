@@ -597,7 +597,7 @@ describe('launch', () => {
   it('reproduces Node’s crash for an unhandled rejection: prints and exits 1', async () => {
     // Registering ANY unhandledRejection listener disables Node's default (throw, exit 1) — so a passive
     // reporting listener turned a crashing service into one that kept running and reported SUCCESS to
-    // systemd/k8s/CI (docs/review/node-A-launch.md SEV1 #1).
+    // systemd/k8s/CI.
     const fp = fakeProcess();
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
     fp.fire('unhandledRejection', new Error('rejected'));
@@ -649,7 +649,6 @@ describe('launch', () => {
 
   it('re-prints an uncaught exception to stderr, which installing a listener suppressed', async () => {
     // Operators lose the stack from their log pipeline otherwise — the first artifact they reach for
-    // (SEV1 #4).
     const fp = fakeProcess();
     launchTracked('tok', baseOptions({ process: fp.proc, captureStore: memStore() }));
     fp.fire('uncaughtException', new Error('boom'));
@@ -668,7 +667,7 @@ describe('launch', () => {
     await vi.waitFor(() => expect(fp.exit).toHaveBeenCalledWith(1));
   });
 
-  it('removes the rejection policy listener on stop() — a stopped SDK owns nothing', async () => {
+  it('removes the rejection policy listener on stop — a stopped SDK owns nothing', async () => {
     // stop() removed the uncaughtException listener and forgot the rejection listener added alongside it.
     // Measured: after stop(), `warn` + a rejection kept the process alive where the control exits 1, and
     // launch→stop→launch accumulated listeners (3), producing two prints and two exits per rejection.
@@ -857,7 +856,7 @@ describe('launch', () => {
     expect(reg.size).toBe(8);
   });
 
-  it('is a per-process singleton: a second launch() warns, is ignored, and returns the first client', async () => {
+  it('is a per-process singleton: a second launch warns, is ignored, and returns the first client', async () => {
     const carrier = {};
     const onError = vi.fn();
     const first = launchTracked('tok', baseOptions({ captureStore: memStore(), carrier, onError }));
@@ -922,7 +921,7 @@ describe('launch', () => {
     expect(readdirSync(join(dir, '1-0-x', 'capture'))).toContain('0000000001000');
   });
 
-  it('uses the BATCHED capture writer: buffered entries are flushed to disk on stop()', async () => {
+  it('uses the BATCHED capture writer: buffered entries are flushed to disk on stop', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-batched-'));
     const client = launchTracked(
       'tok',
@@ -940,7 +939,7 @@ describe('launch', () => {
     expect(data).toContain('batched-capture-marker-xyz'); // durable on disk after the dispose flush
   });
 
-  it('captureWriter: "worker" wires the OFF-THREAD ring writer; entries are drained to disk by stop()', async () => {
+  it('captureWriter: "worker" wires the OFF-THREAD ring writer; entries are drained to disk by stop', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-worker-ring-'));
     const client = launchTracked(
       'tok',
@@ -996,7 +995,7 @@ describe('launch', () => {
     }
   });
 
-  it('removes the exit-flush handler on stop() (no leak across a relaunch)', async () => {
+  it('removes the exit-flush handler on stop (no leak across a relaunch)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-exit-off-'));
     const proc = fakeProcess();
     try {
@@ -1028,7 +1027,7 @@ describe('launch', () => {
   // the reason this is done the way it is: flush, remove our own listener, then RE-RAISE, so the default
   // disposition still applies and the exit code is still 143. And, like the crash policy, only when Bugsee
   // is the SOLE handler: a host with its own SIGTERM handler has taken responsibility for the outcome.
-  describe('flush on SIGTERM/SIGINT/SIGHUP (Wave 6.1)', () => {
+  describe('flush on SIGTERM/SIGINT/SIGHUP', () => {
     const withDataDir = (
       run: (dir: string, proc: ReturnType<typeof fakeProcess>) => void,
     ): void => {
@@ -1106,7 +1105,7 @@ describe('launch', () => {
       });
     });
 
-    it('removes the signal listeners on stop()', () => {
+    it('removes the signal listeners on stop', () => {
       withDataDir((dir, proc) => {
         const client = launchTracked(
           'tok',
@@ -1173,10 +1172,10 @@ describe('launch', () => {
     expect(client.isLaunched()).toBe(true);
   });
 
-  it('routes a provider-start failure to onError and still launches (never throws, §15.1)', () => {
+  it('routes a provider-start failure to onError and still launches (never throws)', () => {
     const onError = vi.fn();
     // The system-traces provider samples on start; a sampler that throws makes its start() throw.
-    // launch must isolate that to onError and still come up launched (the §15.1 guarantee).
+    // launch must isolate that to onError and still come up launched (the guarantee).
     const client = launchTracked(
       'tok',
       baseOptions({
@@ -1414,7 +1413,7 @@ describe('launch — capture recovery', () => {
     expect(marker?.request.report.summary).toBe('live boom');
   });
 
-  // R2-1. An injected `bundleStore` is the integrator's own store: stable across launches and OUTSIDE the
+  // An injected `bundleStore` is the integrator's own store: stable across launches and OUTSIDE the
   // per-instance subtree, so it holds the previous launch's staged bundle while that incident's report
   // marker still sits in the (now dead) subtree the launch left behind. Replaying the queue blind and then
   // rebuilding from the marker reported that incident TWICE, with differing payloads — the staged bundle's
@@ -1452,7 +1451,7 @@ describe('launch — capture recovery', () => {
     );
   });
 
-  // R5-4. The SAME wiring, but with a RETRYABLE failure — the only condition under which routing a
+  // The SAME wiring, but with a RETRYABLE failure — the only condition under which routing a
   // recovered blob back through the durable queue is visible. `pipeline: baseUploadPipeline` →
   // `pipeline: durable ?? baseUploadPipeline` survived every suite in three review rounds because every
   // platform test used an accepting transport: the second copy the durable queue stages on the way in is
@@ -1494,7 +1493,7 @@ describe('launch — capture recovery', () => {
     );
     // The 5 s retry backoff is deliberately still running: bound the teardown rather than wait it out.
     await client.stop(0);
-    // A repeat stop() answers for the REAL drain (R3L-1/2), which is the retry backoff just described: the
+    // A repeat stop answers for the REAL drain, which is the retry backoff just described: the
     // shared afterEach must not wait for it, so this already-stopped client leaves the tracked list.
     clients.splice(clients.indexOf(client), 1);
   });
@@ -1722,7 +1721,7 @@ describe('launch — capture recovery', () => {
     expect(started).toBe(false); // the controllingOption gate skips a disabled provider
   });
 
-  it('reportDefaultBugPriority applies to client.upload() on node too (R2D-3)', async () => {
+  it('reportDefaultBugPriority applies to client.upload on node too', async () => {
     const transport = uploadTransport();
     const client = launchTracked(
       'tok',
@@ -1745,7 +1744,7 @@ describe('launch — capture recovery', () => {
     expect(req.severity).toBe(Severity.Critical);
   });
 
-  it('profiling is on ONLY for boolean true: any other value is off and reported (R2P-5)', async () => {
+  it('profiling is on ONLY for boolean true: any other value is off and reported', async () => {
     for (const bad of ['true', 'yes', 1, {}, 'false', 0, null]) {
       const transport = uploadTransport();
       const { scheduler } = fakeScheduler();
@@ -1783,7 +1782,7 @@ describe('launch — capture recovery', () => {
     }
   });
 
-  it('detectHangs with a non-boolean keeps the default (ON) and says so (R2P-5)', () => {
+  it('detectHangs with a non-boolean keeps the default (ON) and says so', () => {
     for (const bad of ['false', 0, null]) {
       let started = false;
       const onError = vi.fn();
@@ -2099,7 +2098,7 @@ describe('launchCore', () => {
     expect(contextStore.run(frozen, () => internals?.activeSpanStore.get())).toBeUndefined();
   });
 
-  it('a broken custom store surfaces at launch — never silently, even with no APM wired (F5)', () => {
+  it('a broken custom store surfaces at launch — never silently, even with no APM wired', () => {
     // Measured: launch reads the registered store repeatedly (provider starts), and every throw is
     // reported — so a broken custom binding is LOUD at launch regardless of whether any controller
     // ever touches the span store. A dedicated probe would be redundant noise on top; this pins the
@@ -2155,7 +2154,7 @@ describe('launchCore', () => {
     expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch warning still fires
   });
 
-  it('launch() returns exactly launchCore().client (public surface unchanged)', () => {
+  it('launch returns exactly launchCore.client (public surface unchanged)', () => {
     const carrier = {};
     const client = launch('tok', baseOptions({ carrier, captureStore: memStore() }));
     clients.push(client);
@@ -2165,7 +2164,7 @@ describe('launchCore', () => {
   });
 });
 
-describe('launch — trace propagation (X3)', () => {
+describe('launch — trace propagation', () => {
   // Drive the REAL wrapped global fetch from inside an active per-request context and assert the launch-wired
   // decorator actually INJECTS (or, with the kill-switch, does not). This validates the wiring line
   // `network.interceptor.addRequestDecorator(propagationDecorator)` end-to-end — a no-op there leaves no
@@ -2213,7 +2212,7 @@ describe('launch — trace propagation (X3)', () => {
     }
   });
 
-  // R5V-6: `['']` is a substring of every URL, so the trace + session ids went to every third party; and the
+  // `['']` is a substring of every URL, so the trace + session ids went to every third party; and the
   // invalid list must reach the host's onError THROUGH the launch (not only through the unit-level builder).
   it('tracePropagationTargets [""] sends no trace to a third party; an invalid entry is reported', async () => {
     const { scheduler } = fakeScheduler();
@@ -2251,7 +2250,7 @@ describe('launch — trace propagation (X3)', () => {
     }
   });
 
-  // R4V-4: `propagateTrace` is node's OWN definition (default ON, fail OFF): `'false'`/`0`/`null`/`''` used to
+  // `propagateTrace` is node's OWN definition (default ON, fail OFF): `'false'`/`0`/`null`/`''` used to
   // leave propagation ON (a raw `=== false` read). Only boolean `true` or absence keeps it on.
   it.each([
     false,
@@ -2321,8 +2320,8 @@ describe('launch — trace propagation (X3)', () => {
   });
 });
 
-describe('launch — capturedDataStore (disk by default, D3)', () => {
-  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir()/bugsee/<appTokenHash>', () => {
+describe('launch — capturedDataStore (disk by default)', () => {
+  it('defaults to disk: wires a file-backed chunk store + durable bundle store under os.tmpdir/bugsee/<appTokenHash>', () => {
     const { scheduler } = fakeScheduler(); // no real heartbeat/flush timers
     // A DEDICATED app token, because the cleanup below removes the whole per-token root. Forty other
     // tests in this file launch under 'tok' and, with disk the default, write their own instance subtrees
@@ -2636,7 +2635,7 @@ describe('launch — incoming-server instrumentation wiring', () => {
     const attributes: Record<string, unknown> = {};
     let finished = false;
     // Annotated, NOT cast: `registerExt(name, api: unknown)` erases the type on the way in, so the
-    // annotation is the only thing that keeps this double inside tsc's conformance net (R5-8).
+    // annotation is the only thing that keeps this double inside tsc's conformance net.
     const txn: Transaction = {
       getTraceId: () => 'trace-1',
       getSpanId: () => 'span-1',

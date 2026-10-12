@@ -124,7 +124,7 @@ describe('describeTarget', () => {
     });
   });
 
-  it('attaches the nearest annotated component name (data-bugsee-component, D2)', () => {
+  it('attaches the nearest annotated component name (data-bugsee-component)', () => {
     expect(describeTarget(el({ tag: 'button', id: 'go', component: 'Toolbar' }), MASK)).toEqual({
       tag: 'button',
       id: 'go',
@@ -1427,7 +1427,7 @@ describe('createBrowserInputSource', () => {
         expect(events.map((e) => (e as { scrollY: number }).scrollY)).toEqual([1, 2]);
       });
 
-      describe('bindBlackout (R2V-3: a carrier-shared source follows the current client)', () => {
+      describe('bindBlackout: a carrier-shared source follows the current client', () => {
         it('an ACTIVE source moves its subscription to the new gate and stops watching the old one', () => {
           const target = fakeTarget();
           const frame = fakeFrame();

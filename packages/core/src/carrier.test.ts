@@ -72,7 +72,7 @@ describe('getCarrier', () => {
     expect(Object.getPrototypeOf(host.__BUGSEE__)).toBeNull();
   });
 
-  it('defaults to the real globalThis when no global is supplied', () => {
+  it('defaults to the real globalThis for the carrier version', () => {
     const carrier = getCarrier();
     expect(carrier.version).toBe(BUGSEE_SDK_VERSION);
     expect(
@@ -121,7 +121,7 @@ describe('getOrCreateInterceptor', () => {
     expect(copyBFactory).not.toHaveBeenCalled();
   });
 
-  it('defaults to the real globalThis when no global is supplied', () => {
+  it('defaults to the real globalThis for the interceptor registry', () => {
     const made = fakeInterceptor('console');
     const result = getOrCreateInterceptor('console', () => made);
     expect(result).toBe(made);
@@ -145,7 +145,7 @@ describe('getCarrierClient / setCarrierClient (per-process singleton slot)', () 
     expect(getCarrierClient(g)).toBeUndefined();
   });
 
-  it('defaults to the real globalThis when no global is supplied', () => {
+  it('defaults to the real globalThis for the client slot', () => {
     const client = { id: 'global-client' };
     setCarrierClient(client);
     expect(getCarrierClient()).toBe(client);
@@ -170,7 +170,7 @@ describe('clearCarrierClient (release only your own slot)', () => {
     expect(getCarrierClient(g)).toBe(newClient);
   });
 
-  it('defaults to the real globalThis', () => {
+  it('defaults to the real globalThis for the launch status', () => {
     const client = { id: 'g' };
     setCarrierClient(client);
     clearCarrierClient(client);
@@ -188,7 +188,7 @@ describe('getCarrierStatus / setCarrierStatus (process lifecycle state)', () => 
     expect(getCarrier(g).status).toBe(BugseeStatus.Launched);
   });
 
-  it('defaults to the real globalThis', () => {
+  it('defaults to the real globalThis for the process status', () => {
     setCarrierStatus(BugseeStatus.Stopping);
     expect(getCarrierStatus()).toBe(BugseeStatus.Stopping);
   });
@@ -211,7 +211,7 @@ describe('getProcessStatus', () => {
     expect(getProcessStatus(g)).toBe(BugseeStatus.Launching);
   });
 
-  it('defaults to the real globalThis', () => {
+  it('defaults to the real globalThis for the remembered launch options', () => {
     setCarrierStatus(BugseeStatus.Stopping);
     expect(getProcessStatus()).toBe(BugseeStatus.Stopping);
   });
@@ -249,7 +249,7 @@ describe('setCarrierLastLaunch', () => {
     expect(Object.keys(retained).sort()).toEqual([
       'carrier',
       'clock',
-      'endpoint', // deployment identity (R2P-3): a relaunch must not fall back to the production endpoint
+      'endpoint', // deployment identity: a relaunch must not fall back to the production endpoint
       'onError',
       'scheduler',
       'transport',
@@ -259,7 +259,7 @@ describe('setCarrierLastLaunch', () => {
     expect(retained.scheduler).toBe(scheduler);
   });
 
-  it('remembers a custom carrier host on the default slot, and forgets it on the next default launch (R2L-12)', () => {
+  it('remembers a custom carrier host on the default slot, and forgets it on the next default launch', () => {
     const x = {};
     setCarrierLastLaunch('tok', { carrier: x }, x);
     expect(getCarrier().lastHost).toBe(x);
@@ -286,14 +286,14 @@ describe('setCarrierLastLaunch', () => {
     expect('clock' in (getCarrier(g).lastLaunch?.options as object)).toBe(false);
   });
 
-  it('defaults to the real globalThis', () => {
+  it('defaults to the real globalThis for the remembered launch token', () => {
     setCarrierLastLaunch('tok2', undefined);
     expect(getCarrier().lastLaunch?.appToken).toBe('tok2');
   });
 });
 
 describe('getInternal (the singleton client as a service resolver)', () => {
-  it('is undefined when no client is launched', () => {
+  it('is undefined internally when no client is launched', () => {
     expect(getInternal({})).toBeUndefined();
   });
 
@@ -306,7 +306,7 @@ describe('getInternal (the singleton client as a service resolver)', () => {
 });
 
 describe('getFilters (the singleton client filters service)', () => {
-  it('is undefined when no client is launched', () => {
+  it('filters are undefined when no client is launched', () => {
     expect(getFilters({})).toBeUndefined();
   });
 
@@ -350,7 +350,7 @@ describe('service manifests', () => {
   });
 });
 
-describe('process-level lifecycle listener (L1)', () => {
+describe('process-level lifecycle listener', () => {
   it('is held on the carrier slot, shared by every reader of the same host, and cleared with null', () => {
     const g = {};
     const listener = vi.fn();
@@ -365,7 +365,7 @@ describe('process-level lifecycle listener (L1)', () => {
     expect(getCarrierLifecycleSlot({}).get()).toBeNull();
   });
 
-  describe('sealCarrierLifecycleSlot (R5L-1)', () => {
+  describe('sealCarrierLifecycleSlot', () => {
     const pageView = (g: object): Record<string, unknown> =>
       (g as { __BUGSEE__: Record<string, Record<string, unknown>> }).__BUGSEE__[
         BUGSEE_SDK_VERSION
@@ -434,7 +434,7 @@ describe('process-level lifecycle listener (L1)', () => {
   });
 });
 
-describe('process-level blackout flag (V2)', () => {
+describe('process-level blackout flag', () => {
   it('defaults to false and is per host', () => {
     const g = {};
     expect(getCarrierBlackout(g)).toBe(false);
@@ -446,7 +446,7 @@ describe('process-level blackout flag (V2)', () => {
   });
 });
 
-describe('in-flight launch (L13)', () => {
+describe('in-flight launch', () => {
   it('is recorded and cleared per host', () => {
     const g = {};
     expect(getCarrierPendingLaunch(g)).toBeUndefined();

@@ -169,7 +169,7 @@ describe('createHttpErrorDetectionProvider (Android BugseeDetectionHttpError par
     expect(report).toHaveBeenCalledTimes(4);
   });
 
-  it('the method is case-insensitive in the de-dup key and reported upper-case (R2P-8)', () => {
+  it('the method is case-insensitive in the de-dup key and reported upper-case', () => {
     const { source, report } = setup();
     source.emit('complete', netEvent({ method: 'get' }));
     source.emit('complete', netEvent({ method: 'GET' }));

@@ -212,7 +212,7 @@ describe('clearInstance', () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects a pending get() with "cleared before it initialized"', async () => {
+  it('rejects a pending get with "cleared before it initialized"', async () => {
     const c = createServiceContainer();
     const pending = c.getProvider(S).get();
     c.getProvider(S).clearInstance();

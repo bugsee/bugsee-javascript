@@ -44,7 +44,7 @@ describe('createPixelVideoController', () => {
     expect(source.started).toBe(true);
   });
 
-  it('R2V-9: a stop() while the permission check is pending means the source never starts', async () => {
+  it('a stop() while the permission check is pending means the source never starts', async () => {
     const source = fakeSource();
     let grant: (v: boolean) => void = () => {};
     const controller = createPixelVideoController({
@@ -59,7 +59,7 @@ describe('createPixelVideoController', () => {
     expect(await controller.snapshot(1)).toEqual([]);
   });
 
-  it('R2V-9: a start() that was overtaken by a newer start() does not start the source twice', async () => {
+  it('a start() that was overtaken by a newer start does not start the source twice', async () => {
     const source = fakeSource();
     const startSpy = vi.spyOn(source, 'start');
     const grants: Array<(v: boolean) => void> = [];
@@ -74,7 +74,7 @@ describe('createPixelVideoController', () => {
     expect(startSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('R2V-9: stop() then start() again works (the new start is not cancelled by the old stop)', async () => {
+  it('stop() then start() again works (the new start is not cancelled by the old stop)', async () => {
     const source = fakeSource();
     const controller = createPixelVideoController({ source });
     controller.stop();

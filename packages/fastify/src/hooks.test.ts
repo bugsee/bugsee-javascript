@@ -15,7 +15,7 @@ import {
 // Fully conforming — deliberately NOT cast (`as unknown as Transaction`/`as Transaction`). Left as a
 // bare object literal assigned to a `Transaction`-typed const, tsc's excess/missing-property check on a
 // fresh object literal rejects this double at authoring time (a CI gate) the moment `Transaction` grows a
-// member this doesn't implement — see docs/review/OPEN-FINDINGS.md §R3-7's "structural point (S2)".
+// member this doesn't implement — §'s "structural point (S2)".
 type SpiedTransaction = Transaction & {
   setName: ReturnType<typeof vi.fn>;
   setAttribute: ReturnType<typeof vi.fn>;
@@ -270,7 +270,7 @@ describe('onError hook', () => {
 
   // F-1/F-3: a Fastify schema-validation failure (FST_ERR_VALIDATION) carries `statusCode: 400` and must
   // NOT be reported like a thrown 5xx by default; and the app must be able to override the decision.
-  it('skips a genuine Fastify schema-validation 4xx by default (F-1)', () => {
+  it('skips a genuine Fastify schema-validation 4xx by default', () => {
     const { client, logException } = fakeClient();
     const app = fakeApp({ getClient: () => client });
     // The real shape Fastify's Ajv validation raises (verified against fastify@5.12.1's compileValidator
@@ -291,7 +291,7 @@ describe('onError hook', () => {
     expect(done).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a 5xx and skips a 4xx by default, like every other backend adapter (F-3)', () => {
+  it('reports a 5xx and skips a 4xx by default, like every other backend adapter', () => {
     const { client, logException } = fakeClient();
     const app = fakeApp({ getClient: () => client });
     const notFound = Object.assign(new Error('nope'), { statusCode: 404 });
@@ -309,7 +309,7 @@ describe('onError hook', () => {
     expect(logException).toHaveBeenCalledTimes(1);
   });
 
-  it('honours a custom shouldReport override (F-3)', () => {
+  it('honours a custom shouldReport override', () => {
     const { client, logException } = fakeClient();
     const app = fakeApp({ getClient: () => client, shouldReport: () => false });
     const boom = Object.assign(new Error('boom'), { statusCode: 503 });
@@ -530,7 +530,7 @@ describe('refactor: route refinement, abort guard, re-entrancy', () => {
     expect(txn.setName).toHaveBeenCalledWith('GET /users/:id'); // setRoute at finish refined the name
   });
 
-  // F-4 (round-2 D2): a manual rename (client.ext('performance').setRouteName()/setActiveTransactionName())
+  // F-4 (D2): a manual rename (client.ext('performance').setRouteName/setActiveTransactionName)
   // stamps 'bugsee.name_source' on the transaction; server-instrument's finishWith must NOT clobber it
   // with the automatic route-derived name. This exercises the check against a Transaction double whose
   // getAttributes() actually reports the stamp, not one that omits the method entirely.

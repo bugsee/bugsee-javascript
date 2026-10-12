@@ -8,8 +8,8 @@ import {
   type TraceResponseConfig,
 } from './server-instrument';
 
-// Incoming-server auto-instrumentation for node:http (design: docs/design/incoming-server-instrumentation.md
-// §5.2, decisions D2/D11/D12). Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
+// Incoming-server auto-instrumentation for node:http (design:
+// decisions D2/D11/D12). Patches `http.Server.prototype.emit` AND `https.Server.prototype.emit` (https
 // inherits emit via the tls/net chain, NOT via http.Server.prototype, so each is patched separately) to
 // bracket the `'request'` event: it opens the per-request context + an http.server transaction via the
 // shared `runServerRequest` core (run-scoped), wires finish on the response, and passes the dispatch

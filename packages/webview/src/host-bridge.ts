@@ -1,4 +1,4 @@
-// The JS→native channel across the WebView boundary (docs/design/webview-bridge.md §6.2/§9). Two host shapes
+// The JS→native channel across the WebView boundary. Two host shapes
 // are supported, under the same interface name and the same wire: Android registers an `@JavascriptInterface`
 // object `window.BugseeBridge` whose `post(raw)` receives each wire string; iOS registers a
 // `WKScriptMessageHandler` reached at `window.webkit.messageHandlers.BugseeBridge.postMessage(raw)`. The bridge
@@ -84,7 +84,7 @@ export function createHostBridge(opts?: {
   const transport = opts?.transport;
   const buffer: string[] = [];
 
-  // PINNED on first resolve (Wave 0.3 / D-A4, docs/design/webview-bridge-auth.md).
+  // PINNED on first resolve (Wave 0.3 / D-A4).
   //
   // This used to re-read `global.BugseeBridge` on every post, so any script loading after the SDK could
   // assign its own `{post}` and receive the whole capture stream — logs, request URLs, bodies — while the
@@ -98,7 +98,7 @@ export function createHostBridge(opts?: {
   // Deliberately NOT reported when a swap happens: detecting it costs a global read per post to surface an
   // event the SDK cannot act on, and a page could trigger it at will to flood `onError`.
   //
-  // What is pinned is the BOUND METHOD, not the object (review round 1). Holding the object still read
+  // What is pinned is the BOUND METHOD, not the object. Holding the object still read
   // `sink.post` on every send, so `window.BugseeBridge.post = evil` — a property write that never touches
   // the binding pinning watches — rerouted the whole capture stream. Binding captures the receiver too,
   // which is what a Java `@JavascriptInterface` host object needs.
@@ -211,7 +211,7 @@ export function createHostBridge(opts?: {
   };
 
   return {
-    // A PURE read (review round 1): this used to call `resolve()`, so merely asking "is the bridge there?"
+    // A PURE read: this used to call `resolve`, so merely asking "is the bridge there?"
     // pinned the sink as a side effect. A getter that mutates is a trap for any future caller, and it made
     // the pin happen at an arbitrary read rather than at the first message.
     get available(): boolean {

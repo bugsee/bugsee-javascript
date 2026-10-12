@@ -5,7 +5,7 @@ import {
   wrapFetchHandler,
 } from '@bugsee/node';
 
-// Native Bun.serve instrumentation (design: docs/design/incoming-server-instrumentation.md §5.3). Replaces
+// Native Bun.serve instrumentation. Replaces
 // `Bun.serve` to wrap its `fetch` handler via the shared `wrapFetchHandler` — so idiomatic
 // `Bun.serve({fetch})` apps (which bypass node:http, and so the emit-patch interceptor) get a per-request
 // context + http.server transaction. Self-skips when `Bun` is absent (e.g. unit tests on Node). KNOWN GAPS

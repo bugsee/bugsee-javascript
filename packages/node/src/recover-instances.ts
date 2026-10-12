@@ -30,7 +30,7 @@ import {
 } from './liveness';
 import { claimSubtree, releaseClaim } from './recovery-claim';
 
-// Multi-instance recovery coordinator (design: docs/design/multi-instance-disk-coexistence.md, D4). On
+// Multi-instance recovery coordinator. On
 // launch, a live aggregator scans the SIBLING instance subtrees under the shared `dataDir` and recovers each
 // one's pending bundles (its durable queue) + detected-incident markers (rebuilt from its capture chunks),
 // enqueuing them through THIS instance's upload pipeline, then removes the subtree — but ONLY once it is
@@ -58,7 +58,7 @@ export interface RecoverInstancesOptions {
   /**
    * The Crashpad-dir seam (Electron). When set, each dead sibling's crashpad-session marker is read and
    * its pending native `.dmp`s are harvested + synthesized into session-stitched crash bundles
-   * (docs/design/electron-native-crashes.md §6.1). Absent → native recovery is skipped.
+   * Absent → native recovery is skipped.
    */
   nativeCrashSource?: NativeCrashSource;
   /** Now (ms) for the heartbeat-staleness check. Default Date.now. */
@@ -70,7 +70,7 @@ export interface RecoverInstancesOptions {
   /** Failure sink. Default no-op. */
   onError?: (error: unknown) => void;
   /**
-   * Called ONCE, when recovery finds evidence that a previous run did not stop cleanly (R2D-2): a DEAD
+   * Called ONCE, when recovery finds evidence that a previous run did not stop cleanly: a DEAD
    * sibling that was NOT cleanly stopped (no `.stopped` marker) and still held an unsettled incident — a
    * pending report marker or an undelivered bundle — or a native crash dump the harvest actually found. A
    * sibling that merely died (a process that exited without calling `stop()`) with nothing in flight is NOT
@@ -150,7 +150,7 @@ async function finishSubtree(
     cleanOtherGenerations: false,
   });
 
-  // Native-crash recovery (Electron/Crashpad — docs/design/electron-native-crashes.md §6.1): a native
+  // Native-crash recovery (Electron/Crashpad): a native
   // crash kills the process instantly, leaving a crashpad-session marker (NOT a report marker). It must
   // run BEFORE recoverReports, whose sweep would otherwise free the crashed generation's capture. Only
   // when a source is configured (Electron supplies it); a still-pending native crash protects its

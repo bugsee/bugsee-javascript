@@ -104,7 +104,7 @@ const reportsFor = (onError: ReturnType<typeof vi.fn>, name: string) =>
 
 const INVALID: unknown[] = [null, 0, '', 'false', 'true', 1, []];
 
-describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError (R3V-3)', () => {
+describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError', () => {
   it.each(
     INVALID,
   )('captureLocalVariables=%j builds no capture and never touches the inspector', (bad) => {
@@ -161,7 +161,7 @@ describe('captureLocalVariables / captureSourceContext: invalid => OFF + onError
   });
 });
 
-describe('instrumentIncomingRequests: only boolean false opts out (R3V-3)', () => {
+describe('instrumentIncomingRequests: only boolean false opts out', () => {
   const installable = () => ({ install: vi.fn(), uninstall: vi.fn() });
 
   it.each(

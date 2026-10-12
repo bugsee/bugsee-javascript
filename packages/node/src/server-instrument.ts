@@ -10,7 +10,7 @@ import { NAME_SOURCE_ATTRIBUTE, sanitizeUrl } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { type RequestContextStore, RequestContextStoreToken } from './request-context-store';
 
-// Shared server-instrumentation core (design: docs/design/incoming-server-instrumentation.md). Absorbed
+// Shared server-instrumentation core. Absorbed
 // from the retired @bugsee/server-adapters engine and extended with (a) a `run`-scoped entry
 // (`runServerRequest`) for the node:http emit patch / native serve wraps / express / koa, and (b)
 // first-owner-wins RE-ENTRANCY: the first opener OWNS the per-request context + the `http.server`
@@ -36,7 +36,7 @@ export interface ServerRequestInfo {
 }
 
 /**
- * The BE→FE return headers (Profile v1 §12 return path), each independently toggleable. BOTH default OFF
+ * The BE→FE return headers (return path), each independently toggleable. BOTH default OFF
  * (T9) — there is no consumer until the frontend adapters read them, at which point they flip on. Built
  * by {@link buildTraceResponseHeaders} and applied to the response by the CALLER (the node:http patch / the
  * native serve wrap), which owns the response object — the core has no response handle.
@@ -476,7 +476,7 @@ function makeSpan(
         name: spanName(info, route),
         operation: 'http.server',
         // Continue the inbound trace as a true CHILD: adopt the trace id, make the http.server span a
-        // child of the upstream span, and adopt the upstream sampling decision (Profile v1 §12).
+        // child of the upstream span, and adopt the upstream sampling decision.
         ...(inbound !== undefined
           ? {
               continuation: {
