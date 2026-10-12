@@ -442,6 +442,102 @@ describe('launch (webview)', () => {
     expect(entriesOfType(fake.msgs(), 'events.user')).toStrictEqual([]);
   });
 
+  // V10: a blackout used to gate NOTHING in a WebView: the input and ui.* providers were built without the
+  // client's blackout gate, so a blacked-out embedded page still streamed every press and field focus.
+  describe('blackout gates the WebView interaction capture (V10)', () => {
+    const field = {
+      tagName: 'INPUT',
+      id: 'qty',
+      type: 'number',
+      getAttribute: () => null,
+      closest: () => null,
+      matches: () => false,
+    };
+    const press = (doc: ReturnType<typeof fakeEventTarget>, id: number): void =>
+      doc.emit('pointerdown', {
+        pointerId: id,
+        pointerType: 'touch',
+        target: {
+          tagName: 'BUTTON',
+          getAttribute: () => null,
+          closest: () => null,
+          matches: () => false,
+        },
+        clientX: id,
+        clientY: id,
+        button: 0,
+        pressure: 1,
+      });
+    const boot = () => {
+      const fake = fakeGlobal();
+      const doc = fakeEventTarget();
+      const win = fakeEventTarget();
+      const client = track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+        }),
+      );
+      return { fake, doc, client };
+    };
+
+    it('drops presses and ui.* breadcrumbs during the blackout, and only then', () => {
+      const { fake, doc, client } = boot();
+      press(doc, 1);
+      doc.emit('focusin', { target: field });
+      client.startBlackout();
+      press(doc, 2);
+      doc.emit('change', { target: field });
+      client.endBlackout();
+      press(doc, 3);
+      doc.emit('change', { target: field });
+      const xs = entriesOfType(fake.msgs(), 'input').map(
+        (e) => (e.p as unknown as { data: { x: number } }).data.x,
+      );
+      expect(xs).toEqual([1, 3]);
+      const categories = entriesOfType(fake.msgs(), 'breadcrumbs').map(
+        (e) => (e.p as unknown as { data: { category: string } }).data.category,
+      );
+      expect(categories).toEqual(['ui.focus', 'ui.change']);
+    });
+
+    it('a wheel turn made during the blackout is never streamed, even if its frame flushes after it ended', async () => {
+      const { fake, doc, client } = boot();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 11,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.startBlackout();
+      doc.emit('wheel', {
+        deltaX: 0,
+        deltaY: 22,
+        deltaMode: 0,
+        clientX: 1,
+        clientY: 1,
+        buttons: 0,
+      });
+      client.endBlackout();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(entriesOfType(fake.msgs(), 'input')).toStrictEqual([]);
+    });
+
+    it('does not suppress non-visual capture (an app breadcrumb still streams)', () => {
+      const { fake, client } = boot();
+      client.startBlackout();
+      client.addBreadcrumb({ category: 'app.step', message: 'kept' });
+      const categories = entriesOfType(fake.msgs(), 'breadcrumbs').map(
+        (e) => (e.p as unknown as { data: { category: string } }).data.category,
+      );
+      expect(categories).toEqual(['app.step']);
+    });
+  });
+
   it('withholds a WebView ui.* breadcrumb for a sensitive field', () => {
     const fake = fakeGlobal();
     const doc = fakeEventTarget();

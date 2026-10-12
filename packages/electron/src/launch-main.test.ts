@@ -1,4 +1,9 @@
-import { CaptureDataEntryBase, CaptureStoreToken } from '@bugsee/core';
+import {
+  BlackoutToken,
+  CaptureDataEntryBase,
+  CaptureStoreToken,
+  createBlackoutState,
+} from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
@@ -36,8 +41,13 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
   const store = { add: (e: unknown) => added.push(e) };
+  const blackout = createBlackoutState();
   const client = {
-    getService: vi.fn((token: unknown) => (token === CaptureStoreToken ? store : undefined)),
+    getService: vi.fn((token: unknown) => {
+      if (token === CaptureStoreToken) return store;
+      if (token === BlackoutToken) return blackout;
+      return undefined;
+    }),
     // The real client has this (client.ts:493); the fake lacked it, which is why wiring R3's detection
     // provider surfaced here rather than in production.
     addDetectionProvider: vi.fn(),
@@ -56,6 +66,7 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
   return {
     launch: launch as never,
     client,
+    blackout,
     stop,
     flush,
     added,
@@ -129,6 +140,7 @@ describe('launchMain', () => {
     expect(decodeControl((r.sent[0] as { raw: string }).raw)).toEqual({
       command: 'session',
       sessionId: 'sess-xyz',
+      blackout: false, // main's blackout state rides every handshake reply
     });
   });
 
@@ -226,6 +238,7 @@ describe('launchMain', () => {
       stop() {
         source.stopped = true;
       },
+      clear() {},
       snapshot: vi.fn(async (now: number) => [
         new CaptureDataEntryBase('video', now, new Uint8Array([1])),
       ]),
@@ -425,4 +438,73 @@ describe('launchMain — gone handling without a crashReporter', () => {
     await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 5000 });
     expect(JSON.stringify(submitted[0])).toContain('crashed');
   }, 10_000);
+});
+
+describe('launchMain - blackout is forwarded to every renderer (privacy)', () => {
+  const commands = (r: { sent: Array<{ raw: string }> }) =>
+    r.sent.map((m) => decodeControl(m.raw)?.command);
+
+  it('the main blackout starting / ending is broadcast to every registered renderer', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const a = fakeSender(1);
+    const b = fakeSender(2);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: a }, encodeHello());
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: b }, encodeHello());
+    f.blackout.start();
+    f.blackout.end();
+    expect(commands(a)).toEqual(['session', 'blackout-start', 'blackout-end']);
+    expect(commands(b)).toEqual(['session', 'blackout-start', 'blackout-end']);
+  });
+
+  it('a renderer that says hello DURING a blackout is told so in its session reply', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    f.blackout.start();
+    const late = fakeSender(3);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: late }, encodeHello());
+    expect(decodeControl((late.sent[0] as { raw: string }).raw)?.blackout).toBe(true);
+  });
+
+  it('stopping the client unsubscribes from the blackout (no broadcast after stop)', async () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const r = fakeSender();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    await client.stop();
+    r.sent.length = 0;
+    f.blackout.start();
+    expect(r.sent).toEqual([]);
+  });
+
+  it('gates the opt-in pixel video: the source is stopped and CLEARED when the blackout begins', async () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const calls: string[] = [];
+    const source: VideoCaptureSource = {
+      start: () => void calls.push('start'),
+      stop: () => void calls.push('stop'),
+      clear: () => void calls.push('clear'),
+      snapshot: vi.fn(async () => [new CaptureDataEntryBase('video', 1, new Uint8Array([1]))]),
+    };
+    launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      video: { source, hasPermission: () => true },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual(['start']);
+    f.blackout.start();
+    expect(calls).toEqual(['start', 'stop', 'clear']);
+    const snapshotSource = (f.received?.options.reportSnapshots ?? [])[0] as (
+      now: number,
+    ) => Promise<unknown[]>;
+    expect(await snapshotSource(5)).toEqual([]);
+    f.blackout.end();
+    expect(calls).toEqual(['start', 'stop', 'clear', 'start']);
+  });
 });

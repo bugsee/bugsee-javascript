@@ -33,6 +33,7 @@ export type InteractionSource = Interceptor<{ interact: InteractionDetail }>;
 interface EventTimingEntryLike {
   readonly name: string;
   readonly duration: number;
+  readonly startTime?: number;
   readonly interactionId?: number;
   readonly target?: unknown;
 }
@@ -56,9 +57,24 @@ export interface InteractionEnv {
   durationThreshold?: number;
   /** Mask selector forwarded to `describeTarget`. Default `[data-bugsee-hidden]`. */
   maskSelector?: string;
-  /** Blackout gate: while active, interactions are not emitted (they are interaction capture). */
+  /**
+   * Blackout gate: interactions are interaction capture, so none is emitted while it is active AND none
+   * whose event time falls inside a past blackout span (Event Timing entries are delivered LATE — often
+   * after the blackout ended — so delivery time alone would let a blacked-out click through).
+   */
   blackout?: BlackoutGate;
+  /** The clock Event Timing `startTime`s are measured on (`performance.now()`); default the global one. */
+  now?: () => number;
 }
+
+/** A blackout span on the Event Timing clock; `end` is `Infinity` while it is still open. */
+interface BlackoutSpan {
+  start: number;
+  end: number;
+}
+// Event Timing entries are delivered within seconds; a span older than this can no longer matter.
+const SPAN_RETENTION_MS = 5 * 60_000;
+const MAX_SPANS = 64;
 
 const DEFAULT_DURATION_THRESHOLD = 40;
 const DEFAULT_MASK = '[data-bugsee-hidden]';
@@ -81,6 +97,8 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
   readonly #threshold: number;
   readonly #mask: string;
   readonly #blackout: BlackoutGate | undefined;
+  readonly #now: () => number;
+  readonly #spans: BlackoutSpan[] = [];
   #observer: PerformanceObserverLike | undefined;
   // Dedupe by the monotonic interactionId high-water mark: Event Timing entries arrive in startTime order
   // and interactionId increases per interaction, so emitting only for ids ABOVE the mark yields exactly
@@ -95,6 +113,46 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
     this.#threshold = env.durationThreshold ?? DEFAULT_DURATION_THRESHOLD;
     this.#mask = env.maskSelector ?? DEFAULT_MASK;
     this.#blackout = env.blackout;
+    this.#now = env.now ?? (() => g.performance?.now() ?? 0);
+    if (env.blackout !== undefined) {
+      // Track the spans from construction (the client's lifetime), not from first subscription: a blackout
+      // that began and ended before anyone subscribed must still hide its buffered entries. A blackout
+      // already in force opens a span reaching back to the start of the timeline, 0 (fail closed).
+      if (env.blackout.isActive()) {
+        this.#spans.push({ start: 0, end: Number.POSITIVE_INFINITY });
+      }
+      env.blackout.onChange((active) => this.#onBlackout(active));
+    }
+  }
+
+  #onBlackout(active: boolean): void {
+    const now = this.#now();
+    if (active) {
+      this.#spans.push({ start: now, end: Number.POSITIVE_INFINITY });
+    } else {
+      const open = this.#spans.at(-1);
+      if (open !== undefined) {
+        open.end = now;
+      }
+    }
+    // Bound the memory: drop spans too old to matter, then the oldest beyond the cap.
+    while (
+      this.#spans.length > 0 &&
+      ((this.#spans[0] as BlackoutSpan).end < now - SPAN_RETENTION_MS ||
+        this.#spans.length > MAX_SPANS)
+    ) {
+      this.#spans.shift();
+    }
+  }
+
+  /** Whether the interaction [startTime, startTime + duration] overlaps any blackout span. */
+  #inBlackoutSpan(entry: EventTimingEntryLike): boolean {
+    const start = entry.startTime;
+    if (typeof start !== 'number') {
+      return false; // no event time to judge (the delivery-time gate still applies)
+    }
+    const end = start + entry.duration;
+    return this.#spans.some((span) => start <= span.end && end >= span.start);
   }
 
   #onEntries(entries: EventTimingEntryLike[]): void {
@@ -103,7 +161,7 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
       if (id <= this.#maxSeenId) continue; // a non-interaction (id 0) or an already-seen interaction
       this.#maxSeenId = id;
       // Blackout: the id is still consumed above, so a buffered entry cannot be replayed after it ends.
-      if (this.#blackout?.isActive() === true) continue;
+      if (this.#blackout?.isActive() === true || this.#inBlackoutSpan(entry)) continue;
       const target = targetLabel(entry.target, this.#mask);
       const component = componentNameFromElement(entry.target); // D2: nearest data-bugsee-component
       this.emit('interact', {
@@ -135,7 +193,10 @@ class BrowserInteractionSource extends InterceptorBase<{ interact: InteractionDe
   }
 }
 
-const g = globalThis as unknown as { PerformanceObserver?: PerformanceObserverCtorLike };
+const g = globalThis as unknown as {
+  PerformanceObserver?: PerformanceObserverCtorLike;
+  performance?: { now(): number };
+};
 
 /** Build the interaction source over the real Event Timing API (overridable / absent → self-skip). */
 export function createBrowserInteractionSource(env: InteractionEnv = {}): InteractionSource {
@@ -144,5 +205,6 @@ export function createBrowserInteractionSource(env: InteractionEnv = {}): Intera
     ...(env.durationThreshold !== undefined ? { durationThreshold: env.durationThreshold } : {}),
     ...(env.maskSelector !== undefined ? { maskSelector: env.maskSelector } : {}),
     ...(env.blackout !== undefined ? { blackout: env.blackout } : {}),
+    ...(env.now !== undefined ? { now: env.now } : {}),
   });
 }

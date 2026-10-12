@@ -20,6 +20,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  BlackoutToken,
   type BreadcrumbFilter,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
@@ -578,12 +579,15 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
   // `input` stream. NOT `events.user`: that stream carries the embedded app's own `client.event()` data,
   // and SDK code must never write into a `user.*` stream.
+  // The client's blackout gate gates every interaction source below (same as the browser tier): a blacked-out
+  // embedded page streams no presses, wheel turns or ui.* breadcrumbs to the host.
+  const blackout = client.getService(BlackoutToken);
   const inputSource = getOrCreateInterceptor(
     'webview-input',
-    () => createBrowserInputSource({ target: domDocument }),
+    () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  client.addCaptureProvider(createInputProvider(inputSource));
+  client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // DELIBERATELY no viewport source here, unlike `@bugsee/browser`. That tier records the frame its
   // coordinates belong to (`video.aux`) because nothing else knows it; here the native receiver
   // REWRITES every point before storing it — Android's `BridgeInputMapper` maps viewport-relative CSS
@@ -605,9 +609,13 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
     carrier,
   );
   client.addCaptureProvider(
-    createUiBreadcrumbProvider(uiBreadcrumbSource, (crumb) => {
-      client.addBreadcrumb(crumb);
-    }),
+    createUiBreadcrumbProvider(
+      uiBreadcrumbSource,
+      (crumb) => {
+        client.addBreadcrumb(crumb);
+      },
+      blackout,
+    ),
   );
 
   // Detection: window `error` → crash, `unhandledrejection` → error, on the WebView window. The report path

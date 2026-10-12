@@ -351,10 +351,18 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   /**
    * Suppress ALL visual / interaction capture (session replay, input presses, `ui.*` interaction
    * breadcrumbs, the report-time view hierarchy) until {@link endBlackout}. Logs, network, traces and
-   * events continue. Idempotent and NOT counted: one `endBlackout()` ends any number of calls, as on mobile.
+   * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry: see
+   * docs/design/blackout.md for the exact list). Idempotent and NOT counted: one `endBlackout()` ends any
+   * number of calls, as on mobile.
    */
   startBlackout(): void;
-  /** End a blackout; visual capture resumes (replay with a fresh full snapshot). No-op when not active. */
+  /**
+   * End a blackout; visual capture resumes (replay with a fresh full snapshot). No-op when not active.
+   *
+   * PRIVACY: the replay snapshot is taken from the LIVE page at this moment, so if the sensitive view is
+   * still on screen it contains whatever it holds then, including values typed during the blackout when
+   * `maskAllInputs` is false. Call `endBlackout()` only AFTER the sensitive view is gone.
+   */
   endBlackout(): void;
   /** Whether a blackout is currently in force. */
   isBlackout(): boolean;

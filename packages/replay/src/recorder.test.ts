@@ -38,6 +38,10 @@ function fakeInit() {
 const evt = (timestamp: number): eventWithTime =>
   ({ type: 3, data: { source: 0 }, timestamp }) as unknown as eventWithTime;
 
+/** The captured entries minus the blackout marker custom events (asserted separately). */
+const real = (entries: CaptureDataEntry[]) =>
+  entries.filter((e) => (e.data as { type: number }).type !== 5);
+
 const options = () => ({}) as never; // OptionsContainer — unused by the replay provider
 
 describe('createReplayCaptureProvider', () => {
@@ -99,12 +103,12 @@ describe('createReplayCaptureProvider', () => {
 
     provider.startBlackout();
     rec.emit(evt(1)); // dropped
-    expect(added).toHaveLength(0);
+    expect(real(added)).toHaveLength(0);
 
     provider.stopBlackout();
     rec.emit(evt(2)); // captured again
-    expect(added).toHaveLength(1);
-    expect(added[0]?.timestamp).toBe(2);
+    expect(real(added)).toHaveLength(1);
+    expect(real(added)[0]?.timestamp).toBe(2);
   });
 
   describe('blackout (privacy: fail closed)', () => {
@@ -149,7 +153,7 @@ describe('createReplayCaptureProvider', () => {
       provider.stopBlackout();
       stale(evt(2)); // the old closure stays dead after the restart
       rec.emit(evt(3));
-      expect(added.map((e) => e.timestamp)).toEqual([3]);
+      expect(real(added).map((e) => e.timestamp)).toEqual([3]);
     });
 
     it('never records at all when a blackout was already active at start (lazy replay load)', () => {
@@ -171,7 +175,7 @@ describe('createReplayCaptureProvider', () => {
       gate.end();
       expect(rec.record).toHaveBeenCalledTimes(2);
       rec.emit(evt(2));
-      expect(added.map((e) => e.timestamp)).toEqual([1, 2]);
+      expect(real(added).map((e) => e.timestamp)).toEqual([1, 2]);
     });
 
     it('starts the deferred recording when the gate ends a blackout that was active at start', () => {
@@ -203,6 +207,59 @@ describe('createReplayCaptureProvider', () => {
       real.start();
       real.end();
       expect(rec.record).toHaveBeenCalledTimes(1);
+    });
+
+    describe('replay blackout markers (rrweb custom events)', () => {
+      const markers = (added: CaptureDataEntry[]) =>
+        added
+          .map(
+            (e) => e.data as { type: number; data: { tag: string; payload: { active: boolean } } },
+          )
+          .filter((d) => d.type === 5 && d.data.tag === 'bugsee.blackout')
+          .map((d) => d.data.payload.active);
+
+      it('emits a custom event at blackout start and another at the end, so the player can show it', () => {
+        const gate = createBlackoutState();
+        const { rec, added, provider } = setup(gate);
+        provider.start(options());
+        rec.emit(evt(1));
+        gate.start();
+        expect(markers(added)).toEqual([true]);
+        gate.end();
+        expect(markers(added)).toEqual([true, false]);
+        const [first] = added;
+        expect(first?.type).toBe('replay');
+        // The end marker lands BEFORE the fresh Meta + FullSnapshot the restarted recorder opens with.
+        expect(added.at(-1)?.data).toMatchObject({ type: 5, data: { payload: { active: false } } });
+      });
+
+      it('carries a numeric timestamp on both the event and the entry', () => {
+        const gate = createBlackoutState();
+        const { added, provider, rec } = setup(gate);
+        provider.start(options());
+        gate.start();
+        const entry = added.at(-1);
+        expect(typeof (entry?.data as { timestamp: number }).timestamp).toBe('number');
+        expect(entry?.timestamp).toBe((entry?.data as { timestamp: number }).timestamp);
+        expect(rec.record).toHaveBeenCalledTimes(1);
+      });
+
+      it('emits no marker for a repeated start/stop, nor for a blackout that never recorded anything', () => {
+        const gate = createBlackoutState();
+        gate.start();
+        const { added, provider } = setup(gate);
+        provider.start(options()); // started blacked out: never recorded
+        expect(markers(added)).toEqual([]);
+        provider.startBlackout(); // already blacked out
+        expect(markers(added)).toEqual([]);
+      });
+
+      it('emits no marker from a provider that was never started', () => {
+        const { added, provider } = setup();
+        provider.startBlackout();
+        provider.stopBlackout();
+        expect(added).toHaveLength(0);
+      });
     });
 
     it('a manual stopBlackout() on a provider that was never started does not start recording', () => {

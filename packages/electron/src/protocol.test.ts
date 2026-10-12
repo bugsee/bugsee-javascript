@@ -94,6 +94,31 @@ describe('encodeControl / decodeControl', () => {
     expect(decodeControl(encodeControl(msg))).toEqual(msg);
   });
 
+  it('round-trips the blackout commands (main→renderer blackout forwarding)', () => {
+    expect(decodeControl(encodeControl({ command: 'blackout-start' }))).toEqual({
+      command: 'blackout-start',
+    });
+    expect(decodeControl(encodeControl({ command: 'blackout-end' }))).toEqual({
+      command: 'blackout-end',
+    });
+  });
+
+  it('the session reply can carry the main blackout state (true AND false survive the wire)', () => {
+    for (const blackout of [true, false]) {
+      const msg: ControlMessage = { command: 'session', sessionId: 's', blackout };
+      expect(decodeControl(encodeControl(msg))).toEqual(msg);
+    }
+    // Omitted when not provided.
+    expect(JSON.parse(encodeControl({ command: 'session', sessionId: 's' }))).not.toHaveProperty(
+      'bo',
+    );
+  });
+
+  it('ignores a non-boolean blackout flag on the wire (untrusted-shaped input)', () => {
+    const raw = JSON.stringify({ k: 'control', c: 'session', sid: 's', bo: 'yes' });
+    expect(decodeControl(raw)).toEqual({ command: 'session', sessionId: 's' });
+  });
+
   it('omits sessionId when absent (not encoded as undefined)', () => {
     const raw = encodeControl({ command: 'pause' });
     expect(JSON.parse(raw)).not.toHaveProperty('sid');

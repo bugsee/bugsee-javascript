@@ -118,6 +118,8 @@ const BROWSER_OPTION_DEFINITIONS = [
   { friendly: 'captureInteractions', key: BugseeOption.CaptureInteractions, default: true },
   // View hierarchy is browser/DOM-only too.
   { friendly: 'captureViewHierarchy', key: BugseeOption.CaptureViewHierarchy, default: true },
+  // A page that must load already blacked out (see BugseeLaunchOptions.startInBlackout).
+  { friendly: 'startInBlackout', key: BugseeOption.CaptureStartInBlackout, default: false },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -224,6 +226,14 @@ export interface BugseeLaunchOptions {
   captureInteractions?: boolean;
   /** Capture a DOM view hierarchy (→ viewtree) at report time. Default true. */
   captureViewHierarchy?: boolean;
+  /**
+   * Launch with a blackout ALREADY in force: visual and interaction capture (replay, input, wheel, UI
+   * breadcrumbs, the view hierarchy) stays suppressed from the first instant until you call
+   * `endBlackout()`. Use it when the page shows sensitive content from its first frame, so there is no
+   * moment to call `startBlackout()` before capture could begin. Logs, network, traces and events carry on
+   * (see `startBlackout()` for exactly what a blackout covers). Default false.
+   */
+  startInBlackout?: boolean;
   /** Report dialog: the summary must be filled in before Send. Default false (as on mobile). */
   reportSummaryRequired?: boolean;
   /** Report dialog: the description must be filled in. Default false. */
@@ -627,6 +637,15 @@ async function buildLaunch(
 
   clientRef = client;
 
+  // startInBlackout: raise the blackout BEFORE any provider is added or started (everything below, and
+  // `client.launch()`, runs after this synchronously), so no visual/interaction source can observe a single
+  // event before the app is able to call `startBlackout()` itself. Goes through the state service, the same
+  // one `client.startBlackout()` drives; the lifecycle events fire as for any blackout.
+  const blackout = client.getService(BlackoutToken);
+  if (resolved.options.get(BugseeOption.CaptureStartInBlackout, false)) {
+    blackout.start();
+  }
+
   // The identifier store. Persistence is OPT-IN (PII): when off the store is still created, but only ever
   // used to REMOVE a value an earlier opted-in launch (or another tab) left behind. When on, restore the
   // persisted identifier NOW — synchronously, before any provider starts, any service manifest runs or the
@@ -683,10 +702,9 @@ async function buildLaunch(
   // `client.event()` data and SDK capture must never be written into a `user.*` stream.
   const inputSource = getOrCreateInterceptor(
     'browser-input',
-    () => createBrowserInputSource({ target: domDocument }),
+    () => createBrowserInputSource({ target: domDocument, blackout }),
     carrier,
   );
-  const blackout = client.getService(BlackoutToken);
   client.addCaptureProvider(createInputProvider(inputSource, { blackout }));
   // The FRAME those coordinates belong to, over time → the `video.aux` stream. Without it a consumer has
   // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,

@@ -3,7 +3,7 @@
 // "capturePage + MediaRecorder" combination is composed INTO one source by the adapter (capturePage frames
 // → canvas → MediaRecorder → webm), so the controller stays source-agnostic. `snapshot` is the
 // ReportSnapshotSource contract: given the report's wall-clock time, return the buffered `video` entries.
-import type { CaptureDataEntry } from '@bugsee/core';
+import type { BlackoutGate, CaptureDataEntry } from '@bugsee/core';
 import type { VideoCaptureSource } from './video-capture';
 
 export interface PixelVideoControllerOptions {
@@ -16,6 +16,13 @@ export interface PixelVideoControllerOptions {
   hasPermission?: () => boolean | Promise<boolean>;
   /** Sink for a failing report-time snapshot — a missing video must never block the report. */
   onError?: (error: unknown) => void;
+  /**
+   * The client's blackout gate. While a blackout is in force the controller captures NOTHING: on start it
+   * stops the source and CLEARS its buffer (the frames just before the blackout may show the sensitive
+   * screen), snapshots yield no video, and a blackout already in force at start keeps the source off.
+   * When it ends the source restarts into an empty buffer.
+   */
+  blackout?: BlackoutGate;
 }
 
 export interface PixelVideoController {
@@ -31,6 +38,29 @@ export function createPixelVideoController(
   options: PixelVideoControllerOptions,
 ): PixelVideoController {
   let active = false;
+  // Bumped at every blackout start: a snapshot that was in flight across one is discarded.
+  let blackoutEpoch = 0;
+  let offBlackout: (() => void) | undefined;
+
+  const guarded = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (error) {
+      options.onError?.(error);
+    }
+  };
+
+  // Subscribed only while `active` (start() .. stop()), so every call here concerns a running controller.
+  const onBlackout = (blackedOut: boolean): void => {
+    if (blackedOut) {
+      blackoutEpoch += 1;
+      // Independent guards: a throwing stop must not skip the clear (that would keep the frames).
+      guarded(() => options.source.stop());
+      guarded(() => options.source.clear());
+    } else {
+      guarded(() => options.source.start());
+    }
+  };
 
   return {
     async start(): Promise<void> {
@@ -45,9 +75,15 @@ export function createPixelVideoController(
           return; // no permission → stay inert (no capture, snapshots return [])
         }
         active = true;
-        options.source.start();
+        // The gate is read in the same synchronous step as the subscription, so no change can slip between.
+        offBlackout = options.blackout?.onChange(onBlackout);
+        if (options.blackout?.isActive() !== true) {
+          options.source.start();
+        }
       } catch (error) {
         active = false; // roll back — never a half-started state
+        offBlackout?.();
+        offBlackout = undefined;
         options.onError?.(error);
       }
     },
@@ -56,6 +92,8 @@ export function createPixelVideoController(
         return;
       }
       active = false;
+      offBlackout?.();
+      offBlackout = undefined;
       // Robust: a throwing source.stop must not break the client shutdown cascade (launchMain calls this
       // before the real client.stop). Route to onError and continue.
       try {
@@ -65,11 +103,14 @@ export function createPixelVideoController(
       }
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
-      if (!active) {
+      if (!active || options.blackout?.isActive() === true) {
         return [];
       }
+      const epoch = blackoutEpoch;
       try {
-        return await options.source.snapshot(now);
+        const entries = await options.source.snapshot(now);
+        // A blackout began while the source was encoding: its result may hold pre-blackout frames.
+        return epoch === blackoutEpoch && options.blackout?.isActive() !== true ? entries : [];
       } catch (error) {
         options.onError?.(error);
         return [];
