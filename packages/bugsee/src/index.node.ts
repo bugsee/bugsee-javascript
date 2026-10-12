@@ -30,6 +30,17 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/no
 // to reach this token, as every framework adapter's own hooks.ts already does internally.
 export { type RequestContextStore, RequestContextStoreToken } from '@bugsee/node';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export { type BugseeNodeLaunchOptions, launch, relaunch } from './node';
 export type { Bugsee } from './server-launch';
 export { BugseeStatus, getStatus } from './status';

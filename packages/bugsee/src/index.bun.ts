@@ -22,6 +22,17 @@ export {
   type LifecycleEventType,
 } from '@bugsee/core';
 export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export { type BugseeBunLaunchOptions, launch, relaunch } from './bun';
 export type { Bugsee } from './server-launch';
 export { BugseeStatus, getStatus } from './status';

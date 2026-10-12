@@ -5,6 +5,9 @@
 // Without it a worker build resolved the BROWSER entry, whose SDK reaches for `window`/`document` and the
 // page lifecycle. `@bugsee/webworker` is the DOM-less composition for both Web Workers and Service
 // Workers, and is what this re-exports.
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 export type {
   AttributeValue,
   Breadcrumb,
@@ -19,6 +22,17 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export * from '@bugsee/webworker';
 
 import type { PerformanceFacade } from '@bugsee/performance';

@@ -8,6 +8,9 @@
 import { type Bugsee, type BugseeNodeLaunchOptions, launch } from '@bugsee/bugsee/node';
 
 export type { Bugsee } from '@bugsee/bugsee/node';
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/bugsee/node';
 
 /** Options for the Astro server (Node) composition — the batteries-included node umbrella options. */
 export interface AstroServerOptions extends BugseeNodeLaunchOptions {}

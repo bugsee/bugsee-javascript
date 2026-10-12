@@ -204,7 +204,7 @@ describe('detectHttpErrors', () => {
     await client.flush(2000);
     const request = requestOf(uploads(http)[0] as Record<string, Uint8Array>);
     expect(request.source).toMatchObject({ type: 'error', mechanism: 'http-error' });
-    expect(request.summary).toBe('HTTP 503 GET https://api.example.com/orders');
+    expect(request.summary).toBe('HTTP 503');
     expect(JSON.stringify(request)).not.toContain('SECRET');
   });
 
@@ -214,6 +214,31 @@ describe('detectHttpErrors', () => {
     await fetch('https://api.example.com/orders');
     await client.flush(2000);
     expect(uploads(http)).toHaveLength(0);
+  });
+
+  it('does not report a 4xx (mobile parity: server errors only)', async () => {
+    stubFetch(404);
+    const { client, http } = await start({ detectHttpErrors: true });
+    await fetch('https://api.example.com/orders');
+    await client.flush(2000);
+    expect(uploads(http)).toHaveLength(0);
+  });
+
+  it('treats detectHttpErrors: undefined as not supplied (stays off)', async () => {
+    stubFetch(503);
+    const { client, http } = await start({ detectHttpErrors: undefined });
+    await fetch('https://api.example.com/orders');
+    await client.flush(2000);
+    expect(uploads(http)).toHaveLength(0);
+  });
+
+  it('reports a repeated 5xx on the same templated endpoint once per session', async () => {
+    stubFetch(503);
+    const { client, http } = await start({ detectHttpErrors: true });
+    await fetch('https://api.example.com/orders/1');
+    await fetch('https://api.example.com/orders/2');
+    await client.flush(2000);
+    expect(uploads(http)).toHaveLength(1);
   });
 
   it('does not report a successful fetch', async () => {
@@ -240,6 +265,12 @@ describe('captureNetworkDefaultSanitizer', () => {
 
   it('redacts secrets in captured URLs by default', async () => {
     const text = await networkText({});
+    expect(text).toContain('api.example.com/orders');
+    expect(text).not.toContain('SECRETVALUE');
+  });
+
+  it('captureNetworkDefaultSanitizer: undefined keeps the redaction ON (privacy fail-closed)', async () => {
+    const text = await networkText({ captureNetworkDefaultSanitizer: undefined });
     expect(text).toContain('api.example.com/orders');
     expect(text).not.toContain('SECRETVALUE');
   });

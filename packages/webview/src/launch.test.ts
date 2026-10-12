@@ -511,6 +511,41 @@ describe('launch (webview)', () => {
     expect(JSON.stringify(report?.p)).toContain('kaboom-wv'); // the report carries the incident, not an empty trigger
   });
 
+  it('detectHttpErrors: a 5xx fetch triggers a native report; off by default and for 4xx (review O6)', async () => {
+    // The interceptor wraps whatever `fetch` is at activation: switch the status through a variable.
+    let status = 503;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+    try {
+      const off = fakeGlobal();
+      track('tok', baseOptions({ global: off.global, reportTrigger: true, carrier: {} }));
+      await fetch('https://api.example.com/orders');
+      expect(off.msgs().some((m) => m.k === 'report')).toBe(false); // option off
+
+      const on = fakeGlobal();
+      track(
+        'tok',
+        baseOptions({
+          global: on.global,
+          reportTrigger: true,
+          detectHttpErrors: true,
+          carrier: {},
+        }),
+      );
+      status = 404;
+      await fetch('https://api.example.com/orders');
+      expect(on.msgs().some((m) => m.k === 'report')).toBe(false); // 4xx is not a server error
+      status = 503;
+      await fetch('https://api.example.com/orders');
+      const report = on.msgs().find((m): m is ReportMessage => m.k === 'report');
+      expect(JSON.stringify(report?.p)).toContain('HTTP 503');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('uses ONE shared per-session seq across the capture stream AND the report path', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global, reportTrigger: true }));

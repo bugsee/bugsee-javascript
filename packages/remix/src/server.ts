@@ -9,6 +9,9 @@
 import { type Bugsee, type BugseeNodeLaunchOptions, launch } from '@bugsee/bugsee/node';
 
 export type { Bugsee } from '@bugsee/bugsee/node';
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/bugsee/node';
 
 // R3 (node half): the trace-meta stream transformer for a Node `entry.server` (uses node:stream) lives here
 // on the node-only entry, alongside launch.

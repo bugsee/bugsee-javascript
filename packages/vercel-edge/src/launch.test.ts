@@ -98,6 +98,49 @@ const issueJson = (transport: ReturnType<typeof uploadTransport>) => {
   };
 };
 
+describe('launchEdge: detectHttpErrors (review O6)', () => {
+  // One stub installed BEFORE launch: the interceptor wraps whatever `fetch` is at activation, so the
+  // status is switched through a variable, never by re-stubbing (that would replace the wrapper).
+  let status = 503;
+  const stub = (initial: number) => {
+    status = initial;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+  };
+
+  it('reports a 5xx fetch, once per endpoint+status, and ignores a 4xx', async () => {
+    stub(404);
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, detectHttpErrors: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders/1');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+    status = 503;
+    await fetch('https://api.example.com/orders/1');
+    await fetch('https://api.example.com/orders/2');
+    await client.flush();
+    expect(issueJson(transport).summary).toBe('HTTP 503');
+    expect(transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'))).toHaveLength(1);
+  });
+
+  it('is off by default', async () => {
+    stub(503);
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+  });
+});
+
 describe('launchEdge', () => {
   it('uploads a bundle on logException through the full edge path (session→issue→PUT)', async () => {
     const transport = uploadTransport();

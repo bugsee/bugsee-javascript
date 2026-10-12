@@ -147,11 +147,13 @@ export interface DefaultNetworkSanitizer {
   sanitizeErrorMessage(message: string): string;
 }
 
-const DEFAULT_NETWORK_SANITIZER: DefaultNetworkSanitizer = {
+// Frozen: the object is shared by every caller, so one caller replacing `sanitize` must not be able to
+// switch redaction off (or tamper with it) for the whole process.
+const DEFAULT_NETWORK_SANITIZER: DefaultNetworkSanitizer = Object.freeze({
   sanitize,
   sanitizeUrl,
   sanitizeErrorMessage,
-};
+});
 
 /** The built-in network sanitizer, for composing with a custom `setNetworkEventFilter` filter. */
 export function getDefaultNetworkSanitizer(): DefaultNetworkSanitizer {
@@ -206,7 +208,10 @@ class NetworkCaptureProvider extends CaptureProviderBase {
     //
     // The body policy (master toggle, size limit, allow-without-type) is read once per launch and
     // applied to every event before the filter/sanitizer XOR.
-    this.#sanitizeDefault = options.get(BugseeOption.CaptureNetworkDefaultSanitizer, true);
+    // FAIL CLOSED: redaction is off only for an explicit boolean `false`. `undefined`, null, 0 or a
+    // string must not strip the PII redaction (the resolver already normalizes; this guards direct callers).
+    this.#sanitizeDefault =
+      options.get<unknown>(BugseeOption.CaptureNetworkDefaultSanitizer, true) !== false;
     this.#captureBodies = options.get(BugseeOption.CaptureNetworkBodies, true);
     this.#maxBodyBytes = options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
     this.#captureBodyWithoutType = options.get(BugseeOption.CaptureNetworkBodyWithoutType, false);

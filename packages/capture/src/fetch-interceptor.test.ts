@@ -80,6 +80,52 @@ describe('createFetchInterceptor — capture', () => {
     expect(events[1]?.event.custom?.error).toBe('network down');
   });
 
+  it('emits an ABORT stage (not error) when the request is aborted: AbortError by name', async () => {
+    const { target, call } = harness(async () => {
+      throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    });
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    await expect(call('https://api/x')).rejects.toThrow('aborted');
+    expect(events.map((e) => e.stage)).toEqual(['before', 'abort']);
+    expect(events[1]?.event).toMatchObject({ type: 'abort', id: 'r1' });
+  });
+
+  it('emits an ABORT stage when the caller signal is already aborted, whatever the rejection is', async () => {
+    const { target, call } = harness(async () => {
+      throw new Error('some wrapped failure');
+    });
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    const controller = { signal: { aborted: true } }; // an already-fired AbortSignal (capture has no DOM lib)
+    await expect(call('https://api/x', { signal: controller.signal })).rejects.toThrow('wrapped');
+    expect(events.map((e) => e.stage)).toEqual(['before', 'abort']);
+  });
+
+  it('also honours the signal carried by a Request object passed as input', async () => {
+    const { target, call } = harness(async () => {
+      throw new Error('wrapped');
+    });
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    const controller = { signal: { aborted: true } }; // an already-fired AbortSignal (capture has no DOM lib)
+    await expect(
+      call({ url: 'https://api/x', method: 'GET', signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(events.map((e) => e.stage)).toEqual(['before', 'abort']);
+  });
+
+  it('keeps a plain network failure on the error stage even with a live (unaborted) signal', async () => {
+    const { target, call } = harness(async () => {
+      throw new Error('network down');
+    });
+    const ic = createFetchInterceptor({ now: () => 1, newId: () => 'r1', target });
+    const events = collect(ic);
+    const controller = { signal: { aborted: false } }; // a live AbortSignal
+    await expect(call('https://api/x', { signal: controller.signal })).rejects.toThrow();
+    expect(events.map((e) => e.stage)).toEqual(['before', 'error']);
+  });
+
   it('shares one id+sequence across a request and increments per request (default counter)', async () => {
     const { target, call } = harness(async () => okResponse());
     const ic = createFetchInterceptor({ now: () => 0, target });

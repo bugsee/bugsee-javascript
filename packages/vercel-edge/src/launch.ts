@@ -1,6 +1,7 @@
 import { fetchTransport } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   installNetworkCapture,
 } from '@bugsee/capture';
@@ -71,6 +72,9 @@ export const EdgeContextStoreToken = serviceToken<EdgeRequestContextStore>(
   'edge-request-context-store',
 );
 
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+
 export interface BugseeEdgeLaunchOptions {
   /**
    * The run()-scoped async store backing per-request context. Default: probe `globalThis.AsyncLocalStorage`,
@@ -125,6 +129,27 @@ export interface BugseeEdgeLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
   /** Detect global `unhandledrejection` (floating-promise rejections). Default true. */
@@ -218,6 +243,7 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     EDGE_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   const services = createServiceContainer();
@@ -318,6 +344,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   // Detection: the `unhandledrejection` safety net (gated by `detectCrashes` via its controllingOption). It
   // self-skips where the global target has no addEventListener (a non-edge runtime).

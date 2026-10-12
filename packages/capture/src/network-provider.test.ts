@@ -129,6 +129,32 @@ describe('createNetworkCaptureProvider', () => {
     expect(captured.custom?.headers).toEqual({ authorization: 'secret' }); // raw, not redacted
   });
 
+  it.each([
+    undefined,
+    null,
+    0,
+    'false',
+    'no',
+  ])('fails CLOSED: captureNetworkDefaultSanitizer=%j (not boolean false) keeps redaction on', async (value) => {
+    const store = mkStore();
+    const source = mkSource();
+    const p = createNetworkCaptureProvider(source);
+    p.init(buildInit(store));
+    p.start(createOptionsContainer({ [BugseeOption.CaptureNetworkDefaultSanitizer]: value }));
+    source.emit('complete', netEvent({ custom: { headers: { authorization: 'secret' } } }));
+    const captured = (await drainNetwork(store))?.[0]?.data as NetworkEvent;
+    expect(captured.custom?.headers?.authorization).not.toBe('secret');
+  });
+
+  it('getDefaultNetworkSanitizer returns a frozen object (callers cannot swap sanitize)', () => {
+    const s = getDefaultNetworkSanitizer();
+    expect(Object.isFrozen(s)).toBe(true);
+    expect(() => {
+      (s as { sanitize: unknown }).sanitize = () => 0;
+    }).toThrow(TypeError);
+    expect(getDefaultNetworkSanitizer()).toBe(s);
+  });
+
   it('sanitizes sensitive request/response headers per event (non-mutating)', async () => {
     const store = mkStore();
     const source = mkSource();

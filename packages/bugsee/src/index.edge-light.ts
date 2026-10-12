@@ -4,6 +4,9 @@
 // Without it the umbrella fell through to `default`, i.e. the BROWSER entry, which needs IndexedDB and a
 // DOM. A thin re-export: `@bugsee/vercel-edge` IS the composition root here. `launchEdge` is also exported
 // as `launch` so the umbrella's entry point has the same name on every runtime.
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 export type {
   AttributeValue,
   Breadcrumb,
@@ -18,6 +21,17 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 export * from '@bugsee/vercel-edge';
 
 import type { PerformanceFacade } from '@bugsee/performance';

@@ -203,6 +203,13 @@ interface Patch {
   original: RequestFn;
 }
 
+/** node's `AbortSignal`-driven cancellation: `AbortError`, code `ABORT_ERR`. */
+const isAbortError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  ((error as { name?: unknown }).name === 'AbortError' ||
+    (error as { code?: unknown }).code === 'ABORT_ERR');
+
 class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEvent>> {
   readonly name = 'node-http';
   readonly #now: () => number;
@@ -297,14 +304,16 @@ class NodeHttpInterceptor extends InterceptorBase<Record<NetworkStage, NetworkEv
       });
       (req as ClientRequest).on('error', (error) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.emit('error', {
+        // A request the caller cancelled (`signal`/AbortController) is an ABORT, not a failure.
+        const stage = isAbortError(error) ? 'abort' : 'error';
+        this.emit(stage, {
           timestamp: this.#now(),
           id,
           sequence: id,
           mechanism: 'http',
           url,
           method,
-          type: 'error',
+          type: stage,
           customError: message,
           custom: { error: message },
         });

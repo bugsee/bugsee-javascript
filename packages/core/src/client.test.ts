@@ -1641,7 +1641,7 @@ describe('createClient — logException', () => {
 
   it('applies mechanism, severity and labels overrides', async () => {
     const { client, report } = withTrigger();
-    await client.logException(new Error('x'), {
+    await asInternalClient(client).logException(new Error('x'), {
       mechanism: 'uncaught',
       severity: 'blocker',
       labels: ['p1'],
@@ -2298,16 +2298,15 @@ describe('createClient — upload (manual report)', () => {
   it('marks a report from the dialog with the code_dialog trigger', async () => {
     const { client, sent } = upload();
 
-    await client.upload({ trigger: 'code_dialog', summary: 's' });
+    await asInternalClient(client).upload({ trigger: 'code_dialog', summary: 's' });
 
     expect(sent().source.type).toBe('code_dialog');
   });
 
-  it('asInternalClient hands back the SAME client, reaching the wire-level trigger through the public type', async () => {
+  it('asInternalClient reaches the wire-level trigger through the public type', async () => {
     const { client, sent } = upload();
     const publicClient: BugseeClient = client;
 
-    expect(asInternalClient(publicClient)).toBe(client);
     await asInternalClient(publicClient).upload({ trigger: 'code_dialog', summary: 's' });
 
     expect(sent().source.type).toBe('code_dialog');
@@ -2384,7 +2383,7 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
   it('builds the same report fields as upload()', async () => {
     const { client, enqueue } = setup();
-    const prepared = client.prepareUpload();
+    const prepared = asInternalClient(client).prepareUpload();
 
     await prepared?.send({
       summary: 's',
@@ -2688,5 +2687,105 @@ describe('createClient — mobile-parity options (T6)', () => {
       sink(createReportingRequest({ source: { type: 'crash' } }));
       expect(severities(report)).toEqual(['blocker']);
     });
+  });
+});
+
+describe('createClient — wire-level options are not reachable from the public surface (review O12)', () => {
+  const setup = () => {
+    // `upload` goes through the upload pipeline, `logException` through the trigger pipeline.
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const report = vi.fn<TriggerPipeline['report']>(async () => ({ ok: true }));
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    const logClient = createClient({ triggerPipeline: { report } as TriggerPipeline });
+    const sentSource = () => (enqueue.mock.calls[0]?.[0] as Bundle).request.source;
+    const reportedSource = () => (report.mock.calls[0]?.[0] as ReportingRequest).source;
+    return { client, logClient, sentSource, reportedSource };
+  };
+  // What plain JavaScript can do: the type system hides these options, the runtime must too.
+  const forge = (value: unknown) => value as never;
+
+  it('upload() ignores a forged `trigger` (plain JS cannot file a code_dialog report)', async () => {
+    const { client, sentSource } = setup();
+    await client.upload(forge({ trigger: 'code_dialog', summary: 's' }));
+    expect(sentSource().type).toBe('code_upload');
+  });
+
+  it('upload() still honours every public field next to a forged trigger', async () => {
+    const { client, enqueue } = (() => {
+      const { uploadPipeline, enqueue: e } = fakeUpload();
+      return {
+        client: createClient({ uploadPipeline, appToken: 'tok', getEnvironment }),
+        enqueue: e,
+      };
+    })();
+    await client.upload(forge({ trigger: 'code_dialog', summary: 'kept', labels: ['a'] }));
+    const request = (enqueue.mock.calls[0]?.[0] as Bundle).request;
+    expect(request.summary).toBe('kept');
+    expect(request.labels).toEqual(['a']);
+  });
+
+  it('logException() ignores a forged `mechanism`', async () => {
+    const { logClient, reportedSource } = setup();
+    await logClient.logException(new Error('x'), forge({ mechanism: 'uncaught' }));
+    expect(reportedSource()).toEqual({ type: 'error', mechanism: 'programmatic' });
+  });
+
+  it('prepareUpload().send() ignores a forged `trigger`', async () => {
+    const { client, sentSource } = setup();
+    await client.prepareUpload()?.send(forge({ trigger: 'code_dialog' }));
+    expect(sentSource().type).toBe('code_upload');
+  });
+
+  it('upload() / logException() tolerate a null or non-object options argument', async () => {
+    const { client, logClient } = setup();
+    await expect(client.upload(forge(null))).resolves.toBeDefined();
+    await expect(logClient.logException(new Error('y'), forge('nope'))).resolves.toBeDefined();
+  });
+
+  it('asInternalClient keeps the wire-level options: trigger, mechanism and the dialog path', async () => {
+    const { client, logClient, sentSource, reportedSource } = setup();
+    await asInternalClient(client).upload({ trigger: 'code_dialog', summary: 's' });
+    expect(sentSource().type).toBe('code_dialog');
+    await asInternalClient(logClient).logException(new Error('z'), { mechanism: 'http-error' });
+    expect(reportedSource()).toEqual({ type: 'error', mechanism: 'http-error' });
+  });
+
+  it('asInternalClient keeps prepareUpload().send({ trigger }) (the report dialog)', async () => {
+    const { client, sentSource } = setup();
+    await asInternalClient(client).prepareUpload()?.send({ trigger: 'code_dialog' });
+    expect(sentSource().type).toBe('code_dialog');
+  });
+
+  it('prepareUpload() is null on a stopped client through both views', async () => {
+    const { client } = setup();
+    client.launch();
+    await client.stop();
+    expect(client.prepareUpload()).toBeNull();
+    expect(asInternalClient(client).prepareUpload()).toBeNull();
+  });
+
+  it('the internal view survives a platform wrapper that spreads the public client', async () => {
+    const { client, sentSource } = setup();
+    const wrapped: BugseeClient = { ...client, stop: client.stop };
+    await asInternalClient(wrapped).upload({ trigger: 'code_dialog', summary: 's' });
+    expect(sentSource().type).toBe('code_dialog');
+    // ...while the wrapper's own public methods stay stripped.
+    await wrapped.upload(forge({ trigger: 'code_dialog' }));
+  });
+
+  it('a client that was not created by createClient is returned as is (no brand to unwrap)', () => {
+    const plain = { upload: vi.fn() } as unknown as BugseeClient;
+    expect(asInternalClient(plain)).toBe(plain);
+  });
+
+  it('the public methods do not mutate the caller options object', async () => {
+    const { client } = setup();
+    const options = { trigger: 'code_dialog', summary: 's' };
+    await client.upload(forge(options));
+    expect(options).toEqual({ trigger: 'code_dialog', summary: 's' });
   });
 });

@@ -11,6 +11,7 @@ import {
 } from '@bugsee/browser';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createInputProvider,
   createLogCaptureProvider,
   createSystemEventsProvider,
@@ -108,6 +109,9 @@ const CAPABILITIES = [
   'crash',
 ] as const;
 
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+
 export interface BugseeWebViewLaunchOptions {
   /** SDK version reported in the handshake. Default the package version. */
   sdkVersion?: string;
@@ -120,6 +124,27 @@ export interface BugseeWebViewLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /**
    * Stream the viewport rects of sensitive elements (password / payment inputs + `.bugsee-hide`) so native masks
    * them in its captured frames. Default true. When on, the SDK declares the `obscuring` capability and streams
@@ -326,6 +351,7 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     COMMON_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   const services = createServiceContainer();
@@ -531,6 +557,8 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),

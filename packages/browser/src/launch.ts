@@ -193,7 +193,7 @@ export interface BugseeLaunchOptions {
   /** Capture console output as logs. Default true. */
   captureLogs?: boolean;
   /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
-  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
   /**
    * Capture breadcrumbs (`addBreadcrumb` and the automatic UI-interaction ones). Default true. Mobile SDKs
    * default this to false; on the web UI breadcrumbs are a core signal, so JS keeps them on.
@@ -250,7 +250,7 @@ export interface BugseeLaunchOptions {
   persistUserIdentifier?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
-  /** Report failed fetch/XHR exchanges (status >= 400, or no response) as `error` reports. Default false. */
+  /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
   detectHttpErrors?: boolean;
   /** Severity a crash report starts with. Default `blocker`. */
   reportDefaultCrashPriority?: SeverityName;
@@ -458,6 +458,7 @@ async function buildLaunch(
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     BROWSER_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   // The internal service container (the client's "BugseeInternal"). Register the fetch transport, then
@@ -755,7 +756,7 @@ async function buildLaunch(
   // Detection providers: window error → crash, unhandledrejection → error.
   client.addDetectionProvider(createWindowErrorProvider(win));
   client.addDetectionProvider(createUnhandledRejectionProvider(win));
-  // Failed fetch/xhr exchanges → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  // fetch/xhr server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   client.launch();

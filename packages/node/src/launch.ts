@@ -211,7 +211,7 @@ export interface BugseeLaunchOptions {
    */
   captureNetworkDefaultSanitizer?: boolean;
   /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`. Default `verbose`. */
-  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
   /** Capture breadcrumbs (`addBreadcrumb` and adapter-supplied ones). Default true (mobile defaults to false). */
   captureBreadcrumbs?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
@@ -240,7 +240,7 @@ export interface BugseeLaunchOptions {
   captureSystemEvents?: boolean;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
-  /** Report failed outbound HTTP exchanges (status >= 400, or no response) as `error` reports. Default false. */
+  /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
   detectHttpErrors?: boolean;
   /** Severity a crash report starts with: `verylow | low | medium | high | critical | blocker`. Default `blocker`. */
   reportDefaultCrashPriority?: 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
@@ -522,6 +522,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     NODE_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   // The internal service container (the client's "BugseeInternal"). Node registers its platform
@@ -835,7 +836,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // and never goes through `logException`, so a client-configured enricher was skipped for every
   // uncaught crash — the one case local variables exist for.
   client.addDetectionProvider(createUncaughtExceptionProvider(proc, enrichFrames));
-  // Failed outbound HTTP exchanges → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  // Outbound HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   if ((options.unhandledRejections ?? 'preserve') !== 'none') {
     client.addDetectionProvider(createUnhandledRejectionProvider(proc, enrichFrames));

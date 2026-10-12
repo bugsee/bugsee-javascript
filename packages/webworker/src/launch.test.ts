@@ -1513,6 +1513,36 @@ describe('launch — network capture wiring', () => {
     ]);
   });
 
+  it('detectHttpErrors (review O6): reports a 5xx fetch once per endpoint+status, ignores a 4xx, off by default', async () => {
+    // The interceptor wraps whatever `fetch` is at activation: switch the status through a variable.
+    let status = 503;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('x', { status })),
+    );
+    const offTransport = uploadTransport();
+    const off = track('tok-off', baseOptions({ transport: offTransport, carrier: {} }));
+    await fetch('https://api.example.com/orders');
+    await off.flush();
+    expect(offTransport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+
+    status = 404;
+    const transport = uploadTransport();
+    const client = track(
+      'tok',
+      baseOptions({ transport, captureNetwork: true, detectHttpErrors: true, carrier: {} }),
+    );
+    await fetch('https://api.example.com/orders/1');
+    await client.flush();
+    expect(transport.mock.calls.some(([url]) => url.endsWith('/v2/issues'))).toBe(false);
+    status = 503;
+    await fetch('https://api.example.com/orders/1');
+    await fetch('https://api.example.com/orders/2');
+    await client.flush();
+    expect(issueJson(transport).summary).toBe('HTTP 503');
+    expect(transport.mock.calls.filter(([url]) => url.endsWith('/v2/issues'))).toHaveLength(1);
+  });
+
   it('reuses a console interceptor already on the carrier instead of installing a second one', () => {
     const carrier = {};
     const existing = getOrCreateInterceptor('console', () => createConsoleInterceptor(), carrier);

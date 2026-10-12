@@ -22,6 +22,9 @@ import {
 import { attachBugseeOtelProvider } from './otel-provider';
 
 export type { Bugsee, BugseeSpanProcessor } from '@bugsee/bugsee/node';
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/bugsee/node';
 export {
   type AttachOtelProviderOptions,
   attachBugseeOtelProvider,

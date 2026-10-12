@@ -7,6 +7,17 @@
 // no pageload or startup transaction to wire.
 
 export * from '@bugsee/cloudflare';
+// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
+// entry, so their types must too).
+export type {
+  PerformanceApi,
+  PerformanceFacade,
+  Span,
+  SpanStatus,
+  StartTransactionOptions,
+  Transaction,
+  TransactionNameSource,
+} from '@bugsee/performance';
 
 import {
   type BugseeEdgeLaunchOptions,
@@ -22,6 +33,9 @@ export type Bugsee = CloudflareBugsee & PerformanceFacade;
 export function launch(appToken: string, options?: BugseeEdgeLaunchOptions): Bugsee {
   return withPerformanceFacade(launchCloudflare(appToken, options));
 }
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
+// default sanitizer rather than layering on it).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 export type {
   AttributeValue,
   Breadcrumb,

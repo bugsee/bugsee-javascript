@@ -7,8 +7,14 @@ import type { LogLevelName } from '@bugsee/types';
 
 const NAMES: readonly string[] = ['error', 'warning', 'info', 'debug', 'verbose'];
 
-/** A log-level name from untrusted input (a launch option): the canonical name, else `undefined`. */
+/**
+ * A log-level name from untrusted input (a launch option): the canonical name (case-insensitive), or the
+ * integer wire level 1-5 (1 = error … 5 = verbose, the mobile SDKs' numeric form); else `undefined`.
+ */
 export function parseLogLevelName(value: unknown): LogLevelName | undefined {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? (NAMES[value - 1] as LogLevelName | undefined) : undefined;
+  }
   if (typeof value !== 'string') {
     return undefined;
   }

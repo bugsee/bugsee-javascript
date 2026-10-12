@@ -176,3 +176,108 @@ describe('COMMON_OPTION_DEFINITIONS', () => {
     });
   });
 });
+
+describe('resolveLaunchOptions: undefined, validation and normalization (review O1/O7/O9)', () => {
+  const resolve = (values: Record<string, unknown>) => {
+    const errors: Error[] = [];
+    const r = resolveLaunchOptions(values, COMMON_OPTION_DEFINITIONS, (e) => errors.push(e));
+    return { r, errors };
+  };
+
+  it('treats an explicit undefined as NOT supplied: the default applies and the host bag omits it', () => {
+    const { r, errors } = resolve({
+      captureNetworkDefaultSanitizer: undefined,
+      detectHttpErrors: undefined,
+      maxRecordingTime: undefined,
+    });
+    expect(r.canonical[BugseeOption.CaptureNetworkDefaultSanitizer]).toBe(true);
+    expect(r.canonical[BugseeOption.DetectHttpErrors]).toBe(false);
+    expect(r.canonical[BugseeOption.Duration]).toBe(60);
+    expect(r.host).toEqual({});
+    expect(r.isEnabled(BugseeOption.DetectHttpErrors)).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  it('keeps an explicit boolean false (the only value that turns the default sanitizer off)', () => {
+    const { r } = resolve({ captureNetworkDefaultSanitizer: false, detectHttpErrors: true });
+    expect(r.canonical[BugseeOption.CaptureNetworkDefaultSanitizer]).toBe(false);
+    expect(r.canonical[BugseeOption.DetectHttpErrors]).toBe(true);
+    expect(r.host[BugseeOption.CaptureNetworkDefaultSanitizer]).toBe(false);
+  });
+
+  it.each([
+    ['captureNetworkDefaultSanitizer', BugseeOption.CaptureNetworkDefaultSanitizer, true],
+    ['detectHttpErrors', BugseeOption.DetectHttpErrors, false],
+    ['captureNetwork', BugseeOption.CaptureNetwork, true],
+    ['captureBreadcrumbs', BugseeOption.CaptureBreadcrumbs, true],
+    ['detectCrashes', BugseeOption.DetectCrash, true],
+  ])('a non-boolean %s reports to onError and falls back to the default', (friendly, key, def) => {
+    for (const bad of ['no', 0, null, {}]) {
+      const { r, errors } = resolve({ [friendly]: bad });
+      expect(r.canonical[key]).toBe(def);
+      expect(r.host[key]).toBeUndefined();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.message).toContain(friendly);
+      expect(errors[0]?.message).toContain('boolean');
+    }
+  });
+
+  it('writes the NORMALIZED value back (trimmed/lowercased names)', () => {
+    const { r, errors } = resolve({
+      captureLogsLevel: ' Warning ',
+      reportDefaultErrorPriority: 'Critical',
+      reportDefaultCrashPriority: 'High',
+    });
+    expect(r.canonical[BugseeOption.CaptureLogsLevel]).toBe('warning');
+    expect(r.host[BugseeOption.CaptureLogsLevel]).toBe('warning');
+    expect(r.canonical[BugseeOption.ReportingDefaultErrorPriority]).toBe('critical');
+    expect(r.canonical[BugseeOption.ReportingDefaultCrashPriority]).toBe('high');
+    expect(errors).toEqual([]);
+  });
+
+  it.each([
+    [1, 'error'],
+    [2, 'warning'],
+    [3, 'info'],
+    [4, 'debug'],
+    [5, 'verbose'],
+  ])('accepts the integer log level %i as %s', (n, name) => {
+    const { r, errors } = resolve({ captureLogsLevel: n });
+    expect(r.canonical[BugseeOption.CaptureLogsLevel]).toBe(name);
+    expect(errors).toEqual([]);
+  });
+
+  it.each([
+    0,
+    6,
+    2.5,
+    'urgent',
+    {},
+    true,
+  ])('an invalid log level %j reports and uses verbose', (bad) => {
+    const { r, errors } = resolve({ captureLogsLevel: bad });
+    expect(r.canonical[BugseeOption.CaptureLogsLevel]).toBe('verbose');
+    expect(r.host[BugseeOption.CaptureLogsLevel]).toBeUndefined();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain('captureLogsLevel');
+  });
+
+  it('an invalid priority reports and uses the default', () => {
+    const { r, errors } = resolve({ reportDefaultErrorPriority: 'urgent' });
+    expect(r.canonical[BugseeOption.ReportingDefaultErrorPriority]).toBe('high');
+    expect(errors[0]?.message).toContain('reportDefaultErrorPriority');
+  });
+
+  it('works without onError (silent fallback) and survives an onError that throws', () => {
+    expect(
+      resolveLaunchOptions({ detectHttpErrors: 'x' }, COMMON_OPTION_DEFINITIONS).canonical[
+        BugseeOption.DetectHttpErrors
+      ],
+    ).toBe(false);
+    expect(
+      resolveLaunchOptions({ detectHttpErrors: 'x' }, COMMON_OPTION_DEFINITIONS, () => {
+        throw new Error('boom');
+      }).canonical[BugseeOption.DetectHttpErrors],
+    ).toBe(false);
+  });
+});

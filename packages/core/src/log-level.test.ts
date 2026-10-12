@@ -11,7 +11,30 @@ describe('parseLogLevelName', () => {
     expect(parseLogLevelName('  WARNING ')).toBe('warning');
   });
 
-  it.each(['warn', 'trace', '', 3, undefined, null, {}])('rejects %j', (value) => {
+  it.each([
+    [1, 'error'],
+    [2, 'warning'],
+    [3, 'info'],
+    [4, 'debug'],
+    [5, 'verbose'],
+  ])('accepts the integer wire level %i as %s', (n, name) => {
+    expect(parseLogLevelName(n)).toBe(name);
+  });
+
+  it.each([
+    'warn',
+    'trace',
+    '',
+    '3',
+    0,
+    6,
+    -1,
+    2.5,
+    Number.NaN,
+    undefined,
+    null,
+    {},
+  ])('rejects %j', (value) => {
     expect(parseLogLevelName(value)).toBeUndefined();
   });
 });

@@ -392,7 +392,53 @@ export interface InternalBugseeClient extends BugseeClient {
  * @internal
  */
 export function asInternalClient(client: BugseeClient): InternalBugseeClient {
-  return client as InternalBugseeClient;
+  const internal = (client as { [INTERNAL_METHODS]?: InternalMethods })[INTERNAL_METHODS];
+  // A client without the brand was not made by `createClient` (a test double): nothing to unwrap.
+  return internal === undefined ? (client as InternalBugseeClient) : { ...client, ...internal };
+}
+
+// The wire-level methods of a client, kept under a symbol so the PUBLIC `upload` / `logException` /
+// `prepareUpload` can strip `trigger` / `mechanism` at RUNTIME (types alone do not stop plain JavaScript from
+// forging `code_dialog`). `Symbol.for`, so two copies of this module (the ESM and CJS builds) agree on it;
+// an enumerable own property, so a platform wrapper that spreads the client carries it along.
+const INTERNAL_METHODS = Symbol.for('com.bugsee.internal-client');
+type InternalMethods = Pick<InternalBugseeClient, 'logException' | 'upload' | 'prepareUpload'>;
+
+/** A copy of `options` without `keys`; anything that is not an object (null, a string) counts as none. */
+function withoutWireOptions<T>(options: T, ...keys: string[]): T | undefined {
+  if (typeof options !== 'object' || options === null) {
+    return undefined;
+  }
+  const copy = { ...options } as Record<string, unknown>;
+  for (const key of keys) {
+    delete copy[key];
+  }
+  return copy as T;
+}
+
+/** The public face of a freshly built client: the same methods, minus the wire-level options. */
+function exposePublicSurface(client: InternalBugseeClient): InternalBugseeClient {
+  const internal: InternalMethods = {
+    logException: client.logException,
+    upload: client.upload,
+    prepareUpload: client.prepareUpload,
+  };
+  return {
+    ...client,
+    logException: (error, options) =>
+      internal.logException(error, withoutWireOptions(options, 'mechanism')),
+    upload: (options) => internal.upload(withoutWireOptions(options, 'trigger')),
+    prepareUpload: () => {
+      const prepared = internal.prepareUpload();
+      return prepared === null
+        ? null
+        : {
+            send: (options) => prepared.send(withoutWireOptions(options, 'trigger')),
+            discard: () => prepared.discard(),
+          };
+    },
+    [INTERNAL_METHODS]: internal,
+  } as InternalBugseeClient;
 }
 
 /**
@@ -1052,7 +1098,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     addDetectionProvider: detectionCoordinator.addProvider,
   };
 
-  return {
+  const client: InternalBugseeClient = {
     ...context,
 
     registerExt: extensionRegistry.registerExt,
@@ -1396,4 +1442,5 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       return drainPending(timeout);
     },
   };
+  return exposePublicSurface(client);
 }

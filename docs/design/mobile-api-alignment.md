@@ -24,20 +24,25 @@ Each task is test-first with the mutator loop, keeps the coverage gate, and land
 ## Options added by T6
 
 Launch options (all runtimes through `COMMON_OPTION_DEFINITIONS` in `@bugsee/core`; sent in `sdk.options`
-dots-to-colons like every other option). `detectHttpErrors` is wired in `@bugsee/browser` and `@bugsee/node`.
+dots-to-colons like every other option). `detectHttpErrors` is wired wherever network capture is installed: browser, node (so Bun, Deno and the umbrella), web worker, WebView, Vercel Edge and Cloudflare.
 
 | Friendly | Canonical (`com.bugsee.option.` + ...) | Default | Notes |
 |---|---|---|---|
 | `captureLogsLevel` | `capture.logs.level` | `'verbose'` | Console and `client.log()` records less severe than the level are dropped before the log filter. |
 | `captureBreadcrumbs` | `capture.breadcrumbs` | `true` (mobile: `false`) | `false` drops every breadcrumb: `addBreadcrumb`, the UI ones and adapter ones. See Kept differences. |
-| `detectHttpErrors` | `detect.http-errors` | `false` | fetch / XHR / `node:http` responses with status >= 400, or a request with no response, file an `error` report with mechanism `http-error`. Own rate budget (20 per minute). The report text carries the method, status and URL without query string or credentials. |
+| `detectHttpErrors` | `detect.http-errors` | `false` | fetch / XHR / `node:http` **5xx** responses (Android `BugseeDetectionHttpError`, iOS `BGSDetectionProviderHttpError`) file an `error` report with mechanism `http-error`, once per session per (method, templated URL, status). Severity `high` (explicit, so `reportDefaultErrorPriority` does not override it), domain `HttpError::Server`, attributes `http_status_code` / `http_method` / `http_url` / `http_status_text`; the text is only `HTTP <status> <statusText>`. 4xx, transport failures and aborted requests are never reported. See Kept differences. |
 | `captureNetworkDefaultSanitizer` | `capture.network.default-sanitizer` | `true` | Friendly name for the existing key. A network filter still replaces the default; see `getDefaultNetworkSanitizer()`. |
 | `reportDefaultCrashPriority` | `reporting.defaults.crash-priority` | `'blocker'` | Severity of a crash report that was given none. |
 | `reportDefaultErrorPriority` | `reporting.defaults.error-priority` | `'high'` | Same for error reports (`logException`, unhandled rejections, http errors). |
 
 An explicit per-call severity (`logException(e, { severity })`) and a report handler's edits win over the default.
 Native-crash recovery (Electron) builds its report outside the client and keeps `blocker`.
-Invalid values warn through `onError` and fall back to the default.
+An option passed as `undefined` counts as not supplied (the default applies; `captureNetworkDefaultSanitizer: undefined`
+keeps the redaction ON). The default sanitizer is turned off ONLY by an explicit boolean `false`. A value of the wrong
+type (a non-boolean toggle, an unknown log level or priority name) is reported through `onError` and the default
+applies; **the library never logs, so without an `onError` the fallback is silent.** `captureLogsLevel` also accepts
+the integer levels 1-5 (1 = error ... 5 = verbose). The value in effect (trimmed, lower-cased, integers mapped to
+names) is what `sdk.options` and `getLaunchOptions()` carry, not the raw input.
 
 `getDefaultNetworkSanitizer()` (exported from `@bugsee/capture` and the `@bugsee/bugsee` entries) returns
 `{ sanitize, sanitizeUrl, sanitizeErrorMessage }`, the same object the built-in sanitizer uses. Call it from inside a
@@ -131,6 +136,27 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
 - A rejected or oversize notification is reported through `onError`, never thrown.
 
 ## Kept differences (documented, not changed)
+
+- **`detectHttpErrors` vs mobile.** Same: 5xx only, per-session de-duplication on (method, normalized URL, status),
+  severity High, domain `HttpError::Server`, attributes, query/fragment/credentials stripped. Different:
+  (1) path templating (`{id}`, `{uuid}`, `{hex}`, `{token}`, `{email}`) is ALWAYS on; Android applies it only when a
+  network filter is configured, because the JS detector reads the raw event and an e-mail in a path must never reach
+  a summary; (2) a 20-per-minute rate limit stays as a backstop behind the de-duplication (mobile has none), and the
+  de-duplication set is capped at 1000 endpoints (past that, new endpoints are dropped); (3) both the `complete` and
+  the `error` stage are accepted, like Android; an aborted request (`AbortError`, an aborted caller signal, ABORT_ERR)
+  is emitted as an `abort` stage by the fetch and `node:http` interceptors, and a request with no HTTP status is never
+  reported; a `req.destroy()` by the app cannot be told apart from a connection reset, so it stays an `error` stage
+  (still not reported, because it has no status); (4) the grouping signature is carried as one synthetic crash.json
+  frame (`HttpError.<METHOD> <url> <status>`), not a client-computed hash; the worker's managed-JS path is not
+  verified to group on it.
+- **Electron renderer options.** `captureBreadcrumbs`, `captureLogsLevel`, `reportDefault*Priority` and
+  `captureNetworkDefaultSanitizer` given to the MAIN process do not apply to data a renderer streams up, unless the
+  renderer is launched with the same options. Forwarding them in the session handshake is a follow-up.
+- **Wire options on the public client.** `UploadOptions.trigger` and `LogExceptionOptions.mechanism` are hidden by
+  type AND stripped at runtime from the public `upload` / `logException` / `prepareUpload().send`, so plain JavaScript
+  cannot forge a `code_dialog` report. SDK packages reach them through `asInternalClient`, which is no longer the
+  same object as the public client (it is a copy carrying the unstripped methods). The `@internal` types remain in the
+  published d.ts.
 
 - `captureBreadcrumbs` defaults to `true`, not mobile's `false`: UI-interaction breadcrumbs (click / change / submit /
   focus) are a core web signal and were already always on. The option can now switch them off.

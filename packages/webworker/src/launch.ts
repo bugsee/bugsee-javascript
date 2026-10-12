@@ -14,6 +14,7 @@ import {
 } from '@bugsee/browser-utils';
 import {
   createConsoleInterceptor,
+  createHttpErrorDetectionProvider,
   createLogCaptureProvider,
   installNetworkCapture,
 } from '@bugsee/capture';
@@ -84,6 +85,9 @@ const WORKER_OPTION_DEFINITIONS = [
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
 ];
 
+/** A report severity / priority name (the `Severity` scale of the report). */
+type SeverityLevel = 'verylow' | 'low' | 'medium' | 'high' | 'critical' | 'blocker';
+
 export interface BugseeWorkerLaunchOptions {
   /** API origin (no trailing slash). Default https://api.bugsee.com. */
   endpoint?: string;
@@ -102,6 +106,27 @@ export interface BugseeWorkerLaunchOptions {
   captureNetworkBodies?: boolean;
   /** Max captured request/response body size in bytes. Default 20480. */
   maxNetworkBodySize?: number;
+  /** Minimum level of a log record to capture: `error | warning | info | debug | verbose`, or the integer 1-5. Default `verbose`. */
+  captureLogsLevel?: 'error' | 'warning' | 'info' | 'debug' | 'verbose' | 1 | 2 | 3 | 4 | 5;
+  /** Capture breadcrumbs (`addBreadcrumb`). Default true (mobile defaults to false). */
+  captureBreadcrumbs?: boolean;
+  /**
+   * Apply the built-in network PII sanitizer (URL, headers, bodies, error text). Default true; off ONLY for an
+   * explicit `false`. A `setNetworkEventFilter` filter REPLACES it; compose with `getDefaultNetworkSanitizer()`.
+   */
+  captureNetworkDefaultSanitizer?: boolean;
+  /**
+   * Report HTTP SERVER errors (status 500-599) of fetch/XHR exchanges as `error` reports, once per session per
+   * (method, templated URL, status), severity High, domain `HttpError::Server`. 4xx, transport failures and
+   * aborted requests are not reported (mobile parity). Default false.
+   */
+  detectHttpErrors?: boolean;
+  /** Severity a crash report starts with. Default `blocker`. */
+  reportDefaultCrashPriority?: SeverityLevel;
+  /** Severity an error report starts with. Default `high`. */
+  reportDefaultErrorPriority?: SeverityLevel;
+  /** `notify()` batching window in ms (0 = send as soon as the tick ends). Default 0. */
+  notifyFlushDelay?: number;
   /** Capture a body even when its Content-Type is missing/blank. Default false. */
   captureNetworkBodyWithoutType?: boolean;
   /** Detect global `error` + `unhandledrejection` on the worker scope. Default true. */
@@ -179,6 +204,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const resolved = resolveLaunchOptions(
     options as unknown as Record<string, unknown>,
     WORKER_OPTION_DEFINITIONS,
+    options.onError,
   );
 
   const services = createServiceContainer();
@@ -313,6 +339,8 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
+  client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
   // Detection: global `error` → crash, `unhandledrejection` → error, on the worker scope (gated by
   // detectCrashes via each provider's controllingOption). Skipped if there is no worker global (non-worker).

@@ -214,8 +214,24 @@ describe('detectHttpErrors', () => {
     await client.flush(2000);
     const request = requestOf(uploads(transport)[0] as Files);
     expect(request.source).toMatchObject({ type: 'error', mechanism: 'http-error' });
-    expect(request.summary).toBe('HTTP 502 GET https://api.example.com/orders');
+    expect(request.summary).toBe('HTTP 502');
     expect(JSON.stringify(request)).not.toContain('SECRET');
+  });
+
+  it('does not report a 4xx (mobile parity: server errors only)', async () => {
+    stubFetch(404);
+    const { client, transport } = start({ detectHttpErrors: true });
+    await fetch('https://api.example.com/orders');
+    await client.flush(2000);
+    expect(uploads(transport)).toHaveLength(0);
+  });
+
+  it('treats detectHttpErrors: undefined as not supplied (stays off)', async () => {
+    stubFetch(502);
+    const { client, transport } = start({ detectHttpErrors: undefined });
+    await fetch('https://api.example.com/orders');
+    await client.flush(2000);
+    expect(uploads(transport)).toHaveLength(0);
   });
 
   it('is off by default', async () => {

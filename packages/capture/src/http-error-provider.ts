@@ -1,5 +1,6 @@
 import {
   type Clock,
+  type CrashJson,
   createRateLimiter,
   createSystemClock,
   type DetectionProvider,
@@ -15,52 +16,65 @@ import {
   sanitizeUrl,
 } from '@bugsee/protocol';
 
+import { sanitizeDetectorUrl } from './detector-url-sanitizer';
 import type { NetworkSource } from './network-provider';
 
-// `detectHttpErrors` (Android `DetectAndReportHttpErrors`): a failed HTTP exchange — a response with
-// status >= 400, or a request that never got a response — becomes an `error` report with mechanism
-// `http-error`. It is a detection provider that SUBSCRIBES to the network sources (pub/sub design), so it
-// adds no hook of its own and sees exactly what network capture sees (the SDK's own traffic is already
-// skipped by the interceptors). Off by default, as on mobile.
+// `detectHttpErrors` (Android `DetectAndReportHttpErrors`, iOS `BGSDetectionProviderHttpError`): an HTTP
+// SERVER error — a response with status 500-599 — becomes an `error` report with mechanism `http-error`.
+// Matches mobile:
+//  - 4xx is NOT reported (validation, auth challenges and conditional requests are routinely expected), and
+//    neither is a transport failure or an aborted request (no HTTP status);
+//  - once per (method, normalized URL, status) per session — retries and polling do not re-file;
+//  - severity High, set EXPLICITLY so `reportDefaultErrorPriority` does not override it;
+//  - domain `HttpError::Server`; grouping is pinned to endpoint + exact status through one frame whose
+//    label is `<METHOD> <normalized URL> <status>`;
+//  - attributes `http_status_code` / `http_method` / `http_url` (+ `http_status_text`); the text carries
+//    only `HTTP <status> <statusText>`.
+// It is a detection provider that SUBSCRIBES to the network sources (pub/sub design), so it adds no hook of
+// its own and sees exactly what network capture sees (the SDK's own traffic is already skipped by the
+// interceptors). Off by default, as on mobile.
 
 /** Request/response transports. ws/sse/webtransport have no status; sendBeacon is fire-and-forget. */
 const HTTP_MECHANISMS: ReadonlySet<NetworkMechanism> = new Set(['fetch', 'xhr', 'http']);
 
-// A failing endpoint that is polled, or a page that retries in a loop, would otherwise file a report per
-// attempt. This is a budget of its own, so that such a storm cannot also exhaust the client's capture
-// budget for real crashes. 20 per minute: enough to see the pattern, far from a flood.
+const MIN_SERVER_ERROR = 500;
+const MAX_SERVER_ERROR = 599;
+const DOMAIN = 'HttpError::Server';
+const FRAME_CLASS = 'HttpError';
+
+// A BACKSTOP behind the per-session de-duplication: a storm of DISTINCT failing endpoints must not exhaust
+// the client's capture budget for real crashes. 20 per minute: enough to see the pattern, far from a flood.
 const DEFAULT_RATE_LIMIT: RateLimiterOptions = { limit: 20, windowMs: 60_000 };
+// Bounds the de-duplication set (memory). Templating keeps real apps far below this; once full, endpoints not
+// yet seen are dropped rather than the set growing without limit.
+const DEFAULT_MAX_ENDPOINTS = 1000;
 
 export interface HttpErrorProviderOptions {
   /** Monotonic time source for the rate limiter; injectable. Default the system clock. */
   clock?: Clock;
-  /** Reports per rolling window. Default 20 per 60 s. */
+  /** Reports per rolling window (a backstop behind the de-duplication). Default 20 per 60 s. */
   rateLimit?: RateLimiterOptions;
+  /** Most distinct (method, URL, status) tuples remembered per session. Default 1000. */
+  maxEndpoints?: number;
 }
 
-/**
- * The request target for a report's text: scheme, host and path only. The query string and fragment are
- * dropped entirely (that is where tokens and ids live, and keeping them would also make every request its
- * own issue), credentials are dropped, and the remainder is passed through the default URL redaction.
- */
-const reportableUrl = (raw: unknown): string => {
-  const url = String(raw);
-  const match = /^([a-z][a-z0-9+.-]*:\/\/)(?:[^/?#]*@)?([^/?#]*)([^?#]*)/i.exec(url);
-  const stripped =
-    match !== null ? `${match[1]}${match[2]}${match[3]}` : (url.split(/[?#]/)[0] ?? '');
-  return sanitizeUrl(stripped);
-};
+/** Scheme, host and templated path only (see `sanitizeDetectorUrl`), then the default URL redaction. */
+const reportableUrl = (raw: unknown): string =>
+  sanitizeUrl(sanitizeDetectorUrl(raw == null ? '' : String(raw)));
 
 class HttpErrorDetectionProvider extends DetectionProviderBase {
   readonly name = 'http-error';
   readonly controllingOption = BugseeOption.DetectHttpErrors;
   readonly #source: NetworkSource;
   readonly #limiter: { tryAcquire(): boolean };
+  readonly #maxEndpoints: number;
+  readonly #reported = new Set<string>();
   #off: (() => void) | null = null;
 
   constructor(source: NetworkSource, options: HttpErrorProviderOptions) {
     super();
     this.#source = source;
+    this.#maxEndpoints = options.maxEndpoints ?? DEFAULT_MAX_ENDPOINTS;
     this.#limiter = createRateLimiter(
       options.clock ?? createSystemClock(),
       options.rateLimit ?? DEFAULT_RATE_LIMIT,
@@ -77,42 +91,65 @@ class HttpErrorDetectionProvider extends DetectionProviderBase {
   protected override onStop(): void {
     this.#off?.();
     this.#off = null;
+    this.#reported.clear();
   }
 
   #onNetwork(stage: string, event: NetworkEvent): void {
-    if (!HTTP_MECHANISMS.has(event.mechanism)) {
+    // Android accepts both the completed and the errored stage (a 5xx can arrive on either) and relies on
+    // the status gate to exclude transport failures; every other stage never carries a response.
+    if (!HTTP_MECHANISMS.has(event.mechanism) || (stage !== 'complete' && stage !== 'error')) {
       return;
     }
-    const failedResponse = stage === 'complete' && (event.status ?? 0) >= 400;
-    if (!failedResponse && stage !== 'error') {
+    const status = event.status ?? 0;
+    if (status < MIN_SERVER_ERROR || status > MAX_SERVER_ERROR) {
       return;
     }
+    const method = event.method;
+    const url = reportableUrl(event.url);
+    const label = `${method || 'HTTP'} ${url} ${status}`;
+    if (this.#reported.has(label) || this.#reported.size >= this.#maxEndpoints) {
+      return;
+    }
+    // Only after the cheap gates, and BEFORE consuming the slot: a failure the backstop drops stays
+    // reportable once the window reopens.
     if (!this.#limiter.tryAcquire()) {
       return;
     }
-    const target = `${event.method} ${reportableUrl(event.url)}`;
-    if (failedResponse) {
-      const statusText = event.statusText ? ` ${sanitizeErrorMessage(event.statusText)}` : '';
-      this.handleReportingRequest(
-        this.createErrorReport({
-          mechanism: 'http-error',
-          summary: `HTTP ${event.status} ${target}`,
-          description: `${target} -> ${event.status}${statusText}`,
-        }),
-      );
-      return;
+    this.#reported.add(label);
+
+    const statusText = event.statusText ? sanitizeErrorMessage(event.statusText) : '';
+    const summary = statusText === '' ? `HTTP ${status}` : `HTTP ${status} ${statusText}`;
+    const crash: CrashJson = {
+      exception_type: 'error',
+      ndkCrash: false,
+      handled: true,
+      exception: {
+        name: FRAME_CLASS,
+        reason: summary,
+        domain: DOMAIN,
+        // One synthetic frame pins grouping to endpoint + exact status (Android's frame-method slot).
+        frames: [{ trace: `${FRAME_CLASS}.${label}`, user: false }],
+      },
+    };
+    const request = this.createErrorReport({
+      mechanism: 'http-error',
+      severity: 'high',
+      summary,
+      description: '',
+      crash,
+    });
+    const attributes = request.report.attributes;
+    attributes.http_status_code = status;
+    if (method) {
+      attributes.http_method = method;
     }
-    const cause =
-      typeof event.customError === 'string' && event.customError !== ''
-        ? `: ${sanitizeErrorMessage(event.customError)}`
-        : '';
-    this.handleReportingRequest(
-      this.createErrorReport({
-        mechanism: 'http-error',
-        summary: `HTTP request failed: ${target}`,
-        description: `${target} failed${cause}`,
-      }),
-    );
+    if (url !== '') {
+      attributes.http_url = url;
+    }
+    if (statusText !== '') {
+      attributes.http_status_text = statusText;
+    }
+    this.handleReportingRequest(request);
   }
 }
 
