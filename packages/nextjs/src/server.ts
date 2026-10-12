@@ -49,7 +49,8 @@ export interface NextjsServerOptions extends BugseeNodeLaunchOptions {
    * (carrying the consume-bridge processor) so Next.js emits + Bugsee consumes its spans with no user
    * OTel setup. First-wins — it never clobbers a pre-existing `@vercel/otel`. Requires the optional peers
    * `@opentelemetry/api` + `@opentelemetry/sdk-trace-base` (skipped if absent). Set `false` to opt out
-   * (e.g. you manage OTel yourself). Default `true`.
+   * (e.g. you manage OTel yourself). Default `true`. It installs a process-wide provider that consumes every span,
+   * so an INVALID value (`'false'`, `0`, `null`, `1`) is treated as OFF and reported through `onError`.
    */
   setupOtelProvider?: boolean;
 }

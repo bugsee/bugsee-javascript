@@ -42,6 +42,7 @@ import {
   TransportToken,
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
+import { describeValue, reportGuarded } from '@bugsee/util';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -105,8 +106,12 @@ export interface BugseeEdgeLaunchOptions {
    * isolate and therefore one capture ring — the leak proven on real workerd
    * (docs/review/cloudflare.md SEV1 #2, docs/design/cloudflare-tenant-isolation.md).
    *
-   * Default false: Vercel Edge and plain fetch handlers are single-tenant, and partitioning there would be
-   * overhead with nothing to separate.
+   * Default false on Vercel Edge and plain fetch handlers (single-tenant: partitioning there would be overhead
+   * with nothing to separate). `@bugsee/cloudflare` defaults it to TRUE.
+   *
+   * This option PROTECTS data, so an INVALID value (`'true'`, `1`, `null`, `0`, `''`) is treated as ON and reported
+   * through `onError`; only boolean `false` switches it off. On Cloudflare an explicit `false` silently reinstates
+   * the cross-tenant leak the default prevents, so `@bugsee/cloudflare` warns about it once per isolate.
    */
   partitionCaptureByTenant?: boolean;
   /**
@@ -219,7 +224,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
   if (alreadyLaunched !== undefined) {
-    options.onError?.(
+    reportGuarded(
+      options.onError,
       new Error(
         'Bugsee.launch() called more than once in this isolate; the repeat call is ignored',
       ),
@@ -244,7 +250,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
         existing = undefined; // unknown store kind → warn, which is the safe direction
       }
       if (existing?.owners === undefined) {
-        options.onError?.(
+        reportGuarded(
+          options.onError,
           new Error(
             'Bugsee: this launch requested per-tenant isolation but an earlier launch in this isolate ' +
               'created a NON-partitioned client, which is reused. On Cloudflare that means one Durable ' +
@@ -297,9 +304,10 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
     options.partitionCaptureByTenant !== undefined &&
     typeof options.partitionCaptureByTenant !== 'boolean'
   ) {
-    options.onError?.(
+    reportGuarded(
+      options.onError,
       new Error(
-        `Bugsee: partitionCaptureByTenant expected a boolean, got ${typeof options.partitionCaptureByTenant === 'object' ? typeof options.partitionCaptureByTenant : JSON.stringify(options.partitionCaptureByTenant)}; tenant partitioning stays ON`,
+        `Bugsee: partitionCaptureByTenant expected a boolean, got ${describeValue(options.partitionCaptureByTenant)}; tenant partitioning stays ON`,
       ),
     );
   }
@@ -308,7 +316,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   // A caller-supplied store WINS over the partitioning switch — and that silently reinstates the
   // cross-tenant leak, so say so rather than failing open quietly.
   if (partitionByTenant && options.captureStore !== undefined) {
-    options.onError?.(
+    reportGuarded(
+      options.onError,
       new Error(
         'Bugsee: partitionCaptureByTenant was requested but an explicit captureStore was supplied, so ' +
           'per-tenant isolation is NOT active. On Cloudflare this means one Durable Object incident can ' +

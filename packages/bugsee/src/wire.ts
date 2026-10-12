@@ -124,9 +124,10 @@ export interface UmbrellaExtensionOptions {
   /**
    * OTLP/HTTP-JSON traces endpoint (e.g. `https://api.honeycomb.io/v1/traces`). When set, finished
    * performance transactions are ALSO exported here (a TEE — Bugsee still receives them), so your data
-   * lands in your own OTel backend. Requires performance on.
+   * lands in your own OTel backend. A string (trimmed) or a `URL`; empty or whitespace means no exporter, any other
+   * type is reported through `onError` and means no exporter. Requires performance on.
    */
-  otelExportUrl?: string;
+  otelExportUrl?: string | URL;
   /** Headers for the OTLP export (e.g. `authorization`, `x-honeycomb-team`). Use lowercase keys. */
   otelExportHeaders?: Record<string, string>;
   /** OTLP resource attributes for the export (e.g. `{ 'service.name': 'web' }`). */
@@ -150,6 +151,40 @@ function teeSend(
     const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
     if (failed !== undefined) throw failed.reason; // best-effort: the batch already drained, onError logs it
   };
+}
+
+/**
+ * The OTLP endpoint of `otelExportUrl` (R5V-7): a string (trimmed) or a `URL` object (its href). Absent, `null`, an
+ * empty or whitespace-only string mean "no exporter" silently; anything else (a number, an object, ...) is reported
+ * and means no exporter either, so nothing is ever posted to an address the host did not give.
+ */
+function resolveOtlpUrl(
+  value: unknown,
+  onError: ((error: unknown) => void) | undefined,
+): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const text =
+    typeof value === 'string'
+      ? value
+      : Object.prototype.toString.call(value) === '[object URL]'
+        ? (value as { href: string }).href
+        : undefined;
+  if (text === undefined) {
+    try {
+      onError?.(
+        new Error(
+          `otelExportUrl must be a string or a URL (got ${typeof value}); no OTLP exporter is configured`,
+        ),
+      );
+    } catch {
+      /* a throwing onError must not break launch */
+    }
+    return undefined;
+  }
+  const trimmed = text.trim();
+  return trimmed === '' ? undefined : trimmed;
 }
 
 /** Merge `device_id` into an OTLP resource when the caller did not already set a recognized key. */
@@ -204,12 +239,13 @@ export function wireUmbrella<C extends BugseeClient>(
   // Produce: when an OTLP endpoint is configured, TEE the drained batch to it too (Bugsee still receives
   // it). The internal-tagged transport keeps the SDK's own export out of network capture (self-isolation).
   const otlpResource = otlpResourceWithDeviceId(options.otelExportResource, internals.deviceId);
+  const otlpUrl = resolveOtlpUrl(options.otelExportUrl, internals.onError);
   const otlpSend =
-    // Only a NON-EMPTY string configures an exporter: `''` would post to the page's own URL (R4V-10).
-    typeof options.otelExportUrl === 'string' && options.otelExportUrl !== ''
+    // Only a NON-EMPTY URL configures an exporter: `''` / `'   '` would post to the page's own URL (R4V-10, R5V-7).
+    otlpUrl !== undefined
       ? createOtlpTraceExporter({
           transport: internals.transport,
-          url: options.otelExportUrl,
+          url: otlpUrl,
           scope: { name: scopeName },
           ...(options.otelExportHeaders !== undefined
             ? { headers: options.otelExportHeaders }
@@ -311,6 +347,7 @@ export function wireUmbrella<C extends BugseeClient>(
         ...(options.tracePropagationTargets !== undefined
           ? { allowlist: options.tracePropagationTargets }
           : {}),
+        ...(internals.onError !== undefined ? { onError: internals.onError } : {}),
         ...(options.tracePropagationOrigin !== undefined
           ? { origin: options.tracePropagationOrigin }
           : {}),

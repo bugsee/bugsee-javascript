@@ -2148,6 +2148,19 @@ describe('launch — session replay (lazy)', () => {
     ).toHaveLength(1);
   });
 
+  // R5V-4: the canvas warning called the app's sink unguarded, so a sink that rethrows made launch() reject.
+  it('a rethrowing onError cannot break launch over an invalid replay.canvas (the add-on stays OFF)', async () => {
+    const onError = vi.fn(() => {
+      throw new Error('the host sink rethrows');
+    });
+    await expect(
+      launchTracked('tok', domReplayOptions({ replay: { canvas: 'yes' as never }, onError })),
+    ).resolves.toBeDefined();
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    expect(createCanvasRecordConfig).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+  });
+
   // `replay: false` is now THE errors-only path — it inherits the guarantee the old default carried: no
   // recorder, no replay.bin encoder, and (below) no @bugsee/replay in the bundle at all.
   it('does NOT register replay when replay is `false` — the errors-only opt-out', async () => {

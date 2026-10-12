@@ -7,6 +7,7 @@ import {
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
   type OptionDefinition,
+  resolveFailClosedBoolean,
   resolveFailOnBoolean,
   resolveLaunchOptions,
 } from './options';
@@ -489,6 +490,18 @@ describe('round-3 option normalisers', () => {
       expect(run(def, false)).toMatchObject({ value: false, errors: [] });
       expect(run(def, true)).toMatchObject({ value: true, errors: [] });
       expect(run(def, { canvas: true })).toMatchObject({ value: true, errors: [] });
+    });
+  });
+
+  describe('resolveFailClosedBoolean (a default-ON feature that collects or emits data)', () => {
+    it('undefined => fallback; a boolean is itself; anything else (null, 0, "", "false", "true", 1, {}) => OFF', () => {
+      expect(resolveFailClosedBoolean(undefined, true)).toBe(true);
+      expect(resolveFailClosedBoolean(undefined, false)).toBe(false);
+      expect(resolveFailClosedBoolean(true, false)).toBe(true);
+      expect(resolveFailClosedBoolean(false, true)).toBe(false);
+      for (const v of [null, 0, '', 'false', 'true', 1, {}, []]) {
+        expect(resolveFailClosedBoolean(v, true), String(v)).toBe(false);
+      }
     });
   });
 

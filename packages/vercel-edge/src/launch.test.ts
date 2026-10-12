@@ -427,6 +427,62 @@ describe('launchEdge — partitionCaptureByTenant', () => {
     await client.stop?.();
   });
 
+  // R5V-4 / R5V-5: the warning must survive a host sink that throws, and describe ANY value without throwing
+  // (JSON.stringify throws on a BigInt and prints `undefined` for a Symbol or a function).
+  it.each([
+    [10n, '10n'],
+    [Symbol('on'), 'Symbol(on)'],
+    [function enable() {}, 'function enable'],
+    ['yes', '"yes"'],
+    [3, '3'],
+  ])('an invalid value %s is described safely and a rethrowing onError cannot break launch', async (value, text) => {
+    const seen: Error[] = [];
+    const onError = (e: Error): never => {
+      seen.push(e);
+      throw new Error('the host sink rethrows');
+    };
+    let client: ReturnType<typeof launchEdge> | undefined;
+    expect(() => {
+      client = launchEdge('tok', {
+        partitionCaptureByTenant: value,
+        carrier: {},
+        onError,
+      } as unknown as Parameters<typeof launchEdge>[1]);
+    }).not.toThrow();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.message).toContain(`got ${text}`);
+    expect(seen[0]?.message).toContain('tenant partitioning stays ON');
+    await client?.stop?.();
+  });
+
+  it('a rethrowing onError cannot break launch when an explicit captureStore overrides partitioning', async () => {
+    const inert = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release: () => {},
+      }),
+    };
+    const onError = vi.fn((_e: Error) => {
+      throw new Error('the host sink rethrows');
+    });
+    let client: ReturnType<typeof launchEdge> | undefined;
+    expect(() => {
+      client = launchEdge('tok', {
+        partitionCaptureByTenant: true,
+        captureStore: inert as never,
+        carrier: {},
+        onError,
+      } as unknown as Parameters<typeof launchEdge>[1]);
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('per-tenant isolation is NOT active');
+    await client?.stop?.();
+  });
+
   it.each([[undefined], [false]])('%j is OFF and reports nothing', async (value) => {
     const errors: Error[] = [];
     const client = launchEdge('tok', {

@@ -1,3 +1,4 @@
+import { describeValue } from '@bugsee/util';
 import type { OutgoingRequest, RequestDecorator } from './request-decorator';
 import {
   type BugseeTraceState,
@@ -42,6 +43,8 @@ export interface TraceparentDecoratorOptions {
    * through unchanged), set as the `bugsee=` vendor entry on any tracestate already on the outgoing request.
    */
   getBugseeState?: () => BugseeTraceState | undefined;
+  /** Where an invalid `allowlist` is reported (once, at creation). A throwing sink is swallowed. */
+  onError?: (error: unknown) => void;
 }
 
 const W3C_VERSION = '00';
@@ -125,11 +128,59 @@ const headerValue = (
   return undefined;
 };
 
+type AllowTarget = (url: string) => boolean;
+
+/**
+ * Validate `tracePropagationTargets` ONCE (R5V-6): it decides which third parties receive the trace and session
+ * ids, so a value that cannot be understood must send to NOBODY and say so. A non-array is ignored (reported); an
+ * entry that is neither a string nor a RegExp is skipped (reported); an empty string is dropped (`''` is a
+ * substring of every URL: `process.env.TARGETS.split(',')` with the variable unset); a `/g` or `/y` RegExp is
+ * copied without those flags (`test` on a stateful regex alternates sent / not sent and writes the app's own
+ * `lastIndex`).
+ */
+function compileTargets(
+  list: unknown,
+  onError: ((error: unknown) => void) | undefined,
+): AllowTarget[] {
+  const report = (message: string): void => {
+    try {
+      onError?.(new Error(message));
+    } catch {
+      /* a throwing sink must not break creating the decorator */
+    }
+  };
+  if (list === undefined) {
+    return [];
+  }
+  if (!Array.isArray(list)) {
+    report(
+      `tracePropagationTargets must be an array of strings / RegExps (got ${describeValue(list)}); the trace is propagated to no cross-origin target`,
+    );
+    return [];
+  }
+  const targets: AllowTarget[] = [];
+  for (const entry of list as unknown[]) {
+    if (typeof entry === 'string') {
+      if (entry !== '') {
+        targets.push((url) => url.includes(entry));
+      }
+    } else if (entry instanceof RegExp) {
+      const pattern = new RegExp(entry.source, entry.flags.replace(/[gy]/g, ''));
+      targets.push((url) => pattern.test(url));
+    } else {
+      report(
+        `tracePropagationTargets entries must be strings or RegExps (got ${describeValue(entry)}); the entry is ignored`,
+      );
+    }
+  }
+  return targets;
+}
+
 export function createTraceparentDecorator(options: TraceparentDecoratorOptions): RequestDecorator {
   const origin =
     options.origin ??
     (globalThis as unknown as { location?: { origin?: string } }).location?.origin;
-  const allowlist = options.allowlist ?? [];
+  const allowlist = compileTargets(options.allowlist, options.onError);
   const resolveOrigin = options.resolveOrigin ?? defaultResolveOrigin;
 
   const isAllowed = (url: string): boolean => {
@@ -138,9 +189,7 @@ export function createTraceparentDecorator(options: TraceparentDecoratorOptions)
       return true;
     }
     // Cross-origin / unparseable / unknown app origin → ONLY an explicit allowlist match (no silent leak).
-    return allowlist.some((pattern) =>
-      typeof pattern === 'string' ? url.includes(pattern) : pattern.test(url),
-    );
+    return allowlist.some((matches) => matches(url));
   };
 
   return (request: OutgoingRequest) => {

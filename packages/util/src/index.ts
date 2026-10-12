@@ -9,6 +9,7 @@ export type { PlainObject } from './deep-merge';
 export { deepMerge } from './deep-merge';
 export type { Deferred } from './deferred';
 export { createDeferred, isThenable } from './deferred';
+export { describeValue } from './describe-value';
 export {
   isBrowser,
   isBun,
@@ -24,6 +25,7 @@ export {
 export { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from './fflate';
 export { jsonSafeStringify } from './json-safe-stringify';
 export { randomId } from './random-id';
+export { reportGuarded } from './report-guarded';
 export { sha256Hex } from './sha256';
 export { resolveTimeOrigin } from './time-origin';
 export { utf8ByteLength } from './utf8-byte-length';

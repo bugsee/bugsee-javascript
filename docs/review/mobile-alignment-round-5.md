@@ -101,3 +101,44 @@ signature / edge leak / test assertions, **K3** CI timing budgets.
 - **R5H-6 minor (CI), fix (K3).** `protocol/src/sanitize.test.ts` linear-time XML test measured 60 s on CI against a
   120 s limit: raise `LINEARITY_TEST_TIMEOUT_MS` to 180_000 and use that ONE constant in `linear-time.test.ts` (it
   hard-codes 180_000 today). K1 owns the `detector-url-sanitizer.test.ts` wall-clock assertion (R5V-10).
+
+## K1 fix record (R5V-1 .. R5V-10)
+
+Fixed test-first with the mutator loop; measured on the seeded corpora in `packages/capture/src/detector-url-corpus.test-d.ts`
+(the unit test uses 20,000 tokens a bucket, the scratch figures below 200,000).
+
+- **R5V-1.** A segment is word-like only as (a) a separator-delimited slug whose pieces are words of <= 12 pronounceable
+  letters / numbers / short codes (words >= numbers), or (b) a camel/Pascal name: >= 2 Title words, each pronounceable
+  (consonant runs counted in sounds with a list of known clusters, vowel runs, vowel ratio, `q` needs `u`), at most one
+  fragment, two acronyms (only known ones count), 80% of the name covered by words, 60% by words of 4+ letters. A
+  single-case string with no separator is never word-like; the old coverage heuristic is gone at every length. 3+ word
+  slugs now also need pronounceable words and only version-shaped words may have a number between letters.
+  Keep rate on 200,000 tokens a bucket (a98dabb = no word check at all, in parentheses where the new figure is higher):
+
+  | alphabet | 16-19 | 20-21 | 22-23 | 24-31 | 32-47 | 48-64 |
+  |---|---|---|---|---|---|---|
+  | base64url | 5.191 | 3.070 | 2.213 | 1.046 | 0.164 | 0.008 |
+  | base62 | 4.737 (4.724) | 2.692 (2.683) | 1.937 (1.935) | 0.844 | 0.137 | 0.004 |
+  | hex | 0 | 0 | 0 | 0 | 0 | 0 |
+  | base36 lower | 4.056 | 1.720 | 0.990 | 0.021 | 0.001 | 0 |
+  | base36 upper | 4.056 | 1.720 | 0.990 | 0.021 | 0.001 | 0 |
+  | base32 lower | 16.514 | 9.973 | 7.041 | 0.369 | 0.043 | 0.001 |
+  | cuid2 | 5.334 | 2.266 | 1.298 | 0.028 | 0.001 | 0 |
+  | ULID lower | 2.246 | 0.801 | 0.425 | 0.005 | 0 | 0 |
+  | nanoid lower | 5.282 | 2.401 | 1.425 | 0.040 | 0.001 | 0 |
+
+  Every bucket is at or below a98dabb except three base62 buckets, 0.001-0.013 points above (24, 4 and 2 tokens in
+  200,000: random mixed-case pieces that happen to read as two words). False templating of the 3,000-segment route
+  corpus: 0.00% (a98dabb: 16.67%, round 4 before this fix: 0.00% because it kept lower-case random tokens). The corpus
+  clusters were tuned against it, so a second, differently worded 3,000-segment set (scratch) was used: it first showed
+  10.3% and 2.8% before the missing consonant clusters it exposed were added, then 0.0%; treat the true rate on unseen
+  vocabulary as a few percent, not zero (a missing cluster templates a real word: privacy over grouping).
+- **R5V-2/3.** One linear scan over every `@`; a host of only digits and dots or `\d+x[.ext]` is not an address.
+- **R5V-4/5.** `reportGuarded` / `describeValue` in `@bugsee/util` (re-exported by core): node local-variables, vercel-edge,
+  browser canvas, cloudflare. A rethrowing sink cannot break launch; BigInt / Symbol / function values are described.
+- **R5V-6.** Empty entries dropped, non-array and non string/RegExp entries reported, `/g` `/y` flags removed on a copy.
+- **R5V-7.** `otelExportUrl` accepts a `URL`, trims, blank = no exporter, other types reported.
+- **R5V-8.** `NextjsServerOptions` and the Nuxt interfaces are in the direction table; `setupOtelProvider` and
+  `injectTraceMeta` fail OFF + `onError` via `resolveFailClosedBoolean` (core).
+- **R5V-9.** JSDoc for the four options; Cloudflare warns once per isolate about an explicit `partitionCaptureByTenant: false`.
+- **R5V-10.** Wall-clock assertion removed; `ip:port`, `[::1]`, `tel:`, `%2540`, hashed asset names (`bundle.{token}.jpg`).

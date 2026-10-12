@@ -129,6 +129,29 @@ const RAW_STRICT: Record<string, RawEntry> = {
   'bugsee:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
   'bugsee:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
   'bugsee:otelConsume': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
+  'nextjs:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
+  'nextjs:recover': { safe: 'n/a', why: 'durability behaviour' },
+  'nextjs:otelConsume': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
+  'nuxt:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
+  'nuxt:recover': { safe: 'n/a', why: 'durability behaviour' },
+  'nuxt:otelConsume': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
+  'nuxt:persist': { safe: 'off', why: 'browser option, read `=== true`' },
+  'nuxt:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
+  'nuxt:partitionCaptureByTenant': {
+    safe: 'on',
+    why: 'edge option forwarded to launchEdge, which reads it with resolveFailOnBoolean (R4V-1)',
+    check: ['vercel-edge', /resolveFailOnBoolean\(\s*options\.partitionCaptureByTenant/],
+  },
+  'nextjs:setupOtelProvider': {
+    safe: 'off',
+    why: 'default ON, installs a process-wide provider that consumes every span: invalid is OFF + onError (R5V-8)',
+    check: ['nextjs', /resolveFailClosedBoolean\(\s*options\.setupOtelProvider/],
+  },
+  'nuxt:injectTraceMeta': {
+    safe: 'off',
+    why: 'default ON, emits trace ids into every rendered page: invalid is OFF + onError (R5V-8)',
+    check: ['nuxt', /resolveFailClosedBoolean\(\s*injectTraceMeta/],
+  },
 };
 
 /** Which packages' definitions a launch-options interface can see. */
@@ -146,6 +169,12 @@ const INTERFACES: Array<[string, string, string, string[]]> = [
   ['bugsee', 'src/server-launch.ts', 'BugseeServerLaunchOptions', UMBRELLA],
   ['electron', 'src/launch-main.ts', 'LaunchMainOptions', ['core', 'node']],
   ['electron', 'src/launch-renderer.ts', 'LaunchRendererOptions', ['core', 'browser']],
+  // Framework adapters that read an option of their OWN (R5V-8): `setupOtelProvider` was `=== false` and
+  // `injectTraceMeta` was truthy, so `'false'` / `0` / `null` kept them ON or flipped them the wrong way.
+  ['nextjs', 'src/server.ts', 'NextjsServerOptions', UMBRELLA],
+  ['nuxt', 'src/nitro.ts', 'InstallBugseeNitroOptions', UMBRELLA],
+  ['nuxt', 'src/nitro-edge.ts', 'InstallBugseeNitroEdgeOptions', ['core', 'vercel-edge']],
+  ['nuxt', 'src/client.ts', 'InstallBugseeClientOptions', ['core', 'browser', 'performance']],
 ];
 
 function interfaceOf(
@@ -387,6 +416,8 @@ describe('every boolean launch option has an explicit, tested fail direction (R3
         'bugsee:holdBlackout',
         'cloudflare:partitionCaptureByTenant',
         'electron:holdBlackout',
+        'nuxt:holdBlackout',
+        'nuxt:partitionCaptureByTenant',
         'vercel-edge:partitionCaptureByTenant',
       ].sort(),
     );

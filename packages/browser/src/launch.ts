@@ -72,6 +72,7 @@ import {
   type UploadResult,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { reportGuarded } from '@bugsee/util';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
@@ -344,6 +345,9 @@ export interface BugseeLaunchOptions {
    *
    * `@bugsee/replay` is lazy-`import()`ed, so it is a separate chunk that is fetched only when replay runs
    * (design D2/D8): `replay: false` therefore keeps the errors-only bundle genuinely free of it.
+   *
+   * An INVALID value (anything but a boolean or a plain options object: `0`, `null`, `''`, `'false'`, an array) is
+   * treated as OFF and reported through `onError`: replay captures page content, so it never stays on by accident.
    *
    * Replay also requires a DOM. In a DOM-less host — an SSR / pre-render pass of any of the five
    * meta-framework adapters — the chunk is not fetched and nothing is recorded, whatever this option
@@ -862,7 +866,8 @@ async function buildLaunch(
       typeof canvasOption === 'object' && canvasOption !== null && !Array.isArray(canvasOption);
     const canvasEnabled = canvasOption === true || canvasIsBag;
     if (canvasOption !== undefined && canvasOption !== false && !canvasEnabled) {
-      options.onError?.(
+      reportGuarded(
+        options.onError,
         new Error(
           'Bugsee: replay.canvas must be a boolean or an options object; canvas replay stays OFF',
         ),

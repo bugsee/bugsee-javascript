@@ -119,6 +119,15 @@ export function resolveFailOnBoolean(value: unknown, fallback: boolean): boolean
   return value === undefined ? fallback : value !== false;
 }
 
+/**
+ * The value of a {@link FAIL_CLOSED_BOOLEAN_OPTION} read outside `resolveLaunchOptions` (framework adapters whose
+ * options are read by the adapter itself): `undefined` is `fallback`, a boolean is itself, EVERYTHING else
+ * (`null`, `0`, `''`, `'false'`, `'true'`, `1`) is OFF. The caller reports the non-boolean value.
+ */
+export function resolveFailClosedBoolean(value: unknown, fallback: boolean): boolean {
+  return value === undefined ? fallback : value === true;
+}
+
 const boolean = BOOLEAN_OPTION;
 const failClosed = FAIL_CLOSED_BOOLEAN_OPTION;
 const flushDelay = {

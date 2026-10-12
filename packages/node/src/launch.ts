@@ -409,7 +409,8 @@ export interface BugseeLaunchOptions {
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
    * a per-request context + an `http.server` APM transaction. ON BY DEFAULT — set `false` to opt out (the
-   * escape hatch). Captures NO handled errors (the framework swallows them before node:http) and NO
+   * escape hatch). An INVALID value (anything but a boolean: `0`, `null`, `'false'`) is treated as OFF and
+   * reported through `onError`, never as ON. Captures NO handled errors (the framework swallows them before node:http) and NO
    * headers/bodies; coexists with the framework adapters via first-owner-wins re-entrancy (exactly one
    * context + one transaction per request). See docs/design/incoming-server-instrumentation.md.
    */
@@ -855,6 +856,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     ...(options.tracePropagationTargets !== undefined
       ? { tracePropagationTargets: options.tracePropagationTargets }
       : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   if (propagationDecorator !== undefined) {
     network.interceptor.addRequestDecorator(propagationDecorator);
