@@ -7,7 +7,7 @@
 //    endpoint and an e-mail address in a path can never reach a summary.
 // Android templates only when a network filter is configured; this SDK templates ALWAYS, because the
 // default-sanitized timeline is not what a detector reads (it sees the raw event) and a templated path is
-// also what makes grouping useful. Recorded under "Kept differences" of the mobile alignment notes.
+// also what makes grouping useful.
 
 const ALL_DIGITS = /^[0-9]+$/;
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

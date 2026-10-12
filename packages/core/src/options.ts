@@ -256,7 +256,7 @@ export const COMMON_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   { friendly: 'detectCrashes', key: BugseeOption.DetectCrash, default: true, ...boolean },
   { friendly: 'maxRecordingTime', key: BugseeOption.Duration, default: 60 },
   // Mobile-parity options (Android OptionsDescriptors). `captureBreadcrumbs` deliberately defaults to TRUE
-  // here although mobile defaults it to false (see the mobile API alignment notes).
+  // here although mobile defaults it to false.
   {
     friendly: 'captureLogsLevel',
     key: BugseeOption.CaptureLogsLevel,
