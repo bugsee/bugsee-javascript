@@ -3,6 +3,7 @@ import {
   type LaunchResult,
   launchCore,
   type NodeRuntime,
+  launch as nodeLaunch,
   RequestContextStoreToken,
   type SystemProbe,
 } from '@bugsee/node';
@@ -270,11 +271,20 @@ describe('bugsee node umbrella launch', () => {
     expect(client.getActiveSpan()).toBeUndefined();
   });
 
-  it('a repeat launch still returns a client carrying the calls', () => {
+  it('a repeat launch over a client the PLAIN node launch created still carries the calls', () => {
+    // The singleton was created WITHOUT the umbrella (so it has no pass-throughs yet); the umbrella launch
+    // that finds it must install them on that same client, not hand back a bare one.
     const carrier = {};
-    track(launch('tok', base({ carrier, appStartTimeMs: 1000 })));
+    const plain = nodeLaunch('tok', base({ carrier, appStartTimeMs: 1000 }));
+    launched.push(plain as Bugsee);
+    expect((plain as Partial<Bugsee>).startTransaction).toBeUndefined();
     const second = launch('tok', base({ carrier, appStartTimeMs: 1000 }));
+    expect(second).toBe(plain);
     expect(typeof second.startTransaction).toBe('function');
+    // ... and they reach the performance API (a no-op transaction: this singleton wired no extension).
+    const txn = second.startTransaction('Repeat', 'ui.load');
+    expect(txn.getName()).toBe('Repeat');
+    expect(second.getActiveSpan()).toBeUndefined();
   });
 
   it('does not mint a device id on node launch', () => {

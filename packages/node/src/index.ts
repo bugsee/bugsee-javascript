@@ -2,6 +2,9 @@
 // unhandledRejection detection, console/network capture. Built test-first per
 // docs/implementation-standards.md.
 
+// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (review R2D-4: the
+// directly imported platform package exposes the same value surface as the umbrella entries).
+export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
 // F-6: the `HttpTransport` primitive (+ its request/response option shapes) — used internally by the
 // `transport` launch option (launch.ts) but never re-exported, forcing a consumer wiring a custom
 // transport (a proxy, a queueing shim, a test double) into an unsafe `as never` cast to satisfy the
@@ -11,7 +14,16 @@ export type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/co
 // extraction, the application-supplied `user` callback) without each taking a direct @bugsee/core
 // dependency. That work runs outside `runServerRequest` and the engine structurally cannot guard it.
 // Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
-export { addReportAttachment, BugseeStatus, guarded, neverThrow } from '@bugsee/core';
+export {
+  addReportAttachment,
+  BugseeStatus,
+  guarded,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  neverThrow,
+  type ReportAttachmentInput,
+} from '@bugsee/core';
 // R-7/F4: the request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two
 // live stores over the same source alias on it. The launch builds and owns one; hand-wirers must

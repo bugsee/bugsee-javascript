@@ -13,12 +13,14 @@
 // Bugsee with `registerOTel({ spanProcessors: [processor] })` (the Highlight coexistence pattern). AND
 // (N1b-2) when NO OTel provider is registered, we zero-config self-register one carrying that processor
 // (fire-and-forget, first-wins) so Next emits its spans with no user OTel setup — see ./otel-provider.
+
 import {
   type Bugsee,
   type BugseeNodeLaunchOptions,
   type BugseeSpanProcessor,
   launch,
 } from '@bugsee/bugsee/node';
+import { relaunchWith } from '@bugsee/core';
 import { attachBugseeOtelProvider } from './otel-provider';
 
 export type { Bugsee, BugseeSpanProcessor } from '@bugsee/bugsee/node';
@@ -75,3 +77,25 @@ export function registerServer(appToken: string, options: NextjsServerOptions = 
     },
   });
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+} from '@bugsee/bugsee/node';
+
+/**
+ * Stop the running client and launch again with the same token through `registerServer`, NOT the plain node
+ * umbrella launch the `@bugsee/bugsee/node` `relaunch` would run: `registerServer` is what turns `otelConsume`
+ * on by default and attaches the OpenTelemetry span-processor seam / zero-config provider, which a relaunch
+ * must restore. Bugsee options return to their defaults (then Next's defaults apply on top) and integration
+ * seams are kept; `onSpanProcessor` / `setupOtelProvider` are Next options and are NOT remembered, pass them
+ * again if you need them. Rejects when nothing was launched yet.
+ */
+export const relaunch = (options?: NextjsServerOptions): Promise<Bugsee> =>
+  relaunchWith(registerServer, options, options?.carrier);

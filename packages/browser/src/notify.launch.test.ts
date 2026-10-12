@@ -134,12 +134,32 @@ describe('browser notify()', () => {
     expect(item?.delivery).toBe('deferred');
   });
 
-  it('sends the delay on the wire as the canonical option', async () => {
+  it('reports the delay among the launch options as the canonical key', async () => {
     const { client } = await start({ notifyFlushDelay: 250 });
     expect(client.getLaunchOptions()['com.bugsee.option.config.notify-flush-delay']).toBe(250);
   });
 
-  it('does nothing before launch has finished or after stop()', async () => {
+  it('sends the delay on the WIRE: the session create carries it in sdk.options, dots as colons', async () => {
+    const http = vi.fn<HttpTransport>(async (url: string): Promise<HttpResponse> => {
+      if (url.endsWith('/v2/issues')) {
+        return {
+          status: 200,
+          headers: {},
+          body: json({ endpoint: 'https://s3.test/put', issueId: 'i1', recordingId: 'r1' }),
+        };
+      }
+      return { status: 200, headers: {}, body: json({ access_token: 'access' }) };
+    });
+    const { client } = await start({ notifyFlushDelay: 250 }, http);
+    await client.logException(new Error('x'));
+    const session = http.mock.calls.find(([url]) => url.endsWith('/v2/sessions'));
+    const body = JSON.parse((session?.[1] as HttpRequestOptions).body as string) as {
+      environment: { sdk: { options: Record<string, unknown> } };
+    };
+    expect(body.environment.sdk.options['com:bugsee:option:config:notify-flush-delay']).toBe(250);
+  });
+
+  it('does nothing after stop()', async () => {
     const { client, http } = await start();
     await client.stop();
     client.notify('after stop');

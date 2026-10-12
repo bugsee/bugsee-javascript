@@ -1,6 +1,7 @@
 # Aligning the JS SDK public API with the mobile SDKs
 
-Status: **Plan, in progress.** 2026-10-12. Source: a read-only comparison of the Android (`android/sdk`, `Bugsee.java`,
+Status: **Implemented** (T1-T9 landed and went through two multi-agent review rounds, 2026-10-12; findings in
+`docs/review/mobile-alignment-round-1.md` and `-round-2.md`). What is NOT built is listed under "Remaining mobile gaps". Source: a read-only comparison of the Android (`android/sdk`, `Bugsee.java`,
 `OptionsDescriptors.java`), iOS (`BugseeLib/Bugsee.h`, `BGSOptionsDescriptors.m`) and JS public surfaces. The mobile
 SDKs are the parity target (CLAUDE.md, "Android-canonical"). Where the web genuinely differs, the difference stays and
 is documented under "Kept differences".
@@ -11,15 +12,15 @@ Each task is test-first with the mutator loop, keeps the coverage gate, and land
 
 | ID | Task | Mobile reference | Notes |
 |---|---|---|---|
-| T1 | Wire `ReportHandler.after`; add `setLifecycleEventsListener` with the mobile event set (Launched, Stopped, BeforeReportShown, AfterReportShown, BeforeReportUploaded, AfterReportUploaded, ReportUploadFailed, ReportUploadFailedWithFutureRetry, BeforeReportAssembled, AfterReportAssembled, ReportAssemblyFailed, BlackoutStarted, BlackoutEnded) | Android `LifecycleEvents`, iOS `BugseeLifecycleEventType` | `after` is typed today and never invoked |
-| T2 | Facade cleanup: type `performanceUploadMode`; `startTransaction` / `startSpan` / `getActiveSpan` on the `Bugsee` object; stop exposing `UploadOptions.trigger` and `Mechanism` publicly | `Bugsee.startTransaction`, `startSpan`, `getActiveSpan` | internals keep working through an internal entry |
-| T3 | Attachments: a public attachment type and `report.attachments` writable from `ReportHandler.before`; iOS limits (3 files, 3 MB each; Android has no cap); bundle assembler includes them | `Report.addAttachment`, iOS `BugseeAttachment` | |
-| T4 | Blackout: `startBlackout` / `endBlackout` / `isBlackout`; suspends replay, input and viewtree capture while logs and network continue | `Bugsee.startBlackout` | emits the T1 events once T1 lands |
-| T5 | Launch state: `getStatus()` with the Stopped/Launching/Launched/Stopping enum, `relaunch(options?)`, `getLaunchOptions()`, `getHostLaunchOptions()`; verify launch → stop → launch works | `getStatus`, `relaunch`, `getLaunchOptions` | |
-| T6 | Missing options: `captureLogsLevel`, `captureBreadcrumbs`, `detectHttpErrors`, `captureNetworkDefaultSanitizer`, `reportDefaultCrashPriority`, `reportDefaultErrorPriority`; `getDefaultNetworkSanitizer()` so a custom filter can reuse the default redaction | `OptionsDescriptors` keys under `com.bugsee.option.*` | canonical keys already exist for some |
+| T1 | Wire `ReportHandler.after`; add `setLifecycleEventsListener` with the mobile event set (Launched, Stopped, BeforeReportShown, AfterReportShown, BeforeReportUploaded, AfterReportUploaded, ReportUploadFailed, ReportUploadFailedWithFutureRetry, BeforeReportAssembled, AfterReportAssembled, ReportAssemblyFailed, BlackoutStarted, BlackoutEnded) | Android `LifecycleEvents`, iOS `BugseeLifecycleEventType` | **Done.** `after` was typed and never invoked; it now runs (also on the injected trigger-pipeline path). |
+| T2 | Facade cleanup: type `performanceUploadMode`; `startTransaction` / `startSpan` / `getActiveSpan` on the `Bugsee` object; stop exposing `UploadOptions.trigger` and `Mechanism` publicly | `Bugsee.startTransaction`, `startSpan`, `getActiveSpan` | **Done.** Internals keep working through `asInternalClient`. |
+| T3 | Attachments: a public attachment type and `report.attachments` writable from `ReportHandler.before`; iOS limits (3 files, 3 MB each; JS applies these); Android has no byte limit but caps a report at 1000 attachments (`IssueReport.MAX_ATTACHMENTS`, a runaway-loop guard that JS does not need); bundle assembler includes them | `Report.addAttachment`, iOS `BugseeAttachment` | **Done.** The report field is `userAttachments` (`addReportAttachment(report, input)` is the helper form). |
+| T4 | Blackout: `startBlackout` / `endBlackout` / `isBlackout`; suspends replay, input and viewtree capture while logs and network continue | `Bugsee.startBlackout` | **Done.** Emits the T1 events. |
+| T5 | Launch state: `getStatus()` with the Stopped/Launching/Launched/Stopping enum, `relaunch(options?)`, `getLaunchOptions()`, `getHostLaunchOptions()`; verify launch → stop → launch works | `getStatus`, `relaunch`, `getLaunchOptions` | **Done.** See "Kept differences" for the relaunch semantics. |
+| T6 | Missing options: `captureLogsLevel`, `captureBreadcrumbs`, `detectHttpErrors`, `captureNetworkDefaultSanitizer`, `reportDefaultCrashPriority`, `reportDefaultErrorPriority`; `getDefaultNetworkSanitizer()` so a custom filter can reuse the default redaction | `OptionsDescriptors` keys under `com.bugsee.option.*` | **Done.** Canonical keys already existed for some. |
 | T7 | `notify(title, body?, severity?, fields?, urgent?)` | `Bugsee.notify` | **Done.** The collector already accepts it from a browser; see "T7 findings" |
 | T8 | `logException` options: `domain`; check what `mergingRules` does on iOS | Android `ExceptionOptions.Domain`, iOS `BugseeExceptionLoggingOptions` | Done: `domain` + `skipFrames` (see T8 findings) |
-| T9 | Browser: persist the user identifier across page loads, as iOS does | iOS `setUserIdentifier` | storage-failure tolerant |
+| T9 | Browser: persist the user identifier across page loads, as iOS and Android do (Android keeps it in `BugseeEnvironment`'s global preferences under `user_identifier`) | iOS / Android `setUserIdentifier` | **Done**, storage-failure tolerant, and **opt-in** (`persistUserIdentifier`): the identifier is often an e-mail (PII) and a browser may be shared. |
 
 ## Options added by T6
 
@@ -33,7 +34,7 @@ dots-to-colons like every other option). `detectHttpErrors` is wired wherever ne
 | `detectHttpErrors` | `detect.http-errors` | `false` | fetch / XHR / `node:http` **5xx** responses (Android `BugseeDetectionHttpError`, iOS `BGSDetectionProviderHttpError`) file an `error` report with mechanism `http-error`, once per session per (method, templated URL, status). Severity `high` (explicit, so `reportDefaultErrorPriority` does not override it), domain `HttpError::Server`, attributes `http_status_code` / `http_method` / `http_url` / `http_status_text`; the text is only `HTTP <status> <statusText>`. 4xx, transport failures and aborted requests are never reported. See Kept differences. |
 | `captureNetworkDefaultSanitizer` | `capture.network.default-sanitizer` | `true` | Friendly name for the existing key. A network filter still replaces the default; see `getDefaultNetworkSanitizer()`. |
 | `reportDefaultCrashPriority` | `reporting.defaults.crash-priority` | `'blocker'` | Severity of a crash report that was given none. |
-| `reportDefaultErrorPriority` | `reporting.defaults.error-priority` | `'high'` | Same for error reports (`logException`, unhandled rejections, http errors). |
+| `reportDefaultErrorPriority` | `reporting.defaults.error-priority` | `'high'` | Same for error reports (`logException`, unhandled rejections). NOT for http errors: those carry an explicit `high`. |
 
 An explicit per-call severity (`logException(e, { severity })`) and a report handler's edits win over the default.
 Native-crash recovery (Electron) builds its report outside the client and keeps `blocker`.
@@ -137,8 +138,9 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   need its own IndexedDB / file store with multi-instance coexistence, which the bundle queue only gets through the
   per-instance prefix and liveness machinery, so it is not cheap. Use `urgent`, `flush()` or a short `notifyFlushDelay`
   where loss matters. The queue is capped (1000 items, 1 MB, 72 h; oldest dropped) and survives `stop()` then `launch()` on one page.
-- Wired in `@bugsee/browser` and `@bugsee/node` (so Bun, Deno and the umbrella). The Vercel edge, web worker and
-  Cloudflare entries compile `notify()` but have no sender, so it is a silent no-op there; an isolate that is frozen
+- Wired in `@bugsee/browser` and `@bugsee/node` (so Bun, Deno and the umbrella). The Vercel edge, web worker,
+  Cloudflare and WebView entries compile `notify()` but have no sender, so it is a silent no-op there (the WebView
+  also accepts `notifyFlushDelay` and ignores it; the native host owns delivery); an isolate that is frozen
   after the response would lose a queued message anyway.
 - A rejected or oversize notification is reported through `onError`, never thrown.
 
@@ -153,17 +155,19 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   the `error` stage are accepted, like Android; an aborted request (`AbortError`, an aborted caller signal, ABORT_ERR)
   is emitted as an `abort` stage by the fetch and `node:http` interceptors, and a request with no HTTP status is never
   reported; a `req.destroy()` by the app cannot be told apart from a connection reset, so it stays an `error` stage
-  (still not reported, because it has no status); (4) the grouping signature is carried as one synthetic crash.json
-  frame (`HttpError.<METHOD> <url> <status>`), not a client-computed hash; the worker's managed-JS path is not
-  verified to group on it.
+  (still not reported, because it has no status). Same on both: the grouping signature is carried as one synthetic crash.json frame (`HttpError.<METHOD> <url>
+  <status>`), not a client-computed hash (Android `BugseeDetectionHttpError` does the same with `FRAME_CLASS =
+  "HttpError"`); the worker's managed-JS path is not verified to group on it.
 - **Electron renderer options.** `captureBreadcrumbs`, `captureLogsLevel`, `reportDefault*Priority` and
   `captureNetworkDefaultSanitizer` given to the MAIN process do not apply to data a renderer streams up, unless the
   renderer is launched with the same options. Forwarding them in the session handshake is a follow-up.
 - **Wire options on the public client.** `UploadOptions.trigger` and `LogExceptionOptions.mechanism` are hidden by
-  type AND stripped at runtime from the public `upload` / `logException` / `prepareUpload().send`, so plain JavaScript
-  cannot forge a `code_dialog` report. SDK packages reach them through `asInternalClient`, which is no longer the
-  same object as the public client (it is a copy carrying the unstripped methods). The `@internal` types remain in the
-  published d.ts.
+  type AND stripped at runtime from the public `upload` / `logException` / `prepareUpload().send`, which stops
+  accidental and untyped use. It is NOT a security boundary: code that can import `@bugsee/core` can call
+  `asInternalClient`, or read the `Symbol.for('com.bugsee.internal-client')` brand off the client, and so can still
+  file a report with `trigger: 'code_dialog'`. SDK packages reach the wire options through `asInternalClient`,
+  which is no longer the same object as the public client (it is a copy carrying the unstripped methods). The
+  `@internal` types remain in the published d.ts.
 
 - `captureBreadcrumbs` defaults to `true`, not mobile's `false`: UI-interaction breadcrumbs (click / change / submit /
   focus) are a core web signal and were already always on. The option can now switch them off.
@@ -172,7 +176,54 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
 - JS filters return a value; mobile filters take a callback.
 - No native triggers (shake, screenshot, notification bar, broadcast), no video options, `Appearance` or `setWrapper`.
   Web uses replay, CSS masking, and per-call `strings` / `theme` / `css` on the dialog.
-- `maxDataSize` per runtime (browser 10 MB, Node 50 MB).
+- `maxDataSize` per runtime (browser 10 MB, Node 50 MB). It is NOT the mobile option of the same name:
+  JS `maxDataSize` is `config.data-size`, the size of the rolling in-memory/on-disk CAPTURE buffer that becomes the
+  report. Mobile `config.max-data-size` (Android default 150, iOS 50, in MB) is a disk cap on reports WAITING to
+  be sent, evicting whole pending reports (errors, then bug reports, then crashes, oldest first). The JS
+  equivalent of that is not built (see "Remaining mobile gaps": `MaxPendingReports` / `MaxPendingReportAge`).
+- **`relaunch()` semantics.** JS `relaunch()` after `stop()` starts a new client again (Android: `relaunch()` when
+  the SDK is not started is a logged no-op, so a stopped Android SDK stays stopped). Before any `launch()` JS
+  rejects (Android logs a warning and returns). Everything else follows mobile: Bugsee options return to their
+  defaults, integration seams and the deployment identity are kept (see `RELAUNCH_KEPT_OPTIONS`, which stay
+  referenced from the process carrier after the client is gone).
+  Each package's `relaunch` re-runs THAT package's launch (e.g. `@bugsee/nextjs/server` re-runs `registerServer`
+  so the OTel default-attach is re-applied; the plain umbrella `@bugsee/bugsee/node` `relaunch` would not).
+  `@bugsee/webview` and `@bugsee/electron` offer none: the WebView carrier holds only a facade (native owns the
+  session) and Electron's launch needs `ipcMain`.
+- **JS-only launch keys** with no mobile counterpart: `startInBlackout` (`capture.start-in-blackout`),
+  `persistUserIdentifier` (`user.persist-identifier`) and `lifecycleEventsListener` (mobile registers its listener
+  through `setLifecycleEventsListener` only; the option exists so Launching/Launched are observable, since a
+  listener set after `launch()` misses them).
+- **`startBlackout()` before launch** is a no-op (so is `endBlackout()`); use `startInBlackout`. Android
+  behaves the same (`BugseeInternal.startBlackout` logs a warning and returns unless the SDK is started).
+
+## Remaining mobile gaps (no JS equivalent yet)
+
+Verified 2026-10-12 against `android/sdk/library/.../Bugsee.java` and `contracts/options/Options.java`; a
+`grep` of `packages/*/src` finds none of these. Not part of the alignment tasks above; recorded so they are
+decisions, not oversights. `deleteCollectedDataOnDevice` is the one to decide on next (privacy).
+
+APIs:
+- `deleteCollectedDataOnDevice(includingIntermediate, listener)`: erase everything collected on the device
+  (privacy / right-to-erasure). JS stores in IndexedDB / files; needs a store-level wipe plus the in-flight uploads.
+- `addNetworkEvent(networkEvent, requiresFiltering)`: feed a network event the SDK did not intercept.
+- `logUnhandledException(ex, options)`: file an exception as an unhandled one (JS has `logException`, which is
+  handled; unhandled ones come from the global handlers).
+- `testCrash()`: force a crash to verify the integration.
+- On-demand `captureViewHierarchy()`: JS has the `captureViewHierarchy` launch option (report-time snapshot) but
+  no call to capture one now.
+- Runtime secure-view / secure-rectangle APIs (`addSecureActivity`, `addSecureRectangle`, `removeSecureRectangle`,
+  `removeAllSecureRectangles`, `getAllSecureRectangles`): JS masks with replay options and CSS (and the WebView
+  obscuring channel), not by registering rectangles at runtime.
+
+Options (`com.bugsee.option.` + ...):
+- `config.max-pending-reports`, `config.max-pending-report-age` (Android defaults 30 and 30 days) and mobile's
+  meaning of `config.max-data-size` (disk cap on pending reports; see Kept differences).
+- `detect.early-crash`, `detect.anomaly`, `detect.frustration` and the `detect.exit.*` family (exit reasons:
+  low memory, not responding, excessive resource use, ...).
+- `capture.logs.allsources` (all log sources, not only the app's), `capture.network.on-launch` (network capture
+  from before launch), `capture.breadcrumbs.extras`.
+- `performance.adaptive-sampling` (Android default on).
 
 ## Open decisions (not delegated)
 

@@ -275,9 +275,25 @@ describe('launch -> stop -> launch cycles leave nothing behind', () => {
         bundleStore,
       }),
     );
-    const t0 = Date.now();
-    expect(await client.stop(20)).toBe(true);
-    expect(Date.now() - t0).toBeLessThan(1000); // bounded by the deadline, not by the pending scan
+    // Deterministic, no wall clock: only the deadline timer is faked, advanced in 20 ms steps.
+    // If stop() waited for the never-settling scan (or used a longer deadline) this would never resolve.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let settled = false;
+      const stopping = client.stop(20).then((drained) => {
+        settled = true;
+        return drained;
+      });
+      // The deadline timer is armed a few async steps into stop(): advance in deadline-sized steps, at most 5
+      // (100 ms of fake time in all), so a longer or missing deadline fails instead of passing slowly.
+      for (let step = 0; step < 5 && !settled; step++) {
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      expect(settled).toBe(true);
+      expect(await stopping).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(getStatus()).toBe(BugseeStatus.Stopped);
   });
 

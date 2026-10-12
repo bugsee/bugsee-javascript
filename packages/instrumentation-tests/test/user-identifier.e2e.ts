@@ -4,6 +4,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { USER_IDENTIFIER_KEY_PREFIX } from '@bugsee/browser';
 import { type MockCollector, parseBundles, readJson, startMockCollector } from '@bugsee/e2e-kit';
 import { build } from 'esbuild';
 import { type Browser, type BrowserContext, chromium, type Page } from 'playwright';
@@ -171,8 +172,9 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
       await first.evaluate(() =>
         (window as unknown as { __bugsee: Api }).__bugsee.setUserIdentifier('ann@example.com'),
       );
-      const stored = await first.evaluate(() =>
-        Object.keys(localStorage).filter((k) => k.startsWith('bugsee.user_identifier.')),
+      const stored = await first.evaluate(
+        (prefix) => Object.keys(localStorage).filter((k) => k.startsWith(prefix)),
+        USER_IDENTIFIER_KEY_PREFIX,
       );
       expect(stored).toEqual([]);
       await first.close();
@@ -201,8 +203,9 @@ describe('user identifier persistence — REAL Chromium end to end', () => {
         ),
       ).toBeNull();
       expect(
-        await second.evaluate(() =>
-          Object.keys(localStorage).filter((k) => k.startsWith('bugsee.user_identifier.')),
+        await second.evaluate(
+          (prefix) => Object.keys(localStorage).filter((k) => k.startsWith(prefix)),
+          USER_IDENTIFIER_KEY_PREFIX,
         ),
       ).toEqual([]);
     });

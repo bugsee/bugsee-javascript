@@ -70,3 +70,16 @@ export function captureRemixErrorBoundaryError(
   if (isRouteErrorResponse(error)) return;
   reportReactError(error, options.getClient !== undefined ? { getClient: options.getClient } : {});
 }
+
+// API parity with the umbrella entries (review R2D-4): the same VALUE surface, thin re-exports of the same functions.
+export {
+  addReportAttachment,
+  BugseeStatus,
+  getDefaultNetworkSanitizer,
+  getStatus,
+  LifecycleEvents,
+  type LifecycleEventsListener,
+  type LifecycleEventType,
+  type ReportAttachmentInput,
+  relaunch,
+} from '@bugsee/bugsee';

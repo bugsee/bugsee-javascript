@@ -363,6 +363,10 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * events continue (so do request/response bodies, navigation URLs and `video.aux` geometry: see
    * docs/design/blackout.md for the exact list). Idempotent and NOT counted: one `endBlackout()` ends any
    * number of calls, as on mobile.
+   *
+   * A NO-OP while the client is not launched (before it is launched, after `stop()`, or once the SDK has been
+   * killed): there is nothing to suppress yet, and the call is not remembered. To be dark from the very first
+   * frame use the `startInBlackout` launch option (browser) instead of calling this right after `launch()`.
    */
   startBlackout(): void;
   /**
@@ -405,8 +409,11 @@ export interface InternalBugseeClient extends BugseeClient {
 }
 
 /**
- * View a public client through its internal surface. A type-level cast only: every client the SDK
- * creates already implements the internal options.
+ * View a public client through its internal surface. Returns a COPY of the client carrying the unstripped
+ * wire-level `logException` / `upload` / `prepareUpload` (the public methods strip `trigger` / `mechanism`
+ * at runtime), so it is NOT the same object as `client` and a wrapper that replaces public methods on the
+ * client does not affect it. A client without the brand (a test double) is cast as is. This is an SDK-internal
+ * seam, not a security boundary: code that can import `@bugsee/core` can call it.
  * @internal
  */
 export function asInternalClient(client: BugseeClient): InternalBugseeClient {

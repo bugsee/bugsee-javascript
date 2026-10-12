@@ -29,6 +29,7 @@ const PUBLIC_RUNTIME_API = [
   'BugseeStatus',
   'getDefaultNetworkSanitizer',
   'LifecycleEvents',
+  'addReportAttachment',
 ] as const;
 
 describe('public API export parity across the umbrella entries', () => {
