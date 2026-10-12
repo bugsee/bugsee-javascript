@@ -145,7 +145,7 @@ describe('enqueue — validation and the wire shape', () => {
     user = 'u-2';
     await vi.advanceTimersByTimeAsync(0);
     expect(sends[0]?.[0]).toMatchObject({
-      user: { id: 'u-1' },
+      user: { email: 'u-1' }, // Android sends {email}; the integrations read only name/email
       attributes: { plan: 'pro' },
       environment: env,
     });
@@ -691,8 +691,11 @@ describe('flush and suspend', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(send).not.toHaveBeenCalled();
     expect(relay.pending()).toBe(1);
-    // a later notification re-arms scheduling and carries the old one with it
+    // while stopped a later notification is only queued; resume() sends it with the old one
     relay.enqueue({ title: 'b' });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(send).not.toHaveBeenCalled();
+    relay.resume();
     await vi.advanceTimersByTimeAsync(1000);
     expect(sends[0]?.map((i) => i.title)).toEqual(['a', 'b']);
   });
@@ -774,6 +777,291 @@ describe('timers', () => {
         throw new Error('sink');
       },
     });
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(relay.pending()).toBe(0);
+  });
+});
+
+describe('suspend / resume: a stopped SDK sends nothing (P4)', () => {
+  it('flush after suspend sends nothing, keeps the queue and reports it undelivered', async () => {
+    const { relay, send } = make({ flushDelayMs: 5000 });
+    relay.enqueue({ title: 'a' });
+    relay.suspend();
+    await expect(relay.flush()).resolves.toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(relay.pending()).toBe(1);
+  });
+
+  it('flush after suspend is true when nothing is pending', async () => {
+    const { relay } = make();
+    relay.suspend();
+    await expect(relay.flush()).resolves.toBe(true);
+  });
+
+  it('a send that fails after suspend does not re-arm the retry timer', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { relay, send } = make({}, async () => {
+      await gate;
+      return { outcome: 'retry' };
+    });
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    relay.suspend();
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0); // no backoff armed
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('a drain in progress at suspend sends no further batch', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { relay, send } = make({}, async () => {
+      calls += 1;
+      if (calls === 1) {
+        await gate;
+      }
+      return SENT;
+    });
+    for (let i = 0; i < 120; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    relay.suspend();
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('an urgent notification after suspend is queued, not sent', async () => {
+    const { relay, send } = make();
+    relay.suspend();
+    relay.enqueue({ title: 'u', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(relay.pending()).toBe(1);
+  });
+
+  it('resume clears the stopped state and sends what was kept', async () => {
+    const { relay, send } = make();
+    relay.enqueue({ title: 'a' });
+    relay.suspend();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    relay.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume with an empty queue arms nothing', () => {
+    const { relay } = make();
+    relay.suspend();
+    relay.resume();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('queue caps: total bytes and age (P6)', () => {
+  it('drops the oldest once the queued bytes pass 1 MB', async () => {
+    const { relay, onError } = make({ flushDelayMs: 100_000 });
+    const big = 'x'.repeat(200 * 1024);
+    for (let i = 0; i < 7; i++) {
+      relay.enqueue({ title: `n${i}`, body: big });
+    }
+    // 7 x ~200 KB > 1 MB: the two oldest go, five (~1000 KB) fit
+    expect(relay.pending()).toBe(5);
+    expect(onError).toHaveBeenCalledTimes(2);
+    relay.suspend();
+    relay.resume();
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(sends.flat().map((i) => i.title)).toEqual(['n2', 'n3', 'n4', 'n5', 'n6']);
+  });
+
+  it('keeps a lone notification even when it alone is the largest allowed', () => {
+    const { relay, onError } = make({ flushDelayMs: 100_000 });
+    relay.enqueue({ title: 't', body: 'x'.repeat(250 * 1024) });
+    expect(relay.pending()).toBe(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('drops a notification older than 72 h instead of sending it', async () => {
+    let now = 1_700_000_000_000;
+    const { relay, send, onError } = make(
+      { clock: { wallNow: () => now, monotonicNow: () => 0 }, flushDelayMs: 100_000 },
+      async () => SENT,
+    );
+    relay.enqueue({ title: 'old' });
+    now += 72 * 3600_000 + 1;
+    relay.enqueue({ title: 'fresh' });
+    expect(relay.pending()).toBe(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    await relay.flush();
+    expect(send.mock.calls[0]?.[0].map((i: NotifyItem) => i.title)).toEqual(['fresh']);
+  });
+
+  it('keeps one exactly 72 h old', async () => {
+    let now = 1_700_000_000_000;
+    const { relay } = make({
+      clock: { wallNow: () => now, monotonicNow: () => 0 },
+      flushDelayMs: 100_000,
+    });
+    relay.enqueue({ title: 'edge' });
+    now += 72 * 3600_000;
+    relay.enqueue({ title: 'fresh' });
+    expect(relay.pending()).toBe(2);
+  });
+
+  it('drops an aged item that waited out a backoff before retrying it', async () => {
+    let now = 1_700_000_000_000;
+    let calls = 0;
+    const { relay, send } = make(
+      { clock: { wallNow: () => now, monotonicNow: () => 0 } },
+      async () => {
+        calls += 1;
+        return calls === 1 ? { outcome: 'retry' } : SENT;
+      },
+    );
+    relay.enqueue({ title: 'old' });
+    await vi.advanceTimersByTimeAsync(0);
+    now += 73 * 3600_000;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(relay.pending()).toBe(0);
+  });
+});
+
+describe('urgent sends are tracked without an ever-growing chain (P7)', () => {
+  it('flush waits for every urgent send in flight, in any completion order', async () => {
+    const releases: Array<() => void> = [];
+    const { relay } = make(
+      {},
+      () => new Promise<NotifyResult>((resolve) => releases.push(() => resolve(SENT))),
+    );
+    for (let i = 0; i < 3; i++) {
+      relay.enqueue({ title: `u${i}`, urgent: true });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    let done = false;
+    const flushed = relay.flush().then((r) => {
+      done = true;
+      return r;
+    });
+    releases[2]?.();
+    releases[0]?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(false);
+    releases[1]?.();
+    await expect(flushed).resolves.toBe(true);
+  });
+
+  it('flush also waits for an urgent send that starts while it is waiting', async () => {
+    const releases: Array<() => void> = [];
+    const { relay } = make(
+      {},
+      () => new Promise<NotifyResult>((resolve) => releases.push(() => resolve(SENT))),
+    );
+    relay.enqueue({ title: 'u0', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    let done = false;
+    const flushed = relay.flush().then((r) => {
+      done = true;
+      return r;
+    });
+    await vi.advanceTimersByTimeAsync(0); // flush is now parked on u0
+    relay.enqueue({ title: 'u1', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    releases[0]?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(false);
+    releases[1]?.();
+    await expect(flushed).resolves.toBe(true);
+  });
+
+  it('flush resolves immediately once all urgent sends have finished', async () => {
+    const { relay } = make();
+    relay.enqueue({ title: 'u', urgent: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(relay.flush()).resolves.toBe(true);
+  });
+});
+
+describe('collector verdicts: retry-after and kill (P9)', () => {
+  it('waits the collector-given retryAfter instead of the backoff', async () => {
+    let calls = 0;
+    const { relay, send } = make({}, async () => {
+      calls += 1;
+      return calls === 1 ? { outcome: 'retry', retryAfterMs: 30_000 } : SENT;
+    });
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('never waits more than 10 minutes on a retryAfter', async () => {
+    let calls = 0;
+    const { relay, send } = make({}, async () => {
+      calls += 1;
+      return calls === 1 ? { outcome: 'retry', retryAfterMs: 86_400_000 } : SENT;
+    });
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('a kill verdict drops the queue, stops sending and tells the owner once', async () => {
+    const onKill = vi.fn();
+    const { relay, send } = make({ onKill }, async () => ({ outcome: 'kill' }));
+    relay.enqueue({ title: 'a' });
+    relay.enqueue({ title: 'b' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onKill).toHaveBeenCalledTimes(1);
+    expect(relay.pending()).toBe(0);
+    relay.enqueue({ title: 'c' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume after a kill verdict sends nothing: the relay stays dead', async () => {
+    const { relay, send } = make({}, async () => ({ outcome: 'kill' }));
+    relay.enqueue({ title: 'a' });
+    await vi.advanceTimersByTimeAsync(0);
+    relay.resume();
+    relay.enqueue({ title: 'b' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(relay.pending()).toBe(0);
+  });
+
+  it('a kill verdict also drops what had not been batched yet', async () => {
+    const { relay } = make({}, async () => ({ outcome: 'kill' }));
+    for (let i = 0; i < 60; i++) {
+      relay.enqueue({ title: `n${i}` });
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(relay.pending()).toBe(0);
+  });
+
+  it('a throwing onKill never breaks the relay', async () => {
+    const { relay } = make(
+      {
+        onKill: () => {
+          throw new Error('x');
+        },
+      },
+      async () => ({ outcome: 'kill' }),
+    );
     relay.enqueue({ title: 'a' });
     await vi.advanceTimersByTimeAsync(0);
     expect(relay.pending()).toBe(0);

@@ -13,7 +13,7 @@ Each task is test-first with the mutator loop, keeps the coverage gate, and land
 |---|---|---|---|
 | T1 | Wire `ReportHandler.after`; add `setLifecycleEventsListener` with the mobile event set (Launched, Stopped, BeforeReportShown, AfterReportShown, BeforeReportUploaded, AfterReportUploaded, ReportUploadFailed, ReportUploadFailedWithFutureRetry, BeforeReportAssembled, AfterReportAssembled, ReportAssemblyFailed, BlackoutStarted, BlackoutEnded) | Android `LifecycleEvents`, iOS `BugseeLifecycleEventType` | `after` is typed today and never invoked |
 | T2 | Facade cleanup: type `performanceUploadMode`; `startTransaction` / `startSpan` / `getActiveSpan` on the `Bugsee` object; stop exposing `UploadOptions.trigger` and `Mechanism` publicly | `Bugsee.startTransaction`, `startSpan`, `getActiveSpan` | internals keep working through an internal entry |
-| T3 | Attachments: a public attachment type and `report.attachments` writable from `ReportHandler.before`; mobile limits (3 files, 3 MB each); bundle assembler includes them | `Report.addAttachment`, iOS `BugseeAttachment` | |
+| T3 | Attachments: a public attachment type and `report.attachments` writable from `ReportHandler.before`; iOS limits (3 files, 3 MB each; Android has no cap); bundle assembler includes them | `Report.addAttachment`, iOS `BugseeAttachment` | |
 | T4 | Blackout: `startBlackout` / `endBlackout` / `isBlackout`; suspends replay, input and viewtree capture while logs and network continue | `Bugsee.startBlackout` | emits the T1 events once T1 lands |
 | T5 | Launch state: `getStatus()` with the Stopped/Launching/Launched/Stopping enum, `relaunch(options?)`, `getLaunchOptions()`, `getHostLaunchOptions()`; verify launch → stop → launch works | `getStatus`, `relaunch`, `getLaunchOptions` | |
 | T6 | Missing options: `captureLogsLevel`, `captureBreadcrumbs`, `detectHttpErrors`, `captureNetworkDefaultSanitizer`, `reportDefaultCrashPriority`, `reportDefaultErrorPriority`; `getDefaultNetworkSanitizer()` so a custom filter can reuse the default redaction | `OptionsDescriptors` keys under `com.bugsee.option.*` | canonical keys already exist for some |
@@ -90,7 +90,8 @@ then a session. No access token and no `/v2/sessions` call are needed, so `notif
 **Item** (`RelayNotification`, identical on both platforms; the server's `sanitizeItem` keeps exactly these keys):
 `id` (client UUID, the dedup and status key), `timestamp` (ms), `title` (required), `body`, `severity` (1 to 5, the same
 numbers as report severity), `fields` (string to string), `urgent` (true only), `delivery` (`immediate` or `deferred`,
-stamped when it is sent), `user`, `environment`, `attributes` (snapshots taken at the call).
+stamped when it is sent), `user`, `environment`, `attributes` (snapshots taken at the call). `user` is `{ email: <user identifier> }`, as Android
+sends it: the integrations read only `name` / `email` from it, so the earlier `{ id }` shape was invisible to them.
 An item without an `id` or a non-empty `title` is `invalid` server-side.
 
 **Response.** `{ ok: true, result: { notifications: { <id>: accepted | skipped | invalid | failed } } }`.
@@ -119,8 +120,14 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   notification arms the window and later ones join it. Delivery is stamped `immediate` when the delay is 0 and
   `deferred` otherwise; an `urgent` notification skips the window and is sent alone, stamped `immediate`
   (Android `RelayNotification.flushDelivery`).
-- Retry: network error, 408, 429, 5xx, or a per-item `failed` back off 2 s doubling to 60 s, keeping order. Other
-  4xx and a `{ ok: false }` envelope drop the batch (the error router answers HTTP 200 for a refusal).
+- Retry: network error, 408, 429, 5xx, or a per-item `failed` back off 2 s doubling to 60 s, keeping order. A 429
+  `QuotaExceeded` carries `retryAfter` (seconds, body) which replaces the backoff for that retry (capped at 10 min).
+  Other 4xx and a `{ ok: false }` envelope drop the batch (the error router answers HTTP 200 for a refusal). A
+  `403` whose body is `{ error: 'KillSdk' }` switches the SDK off like a report's KillSdk verdict; an anonymous 403
+  (a proxy) is only a rejected batch.
+- After `stop()` or a kill the relay sends and retries nothing (`flush()` is a no-op, no backoff timer is re-armed);
+  a re-launch resumes what was kept. The queue is bounded by count (1000), total size (1 MB) and age (72 h), oldest
+  dropped first, like Android's relay storage.
 - `fields` keeps only string values; severity is the report severity names.
 - `client.flush()` and `client.stop()` deliver what is pending, so `await bugsee.stop()` before exit loses nothing.
 
@@ -129,7 +136,7 @@ An item without an `id` or a non-empty `title` is `invalid` server-side.
   after a restart. A page closed or a process killed with an unsent notification loses it. A durable queue would
   need its own IndexedDB / file store with multi-instance coexistence, which the bundle queue only gets through the
   per-instance prefix and liveness machinery, so it is not cheap. Use `urgent`, `flush()` or a short `notifyFlushDelay`
-  where loss matters. The queue is capped at 1000 (oldest dropped) and survives `stop()` then `launch()` on one page.
+  where loss matters. The queue is capped (1000 items, 1 MB, 72 h; oldest dropped) and survives `stop()` then `launch()` on one page.
 - Wired in `@bugsee/browser` and `@bugsee/node` (so Bun, Deno and the umbrella). The Vercel edge, web worker and
   Cloudflare entries compile `notify()` but have no sender, so it is a silent no-op there; an isolate that is frozen
   after the response would lose a queued message anyway.

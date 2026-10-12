@@ -16,13 +16,20 @@ import type { NotifyItem, NotifyResult } from './transport';
 // stop()/launch() cycle within one page.
 //
 // Limits, all from the mobile SDKs: a batch is at most 50 notifications / 256 KB, one notification at most
-// 256 KB, and a failed batch is retried with a 2 s -> 60 s exponential backoff.
+// 256 KB, a failed batch is retried with a 2 s -> 60 s exponential backoff, the pending queue holds at most
+// 1 MB (1000 items) and nothing older than 72 h is sent (Android's relay storage caps).
 
 const MAX_BATCH_COUNT = 50;
 const MAX_BATCH_BYTES = 256 * 1024;
 const MAX_ITEM_BYTES = 256 * 1024;
 /** In-memory bound; mobile's equivalent is its storage count cap. The oldest message is dropped. */
 const MAX_PENDING = 1000;
+/** Total queued bytes (Android's relay storage cap). The oldest are dropped first. */
+const MAX_QUEUE_BYTES = 1024 * 1024;
+/** A notification older than this is dropped instead of sent (Android: 72 h). */
+const MAX_AGE_MS = 72 * 3600_000;
+/** The longest wait a collector `retryAfter` may impose. */
+const MAX_RETRY_AFTER_MS = 600_000;
 const RETRY_INITIAL_MS = 2000;
 const RETRY_MAX_MS = 60_000;
 
@@ -73,6 +80,8 @@ export interface NotifyRelayOptions {
   /** Notification id generator. Default `randomId()`. */
   newId?: () => string;
   onError?: (error: unknown) => void;
+  /** The collector answered `403 KillSdk`: the owner should enter its kill state. Called once. */
+  onKill?: () => void;
 }
 
 export interface NotifyRelay {
@@ -80,8 +89,13 @@ export interface NotifyRelay {
   enqueue(input: NotifyInput): void;
   /** Send everything pending now. Resolves true when nothing is left pending. */
   flush(): Promise<boolean>;
-  /** Cancel the scheduled flush and the backoff; the queue is kept. */
+  /**
+   * Stop sending: cancel the scheduled flush and the backoff, and refuse to send or re-arm a retry until
+   * {@link NotifyRelay.resume}. The queue is kept.
+   */
   suspend(): void;
+  /** Undo `suspend()` (a re-launch) and schedule what was kept. */
+  resume(): void;
   /** Number of notifications not yet delivered: queued, or in a request that has not answered. */
   pending(): number;
 }
@@ -120,16 +134,48 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   let retryDelay = RETRY_INITIAL_MS;
   let running: Promise<boolean> | null = null;
   /** Settles when every urgent send started so far has. A chain, so finished sends are not retained. */
-  let urgentSends: Promise<unknown> = Promise.resolve();
+  const urgentSends = new Set<Promise<void>>();
   let inFlightItems = 0;
+  /** A stopped SDK (stop() / kill) sends and retries nothing. Cleared by `resume()` on launch. */
+  let stopped = false;
+  let killed = false;
+  /** A 429's `retryAfter`, consumed by the next `scheduleRetry`. */
+  let retryHintMs: number | undefined;
+  const sizes = new WeakMap<NotifyItem, number>();
+  const sizeOf = (item: NotifyItem): number => {
+    let size = sizes.get(item);
+    if (size === undefined) {
+      size = jsonBytes(item);
+      sizes.set(item, size);
+    }
+    return size;
+  };
 
-  /** Keep at most MAX_PENDING, dropping the oldest. */
+  /** Drop what is too old to be worth sending (72 h). */
+  const dropExpired = (): void => {
+    const cutoff = clock.wallNow() - MAX_AGE_MS;
+    const kept = queue.filter((item) => item.timestamp >= cutoff);
+    if (kept.length !== queue.length) {
+      report(
+        new Error(`notify: dropped ${queue.length - kept.length} notification(s) older than 72 h`),
+      );
+      queue = kept;
+    }
+  };
+
+  /** Keep at most MAX_PENDING items and MAX_QUEUE_BYTES bytes, dropping the oldest; and nothing past 72 h. */
   const trim = (): void => {
+    dropExpired();
     while (queue.length > MAX_PENDING) {
       queue.shift();
       report(
         new Error(`notify: more than ${MAX_PENDING} notifications pending; dropped the oldest`),
       );
+    }
+    let bytes = queue.reduce((sum, item) => sum + sizeOf(item), 0);
+    while (bytes > MAX_QUEUE_BYTES && queue.length > 1) {
+      bytes -= sizeOf(queue.shift() as NotifyItem);
+      report(new Error('notify: more than 1 MB of notifications pending; dropped the oldest'));
     }
   };
 
@@ -155,9 +201,25 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
       retryDelay = RETRY_INITIAL_MS;
       return true;
     }
+    if (result.outcome === 'kill') {
+      killed = true;
+      stopped = true;
+      queue = [];
+      clearFlushTimer();
+      clearRetryTimer();
+      try {
+        options.onKill?.();
+      } catch (error) {
+        report(error);
+      }
+      return true;
+    }
     if (result.outcome === 'rejected') {
       report(new Error(`notify: the collector rejected ${batch.length} notification(s); dropped`));
       return true;
+    }
+    if (result.retryAfterMs !== undefined) {
+      retryHintMs = Math.min(Math.max(result.retryAfterMs, 0), MAX_RETRY_AFTER_MS);
     }
     const wanted = result.retryIds;
     const back = wanted === undefined ? batch : batch.filter((item) => wanted.includes(item.id));
@@ -182,14 +244,20 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   };
 
   const drain = async (): Promise<boolean> => {
-    while (queue.length > 0) {
+    for (;;) {
+      dropExpired();
+      if (queue.length === 0 || stopped) {
+        break;
+      }
       if (!(await dispatch(takeBatch(), false))) {
         scheduleRetry();
         return false;
       }
     }
-    clearRetryTimer(); // everything is out: a backoff armed by an earlier failure has nothing left to do
-    return true;
+    if (queue.length === 0) {
+      clearRetryTimer(); // everything is out: a backoff armed by an earlier failure has nothing left to do
+    }
+    return queue.length === 0;
   };
 
   const clearFlushTimer = (): void => {
@@ -207,8 +275,16 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
 
   const scheduleRetry = (): void => {
     clearRetryTimer();
-    const wait = retryDelay;
-    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    if (stopped) {
+      return; // a stopped SDK keeps no timer, and so sends no request, alive
+    }
+    let wait = retryDelay;
+    if (retryHintMs !== undefined) {
+      wait = retryHintMs; // the collector named the wait: honour it, leave the backoff where it is
+      retryHintMs = undefined;
+    } else {
+      retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    }
     retryTimer = timers.setTimeout(() => {
       retryTimer = null;
       void flush();
@@ -217,18 +293,21 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
 
   const flush = async (): Promise<boolean> => {
     clearFlushTimer();
+    // drain() itself refuses to send while stopped, so a stopped flush only waits for what is in flight.
     running ??= drain().finally(() => {
       running = null;
     });
     const drained = await running;
-    await urgentSends;
+    while (urgentSends.size > 0) {
+      await Promise.allSettled([...urgentSends]);
+    }
     return drained && queue.length === 0;
   };
 
   const scheduleFlush = (): void => {
     // A backing-off retry already owns the next send; sending newer messages ahead of it would both
     // hammer a failing endpoint and reorder the queue.
-    if (flushTimer !== null || retryTimer !== null) {
+    if (stopped || flushTimer !== null || retryTimer !== null) {
       return;
     }
     flushTimer = timers.setTimeout(() => {
@@ -238,16 +317,23 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
   };
 
   const sendUrgent = (item: NotifyItem): void => {
-    const attempt = dispatch([item], true).then((done) => {
-      if (!done) {
-        scheduleRetry();
-      }
-    });
-    urgentSends = Promise.allSettled([urgentSends, attempt]);
+    const attempt: Promise<void> = dispatch([item], true)
+      .then((done) => {
+        if (!done) {
+          scheduleRetry();
+        }
+      })
+      .finally(() => {
+        urgentSends.delete(attempt);
+      });
+    urgentSends.add(attempt);
   };
 
   return {
     enqueue(input: NotifyInput): void {
+      if (killed) {
+        return;
+      }
       if (typeof input.title !== 'string' || input.title.length === 0) {
         return;
       }
@@ -269,7 +355,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
       try {
         const snapshot = options.snapshot?.();
         if (snapshot?.userIdentifier) {
-          item.user = { id: snapshot.userIdentifier };
+          item.user = { email: snapshot.userIdentifier };
         }
         if (snapshot?.attributes && Object.keys(snapshot.attributes).length > 0) {
           item.attributes = snapshot.attributes;
@@ -284,7 +370,7 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
         report(new Error('notify: notification is larger than 256 KB; ignored'));
         return;
       }
-      if (item.urgent === true) {
+      if (item.urgent === true && !stopped) {
         sendUrgent(item);
         return;
       }
@@ -296,8 +382,17 @@ export function createNotifyRelay(options: NotifyRelayOptions): NotifyRelay {
     flush,
 
     suspend(): void {
+      stopped = true;
       clearFlushTimer();
       clearRetryTimer();
+    },
+
+    resume(): void {
+      // After a kill verdict the queue is empty and `enqueue` refuses everything, so there is nothing to resume.
+      stopped = false;
+      if (queue.length > 0) {
+        scheduleFlush();
+      }
     },
 
     pending(): number {

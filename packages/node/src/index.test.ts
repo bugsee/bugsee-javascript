@@ -29,6 +29,7 @@ import * as publicApi from './index';
 
 /** Every VALUE the package exports (types are erased and cannot be asserted at runtime). */
 const EXPECTED_EXPORTS = [
+  'addReportAttachment',
   'BugseeStatus',
   'PROFILING_OPTION_DEFINITIONS',
   'ProfilingOption',

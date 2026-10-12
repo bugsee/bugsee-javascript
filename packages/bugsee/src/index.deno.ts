@@ -16,7 +16,9 @@ export type {
   UploadOptions,
 } from '@bugsee/core';
 // Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
+// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
 export {
+  addReportAttachment,
   LifecycleEvents,
   type LifecycleEventsListener,
   type LifecycleEventType,

@@ -133,20 +133,55 @@ function notifyStatusMap(decoded: unknown): Record<string, unknown> | undefined 
   return typeof map === 'object' && map !== null ? (map as Record<string, unknown>) : undefined;
 }
 
+/** The relay's `{ ok: false, error: '<Name>' }` error name (a string, unlike the `/v2/issues` envelope). */
+function relayErrorName(body: Uint8Array): string | undefined {
+  try {
+    const error = (decode(body) as { error?: unknown } | null)?.error;
+    return typeof error === 'string' ? error : undefined;
+  } catch {
+    return undefined; // not JSON: a proxy, not the collector
+  }
+}
+
+/** A 429's wait in ms: the body's `retryAfter` (seconds, `QuotaExceeded`), else a numeric `Retry-After` header. */
+function retryAfterMs(response: HttpResponse): number | undefined {
+  let seconds: unknown;
+  try {
+    seconds = (decode(response.body) as { retryAfter?: unknown } | null)?.retryAfter;
+  } catch {
+    seconds = undefined;
+  }
+  if (typeof seconds !== 'number') {
+    const header = response.headers['retry-after'];
+    seconds = typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : undefined;
+  }
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? Math.round(seconds * 1000)
+    : undefined;
+}
+
 /**
  * Map the relay's answer onto what the sender should do (Android `NotificationRelayUploadJob.upload`).
  *
  * - 2xx / 5xx: the per-item map decides — only an item the collector called `failed` is worth sending
  *   again (`accepted`, `skipped` and `invalid` are final). A 5xx with no map retries everything.
- * - 408 / 429 and anything else non-2xx below 400 or unparseable: retry.
+ * - 408 / 429 and anything else non-2xx below 400 or unparseable: retry (a 429's `retryAfter` is the wait).
+ * - 403 with `error: 'KillSdk'`: kill (the app's SDK was switched off server-side).
  * - other 4xx: rejected.
  * - a `{ ok: false }` envelope inside a 200 is the collector refusing the batch: rejected (the error
  *   router forces HTTP 200, so retrying would repeat the same refusal forever).
  */
 function classifyNotify(response: HttpResponse, items: readonly NotifyItem[]): NotifyResult {
   const { status } = response;
-  if (status === 408 || status === 429) {
+  if (status === 429) {
+    const wait = retryAfterMs(response);
+    return wait === undefined ? { outcome: 'retry' } : { outcome: 'retry', retryAfterMs: wait };
+  }
+  if (status === 408) {
     return { outcome: 'retry' };
+  }
+  if (status === 403 && relayErrorName(response.body) === 'KillSdk') {
+    return { outcome: 'kill' }; // the app's SDK is switched off (appserver `resolveOrgAndApp`)
   }
   if (status >= 400 && status < 500) {
     return { outcome: 'rejected' };

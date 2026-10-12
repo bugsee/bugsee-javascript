@@ -22,6 +22,7 @@ import type {
   SeverityName,
 } from '@bugsee/types';
 import { isThenable } from '@bugsee/util';
+import { encodeRequestForMarker, normalizeReportAttachments } from './attachments';
 import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
@@ -42,7 +43,7 @@ import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
 import { createEnvironment } from './environment';
-import type { BugseeError } from './errors';
+import { BugseeError } from './errors';
 import type { BreadcrumbInput, LogEvent } from './events';
 import {
   type BreadcrumbFilter,
@@ -729,6 +730,13 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
           clock,
           flushDelayMs: notifyFlushDelayMs,
           onError: onErrorSafe,
+          // The relay's own `403 KillSdk` verdict switches the SDK off exactly like a report's.
+          onKill: () =>
+            enterKillState(
+              new BugseeError('Notification relay: the SDK has been disabled by the server', 403, {
+                fatal: true,
+              }),
+            ),
           snapshot: () => {
             let builtEnvironment: EnvironmentEnvelope | undefined;
             try {
@@ -836,6 +844,24 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
+
+  // The worker's Android path caps the exception domain at 150 characters; never leave a lone surrogate behind.
+  const MAX_DOMAIN_LENGTH = 150;
+  const capDomain = (domain: string, sink: (error: unknown) => void): string => {
+    if (domain.length <= MAX_DOMAIN_LENGTH) {
+      return domain;
+    }
+    sink(
+      new Error(
+        `logException: \`domain\` is longer than ${MAX_DOMAIN_LENGTH} characters; truncated`,
+      ),
+    );
+    const last = domain.charCodeAt(MAX_DOMAIN_LENGTH - 1);
+    return domain.slice(
+      0,
+      last >= 0xd800 && last <= 0xdbff ? MAX_DOMAIN_LENGTH - 1 : MAX_DOMAIN_LENGTH,
+    );
+  };
 
   // Build, filter and submit a report someone explicitly asked for (`upload` / a prepared upload).
   const sendUpload = (
@@ -981,11 +1007,18 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
     // (a synchronous store that did not throw). It decides nothing about retirement — it decides whether
     // keeping the marker actually preserves the incident, or only looks like it does.
     let markerDurable: boolean | Promise<boolean> = true;
+    // Apply the attachment limits NOW, so the marker below persists at most 3 x 3 MB of valid data (not an
+    // arbitrary pile of bytes) and assembly never meets a malformed one. Never lets the report be lost.
+    try {
+      normalizeReportAttachments(handled.report, onErrorSafe);
+    } catch (error) {
+      onErrorSafe(error);
+    }
     if (reportMarkers !== undefined) {
       try {
         const written = reportMarkers.store.put({
           generation: reportMarkers.generation,
-          request: handled,
+          request: encodeRequestForMarker(handled),
           attributes: identity.attributes,
           userIdentifier: identity.userIdentifier,
         });
@@ -1247,7 +1280,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       const domain = exceptionOptions?.domain;
       if (domain !== undefined) {
         if (typeof domain === 'string' && domain !== '') {
-          crashOptions.domain = domain;
+          crashOptions.domain = capDomain(domain, onError);
         } else {
           onError(
             new Error('logException: ignoring invalid `domain` (expected a non-empty string)'),
@@ -1266,7 +1299,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
           );
         }
       }
-      applyExceptionOptions(crash, crashOptions);
+      applyExceptionOptions(crash, crashOptions, onError);
       const request = createReportingRequest({
         source: { type: 'error', mechanism: exceptionOptions?.mechanism ?? 'programmatic' },
         summary: message,
@@ -1385,6 +1418,7 @@ export function createClient(options: CreateClientOptions = {}): InternalBugseeC
       lifecycle.emit(LifecycleEvents.Launching);
       launched = true;
       stopped = false;
+      notifyRelay?.resume(); // a stop() suspended it; what was kept goes out now
       // launch() must never throw (§15.1): a throwing provider.start is isolated per coordinator
       // (a failed capture start must not prevent detection from starting) and routed to onError.
       try {

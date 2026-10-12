@@ -302,19 +302,29 @@ function renderThrowable(value: unknown): string {
 
 /**
  * Apply the already-validated `logException` options that live in the crash document: stamp `domain` on
- * the outermost exception and mark its top `skipFrames` frames `hidden` (Android/iOS `skipFrames`: the
+ * the outermost exception and mark its top `skipFrames` frames `hidden`, never the last one (Android/iOS `skipFrames`: the
  * frames stay in the trace but stop deciding the grouping location, so a wrapper or adapter does not
  * collapse every error it reports into one issue). Mutates and returns `crash`.
  */
 export function applyExceptionOptions(
   crash: CrashJson,
   options: { domain?: string; skipFrames?: number },
+  onError: (error: unknown) => void = () => undefined,
 ): CrashJson {
   if (options.domain !== undefined) {
     crash.exception.domain = options.domain;
   }
   if (options.skipFrames !== undefined) {
-    for (const frame of crash.exception.frames.slice(0, options.skipFrames)) {
+    // Hiding every frame leaves the worker no location or signature, so one frame always stays visible.
+    const limit = Math.max(crash.exception.frames.length - 1, 0);
+    if (options.skipFrames > limit) {
+      onError(
+        new Error(
+          `logException: \`skipFrames\` (${options.skipFrames}) is not below the ${crash.exception.frames.length} frame(s) of the stack; clamped to ${limit}`,
+        ),
+      );
+    }
+    for (const frame of crash.exception.frames.slice(0, Math.min(options.skipFrames, limit))) {
       frame.hidden = true;
     }
   }

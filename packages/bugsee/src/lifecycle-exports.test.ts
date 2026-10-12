@@ -1,4 +1,4 @@
-import { LifecycleEvents } from '@bugsee/core';
+import { addReportAttachment, LifecycleEvents } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import * as browserEntry from './index';
 import * as bunEntry from './index.bun';
@@ -23,6 +23,24 @@ describe('LifecycleEvents is re-exported from every umbrella entry', () => {
   for (const [name, entry] of Object.entries(entries)) {
     it(name, () => {
       expect(entry.LifecycleEvents).toBe(LifecycleEvents);
+    });
+  }
+});
+
+// `addReportAttachment` (the helper form of `report.userAttachments`) is on every entry, the same function.
+describe('addReportAttachment is re-exported from every umbrella entry', () => {
+  const entries = {
+    browser: browserEntry,
+    node: nodeEntry,
+    bun: bunEntry,
+    deno: denoEntry,
+    'edge-light': edgeEntry,
+    worker: workerEntry,
+    workerd: workerdEntry,
+  };
+  for (const [name, entry] of Object.entries(entries)) {
+    it(name, () => {
+      expect(entry.addReportAttachment).toBe(addReportAttachment);
     });
   }
 });

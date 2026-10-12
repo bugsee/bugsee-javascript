@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   addReportAttachment,
+  decodeRequestFromMarker,
+  encodeRequestForMarker,
   MAX_USER_ATTACHMENT_BYTES,
   MAX_USER_ATTACHMENTS,
+  normalizeReportAttachments,
   resolveUserAttachments,
   sanitizeAttachmentFileName,
 } from './attachments';
@@ -11,7 +14,7 @@ import { createReportingRequest } from './reporting';
 const fixedName = (): string => 'rand';
 
 describe('limits', () => {
-  it('mirror the mobile SDKs: 3 attachments of 3 MB', () => {
+  it('match iOS: 3 attachments of 3 MB', () => {
     expect(MAX_USER_ATTACHMENTS).toBe(3);
     expect(MAX_USER_ATTACHMENT_BYTES).toBe(3 * 1024 * 1024);
   });
@@ -177,5 +180,162 @@ describe('addReportAttachment', () => {
     addReportAttachment(report, { name: 'a', data: 'x' });
     addReportAttachment(report, { name: 'b', data: 'y' });
     expect(report.userAttachments?.map((a) => a.name)).toEqual(['a', 'b']);
+  });
+});
+
+describe('resolveUserAttachments hardening (P2, P9)', () => {
+  it('drops a non-string fileName / mimeType, keeps the attachment, and reports each', () => {
+    const onError = vi.fn();
+    const out = resolveUserAttachments(
+      [{ name: 'x', data: 'y', fileName: 42, mimeType: {} } as never],
+      onError,
+      fixedName,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ name: 'x', fileName: 'x', mimeType: 'text/plain' });
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('never lets one hostile attachment lose the others (throwing getter)', () => {
+    const onError = vi.fn();
+    const hostile = {
+      get name(): string {
+        throw new Error('boom');
+      },
+      data: 'y',
+    };
+    const out = resolveUserAttachments(
+      [hostile as never, { name: 'ok', data: 'z' }],
+      onError,
+      fixedName,
+    );
+    expect(out.map((a) => a.name)).toEqual(['ok']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an attachment that throws a non-Error as unreadable', () => {
+    const onError = vi.fn();
+    const hostile = {
+      get name(): string {
+        throw 'plain string';
+      },
+      data: 'y',
+    };
+    expect(resolveUserAttachments([hostile as never], onError, fixedName)).toEqual([]);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('unreadable');
+  });
+
+  it('names a hostile attachment (3rd+ getter call) as unreadable even when labelling it throws', () => {
+    const onError = vi.fn();
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap');
+        },
+      },
+    );
+    expect(resolveUserAttachments([hostile as never], onError, fixedName)).toEqual([]);
+    expect(String(onError.mock.calls[0]?.[0])).toContain('(unreadable)');
+  });
+
+  it('drops empty data (iOS parity) and reports it', () => {
+    const onError = vi.fn();
+    const out = resolveUserAttachments(
+      [
+        { name: 'a', data: '' },
+        { name: 'b', data: new Uint8Array(0) },
+        { name: 'c', data: 'x' },
+      ],
+      onError,
+      fixedName,
+    );
+    expect(out.map((a) => a.name)).toEqual(['c']);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('strips bidi override characters from the file name', () => {
+    expect(sanitizeAttachmentFileName('a\u202Etxt.exe\u2066\u200F')).toBe('atxt.exe');
+  });
+
+  it('does not split a surrogate pair at the 128-character cut', () => {
+    const name = `${'a'.repeat(127)}\u{1F600}`;
+    const cut = sanitizeAttachmentFileName(name);
+    expect(cut).toBe('a'.repeat(127));
+  });
+});
+
+describe('normalizeReportAttachments + marker round trip (P1)', () => {
+  const binary = new Uint8Array([0, 1, 2, 254, 255]);
+
+  it('applies the limits to the report in place, once, at submit time', () => {
+    const onError = vi.fn();
+    const request = createReportingRequest({
+      source: { type: 'code_upload' },
+      userAttachments: [
+        { name: 'a', data: 'x' },
+        { name: 'b', data: 'y' },
+        { name: 'c', data: 'z' },
+        { name: 'd', data: 'w' },
+      ],
+    });
+    normalizeReportAttachments(request.report, onError);
+    expect(request.report.userAttachments?.map((a) => a.name)).toEqual(['a', 'b', 'c']);
+    expect(request.report.userAttachments?.[0]).toEqual({
+      name: 'a',
+      data: 'x',
+      mimeType: 'text/plain',
+      fileName: 'a',
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a report without attachments untouched', () => {
+    const request = createReportingRequest({ source: { type: 'code_upload' } });
+    normalizeReportAttachments(request.report, vi.fn());
+    expect(request.report.userAttachments).toBeUndefined();
+  });
+
+  it('round-trips binary data through JSON as base64', () => {
+    const request = createReportingRequest({
+      source: { type: 'code_upload' },
+      userAttachments: [
+        { name: 'bin', data: binary, mimeType: 'application/x-test', fileName: 'b.bin' },
+        { name: 'txt', data: 'héllo' },
+      ],
+    });
+    normalizeReportAttachments(request.report, vi.fn());
+    const wire = JSON.stringify(encodeRequestForMarker(request));
+    expect(wire.length).toBeLessThan(600); // base64, not {"0":..} per byte
+    const back = decodeRequestFromMarker(JSON.parse(wire), vi.fn());
+    const [bin, txt] = back.report.userAttachments as { data: unknown }[];
+    expect(bin?.data).toBeInstanceOf(Uint8Array);
+    expect(Array.from(bin?.data as Uint8Array)).toEqual(Array.from(binary));
+    expect(txt?.data).toBe('héllo');
+    expect(back.report.userAttachments?.[0]).toMatchObject({
+      name: 'bin',
+      mimeType: 'application/x-test',
+      fileName: 'b.bin',
+    });
+    // the live request is not mutated by encoding
+    expect(request.report.userAttachments?.[0]?.data).toBeInstanceOf(Uint8Array);
+  });
+
+  it('passes a request with no user attachments through unchanged', () => {
+    const request = createReportingRequest({ source: { type: 'code_upload' } });
+    expect(encodeRequestForMarker(request)).toBe(request);
+    expect(decodeRequestFromMarker(request, vi.fn())).toBe(request);
+  });
+
+  it('drops an attachment whose marker payload is corrupt, reports it, keeps the rest', () => {
+    const onError = vi.fn();
+    const request = createReportingRequest({ source: { type: 'code_upload' } });
+    request.report.userAttachments = [
+      { name: 'bad', data: '', dataBase64: '***not base64***' },
+      { name: 'ok', data: 'fine' },
+    ] as never;
+    const back = decodeRequestFromMarker(request, onError);
+    expect(back.report.userAttachments?.map((a) => a.name)).toEqual(['ok']);
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 });
