@@ -1,4 +1,5 @@
 import {
+  type BlackoutGate,
   type CaptureProvider,
   CaptureProviderBase,
   type EventSubscribable,
@@ -33,6 +34,12 @@ export type InputSource = EventSubscribable<{ input: InputEventDetail }>;
 export interface InputProviderOptions {
   /** Wall-clock source for the entry timestamp; injectable for tests. Default Date.now. */
   now?: () => number;
+  /**
+   * The blackout gate. While a blackout is in force every input event is dropped (interaction capture is
+   * visual capture — see `startBlackout`). Read per event, so a blackout already active at start, or
+   * begun at any later point, is honoured with no subscription to leak.
+   */
+  blackout?: BlackoutGate;
 }
 
 class InputProvider extends CaptureProviderBase {
@@ -40,16 +47,21 @@ class InputProvider extends CaptureProviderBase {
   readonly controllingOption = BugseeOption.CaptureInteractions;
   readonly #source: InputSource;
   readonly #now: () => number;
+  readonly #blackout: BlackoutGate | undefined;
   #off: (() => void) | null = null;
 
   constructor(source: InputSource, options: InputProviderOptions = {}) {
     super();
     this.#source = source;
     this.#now = options.now ?? (() => Date.now());
+    this.#blackout = options.blackout;
   }
 
   protected onStart(): void {
     this.#off = this.#source.on('input', (event) => {
+      if (this.#blackout?.isActive() === true) {
+        return; // blackout: interactions are not recorded
+      }
       const timestamp = event.timestamp ?? this.#now();
       // `timestamp` written LAST so the resolved value always wins, including over a detail that
       // carries an explicit `timestamp: undefined` (which the spread would otherwise reinstate).

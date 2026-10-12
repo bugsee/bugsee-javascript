@@ -6,6 +6,7 @@ import {
   launchCore,
   readMetaTraceContinuation,
 } from '@bugsee/browser';
+import { BlackoutToken } from '@bugsee/core';
 import type { PerformanceFacade } from '@bugsee/performance';
 import { withPerformanceFacade } from './performance-facade';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
@@ -40,7 +41,8 @@ export async function launch(
         { pageload: true },
         {
           createNavigationSource: createBrowserNavigationSource,
-          createInteractionSource: createBrowserInteractionSource,
+          createInteractionSource: () =>
+            createBrowserInteractionSource({ blackout: client.getService(BlackoutToken) }),
           readMetaTraceContinuation,
         },
       );

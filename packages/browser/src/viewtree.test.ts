@@ -1,4 +1,4 @@
-import type { CaptureDataEntry } from '@bugsee/core';
+import { type CaptureDataEntry, createBlackoutState } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createDomSnapshot,
@@ -212,5 +212,26 @@ describe('createViewtreeSnapshotSource', () => {
   it('produces no entry when there is no DOM to snapshot', () => {
     const source = createViewtreeSnapshotSource({ document: {} });
     expect(source(1)).toEqual([]);
+  });
+
+  it('produces no entry — and never reads the DOM — while a blackout is in force', () => {
+    const blackout = createBlackoutState();
+    const body = el({ tag: 'body' });
+    const read = vi.fn(() => body);
+    const source = createViewtreeSnapshotSource({
+      document: {
+        get body() {
+          return read();
+        },
+      },
+      blackout,
+    });
+    expect(source(1)).toHaveLength(1);
+    read.mockClear();
+    blackout.start();
+    expect(source(2)).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+    blackout.end();
+    expect(source(3)).toHaveLength(1);
   });
 });

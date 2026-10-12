@@ -286,6 +286,22 @@ describe('bugsee umbrella launch', () => {
     expect(active.getAttributes()['ui.interaction_type']).toBe('click');
   });
 
+  it('opens no `ui.interaction` transaction during a blackout', async () => {
+    const { pushEvent } = stubPerformanceObserver();
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    client.startBlackout();
+    pushEvent({ name: 'click', duration: 90, interactionId: 5, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'pageload',
+    );
+    client.endBlackout();
+    pushEvent({ name: 'click', duration: 90, interactionId: 6, target: { tagName: 'BUTTON' } });
+    expect((client.ext('performance').getActiveSpan() as Transaction).getOperation()).toBe(
+      'ui.interaction',
+    );
+  });
+
   it('does NOT wire interactions when traceInteractions is false', async () => {
     const { pushEvent } = stubPerformanceObserver();
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });

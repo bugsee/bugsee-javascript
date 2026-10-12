@@ -3,6 +3,7 @@ import { createServiceContainer, defineService, serviceToken } from '@bugsee/ser
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { addReportAttachment } from './attachments';
+import { BlackoutToken } from './blackout';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import {
@@ -2363,5 +2364,62 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
     expect(result).toEqual({ ok: true });
     expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createClient — blackout', () => {
+  it('starts not blacked out', () => {
+    expect(createClient().isBlackout()).toBe(false);
+  });
+
+  it('startBlackout()/endBlackout() toggle isBlackout()', () => {
+    const client = createClient();
+    client.startBlackout();
+    expect(client.isBlackout()).toBe(true);
+    client.endBlackout();
+    expect(client.isBlackout()).toBe(false);
+  });
+
+  it('is idempotent and not counted (one end clears any number of starts)', () => {
+    const client = createClient();
+    client.startBlackout();
+    client.startBlackout();
+    client.endBlackout();
+    expect(client.isBlackout()).toBe(false);
+  });
+
+  it('publishes the state through the container so providers can subscribe (internal onBlackoutChange)', () => {
+    const client = createClient();
+    const seen: boolean[] = [];
+    client.getService(BlackoutToken).onChange((active) => seen.push(active));
+    client.startBlackout();
+    client.startBlackout();
+    client.endBlackout();
+    expect(seen).toEqual([true, false]);
+  });
+
+  it('routes a throwing subscriber to onError without breaking the toggle', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    const boom = new Error('boom');
+    client.getService(BlackoutToken).onChange(() => {
+      throw boom;
+    });
+    client.startBlackout();
+    expect(client.isBlackout()).toBe(true);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('does not suppress non-visual capture (logs/events/traces continue)', async () => {
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
+    const client = createClient({ captureStore: store });
+    client.startBlackout();
+    client.log('still logged');
+    client.event('still-evented');
+    client.trace('still-traced', 1);
+    const drained = await createCaptureExporter(store).drain();
+    expect(drained.get('log')).toHaveLength(1);
+    expect(drained.get('events.user')).toHaveLength(1);
+    expect(drained.get('traces.user')).toHaveLength(1);
   });
 });
