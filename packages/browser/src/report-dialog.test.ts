@@ -272,8 +272,13 @@ describe('layout', () => {
     expect(send.getAttribute('title')).toBe('Send');
     const icon = send.querySelector('svg.bugsee-reporting-dialog-send-icon');
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
-    expect(icon?.querySelector('path')?.getAttribute('fill-rule')).toBe('evenodd');
     expect(icon?.querySelector('path')?.getAttribute('d')?.length).toBeGreaterThan(20);
+  });
+
+  it('rounds the send arrowhead by stroking it with round joins', () => {
+    expect(REPORT_DIALOG_CSS).toMatch(
+      /send-icon \{[^}]*stroke: currentColor;[^}]*stroke-linejoin: round;/,
+    );
   });
 
   it('uses the brand teal as the accent, with the AA variant on the light page', () => {

@@ -150,7 +150,15 @@ export const REPORT_DIALOG_CSS = `
   color: ${v('accent')};
   cursor: pointer;
 }
-.${p}send-icon { display: block; width: 100%; height: 100%; fill: currentColor; }
+.${p}send-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
 .${p}send:disabled { opacity: 0.5; cursor: default; }
 .${p}close:hover, .${p}send:hover:not(:disabled) { background: rgba(128, 128, 128, 0.15); }
 
