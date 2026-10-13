@@ -5,6 +5,7 @@ import {
   LINEARITY_TEST_TIMEOUT_MS,
   linearityVerdict,
   measurePair,
+  settleLinearity,
   timePerCall,
 } from './linear-time.test-helper';
 
@@ -379,5 +380,41 @@ describe('linearityVerdict', () => {
     // The point of the tolerance: 4x the reference is already past it, well below quadratic's 16x.
     expect(linearityVerdict(65 * 4, 65)).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
     expect(linearityVerdict(65 * 3.9, 65)).toBeLessThan(LINEAR_TOLERANCE);
+  });
+});
+
+describe('settleLinearity', () => {
+  const script = (verdicts: number[]) => {
+    let calls = 0;
+    const measure = () => {
+      const verdict = verdicts[calls] as number;
+      calls += 1;
+      return { verdict, message: `v${verdict}` };
+    };
+    return { measure, calls: () => calls };
+  };
+
+  it('stops after two agreeing passes and accepts', () => {
+    const s = script([1, 2, 99]);
+    expect(settleLinearity(s.measure).verdict).toBeLessThan(LINEAR_TOLERANCE);
+    expect(s.calls()).toBe(2);
+  });
+
+  it('stops after two agreeing failures and rejects', () => {
+    const s = script([16, 15, 1]);
+    expect(settleLinearity(s.measure).verdict).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
+    expect(s.calls()).toBe(2);
+  });
+
+  it('breaks a pass/fail split with a third measurement: 2 fails vs 1 pass rejects', () => {
+    const s = script([1, 16, 15]);
+    expect(settleLinearity(s.measure).verdict).toBeGreaterThanOrEqual(LINEAR_TOLERANCE);
+    expect(s.calls()).toBe(3);
+  });
+
+  it('breaks a fail/pass split with a third measurement: 2 passes vs 1 fail accepts', () => {
+    const s = script([16, 1, 2]);
+    expect(settleLinearity(s.measure).verdict).toBeLessThan(LINEAR_TOLERANCE);
+    expect(s.calls()).toBe(3);
   });
 });

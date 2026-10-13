@@ -272,13 +272,33 @@ export const linearityVerdict = (observed: number, reference: number): number =>
   observed / reference;
 
 /**
- * How many times a guard may re-measure before it fails. Scheduler/contention noise is independent per
- * attempt (a CI runner read 8.7 against a ceiling of 4 for work that measures ~1 on an idle machine, with a
- * 0.08 ms small side), while a genuinely super-linear subject is `SIZE_SEPARATION`x the reference on EVERY
- * attempt. So the guard passes if ANY attempt lands under the ceiling: a real regression still fails, and
- * a healthy build no longer fails on one unlucky sample. The best (lowest) verdict is the one reported.
+ * Up to three measurements decide each guard, by MAJORITY. Scheduler/contention noise is independent per
+ * attempt, and it cuts both ways: a CI runner read a healthy subject at 8.7 against a ceiling of 4, and a
+ * loaded local machine read a quadratic one under 4 once. A genuinely super-linear subject is
+ * `SIZE_SEPARATION`x the reference on EVERY attempt and a healthy one is near 1x on every attempt, so two
+ * agreeing attempts settle it and a third is only run to break a split. The median verdict is reported.
  */
 const MAX_ATTEMPTS = 3;
+
+type Reading = { verdict: number; message: string };
+
+/**
+ * Runs `measure` up to {@link MAX_ATTEMPTS} times and returns the median reading. Split out so the
+ * decision (early exit on two agreeing attempts, a third only to break a split) can be driven with a
+ * scripted sequence instead of real timings.
+ */
+export const settleLinearity = (measure: () => Reading): Reading => {
+  const results: Reading[] = [];
+  const passed = (r: Reading): boolean => r.verdict < LINEAR_TOLERANCE;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    results.push(measure());
+    if (attempt === 2 && passed(results[0] as Reading) === passed(results[1] as Reading)) {
+      break; // the first two agree: no third measurement needed
+    }
+  }
+  const sorted = [...results].sort((a, b) => a.verdict - b.verdict);
+  return sorted[Math.floor((sorted.length - 1) / 2)] as Reading;
+};
 
 export const expectLinearIn = <T>(
   prepare: (size: number) => T,
@@ -286,21 +306,12 @@ export const expectLinearIn = <T>(
   size: number,
   benign?: (size: number) => T,
 ): void => {
-  let best: { verdict: number; message: string } | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    const result = measureLinearity(prepare, work, size, benign);
-    if (best === undefined || result.verdict < best.verdict) {
-      best = result;
-    }
-    if (result.verdict < LINEAR_TOLERANCE) {
-      break;
-    }
-  }
+  const median = settleLinearity(() => measureLinearity(prepare, work, size, benign));
   // EVERY number rides along in the message. This fails on machines that cannot be inspected, and
   // the verdict alone does not say whether the subject grew, the baseline shrank, or the machine
   // simply reads a 16x step as more than 16x for everything — which is the whole reason the ceiling
   // is relative. The reference reading is what separates those.
-  expect(best?.verdict, best?.message).toBeLessThan(LINEAR_TOLERANCE);
+  expect(median.verdict, median.message).toBeLessThan(LINEAR_TOLERANCE);
 };
 
 const measureLinearity = <T>(
