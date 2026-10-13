@@ -720,7 +720,7 @@ describe('powered-by link', () => {
     expect(logo?.getAttribute('viewBox')).toBe('0 0 495 252');
     expect(logo?.getAttribute('aria-hidden')).toBe('true');
     // the brand mark, not a placeholder: its red body and white eye
-    expect(logo?.querySelector('path')?.parentElement?.getAttribute('fill')).toBe('#60b4c4');
+    expect(logo?.querySelector('path')?.parentElement?.getAttribute('fill')).toBe('#ff5858');
     expect(logo?.querySelector('ellipse')?.getAttribute('fill')).toBe('#fff');
     // bottom of the card: after every field, and after the version line
     const after = (a: Element, b: Element): boolean =>
