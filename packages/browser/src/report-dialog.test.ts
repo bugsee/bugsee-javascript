@@ -1211,6 +1211,6 @@ describe('version line', () => {
     const rule =
       REPORT_DIALOG_CSS.match(/\.bugsee-reporting-dialog-version \{([^}]*)\}/)?.[1] ?? '';
     expect(rule).toContain('font-size: 9px');
-    expect(rule).toContain('opacity: 0.65');
+    expect(rule).toContain('opacity: 0.3');
   });
 });
