@@ -2,6 +2,7 @@
 // with environment variables, applies defaults, and decides whether the plugin is active (a token is
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
+import { type AppIdentityDeps, appIdentityDefines, findAppIdentity } from './app-identity';
 import {
   uploadSourcemaps as defaultUploadSourcemaps,
   type UploadSourcemapsResult,
@@ -19,9 +20,17 @@ import { resolveVcsMetadata as defaultResolveVcsMetadata, type VcsMetadata } fro
 export interface BugseePluginOptions {
   /** Bugsee app token. Falls back to `BUGSEE_APP_TOKEN`. Required to upload; absent ⇒ the plugin no-ops. */
   appToken?: string;
-  /** App version. Falls back to `BUGSEE_APP_VERSION`, else `0.0.0`. */
+  /**
+   * App version. Falls back to `BUGSEE_APP_VERSION`, then the `version` of the nearest package.json, else
+   * `0.0.0`. A real value is also baked into the bundle for the app's runtime SDK to read.
+   */
   appVersion?: string;
-  /** Build number. Falls back to `BUGSEE_APP_BUILD`, else `0`. */
+  /**
+   * Build number. Falls back to `BUGSEE_APP_BUILD`, then a CI commit id (`GITHUB_SHA`,
+   * `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`,
+   * `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`), else `0`. A real value is also
+   * baked into the bundle for the app's runtime SDK to read.
+   */
   appBuild?: string;
   /** API endpoint override. Falls back to `BUGSEE_ENDPOINT`. */
   endpoint?: string;
@@ -146,6 +155,16 @@ export interface ResolvedPluginOptions {
   registerBuild: RegisterBuildSetting;
   /** Explicit `package_id`; `undefined` means "the nearest package.json". */
   packageId: string | undefined;
+  /**
+   * `define` entries that bake the app's version/build into its bundle (`__BUGSEE_APP_VERSION__`,
+   * `__BUGSEE_APP_BUILD__`, JSON-encoded). Only values that were actually found are present — never the
+   * `0.0.0` / `0` placeholders — and the map is empty when the plugin is `disabled`.
+   *
+   * Deliberately independent of the token: the constants are harmless without one, and a build that
+   * uploads nothing still ships an app that should know its own version. `disabled: true` is the only
+   * switch that turns this off.
+   */
+  identityDefines: Record<string, string>;
   /** NODE_ENV as the plugin was configured under — the release signal for a bundler with no mode. */
   nodeEnv: string | undefined;
 }
@@ -157,13 +176,18 @@ const runsByDir = new Map<string, Promise<PluginRunResult | undefined>>();
 export function resolvePluginOptions(
   options: BugseePluginOptions,
   env: EnvRecord,
+  deps: AppIdentityDeps = {},
 ): ResolvedPluginOptions {
   const appToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  // Never throws (see `projectRoot` on ResolvedPluginOptions): the package.json lookup is synchronous
+  // and contained, and `process.cwd()` is reached only if nothing earlier supplied a version.
+  const found = findAppIdentity(options, env, deps);
   return {
     enabled: !options.disabled && appToken !== '',
     appToken,
-    appVersion: options.appVersion ?? env.BUGSEE_APP_VERSION ?? '0.0.0',
-    appBuild: options.appBuild ?? env.BUGSEE_APP_BUILD ?? '0',
+    appVersion: found.version ?? '0.0.0',
+    appBuild: found.build ?? '0',
+    identityDefines: options.disabled ? {} : appIdentityDefines(found),
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,

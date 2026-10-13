@@ -45,6 +45,7 @@
     "miniflare": "^4.20260722.0",
     "playwright": "^1.62.1",
     "tsx": "^4.19.0",
+    "vite": "^8.0.0",
     "webpack": "^5.111.0",
     "webpack-subresource-integrity": "^5.1.0"
   }

@@ -39,7 +39,7 @@ interface WebpackCompilationLike {
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
 interface WebpackCompilerLike {
-  options: { output?: { path?: string }; mode?: string };
+  options: { output?: { path?: string }; mode?: string; plugins?: unknown[] };
   hooks: {
     afterEmit: { tapPromise: (name: string, fn: () => Promise<void>) => void };
     /** webpack 5 only. */
@@ -55,7 +55,44 @@ interface WebpackCompilerLike {
   webpack?: {
     Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: number };
     sources: { RawSource: new (buffer: Buffer) => unknown };
+    DefinePlugin?: DefinePluginCtor;
   };
+  /** Rspack's own API object (webpack-compatible `DefinePlugin`). */
+  rspack?: { DefinePlugin?: DefinePluginCtor };
+}
+
+/** webpack's / rspack's `DefinePlugin`, as far as the identity injection uses it. */
+type DefinePluginCtor = new (
+  definitions: Record<string, string>,
+) => {
+  apply(compiler: unknown): void;
+};
+
+/**
+ * Add the app-identity constants through the bundler's own `DefinePlugin`, skipping any key the user
+ * already defines (their `DefinePlugin` instances expose `.definitions`) so an explicit definition wins.
+ */
+function injectDefines(
+  compiler: { options: { plugins?: unknown[] } },
+  DefinePlugin: DefinePluginCtor | undefined,
+  defines: Record<string, string>,
+): void {
+  if (DefinePlugin === undefined) {
+    return;
+  }
+  const taken = new Set<string>();
+  for (const plugin of compiler.options.plugins ?? []) {
+    const definitions = (plugin as { definitions?: unknown } | null)?.definitions;
+    if (typeof definitions === 'object' && definitions !== null) {
+      for (const key of Object.keys(definitions)) {
+        taken.add(key);
+      }
+    }
+  }
+  const free = Object.fromEntries(Object.entries(defines).filter(([key]) => !taken.has(key)));
+  if (Object.keys(free).length > 0) {
+    new DefinePlugin(free).apply(compiler);
+  }
 }
 
 /** A compilation's asset table as the core's `AssetStore`. */
@@ -120,15 +157,27 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
        * `'hidden'` and `'inline'` are deliberate production choices, and replacing them would change what
        * ships to the user's own users.
        */
-      config(config: { build?: { sourcemap?: boolean | string } }) {
-        if (!resolved.enabled) {
-          return undefined; // a disabled plugin must not alter the build at all
-        }
+      config(config: {
+        build?: { sourcemap?: boolean | string };
+        define?: Record<string, unknown>;
+      }) {
+        // The app's version/build go in whenever one was found, token or not (`identityDefines` is empty
+        // when `disabled`, so a disabled plugin still alters nothing). A key the user defines themselves
+        // is left alone.
+        const define = Object.fromEntries(
+          Object.entries(resolved.identityDefines).filter(
+            ([key]) => config.define === undefined || !(key in config.define),
+          ),
+        );
         const current = config.build?.sourcemap;
-        if (current === undefined || current === false) {
-          return { build: { sourcemap: true } };
+        const wantMaps = resolved.enabled && (current === undefined || current === false);
+        if (!wantMaps && Object.keys(define).length === 0) {
+          return undefined;
         }
-        return undefined;
+        return {
+          ...(wantMaps ? { build: { sourcemap: true } } : {}),
+          ...(Object.keys(define).length > 0 ? { define } : {}),
+        };
       },
       /**
        * `isProduction`, not `mode === 'production'`: `vite build --mode staging` is a production build.
@@ -143,7 +192,20 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
     },
     rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output, {}) },
+    esbuild: {
+      // esbuild's `define` is a plain string map; a key the user already set is kept.
+      config(initialOptions: { define?: Record<string, string> }) {
+        const define = { ...resolved.identityDefines, ...initialOptions.define };
+        if (Object.keys(define).length > 0) {
+          initialOptions.define = define;
+        }
+      },
+    },
+    rspack(compiler: WebpackCompilerLike) {
+      injectDefines(compiler, compiler.rspack?.DefinePlugin, resolved.identityDefines);
+    },
     webpack(compiler: WebpackCompilerLike) {
+      injectDefines(compiler, compiler.webpack?.DefinePlugin, resolved.identityDefines);
       // Whether THIS compilation's bundles were stamped in the build. Reset per compilation, so in
       // watch mode a stamp from the previous build cannot vouch for this one.
       let preStamped = false;
