@@ -25,6 +25,7 @@ import {
   BugseeStatus,
   type BundleStore,
   BundleStoreToken,
+  bundledAppIdentity,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
@@ -51,6 +52,7 @@ import {
   type OptionDefinition,
   ReportMarkerStoreToken,
   recoverReports,
+  resolveAppIdentity,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
@@ -61,6 +63,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { isServiceWorker } from '@bugsee/util';
+import { warnToConsole } from './app-identity';
 import {
   buildWorkerEnvironment,
   realWorkerProbe,
@@ -290,6 +293,11 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
   const uploadPipeline = durable ?? baseUploadPipeline;
 
   const probe = options.systemProbe ?? realWorkerProbe;
+  const appIdentity = resolveAppIdentity(
+    { version: options.appVersion, build: options.appBuild },
+    [bundledAppIdentity],
+    warnToConsole,
+  );
   const getEnvironment = () =>
     buildWorkerEnvironment(
       {
@@ -297,8 +305,8 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
         platformType,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
-        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+        ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
       },
       probe,
     );
