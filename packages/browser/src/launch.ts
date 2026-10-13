@@ -123,6 +123,17 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
+/** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
+const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
+
+/** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
+const indexedDbPresent = (): boolean => {
+  try {
+    return (globalThis as { indexedDB?: unknown }).indexedDB != null;
+  } catch {
+    return false;
+  }
+};
 
 const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
@@ -158,6 +169,9 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: true,
     ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   },
+  // Persistence collects data at rest, so only boolean `true`/`false` count: anything else is OFF and reported
+  // (the launch substitutes the IndexedDB default only when the option is absent).
+  { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -581,11 +595,13 @@ async function buildLaunch(
   // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
   // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
   // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
-  // Durable by default wherever IndexedDB exists, so the rolling window survives a reload or a browser
-  // restart; `persist: false` opts out, and a runtime without IndexedDB degrades to in-memory.
+  // Durable by default wherever an IndexedDB object exists, so the rolling window survives a reload or a
+  // browser restart. `persist: false` opts out; a non-boolean value is OFF and reported. Presence is all
+  // that is probed: if the store later cannot commit, writes fail into `onError` (best effort).
   const persist =
-    options.persist ??
-    (options.indexedDB !== undefined || (globalThis as { indexedDB?: unknown }).indexedDB != null);
+    options.persist === undefined
+      ? options.indexedDB !== undefined || indexedDbPresent()
+      : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
   const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({

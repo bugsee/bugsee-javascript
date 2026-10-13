@@ -179,6 +179,7 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
+  persist: false, // tests opt in; the shipped default is on wherever IndexedDB exists
   deviceIdEnv: {
     localStorage: testDeviceIdLocalStorage(),
     randomUUID: () => TEST_DEVICE_ID,
@@ -1323,7 +1324,7 @@ describe('launch', () => {
     it('persists by default when IndexedDB is available: the capture database is created', async () => {
       const idb = new IDBFactory();
       vi.stubGlobal('indexedDB', idb);
-      await launchTracked('tok', baseOptions({ locks: fakeWebLocks() }));
+      await launchTracked('tok', baseOptions({ persist: undefined, locks: fakeWebLocks() }));
       await vi.waitFor(async () =>
         expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
       );
@@ -1331,7 +1332,10 @@ describe('launch', () => {
 
     it('treats an injected indexedDB as availability too', async () => {
       const idb = new IDBFactory();
-      await launchTracked('tok', baseOptions({ indexedDB: idb, locks: fakeWebLocks() }));
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
       await vi.waitFor(async () =>
         expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
       );
@@ -1340,17 +1344,60 @@ describe('launch', () => {
     it('stays in memory when persist is false, even with IndexedDB available', async () => {
       const idb = new IDBFactory();
       vi.stubGlobal('indexedDB', idb);
-      await launchTracked('tok', baseOptions({ persist: false, locks: fakeWebLocks() }));
-      await new Promise((r) => setTimeout(r, 20));
-      const names = await databaseNames(idb);
-      expect(names).not.toContain(captureDatabaseName('tok'));
-      expect(names).not.toContain(coexistenceDatabaseName('tok'));
+      const client = await launchTracked('tok', baseOptions({ persist: false }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
     });
 
     it('stays in memory when there is no IndexedDB at all', async () => {
       vi.stubGlobal('indexedDB', undefined);
-      const client = await launchTracked('tok', baseOptions());
-      expect(client.isLaunched()).toBe(true);
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+
+    it('treats a throwing indexedDB getter as absent instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      Object.defineProperty(globalThis, 'indexedDB', {
+        configurable: true,
+        get: () => {
+          throw new Error('denied');
+        },
+      });
+      try {
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.isLaunched()).toBe(true);
+        expect(() => client.getService(BundleStoreToken)).toThrow();
+      } finally {
+        Object.defineProperty(globalThis, 'indexedDB', {
+          configurable: true,
+          writable: true,
+          value: undefined,
+        });
+      }
+    });
+
+    // Persisting writes captured data at rest, so a non-boolean never turns it on, and it is reported.
+    it.each([
+      0,
+      '',
+      'false',
+      'true',
+      1,
+      null,
+    ])('persist=%j (invalid) is OFF even with IndexedDB available, and reports', async (bad) => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ persist: bad as never, onError, locks: fakeWebLocks() }),
+      );
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('persist must be a boolean'),
+        ),
+      ).toHaveLength(1);
     });
   });
 

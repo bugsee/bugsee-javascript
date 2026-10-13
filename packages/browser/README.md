@@ -23,7 +23,7 @@ What it contains:
 
 By default the rolling capture window and the queue of reports waiting to upload are kept in IndexedDB, so the recent past survives a page reload or a browser restart, and a report interrupted mid-upload is sent on the next visit. Data is stored in per-app databases named `bugsee-<hash>`, `bugsee-capture-<hash>` and `bugsee-markers-<hash>`.
 
-Pass `persist: false` to keep everything in memory instead. Where IndexedDB is unavailable (some private modes, restricted contexts) the SDK falls back to memory on its own.
+Pass `persist: false` to keep everything in memory instead. The default only checks that the page exposes an IndexedDB object. If the browser refuses to store data (over quota, some private modes), writes fail best-effort and are reported to `onError`; the SDK does not switch to memory at that point. Any `persist` value other than `true` or `false` counts as off and is reported.
 
 ## License
 
