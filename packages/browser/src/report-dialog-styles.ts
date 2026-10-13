@@ -141,9 +141,9 @@ export const REPORT_DIALOG_CSS = `
 }
 .${p}close-icon { display: block; width: 100%; height: 100%; fill: currentColor; }
 .${p}send {
-  width: 48px;
-  height: 48px;
-  padding: 8px;
+  width: 44px;
+  height: 44px;
+  padding: 13px; /* the stroked arrowhead then measures the same as the close glyph (about 14px) */
   border: 0;
   border-radius: 50%;
   background: none;

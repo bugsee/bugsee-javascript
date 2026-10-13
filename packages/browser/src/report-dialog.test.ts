@@ -1193,3 +1193,15 @@ describe('lifecycle events', () => {
     await expect(pending).resolves.toEqual({ ok: true });
   });
 });
+
+describe('toolbar buttons', () => {
+  it('give the close and send actions the same button size', () => {
+    const css = REPORT_DIALOG_CSS;
+    const box = (name: string): string => {
+      const rule = css.match(new RegExp(`\\.bugsee-reporting-dialog-${name} \\{([^}]*)\\}`));
+      return `${rule?.[1]?.match(/width: (\d+px)/)?.[1]}x${rule?.[1]?.match(/height: (\d+px)/)?.[1]}`;
+    };
+    expect(box('send')).toBe('44pxx44px');
+    expect(box('close')).toBe(box('send'));
+  });
+});
