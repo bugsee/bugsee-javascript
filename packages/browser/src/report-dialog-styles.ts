@@ -12,8 +12,9 @@
 //   /* or inside the shadow root: showReportDialog({ css: '.bugsee-reporting-dialog-send { … }' }) */
 //
 // Colours are the mobile SDKs' (Android `ColorConstants`, iOS `BugseeTheme`): the light page is #EDF1F6
-// with white fields, the dark page #121212, the accent red #FF5858, the severity icons green/amber/
-// salmon/red/dark-red. Two deliberate adjustments for the web, both for contrast: the light text is a
+// with white fields, the dark page #121212, the accent was red #FF5858 (now the viewer's brand teal), the severity icons green/amber/
+// salmon/red/dark-red. The accent is the viewer's brand teal (#60B4C4; #3A8A99 on the light page, the
+// viewer's AA-contrast variant). Two deliberate adjustments for the web, both for contrast: the light text is a
 // shade darker than Android's #637E99 (4.2:1 on white) and the dark field is #262626 rather than #777777.
 
 /** The prefix of every class, part and custom property the dialog exposes. */
@@ -35,13 +36,13 @@ export const REPORT_DIALOG_CSS = `
   --${p}field-border: rgba(153, 153, 153, 0.4);
   --${p}text: #4F6A85;
   --${p}hint: #8497AB;
-  --${p}accent: #FF5858;
+  --${p}accent: #3A8A99;
   --${p}error: #C62828;
   --${p}severity-active: #182433;
   --${p}severity-idle: #637E99;
   --${p}shade: rgba(0, 0, 0, 0.55);
   --${p}shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-  --${p}radius: 8px;
+  --${p}radius: 12px;
   font: 17px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 :host([data-theme='dark']) {
@@ -51,6 +52,7 @@ export const REPORT_DIALOG_CSS = `
   --${p}field-border: #555555;
   --${p}text: #FFFFFF;
   --${p}hint: #B4B4B4;
+  --${p}accent: #60B4C4;
   --${p}error: #FF8A80;
   --${p}severity-active: #FFFFFF;
   --${p}severity-idle: #B4B4B4;
@@ -63,6 +65,7 @@ export const REPORT_DIALOG_CSS = `
     --${p}field-border: #555555;
     --${p}text: #FFFFFF;
     --${p}hint: #B4B4B4;
+    --${p}accent: #60B4C4;
     --${p}error: #FF8A80;
     --${p}severity-active: #FFFFFF;
     --${p}severity-idle: #B4B4B4;
@@ -103,6 +106,7 @@ export const REPORT_DIALOG_CSS = `
   max-height: 100%;
   margin: auto;
   background: ${v('page')};
+  border: 1px solid ${v('field-border')};
   border-radius: ${v('radius')};
   box-shadow: ${v('shadow')};
   overflow: hidden;
@@ -113,17 +117,17 @@ export const REPORT_DIALOG_CSS = `
   align-items: center;
   gap: 8px;
   height: 56px;
-  padding: 0 8px 0 4px;
+  padding: 0 8px 0 8px;
   flex: none;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 .${p}title {
   flex: 1;
   margin: 0;
   text-align: center;
   font-size: 17px;
-  font-weight: 600;
-  color: ${v('accent')};
+  font-weight: 700;
+  text-transform: uppercase;
+  color: ${v('text')};
 }
 .${p}close {
   width: 44px;
@@ -132,25 +136,23 @@ export const REPORT_DIALOG_CSS = `
   border: 0;
   border-radius: 50%;
   background: none;
-  color: ${v('accent')};
+  color: ${v('text')};
   cursor: pointer;
 }
 .${p}close-icon { display: block; width: 100%; height: 100%; fill: currentColor; }
 .${p}send {
-  min-width: 64px;
-  height: 40px;
-  padding: 0 16px;
+  width: 48px;
+  height: 48px;
+  padding: 8px;
   border: 0;
-  border-radius: 3px;
+  border-radius: 50%;
   background: none;
   color: ${v('accent')};
-  font: inherit;
-  font-size: 16px;
-  font-weight: 600;
   cursor: pointer;
 }
+.${p}send-icon { display: block; width: 100%; height: 100%; fill: currentColor; }
 .${p}send:disabled { opacity: 0.5; cursor: default; }
-.${p}close:hover, .${p}send:hover:not(:disabled) { background: rgba(255, 88, 88, 0.1); }
+.${p}close:hover, .${p}send:hover:not(:disabled) { background: rgba(128, 128, 128, 0.15); }
 
 .${p}body {
   display: flex;
@@ -180,10 +182,10 @@ export const REPORT_DIALOG_CSS = `
   color: ${v('text')};
   background: ${v('field')};
   border: 1px solid ${v('field-border')};
-  border-radius: 2px;
+  border-radius: 8px;
 }
 .${p}input::placeholder { color: ${v('hint')}; opacity: 1; }
-textarea.${p}input { min-height: 7.5em; resize: vertical; }
+textarea.${p}input { min-height: 8.2em; resize: vertical; }
 .${p}input:focus-visible { outline: 2px solid ${v('accent')}; outline-offset: 1px; }
 .${p}input[aria-invalid='true'] { border-color: ${v('error')}; }
 .${p}error { min-height: 0; margin: 0; font-size: 13px; color: ${v('error')}; }
@@ -221,25 +223,23 @@ textarea.${p}input { min-height: 7.5em; resize: vertical; }
 .${p}severity-blocker .${p}severity-icon { color: #8C0101; }
 
 .${p}footer-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: center;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 12px 12px;
+  column-gap: 10px;
+  padding: 0 12px 14px;
   flex: none;
 }
-.${p}version { margin: 0; font-size: 12px; color: ${v('hint')}; }
-.${p}powered {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: ${v('hint')};
-  text-decoration: none;
-}
-.${p}powered:hover { color: ${v('text')}; text-decoration: underline; }
-.${p}powered:focus-visible { outline: 2px solid ${v('accent')}; outline-offset: 2px; border-radius: 2px; }
-.${p}logo { display: block; height: 14px; width: auto; }
+/* The link has no box of its own: its logo and text are laid out on the footer grid, with the version
+   line under the text. */
+.${p}powered { display: contents; font-size: 16px; color: ${v('hint')}; text-decoration: none; }
+.${p}logo { grid-column: 1; grid-row: 1 / span 2; display: block; height: 30px; width: auto; }
+.${p}powered-text { grid-column: 2; grid-row: 1; font-size: 16px; color: ${v('hint')}; }
+.${p}version { grid-column: 2; grid-row: 2; margin: 0; font-size: 12px; color: ${v('hint')}; opacity: 0.6; }
+.${p}powered:hover .${p}powered-text { color: ${v('text')}; text-decoration: underline; }
+.${p}powered:focus-visible .${p}powered-text,
+.${p}powered:focus-visible .${p}logo { outline: 2px solid ${v('accent')}; outline-offset: 2px; border-radius: 2px; }
 
 .${p}confirm {
   position: absolute;

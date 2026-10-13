@@ -106,10 +106,13 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // Material "bug_report" and "close" glyphs (Apache-2.0).
 const BUG_PATH =
   'M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a6.002 6.002 0 0 0-2.83 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z';
+// A paper plane with a folded wing, drawn for this dialog (even-odd: the second subpath is the fold).
+const SEND_PATH =
+  'M2.5 11.3 21.5 3.3 18 20.5 12.4 16.1 9.6 19.2 9.1 13.9ZM10.2 13.5 17.2 7.6 11 14.6Z';
 const CLOSE_PATH =
   'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z';
 
-// The Bugsee mark (brand red body, white eye) — the same artwork as the viewer's logo.svg.
+// The Bugsee mark (brand teal body, white eye) — the same artwork as the viewer's logo.svg.
 const LOGO_BODY =
   'm102 251.9h30.4v-31h10v31.1h30.4v-31h40v31.1h30.4v-31h10v31.1h33.7c-2.8-9.2-4.3-19-4.3-29.1 0-55.4 45.2-100.4 100.9-100.4 40.6 0 75.6 23.9 91.6 58.3h19.1c-17.6-59.2-56.5-109.3-108-141.4 1.7-7.8.2-15.9-3.9-22.6-7.7.3-15.1 3.5-20.6 9.1-33.1-15.9-70.2-24.8-109.5-24.8-139.3 0-252.3 112.3-252.3 250.9h82v-31h20v31.1zm240-149.5c13.9 0 25.2-11.2 25.2-25.1s-11.3-25.1-25.2-25.1-25.2 11.2-25.2 25.1 11.3 25.1 25.2 25.1zm9.1-7c5.6 0 10.1-4.5 10.1-10s-4.5-10-10.1-10-10.1 4.5-10.1 10 4.5 10 10.1 10zm-20.7-43.3';
 const LOGO_HORN =
@@ -251,7 +254,8 @@ function showDialog(
   const setBusy = (value: boolean): void => {
     busy = value;
     refs.send.disabled = value;
-    refs.send.textContent = value ? strings.sending : strings.send;
+    refs.send.setAttribute('aria-label', value ? strings.sending : strings.send);
+    refs.send.title = value ? strings.sending : strings.send;
     for (const control of Object.values(refs.fields)) {
       control.disabled = value;
     }
@@ -509,9 +513,16 @@ function build(
   hook(close, 'close');
   close.setAttribute('data-action', 'cancel');
   close.append(icon(CLOSE_PATH, 'close-icon'));
-  const send = make('button', { type: 'submit' }, strings.send);
+  const send = make('button', {
+    type: 'submit',
+    'aria-label': strings.send,
+    title: strings.send,
+  });
   hook(send, 'send');
   send.setAttribute('data-action', 'send');
+  const sendIcon = icon(SEND_PATH, 'send-icon');
+  sendIcon.querySelector('path')?.setAttribute('fill-rule', 'evenodd');
+  send.append(sendIcon);
   const bar = make('div');
   hook(bar, 'bar');
   const title = make('h2', { id: titleId }, strings.title);
@@ -635,7 +646,7 @@ function build(
     eye.setAttribute(name, value);
   }
   const brand = doc.createElementNS(SVG_NS, 'g');
-  brand.setAttribute('fill', '#ff5858');
+  brand.setAttribute('fill', '#60b4c4');
   for (const d of [LOGO_BODY, LOGO_HORN]) {
     const shape = doc.createElementNS(SVG_NS, 'path');
     shape.setAttribute('d', d);
@@ -646,7 +657,9 @@ function build(
   const powered = make('a', { href: BUGSEE_URL, target: '_blank', rel: 'noopener noreferrer' });
   hook(powered, 'powered');
   powered.setAttribute('data-powered', '');
-  powered.append(logo, doc.createTextNode(strings.poweredBy));
+  const poweredText = make('span', {}, strings.poweredBy);
+  hook(poweredText, 'powered-text');
+  powered.append(logo, poweredText);
   const footerRow = make('div');
   hook(footerRow, 'footer-row');
   footerRow.append(version, powered);
