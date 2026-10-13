@@ -375,7 +375,10 @@ describe('launch', () => {
   });
 
   it('does not register bundleStore in in-memory mode', async () => {
-    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ persist: false, captureStore: memStore() }),
+    );
     expect(() => client.getService(BundleStoreToken)).toThrow();
   });
 
@@ -1313,6 +1316,44 @@ describe('launch', () => {
     await new Promise((r) => setTimeout(r, 0)); // let async hydration settle
   });
 
+  describe('persist default', () => {
+    const databaseNames = async (idb: IDBFactory): Promise<string[]> =>
+      (await idb.databases()).map((d) => d.name ?? '');
+
+    it('persists by default when IndexedDB is available: the capture database is created', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      await launchTracked('tok', baseOptions({ locks: fakeWebLocks() }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats an injected indexedDB as availability too', async () => {
+      const idb = new IDBFactory();
+      await launchTracked('tok', baseOptions({ indexedDB: idb, locks: fakeWebLocks() }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('stays in memory when persist is false, even with IndexedDB available', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      await launchTracked('tok', baseOptions({ persist: false, locks: fakeWebLocks() }));
+      await new Promise((r) => setTimeout(r, 20));
+      const names = await databaseNames(idb);
+      expect(names).not.toContain(captureDatabaseName('tok'));
+      expect(names).not.toContain(coexistenceDatabaseName('tok'));
+    });
+
+    it('stays in memory when there is no IndexedDB at all', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      const client = await launchTracked('tok', baseOptions());
+      expect(client.isLaunched()).toBe(true);
+    });
+  });
+
   it('threads onError into the persistent capture store', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
     const client = await launchTracked('tok', baseOptions({ persist: true, onError: vi.fn() }));
@@ -1923,7 +1964,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   });
 
   it('builds no marker store without persist', async () => {
-    const client = await launchTracked('tok', baseOptions({})); // in-memory store
+    const client = await launchTracked('tok', baseOptions({ persist: false })); // in-memory store
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 

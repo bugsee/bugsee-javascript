@@ -360,9 +360,10 @@ export interface BugseeLaunchOptions {
   /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
   maxDataSize?: number;
   /**
-   * Persist the bundle queue to IndexedDB so a crash report survives a reload/kill mid-upload and is
-   * re-uploaded on the next launch (guaranteed crash delivery). Off by default (in-memory only). An
-   * explicit `bundleStore` overrides this.
+   * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
+   * reload or a browser restart and a report interrupted mid-upload is re-uploaded on the next launch.
+   * On by default wherever IndexedDB is available (otherwise in-memory); `false` keeps everything in
+   * memory. An explicit `bundleStore` or `captureStore` overrides the matching part.
    */
   persist?: boolean;
   /**
@@ -580,11 +581,16 @@ async function buildLaunch(
   // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
   // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
   // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
-  const durableCapture = options.persist === true && options.captureStore === undefined;
+  // Durable by default wherever IndexedDB exists, so the rolling window survives a reload or a browser
+  // restart; `persist: false` opts out, and a runtime without IndexedDB degrades to in-memory.
+  const persist =
+    options.persist ??
+    (options.indexedDB !== undefined || (globalThis as { indexedDB?: unknown }).indexedDB != null);
+  const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
     appToken,
-    persist: options.persist === true,
+    persist,
     captureRecovery: durableCapture,
     ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),

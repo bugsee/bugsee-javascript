@@ -79,6 +79,7 @@ const start = async (storage: Storage, over: Partial<BugseeLaunchOptions> = {}, 
     systemProbe: probe,
     systemMetricsSampler: () => [],
     captureNetwork: false,
+    persist: false,
     replay: false,
     captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
     deviceIdEnv: {
