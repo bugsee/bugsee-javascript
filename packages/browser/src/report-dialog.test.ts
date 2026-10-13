@@ -1210,7 +1210,7 @@ describe('version line', () => {
   it('is small and faint next to the "Powered by" text', () => {
     const rule =
       REPORT_DIALOG_CSS.match(/\.bugsee-reporting-dialog-version \{([^}]*)\}/)?.[1] ?? '';
-    expect(rule).toContain('font-size: 10px');
-    expect(rule).toContain('opacity: 0.4');
+    expect(rule).toContain('font-size: 9px');
+    expect(rule).toContain('opacity: 0.65');
   });
 });
