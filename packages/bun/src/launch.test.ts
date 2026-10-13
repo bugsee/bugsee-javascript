@@ -132,6 +132,27 @@ describe('@bugsee/bun launch', () => {
     );
   });
 
+  it('detects the app version and build from the environment, and honours appIdentitySource', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '6.4.0');
+    vi.stubEnv('BUGSEE_APP_BUILD', 'b-17');
+    try {
+      const detected = launchCore('tok', base());
+      track(detected.client);
+      expect(detected.internals?.getEnvironment().app).toMatchObject({
+        version: '6.4.0',
+        build: 'b-17',
+      });
+      const sourced = launchCore(
+        'tok',
+        base({ appIdentitySource: () => ({ version: '8.0.0' }), carrier: {} }),
+      );
+      track(sourced.client);
+      expect(sourced.internals?.getEnvironment().app?.version).toBe('8.0.0');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('launch() returns the working public client launchCore() builds', () => {
     const client = track(launch('tok', base()));
     expect(typeof client.logException).toBe('function');
