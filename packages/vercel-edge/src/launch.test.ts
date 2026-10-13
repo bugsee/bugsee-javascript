@@ -1021,3 +1021,65 @@ describe('EdgeContextStoreToken', () => {
     expect(EdgeContextStoreToken.name).not.toBe(core.CaptureStoreToken.name);
   });
 });
+
+describe('app identity resolution', () => {
+  const reportedApp = async (over: Partial<BugseeEdgeLaunchOptions> = {}) => {
+    const transport = uploadTransport();
+    const client = launchTracked('tok', baseOptions({ transport, carrier: {}, ...over }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    return issueJson(transport).environment.app;
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the build-time constants and does not warn', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await reportedApp()).toMatchObject({ version: '4.5.6', build: '777' });
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('app version'))).toEqual([]);
+  });
+
+  it('lets explicit options win over the build-time constants', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    expect(await reportedApp({ appVersion: '1.0.0', appBuild: '5' })).toMatchObject({
+      version: '1.0.0',
+      build: '5',
+    });
+  });
+
+  it('takes the build from VERCEL_GIT_COMMIT_SHA when nothing else supplies it', async () => {
+    vi.stubEnv('VERCEL_GIT_COMMIT_SHA', 'abc123');
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    expect(await reportedApp()).toMatchObject({ version: '4.5.6', build: 'abc123' });
+  });
+
+  it('prefers the build-time build over VERCEL_GIT_COMMIT_SHA', async () => {
+    vi.stubEnv('VERCEL_GIT_COMMIT_SHA', 'abc123');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await reportedApp()).toMatchObject({ build: '777' });
+  });
+
+  it('copes with a runtime that has no process', async () => {
+    vi.stubGlobal('process', undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
+  });
+
+  it('warns exactly once when no version can be found, and falls back to the defaults', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warn.mockClear(); // a spy that outlived an earlier test would still hold that test's calls
+    launchTracked('tok', baseOptions({ carrier: {} }));
+    // Checked straight after launch: the warning is a launch-time event, so later async work cannot add to it.
+    const appWarnings = warn.mock.calls.filter((c) => String(c[0]).includes('app version'));
+    expect(appWarnings).toHaveLength(1);
+    expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
+  });
+});

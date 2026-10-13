@@ -28,6 +28,7 @@ import {
   BugseeStatus,
   type BundleStore,
   BundleStoreToken,
+  bundledAppIdentity,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
@@ -59,6 +60,7 @@ import {
   ReportMarkerStoreToken,
   recoverReports,
   relaunchWith,
+  resolveAppIdentity,
   resolveFailOnBoolean,
   resolveLaunchOptions,
   runLaunchRecovery,
@@ -73,6 +75,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { reportGuarded } from '@bugsee/util';
+import { metaAppIdentity, warnToConsole } from './app-identity';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
@@ -608,6 +611,14 @@ async function buildLaunch(
   // Browser environment envelope, rebuilt at each report. Canonical options are wire-translated inside.
   const probe = options.systemProbe ?? realBrowserProbe;
   services.addService(defineService(BrowserProbeToken, () => probe));
+  const appIdentity = resolveAppIdentity(
+    { version: options.appVersion, build: options.appBuild },
+    [
+      bundledAppIdentity,
+      metaAppIdentity(options.document ?? (win as { document?: Document }).document),
+    ],
+    warnToConsole,
+  );
   const getEnvironment = () =>
     buildBrowserEnvironment(
       {
@@ -615,8 +626,8 @@ async function buildLaunch(
         deviceId,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
-        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+        ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
       },
       probe,
     );
@@ -1189,8 +1200,8 @@ async function buildLaunch(
     transport,
     getEnvironment,
     network,
-    appVersion: options.appVersion,
-    appBuild: options.appBuild,
+    appVersion: appIdentity.version,
+    appBuild: appIdentity.build,
     deviceId,
     onError: options.onError,
     activeSpanStore: undefined, // the single-slot default is correct here — see the interface note
