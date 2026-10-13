@@ -18,6 +18,12 @@ export type { AttributeValue } from '@bugsee/types';
 // an invalid value without ever breaking launch; they live in @bugsee/util.
 export { describeValue, reportGuarded } from '@bugsee/util';
 export {
+  type AppIdentity,
+  type AppIdentitySource,
+  bundledAppIdentity,
+  resolveAppIdentity,
+} from './app-identity';
+export {
   addReportAttachment,
   decodeRequestFromMarker,
   encodeRequestForMarker,
