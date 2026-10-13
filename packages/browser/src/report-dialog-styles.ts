@@ -40,7 +40,7 @@ export const REPORT_DIALOG_CSS = `
   --${p}error: #C62828;
   --${p}severity-active: #182433;
   --${p}severity-idle: #637E99;
-  --${p}shade: rgba(0, 0, 0, 0.55);
+  --${p}shade: rgba(0, 0, 0, 0.92);
   --${p}shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
   --${p}radius: 12px;
   font: 17px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;

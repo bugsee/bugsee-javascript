@@ -1214,3 +1214,12 @@ describe('version line', () => {
     expect(rule).toContain('opacity: 0.3');
   });
 });
+
+describe('page shading', () => {
+  it('is nearly black, so the page behind the dialog is barely visible', () => {
+    const alpha = REPORT_DIALOG_CSS.match(
+      /--bugsee-reporting-dialog-shade: rgba\(0, 0, 0, ([\d.]+)\)/,
+    )?.[1];
+    expect(Number(alpha)).toBeGreaterThanOrEqual(0.9);
+  });
+});
