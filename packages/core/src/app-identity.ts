@@ -31,12 +31,14 @@ const usable = (value: unknown): value is string =>
 /**
  * Settles the app identity: an explicit option wins (an empty string is an explicit choice), otherwise
  * each field comes from the first source that has a usable value. A missing version is reported once
- * through `warn`; a missing build is not (it is a refinement of the version).
+ * through `warn`; a missing build is not (it is a refinement of the version). `hint` says how THIS runtime
+ * is told its version (a browser has no environment variables, a server does) and ends the warning.
  */
 export const resolveAppIdentity = (
   explicit: AppIdentity,
   sources: readonly AppIdentitySource[],
   warn?: (message: string) => void,
+  hint = 'Pass `appVersion` (and `appBuild`) to launch().',
 ): AppIdentity => {
   const resolved: AppIdentity = {};
   for (const field of ['version', 'build'] as const) {
@@ -60,12 +62,53 @@ export const resolveAppIdentity = (
   }
   if (resolved.version === undefined) {
     try {
-      warn?.(
-        'Bugsee: the app version could not be detected, so reports will show 0.0.0. Pass `appVersion` (and `appBuild`) to launch(), or set BUGSEE_APP_VERSION.',
-      );
+      warn?.(`Bugsee: the app version could not be detected, so reports will show 0.0.0. ${hint}`);
     } catch {
       // A broken warning sink must never break launch.
     }
   }
   return resolved;
+};
+
+/** How many directories (the start included) are searched for a `package.json`. */
+export const PACKAGE_VERSION_MAX_DEPTH = 12;
+
+/** The path primitives and file read the manifest walk needs; the platform supplies them. */
+export interface PackageVersionIo {
+  /** Reads a file as text; may throw. */
+  readFile: (path: string) => string;
+  /** The parent directory of a path; the same path at the root. */
+  dirname: (path: string) => string;
+  /** Joins a directory and a file name. */
+  join: (dir: string, name: string) => string;
+}
+
+/**
+ * The `version` of the NEAREST `package.json` at or above `start`. Nearest, so a workspace app reports its
+ * own version rather than the monorepo root's: a manifest that parses but has no usable version ENDS the
+ * search with no version, while a missing or unparseable file keeps it walking. Searches at most
+ * {@link PACKAGE_VERSION_MAX_DEPTH} directories. Never throws.
+ */
+export const findNearestPackageVersion = (
+  start: string,
+  io: PackageVersionIo,
+): string | undefined => {
+  let dir = start;
+  for (let depth = 0; depth < PACKAGE_VERSION_MAX_DEPTH; depth++) {
+    try {
+      const parsed: unknown = JSON.parse(io.readFile(io.join(dir, 'package.json')));
+      if (typeof parsed === 'object' && parsed !== null) {
+        const version = (parsed as { version?: unknown }).version;
+        return usable(version) ? version.trim() : undefined;
+      }
+    } catch {
+      // Missing, unreadable or invalid: keep walking.
+    }
+    const parent = io.dirname(dir);
+    if (parent === dir) {
+      return undefined;
+    }
+    dir = parent;
+  }
+  return undefined;
 };

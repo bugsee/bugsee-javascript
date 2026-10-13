@@ -1,10 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
-import type { AppIdentity, AppIdentitySource } from '@bugsee/core';
-
-/** How many directories (the start included) are searched for a `package.json`. */
-const MAX_DEPTH = 12;
+import { type AppIdentity, type AppIdentitySource, findNearestPackageVersion } from '@bugsee/core';
 
 /** Commit variables set by CI systems and hosting platforms, in the order they are tried. */
 const BUILD_ENV_VARS = [
@@ -55,33 +52,9 @@ const firstSet = (
   return undefined;
 };
 
-/** The `version` of the nearest `package.json` at or above `start`; unreadable or versionless files are skipped. */
-const nearestPackageVersion = (
-  start: string,
-  readFile: (path: string) => string,
-): string | undefined => {
-  let dir = start;
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    try {
-      const parsed = JSON.parse(readFile(join(dir, 'package.json'))) as { version?: unknown };
-      if (present(parsed.version)) {
-        return parsed.version;
-      }
-    } catch {
-      // Missing, unreadable or invalid: keep walking.
-    }
-    const parent = dirname(dir);
-    if (parent === dir) {
-      return undefined;
-    }
-    dir = parent;
-  }
-  return undefined;
-};
-
 /**
  * Finds the app's version and build on a server or desktop host: environment overrides first, then the
- * version npm exports to scripts, then the nearest `package.json`; the build comes from CI/host commit
+ * version npm exports to scripts, then the nearest `package.json` (a nearest manifest without a version means no version; a parent's is not adopted); the build comes from CI/host commit
  * variables. The `package.json` search is done lazily and at most once.
  */
 export const createNodeAppIdentitySource = (
@@ -96,7 +69,10 @@ export const createNodeAppIdentitySource = (
       const start =
         options.appRoot !== undefined && options.appRoot !== '' ? options.appRoot : cwd();
       searched = {
-        value: start === undefined ? undefined : nearestPackageVersion(start, readFile),
+        value:
+          start === undefined
+            ? undefined
+            : findNearestPackageVersion(start, { readFile, dirname, join }),
       };
     }
     return searched.value;

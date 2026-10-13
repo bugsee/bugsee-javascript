@@ -5,6 +5,10 @@ export const warnToConsole = (message: string): void => {
   (globalThis as unknown as { console?: { warn?: (m: string) => void } }).console?.warn?.(message);
 };
 
+/** How a browser page is told its version: it has no process environment at runtime. */
+export const BROWSER_APP_VERSION_HINT =
+  'Pass `appVersion` (and `appBuild`) to launch(), use the Bugsee Vite or webpack plugin (it defines `__BUGSEE_APP_VERSION__`), set that constant yourself, or add <meta name="bugsee:app-version" content="...">.';
+
 const metaContent = (doc: Document, name: string): string | undefined =>
   doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') ?? undefined;
 

@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@bugsee/bugsee-cli": "^0.7.11",
+    "@bugsee/core": "workspace:*",
     "unplugin": "^2.3.10"
   },
   "devDependencies": {

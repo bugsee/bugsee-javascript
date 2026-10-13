@@ -77,16 +77,27 @@ describe('createNodeAppIdentitySource version', () => {
     expect(source()?.version).toBe('6.0.0');
   });
 
-  it('skips invalid JSON, a missing version, a blank version and a non-string version', () => {
+  it('skips an unparseable manifest and keeps walking', () => {
     const readFile = files({
       '/a/b/c/d/package.json': '{not json',
-      '/a/b/c/package.json': '{"name":"x"}',
-      '/a/b/package.json': '{"version":"  "}',
-      '/a/package.json': '{"version":7}',
-      '/package.json': '{"version":"0.5.0"}',
+      '/a/package.json': '{"version":"0.5.0"}',
     });
     const source = createNodeAppIdentitySource({ env: {}, cwd: () => '/a/b/c/d', readFile });
     expect(source()?.version).toBe('0.5.0');
+  });
+
+  it.each([
+    ['has no version', '{"name":"x"}'],
+    ['has a blank version', '{"version":"  "}'],
+    ['has a non-string version', '{"version":7}'],
+  ])('stops at a nearest manifest that %s rather than adopting a parent version', (_, nearest) => {
+    const readFile = files({
+      '/ws/apps/web/package.json': nearest,
+      '/ws/package.json': '{"version":"0.0.0"}',
+    });
+    const source = createNodeAppIdentitySource({ env: {}, cwd: () => '/ws/apps/web', readFile });
+    expect(source()).toEqual({});
+    expect(readFile).toHaveBeenCalledTimes(1);
   });
 
   it('gives up at the filesystem root', () => {

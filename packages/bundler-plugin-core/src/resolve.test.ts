@@ -361,6 +361,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
     const resolved = resolvePluginOptions(
       { appToken: 't', projectRoot: '/repo', commit: sha, allowDirtyCommit: true },
       {},
+      noPackage,
     );
     await runPluginUpload(resolved, '/out-vcs-1', { uploadSourcemaps, resolveVcs });
 

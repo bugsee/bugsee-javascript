@@ -63,7 +63,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { isServiceWorker } from '@bugsee/util';
-import { warnToConsole } from './app-identity';
+import { WORKER_APP_VERSION_HINT, warnToConsole } from './app-identity';
 import {
   buildWorkerEnvironment,
   realWorkerProbe,
@@ -297,6 +297,7 @@ export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}
     { version: options.appVersion, build: options.appBuild },
     [bundledAppIdentity],
     warnToConsole,
+    WORKER_APP_VERSION_HINT,
   );
   const getEnvironment = () =>
     buildWorkerEnvironment(

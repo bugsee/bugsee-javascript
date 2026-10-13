@@ -407,6 +407,9 @@ importers:
       '@bugsee/bugsee-cli':
         specifier: ^0.7.11
         version: 0.7.11
+      '@bugsee/core':
+        specifier: workspace:*
+        version: link:../core
       unplugin:
         specifier: ^2.3.10
         version: 2.3.11

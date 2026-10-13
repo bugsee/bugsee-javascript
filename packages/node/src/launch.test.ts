@@ -3052,5 +3052,9 @@ describe('app identity detection', () => {
     expect(internals?.appVersion).toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toContain('app version');
+    const text = String(warn.mock.calls[0]?.[0]);
+    expect(text).toContain('appVersion');
+    expect(text).toContain('BUGSEE_APP_VERSION');
+    expect(text).toContain('package.json');
   });
 });

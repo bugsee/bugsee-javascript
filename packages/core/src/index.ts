@@ -21,6 +21,9 @@ export {
   type AppIdentity,
   type AppIdentitySource,
   bundledAppIdentity,
+  findNearestPackageVersion,
+  PACKAGE_VERSION_MAX_DEPTH,
+  type PackageVersionIo,
   resolveAppIdentity,
 } from './app-identity';
 export {

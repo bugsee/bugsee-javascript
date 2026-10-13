@@ -21,15 +21,18 @@ export interface BugseePluginOptions {
   /** Bugsee app token. Falls back to `BUGSEE_APP_TOKEN`. Required to upload; absent ⇒ the plugin no-ops. */
   appToken?: string;
   /**
-   * App version. Falls back to `BUGSEE_APP_VERSION`, then the `version` of the nearest package.json, else
-   * `0.0.0`. A real value is also baked into the bundle for the app's runtime SDK to read.
+   * App version. Falls back to `BUGSEE_APP_VERSION`, then the `version` of the nearest package.json at or
+   * above the bundler's project directory (a nearest package.json without a version means none), else
+   * `0.0.0`. A blank or whitespace-only value counts as unset. A real value is also baked into the bundle
+   * for the app's runtime SDK to read.
    */
   appVersion?: string;
   /**
    * Build number. Falls back to `BUGSEE_APP_BUILD`, then a CI commit id (`GITHUB_SHA`,
    * `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`,
-   * `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`), else `0`. A real value is also
-   * baked into the bundle for the app's runtime SDK to read.
+   * `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`), else `0`. A blank or
+   * whitespace-only value counts as unset. A real value is also baked into the bundle for the app's runtime
+   * SDK to read.
    */
   appBuild?: string;
   /** API endpoint override. Falls back to `BUGSEE_ENDPOINT`. */
@@ -73,7 +76,11 @@ export interface BugseePluginOptions {
   commit?: string;
   /** Report a commit even when the working tree has uncommitted changes. Default `false`. */
   allowDirtyCommit?: boolean;
-  /** Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. */
+  /**
+   * Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. It is for VCS
+   * only: the app version is read from the BUNDLER's project directory (Vite `root`, webpack `context`,
+   * esbuild `absWorkingDir`), so a monorepo app reports its own package.json. Pass `appVersion` to override.
+   */
   projectRoot?: string;
   /**
    * Where user-actionable NOTICES go — a malformed `commit`, a SHA dropped because the tree was dirty,
@@ -169,6 +176,33 @@ export interface ResolvedPluginOptions {
   nodeEnv: string | undefined;
 }
 
+/** The app identity the upload / registration are labelled with, and the `define`s baked into the bundle. */
+export interface ResolvedIdentity {
+  appVersion: string;
+  appBuild: string;
+  identityDefines: Record<string, string>;
+}
+
+/**
+ * Settle the app identity from the options, the environment and the nearest package.json at or above
+ * `root`. `root` is the BUNDLER's project directory (Vite's `config.root`, webpack's `compiler.context`,
+ * esbuild's `absWorkingDir`), never the VCS root; without one, the working directory is used. The upload and
+ * the baked `define`s come from this one resolution, so they cannot disagree.
+ */
+export function resolveIdentity(
+  options: BugseePluginOptions,
+  env: EnvRecord,
+  root: string | undefined,
+  deps: AppIdentityDeps = {},
+): ResolvedIdentity {
+  const found = findAppIdentity(options, env, deps, root);
+  return {
+    appVersion: found.version ?? '0.0.0',
+    appBuild: found.build ?? '0',
+    identityDefines: options.disabled ? {} : appIdentityDefines(found),
+  };
+}
+
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
 /** In-flight uploads, keyed by output directory. Entries are removed as each run settles. */
 const runsByDir = new Map<string, Promise<PluginRunResult | undefined>>();
@@ -179,15 +213,12 @@ export function resolvePluginOptions(
   deps: AppIdentityDeps = {},
 ): ResolvedPluginOptions {
   const appToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
-  // Never throws (see `projectRoot` on ResolvedPluginOptions): the package.json lookup is synchronous
-  // and contained, and `process.cwd()` is reached only if nothing earlier supplied a version.
-  const found = findAppIdentity(options, env, deps);
+  // The BASELINE identity, from the working directory; never throws (see `projectRoot` on
+  // ResolvedPluginOptions). The bundler hooks refine it from the bundler's own project directory.
   return {
     enabled: !options.disabled && appToken !== '',
     appToken,
-    appVersion: found.version ?? '0.0.0',
-    appBuild: found.build ?? '0',
-    identityDefines: options.disabled ? {} : appIdentityDefines(found),
+    ...resolveIdentity(options, env, undefined, deps),
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,

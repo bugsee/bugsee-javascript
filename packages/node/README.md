@@ -21,10 +21,10 @@ Reports show which version of your app produced them. You normally do not have t
 1. The `appVersion` and `appBuild` launch options. These always win.
 2. Values injected at build time (`__BUGSEE_APP_VERSION__` and `__BUGSEE_APP_BUILD__`).
 3. The `appIdentitySource` launch option, a function returning `{ version?, build? }`. Use it when something else in your host knows the version.
-4. For the version: the `BUGSEE_APP_VERSION` environment variable, then `npm_package_version` (set when you start the app with `npm run` or `pnpm run`), then the `version` field of the nearest `package.json`, searched upward from `appRoot` (or the working directory), up to 12 levels.
+4. For the version: the `BUGSEE_APP_VERSION` environment variable, then `npm_package_version` (set when you start the app with `npm run` or `pnpm run`), then the `version` field of the nearest `package.json`, searched upward from `appRoot` (or the working directory), up to 12 levels. The nearest `package.json` wins: if it has no usable version, there is no version (a parent or workspace version is not adopted). Blank values are ignored.
 5. For the build: the `BUGSEE_APP_BUILD` environment variable, then the commit variable of your CI or host, tried in this order: `GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`, `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`.
 
-Detection runs once, at launch. If no version is found, reports show `0.0.0` and a single warning is printed; set `appVersion` or `BUGSEE_APP_VERSION` to fix it.
+Detection runs once, at launch. If no version is found, reports show `0.0.0` and a single warning is printed; set `appVersion` or `BUGSEE_APP_VERSION`, or give your `package.json` a version, to fix it.
 
 ## Links
 

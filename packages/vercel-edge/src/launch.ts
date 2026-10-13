@@ -45,7 +45,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
 import { describeValue, reportGuarded } from '@bugsee/util';
-import { vercelAppIdentity, warnToConsole } from './app-identity';
+import { EDGE_APP_VERSION_HINT, edgeAppIdentity, warnToConsole } from './app-identity';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -282,8 +282,9 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
 
   const appIdentity = resolveAppIdentity(
     { version: options.appVersion, build: options.appBuild },
-    [bundledAppIdentity, vercelAppIdentity],
+    [bundledAppIdentity, edgeAppIdentity],
     warnToConsole,
+    EDGE_APP_VERSION_HINT,
   );
   const getEnvironment = () =>
     buildEdgeEnvironment({

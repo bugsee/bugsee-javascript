@@ -6,6 +6,7 @@
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { findNearestPackageVersion } from '@bugsee/core';
 import type { EnvRecord } from './run-cli';
 
 /** Commit-id variables set by common CI / hosting providers, in priority order. */
@@ -44,31 +45,15 @@ function firstEnv(env: EnvRecord, names: readonly string[]): string | undefined 
 }
 
 /**
- * The `version` of the NEAREST package.json at or above `from`. Nearest, so a monorepo app reports its own
- * version rather than the workspace's; a package.json without a version stops the search (it is the app's,
- * it just has no version), while a missing or unparseable one keeps walking. Synchronous and never throws.
+ * The `version` of the NEAREST package.json at or above `from` (the one shared rule, in `@bugsee/core`): a
+ * monorepo app reports its own version rather than the workspace's, and a nearest manifest without a version
+ * means no version. Synchronous and never throws.
  */
 export function findPackageVersion(
   from: string,
   readFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
 ): string | undefined {
-  let dir = resolve(from);
-  for (;;) {
-    try {
-      const pkg: unknown = JSON.parse(readFile(join(dir, 'package.json')));
-      if (typeof pkg === 'object' && pkg !== null) {
-        const version = (pkg as { version?: unknown }).version;
-        return typeof version === 'string' && version.trim() !== '' ? version.trim() : undefined;
-      }
-    } catch {
-      // No package.json here, or not one that parses — keep walking.
-    }
-    const parent = dirname(dir);
-    if (parent === dir) {
-      return undefined;
-    }
-    dir = parent;
-  }
+  return findNearestPackageVersion(resolve(from), { readFile, dirname, join });
 }
 
 /** What was found; `undefined` for a value nothing supplied, so a real one is told apart from a default. */
@@ -77,28 +62,35 @@ export interface FoundAppIdentity {
   build: string | undefined;
 }
 
+/** The value when it has something in it, trimmed; blank and whitespace-only count as unset. */
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed === '' ? undefined : trimmed;
+}
+
 /**
- * Resolve version and build. Version: option, `BUGSEE_APP_VERSION`, the nearest package.json. Build: option,
- * `BUGSEE_APP_BUILD`, a CI commit id. `process.cwd()` is consulted only when nothing earlier answered, and
- * a throwing one (an unlinked working directory) just means "not found".
+ * Resolve version and build. Version: option, `BUGSEE_APP_VERSION`, the nearest package.json from `root`
+ * (the BUNDLER's project directory, not the VCS root). Build: option, `BUGSEE_APP_BUILD`, a CI commit id.
+ * A blank option or variable is "unset" everywhere, so it falls through rather than being uploaded or baked.
+ * `root` (or, without one, `process.cwd()`) is consulted only when nothing earlier answered, and a throwing
+ * working directory just means "not found".
  */
 export function findAppIdentity(
-  options: { appVersion?: string; appBuild?: string; projectRoot?: string },
+  options: { appVersion?: string; appBuild?: string },
   env: EnvRecord,
   deps: AppIdentityDeps = {},
+  root?: string,
 ): FoundAppIdentity {
-  let version = options.appVersion ?? firstEnv(env, ['BUGSEE_APP_VERSION']);
+  let version = nonBlank(options.appVersion) ?? firstEnv(env, ['BUGSEE_APP_VERSION']);
   if (version === undefined) {
     try {
-      version = findPackageVersion(
-        options.projectRoot ?? (deps.cwd ?? process.cwd)(),
-        deps.readFile,
-      );
+      version = findPackageVersion(root ?? (deps.cwd ?? process.cwd)(), deps.readFile);
     } catch {
       version = undefined;
     }
   }
-  const build = options.appBuild ?? firstEnv(env, ['BUGSEE_APP_BUILD', ...CI_COMMIT_ENV_VARS]);
+  const build =
+    nonBlank(options.appBuild) ?? firstEnv(env, ['BUGSEE_APP_BUILD', ...CI_COMMIT_ENV_VARS]);
   return { version, build };
 }
 

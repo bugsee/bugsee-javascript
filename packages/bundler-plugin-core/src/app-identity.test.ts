@@ -79,14 +79,40 @@ describe('findAppIdentity', () => {
     expect(findAppIdentity({}, { BUGSEE_APP_VERSION: '2' }, deps).version).toBe('2');
   });
 
-  it('starts at projectRoot when given, not cwd', () => {
+  it('starts at the given root when there is one, not at cwd', () => {
     const read = files({ '/root/package.json': '{"version":"7.0.0"}' });
     const cwd = () => {
       throw new Error('no cwd');
     };
-    expect(findAppIdentity({ projectRoot: '/root/app' }, {}, { readFile: read, cwd }).version).toBe(
-      '7.0.0',
-    );
+    expect(findAppIdentity({}, {}, { readFile: read, cwd }, '/root/app').version).toBe('7.0.0');
+  });
+
+  it('treats blank and whitespace-only options exactly like unset ones', () => {
+    const deps = { readFile: files({ '/p/package.json': '{"version":"1.0.0"}' }), cwd: () => '/p' };
+    for (const blank of ['', '   ', '\t\n']) {
+      const found = findAppIdentity(
+        { appVersion: blank, appBuild: blank },
+        { BUGSEE_APP_VERSION: '4.0.0', BUGSEE_APP_BUILD: '8' },
+        deps,
+      );
+      expect(found).toEqual({ version: '4.0.0', build: '8' });
+    }
+    expect(findAppIdentity({ appVersion: ' ' }, {}, deps).version).toBe('1.0.0');
+    expect(findAppIdentity({ appBuild: ' ' }, { GITHUB_SHA: 'abc' }, deps).build).toBe('abc');
+    expect(findAppIdentity({ appBuild: ' ' }, {}, deps).build).toBeUndefined();
+  });
+
+  it('trims a real option value', () => {
+    expect(findAppIdentity({ appVersion: ' 2.0.0 ', appBuild: ' 5 ' }, {}).version).toBe('2.0.0');
+    expect(findAppIdentity({ appVersion: '1', appBuild: ' 5 ' }, {}).build).toBe('5');
+  });
+
+  it('stops at a versionless nearest package.json instead of adopting a workspace version', () => {
+    const read = files({
+      '/ws/package.json': '{"version":"0.0.0"}',
+      '/ws/apps/web/package.json': '{"name":"web"}',
+    });
+    expect(findAppIdentity({}, {}, { readFile: read }, '/ws/apps/web').version).toBeUndefined();
   });
 
   it('a throwing process.cwd() means not found, never an exception', () => {

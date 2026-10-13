@@ -75,7 +75,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { reportGuarded } from '@bugsee/util';
-import { metaAppIdentity, warnToConsole } from './app-identity';
+import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
@@ -618,6 +618,7 @@ async function buildLaunch(
       metaAppIdentity(options.document ?? (win as { document?: Document }).document),
     ],
     warnToConsole,
+    BROWSER_APP_VERSION_HINT,
   );
   const getEnvironment = () =>
     buildBrowserEnvironment(

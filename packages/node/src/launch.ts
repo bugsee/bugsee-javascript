@@ -565,6 +565,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       ),
     ],
     warnToConsole,
+    'Pass `appVersion` (and `appBuild`) to launch(), set BUGSEE_APP_VERSION (and BUGSEE_APP_BUILD), or give your package.json a version.',
   );
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
 

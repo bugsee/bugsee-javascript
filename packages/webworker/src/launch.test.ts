@@ -1720,5 +1720,11 @@ describe('app identity resolution', () => {
     expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toContain('app version');
+    const text = String(warn.mock.calls[0]?.[0]);
+    expect(text).toContain('appVersion');
+    expect(text).toContain('Vite or webpack plugin');
+    expect(text).toContain('__BUGSEE_APP_VERSION__');
+    expect(text).not.toContain('bugsee:app-version');
+    expect(text).not.toMatch(/\bBUGSEE_APP_VERSION\b/);
   });
 });
