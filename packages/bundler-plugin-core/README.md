@@ -17,7 +17,7 @@ npm install --save-dev @bugsee/vite-plugin
 
 - The `unplugin`-based plugin factory behind both of those packages.
 - Rollup, esbuild and Rspack variants: `bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. They share the same options, but they are exported only from this package and have no dedicated wrapper package; they are less exercised than the Vite and Webpack plugins. If you use them, install this package as a dev dependency and import them from `@bugsee/bundler-plugin-core`.
-- Option resolution (`appToken`, `appVersion`, `appBuild`, `endpoint`, `deleteMaps`, `dryRun`, `disabled`, with environment fallbacks such as `BUGSEE_APP_TOKEN`), build-commit detection and the CLI runner.
+- Option resolution (`appToken`, `appVersion`, `appBuild`, `endpoint`, `deleteMaps`, `dryRun`, `disabled`, with environment fallbacks such as `BUGSEE_APP_TOKEN`; the version also falls back to the nearest `package.json`, the build to a CI commit id, and a real value is baked into the app bundle as `__BUGSEE_APP_VERSION__` / `__BUGSEE_APP_BUILD__` for the runtime SDK), build-commit detection and the CLI runner.
 
 The programmatic API beyond the plugins is internal and may change between releases.
 

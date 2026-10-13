@@ -34,8 +34,8 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 | option | env fallback | default | meaning |
 |---|---|---|---|
 | `appToken` | `BUGSEE_APP_TOKEN` | — | required to upload; absent ⇒ the plugin no-ops |
-| `appVersion` | `BUGSEE_APP_VERSION` | `0.0.0` | recorded on the symbol; a fallback join key |
-| `appBuild` | `BUGSEE_APP_BUILD` | `0` | recorded on the symbol; a fallback join key |
+| `appVersion` | `BUGSEE_APP_VERSION`, then the nearest `package.json` `version` | `0.0.0` | recorded on the symbol; a fallback join key. A real value is also baked into the bundle, so the app's SDK reports it |
+| `appBuild` | `BUGSEE_APP_BUILD`, then the CI commit id (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`, `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`) | `0` | recorded on the symbol; a fallback join key. A real value is also baked into the bundle, so the app's SDK reports it |
 | `endpoint` | `BUGSEE_ENDPOINT` | `https://api.bugsee.com` | API endpoint |
 | `deleteMaps` | — | `true` | delete client `.map`s after upload (privacy) |
 | `dryRun` | — | `false` | run the CLI with `--dry-run` (no upload, no delete) |
