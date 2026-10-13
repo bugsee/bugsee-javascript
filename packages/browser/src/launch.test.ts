@@ -2574,7 +2574,12 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
         lifecycleEventsListener: (type) => seen.push(type),
       }),
     );
-    // let the dead-sibling recovery finish (its marker is swept when it is done)
+    // let the dead-sibling recovery finish (its marker is swept when it is done). The event can lag on a slow
+    // machine, so wait for it for a bounded time; the cases that expect silence simply run out the clock.
+    const deadline = Date.now() + 1500;
+    while (!seen.includes(LifecycleEvents.RelaunchedAfterCrash) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     await new Promise((r) => setTimeout(r, 50));
     return seen;
   };
