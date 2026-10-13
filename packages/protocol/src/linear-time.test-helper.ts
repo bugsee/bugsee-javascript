@@ -280,28 +280,33 @@ export const linearityVerdict = (observed: number, reference: number): number =>
  */
 const MAX_ATTEMPTS = 3;
 
+type Reading = { verdict: number; message: string };
+
+/**
+ * Runs `measure` up to {@link MAX_ATTEMPTS} times and returns the median reading. Split out so the
+ * decision (early exit on two agreeing attempts, a third only to break a split) can be driven with a
+ * scripted sequence instead of real timings.
+ */
+export const settleLinearity = (measure: () => Reading): Reading => {
+  const results: Reading[] = [];
+  const passed = (r: Reading): boolean => r.verdict < LINEAR_TOLERANCE;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    results.push(measure());
+    if (attempt === 2 && passed(results[0] as Reading) === passed(results[1] as Reading)) {
+      break; // the first two agree: no third measurement needed
+    }
+  }
+  const sorted = [...results].sort((a, b) => a.verdict - b.verdict);
+  return sorted[Math.floor((sorted.length - 1) / 2)] as Reading;
+};
+
 export const expectLinearIn = <T>(
   prepare: (size: number) => T,
   work: (input: T) => void,
   size: number,
   benign?: (size: number) => T,
 ): void => {
-  const results: Array<{ verdict: number; message: string }> = [];
-  const passed = (r: { verdict: number }): boolean => r.verdict < LINEAR_TOLERANCE;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    results.push(measureLinearity(prepare, work, size, benign));
-    if (
-      attempt === 2 &&
-      passed(results[0] as { verdict: number }) === passed(results[1] as { verdict: number })
-    ) {
-      break; // the first two agree: no third measurement needed
-    }
-  }
-  const sorted = [...results].sort((a, b) => a.verdict - b.verdict);
-  const median = sorted[Math.floor((sorted.length - 1) / 2)] as {
-    verdict: number;
-    message: string;
-  };
+  const median = settleLinearity(() => measureLinearity(prepare, work, size, benign));
   // EVERY number rides along in the message. This fails on machines that cannot be inspected, and
   // the verdict alone does not say whether the subject grew, the baseline shrank, or the machine
   // simply reads a 16x step as more than 16x for everything — which is the whole reason the ceiling
