@@ -143,7 +143,7 @@ export const REPORT_DIALOG_CSS = `
 .${p}send {
   width: 44px;
   height: 44px;
-  padding: 13px; /* the stroked arrowhead then measures the same as the close glyph (about 14px) */
+  padding: 9px; /* the arrowhead is a solid shape, so it reads smaller than the thin close glyph at the same size */
   border: 0;
   border-radius: 50%;
   background: none;
