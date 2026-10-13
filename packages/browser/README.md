@@ -19,6 +19,12 @@ What it contains:
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/browser
 - Bugsee: https://bugsee.com
 
+## Persistence
+
+By default the rolling capture window and the queue of reports waiting to upload are kept in IndexedDB, so the recent past survives a page reload or a browser restart, and a report interrupted mid-upload is sent on the next visit. Data is stored in per-app databases named `bugsee-<hash>`, `bugsee-capture-<hash>` and `bugsee-markers-<hash>`.
+
+Pass `persist: false` to keep everything in memory instead. Where IndexedDB is unavailable (some private modes, restricted contexts) the SDK falls back to memory on its own.
+
 ## License
 
 MIT. See the LICENSE file.
