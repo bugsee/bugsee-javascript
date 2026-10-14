@@ -282,8 +282,7 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 - **Q3.** Omit vs `"$$unavailable"` for unsupported services. Recommendation: keep omitting (consistent with
   the ELU/Deno precedent) unless the viewer needs the sentinel — verify viewer handling first.
 - **Q4.** Does the env builder already detect cloud provider/region? **Checked in review: NO** — node/browser env builders do not read `AWS_REGION`/`VERCEL`/`FLY_REGION`; `hardware.cpu_count` and `hardware.screen_*`/`pixel_ratio` already exist, so do not re-emit those as traces.
-- **Q5.** Which new trace names does the viewer already render? (Viewer tables not inspected.) Any name the
-  viewer lacks needs a viewer PR (precedent: worker PR 46 / viewer PR 14).
+- **Q5.** ANSWERED — see §13.
 - **Q6.** `disk_mem_*` privacy/opt-in: mirror iOS's option-gated capture? Recommendation: opt-in.
 
 ## 11. Evidence base and its limits
@@ -335,3 +334,70 @@ tests named here. These supersede the corresponding prose above where they confl
 **Process note.** Nine automated review rounds each confirmed the previous fixes and found the next layer of
 attach-site / call-shape detail. That class is better caught against real files under the repo's own §7 convergent
 review per slice than by further doc rewrites, which is why the doc is frozen here.
+
+## 13. Q5 answered — what the viewer and the specs repo say (2026-10-14)
+
+Sources: `bugsee/viewer` at `origin/main` `7b65465` (read via git, working copy untouched) and `bugsee/specs`
+`6df4b85`. Verified by reading code, not by rendering a report.
+
+### 13.1 The specs repo is thin on system traces
+`sdk/reporting/bundle/traces.md` fixes the envelope (`timestamp`, optional `displayId`, `name`, `value`) and value
+schemas for only FOUR traces: `capture`, `cellular`, `fold_state`, `hinge_angle`. Everything else is "scalar,
+producer-specific". `platforms/android.md#system-trace-producers` lists Android PRODUCER ids (`connectivity`,
+`power_status`, `ram`, `cpu_usage`, `top_activity`, …), not the wire names the producers emit. `platforms/ios.md`
+specifies `cellular`, `capture` and `ram_low_memory` only and says the iOS producer inventory is "still pending".
+`events-system.md` says only "a platform-reported identifier"; Android names are in `android.md#system-event-names`.
+**Consequence: the viewer's tables are the de-facto contract for every other trace name and value shape.** If a new
+JS trace/value shape is meant to be cross-platform, it should be added to `traces.md` in the specs repo in the same
+change as the viewer entry (the specs README says implementations are checked against the spec).
+
+### 13.2 How the viewer processes system traces
+- Named definitions in `recording-system-traces.constant.ts` give display (`blocks`/`lines`/`areas`), `units`,
+  `precision`, `measure: dataSize`, `series`/`childs` grouping and `states` tables; titles live in
+  `recording-traces-titles.constant.ts`; a fixed list `SYSTEM_TRACES_SPECIAL_TREATMENT` routes some names to
+  processors (`battery`, `charging`, `orientation`, `displays`, `connection`, `wifi`, `cellular`, `capture`,
+  `fold_state`, `hinge_angle`, `thermal_headroom`, `screen_brightness`, `view`, …).
+- A trace with NO definition falls into "process other traces" (`recording-helper.service.ts:245-258`): generic
+  `blocks`, title = titles-table entry or the raw name, no units, no chart. Numeric series (GC, heap, lag) therefore
+  appear as value blocks, not lines/areas, until a definition exists. Equal consecutive values are collapsed.
+- System EVENTS are fully generic: grouped by `name`, one `ticks` row per name titled with the raw name, filtered to
+  the recording window. There is NO event-name table, so any name renders; snake_case vs PascalCase only matters for
+  cross-platform grouping with Android's names, not for rendering.
+
+### 13.3 Per-name verdicts for this doc's proposals
+| Name / shape | Viewer today | Needed |
+|---|---|---|
+| `ram_js_heap_{total,free,used}` | Defined; viewer comment: same semantics as `ram_jvm_heap`, `total` = heap CEILING | Nothing — confirms the ceiling-based Node/Deno design (Q2) |
+| `process_memory_{rss,heap_*,external,array_buffers}`, `cpu_usage_{user,system}`, `event_loop_lag*`, `event_loop_utilization` | Defined (`process_memory_js`, `cpu_usage_js`, `event_loop_lag`) | Nothing |
+| `disk_mem_{free,total}` | `disk` group, MB `areas` | Nothing — confirms integer MB (§4 P1) |
+| `app_state` | `states`: `started` / `foreground` / `background` (strings) | Emit exactly those strings; never `visible`/`hidden` |
+| `displays` | `parseDisplays` expects a LIST of display objects (id, name, width/height or natural size, rotation, …) | `screen_size` stays a separate name; Electron `getAllDisplays()` may use `displays` only in that list shape |
+| `thermal_state` | integer enum table (0 Nominal, 1 Fair, …) | `cpu_pressure` must be a separate name |
+| `connection` | `processConnection` handles the browser shape, `online`-first, `effectiveType` as label only | Nothing for the current shape; ST5 must keep it |
+| `orientation` | `RecordingOrientationsMap` ints 0–4 | Nothing |
+| `rendering_fps` | groups `fps` + `fps_max` | `fps` renders with no new entry; `fps_max` has no browser source |
+| `v8_heap_*`, `gc_*`, `process_memory_limit`, `process_uptime_s`, `handles_active`, `requests_active`, `main_thread_lag_ms`, `screen_size`, `cpu_pressure`, `app_metrics` | Undefined → generic value blocks | Viewer PR: definitions + titles (+ spec entry in `traces.md` where cross-platform) |
+| `dark_mode_changed`, `freeze`, `resume`, `child_process_gone`, `power_*`, window events | Generic ticks rows | Nothing to render; keep names stable and, where Android has one (`DarkModeChanged`), decide on cross-platform grouping |
+| `charging` | **see 13.4** | **change the SDK** |
+
+### 13.4 `charging` is broken today, and the fix is supported
+The viewer's `charging` table is keyed by integer states `"0"` unknown, `"1"` unplugged, `"2"` charging, `"3"` full,
+and `processCharging` accepts an integer OR an `{state, …}` object (`processingHelpers.ts:364`). The shipped JS value is
+a boolean: `false` is dropped by the falsy guard before the processor runs, and `true` looks up `states["true"]`
+(undefined), so the row has no state. **Supersedes §3.1 and the ST0 default**: emit `{state: 0|1|2|3}` with `source`
+OMITTED (never invented), map from `BatteryManager` (`charging` → 2, `!charging` → 1; "full" needs a rule, e.g.
+`charging && level === 1` → 3; unknown/unsupported → omit). This is a fix, not a breaking change — nothing rendered
+before. Q5 for `charging` is closed; the remaining question is only the "full" rule.
+
+### 13.5 Correction to §3
+Clash #4 ("`orientation` ints 3/4 mean opposite things on iOS vs Android") is NOT supported by the viewer's own note:
+`recording-orientations-map.constant.ts` says 3/4 "follow the SDK contract, which both platforms state identically"
+(Android `Orientation.LandscapeLeft(3)`, iOS `BGSOrientationLandscapeLeft = 3`, `BGSContracts.h`), and that an earlier
+swap was a LABEL bug, not a wire difference. The iOS research pass's claim was wrong; no JS action on `orientation`.
+
+### 13.6 Follow-ups
+1. Viewer PR: definitions + titles for the new names in §13.3 (group `v8_heap_*`, a `gc` group, `lines` for lag/uptime).
+2. Specs PR: add any cross-platform JS trace/value shape (`charging` object, `app_state` strings already implied) to
+   `bundle/traces.md`; add the JS runtime names to a platform note.
+3. Not yet checked: viewer `hints` table (`RecordingTracesHintsConstant`) and the session-level `hardware.*`
+   fields the viewer reads from `request.json` (so `hardware.gpu`/`cpu_count` placement for ST6 GPU info is open).
