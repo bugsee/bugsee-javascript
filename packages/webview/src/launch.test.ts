@@ -911,6 +911,29 @@ describe('launch (webview)', () => {
     expect(traces.some((e) => JSON.stringify(e.p).includes('wv_metric'))).toBe(true);
   });
 
+  it('streams battery/charging ({state}) from the browser battery producer', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {},
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getBattery).toHaveBeenCalledTimes(1);
+      const traces = entriesOfType(fake.msgs(), 'traces.system').map((e) => JSON.stringify(e.p));
+      expect(traces.some((t) => t.includes('"battery"') && t.includes('100'))).toBe(true);
+      expect(traces.some((t) => t.includes('"charging"') && t.includes('"state":3'))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global }));

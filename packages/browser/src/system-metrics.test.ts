@@ -111,47 +111,14 @@ describe('createBrowserSystemTracesSampler', () => {
     ]);
   });
 
-  it('samples the cached battery as battery (rounded 0-100) + charging once getBattery resolves', async () => {
+  it('no longer touches getBattery or emits battery/charging (they are a tracker-backed producer now)', async () => {
+    const getBattery = vi.fn(() => Promise.resolve({ level: 0.5, charging: true }));
     const sampler = createBrowserSystemTracesSampler({
-      navigator: { getBattery: () => Promise.resolve({ level: 0.426, charging: true }) },
-    });
-    // Before getBattery resolves: only the connection trace a `navigator` always yields.
-    expect(sampler()).toEqual([{ name: 'connection', value: { type: 'unknown' } }]);
+      navigator: { getBattery },
+    } as unknown as BrowserTracesEnv);
     await tick();
-    expect(sampler().filter((t) => t.name !== 'connection')).toEqual([
-      { name: 'battery', value: 43 }, // 0.426 → 42.6 → round → 43 (pins Math.round)
-      { name: 'charging', value: true },
-    ]);
-  });
-
-  it('reads the cached battery manager LIVE — later samples reflect charge changes', async () => {
-    const manager = { level: 0.5, charging: false };
-    const sampler = createBrowserSystemTracesSampler({
-      navigator: { getBattery: () => Promise.resolve(manager) },
-    });
-    await tick();
-    // A `navigator` now always yields a connection trace (onLine alone is worth reporting), so the
-    // battery assertions filter to what they are about.
-    const batteryOf = () => sampler().filter((t) => t.name !== 'connection');
-    expect(batteryOf()).toEqual([
-      { name: 'battery', value: 50 },
-      { name: 'charging', value: false },
-    ]);
-    manager.level = 0.8; // the real BatteryManager mutates its properties in place
-    manager.charging = true;
-    expect(batteryOf()).toEqual([
-      { name: 'battery', value: 80 }, // re-read live (not a one-time snapshot)
-      { name: 'charging', value: true },
-    ]);
-  });
-
-  it('omits battery when getBattery rejects (unsupported / denied)', async () => {
-    const sampler = createBrowserSystemTracesSampler({
-      navigator: { getBattery: () => Promise.reject(new Error('denied')) },
-    });
-    await tick();
-    // Only the connection trace, which a `navigator` always produces — no battery/charging.
-    expect(sampler()).toEqual([{ name: 'connection', value: { type: 'unknown' } }]);
+    expect(getBattery).not.toHaveBeenCalled();
+    expect(sampler().map((t) => t.name)).toEqual(['connection']);
   });
 
   it('yields nothing when no context API is available (empty env)', () => {
@@ -163,7 +130,6 @@ describe('createBrowserSystemTracesSampler', () => {
       performance: { memory },
       navigator: {
         connection: { effectiveType: '3g' },
-        getBattery: () => Promise.resolve({ level: 1, charging: false }),
       },
       screen: { orientation: { type: 'portrait-primary', angle: 0 } },
     });
@@ -174,8 +140,6 @@ describe('createBrowserSystemTracesSampler', () => {
       'ram_js_heap_used',
       'connection',
       'orientation',
-      'battery',
-      'charging',
     ]);
   });
 

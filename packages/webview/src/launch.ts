@@ -2,6 +2,7 @@ import {
   bindInputBlackout,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
+  createBrowserSystemTraceProducers,
   createBrowserSystemTracesSampler,
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
@@ -671,6 +672,12 @@ export function launchWithSeams(
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      producers: createBrowserSystemTraceProducers(),
+      refreshMs: Math.min(
+        10_000,
+        Math.max(1_000, (resolved.options.get(BugseeOption.Duration, 60) * 1000) / 4),
+      ),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

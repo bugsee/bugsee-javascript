@@ -11,10 +11,8 @@ import { connectionTypeToWire, orientationToWire } from './system-trace-values';
 // The last two carry ANDROID's vocabulary, not the browser's — see ./system-trace-values.ts for why
 // and how. `traces.system` is a cross-platform stream and the viewer renders it from fixed tables, so
 // a browser-shaped value is a value nothing can render.
-//   navigator.getBattery()    → battery (0-100) + charging                      (Android `power_status`)
-// getBattery() is async, so the BatteryManager is fetched once on construction and cached; its
-// `level`/`charging` update live, so the sampler reads the cached manager each interval (omitted until it
-// resolves / where unsupported).
+// Battery (battery + charging) is NOT sampled here: it is event-driven, so it is a tracker-backed producer
+// (./trace-producers.ts over ./trackers/battery-tracker.ts) that calls getBattery() only while capturing.
 
 interface BrowserMemory {
   usedJSHeapSize: number;
@@ -31,10 +29,6 @@ interface NetworkInformation {
   rtt?: number;
   saveData?: boolean;
 }
-interface BatteryManager {
-  level: number;
-  charging: boolean;
-}
 interface ScreenOrientationLike {
   type: string;
   angle: number;
@@ -45,7 +39,6 @@ export interface BrowserTracesEnv {
   performance?: { memory?: BrowserMemory };
   navigator?: {
     connection?: NetworkInformation;
-    getBattery?: () => Promise<BatteryManager>;
     /** navigator.onLine — the one connectivity fact every browser reports. */
     onLine?: boolean;
     /**
@@ -62,7 +55,6 @@ const realEnv = (): BrowserTracesEnv => {
     performance?: { memory?: BrowserMemory };
     navigator?: {
       connection?: NetworkInformation;
-      getBattery?: () => Promise<BatteryManager>;
       onLine?: boolean;
       deviceMemory?: number;
     };
@@ -90,16 +82,6 @@ const realEnv = (): BrowserTracesEnv => {
 export function createBrowserSystemTracesSampler(
   env: BrowserTracesEnv = realEnv(),
 ): () => TraceSample[] {
-  // Fetch the BatteryManager once; cache it. Its level/charging update live, so the sampler reads the
-  // cached manager each interval. Omitted until it resolves (or where getBattery is unsupported/denied).
-  let battery: BatteryManager | undefined;
-  env.navigator?.getBattery?.().then(
-    (manager) => {
-      battery = manager;
-    },
-    () => {}, // unsupported / permission denied → no battery traces
-  );
-
   return () => {
     const samples: TraceSample[] = [];
     const memory = env.performance?.memory;
@@ -152,12 +134,6 @@ export function createBrowserSystemTracesSampler(
         name: 'orientation',
         value: orientationToWire(orientation.type, orientation.angle),
       });
-    }
-    if (battery !== undefined) {
-      samples.push(
-        { name: 'battery', value: Math.round(battery.level * 100) }, // 0-1 → 0-100 (Android parity)
-        { name: 'charging', value: battery.charging },
-      );
     }
     return samples;
   };

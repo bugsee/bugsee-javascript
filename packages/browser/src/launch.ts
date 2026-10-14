@@ -92,6 +92,7 @@ import {
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
+import { createBrowserSystemTraceProducers } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -796,6 +797,12 @@ async function buildLaunch(
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      producers: createBrowserSystemTraceProducers(),
+      refreshMs: Math.min(
+        10_000,
+        Math.max(1_000, (resolved.options.get(BugseeOption.Duration, 60) * 1000) / 4),
+      ),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
