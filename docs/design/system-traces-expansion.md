@@ -275,11 +275,11 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 - **Q1.** Do long tasks / LoAF / web vitals / navigation+resource timing belong in `@bugsee/performance`
   (already owns `longtask` + web-vitals; it does NOT own `long-animation-frame`, which is research-only in `docs/research/capture-apis/browser.md` — LoAF is the open item) rather than `traces.system`? Recommendation: yes — keep them out of this doc's
   scope and confirm `@bugsee/performance` covers long tasks/LoAF; check for overlap before any build.
-- **Q2.** Should Node/Deno emit `ram_js_heap_*` *in addition to* `process_memory_heap_*`? Recommendation: yes,
+- **Q2.** **DECIDED YES (owner, 2026-10-14).** Should Node/Deno emit `ram_js_heap_*` *in addition to* `process_memory_heap_*`? Recommendation: yes,
   as a DIFFERENT quantity (ceiling-based total/free, per §4 P1), not a duplicate; only `used` repeats. Subsumes
   `SYNTHESIS.md` T1 (`heap_size_limit` / `constrainedMemory`), which already proposed this — this doc must
   reconcile with it, not restate it.
-- **Q3.** Omit vs `"$$unavailable"` for unsupported services. Recommendation: keep omitting (consistent with
+- **Q3.** **DECIDED: keep omitting (owner, 2026-10-14).** Omit vs `"$$unavailable"` for unsupported services. Recommendation: keep omitting (consistent with
   the ELU/Deno precedent) unless the viewer needs the sentinel — verify viewer handling first.
 - **Q4.** Does the env builder already detect cloud provider/region? **Checked in review: NO** — node/browser env builders do not read `AWS_REGION`/`VERCEL`/`FLY_REGION`; `hardware.cpu_count` and `hardware.screen_*`/`pixel_ratio` already exist, so do not re-emit those as traces.
 - **Q5.** ANSWERED — see §13.
@@ -401,3 +401,18 @@ swap was a LABEL bug, not a wire difference. The iOS research pass's claim was w
    `bundle/traces.md`; add the JS runtime names to a platform note.
 3. Not yet checked: viewer `hints` table (`RecordingTracesHintsConstant`) and the session-level `hardware.*`
    fields the viewer reads from `request.json` (so `hardware.gpu`/`cpu_count` placement for ST6 GPU info is open).
+
+### 13.7 Decisions and the GPU destination (owner, 2026-10-14)
+- **Q2 = yes**, **Q3 = keep omitting** (viewer: an omitted trace simply does not appear; `$$unavailable` is handled only
+  for wifi/cellular-style traces).
+- **GPU info is ENVIRONMENT data, not a trace.** Resolves §12 item 3 as option (a). The viewer reads
+  `environment.hardware.gpu = { vendor, renderer, gl_version?, gl_extensions? }` (`core/types/environment.ts:78`;
+  rendered in the context and environment panels, `elements-recording-context.component.html:418-439`,
+  `elements-recording-environment.component.html:197`); the specs list `gpu` under `hardware`
+  (`api/issues.md#environment-object`). So ST6 sets `hardware.gpu` through the Electron environment builder once
+  `getGPUInfo` settles, omitted until then, and never as a trace. The mapping from Electron's GPU info to
+  `{vendor, renderer}` is UNVERIFIED (`basic` returns ids; fuller names may need `'complete'`) — confirm against a real
+  Electron before building. `hardware.gpu` may also be fillable in the browser via the WebGL
+  `WEBGL_debug_renderer_info` extension; that is out of this doc's scope and needs its own privacy decision.
+- `hardware.charging` is a **boolean** in the viewer's environment type (`environment.ts:71`), unlike the `charging`
+  TRACE (`{state}`, §13.4). Do not change the environment field when fixing the trace.
