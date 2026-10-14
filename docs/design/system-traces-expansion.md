@@ -66,7 +66,7 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 | `gc_pause_ms` (sum/max per interval), `gc_count` (optionally by type tag) | `PerformanceObserver({entryTypes:['gc']})` | Broadest competitor-backed gap. **MEASURED: node only — blind on Bun and Deno (§8). Gate OFF there.** |
 | `v8_heap_size_limit`, `v8_heap_available`, `v8_heap_malloced`, `v8_heap_peak_malloced` | `v8.getHeapStatistics()` | Cheap on Node/Deno (µs). **MEASURED: do not emit on Bun** — JSC-derived, limit not a ceiling, ~1 ms/call (§8). |
 | `ram_js_heap_{total,free,used}` on Node/Deno | `v8.getHeapStatistics()`: `total` = `heap_size_limit` (the CEILING, Android `ram_jvm_heap` contract), `used` = `used_heap_size`, `free` = limit − used | **Not an alias of `process_memory_heap_*`**: `process_memory_heap_total` is `heapTotal` (committed heap, not the ceiling). Only `used` is the same number in both families; `total` and `free` differ. Keep `process_memory_heap_*` as committed. Same name = same quantity as browser/Android. Decision Q2. |
-| `process_memory_limit` (cgroup cap) | `process.constrainedMemory()` (Node ≥18.15; `SYNTHESIS.md` T1 calls it the real OOM predictor) | Emit ONLY when the value is `> 0` AND `< 2^63` AND `≤ os.totalmem()`; omit for `0` (macOS/unconstrained) and the 2^64 Linux sentinel — never gate on `!== 0` alone. **Needs a Linux probe (macOS-only so far).** Deno/Bun semantics unmeasured. |
+| `process_memory_limit` (cgroup cap) | `process.constrainedMemory()` (Node ≥18.15 — absent on 18.0–18.14, feature-detect;  `SYNTHESIS.md` T1 calls it the real OOM predictor) | Emit ONLY when the value is `> 0` AND `< 2^63` AND `≤ os.totalmem()`; omit for `0` (macOS/unconstrained) and the 2^64 Linux sentinel — never gate on `!== 0` alone. **Needs a Linux probe (macOS-only so far).** Deno/Bun semantics unmeasured. |
 | `ram_system_available` | `process.availableMemory()` | Sentry uses it. **MEASURED: not comparable across runtimes (24 GB vs 0.9 GB same host) and absent on Node 18 — Node ≥22 only, if at all (§8).** |
 | `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | **Unit: integer MB via the existing `bytesToMegabytes` (`@bugsee/protocol` `units.ts:14-18`: `Math.floor(bytes/1024/1024)`, the Android `(int)` cast — binary, NOT `/1e6`; no second definition of "MB"), a deliberate exception to the bytes rule above, from `bsize × bavail` / `bsize × blocks`, change-deduped (≥1 MB). **Path: the filesystem `dataDir` lives on** (`effectiveDataDir`), not `/` or cwd — it is that volume's space, not mobile "device storage", and differs from `/` on overlay/container roots. **Omit both traces when `effectiveDataDir` is undefined** (in-memory launch, or disk setup degraded — `node/src/launch.ts:580-609` clears it); never fall back to cwd or `/`. The sampler is built today with no `dataDir` dep (`launch.ts:866`), so ST3 must thread it in. Opt-in like iOS `BugseeOptionCaptureDiskSpace`. §8 confirmed `statfs` is present and returns sane block counts on node/bun/deno; it did NOT check wire units or path choice. |
 | `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; **MEASURED: always 0 on Bun/Deno → Node only, enforced by `measuresActiveResources` (§5); omit, never emit 0.** |
@@ -136,6 +136,21 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
   is not a gate. Tests: pin the factory call per runtime
   (`toHaveBeenCalledWith(expect.objectContaining({ measuresV8Heap: false, … }))`, as lag is pinned in
   `deno/src/launch.test.ts`), AND run the sampler under a Bun/Deno-shaped fake asserting the traces are ABSENT.
+- **Presence vs honesty are different gates.** The `measures*` flags above answer "does this runtime LIE"
+  (Bun/Deno: API exists, number is wrong). They do not answer "does this API EXIST on the declared floor"
+  (`@bugsee/node` `engines: >=18`): `process.availableMemory()` is absent on Node 18 (§8) and needs ≥20.13/22;
+  `constrainedMemory()` needs ≥18.15 (`docs/research/capture-apis/node.md:141-142`). Node launch uses
+  `createNodeSystemMetricsSampler()` with no flags (`node/src/launch.ts:866`), not the guarded wrapper. So each
+  reader is added with BOTH: a presence check feature-detected at construction (an absent function ⇒ omitted
+  reader — this is not the banned `typeof` honesty gate, it is floor compatibility) AND per-reader try/catch
+  → omit. This is mandatory because the provider runs `sample()` synchronously in `onStart`→`#emit` with no
+  try/catch (`system-traces-provider.ts:59-73`), `captureCoordinator.start()` does not isolate per provider
+  (`capture-coordinator.ts:69-71`) and system events register AFTER traces (`launch.ts:870`): one throw on the
+  initial snapshot means `process_started` never emits, and a throw on a later tick (e.g. `statfsSync` ENOENT after
+  a tmp cleaner removes `dataDir`) is an uncaught `setInterval` exception in the host. A FAILED `statfs` must
+  OMIT — never flow through `bytesToMegabytes`, whose 0-on-NaN would report a full disk. Tests: run the sampler
+  with each API missing and each API throwing; assert launch succeeds, `process_started` still emits, and only
+  that trace is absent.
 - **Per-runtime gates, not passive tells.** Anything UNMEASURED on Bun/Deno ships with a runtime flag (like
   `measuresEventLoopDelay`) defaulting to OFF there until measured; `@bugsee/{bun,deno}` flip it only with a
   recorded measurement in this doc.
@@ -155,9 +170,22 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
   `captureSystemTraces:false` / `client.stop()` still starts the histogram and fetches BatteryManager. There are
   THREE composition roots, not two: node (`launch.ts:866`), browser (`launch.ts:798`) and **webview**
   (`webview/src/launch.ts:671-675`, same `createSystemTracesProvider({ sample: … ?? createBrowserSystemTracesSampler() })`);
-  all three must call `start()`/`stop()` or webview fps stays 0 / its factory leaks. The public option
-  `systemMetricsSampler?: () => readonly TraceSample[]` (`browser/src/launch.ts:411`) must keep working: a bare
-  function is wrapped as sample-only (start/stop no-ops) so every `() => []` test injector survives; the gate is `captureSystemTraces` + provider start/stop. Each standing source
+  all three must call `start()`/`stop()` or webview fps stays 0 / its factory leaks. **The factories themselves change**: `createNodeSystemMetricsSampler`, `createGuardedSystemMetricsSampler`
+  (`guarded-system-metrics.ts:116-118`, today `() => TraceSample[]`) and `createBrowserSystemTracesSampler` all
+  return `LifecycleSampler = { start, stop, sample }`. Bun/Deno do NOT take the `?? createNodeSystemMetricsSampler()`
+  default — they INJECT `createGuardedSystemMetricsSampler(…)` through `options.systemMetricsSampler`
+  (`bun/src/launch.ts:22`, `deno/src/launch.ts:29`), so they pick up the object. Widen the public option
+  (`browser/src/launch.ts:411`, node equivalent) to `(() => readonly TraceSample[]) | LifecycleSampler` and wrap
+  ONLY `typeof === 'function'` values (test stubs like `() => []`) as sample-only; a function wrap at the launch
+  line cannot tell a stub from production, which is why the production samplers must stop being bare functions.
+  The Bun/Deno event-loop histogram is enabled at CONSTRUCTION in `guardedEventLoop`
+  (`guarded-system-metrics.ts:54-56`), NOT in `createEventLoopReader` (`system-metrics.ts:62-63`, node-only): move
+  BOTH `enable()` sites into `start()` (and `disable` in `stop()`). Getting this half-right fails two ways —
+  moving only the node site leaves Bun leaking a running histogram after `captureSystemTraces:false`/`stop()`;
+  no-op-wrapping the guarded sampler while moving `enable()` leaves Bun's `event_loop_lag_*` at the idle floor
+  through a real stall (the Deno lie, on Bun). Bun/Deno tests pin that the DEFAULT sampler has a real `start`
+  (histogram enabled only after provider start, released on stop), as lag is pinned in
+  `deno/src/launch.test.ts:278-279`; the gate is `captureSystemTraces` + provider start/stop. Each standing source
   needs a test proving it is absent when the option is off and released on stop — INCLUDING the two pre-existing
   ones above.
 - **Cost.** GC observer and rAF counter run only between provider `start`/`stop` (see Lifecycle seam). Budget: the sampler tick must stay well under the existing
@@ -231,7 +259,7 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 | Slice | Content | Depends on |
 |---|---|---|
 | ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` decision (§3.1; default = leave as is) + **sampler `{start,stop,sample}` lifecycle seam** | — |
-| ST1 | Node/Deno: `v8_heap_*`, ceiling-based `ram_js_heap_*`, `process_memory_limit` (Linux probe first), `process_uptime_s`, optional `ram_system_available` (Node ≥22) | probes 2, 4 + Linux |
+| ST1 | Node/Deno: `v8_heap_*`, ceiling-based `ram_js_heap_*`, `process_memory_limit` (Linux probe first), `process_uptime_s`, optional `ram_system_available` (Node ≥20.13, feature-detected) | probes 2, 4 + Linux |
 | ST2 | Node: GC observer (`gc_*`) with per-runtime gate | probe 1 |
 | ST3 | Node: `disk_mem_*` (+ option) | probe 3 |
 | ST4 | Browser: `app_state`, `fps`, `screen_size` (optional), `main_thread_lag_ms`, dark-mode/freeze/resume events | probe 5 |
