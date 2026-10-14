@@ -1,6 +1,7 @@
-# System traces expansion — competitor gap + mobile-parity port plan — DESIGNED (not built)
+# System traces expansion — competitor gap + mobile-parity port plan — DESIGNED, FROZEN (not built)
 
-**Status:** DESIGNED 2026-10-14. Nothing here is implemented. Built from five read-only research passes
+**Status:** DESIGNED 2026-10-14; **FROZEN 2026-10-14 after review round 9** (PR #53). No further prose rewrites: remaining
+edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. Nothing here is implemented. Built from five read-only research passes
 (competitor web, competitor server/cloud/edge, competitor Electron/desktop, Bugsee Android SDK, Bugsee iOS
 SDK). Every runtime-support claim marked **UNMEASURED** must be probed on the real runtime before the slice
 that depends on it starts (see §7) — on Bun/Deno "the call succeeded" is not evidence the thing happened
@@ -296,3 +297,41 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 - Mobile: Android/iOS read from source (no code run). iOS spec `report-bundle-structure/platforms/ios.md:192`
   says its producer inventory is "still to be audited", so the iOS source is the only authority.
 - Not researched: Tauri/NW.js; Raygun/Rollbar/LogRocket Electron.
+
+## 12. Follow-ups from review round 9 (pre-implementation checklist — resolve in the owning slice)
+
+Raised by the automated review on `4ad2ae9`; each was judged plausible but is NOT yet verified against the code
+and NOT yet reflected in §4–§9. Each slice's author confirms the claim against the real files first, then adds the
+tests named here. These supersede the corresponding prose above where they conflict.
+
+1. **ST4 — complete browser traces env (`BrowserTracesEnv`).** The `{window, document}` pair given to the events
+   source is an events env, not a traces env. Build a COMPLETE traces env from the same injected `win`/`domDocument`:
+   `performance`/`navigator`/`screen`/`requestAnimationFrame` from that window, `document` from `domDocument`; pass
+   only `{window, document}` to the events source. Do not spread `realEnv()` over an injected document. Tests:
+   injected window+document still emit `ram_js_heap_*`/`connection` from THAT window; a missing
+   `performance.memory` on it omits heap (no fallback to `globalThis`).
+2. **ST4b — `matchMedia` from the launch-injected window.** Browser and webview launch pass
+   `...(typeof win.matchMedia === 'function' ? { matchMedia: win.matchMedia.bind(win) } : {})` alongside
+   `{window: win, document: domDocument}`; never default to `globalThis.matchMedia`. Tests: injected window whose
+   `matchMedia` fires `change` records `dark_mode_changed`; a `WindowEvents` fake with no `matchMedia` still starts
+   input and emits no dark-mode event.
+3. **ST6 — GPU info destination.** `getGPUInfo` has no destination: there is no context stream and the traces
+   provider writes only `traces.system`. Choose and name ONE: (a) wrap Electron `getEnvironment`/the node probe and
+   set `hardware.gpu` (or a JS-specific key) once settled, omitted until then; or (b) a one-shot, change-deduped
+   `traces.system` name with an explicit value shape, Q5-confirmed. `start()` may kick the Promise but must not be
+   the writer. Tests: rejected `getGPUInfo` → no GPU field and node traces still emit; resolved → the chosen field
+   is present on the next report (not a per-tick trace unless (b)).
+4. **ST6 — existing `webContents` and window lifetime.** `web-contents-created` does not replay. In `onActivate`,
+   for each current `getAllWindows()` attach the window events AND `win.webContents` `unresponsive`/`responsive`,
+   plus `browser-window-created`/`web-contents-created` for later ones. Remove all in `onDeactivate`, and on
+   `closed`/`destroyed` so a closed window is not retained until stop. Tests: a window created BEFORE `launchMain`
+   still records `unresponsive` from `webContents`; `win.emit('unresponsive'|'responsive')` does not record.
+5. **ST0/ST5/ST6 — abort in-flight Promises on `stop()`.** `getBattery()` (moved into `start()`) and `getGPUInfo`
+   return Promises that `stop()` does not cancel. Use a generation/`aborted` flag in `start()`; `stop()` flips it and
+   tears down whatever is already cached; the `then` is a no-op when aborted (no cache, no `levelchange` listener).
+   Tests: `start()` then `stop()` before the Promise settles → no listener attached, no retained manager, a later
+   fulfill is ignored. Same token for `getGPUInfo`'s late resolve.
+
+**Process note.** Nine automated review rounds each confirmed the previous fixes and found the next layer of
+attach-site / call-shape detail. That class is better caught against real files under the repo's own §7 convergent
+review per slice than by further doc rewrites, which is why the doc is frozen here.
