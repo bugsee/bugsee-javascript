@@ -934,6 +934,62 @@ describe('launch (webview)', () => {
     }
   });
 
+  it.each([
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+  ])('refreshes the held battery trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const fake = fakeGlobal();
+    vi.stubGlobal('navigator', {
+      getBattery: () =>
+        Promise.resolve({
+          level: 1,
+          charging: true,
+          addEventListener() {},
+          removeEventListener() {},
+        }),
+    });
+    try {
+      vi.setSystemTime(0);
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          maxRecordingTime,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+            },
+            clearInterval: () => {},
+          },
+        } as Partial<BugseeWebViewLaunchOptions>),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const battery = () =>
+        entriesOfType(fake.msgs(), 'traces.system').filter(
+          (e) => (e.p as unknown as { data: { name: string } }).data.name === 'battery',
+        ).length;
+      const tick = () => {
+        for (const t of ticks.filter((x) => x.ms === 1000)) t.cb();
+      };
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick();
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick();
+      expect(battery()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
     const fake = fakeGlobal();
     const getBattery = vi.fn(() =>

@@ -14,6 +14,7 @@ import {
   createSystemEventsProvider,
   createSystemTracesProvider,
   createVideoAuxProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
   type TraceSample,
@@ -798,10 +799,7 @@ async function buildLaunch(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
       producers: createBrowserSystemTraceProducers(undefined, options.onError),
-      refreshMs: Math.min(
-        10_000,
-        Math.max(1_000, (resolved.options.get(BugseeOption.Duration, 60) * 1000) / 4),
-      ),
+      refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),

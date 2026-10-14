@@ -62,6 +62,7 @@ export {
 } from './system-events-provider';
 export {
   createSystemTracesProvider,
+  deriveRefreshMs,
   type SystemTracesProviderOptions,
   type TraceSample,
 } from './system-traces-provider';

@@ -1422,8 +1422,9 @@ describe('launch — system trace producers', () => {
   });
 
   it.each([
-    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s
-    { maxRecordingTime: 2, refreshMs: 1000 }, // 0.5s clamped up to 1s
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s, exactly the floor
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor (2 x the 1s interval)
     { maxRecordingTime: 600, refreshMs: 10_000 }, // 150s clamped down to 10s
   ])('refreshes a held trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
     maxRecordingTime,

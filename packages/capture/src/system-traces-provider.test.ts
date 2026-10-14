@@ -12,7 +12,11 @@ import {
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createSystemTracesProvider, type TraceSample } from './system-traces-provider';
+import {
+  createSystemTracesProvider,
+  deriveRefreshMs,
+  type TraceSample,
+} from './system-traces-provider';
 import { type TraceProducer, TraceProducerBase, type TraceSink } from './trace-producer';
 
 const mkStore = (): CaptureStore =>
@@ -599,5 +603,139 @@ describe('createSystemTracesProvider — producers', () => {
 
   it('requires producers or sample (a provider with neither is a programming error)', () => {
     expect(() => createSystemTracesProvider({} as never)).toThrow(/producers or sample/);
+  });
+});
+
+describe('createSystemTracesProvider — hardening', () => {
+  it('a throwing legacy sample() does not stop the refresh of held values on the same tick', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const errors: unknown[] = [];
+    let t = 0;
+    let n = 0;
+    const a = new Fixed('a', [['battery', 50]], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      sample: () => {
+        n += 1;
+        if (n > 1) throw new Error('sample boom');
+        return [];
+      },
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10,
+      onError: (e) => errors.push(e),
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    t = 10;
+    fs.tick();
+    expect((errors[0] as Error).message).toBe('sample boom');
+    expect((await values(store)).map((v) => [v.name, v.timestamp])).toEqual([
+      ['battery', 0],
+      ['battery', 10],
+    ]);
+  });
+
+  it('a throwing scheduler.setInterval on start unwinds like a failed initial sample (stop producers, not running, rethrow)', async () => {
+    const store = mkStore();
+    let refuse = true;
+    let cb: (() => void) | undefined;
+    const scheduler: Scheduler = {
+      setInterval: (c) => {
+        if (refuse) throw new Error('no timers');
+        cb = c;
+        return 'h';
+      },
+      clearInterval: () => {},
+    };
+    let t = 0;
+    const a = new Fixed('a', [['x', 1]], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      scheduler,
+      now: () => t,
+      refreshMs: 10,
+    });
+    p.init(buildInit(store));
+    expect(() => p.start(options)).toThrow('no timers');
+    expect(a.stoppedCount).toBe(1);
+    a.push('x', 2); // the producer is stopped: dropped
+    refuse = false;
+    a.seed.length = 0;
+    t = 100;
+    p.start(options);
+    t = 200;
+    cb?.();
+    // only the first baseline exists; nothing held from the failed start is refreshed
+    expect((await values(store)).map((v) => [v.value, v.timestamp])).toEqual([[1, 0]]);
+  });
+
+  it('a tick that fires after stop() records nothing (not running)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const p = createSystemTracesProvider({
+      sample: () => [{ name: 'm', value: 1 }],
+      scheduler: fs.scheduler,
+      now: () => t,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    p.stop();
+    t = 5;
+    fs.tick();
+    expect((await values(store)).map((v) => v.timestamp)).toEqual([0]);
+  });
+
+  it('one timer per start and one clearInterval per stop across restarts', () => {
+    let sets = 0;
+    let cleared = 0;
+    const handles: unknown[] = [];
+    const scheduler: Scheduler = {
+      setInterval: () => {
+        sets += 1;
+        const h = `h${sets}`;
+        handles.push(h);
+        return h;
+      },
+      clearInterval: (h) => {
+        cleared += 1;
+        expect(h).toBe(handles[cleared - 1]); // clears exactly the handle that start registered
+      },
+    };
+    const p = createSystemTracesProvider({ producers: [new Fixed('a', [])], scheduler });
+    p.init(buildInit(mkStore()));
+    p.start(options);
+    expect([sets, cleared]).toEqual([1, 0]);
+    p.stop();
+    expect([sets, cleared]).toEqual([1, 1]);
+    p.start(options);
+    expect([sets, cleared]).toEqual([2, 1]);
+    p.stop();
+    expect([sets, cleared]).toEqual([2, 2]);
+  });
+});
+
+describe('deriveRefreshMs', () => {
+  it.each([
+    [600_000, 10_000], // 150 s clamped down to the 10 s ceiling
+    [40_000, 10_000], // exactly the ceiling
+    [20_000, 5_000], // a quarter of the window
+    [8_000, 2_000], // exactly the floor
+    [2_000, 2_000], // 0.5 s clamped up to 2 x the 1 s provider interval
+    [1, 2_000],
+  ])('window %d ms -> %d ms', (windowMs, expected) => {
+    expect(deriveRefreshMs(windowMs)).toBe(expected);
+  });
+
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])('a non-finite or non-positive window (%d) falls back to the 10 s default', (windowMs) => {
+    expect(deriveRefreshMs(windowMs)).toBe(10_000);
   });
 });

@@ -18,6 +18,7 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type TraceSample,
 } from '@bugsee/capture';
@@ -673,10 +674,7 @@ export function launchWithSeams(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
       producers: createBrowserSystemTraceProducers(undefined, options.onError),
-      refreshMs: Math.min(
-        10_000,
-        Math.max(1_000, (resolved.options.get(BugseeOption.Duration, 60) * 1000) / 4),
-      ),
+      refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),

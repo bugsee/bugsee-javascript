@@ -50,6 +50,21 @@ export interface SystemTracesProviderOptions {
   onError?: (error: unknown) => void;
 }
 
+const DEFAULT_INTERVAL_MS = 1000;
+const DEFAULT_REFRESH_MS = 10_000;
+
+/**
+ * The `refreshMs` a launch derives from its rolling recording window (ms): a quarter of the window, so a
+ * held value appears several times in any captured slice, clamped to [2 x the default 1 s provider
+ * interval, 10 s]. The floor keeps a refresh from firing on every tick; a non-finite or non-positive
+ * window (a misconfigured `maxRecordingTime`) falls back to the 10 s default. ONE definition, shared by
+ * the node, browser and webview launches.
+ */
+export function deriveRefreshMs(recordingWindowMs: number): number {
+  if (!Number.isFinite(recordingWindowMs) || recordingWindowMs <= 0) return DEFAULT_REFRESH_MS;
+  return Math.min(DEFAULT_REFRESH_MS, Math.max(2 * DEFAULT_INTERVAL_MS, recordingWindowMs / 4));
+}
+
 interface Held {
   name: string;
   value: unknown;
@@ -84,8 +99,8 @@ class SystemTracesProvider extends CaptureProviderBase {
     }
     this.#producers = options.producers ?? [];
     this.#sample = options.sample;
-    this.#intervalMs = options.intervalMs ?? 1000;
-    this.#refreshMs = options.refreshMs ?? 10_000;
+    this.#intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.#refreshMs = options.refreshMs ?? DEFAULT_REFRESH_MS;
     this.#scheduler = options.scheduler ?? defaultScheduler;
     this.#now = options.now ?? (() => Date.now());
     this.#onError = options.onError ?? (() => {});
@@ -105,12 +120,14 @@ class SystemTracesProvider extends CaptureProviderBase {
     }
     try {
       this.#emitLegacy(this.#now()); // initial snapshot, so a short-lived session still has current values
+      this.#timer = this.#scheduler.setInterval(() => this.#tick(), this.#intervalMs);
     } catch (error) {
+      // a failed start leaves nothing running: producers stopped and #running off (so no stray tick or
+      // late emit records); the snapshot is cleared by the next start
       this.#stopProducers();
       this.#running = false;
       throw error;
     }
-    this.#timer = this.#scheduler.setInterval(() => this.#tick(), this.#intervalMs);
   }
 
   protected override onStop(): void {
@@ -122,9 +139,14 @@ class SystemTracesProvider extends CaptureProviderBase {
   }
 
   #tick(): void {
+    if (!this.#running) return; // a tick that slipped past stop() records nothing
     try {
       const now = this.#now();
-      this.#emitLegacy(now);
+      try {
+        this.#emitLegacy(now);
+      } catch (error) {
+        this.#onError(error); // a broken legacy sampler must not stop the held-value refresh
+      }
       for (const held of [...this.#held.values()]) {
         if (now - held.timestamp >= this.#refreshMs) {
           this.#record(held.name, held.value, held.displayId, now, true);
