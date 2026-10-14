@@ -1,22 +1,29 @@
 import type { Scheduler } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type EventLoopSource,
   type ProcessStats,
   ProcessStatsTracker,
 } from './process-stats-tracker';
 
+// Every handle is unique, and clearInterval must be handed exactly a live handle setInterval returned —
+// so clearing `undefined`/`null` (a handle dropped too early) or the same handle twice fails the test.
 function fakeScheduler() {
   let cb: (() => void) | null = null;
   let cleared = 0;
   let sets = 0;
+  const live = new Set<unknown>();
   const scheduler: Scheduler = {
     setInterval: (c) => {
       cb = c;
       sets += 1;
-      return 'h';
+      const handle = { id: sets };
+      live.add(handle);
+      return handle;
     },
-    clearInterval: () => {
+    clearInterval: (h) => {
+      expect(live.has(h), `clearInterval(${JSON.stringify(h)}) is not a live handle`).toBe(true);
+      live.delete(h);
       cleared += 1;
     },
   };
@@ -173,13 +180,23 @@ describe('ProcessStatsTracker', () => {
     off(); // clears the real interval
   });
 
-  it('the default scheduler delivers ticks', async () => {
-    const tracker = new ProcessStatsTracker({ intervalMs: 5 });
-    const got: ProcessStats[] = [];
-    const off = tracker.on('stats', (s) => got.push(s));
-    await new Promise((r) => setTimeout(r, 40));
-    off();
-    expect(got.length).toBeGreaterThan(0);
+  it('the default scheduler delivers ticks, and is silent after the last unsubscribe', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new ProcessStatsTracker({ intervalMs: 5 });
+      const got: ProcessStats[] = [];
+      const off = tracker.on('stats', (s) => got.push(s));
+      vi.advanceTimersByTime(5);
+      expect(got).toHaveLength(1);
+      vi.advanceTimersByTime(10);
+      expect(got).toHaveLength(3);
+      off();
+      expect(vi.getTimerCount()).toBe(0); // the real interval was cleared
+      vi.advanceTimersByTime(100);
+      expect(got).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports utilization when the source answers', () => {
@@ -301,7 +318,7 @@ describe('ProcessStatsTracker', () => {
     tracker.on('stats', () => {});
     expect(sets).toBe(1);
     expect(calls).toEqual(['start', 'stop', 'start']); // the unwound source is not stopped twice
-    expect(cleared).toBe(1);
+    expect(cleared).toBe(0); // the failed activation registered no timer, so there was none to clear
   });
 
   it('an activation failure before the event-loop source started does not stop it, and onError is optional', () => {

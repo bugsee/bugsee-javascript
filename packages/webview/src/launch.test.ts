@@ -926,9 +926,13 @@ describe('launch (webview)', () => {
       track('tok', baseOptions({ global: fake.global }));
       await new Promise((r) => setTimeout(r, 0));
       expect(getBattery).toHaveBeenCalledTimes(1);
-      const traces = entriesOfType(fake.msgs(), 'traces.system').map((e) => JSON.stringify(e.p));
-      expect(traces.some((t) => t.includes('"battery"') && t.includes('100'))).toBe(true);
-      expect(traces.some((t) => t.includes('"charging"') && t.includes('"state":3'))).toBe(true);
+      const traces = entriesOfType(fake.msgs(), 'traces.system').map(
+        (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+      );
+      expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 100 }));
+      expect(traces).toContainEqual(
+        expect.objectContaining({ name: 'charging', value: { state: 3 } }),
+      );
     } finally {
       vi.unstubAllGlobals();
     }

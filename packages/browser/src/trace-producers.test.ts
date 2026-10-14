@@ -1,4 +1,4 @@
-import { createSystemTracesProvider, type TraceProducer } from '@bugsee/capture';
+import type { TraceProducer } from '@bugsee/capture';
 import { describe, expect, it, vi } from 'vitest';
 import { BatteryProducer, createBrowserSystemTraceProducers } from './trace-producers';
 import { BatteryTracker } from './trackers/battery-tracker';
@@ -78,15 +78,22 @@ describe('BatteryProducer', () => {
     expect(out).toHaveLength(5);
   });
 
-  it('publishes the tracker current() immediately when already resolved (second producer start)', async () => {
+  it('a restart (stop, then start) re-fetches getBattery and re-emits the baseline', async () => {
     const m = mkManager(0.5, false);
-    const producers = createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) });
+    const getBattery = vi.fn(() => Promise.resolve(m));
+    const producers = createBrowserSystemTraceProducers({ getBattery });
     const first = run(producers);
     await flush();
-    first.p.stop(); // tracker deactivates -> current() undefined
-    const again = run(producers); // restart: re-fetches, emits again after resolve
+    first.p.stop(); // tracker deactivates -> current() undefined, listeners released
+    expect(m.count()).toBe(0);
+    const again = run(producers); // nothing cached: emits only after the NEW getBattery resolves
+    expect(again.out).toEqual([]);
     await flush();
-    expect(again.out.map((o) => o.name)).toEqual(['battery', 'charging']);
+    expect(getBattery).toHaveBeenCalledTimes(2);
+    expect(again.out).toEqual([
+      { name: 'battery', value: 50 },
+      { name: 'charging', value: { state: 1 } },
+    ]);
   });
 
   it('forwards onError to the battery tracker: a throw after getBattery resolves is reported', async () => {
@@ -106,15 +113,6 @@ describe('BatteryProducer', () => {
   it('constructs nothing at call time (no getBattery call)', () => {
     const getBattery = vi.fn();
     createBrowserSystemTraceProducers({ getBattery });
-    expect(getBattery).not.toHaveBeenCalled();
-  });
-
-  it('with captureSystemTraces:false (provider never started) getBattery is never called', () => {
-    const getBattery = vi.fn(() => Promise.resolve(mkManager(1, false)));
-    const provider = createSystemTracesProvider({
-      producers: createBrowserSystemTraceProducers({ getBattery }),
-    });
-    expect(provider).toBeDefined();
     expect(getBattery).not.toHaveBeenCalled();
   });
 

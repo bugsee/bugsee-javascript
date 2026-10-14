@@ -10,7 +10,7 @@ import {
 } from '@bugsee/core';
 import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bunSystemProbe } from './environment';
 import { launch, launchCore } from './launch';
 
@@ -87,6 +87,12 @@ const base = (over: Partial<Parameters<typeof launch>[1]> = {}): Parameters<type
   ...over,
 });
 
+// Every test starts from a clean factory spy, so a call recorded by an earlier launch can never satisfy
+// (or break) a later test's assertion on the call count / argument.
+beforeEach(() => {
+  vi.mocked(createNodeSystemTraceProducers).mockClear();
+});
+
 const clients: Array<{ stop: (t?: number) => Promise<boolean> }> = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
@@ -117,10 +123,12 @@ describe('@bugsee/bun launch', () => {
   });
 
   it('does not opt out of event-loop delay (Bun measures it)', () => {
-    vi.mocked(createNodeSystemTraceProducers).mockClear();
     track(launchCore('tok', base()).client);
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
-    expect(arg?.measuresEventLoopDelay).not.toBe(false);
+    expect(arg).toBeDefined();
+    expect(arg).not.toHaveProperty('measuresEventLoopDelay'); // the node default (true) applies
+    expect(arg?.scheduler).toBe(fakeScheduler); // only the launch seams are forwarded
   });
   it('reports the Bun RUNTIME identity in the environment envelope', () => {
     const { client, internals } = launchCore('tok', base());
@@ -349,5 +357,29 @@ describe('@bugsee/bun — the launch scheduler / onError reach the trace tracker
       spy.mockRestore();
     }
     expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+});
+
+describe('@bugsee/bun — captureSystemTraces:false attaches no trace sampling', () => {
+  it('no sampling timer, no trace entries; enabling adds exactly the provider tick + the tracker timer', async () => {
+    const launchWith = (captureSystemTraces: boolean) => {
+      const calls: number[] = [];
+      const store = memStore();
+      const scheduler: Scheduler = {
+        setInterval: (_cb, ms) => {
+          calls.push(ms);
+          return `h${calls.length}`;
+        },
+        clearInterval: () => {},
+      };
+      track(
+        launchCore('tok', base({ scheduler, captureStore: store, captureSystemTraces })).client,
+      );
+      return { store, oneSecond: calls.filter((ms) => ms === 1000).length };
+    };
+    const off = launchWith(false);
+    const on = launchWith(true);
+    expect(on.oneSecond - off.oneSecond).toBe(2);
+    expect((await createCaptureExporter(off.store).drain()).get('traces.system')).toBeUndefined();
   });
 });

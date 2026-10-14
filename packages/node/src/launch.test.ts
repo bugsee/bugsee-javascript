@@ -1389,9 +1389,16 @@ describe('launch — system trace producers', () => {
     return { calls, deps: { perfHooks, scheduler: fs.scheduler } };
   };
 
-  it('the default producers attach nothing when captureSystemTraces is false, and release everything on stop()', async () => {
+  it.each([
+    { label: 'lag measured', over: {} },
+    { label: 'lag opted out (Deno)', over: { measuresEventLoopDelay: false } },
+  ])('the producers ($label) attach nothing when captureSystemTraces is false, and release everything on stop()', async ({
+    over,
+  }) => {
     const fs = fakeScheduler();
-    const { calls, deps } = producerDeps(fs);
+    const trackerTimers = fakeScheduler(); // the shared tracker's OWN scheduler, separate from the launch's
+    const { calls, deps } = producerDeps(trackerTimers);
+    const lagMeasured = !('measuresEventLoopDelay' in over);
     const off = launchTracked(
       'tok',
       baseOptions({
@@ -1400,12 +1407,14 @@ describe('launch — system trace producers', () => {
         scheduler: fs.scheduler,
         captureSystemTraces: false,
         systemMetricsSampler: undefined,
-        systemTraceProducers: createNodeSystemTraceProducers(deps),
+        systemTraceProducers: createNodeSystemTraceProducers({ ...deps, ...over }),
       }),
     );
     expect(calls).toEqual([]);
+    expect(trackerTimers.calls).toHaveLength(0); // no sampling timer registered
     await off.stop();
     expect(calls).toEqual([]);
+    expect(trackerTimers.calls).toHaveLength(0);
     const on = launchTracked(
       'tok',
       baseOptions({
@@ -1413,12 +1422,13 @@ describe('launch — system trace producers', () => {
         clock: fixedClock,
         scheduler: fs.scheduler,
         systemMetricsSampler: undefined,
-        systemTraceProducers: createNodeSystemTraceProducers(deps),
+        systemTraceProducers: createNodeSystemTraceProducers({ ...deps, ...over }),
       }),
     );
-    expect(calls).toEqual(['monitor', 'enable']);
+    expect(calls).toEqual(lagMeasured ? ['monitor', 'enable'] : []);
+    expect(trackerTimers.calls.map((c) => c.ms)).toEqual([1000]); // exactly one sampling timer
     await on.stop();
-    expect(calls.at(-1)).toBe('disable');
+    expect(calls.at(-1)).toBe(lagMeasured ? 'disable' : undefined);
   });
 
   it.each([

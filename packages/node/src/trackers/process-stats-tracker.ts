@@ -131,7 +131,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   }
 
   protected override onDeactivate(): void {
-    this.#d.scheduler.clearInterval(this.#timer);
+    if (this.#timer !== null) this.#d.scheduler.clearInterval(this.#timer); // none after a failed activation
     this.#timer = null;
     this.#stopEventLoop();
     this.#cached = undefined;

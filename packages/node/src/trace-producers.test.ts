@@ -81,19 +81,59 @@ const eventLoop = {
 };
 
 describe('createNodeSystemTraceProducers', () => {
-  it('emits the SAME trace names and values as the legacy sampler (parity)', () => {
-    const deps = constDeps({ eventLoop, eventLoopUtilization: () => 0.5 });
-    const h = harness(deps);
+  // Per-call constant increments: every read advances one fixed step, so whichever reader takes the
+  // baseline, each window is exactly one step — the producers and the legacy sampler see the SAME window.
+  const steppingCpu = () => {
+    let calls = 0;
+    return {
+      cpuUsage: () => {
+        calls += 1;
+        return { user: calls * 100_000, system: calls * 50_000 };
+      },
+      monotonicNowMs: () => calls * 1000, // read right after cpuUsage: the same step
+    };
+  };
+
+  it('emits the SAME trace names and values as the legacy sampler (parity, non-zero CPU window)', () => {
+    const h = harness(constDeps({ ...steppingCpu(), eventLoop, eventLoopUtilization: () => 0.5 }));
     h.startAll();
     h.tick();
-    const legacy = createNodeSystemMetricsSampler({ ...deps, eventLoop: eventLoop.read })();
+    const { eventLoop: _source, ...legacyDeps } = constDeps(steppingCpu());
+    const legacy = createNodeSystemMetricsSampler({
+      ...legacyDeps,
+      eventLoop: eventLoop.read,
+      eventLoopUtilization: () => 0.5,
+    })();
     expect([...h.got.keys()].sort()).toEqual(legacy.map((s) => s.name).sort());
     for (const s of legacy) expect(h.got.get(s.name)).toBe(s.value);
+    expect(h.got.get('cpu_usage_process')).toBe(7.5); // a real, non-zero window on both sides
     expect(h.got.get('process_memory_rss')).toBe(10);
     expect(h.got.get('ram_system_total')).toBe(1000);
     expect(h.got.get('event_loop_lag_max_ms')).toBe(2);
     expect(h.got.get('event_loop_utilization')).toBe(0.5);
     expect(h.got.size).toBe(14);
+  });
+
+  it('CPU producer: user, system and process% are each their own value (distinct non-zero steps)', () => {
+    let user = 0;
+    let system = 0;
+    let wall = 0;
+    const h = harness(
+      constDeps({
+        cpuUsage: () => ({ user, system }),
+        monotonicNowMs: () => wall,
+        cpuCount: () => 2,
+      }),
+    );
+    h.startAll();
+    user += 100_000; // µs
+    system += 50_000; // µs
+    wall += 1000; // ms
+    h.tick();
+    expect(h.got.get('cpu_usage_user')).toBe(100_000);
+    expect(h.got.get('cpu_usage_system')).toBe(50_000);
+    // (100 000 + 50 000) µs busy / (1 000 ms * 1 000) µs wall / 2 cores * 100 = 7.5 %
+    expect(h.got.get('cpu_usage_process')).toBe(7.5);
   });
 
   it('emits a baseline on start, before any tick', () => {
