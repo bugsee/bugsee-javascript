@@ -11,6 +11,8 @@ export interface DelayHistogram {
   enable(): void;
   disable?(): void;
   reset(): void;
+  /** Samples taken since the last reset (Node). Absent on runtimes that do not expose it. */
+  readonly count?: number;
   readonly mean: number;
   readonly max: number;
   percentile(p: number): number;
@@ -35,8 +37,16 @@ export const realPerfHooks: PerfHooks = {
 
 export { eluUnavailable };
 
-/** ns → ms; 0 when non-finite (e.g. NaN before the first tick). */
+/** ns → ms; 0 when a sampled histogram still reports a non-finite field. */
 const lagMs = (ns: number): number => (Number.isFinite(ns) ? ns / 1e6 : 0);
+
+/**
+ * Has the histogram taken no sample yet? Right after enable()+reset() its mean is NaN and max/p99 are ~0 —
+ * reading it then would fabricate a "healthy loop" baseline. `count` is authoritative when the runtime
+ * exposes it; otherwise a non-finite mean is the tell.
+ */
+const isEmpty = (h: DelayHistogram): boolean =>
+  typeof h.count === 'number' ? h.count === 0 : !Number.isFinite(h.mean);
 
 export function createGuardedEventLoopSource(monitor: () => DelayHistogram): EventLoopSource {
   let histogram: DelayHistogram | undefined;
@@ -50,6 +60,11 @@ export function createGuardedEventLoopSource(monitor: () => DelayHistogram): Eve
         histogram.reset();
       } catch {
         unusable = true; // a partial runtime must not abort SDK startup
+        try {
+          histogram?.disable?.(); // enable() may have succeeded: never leave a dropped histogram running
+        } catch {
+          /* best-effort */
+        }
         histogram = undefined;
       }
     },
@@ -63,6 +78,7 @@ export function createGuardedEventLoopSource(monitor: () => DelayHistogram): Eve
     read() {
       if (histogram === undefined) return undefined; // not started: omit, never zero
       try {
+        if (isEmpty(histogram)) return undefined; // nothing measured yet: omit, never a fake zero
         const out = {
           meanMs: lagMs(histogram.mean),
           maxMs: lagMs(histogram.max),

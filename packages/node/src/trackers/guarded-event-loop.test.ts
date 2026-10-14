@@ -7,8 +7,14 @@ import {
 } from './guarded-event-loop';
 
 // A controllable event-loop delay histogram (readings in ns).
+// `count` is the number of samples the histogram has taken (a real Node histogram exposes it).
 function fakePerfHooks(
-  readings = { mean: 2e6, max: 9e6, p99: 7e6 },
+  readings: { mean: number; max: number; p99: number; count?: number } = {
+    mean: 2e6,
+    max: 9e6,
+    p99: 7e6,
+    count: 3,
+  },
   opts: { disable?: boolean } = {},
 ) {
   const state = { monitor: 0, enabled: false, enables: 0, disables: 0, resets: 0 };
@@ -38,6 +44,10 @@ function fakePerfHooks(
       return readings.p99;
     },
   };
+  // a LIVE getter (a spread would snapshot it), absent entirely when the runtime has no count
+  if (readings.count !== undefined) {
+    Object.defineProperty(histogram, 'count', { get: () => readings.count, enumerable: true });
+  }
   const monitor = () => {
     state.monitor += 1;
     return histogram;
@@ -94,7 +104,7 @@ describe('createGuardedEventLoopSource', () => {
   });
 
   it('read() is undefined before start(), then ns to ms, and resets the histogram', () => {
-    const { state, monitor } = fakePerfHooks({ mean: 2e6, max: 9e6, p99: 7e6 });
+    const { state, monitor } = fakePerfHooks({ mean: 2e6, max: 9e6, p99: 7e6, count: 1 });
     const src = createGuardedEventLoopSource(monitor);
     expect(src.read()).toBeUndefined();
     src.start();
@@ -103,11 +113,86 @@ describe('createGuardedEventLoopSource', () => {
     expect(state.resets).toBe(before + 1);
   });
 
-  it('treats a non-finite reading as zero lag', () => {
-    const { monitor } = fakePerfHooks({ mean: Number.NaN, max: 5e6, p99: 5e6 });
+  it('treats a non-finite reading of a SAMPLED histogram as zero lag', () => {
+    const { monitor } = fakePerfHooks({ mean: 5e6, max: Number.NaN, p99: Number.NaN, count: 1 });
     const src = createGuardedEventLoopSource(monitor);
     src.start();
-    expect(src.read()).toEqual({ meanMs: 0, maxMs: 5, p99Ms: 5 });
+    expect(src.read()).toEqual({ meanMs: 5, maxMs: 0, p99Ms: 0 });
+  });
+
+  it('NO FABRICATED BASELINE: read() is undefined until the histogram has a sample (count 0), and does not reset it', () => {
+    const readings = { mean: Number.NaN, max: 0, p99: 0, count: 0 };
+    const { state, monitor } = fakePerfHooks(readings);
+    const src = createGuardedEventLoopSource(monitor);
+    src.start();
+    const resets = state.resets;
+    expect(src.read()).toBeUndefined();
+    expect(state.resets).toBe(resets);
+    // count is authoritative even when mean is finite
+    readings.mean = 1e6;
+    expect(src.read()).toBeUndefined();
+    Object.assign(readings, { count: 4, mean: 3e6, max: 8e6, p99: 6e6 });
+    expect(src.read()).toEqual({ meanMs: 3, maxMs: 8, p99Ms: 6 });
+  });
+
+  it('NO FABRICATED BASELINE without a count property: a non-finite mean means "no sample yet"', () => {
+    const readings = { mean: Number.NaN, max: 0, p99: 0 };
+    const { monitor } = fakePerfHooks(readings);
+    const src = createGuardedEventLoopSource(monitor);
+    src.start();
+    expect(src.read()).toBeUndefined();
+    readings.mean = 2e6;
+    expect(src.read()).toEqual({ meanMs: 2, maxMs: 0, p99Ms: 0 });
+  });
+
+  it('real node histogram: undefined right after start(), real values once it has sampled', async () => {
+    const src = createGuardedEventLoopSource(realPerfHooks.monitorEventLoopDelay);
+    src.start();
+    try {
+      expect(src.read()).toBeUndefined();
+      let out = src.read();
+      for (let i = 0; i < 100 && out === undefined; i += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+        out = src.read();
+      }
+      expect(out).toBeDefined();
+      expect(out?.meanMs).toBeGreaterThan(0);
+      expect(Number.isFinite(out?.maxMs)).toBe(true);
+      expect(Number.isFinite(out?.p99Ms)).toBe(true);
+    } finally {
+      src.stop();
+    }
+  });
+
+  it('enable() succeeded but reset() threw: the histogram is disabled before it is dropped', () => {
+    const { state, histogram } = fakePerfHooks();
+    histogram.reset = () => {
+      throw new Error('reset refused');
+    };
+    const src = createGuardedEventLoopSource(() => histogram);
+    expect(() => src.start()).not.toThrow();
+    expect(state.enables).toBe(1);
+    expect(state.disables).toBe(1);
+    expect(state.enabled).toBe(false);
+    expect(src.read()).toBeUndefined();
+  });
+
+  it('a failed start tolerates a disable() that also throws (and one that is absent)', () => {
+    const a = fakePerfHooks();
+    a.histogram.reset = () => {
+      throw new Error('reset refused');
+    };
+    a.histogram.disable = () => {
+      throw new Error('disable refused');
+    };
+    expect(() => createGuardedEventLoopSource(() => a.histogram).start()).not.toThrow();
+    const b = fakePerfHooks(undefined, { disable: false });
+    b.histogram.reset = () => {
+      throw new Error('reset refused');
+    };
+    const src = createGuardedEventLoopSource(() => b.histogram);
+    expect(() => src.start()).not.toThrow();
+    expect(src.read()).toBeUndefined();
   });
 
   it('a throwing monitorEventLoopDelay: start() does not throw, read() stays undefined, no retry', () => {

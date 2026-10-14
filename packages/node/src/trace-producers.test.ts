@@ -48,6 +48,7 @@ function fakePerfHooks(
 ) {
   const state = { monitor: 0, enabled: false, disables: 0 };
   const histogram = {
+    count: 3, // samples taken; 0 = nothing measured yet
     enable() {
       state.enabled = true;
     },
@@ -62,6 +63,7 @@ function fakePerfHooks(
   };
   return {
     state,
+    histogram,
     perfHooks: {
       monitorEventLoopDelay: () => {
         state.monitor += 1;
@@ -142,6 +144,34 @@ describe('createNodeSystemTraceProducers', () => {
     expect(h.got.get('event_loop_lag_ms')).toBe(2);
     expect(h.got.get('event_loop_lag_max_ms')).toBe(9);
     expect(h.got.get('event_loop_lag_p99_ms')).toBe(7);
+  });
+
+  it('NO FABRICATED LAG BASELINE: lag is absent at start (empty histogram) and appears once it has sampled', () => {
+    const { perfHooks, histogram } = fakePerfHooks();
+    histogram.count = 0;
+    histogram.mean = Number.NaN;
+    const h = harness({ ...constDeps(), perfHooks });
+    h.startAll();
+    expect(h.got.has('process_memory_rss')).toBe(true); // the baseline itself was emitted
+    expect(h.got.has('event_loop_lag_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_max_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_p99_ms')).toBe(false);
+    histogram.count = 2;
+    histogram.mean = 4e6;
+    h.tick();
+    expect(h.got.get('event_loop_lag_ms')).toBe(4);
+    expect(h.got.get('event_loop_lag_max_ms')).toBe(9);
+    expect(h.got.get('event_loop_lag_p99_ms')).toBe(7);
+  });
+
+  it('real node perf_hooks: the start baseline carries NO lag traces (nothing measured yet)', () => {
+    const got = new Map<string, unknown>();
+    const ps = createNodeSystemTraceProducers();
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    for (const p of ps) p.stop();
+    expect(got.has('event_loop_lag_ms')).toBe(false);
+    expect(got.has('event_loop_lag_max_ms')).toBe(false);
+    expect(got.has('event_loop_lag_p99_ms')).toBe(false);
   });
 
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
