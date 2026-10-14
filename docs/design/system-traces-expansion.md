@@ -61,12 +61,12 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless Android say
 ### P1 — Node/Bun/Deno runtime depth (`@bugsee/node`)
 | Trace | Source | Notes |
 |---|---|---|
-| `gc_pause_ms` (sum/max per interval), `gc_count` (optionally by type tag) | `PerformanceObserver({entryTypes:['gc']})` | Broadest competitor-backed gap. **UNMEASURED on Bun/Deno** — gate per runtime like `measuresEventLoopDelay`. |
-| `v8_heap_size_limit`, `v8_heap_available`, `v8_heap_malloced`, `v8_heap_peak_malloced` | `v8.getHeapStatistics()` | Cheap, sync. Bun support **UNMEASURED**. |
+| `gc_pause_ms` (sum/max per interval), `gc_count` (optionally by type tag) | `PerformanceObserver({entryTypes:['gc']})` | Broadest competitor-backed gap. **MEASURED: node only — blind on Bun and Deno (§8). Gate OFF there.** |
+| `v8_heap_size_limit`, `v8_heap_available`, `v8_heap_malloced`, `v8_heap_peak_malloced` | `v8.getHeapStatistics()` | Cheap on Node/Deno (µs). **MEASURED: do not emit on Bun** — JSC-derived, limit not a ceiling, ~1 ms/call (§8). |
 | `ram_js_heap_{total,free,used}` on Node | `v8.getHeapStatistics()` (`heap_size_limit` = total, as Android's `ram_jvm_heap` contract: total = max, free = total − used) | Gives the viewer the same grouping browser already gets. Decision Q2. |
-| `ram_system_available` (cgroup-aware) | `process.availableMemory()` | Sentry uses it. Fallback = omit, not `os.freemem()`. |
-| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | Android/iOS MB integer, change-deduped (≥1 MB). Opt-in-able like iOS `BugseeOptionCaptureDiskSpace`. **UNMEASURED on Bun/Deno.** |
-| `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; API exists Node ≥17.3. |
+| `ram_system_available` | `process.availableMemory()` | Sentry uses it. **MEASURED: not comparable across runtimes (24 GB vs 0.9 GB same host) and absent on Node 18 — Node ≥22 only, if at all (§8).** |
+| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | Android/iOS MB integer, change-deduped (≥1 MB). Opt-in-able like iOS `BugseeOptionCaptureDiskSpace`. **MEASURED sound on node/bun/deno (§8).** |
+| `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; **MEASURED: always 0 on Bun/Deno → Node only.** |
 | `process_uptime_s` | `process.uptime()` | Trivial; Sentry/Datadog/OTel. |
 
 ### P2 — Browser parity (`@bugsee/browser`)
@@ -149,7 +149,40 @@ Record each result in §8 with runtime version and date, as `docs/PROGRESS.md` d
 
 ## 8. Measurement log
 
-*(empty — fill as probes run)*
+Measured 2026-10-14 on macOS (arm64) with standalone probe scripts (NOT yet through the SDK's own call path —
+that confirmation is still owed per slice). Runtimes: node 18.20.6 / 22.13.1 / 22.20.0 / 24.15.0, bun 1.4.3,
+deno 2.8.3. Method: allocate+retain ~100 MB of arrays, churn garbage, read `v8.getHeapStatistics()` and a
+`PerformanceObserver({entryTypes:['gc']})`.
+
+| Probe | node (18/22/24) | bun 1.4.3 | deno 2.8.3 |
+|---|---|---|---|
+| `PerformanceObserver('gc')` entries after heavy churn + forced GC | **works** (28–234 entries; `detail.kind` + `duration` present) | **BLIND — 0 entries** | **BLIND — 0 entries** (also with `--v8-flags=--expose-gc`) |
+| `v8.getHeapStatistics()` tracks a +100 MB retained alloc | yes (Δ99.8 MB, = `memoryUsage().heapUsed`) | yes but **JSC-derived**: Δ62 MB for the same alloc; `malloced_memory == used == total` (aliases); **`heap_size_limit` is not a ceiling** — it moved 55.9 MB → 1.07 GB with heap growth | yes (Δ99.9 MB, real V8) |
+| `v8.getHeapSpaceStatistics()` | real spaces | answers, but only `old_space` is non-zero (a JSC mapping, not V8 spaces) | real spaces |
+| `getHeapStatistics()` cost | 0.3 µs/call | **0.2–1.6 ms/call** (`bun:jsc.heapStats()` 0.47 ms) — ~1000× node | 1.3 µs/call |
+| `fs.statfs` / `statfsSync` | present (node 18.15+ ok); ~0.8 µs sync | present, correct (same blocks as node); 0.5 µs | present, correct; 2.1 µs |
+| `process.availableMemory()` | absent on node 18; present 22+ | present | present — but value differs wildly (24 GB vs node's 0.9 GB on the same host): **semantics not comparable across runtimes** |
+| `process.constrainedMemory()` | 0 (no cgroup limit) | 68.7 GB (looks like a cap, not a container limit) | 0 |
+| `process.getActiveResourcesInfo()` | present (18+) | present, returns 0 entries | present, 0 entries |
+| `process.resourceUsage()` | present | present | **absent** |
+
+**Consequences (applied to §4/§9):**
+1. **GC observer is node-only.** Gate it OFF on Bun and Deno (`measuresGc: false`), same mechanism as
+   `measuresEventLoopDelay`; omit rather than report a quiet GC. (Its absence is itself a lie-by-omission only
+   if we labelled it — we don't.)
+2. **`ram_js_heap_*` / `v8_heap_*` must NOT be emitted on Bun.** Its `heap_size_limit` is not a ceiling, so
+   `free = limit − used` is meaningless, and the cost is ~1000× node. Node and Deno only (real V8).
+   Bun keeps `process_memory_heap_*` (which reads the same JSC data but is already shipped and honest about
+   being "heap used/total").
+3. **`ram_system_available` (`availableMemory`) is not portable** — drop from ST1 for Bun/Deno; Node ≥22 only,
+   and name/define it as "Node's availableMemory", not Android's `ram_system_free`.
+4. `fs.statfs` is sound on all three → ST3 unblocked (still re-confirm through the SDK path).
+5. `handles_active`/`requests_active` is near-useless on Bun/Deno (always 0) → Node only, low priority.
+6. Per-space heap is meaningless on Bun → Node/Deno only if built at all.
+
+**Still unmeasured:** Deno <2.8 (declared floor 2.0), Bun <1.4, Node 20; browser probes (rAF in hidden tabs,
+Compute Pressure, battery events); sampler tick cost with P1 enabled through the SDK; Linux/Windows
+(all numbers above are macOS).
 
 ## 9. Slices
 
