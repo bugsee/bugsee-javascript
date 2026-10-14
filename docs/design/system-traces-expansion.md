@@ -1,6 +1,6 @@
 # System traces expansion — competitor gap + mobile-parity port plan — DESIGNED, FROZEN (not built)
 
-**Status:** DESIGNED 2026-10-14; **FROZEN 2026-10-14 after review round 9** (PR #53). No further prose rewrites: remaining
+**Status:** DESIGNED 2026-10-14; **FROZEN 2026-10-14 after review round 9** (PR #53); **§14 (2026-10-14) adopts the mobile tracker/producer structure and supersedes the lifecycle-seam mechanism in §5/§9/§12.** No further prose rewrites: remaining
 edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. Nothing here is implemented. Built from five read-only research passes
 (competitor web, competitor server/cloud/edge, competitor Electron/desktop, Bugsee Android SDK, Bugsee iOS
 SDK). Every runtime-support claim marked **UNMEASURED** must be probed on the real runtime before the slice
@@ -416,3 +416,72 @@ swap was a LABEL bug, not a wire difference. The iOS research pass's claim was w
   `WEBGL_debug_renderer_info` extension; that is out of this doc's scope and needs its own privacy decision.
 - `hardware.charging` is a **boolean** in the viewer's environment type (`environment.ts:71`), unlike the `charging`
   TRACE (`{state}`, §13.4). Do not change the environment field when fixing the trace.
+
+## 14. Structure: shared trackers + per-trace producers (owner decision, 2026-10-14) — SUPERSEDES the lifecycle seam
+
+The design above was written around a platform `sample()` function and then grew a `{start, stop, sample}` lifecycle
+seam (§5 "Lifecycle seam", §12 item 5, review rounds 2–9) to keep standing resources from leaking. The owner directed
+that system traces follow the mobile SDKs' structure instead. Studied from source (Android `shared/trackers/*`,
+`capture/providers/traces_system/*`, `BugseeCaptureValueProducer*`; iOS `Shared/Trackers/*`,
+`Capture/Providers/TracesSystem/*`), then mapped onto what JS already has.
+
+### 14.1 The mobile structure
+- **Tracker** (`BugseeTrackerBase<T>` / `BGSTrackerBase`): owns a raw OS signal (receiver, callback, 1 s poll), aggregates
+  the CURRENT STATE, and notifies typed listeners (Android: `addListener`/`addBoundListener`, per-listener try/catch;
+  iOS: weak listener table, `respondsToSelector:` fan-out, no isolation). One tracker serves many producers — Android's
+  `BugseeTrackerProcess` owns the 1 s timer and feeds `TraceRandomAccessMemory`, `TraceProcessMemory`, `TraceCpuUsage`.
+- **Producer** (`BugseeCaptureValueProducer` / `BGSCaptureSystemTraceProducer`): subscribes to tracker(s) in `start()`,
+  emits a baseline, converts state to wire values, de-duplicates (`emitIfChangedName`, equality checks), and emits via a
+  listener into the provider. Polled-vs-event-driven is a per-producer fact; cadence is owned by a tracker (Android) or
+  the provider timer (iOS).
+- **Provider** = a container of producers (`TraceValueProducerContainer`): stamps timestamps, keeps a last-value
+  SNAPSHOT per `displayId:name`, and re-emits it at every capture-part switch so a rolling window always starts with the
+  current state. Producer construction is guarded per producer on Android.
+- **Not copied:** trackers there are process-lifetime singletons that start eagerly and are almost never reset (only
+  Android's Storage tracker polls solely while it has listeners); Android has no `captureSystemTraces` gate.
+
+### 14.2 The JS mapping
+- **Tracker = `InterceptorBase` subclass** (`core/src/interceptor-base.ts`): already a listenable multi-key emitter with
+  per-listener isolation, activating on the first subscriber and deactivating on the last — the behaviour Android only has
+  for Storage, here by default, and already the repo's rule ("subscriber-presence drives activation"). The `events.system`
+  sources (`createNodeSystemEventsSource`, `createBrowserSystemEventsSource`) are this pattern today; `traces.system` was the
+  outlier. Trackers are created **per launch from injected environment** (as the events sources are), not module
+  singletons, so they stay testable and compatible with multi-instance coexistence.
+- **Producer = `TraceProducerBase`** (`@bugsee/capture`): `start(sink)` subscribes + emits a baseline; `stop()` unsubscribes;
+  `emit` / `emitIfChanged`.
+- **Provider** = producer container with per-producer start/stop isolation (stronger than either mobile SDK), a sink that
+  stamps time and records the snapshot, and a **refresh** (below). The bare `sample()` option stays as a legacy polled
+  adapter during migration.
+- **Option gate:** `captureSystemTraces` (JS-only) gates the provider; producers start only then, so no tracker activates
+  otherwise and everything is released on stop by subscriber presence.
+
+### 14.3 What this dissolves
+Most review findings in rounds 2–9 were symptoms of resources living in sampler factories or `start`/`stop` pairs:
+the delay histogram and `getBattery()` at construction, rAF/GC-observer/`MessageChannel`/`PressureObserver` standing
+sources, hidden-tab gating, late-resolve abort tokens, the Electron "wrap the node sampler" problem, and the lazy
+events mux. Under this structure each is a tracker's `onActivate`/`onDeactivate`, gated automatically. The
+"same `window`/`document` everywhere" findings (rounds 7–9) become one shared **`PageLifecycleTracker`** bound to the
+injected window+document, subscribed by both the system-events source and the traces producers — the way Android's
+`TraceAppState` and `EventApplicationLifecycle` share the Application tracker. The `measures*` honesty flags live on the
+tracker/factory deps (§5 stays valid in intent; its mechanism is now `NodeTraceProducerDeps`). The §12 items still apply
+as test requirements for the trackers that implement them (ST4/ST5/ST6).
+
+### 14.4 New requirement found: last-value refresh
+Android/iOS re-emit the last value of every trace on each part switch. JS stores roll a time window with no part hook
+(`CaptureStore.tick` evicts by `maxRecordingTimeMs`; `chunk-capture-store.ts`), and today every trace is re-polled every
+second so nothing ages out. Event-driven producers with de-duplication (battery, orientation, connection) WOULD age
+out of every report. The provider therefore re-emits any held value older than `refreshMs` (default 10 s, bounded by a
+quarter of the recording window) with the current timestamp. The viewer collapses equal consecutive values, so the cost is
+bytes, not noise.
+
+### 14.5 Slices (replaces the §9 ordering for ST0)
+ST0′ (`docs/design/system-traces-st0-plan.md`): producer contract + container provider + refresh; node `ProcessStatsTracker`
+(+ guarded lazy event-loop source) and five producers; node/Bun/Deno wiring; browser `BatteryTracker` + `BatteryProducer`
+and the `charging` fix. Follow-ons: migrate the rest of the browser sampler to trackers (memory, connection, orientation),
+shared `PageLifecycleTracker`, delete the legacy samplers, then ST1+ traces as producers, then Electron trackers (ST6).
+
+### 14.6 Verified / not verified
+Verified by reading source: the mobile tracker/producer/provider structure (above), `InterceptorBase`/`MultiKeyEmitterBase`
+semantics, the JS store's window-based eviction with no part hook. Not verified: Android's polled-trace scheduling details,
+how `TraceFps`/FrameMetrics interplay would map to browser `rAF`, and whether per-launch (non-singleton) trackers need any
+registration with the internal DI container for multi-instance coexistence.
