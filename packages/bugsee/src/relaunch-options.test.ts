@@ -196,6 +196,7 @@ const RESET_OPTIONS: readonly string[] = [
   'reportTrigger',
   'shutdownTimeoutMs',
   'startInBlackout',
+  'systemTraceProducers',
   'traceInteractions',
   'traceNavigations',
   'tracePropagationOrigin',
