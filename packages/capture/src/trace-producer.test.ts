@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { TraceProducerBase, type TraceSink } from './trace-producer';
 
 type Emitted = { name: string; value: unknown; displayId?: number };
-const mkSink = (): { sink: TraceSink; got: Emitted[] } => {
+const mkSink = (): { sink: TraceSink; got: Emitted[]; holds: unknown[] } => {
   const got: Emitted[] = [];
+  const holds: unknown[] = [];
   return {
     got,
+    holds,
     sink: {
-      emit: (name, value, displayId) =>
-        void got.push({ name, value, ...(displayId !== undefined ? { displayId } : {}) }),
+      emit: (name, value, displayId, options) => {
+        got.push({ name, value, ...(displayId !== undefined ? { displayId } : {}) });
+        holds.push(options?.hold);
+      },
     },
   };
 };
@@ -107,6 +111,25 @@ describe('TraceProducerBase', () => {
     p.start(sink);
     p.emitChanged('a', 1);
     expect(got).toHaveLength(2);
+  });
+
+  it('emit() marks the value NOT held (a polled value must not be refreshed by the provider)', () => {
+    const p = new Probe();
+    const { sink, holds } = mkSink();
+    p.start(sink);
+    p.emitAll('cpu', 1);
+    p.emitAll('cpu', 1, 0);
+    expect(holds).toEqual([false, false]);
+  });
+
+  it('emitIfChanged() marks the value HELD (a change-driven value is refreshed by the provider)', () => {
+    const p = new Probe();
+    const { sink, holds } = mkSink();
+    p.start(sink);
+    p.emitChanged('battery', 50);
+    p.emitChanged('battery', 50); // dropped: no second emit
+    p.emitChanged('battery', 40, 0);
+    expect(holds).toEqual([true, true]);
   });
 
   it('stop() still drops the sink when onStop throws', () => {

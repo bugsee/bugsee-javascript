@@ -1436,7 +1436,7 @@ describe('launch — system trace producers', () => {
       const store = memStore();
       const once: TraceProducer = {
         name: 'once',
-        start: (sink) => sink.emit('held_trace', 1),
+        start: (sink) => sink.emit('held_trace', 1, undefined, { hold: true }),
         stop: () => {},
       };
       launchTracked(

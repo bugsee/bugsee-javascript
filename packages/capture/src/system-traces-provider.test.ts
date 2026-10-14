@@ -159,14 +159,18 @@ class Fixed extends TraceProducerBase {
   constructor(
     name: string,
     readonly seed: Array<[string, unknown, number?]>,
-    private readonly opts: { throwStart?: boolean; throwStop?: boolean } = {},
+    private readonly opts: { throwStart?: boolean; throwStop?: boolean; held?: boolean } = {},
   ) {
     super();
     this.name = name;
   }
+  #out(n: string, v: unknown, d?: number): void {
+    if (this.opts.held) this.emitIfChanged(n, v, d);
+    else this.emit(n, v, d);
+  }
   protected onStart(): void {
     this.startedCount += 1;
-    for (const [n, v, d] of this.seed) this.emit(n, v, d);
+    for (const [n, v, d] of this.seed) this.#out(n, v, d);
     if (this.opts.throwStart) throw new Error(`${this.name} start boom`);
   }
   protected override onStop(): void {
@@ -174,7 +178,7 @@ class Fixed extends TraceProducerBase {
     if (this.opts.throwStop) throw new Error(`${this.name} stop boom`);
   }
   push(n: string, v: unknown): void {
-    this.emit(n, v);
+    this.#out(n, v);
   }
 }
 const values = async (store: CaptureStore) =>
@@ -278,7 +282,7 @@ describe('createSystemTracesProvider — producers', () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [['battery', 50]]);
+    const a = new Fixed('a', [['battery', 50]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -303,10 +307,14 @@ describe('createSystemTracesProvider — producers', () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [
-      ['o', 1, 0],
-      ['o', 2, 1],
-    ]);
+    const a = new Fixed(
+      'a',
+      [
+        ['o', 1, 0],
+        ['o', 2, 1],
+      ],
+      { held: true },
+    );
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -325,11 +333,87 @@ describe('createSystemTracesProvider — producers', () => {
     ]);
   });
 
+  it('NO REFRESH for a polled (non-held) value: a producer whose poll fails stops appearing, never frozen at its last value', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const cpu = new Fixed('cpu', [
+      ['cpu_usage_process', 12],
+      ['memory_process', 3],
+    ]);
+    const p = createSystemTracesProvider({
+      producers: [cpu],
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10_000,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    // the tracker's poll now throws, so the producer emits nothing more — for well past refreshMs
+    for (t = 1_000; t <= 35_000; t += 1_000) fs.tick();
+    expect((await values(store)).map((v) => [v.name, v.timestamp])).toEqual([
+      ['cpu_usage_process', 0],
+      ['memory_process', 0],
+    ]);
+  });
+
+  it('NO REFRESH for legacy sample() entries (they are re-read each tick, never held)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    let rows: TraceSample[] = [{ name: 'm', value: 1 }];
+    const p = createSystemTracesProvider({
+      sample: () => rows,
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    rows = []; // the sampler has nothing to say any more
+    t = 100;
+    fs.tick();
+    t = 200;
+    fs.tick();
+    expect((await values(store)).map((v) => v.timestamp)).toEqual([0]);
+  });
+
+  it('the sink holds ONLY an explicit hold: true (an emit without options is not refreshed)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const raw: TraceProducer = {
+      name: 'raw',
+      start: (sink) => {
+        sink.emit('plain', 1);
+        sink.emit('truthy', 2, undefined, { hold: 1 as unknown as boolean });
+        sink.emit('held', 3, undefined, { hold: true });
+      },
+      stop: () => {},
+    };
+    const p = createSystemTracesProvider({
+      producers: [raw],
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    t = 10;
+    fs.tick();
+    expect((await values(store)).map((v) => [v.name, v.timestamp])).toEqual([
+      ['plain', 0],
+      ['truthy', 0],
+      ['held', 0],
+      ['held', 10],
+    ]);
+  });
+
   it('refreshMs: Infinity disables the refresh', async () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [['x', 1]]);
+    const a = new Fixed('a', [['x', 1]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -347,7 +431,7 @@ describe('createSystemTracesProvider — producers', () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [['x', 0]]);
+    const a = new Fixed('a', [['x', 0]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -367,7 +451,7 @@ describe('createSystemTracesProvider — producers', () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [['x', 1]]);
+    const a = new Fixed('a', [['x', 1]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -389,7 +473,7 @@ describe('createSystemTracesProvider — producers', () => {
     const store = mkStore();
     const fs = fakeScheduler();
     let t = 0;
-    const a = new Fixed('a', [['x', 1]]);
+    const a = new Fixed('a', [['x', 1]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       scheduler: fs.scheduler,
@@ -409,7 +493,7 @@ describe('createSystemTracesProvider — producers', () => {
     const fs = fakeScheduler();
     let t = 0;
     let fail = true;
-    const a = new Fixed('a', [['x', 1]]);
+    const a = new Fixed('a', [['x', 1]], { held: true });
     const p = createSystemTracesProvider({
       producers: [a],
       sample: () => {

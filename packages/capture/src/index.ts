@@ -65,7 +65,12 @@ export {
   type SystemTracesProviderOptions,
   type TraceSample,
 } from './system-traces-provider';
-export { type TraceProducer, TraceProducerBase, type TraceSink } from './trace-producer';
+export {
+  type TraceEmitOptions,
+  type TraceProducer,
+  TraceProducerBase,
+  type TraceSink,
+} from './trace-producer';
 export {
   createTraceparentDecorator,
   type ParsedTraceparent,

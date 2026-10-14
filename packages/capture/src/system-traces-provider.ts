@@ -40,7 +40,11 @@ export interface SystemTracesProviderOptions {
   scheduler?: Scheduler;
   /** Wall-clock source for the entry timestamp; injectable for tests. Default Date.now. */
   now?: () => number;
-  /** A value older than this is re-emitted so a rolling capture window never loses a rarely-changing trace. Default 10 000; Infinity disables. */
+  /**
+   * A HELD value (emitted with `hold: true`, i.e. a producer's `emitIfChanged`) older than this is
+   * re-recorded so a rolling capture window never loses a rarely-changing trace. Polled values (`emit`,
+   * `hold: false`) and legacy `sample()` rows are never refreshed. Default 10 000; Infinity disables.
+   */
   refreshMs?: number;
   /** Reports an isolated producer/tick failure. Must not throw. */
   onError?: (error: unknown) => void;
@@ -68,8 +72,8 @@ class SystemTracesProvider extends CaptureProviderBase {
   #running = false;
   #timer: unknown = null;
   readonly #sink: TraceSink = {
-    emit: (name, value, displayId) => {
-      if (this.#running) this.#record(name, value, displayId, this.#now());
+    emit: (name, value, displayId, options) => {
+      if (this.#running) this.#record(name, value, displayId, this.#now(), options?.hold === true);
     },
   };
 
@@ -123,7 +127,7 @@ class SystemTracesProvider extends CaptureProviderBase {
       this.#emitLegacy(now);
       for (const held of [...this.#held.values()]) {
         if (now - held.timestamp >= this.#refreshMs) {
-          this.#record(held.name, held.value, held.displayId, now);
+          this.#record(held.name, held.value, held.displayId, now, true);
         }
       }
     } catch (error) {
@@ -133,16 +137,25 @@ class SystemTracesProvider extends CaptureProviderBase {
 
   #emitLegacy(timestamp: number): void {
     if (this.#sample === undefined) return;
-    for (const { name, value } of this.#sample()) this.#record(name, value, undefined, timestamp);
+    for (const { name, value } of this.#sample()) {
+      this.#record(name, value, undefined, timestamp, false); // re-read every tick: never held
+    }
   }
 
-  #record(name: string, value: unknown, displayId: number | undefined, timestamp: number): void {
+  #record(
+    name: string,
+    value: unknown,
+    displayId: number | undefined,
+    timestamp: number,
+    hold: boolean,
+  ): void {
     this.capture('traces.system', timestamp, {
       timestamp,
       name,
       value,
       ...(displayId !== undefined ? { displayId } : {}),
     });
+    if (!hold) return;
     this.#held.set(displayId === undefined ? name : `${displayId}:${name}`, {
       name,
       value,
