@@ -236,4 +236,126 @@ describe('ProcessStatsTracker', () => {
     tracker.on('stats', () => {});
     expect(tracker.current()).not.toBe(early);
   });
+
+  it('a throwing reader AT ACTIVATION: reported via onError, on() does not throw, nothing left attached, and a later activation retries', () => {
+    const errors: unknown[] = [];
+    const calls: string[] = [];
+    let broken = true;
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => void calls.push('start'),
+      stop: () => void calls.push('stop'),
+    };
+    const { tracker, fs } = mk({
+      cpuUsage: () => {
+        if (broken) throw new Error('cpu boom');
+        return { user: 0, system: 0 };
+      },
+      eventLoop,
+      onError: (e) => errors.push(e),
+    });
+    let off: (() => void) | undefined;
+    expect(() => {
+      off = tracker.on('stats', () => {});
+    }).not.toThrow();
+    expect((errors[0] as Error).message).toBe('cpu boom');
+    expect(fs.sets()).toBe(0); // no timer was registered
+    off?.();
+    broken = false;
+    const got: ProcessStats[] = [];
+    tracker.on('stats', (s) => got.push(s));
+    expect(fs.sets()).toBe(1);
+    expect(calls).toEqual(['start']);
+    fs.tick();
+    expect(got).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a throwing setInterval at activation stops the already-started event-loop source', () => {
+    const errors: unknown[] = [];
+    const calls: string[] = [];
+    let refuse = true;
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => void calls.push('start'),
+      stop: () => void calls.push('stop'),
+    };
+    let sets = 0;
+    let cleared = 0;
+    const scheduler: Scheduler = {
+      setInterval: () => {
+        if (refuse) throw new Error('no timers');
+        sets += 1;
+        return 'h';
+      },
+      clearInterval: () => {
+        cleared += 1;
+      },
+    };
+    const { tracker } = mk({ eventLoop, scheduler, onError: (e) => errors.push(e) });
+    const off = tracker.on('stats', () => {});
+    expect((errors[0] as Error).message).toBe('no timers');
+    expect(calls).toEqual(['start', 'stop']);
+    off();
+    refuse = false;
+    tracker.on('stats', () => {});
+    expect(sets).toBe(1);
+    expect(calls).toEqual(['start', 'stop', 'start']); // the unwound source is not stopped twice
+    expect(cleared).toBe(1);
+  });
+
+  it('an activation failure before the event-loop source started does not stop it, and onError is optional', () => {
+    const calls: string[] = [];
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => void calls.push('start'),
+      stop: () => void calls.push('stop'),
+    };
+    const { tracker } = mk({
+      monotonicNowMs: () => {
+        throw new Error('clock boom');
+      },
+      eventLoop,
+    });
+    expect(() => tracker.on('stats', () => {})).not.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  it('a throwing event-loop stop() during the activation unwind is swallowed (the original error is reported)', () => {
+    const errors: unknown[] = [];
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => {},
+      stop: () => {
+        throw new Error('stop boom');
+      },
+    };
+    const scheduler: Scheduler = {
+      setInterval: () => {
+        throw new Error('no timers');
+      },
+      clearInterval: () => {},
+    };
+    const { tracker } = mk({ eventLoop, scheduler, onError: (e) => errors.push(e) });
+    expect(() => tracker.on('stats', () => {})).not.toThrow();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['no timers']);
+  });
+
+  it('an event-loop source whose start() throws is reported and is NOT stopped (it never started)', () => {
+    const errors: unknown[] = [];
+    const calls: string[] = [];
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => {
+        calls.push('start');
+        throw new Error('start boom');
+      },
+      stop: () => void calls.push('stop'),
+    };
+    const { tracker, fs } = mk({ eventLoop, onError: (e) => errors.push(e) });
+    tracker.on('stats', () => {})();
+    expect((errors[0] as Error).message).toBe('start boom');
+    expect(calls).toEqual(['start']);
+    expect(fs.sets()).toBe(0);
+  });
 });

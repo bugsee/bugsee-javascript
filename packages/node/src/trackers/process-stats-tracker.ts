@@ -70,6 +70,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   readonly #eventLoopUtilization: (() => number | undefined) | undefined;
   readonly #onError: ((error: unknown) => void) | undefined;
   #timer: unknown = null;
+  #eventLoopRunning = false;
   #lastCpu = { user: 0, system: 0 };
   #lastWallMs = 0;
   #cached: ProcessStats | undefined;
@@ -97,18 +98,42 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
     return this.#cached;
   }
 
+  // Guarded: InterceptorBase marks the tracker active (and the subscriber is already registered) BEFORE
+  // this runs, so a throw escaping here would leave an "active" tracker with no timer and leak the
+  // subscribing producer's listener. A failure is reported and everything started is unwound; the
+  // tracker then re-tries on its next activation (after the current subscribers leave).
   protected onActivate(): void {
-    this.#lastCpu = this.#d.cpuUsage();
-    this.#lastWallMs = this.#d.monotonicNowMs();
-    this.#cached = undefined;
-    this.#eventLoop?.start();
-    this.#timer = this.#d.scheduler.setInterval(() => this.#poll(), this.#d.intervalMs);
+    try {
+      this.#lastCpu = this.#d.cpuUsage();
+      this.#lastWallMs = this.#d.monotonicNowMs();
+      this.#cached = undefined;
+      if (this.#eventLoop !== undefined) {
+        this.#eventLoop.start();
+        this.#eventLoopRunning = true;
+      }
+      this.#timer = this.#d.scheduler.setInterval(() => this.#poll(), this.#d.intervalMs);
+    } catch (error) {
+      this.#onError?.(error);
+      this.#timer = null;
+      try {
+        this.#stopEventLoop();
+      } catch {
+        /* best-effort unwind; the original failure is the one reported */
+      }
+    }
+  }
+
+  /** Stops the event-loop source only if this activation started it. */
+  #stopEventLoop(): void {
+    if (!this.#eventLoopRunning) return;
+    this.#eventLoopRunning = false;
+    this.#eventLoop?.stop();
   }
 
   protected override onDeactivate(): void {
     this.#d.scheduler.clearInterval(this.#timer);
     this.#timer = null;
-    this.#eventLoop?.stop();
+    this.#stopEventLoop();
     this.#cached = undefined;
   }
 
