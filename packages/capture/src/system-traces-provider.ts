@@ -1,5 +1,6 @@
 import { type CaptureProvider, CaptureProviderBase, type Scheduler } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
+import type { TraceProducer, TraceSink } from './trace-producer';
 
 // Runtime-agnostic SYSTEM TRACES provider (Android traces.system parity). A trace is a
 // named value sampled over TIME. While started, it periodically calls an injected `sample()` and routes
@@ -29,47 +30,136 @@ const defaultScheduler: Scheduler = {
 };
 
 export interface SystemTracesProviderOptions {
-  /** Reads the current system traces (the runtime-specific seam — e.g. node memory/cpu). Required. */
-  sample: () => readonly TraceSample[];
-  /** Sampling interval in ms while started. Default 1000. */
+  /** Trace producers (each subscribes to trackers; the provider owns start/stop + isolation). */
+  producers?: readonly TraceProducer[];
+  /** LEGACY polled seam: read every system trace on each tick. Kept so existing samplers/tests keep working. */
+  sample?: () => readonly TraceSample[];
+  /** Tick interval in ms while started. Default 1000. */
   intervalMs?: number;
-  /** Scheduler for the sampling timer; injectable for tests/edge. Default global timers (unref'd). */
+  /** Scheduler for the tick timer; injectable for tests/edge. Default global timers (unref'd). */
   scheduler?: Scheduler;
   /** Wall-clock source for the entry timestamp; injectable for tests. Default Date.now. */
   now?: () => number;
+  /** A value older than this is re-emitted so a rolling capture window never loses a rarely-changing trace. Default 10 000; Infinity disables. */
+  refreshMs?: number;
+  /** Reports an isolated producer/tick failure. Must not throw. */
+  onError?: (error: unknown) => void;
+}
+
+interface Held {
+  name: string;
+  value: unknown;
+  timestamp: number;
+  displayId: number | undefined;
 }
 
 class SystemTracesProvider extends CaptureProviderBase {
   readonly name = 'traces.system';
   readonly controllingOption = BugseeOption.CaptureSystemTraces;
-  readonly #sample: () => readonly TraceSample[];
+  readonly #producers: readonly TraceProducer[];
+  readonly #sample: (() => readonly TraceSample[]) | undefined;
   readonly #intervalMs: number;
+  readonly #refreshMs: number;
   readonly #scheduler: Scheduler;
   readonly #now: () => number;
+  readonly #onError: (error: unknown) => void;
+  readonly #held = new Map<string, Held>();
+  #started: TraceProducer[] = [];
+  #running = false;
   #timer: unknown = null;
+  readonly #sink: TraceSink = {
+    emit: (name, value, displayId) => {
+      if (this.#running) this.#record(name, value, displayId, this.#now());
+    },
+  };
 
   constructor(options: SystemTracesProviderOptions) {
     super();
+    if (options.producers === undefined && options.sample === undefined) {
+      throw new Error('createSystemTracesProvider needs producers or sample');
+    }
+    this.#producers = options.producers ?? [];
     this.#sample = options.sample;
     this.#intervalMs = options.intervalMs ?? 1000;
+    this.#refreshMs = options.refreshMs ?? 10_000;
     this.#scheduler = options.scheduler ?? defaultScheduler;
     this.#now = options.now ?? (() => Date.now());
+    this.#onError = options.onError ?? (() => {});
   }
 
   protected onStart(): void {
-    this.#emit(); // initial snapshot, so a short-lived session still has current values
-    this.#timer = this.#scheduler.setInterval(() => this.#emit(), this.#intervalMs);
+    this.#held.clear();
+    this.#running = true;
+    for (const producer of this.#producers) {
+      try {
+        producer.start(this.#sink);
+        this.#started.push(producer);
+      } catch (error) {
+        this.#onError(error);
+        this.#safeStop(producer);
+      }
+    }
+    try {
+      this.#emitLegacy(this.#now()); // initial snapshot, so a short-lived session still has current values
+    } catch (error) {
+      this.#stopProducers();
+      this.#running = false;
+      throw error;
+    }
+    this.#timer = this.#scheduler.setInterval(() => this.#tick(), this.#intervalMs);
   }
 
   protected override onStop(): void {
     this.#scheduler.clearInterval(this.#timer);
     this.#timer = null;
+    this.#stopProducers();
+    this.#running = false;
+    this.#held.clear();
   }
 
-  #emit(): void {
-    const timestamp = this.#now();
-    for (const { name, value } of this.#sample()) {
-      this.capture('traces.system', timestamp, { timestamp, name, value });
+  #tick(): void {
+    try {
+      const now = this.#now();
+      this.#emitLegacy(now);
+      for (const held of [...this.#held.values()]) {
+        if (now - held.timestamp >= this.#refreshMs) {
+          this.#record(held.name, held.value, held.displayId, now);
+        }
+      }
+    } catch (error) {
+      this.#onError(error); // a timer must never throw into the host
+    }
+  }
+
+  #emitLegacy(timestamp: number): void {
+    if (this.#sample === undefined) return;
+    for (const { name, value } of this.#sample()) this.#record(name, value, undefined, timestamp);
+  }
+
+  #record(name: string, value: unknown, displayId: number | undefined, timestamp: number): void {
+    this.capture('traces.system', timestamp, {
+      timestamp,
+      name,
+      value,
+      ...(displayId !== undefined ? { displayId } : {}),
+    });
+    this.#held.set(displayId === undefined ? name : `${displayId}:${name}`, {
+      name,
+      value,
+      timestamp,
+      displayId,
+    });
+  }
+
+  #stopProducers(): void {
+    for (const producer of this.#started.splice(0)) this.#safeStop(producer);
+  }
+
+  #safeStop(producer: TraceProducer): void {
+    try {
+      producer.stop();
+    } catch (error) {
+      this.#onError(error);
     }
   }
 }
