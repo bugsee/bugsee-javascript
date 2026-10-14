@@ -68,8 +68,8 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 | `ram_js_heap_{total,free,used}` on Node/Deno | `v8.getHeapStatistics()`: `total` = `heap_size_limit` (the CEILING, Android `ram_jvm_heap` contract), `used` = `used_heap_size`, `free` = limit − used | **Not an alias of `process_memory_heap_*`**: `process_memory_heap_total` is `heapTotal` (committed heap, not the ceiling). Only `used` is the same number in both families; `total` and `free` differ. Keep `process_memory_heap_*` as committed. Same name = same quantity as browser/Android. Decision Q2. |
 | `process_memory_limit` (cgroup cap) | `process.constrainedMemory()` (Node ≥18.15; `SYNTHESIS.md` T1 calls it the real OOM predictor) | Emit ONLY when the value is `> 0` AND `< 2^63` AND `≤ os.totalmem()`; omit for `0` (macOS/unconstrained) and the 2^64 Linux sentinel — never gate on `!== 0` alone. **Needs a Linux probe (macOS-only so far).** Deno/Bun semantics unmeasured. |
 | `ram_system_available` | `process.availableMemory()` | Sentry uses it. **MEASURED: not comparable across runtimes (24 GB vs 0.9 GB same host) and absent on Node 18 — Node ≥22 only, if at all (§8).** |
-| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | **Unit: integer MB** (the Android/iOS wire; a deliberate exception to the bytes rule above, converted in the sampler from `bsize × bavail` / `bsize × blocks`), change-deduped (≥1 MB). **Path: the filesystem `dataDir` lives on** (`effectiveDataDir`), not `/` or cwd — it is that volume's space, not mobile "device storage", and differs from `/` on overlay/container roots. Opt-in like iOS `BugseeOptionCaptureDiskSpace`. §8 confirmed `statfs` is present and returns sane block counts on node/bun/deno; it did NOT check wire units or path choice. |
-| `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; **MEASURED: always 0 on Bun/Deno → Node only.** |
+| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | **Unit: integer MB via the existing `bytesToMegabytes` (`@bugsee/protocol` `units.ts:14-18`: `Math.floor(bytes/1024/1024)`, the Android `(int)` cast — binary, NOT `/1e6`; no second definition of "MB"), a deliberate exception to the bytes rule above, from `bsize × bavail` / `bsize × blocks`, change-deduped (≥1 MB). **Path: the filesystem `dataDir` lives on** (`effectiveDataDir`), not `/` or cwd — it is that volume's space, not mobile "device storage", and differs from `/` on overlay/container roots. **Omit both traces when `effectiveDataDir` is undefined** (in-memory launch, or disk setup degraded — `node/src/launch.ts:580-609` clears it); never fall back to cwd or `/`. The sampler is built today with no `dataDir` dep (`launch.ts:866`), so ST3 must thread it in. Opt-in like iOS `BugseeOptionCaptureDiskSpace`. §8 confirmed `statfs` is present and returns sane block counts on node/bun/deno; it did NOT check wire units or path choice. |
+| `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; **MEASURED: always 0 on Bun/Deno → Node only, enforced by `measuresActiveResources` (§5); omit, never emit 0.** |
 | `process_uptime_s` | `process.uptime()` | Trivial; Sentry/Datadog/OTel. |
 
 ### P2 — Browser parity (`@bugsee/browser`)
@@ -84,7 +84,7 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 | Event-driven `battery`/`charging` | `levelchange`, `chargingchange` | May replace 1 s polling for these two. |
 | `connection` — **keep polling (or add events) but never drop the `onLine`-first mapper** | `window` `online`/`offline` **and** `connection.change`, mapped through `system-trace-values.ts` (`navigator.onLine` outranks `connection.type`) | `connection.change` does NOT fire on `offline` (a Chromium NetworkInformation can still say `wifi` while offline), so replacing the 1 s read with `change` alone leaves the trace stuck on `wifi` after the network drops while `events.system` `offline` fires — the streams disagree. Do not remove polling until the online/offline + change pair is specified and tested. |
 | `hardware_concurrency` (context, not trace) | `navigator.hardwareConcurrency` | Sentry; static → belongs in environment, not a trace. |
-| Main-thread responsiveness | `MessageChannel` / `scheduler.yield` round-trip delta (not `setTimeout(0)`, 4 ms clamp) | Name `main_thread_lag_ms`. **Measure only while `document.visibilityState === 'visible'`; omit (never zero) when hidden** — background tabs clamp/throttle timers and `MessageChannel` to ~1 s and then ~1 min, so a hidden-tab round-trip measures throttling and would paint a hang that did not happen (the inverse of the Deno `event_loop_lag` lie). Not comparable to iOS `queue.main`, which has no such artifact. Probe 5 must include hidden-tab lag vs a known sync block before ST4. |
+| Main-thread responsiveness | `MessageChannel` / `scheduler.yield` round-trip delta (not `setTimeout(0)`, 4 ms clamp) | Name `main_thread_lag_ms`. **Measure only while `document.visibilityState === 'visible'`; omit (never zero) when hidden** — background tabs clamp/throttle timers and `MessageChannel` to ~1 s and then ~1 min, so a hidden-tab round-trip measures throttling and would paint a hang that did not happen (the inverse of the Deno `event_loop_lag` lie). Not comparable to iOS `queue.main`, which has no such artifact. Probe 5 must include hidden-tab lag vs a known sync block before ST4. **Mechanics:** the provider calls `sample()` synchronously (`system-traces-provider.ts:69-73`), so a round-trip cannot complete inside it. The ping is a STANDING source: armed in `start()` (post a message, record the delta on receipt), disconnected in `stop()`; `sample()` only reads the LAST COMPLETED delta and omits until one exists (and while hidden). No busy-wait, no fire-and-forget returning 0. |
 
 ### P3 — Electron main-process telemetry (`@bugsee/electron`)
 Gated into the main-process sampler; `electron` is already an injected arg (no package dependency).
@@ -118,16 +118,24 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
   `@bugsee/core`.
 - **Runtime-portable.** Shared tiers reach globals only via `globalThis as unknown as {…}` casts. `v8`/`fs`/
   `perf_hooks` live in `@bugsee/node` behind the existing guarded-metrics seam (`guarded-system-metrics.ts`).
-- **Named per-runtime flags, never `typeof fn === 'function'` or `value !== 0`.** ST1 lives in
-  `createNodeSystemMetricsSampler`, which `@bugsee/bun`/`@bugsee/deno` reuse wholesale via
-  `createGuardedSystemMetricsSampler`, so any metric added there ships on all three runtimes unless flagged.
-  Add `measuresGc`, `measuresV8Heap`, `measuresAvailableMemory`, `measuresConstrainedMemory` (default ON for
-  Node). `@bugsee/bun`: all four `false`. `@bugsee/deno`: `measuresGc:false`, `measuresAvailableMemory:false`
-  (incomparable), `measuresConstrainedMemory:false` until a Linux probe, `measuresV8Heap:true` (measured real).
-  Put the bun/deno `false`s AFTER `...options` — where `captureLocalVariables: false` already lives
-  (`bun/src/launch.ts:32`, `deno/src/launch.ts:41`) — so a caller cannot switch the lie back on. Bun's
-  `constrainedMemory` of 68.7 GB passes any numeric sanity filter, which is why the sentinel check alone is not a gate.
-  Tests must run the sampler under a Bun/Deno-shaped fake and assert these traces are ABSENT.
+- **Named per-runtime flags on the GUARDED SAMPLER, never `typeof fn === 'function'` or `value !== 0`.** ST1
+  lives in `createNodeSystemMetricsSampler`, which `@bugsee/bun`/`@bugsee/deno` reuse via
+  `createGuardedSystemMetricsSampler(deps)` (`node/src/guarded-system-metrics.ts:113-127`). The flags are
+  `GuardedSystemMetricsDeps` fields — NOT launch options — passed into the factory call BEFORE `...options`,
+  exactly as `deno/src/launch.ts:29` does for `measuresEventLoopDelay: false` (keeping that position lets tests
+  still inject `systemMetricsSampler`). `captureLocalVariables: false` after `...options` is a launch option that
+  `nodeLaunchCore` reads; flags set there never reach the sampler and are silently ignored. Bun today calls
+  `createGuardedSystemMetricsSampler()` with NO args (`bun/src/launch.ts:22`).
+  New deps (default ON for Node): `measuresGc`, `measuresV8Heap`, `measuresAvailableMemory`,
+  `measuresConstrainedMemory`, `measuresActiveResources`. Each `false` must INJECT AN OMITTED READER (the way
+  `measuresEventLoopDelay: false` injects `eventLoop: unavailableLoop`) or a `NodeSystemMetricsDeps` field the node
+  sampler branches on — a boolean that is merely destructured does nothing. Values: `@bugsee/bun` all five
+  `false`; `@bugsee/deno` `measuresGc`/`measuresAvailableMemory`/`measuresConstrainedMemory`/
+  `measuresActiveResources` `false` (blind, incomparable, unprobed on Linux, always 0), `measuresV8Heap: true`
+  (measured real). Bun's `constrainedMemory` of 68.7 GB passes any numeric sanity filter, so the sentinel check
+  is not a gate. Tests: pin the factory call per runtime
+  (`toHaveBeenCalledWith(expect.objectContaining({ measuresV8Heap: false, … }))`, as lag is pinned in
+  `deno/src/launch.test.ts`), AND run the sampler under a Bun/Deno-shaped fake asserting the traces are ABSENT.
 - **Per-runtime gates, not passive tells.** Anything UNMEASURED on Bun/Deno ships with a runtime flag (like
   `measuresEventLoopDelay`) defaulting to OFF there until measured; `@bugsee/{bun,deno}` flip it only with a
   recorded measurement in this doc.
@@ -138,11 +146,20 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
   (`system-traces-provider.ts:33`) built unconditionally at launch (`browser/src/launch.ts:798`,
   `node/src/launch.ts:866`), and the provider is not tied to an interceptor, so interceptor subscriber-presence
   does NOT apply to it; `stop()` only clears the 1 s timer. Standing sources (GC `PerformanceObserver`, rAF
-  counter, `PressureObserver`, battery/connection/`matchMedia` listeners) therefore MUST NOT be installed in the
+  counter, the `MessageChannel` ping, `PressureObserver`, battery/connection/`matchMedia` listeners) therefore MUST NOT be installed in the
   sampler factory — they would run with `captureSystemTraces:false` and survive `client.stop()`. Extend the
   sampler contract to `{ start(), stop(), sample() }` (or a dedicated provider/interceptor): attach in
-  `start`, tear down in `stop`; the gate is `captureSystemTraces` + provider start/stop. Each standing source
-  needs a test proving it is absent when the option is off and released on stop.
+  `start`, tear down in `stop`; **ST0 also migrates the EXISTING factory-time work**: `monitorEventLoopDelay().enable()`
+  at sampler construction (`node/src/system-metrics.ts:62-63`) and `getBattery()` in the browser factory
+  (`browser/src/system-metrics.ts:96-101`) move into `start()` (disable/release in `stop()`) — today
+  `captureSystemTraces:false` / `client.stop()` still starts the histogram and fetches BatteryManager. There are
+  THREE composition roots, not two: node (`launch.ts:866`), browser (`launch.ts:798`) and **webview**
+  (`webview/src/launch.ts:671-675`, same `createSystemTracesProvider({ sample: … ?? createBrowserSystemTracesSampler() })`);
+  all three must call `start()`/`stop()` or webview fps stays 0 / its factory leaks. The public option
+  `systemMetricsSampler?: () => readonly TraceSample[]` (`browser/src/launch.ts:411`) must keep working: a bare
+  function is wrapped as sample-only (start/stop no-ops) so every `() => []` test injector survives; the gate is `captureSystemTraces` + provider start/stop. Each standing source
+  needs a test proving it is absent when the option is off and released on stop — INCLUDING the two pre-existing
+  ones above.
 - **Cost.** GC observer and rAF counter run only between provider `start`/`stop` (see Lifecycle seam). Budget: the sampler tick must stay well under the existing
   cost envelope; measure, don't assume.
 - **Protocol.** Trace names are free-form in `traces.system`, but the viewer renders from fixed lookup tables
@@ -226,7 +243,7 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 ## 10. Open questions (need a product/owner decision)
 
 - **Q1.** Do long tasks / LoAF / web vitals / navigation+resource timing belong in `@bugsee/performance`
-  (already owns web-vitals) rather than `traces.system`? Recommendation: yes — keep them out of this doc's
+  (already owns `longtask` + web-vitals; it does NOT own `long-animation-frame`, which is research-only in `docs/research/capture-apis/browser.md` — LoAF is the open item) rather than `traces.system`? Recommendation: yes — keep them out of this doc's
   scope and confirm `@bugsee/performance` covers long tasks/LoAF; check for overlap before any build.
 - **Q2.** Should Node/Deno emit `ram_js_heap_*` *in addition to* `process_memory_heap_*`? Recommendation: yes,
   as a DIFFERENT quantity (ceiling-based total/free, per §4 P1), not a duplicate; only `used` repeats. Subsumes
@@ -234,7 +251,7 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
   reconcile with it, not restate it.
 - **Q3.** Omit vs `"$$unavailable"` for unsupported services. Recommendation: keep omitting (consistent with
   the ELU/Deno precedent) unless the viewer needs the sentinel — verify viewer handling first.
-- **Q4.** Does the env builder already detect cloud provider/region? (Not checked.)
+- **Q4.** Does the env builder already detect cloud provider/region? **Checked in review: NO** — node/browser env builders do not read `AWS_REGION`/`VERCEL`/`FLY_REGION`; `hardware.cpu_count` and `hardware.screen_*`/`pixel_ratio` already exist, so do not re-emit those as traces.
 - **Q5.** Which new trace names does the viewer already render? (Viewer tables not inspected.) Any name the
   viewer lacks needs a viewer PR (precedent: worker PR 46 / viewer PR 14).
 - **Q6.** `disk_mem_*` privacy/opt-in: mirror iOS's option-gated capture? Recommendation: opt-in.
