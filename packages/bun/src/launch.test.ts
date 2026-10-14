@@ -1,17 +1,28 @@
 import process from 'node:process';
 import {
   type Clock,
+  createCaptureExporter,
   createMemoryCaptureStore,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import type { NodeRuntime, SystemProbe } from '@bugsee/node';
+import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bunSystemProbe } from './environment';
 import { launch, launchCore } from './launch';
+
+// Pass-through spy: pins the wiring (Bun measures event-loop delay, so it must NOT opt out) without
+// changing behaviour.
+vi.mock('@bugsee/node', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/node')>();
+  return {
+    ...actual,
+    createNodeSystemTraceProducers: vi.fn(actual.createNodeSystemTraceProducers),
+  };
+});
 
 // --- fakes: no real process / network / timers --------------------------------------------------
 
@@ -87,6 +98,30 @@ const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T =>
 };
 
 describe('@bugsee/bun launch', () => {
+  it('injects the node trace producers (not a legacy sampler) and they feed traces.system', async () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    const store = memStore();
+    track(launchCore('tok', base({ captureStore: store, captureSystemTraces: true })).client);
+    const produced = vi.mocked(createNodeSystemTraceProducers).mock.results[0]?.value as unknown[];
+    expect(Array.isArray(produced)).toBe(true);
+    expect(produced.length).toBeGreaterThan(0);
+    for (const p of produced) {
+      expect(typeof (p as { start: unknown }).start).toBe('function');
+      expect(typeof (p as { stop: unknown }).stop).toBe('function');
+    }
+    const traces = (await createCaptureExporter(store).drain()).get('traces.system') ?? [];
+    const names = traces.map((e) => (e.data as { name: string }).name);
+    expect(names).toContain('process_memory_rss');
+    expect(names).toContain('ram_system_total');
+    expect(names).toContain('cpu_usage_process');
+  });
+
+  it('does not opt out of event-loop delay (Bun measures it)', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    track(launchCore('tok', base()).client);
+    const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
+    expect(arg?.measuresEventLoopDelay).not.toBe(false);
+  });
   it('reports the Bun RUNTIME identity in the environment envelope', () => {
     const { client, internals } = launchCore('tok', base());
     track(client);

@@ -8,6 +8,7 @@ import {
   createSystemTracesProvider,
   installNetworkCapture,
   type NetworkCapture,
+  type TraceProducer,
   type TraceSample,
 } from '@bugsee/capture';
 import {
@@ -133,7 +134,7 @@ import type { TraceResponseConfig } from './server-instrument';
 import { createSourceContextEnricher, type SourceContextOptions } from './source-context';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
-import { createNodeSystemMetricsSampler } from './system-metrics';
+import { createNodeSystemTraceProducers } from './trace-producers';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
 // @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
@@ -383,6 +384,8 @@ export interface BugseeLaunchOptions {
   hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
   /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
   systemMetricsSampler?: () => readonly TraceSample[];
+  /** Trace producers (each subscribes to trackers; the provider starts/stops them). Default: the node set. A supplied `systemMetricsSampler` wins over this. */
+  systemTraceProducers?: readonly TraceProducer[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
   bundleStore?: BundleStore;
   /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
@@ -863,7 +866,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   }
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createNodeSystemMetricsSampler(),
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
+        : { producers: options.systemTraceProducers ?? createNodeSystemTraceProducers() }),
+      refreshMs: Math.min(10_000, Math.max(1_000, (maxRecordingTime * 1000) / 4)),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

@@ -2,7 +2,7 @@ import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
-  createGuardedSystemMetricsSampler,
+  createNodeSystemTraceProducers,
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
@@ -13,13 +13,13 @@ import { bunSystemProbe } from './environment';
 // node:fs, process, timers), so this reuses the ENTIRE @bugsee/node composition (transport, fs storage,
 // node:http capture, crash detection, durable queue + capture recovery) and only swaps the two
 // Bun-specific defaults: the system probe (reports platform.type 'bun' + the Bun version) and the
-// system-metrics sampler (guarded perf_hooks). Both remain overridable — a caller-supplied option wins
+// system trace producers (guarded perf_hooks). Both remain overridable — a caller-supplied option wins
 // (it spreads AFTER the Bun defaults).
 
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
-    systemMetricsSampler: createGuardedSystemMetricsSampler(),
+    systemTraceProducers: createNodeSystemTraceProducers(),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, after `...options` so a caller cannot switch them on. Measured on
     // Bun 1.4.0: `Debugger.enable` is REFUSED — `Inspector method "Debugger.enable" requires an active

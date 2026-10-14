@@ -1,17 +1,14 @@
 import process from 'node:process';
 import {
   type Clock,
+  createCaptureExporter,
   createMemoryCaptureStore,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import {
-  createGuardedSystemMetricsSampler,
-  type NodeRuntime,
-  type SystemProbe,
-} from '@bugsee/node';
+import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { denoSystemProbe } from './environment';
@@ -25,7 +22,7 @@ vi.mock('@bugsee/node', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node')>();
   return {
     ...actual,
-    createGuardedSystemMetricsSampler: vi.fn(actual.createGuardedSystemMetricsSampler),
+    createNodeSystemTraceProducers: vi.fn(actual.createNodeSystemTraceProducers),
   };
 });
 
@@ -275,8 +272,28 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     // which gives itself away with a zero `idle`. A lag of ~0 is exactly what a healthy process reports,
     // which is why fabricating one is worse than reporting nothing.
     track(launchCore('tok', base()).client);
-    expect(createGuardedSystemMetricsSampler).toHaveBeenCalledWith(
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
       expect.objectContaining({ measuresEventLoopDelay: false }),
     );
+  });
+
+  it('injects the node trace producers (not a legacy sampler) and they feed traces.system', async () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    const store = memStore();
+    track(launchCore('tok', base({ captureStore: store, captureSystemTraces: true })).client);
+    const produced = vi.mocked(createNodeSystemTraceProducers).mock.results[0]?.value as unknown[];
+    expect(Array.isArray(produced)).toBe(true);
+    expect(produced.length).toBeGreaterThan(0);
+    for (const p of produced) {
+      expect(typeof (p as { start: unknown }).start).toBe('function');
+      expect(typeof (p as { stop: unknown }).stop).toBe('function');
+    }
+    const traces = (await createCaptureExporter(store).drain()).get('traces.system') ?? [];
+    const names = traces.map((e) => (e.data as { name: string }).name);
+    expect(names).toContain('process_memory_rss');
+    expect(names).toContain('ram_system_total');
+    expect(names).toContain('cpu_usage_process');
+    // Deno cannot observe a blocked loop, so no lag trace is fabricated.
+    expect(names.some((n) => n.startsWith('event_loop_lag'))).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TraceProducer } from '@bugsee/capture';
 import {
   type BundleStore,
   BundleStoreToken,
@@ -64,6 +65,7 @@ import { type SystemProbe, SystemProbeToken } from './environment';
 import type { HangLevel } from './event-loop-watchdog';
 import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
 import { createNodeRequestContextStore, RequestContextStoreToken } from './request-context-store';
+import { createNodeSystemTraceProducers } from './trace-producers';
 
 /** A test-only contributed service token (an "extension"). */
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
@@ -1366,6 +1368,141 @@ function seedPriorGeneration(
     });
   }
 }
+
+describe('launch — system trace producers', () => {
+  const producerDeps = (fs: ReturnType<typeof fakeScheduler>) => {
+    const calls: string[] = [];
+    const perfHooks = {
+      monitorEventLoopDelay: () => {
+        calls.push('monitor');
+        return {
+          enable: () => void calls.push('enable'),
+          disable: () => void calls.push('disable'),
+          reset() {},
+          mean: 0,
+          max: 0,
+          percentile: () => 0,
+        };
+      },
+      eventLoopUtilization: () => ({ utilization: 0, idle: 1, active: 0 }),
+    };
+    return { calls, deps: { perfHooks, scheduler: fs.scheduler } };
+  };
+
+  it('the default producers attach nothing when captureSystemTraces is false, and release everything on stop()', async () => {
+    const fs = fakeScheduler();
+    const { calls, deps } = producerDeps(fs);
+    const off = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        captureSystemTraces: false,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: createNodeSystemTraceProducers(deps),
+      }),
+    );
+    expect(calls).toEqual([]);
+    await off.stop();
+    expect(calls).toEqual([]);
+    const on = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: createNodeSystemTraceProducers(deps),
+      }),
+    );
+    expect(calls).toEqual(['monitor', 'enable']);
+    await on.stop();
+    expect(calls.at(-1)).toBe('disable');
+  });
+
+  it.each([
+    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s
+    { maxRecordingTime: 2, refreshMs: 1000 }, // 0.5s clamped up to 1s
+    { maxRecordingTime: 600, refreshMs: 10_000 }, // 150s clamped down to 10s
+  ])('refreshes a held trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      const fs = fakeScheduler();
+      const store = memStore();
+      const once: TraceProducer = {
+        name: 'once',
+        start: (sink) => sink.emit('held_trace', 1),
+        stop: () => {},
+      };
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          scheduler: fs.scheduler,
+          maxRecordingTime,
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [once],
+        }),
+      );
+      const tick = fs.calls.find((c) => c.ms === 1000)?.cb;
+      const count = async () =>
+        ((await drain(store, 'traces.system')) ?? []).filter(
+          (e) => (e.data as { name: string }).name === 'held_trace',
+        ).length;
+      expect(await count()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick?.();
+      expect(await count()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick?.();
+      expect(await count()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a legacy systemMetricsSampler still wins when supplied, and the producers are then not started', () => {
+    const start = vi.fn();
+    const spy: TraceProducer = { name: 'spy', start, stop: () => {} };
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        systemMetricsSampler: () => [{ name: 'x', value: 1 }],
+        systemTraceProducers: [spy],
+      }),
+    );
+    expect(client.isLaunched()).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('routes a throwing producer to onError and still launches', () => {
+    const onError = vi.fn();
+    const bad: TraceProducer = {
+      name: 'bad',
+      start: () => {
+        throw new Error('p boom');
+      },
+      stop: () => {},
+    };
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        onError,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: [bad],
+      }),
+    );
+    expect(client.isLaunched()).toBe(true);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('p boom');
+  });
+});
 
 describe('launch — capture recovery', () => {
   // The launch generation is fixedClock.wallNow() = 1000, so prior gens use 500 (≠ 1000).
