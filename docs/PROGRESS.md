@@ -391,6 +391,14 @@ solid), in slices:
 - **CE2 — system TRACES breadth (DONE, `main`):** `createBrowserSystemTracesSampler` adds `connection`
   (navigator.connection), `orientation` (screen.orientation), `battery`/`charging` (cached BatteryManager)
   to the existing `ram_js_heap_*`. Android trace-name parity; degrades per-API.
+- **ST0′ (DONE, `feat/trace-producers`):** `traces.system` is now producers over shared trackers.
+  `@bugsee/capture` has `TraceProducer`/`TraceProducerBase`; the traces provider is a producer container
+  (per-producer start/stop isolation, last-value refresh so a rolling window never loses a rarely-changing
+  trace, legacy `sample` kept). Node: `ProcessStatsTracker` (one timer; memory/system RAM/CPU/event-loop) +
+  `createNodeSystemTraceProducers` with the Bun/Deno honesty flags on its deps (Deno omits event-loop lag).
+  Browser: `BatteryTracker` (`getBattery` only on activation, abortable) + `BatteryProducer`; the `charging`
+  trace is `{ state: 1|2|3 }` (the viewer's table keys), not a boolean. Legacy samplers remain until a cleanup
+  slice; remaining browser traces migrate in follow-on slices.
 - **CE3 — input capture (DONE, `main`; re-based onto the `input` stream 2026-08-27; the state-change
   signals split off to breadcrumbs 2026-08-31):**
   `createBrowserInputSource` (browser) — capture-phase, passive, observe-only DOM listeners for
