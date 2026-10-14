@@ -672,7 +672,7 @@ export function launchWithSeams(
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
-      producers: createBrowserSystemTraceProducers(),
+      producers: createBrowserSystemTraceProducers(undefined, options.onError),
       refreshMs: Math.min(
         10_000,
         Math.max(1_000, (resolved.options.get(BugseeOption.Duration, 60) * 1000) / 4),

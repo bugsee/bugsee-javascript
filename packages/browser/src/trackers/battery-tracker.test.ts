@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type BatteryManagerLike, type BatteryState, BatteryTracker } from './battery-tracker';
 
 function mkManager(level = 0.5, charging = false) {
@@ -154,5 +154,146 @@ describe('BatteryTracker', () => {
     await flush();
     expect(seen).toEqual([{ level: 0.3, charging: true }]);
     expect(() => off()).not.toThrow();
+  });
+
+  it('a subscriber that leaves synchronously during the baseline publish leaves nothing attached', async () => {
+    const m = mkManager(0.5, false);
+    const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) });
+    const off = t.on('state', () => off());
+    await flush();
+    expect(m.count()).toBe(0);
+    expect(t.current()).toBeUndefined();
+  });
+
+  it('a throwing removeEventListener on the last unsubscribe does not throw out of off()', async () => {
+    const m = mkManager();
+    const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) });
+    const off = t.on('state', () => {});
+    await flush();
+    m.removeEventListener = () => {
+      throw new Error('remove refused');
+    };
+    expect(() => off()).not.toThrow();
+    expect(t.current()).toBeUndefined();
+  });
+
+  describe('a throw AFTER getBattery() resolves (inside the fulfilment)', () => {
+    // A throw inside the .then() callback rejects the derived promise, which nothing handles.
+    // The suite runs on Node: its process-level hook is the observable for an unhandled rejection.
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on(event: string, fn: (reason: unknown) => void): void;
+          off(event: string, fn: (reason: unknown) => void): void;
+        };
+      }
+    ).process;
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => void rejections.push(reason);
+    beforeEach(() => {
+      rejections.length = 0;
+      proc.on('unhandledRejection', onRejection);
+    });
+    afterEach(() => {
+      proc.off('unhandledRejection', onRejection);
+    });
+    const settle = async (): Promise<void> => {
+      await flush();
+      await flush(); // unhandledRejection is emitted after a macrotask turn
+    };
+
+    it('addEventListener throwing: onError, no unhandled rejection, no baseline, nothing left attached; a later re-activation works', async () => {
+      const m = mkManager(0.7, true);
+      const realAdd = m.addEventListener;
+      let refuse = true;
+      m.addEventListener = (t: string, l: () => void) => {
+        if (refuse && t === 'chargingchange') throw new Error('add refused');
+        realAdd(t, l);
+      };
+      const errors: unknown[] = [];
+      const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) }, (e) => errors.push(e));
+      const seen: BatteryState[] = [];
+      const off = t.on('state', (s) => seen.push(s));
+      await settle();
+      expect(rejections).toEqual([]);
+      expect((errors[0] as Error).message).toBe('add refused');
+      expect(seen).toEqual([]);
+      expect(t.current()).toBeUndefined();
+      expect(m.count()).toBe(0); // the levelchange listener attached before the throw was removed
+      const realRemove = m.removeEventListener;
+      let removes = 0;
+      m.removeEventListener = (type: string, l: () => void) => {
+        removes += 1;
+        realRemove(type, l);
+      };
+      off();
+      expect(removes).toBe(0); // already detached: the deactivation finds nothing left to remove
+      refuse = false;
+      t.on('state', (s) => seen.push(s));
+      await settle();
+      expect(seen).toEqual([{ level: 0.7, charging: true }]);
+      expect(m.count()).toBe(2);
+      expect(errors).toHaveLength(1);
+    });
+
+    it('a level getter throwing: onError, no unhandled rejection, no baseline, listeners removed', async () => {
+      const m = mkManager();
+      let broken = true;
+      Object.defineProperty(m, 'level', {
+        get: () => {
+          if (broken) throw new Error('level boom');
+          return 0.25;
+        },
+      });
+      const errors: unknown[] = [];
+      const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) }, (e) => errors.push(e));
+      const seen: BatteryState[] = [];
+      const off = t.on('state', (s) => seen.push(s));
+      await settle();
+      expect(rejections).toEqual([]);
+      expect((errors[0] as Error).message).toBe('level boom');
+      expect(seen).toEqual([]);
+      expect(t.current()).toBeUndefined();
+      expect(m.count()).toBe(0);
+      off();
+      broken = false;
+      t.on('state', (s) => seen.push(s));
+      await settle();
+      expect(seen).toEqual([{ level: 0.25, charging: false }]);
+    });
+
+    it('a throwing removeEventListener during the unwind is swallowed; without onError nothing escapes', async () => {
+      const m = mkManager();
+      m.addEventListener = (t: string) => {
+        if (t === 'chargingchange') throw new Error('add refused');
+      };
+      m.removeEventListener = () => {
+        throw new Error('remove refused');
+      };
+      const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) });
+      const seen: BatteryState[] = [];
+      t.on('state', (s) => seen.push(s));
+      await settle();
+      expect(rejections).toEqual([]);
+      expect(seen).toEqual([]);
+    });
+
+    it('a getter throwing on a LATER levelchange is reported, never thrown into the event dispatch', async () => {
+      const m = mkManager(0.5, false);
+      const errors: unknown[] = [];
+      const t = new BatteryTracker({ getBattery: () => Promise.resolve(m) }, (e) => errors.push(e));
+      const seen: BatteryState[] = [];
+      t.on('state', (s) => seen.push(s));
+      await settle();
+      Object.defineProperty(m, 'level', {
+        get: () => {
+          throw new Error('late boom');
+        },
+      });
+      expect(() => m.fire('levelchange')).not.toThrow();
+      expect((errors[0] as Error).message).toBe('late boom');
+      expect(seen).toEqual([{ level: 0.5, charging: false }]);
+      expect(t.current()).toEqual({ level: 0.5, charging: false }); // last good state kept
+    });
   });
 });

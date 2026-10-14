@@ -26,9 +26,12 @@ export class BatteryTracker extends InterceptorBase<{ state: BatteryState }> {
   #state: BatteryState | undefined;
   #onChange: (() => void) | undefined;
 
+  readonly #onError: ((error: unknown) => void) | undefined;
+
   constructor(env: BatteryEnv, onError?: (error: unknown) => void) {
     super(onError);
     this.#env = env;
+    this.#onError = onError;
   }
 
   /** Latest state; undefined before getBattery() resolves and after deactivation. */
@@ -42,12 +45,7 @@ export class BatteryTracker extends InterceptorBase<{ state: BatteryState }> {
       this.#env.getBattery?.().then(
         (manager) => {
           if (this.#generation !== mine) return; // stopped (or restarted) while in flight
-          const onChange = (): void => this.#publish(manager);
-          this.#manager = manager;
-          this.#onChange = onChange;
-          manager.addEventListener?.('levelchange', onChange);
-          manager.addEventListener?.('chargingchange', onChange);
-          this.#publish(manager);
+          this.#attach(manager);
         },
         () => {}, // unsupported / denied -> no battery traces
       );
@@ -56,20 +54,56 @@ export class BatteryTracker extends InterceptorBase<{ state: BatteryState }> {
     }
   }
 
+  // Runs inside the getBattery() fulfilment: a throw here would reject a promise nobody handles, so the
+  // whole body is guarded. On failure everything attached so far is detached and no baseline is kept;
+  // the next activation retries.
+  #attach(manager: BatteryManagerLike): void {
+    const onChange = (): void => {
+      try {
+        this.#publish(manager);
+      } catch (error) {
+        this.#onError?.(error); // never throw into the BatteryManager's event dispatch
+      }
+    };
+    // Recorded BEFORE attaching (and before the baseline publish), so a subscriber that leaves
+    // synchronously during the publish — or the unwind below — detaches exactly these.
+    this.#manager = manager;
+    this.#onChange = onChange;
+    try {
+      manager.addEventListener?.('levelchange', onChange);
+      manager.addEventListener?.('chargingchange', onChange);
+      this.#publish(manager);
+    } catch (error) {
+      this.#detach(); // removing a never-added listener is a no-op (DOM semantics)
+      this.#onError?.(error);
+    }
+  }
+
   protected override onDeactivate(): void {
     this.#generation += 1; // invalidate any in-flight fetch
+    this.#detach();
+  }
+
+  /** Removes the change listeners (best-effort) and forgets the manager and its state. */
+  #detach(): void {
+    const manager = this.#manager;
     const onChange = this.#onChange;
-    if (onChange !== undefined) {
-      this.#manager?.removeEventListener?.('levelchange', onChange);
-      this.#manager?.removeEventListener?.('chargingchange', onChange);
-    }
-    this.#onChange = undefined;
     this.#manager = undefined;
+    this.#onChange = undefined;
     this.#state = undefined;
+    if (manager === undefined || onChange === undefined) return;
+    for (const type of ['levelchange', 'chargingchange']) {
+      try {
+        manager.removeEventListener?.(type, onChange);
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   #publish(manager: BatteryManagerLike): void {
-    this.#state = { level: manager.level, charging: manager.charging };
-    this.emit('state', this.#state);
+    const state = { level: manager.level, charging: manager.charging }; // getters may throw
+    this.#state = state;
+    this.emit('state', state);
   }
 }

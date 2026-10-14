@@ -48,6 +48,13 @@ function realBatteryEnv(): BatteryEnv {
   return { getBattery: () => getBattery.call(nav) };
 }
 
-export function createBrowserSystemTraceProducers(env?: BatteryEnv): TraceProducer[] {
-  return [new BatteryProducer(new BatteryTracker(env ?? realBatteryEnv()))];
+/**
+ * The browser trace producers. `onError` receives a battery failure that happens after getBattery()
+ * resolves (a throwing manager getter / addEventListener), which would otherwise be swallowed.
+ */
+export function createBrowserSystemTraceProducers(
+  env?: BatteryEnv,
+  onError?: (error: unknown) => void,
+): TraceProducer[] {
+  return [new BatteryProducer(new BatteryTracker(env ?? realBatteryEnv(), onError))];
 }

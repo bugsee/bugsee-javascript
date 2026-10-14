@@ -1037,6 +1037,22 @@ describe('launch', () => {
     );
   });
 
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        ...batteryManager(),
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    await launchTracked('tok', baseOptions({ captureStore: memStore(), onError }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('battery add refused');
+  });
+
   it('never calls getBattery when captureSystemTraces is false', async () => {
     const getBattery = vi.fn(() => Promise.resolve(batteryManager()));
     vi.stubGlobal('navigator', { getBattery });

@@ -89,6 +89,20 @@ describe('BatteryProducer', () => {
     expect(again.out.map((o) => o.name)).toEqual(['battery', 'charging']);
   });
 
+  it('forwards onError to the battery tracker: a throw after getBattery resolves is reported', async () => {
+    const m = mkManager(0.5, false);
+    m.addEventListener = () => {
+      throw new Error('add refused');
+    };
+    const onError = vi.fn();
+    const { out } = run(
+      createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }, onError),
+    );
+    await flush();
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('add refused');
+    expect(out).toEqual([]);
+  });
+
   it('constructs nothing at call time (no getBattery call)', () => {
     const getBattery = vi.fn();
     createBrowserSystemTraceProducers({ getBattery });

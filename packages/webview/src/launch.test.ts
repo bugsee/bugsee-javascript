@@ -934,6 +934,31 @@ describe('launch (webview)', () => {
     }
   });
 
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    try {
+      track('tok', baseOptions({ global: fake.global, onError }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+        'battery add refused',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global }));
