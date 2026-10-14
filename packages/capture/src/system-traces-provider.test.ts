@@ -671,6 +671,26 @@ describe('createSystemTracesProvider — hardening', () => {
     expect((await values(store)).map((v) => [v.value, v.timestamp])).toEqual([[1, 0]]);
   });
 
+  it('the timer never lets an exception escape: a throwing clock on a tick goes to onError', () => {
+    const fs = fakeScheduler();
+    const errors: unknown[] = [];
+    let calls = 0;
+    const p = createSystemTracesProvider({
+      producers: [new Fixed('a', [])],
+      scheduler: fs.scheduler,
+      now: () => {
+        calls += 1;
+        if (calls > 1) throw new Error('clock boom');
+        return 0;
+      },
+      onError: (e) => errors.push(e),
+    });
+    p.init(buildInit(mkStore()));
+    p.start(options);
+    expect(() => fs.tick()).not.toThrow();
+    expect((errors[0] as Error).message).toBe('clock boom');
+  });
+
   it('a tick that fires after stop() records nothing (not running)', async () => {
     const store = mkStore();
     const fs = fakeScheduler();
