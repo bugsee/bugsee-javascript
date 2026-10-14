@@ -46,7 +46,7 @@ specifies them).
 small (§4). Many Android/iOS traces have **no JS API** and are explicitly not ported.
 
 **Wire-shape clashes (must resolve before reuse).**
-1. `charging`: Android `{state, source}` map; iOS 4-state int; JS boolean.
+1. `charging`: Android `{state, source}` map; iOS 4-state int; JS boolean (shipped in 0.1.0-beta.3). **Decision needed before any change (ST0):** the Battery API has no `source`, and changing a shipped wire shape is breaking. Options: (a) keep the boolean under its current name and stop calling it a bug; (b) emit Android `{state}` with `source` OMITTED (never invented) and `state` mapped via a table written here (`charging`/`full`/`unplugged`, verified against Android `TracePowerStatus` and the viewer); (c) keep the boolean and accept the viewer gap. **Recommendation: (a)/(c) — do not touch the shipped boolean until Q5 shows what the viewer does with it.**
 2. `cpu`: iOS = percent summed over threads (can exceed 100); JS `cpu_usage_process` = per-core-normalized.
 3. `connection` (JS) vs `network` (iOS) vs Android `connection` — JS already follows Android's vocabulary
    (`web-tier-wire-alignment`); keep.
@@ -77,14 +77,14 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 |---|---|---|
 | `fps` | `requestAnimationFrame` counter over the 1 s window | Android `fps`; iOS `fps`; Highlight/OpenReplay. **Gate on visibility; never keep a permanent rAF loop in a hidden tab** (battery + keeps page awake). |
 | `app_state` (step trace) | `document.visibilityState` mapped to the Android vocabulary (`foreground`/`background`, per Android `TraceAppState`) | NEVER put raw `visible`/`hidden`/`prerender` on `traces.system`. Verify the exact Android value set and the viewer table (Q5) first; `process_foreground`/`process_background` events already exist, so this trace is optional until the viewer needs the step curve. |
-| `displays` | `screen.width/height`, `devicePixelRatio`; Electron `screen.getAllDisplays()` | Static snapshot + `resize`/`display-metrics-changed`. |
+| `screen_size` (JS-specific; **not** `displays`) | `screen.width/height`, `devicePixelRatio` on `resize` | Android `displays` is a display LIST (id, density, flags, bounds), not two CSS-pixel numbers, so the browser `Screen` must not reuse the name. Static values already ship as `hardware.screen_width/screen_height/pixel_ratio` (`browser/src/environment.ts:116-118`); add this only if resize-over-time is wanted, with an explicit value shape `{width, height, dpr}` and Q5 viewer confirmation. Otherwise stay environment-only. |
 | `cpu_pressure` (**not** `thermal_state`) | Compute Pressure `PressureObserver.observe('cpu')` | Chromium-only, experimental, permissions-policy gated. It is CPU CONTENTION (incl. other tabs) with states `nominal/fair/serious/critical`, not Android's 0–6 temperature/throttling enum — so it gets a JS-specific name and the API's own state strings. Map to `thermal_state` only if `PressureObserver.knownSources` includes `thermals` AND the value is converted to Android's int enum. Feature-detect the SOURCE, not just the constructor. Off by default. |
 | `dark_mode_changed` event | `matchMedia('(prefers-color-scheme: dark)')` change | Existing JS `events.system` names are snake_case; use `dark_mode_changed` unless Q5 shows the viewer keys Android's `DarkModeChanged`. |
 | `freeze` / `resume` events | Page Lifecycle | Complements `process_background`. |
 | Event-driven `battery`/`charging` | `levelchange`, `chargingchange` | May replace 1 s polling for these two. |
 | `connection` — **keep polling (or add events) but never drop the `onLine`-first mapper** | `window` `online`/`offline` **and** `connection.change`, mapped through `system-trace-values.ts` (`navigator.onLine` outranks `connection.type`) | `connection.change` does NOT fire on `offline` (a Chromium NetworkInformation can still say `wifi` while offline), so replacing the 1 s read with `change` alone leaves the trace stuck on `wifi` after the network drops while `events.system` `offline` fires — the streams disagree. Do not remove polling until the online/offline + change pair is specified and tested. |
 | `hardware_concurrency` (context, not trace) | `navigator.hardwareConcurrency` | Sentry; static → belongs in environment, not a trace. |
-| Main-thread responsiveness | `setTimeout`/`MessageChannel` round-trip delta | Browser analogue of node `event_loop_lag_*` / iOS `queue.main`. Name `main_thread_lag_ms`. |
+| Main-thread responsiveness | `MessageChannel` / `scheduler.yield` round-trip delta (not `setTimeout(0)`, 4 ms clamp) | Name `main_thread_lag_ms`. **Measure only while `document.visibilityState === 'visible'`; omit (never zero) when hidden** — background tabs clamp/throttle timers and `MessageChannel` to ~1 s and then ~1 min, so a hidden-tab round-trip measures throttling and would paint a hang that did not happen (the inverse of the Deno `event_loop_lag` lie). Not comparable to iOS `queue.main`, which has no such artifact. Probe 5 must include hidden-tab lag vs a known sync block before ST4. |
 
 ### P3 — Electron main-process telemetry (`@bugsee/electron`)
 Gated into the main-process sampler; `electron` is already an injected arg (no package dependency).
@@ -93,7 +93,7 @@ Gated into the main-process sampler; `electron` is already an injected arg (no p
 | Per-process CPU+memory (`app_metrics`: type, pid, cpu %, workingSet) | `app.getAppMetrics()` |
 | `child_process_gone` event (type, reason, exitCode) | `app.on('child-process-gone')` — beyond the existing `render-process-gone` incident path |
 | `power_suspend/resume`, `power_lock/unlock`, `power_ac/battery` events | `powerMonitor` |
-| `displays` (above) incl. add/remove/metrics-change events | `screen` |
+| `displays` as an Android-shaped display LIST (id, size, scale, state), + add/remove/metrics-change events | `screen.getAllDisplays()` — use the name `displays` ONLY once that list shape is specified/confirmed against the viewer (Q5); else a JS-specific name |
 | GPU info (context) | `app.getGPUInfo('basic')` — wrap in try/catch (throws on Linux without acceleration, per Sentry) |
 | Window focus/blur/show/hide/unresponsive events | `BrowserWindow` |
 
@@ -118,6 +118,16 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
   `@bugsee/core`.
 - **Runtime-portable.** Shared tiers reach globals only via `globalThis as unknown as {…}` casts. `v8`/`fs`/
   `perf_hooks` live in `@bugsee/node` behind the existing guarded-metrics seam (`guarded-system-metrics.ts`).
+- **Named per-runtime flags, never `typeof fn === 'function'` or `value !== 0`.** ST1 lives in
+  `createNodeSystemMetricsSampler`, which `@bugsee/bun`/`@bugsee/deno` reuse wholesale via
+  `createGuardedSystemMetricsSampler`, so any metric added there ships on all three runtimes unless flagged.
+  Add `measuresGc`, `measuresV8Heap`, `measuresAvailableMemory`, `measuresConstrainedMemory` (default ON for
+  Node). `@bugsee/bun`: all four `false`. `@bugsee/deno`: `measuresGc:false`, `measuresAvailableMemory:false`
+  (incomparable), `measuresConstrainedMemory:false` until a Linux probe, `measuresV8Heap:true` (measured real).
+  Put the bun/deno `false`s AFTER `...options` — where `captureLocalVariables: false` already lives
+  (`bun/src/launch.ts:32`, `deno/src/launch.ts:41`) — so a caller cannot switch the lie back on. Bun's
+  `constrainedMemory` of 68.7 GB passes any numeric sanity filter, which is why the sentinel check alone is not a gate.
+  Tests must run the sampler under a Bun/Deno-shaped fake and assert these traces are ABSENT.
 - **Per-runtime gates, not passive tells.** Anything UNMEASURED on Bun/Deno ships with a runtime flag (like
   `measuresEventLoopDelay`) defaulting to OFF there until measured; `@bugsee/{bun,deno}` flip it only with a
   recorded measurement in this doc.
@@ -154,7 +164,7 @@ Measure, on real runtimes, with the SDK's own call path (not a toy script):
 2. `v8.getHeapStatistics()` and `getHeapSpaceStatistics()` — present and non-constant on bun and deno?
 3. `fs.statfs` — present and correct on bun and deno?
 4. `process.availableMemory()` / `getActiveResourcesInfo()` — presence per runtime and min Node version.
-5. Browser: rAF-counter cost and accuracy in background tabs; Compute Pressure availability; `battery`
+5. Browser: rAF-counter cost and accuracy in background tabs; `main_thread_lag_ms` in a hidden tab vs a known sync block; Compute Pressure availability; `battery`
    events on Chromium.
 6. Sampler tick cost with P1 enabled (µs per tick) vs the current baseline.
 Record each result in §8 with runtime version and date, as `docs/PROGRESS.md` does for the existing gates.
@@ -203,11 +213,11 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 
 | Slice | Content | Depends on |
 |---|---|---|
-| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` shape fix + **sampler `{start,stop,sample}` lifecycle seam** | — |
+| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` decision (§3.1; default = leave as is) + **sampler `{start,stop,sample}` lifecycle seam** | — |
 | ST1 | Node/Deno: `v8_heap_*`, ceiling-based `ram_js_heap_*`, `process_memory_limit` (Linux probe first), `process_uptime_s`, optional `ram_system_available` (Node ≥22) | probes 2, 4 + Linux |
 | ST2 | Node: GC observer (`gc_*`) with per-runtime gate | probe 1 |
 | ST3 | Node: `disk_mem_*` (+ option) | probe 3 |
-| ST4 | Browser: `app_state`, `fps`, `displays`, `main_thread_lag_ms`, dark-mode/freeze/resume events | probe 5 |
+| ST4 | Browser: `app_state`, `fps`, `screen_size` (optional), `main_thread_lag_ms`, dark-mode/freeze/resume events | probe 5 |
 | ST5 | Browser: event-driven battery/charging; `connection` only with the online/offline + change pair and the `onLine`-first mapper kept | probe 5 |
 | ST6 | Electron: `app_metrics`, `child_process_gone`, power/screen/window events, GPU context | — |
 | ST7 | Serverless context: Lambda context fields, cloud-region audit | Q4 |
