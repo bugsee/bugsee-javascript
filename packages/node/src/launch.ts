@@ -868,7 +868,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     createSystemTracesProvider({
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
-        : { producers: options.systemTraceProducers ?? createNodeSystemTraceProducers() }),
+        : {
+            producers:
+              options.systemTraceProducers ??
+              createNodeSystemTraceProducers({
+                // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+                ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+                ...(options.onError !== undefined ? { onError: options.onError } : {}),
+              }),
+          }),
       refreshMs: Math.min(10_000, Math.max(1_000, (maxRecordingTime * 1000) / 4)),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

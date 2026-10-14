@@ -19,7 +19,11 @@ import { bunSystemProbe } from './environment';
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
-    systemTraceProducers: createNodeSystemTraceProducers(),
+    systemTraceProducers: createNodeSystemTraceProducers({
+      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, after `...options` so a caller cannot switch them on. Measured on
     // Bun 1.4.0: `Debugger.enable` is REFUSED — `Inspector method "Debugger.enable" requires an active

@@ -296,3 +296,58 @@ describe('@bugsee/bun launch', () => {
     }
   });
 });
+
+describe('@bugsee/bun — the launch scheduler / onError reach the trace tracker', () => {
+  const recordingScheduler = () => {
+    const calls: Array<{ cb: () => void; ms: number }> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb, ms) => {
+        calls.push({ cb, ms });
+        return `h${calls.length}`;
+      },
+      clearInterval: () => {},
+    };
+    return { calls, scheduler };
+  };
+
+  it('forwards the launch scheduler and onError into the producer factory', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    const { scheduler } = recordingScheduler();
+    const onError = vi.fn();
+    track(launchCore('tok', base({ scheduler, onError })).client);
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);
+    const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
+    expect(arg?.scheduler).toBe(scheduler);
+    expect(arg?.onError).toBe(onError);
+  });
+
+  it('sampling runs on the injected scheduler: a fake tick produces a stats emit (no real timer)', async () => {
+    const { calls, scheduler } = recordingScheduler();
+    const store = memStore();
+    track(
+      launchCore('tok', base({ scheduler, captureStore: store, captureSystemTraces: true })).client,
+    );
+    const rss = async () =>
+      ((await createCaptureExporter(store).drain()).get('traces.system') ?? []).filter(
+        (e) => (e.data as { name: string }).name === 'process_memory_rss',
+      ).length;
+    expect(await rss()).toBe(1); // the start baseline
+    for (const c of calls.filter((x) => x.ms === 1000)) c.cb();
+    expect(await rss()).toBe(2);
+  });
+
+  it('a throwing reader during a poll reaches options.onError', () => {
+    const { calls, scheduler } = recordingScheduler();
+    const onError = vi.fn();
+    track(launchCore('tok', base({ scheduler, onError, captureSystemTraces: true })).client);
+    const spy = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      throw new Error('memoryUsage boom');
+    });
+    try {
+      for (const c of calls.filter((x) => x.ms === 1000)) c.cb();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+});

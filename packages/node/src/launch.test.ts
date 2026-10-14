@@ -1466,6 +1466,51 @@ describe('launch — system trace producers', () => {
     }
   });
 
+  it('the DEFAULT producers sample through the injected scheduler (no real timer)', async () => {
+    const fs = fakeScheduler();
+    const store = memStore();
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    const rss = async () =>
+      ((await drain(store, 'traces.system')) ?? []).filter(
+        (e) => (e.data as { name: string }).name === 'process_memory_rss',
+      ).length;
+    expect(await rss()).toBe(1); // the start baseline
+    for (const t of fs.calls.filter((c) => c.ms === 1000)) t.cb(); // every 1 s SDK timer, once
+    expect(await rss()).toBe(2); // the tracker's poll, driven by the fake scheduler
+  });
+
+  it('a throwing reader during a DEFAULT-producer poll reaches options.onError', () => {
+    const fs = fakeScheduler();
+    const onError = vi.fn();
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        onError,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    const spy = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      throw new Error('memoryUsage boom');
+    });
+    try {
+      for (const t of fs.calls.filter((c) => c.ms === 1000)) t.cb();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+
   it('a legacy systemMetricsSampler still wins when supplied, and the producers are then not started', () => {
     const start = vi.fn();
     const spy: TraceProducer = { name: 'spy', start, stop: () => {} };

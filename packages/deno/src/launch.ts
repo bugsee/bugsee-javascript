@@ -26,7 +26,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // 160.956ms, bun 146.634ms, deno 0.065ms. Reporting 0.065ms through a 150ms freeze reads as a
     // healthy process, so the lag traces are omitted here rather than fabricated. ELU self-disables on
     // its own tell (a zero `idle`), so it needs no flag.
-    systemTraceProducers: createNodeSystemTraceProducers({ measuresEventLoopDelay: false }),
+    systemTraceProducers: createNodeSystemTraceProducers({
+      measuresEventLoopDelay: false,
+      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, and deliberately AFTER `...options` so a caller cannot switch them
     // back on. This is not a preference: with `includeCaught` Deno FREEZES. Measured with the real SDK
