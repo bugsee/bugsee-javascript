@@ -55,17 +55,20 @@ small (§4). Many Android/iOS traces have **no JS API** and are explicitly not p
 
 ## 4. Proposed additions (prioritised)
 
-Naming rule: use the Android wire name when the quantity is the same thing; otherwise a JS-specific name in
-the existing `process_*` / `event_loop_*` style. Units: bytes unless Android says otherwise.
+Naming rule: use the Android wire name ONLY when the quantity is the same thing; otherwise a JS-specific name in
+the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused Android name specifies otherwise
+(`disk_mem_*` is MB). Values must be the Android/iOS wire shape or the viewer cannot render them (the
+`orientation`/`connection` precedent).
 
 ### P1 — Node/Bun/Deno runtime depth (`@bugsee/node`)
 | Trace | Source | Notes |
 |---|---|---|
 | `gc_pause_ms` (sum/max per interval), `gc_count` (optionally by type tag) | `PerformanceObserver({entryTypes:['gc']})` | Broadest competitor-backed gap. **MEASURED: node only — blind on Bun and Deno (§8). Gate OFF there.** |
 | `v8_heap_size_limit`, `v8_heap_available`, `v8_heap_malloced`, `v8_heap_peak_malloced` | `v8.getHeapStatistics()` | Cheap on Node/Deno (µs). **MEASURED: do not emit on Bun** — JSC-derived, limit not a ceiling, ~1 ms/call (§8). |
-| `ram_js_heap_{total,free,used}` on Node | `v8.getHeapStatistics()` (`heap_size_limit` = total, as Android's `ram_jvm_heap` contract: total = max, free = total − used) | Gives the viewer the same grouping browser already gets. Decision Q2. |
+| `ram_js_heap_{total,free,used}` on Node/Deno | `v8.getHeapStatistics()`: `total` = `heap_size_limit` (the CEILING, Android `ram_jvm_heap` contract), `used` = `used_heap_size`, `free` = limit − used | **Not an alias of `process_memory_heap_*`**: `process_memory_heap_total` is `heapTotal` (committed heap, not the ceiling). Only `used` is the same number in both families; `total` and `free` differ. Keep `process_memory_heap_*` as committed. Same name = same quantity as browser/Android. Decision Q2. |
+| `process_memory_limit` (cgroup cap) | `process.constrainedMemory()` (Node ≥18.15; `SYNTHESIS.md` T1 calls it the real OOM predictor) | Emit ONLY when the value is `> 0` AND `< 2^63` AND `≤ os.totalmem()`; omit for `0` (macOS/unconstrained) and the 2^64 Linux sentinel — never gate on `!== 0` alone. **Needs a Linux probe (macOS-only so far).** Deno/Bun semantics unmeasured. |
 | `ram_system_available` | `process.availableMemory()` | Sentry uses it. **MEASURED: not comparable across runtimes (24 GB vs 0.9 GB same host) and absent on Node 18 — Node ≥22 only, if at all (§8).** |
-| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | Android/iOS MB integer, change-deduped (≥1 MB). Opt-in-able like iOS `BugseeOptionCaptureDiskSpace`. **MEASURED sound on node/bun/deno (§8).** |
+| `disk_mem_free`, `disk_mem_total` | `fs.statfs` (Node ≥18.15) | **Unit: integer MB** (the Android/iOS wire; a deliberate exception to the bytes rule above, converted in the sampler from `bsize × bavail` / `bsize × blocks`), change-deduped (≥1 MB). **Path: the filesystem `dataDir` lives on** (`effectiveDataDir`), not `/` or cwd — it is that volume's space, not mobile "device storage", and differs from `/` on overlay/container roots. Opt-in like iOS `BugseeOptionCaptureDiskSpace`. §8 confirmed `statfs` is present and returns sane block counts on node/bun/deno; it did NOT check wire units or path choice. |
 | `handles_active`, `requests_active` | `process.getActiveResourcesInfo()` | Elastic/OTel. Low priority; **MEASURED: always 0 on Bun/Deno → Node only.** |
 | `process_uptime_s` | `process.uptime()` | Trivial; Sentry/Datadog/OTel. |
 
@@ -73,12 +76,13 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless Android say
 | Trace / event | Source | Notes |
 |---|---|---|
 | `fps` | `requestAnimationFrame` counter over the 1 s window | Android `fps`; iOS `fps`; Highlight/OpenReplay. **Gate on visibility; never keep a permanent rAF loop in a hidden tab** (battery + keeps page awake). |
-| `app_state` (step trace) | `document.visibilityState` | Android+iOS have it; JS has only the events today. Reuse the existing visibility listener. |
+| `app_state` (step trace) | `document.visibilityState` mapped to the Android vocabulary (`foreground`/`background`, per Android `TraceAppState`) | NEVER put raw `visible`/`hidden`/`prerender` on `traces.system`. Verify the exact Android value set and the viewer table (Q5) first; `process_foreground`/`process_background` events already exist, so this trace is optional until the viewer needs the step curve. |
 | `displays` | `screen.width/height`, `devicePixelRatio`; Electron `screen.getAllDisplays()` | Static snapshot + `resize`/`display-metrics-changed`. |
-| `thermal_state` | Compute Pressure `PressureObserver` | Chromium-only, experimental, permissions-policy gated → **behind feature detection, off by default**. |
-| `DarkModeChanged` event | `matchMedia('(prefers-color-scheme: dark)')` change | Android name; trivial. |
+| `cpu_pressure` (**not** `thermal_state`) | Compute Pressure `PressureObserver.observe('cpu')` | Chromium-only, experimental, permissions-policy gated. It is CPU CONTENTION (incl. other tabs) with states `nominal/fair/serious/critical`, not Android's 0–6 temperature/throttling enum — so it gets a JS-specific name and the API's own state strings. Map to `thermal_state` only if `PressureObserver.knownSources` includes `thermals` AND the value is converted to Android's int enum. Feature-detect the SOURCE, not just the constructor. Off by default. |
+| `dark_mode_changed` event | `matchMedia('(prefers-color-scheme: dark)')` change | Existing JS `events.system` names are snake_case; use `dark_mode_changed` unless Q5 shows the viewer keys Android's `DarkModeChanged`. |
 | `freeze` / `resume` events | Page Lifecycle | Complements `process_background`. |
-| Event-driven `battery`/`charging`/`connection` | `levelchange`, `chargingchange`, `connection` `change` | Replaces 1 s polling for these; OpenReplay precedent. Keep a 1 s fallback only where events are absent. |
+| Event-driven `battery`/`charging` | `levelchange`, `chargingchange` | May replace 1 s polling for these two. |
+| `connection` — **keep polling (or add events) but never drop the `onLine`-first mapper** | `window` `online`/`offline` **and** `connection.change`, mapped through `system-trace-values.ts` (`navigator.onLine` outranks `connection.type`) | `connection.change` does NOT fire on `offline` (a Chromium NetworkInformation can still say `wifi` while offline), so replacing the 1 s read with `change` alone leaves the trace stuck on `wifi` after the network drops while `events.system` `offline` fires — the streams disagree. Do not remove polling until the online/offline + change pair is specified and tested. |
 | `hardware_concurrency` (context, not trace) | `navigator.hardwareConcurrency` | Sentry; static → belongs in environment, not a trace. |
 | Main-thread responsiveness | `setTimeout`/`MessageChannel` round-trip delta | Browser analogue of node `event_loop_lag_*` / iOS `queue.main`. Name `main_thread_lag_ms`. |
 
@@ -102,7 +106,7 @@ Gated into the main-process sampler; `electron` is already an injected arg (no p
 
 ### Explicitly NOT ported
 `wifi`, `cellular`, `bluetooth`, `nfc`, `screen_brightness`, `game_mode`, `satellite`, `device_idle`,
-`low_power_*`, `thermal_headroom`, iOS `accessibility`/`fold_state`/`hinge_angle`, `ram_low_memory` /
+`low_power_*`, `thermal_state`/`thermal_headroom` (browser Compute Pressure is CPU, not thermal — see `cpu_pressure`), iOS `accessibility`/`fold_state`/`hinge_angle`, `ram_low_memory` /
 `MemoryPressure` / `TrimMemory` (no JS signal; a heap-ratio threshold would be an invention — if wanted later it
 must be named derived, e.g. `heap_pressure`), `UserDidTakeScreenshot`, `ClipboardChanged` content, input-device
 events. Reasons: no API, privacy, or Bugsee-internal state.
@@ -120,8 +124,16 @@ events. Reasons: no API, privacy, or Bugsee-internal state.
 - **Cadence.** Keep the single 1 s sampler for cheap sync reads. Slow/expensive sources (`fs.statfs`,
   `getAppMetrics`, `getHeapSpaceStatistics`) sample every N ticks (Android precedent: process memory every
   5th tick, disk every 5 s). Event-driven sources emit on change with dedupe (iOS `emitIfChangedName`).
-- **Cost.** GC observer and rAF counter run only while a subscriber is present (subscriber-presence drives
-  activation, per the pub/sub architecture). Budget: the sampler tick must stay well under the existing
+- **Lifecycle seam (REQUIRED, ST0).** Today the platform sampler is a bare `sample: () => TraceSample[]`
+  (`system-traces-provider.ts:33`) built unconditionally at launch (`browser/src/launch.ts:798`,
+  `node/src/launch.ts:866`), and the provider is not tied to an interceptor, so interceptor subscriber-presence
+  does NOT apply to it; `stop()` only clears the 1 s timer. Standing sources (GC `PerformanceObserver`, rAF
+  counter, `PressureObserver`, battery/connection/`matchMedia` listeners) therefore MUST NOT be installed in the
+  sampler factory — they would run with `captureSystemTraces:false` and survive `client.stop()`. Extend the
+  sampler contract to `{ start(), stop(), sample() }` (or a dedicated provider/interceptor): attach in
+  `start`, tear down in `stop`; the gate is `captureSystemTraces` + provider start/stop. Each standing source
+  needs a test proving it is absent when the option is off and released on stop.
+- **Cost.** GC observer and rAF counter run only between provider `start`/`stop` (see Lifecycle seam). Budget: the sampler tick must stay well under the existing
   cost envelope; measure, don't assume.
 - **Protocol.** Trace names are free-form in `traces.system`, but the viewer renders from fixed lookup tables
   (`web-tier-wire-alignment`): new names need a viewer-side title/units entry or they render raw. See Q5.
@@ -159,10 +171,10 @@ deno 2.8.3. Method: allocate+retain ~100 MB of arrays, churn garbage, read `v8.g
 | `PerformanceObserver('gc')` entries after heavy churn + forced GC | **works** (28–234 entries; `detail.kind` + `duration` present) | **BLIND — 0 entries** | **BLIND — 0 entries** (also with `--v8-flags=--expose-gc`) |
 | `v8.getHeapStatistics()` tracks a +100 MB retained alloc | yes (Δ99.8 MB, = `memoryUsage().heapUsed`) | yes but **JSC-derived**: Δ62 MB for the same alloc; `malloced_memory == used == total` (aliases); **`heap_size_limit` is not a ceiling** — it moved 55.9 MB → 1.07 GB with heap growth | yes (Δ99.9 MB, real V8) |
 | `v8.getHeapSpaceStatistics()` | real spaces | answers, but only `old_space` is non-zero (a JSC mapping, not V8 spaces) | real spaces |
-| `getHeapStatistics()` cost | 0.3 µs/call | **0.2–1.6 ms/call** (`bun:jsc.heapStats()` 0.47 ms) — ~1000× node | 1.3 µs/call |
+| `getHeapStatistics()` cost | 0.3 µs/call | **0.2–1.6 ms/call at a small heap — NOT a bound.** `docs/research/capture-apis/SYNTHESIS.md` (§528–539, 699) measured it **heap-linear on Bun: 394 µs at 1–5 MB → 16.9 ms at 20–52 MB → 69 ms at 127–199 MB** (~7% sustained stall at 1 Hz) because JSC walks the heap to fake V8 stats. Cite 69 ms as the bound. (`bun:jsc.heapStats()` 0.47 ms here, one heap size.) | 1.3 µs/call |
 | `fs.statfs` / `statfsSync` | present (node 18.15+ ok); ~0.8 µs sync | present, correct (same blocks as node); 0.5 µs | present, correct; 2.1 µs |
 | `process.availableMemory()` | absent on node 18; present 22+ | present | present — but value differs wildly (24 GB vs node's 0.9 GB on the same host): **semantics not comparable across runtimes** |
-| `process.constrainedMemory()` | 0 (no cgroup limit) | 68.7 GB (looks like a cap, not a container limit) | 0 |
+| `process.constrainedMemory()` | 0 on **macOS**; on Linux Node 22.14 (review host) it returned `18446744073709552000` (≈2^64, the "memory.max = max" sentinel), NOT 0 | 68.7 GB on macOS (not a container limit) | 0 on macOS |
 | `process.getActiveResourcesInfo()` | present (18+) | present, returns 0 entries | present, 0 entries |
 | `process.resourceUsage()` | present | present | **absent** |
 
@@ -180,6 +192,9 @@ deno 2.8.3. Method: allocate+retain ~100 MB of arrays, churn garbage, read `v8.g
 5. `handles_active`/`requests_active` is near-useless on Bun/Deno (always 0) → Node only, low priority.
 6. Per-space heap is meaningless on Bun → Node/Deno only if built at all.
 
+**Corrections after review (PR #53):** `constrainedMemory` unconstrained sentinel differs by OS (Linux 2^64 vs
+macOS 0); the Bun heap-stats cost is heap-linear (SYNTHESIS §699), not 1.6 ms.
+
 **Still unmeasured:** Deno <2.8 (declared floor 2.0), Bun <1.4, Node 20; browser probes (rAF in hidden tabs,
 Compute Pressure, battery events); sampler tick cost with P1 enabled through the SDK; Linux/Windows
 (all numbers above are macOS).
@@ -188,23 +203,25 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 
 | Slice | Content | Depends on |
 |---|---|---|
-| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` shape fix | — |
-| ST1 | Node: `v8_heap_*`, `ram_js_heap_*` aliases, `process_uptime_s`, `ram_system_available` | probes 2, 4 |
+| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` shape fix + **sampler `{start,stop,sample}` lifecycle seam** | — |
+| ST1 | Node/Deno: `v8_heap_*`, ceiling-based `ram_js_heap_*`, `process_memory_limit` (Linux probe first), `process_uptime_s`, optional `ram_system_available` (Node ≥22) | probes 2, 4 + Linux |
 | ST2 | Node: GC observer (`gc_*`) with per-runtime gate | probe 1 |
 | ST3 | Node: `disk_mem_*` (+ option) | probe 3 |
 | ST4 | Browser: `app_state`, `fps`, `displays`, `main_thread_lag_ms`, dark-mode/freeze/resume events | probe 5 |
-| ST5 | Browser: event-driven battery/connection | probe 5 |
+| ST5 | Browser: event-driven battery/charging; `connection` only with the online/offline + change pair and the `onLine`-first mapper kept | probe 5 |
 | ST6 | Electron: `app_metrics`, `child_process_gone`, power/screen/window events, GPU context | — |
 | ST7 | Serverless context: Lambda context fields, cloud-region audit | Q4 |
-| ST8 | Optional: Compute Pressure `thermal_state` (flagged off) | probe 5 |
+| ST8 | Optional: Compute Pressure `cpu_pressure` (flagged off) | probe 5 |
 
 ## 10. Open questions (need a product/owner decision)
 
 - **Q1.** Do long tasks / LoAF / web vitals / navigation+resource timing belong in `@bugsee/performance`
   (already owns web-vitals) rather than `traces.system`? Recommendation: yes — keep them out of this doc's
   scope and confirm `@bugsee/performance` covers long tasks/LoAF; check for overlap before any build.
-- **Q2.** Should Node emit `ram_js_heap_*` *in addition to* `process_memory_heap_*`? Recommendation: yes
-  (viewer grouping parity with browser/Android); accept the duplicate values.
+- **Q2.** Should Node/Deno emit `ram_js_heap_*` *in addition to* `process_memory_heap_*`? Recommendation: yes,
+  as a DIFFERENT quantity (ceiling-based total/free, per §4 P1), not a duplicate; only `used` repeats. Subsumes
+  `SYNTHESIS.md` T1 (`heap_size_limit` / `constrainedMemory`), which already proposed this — this doc must
+  reconcile with it, not restate it.
 - **Q3.** Omit vs `"$$unavailable"` for unsupported services. Recommendation: keep omitting (consistent with
   the ELU/Deno precedent) unless the viewer needs the sentinel — verify viewer handling first.
 - **Q4.** Does the env builder already detect cloud provider/region? (Not checked.)
