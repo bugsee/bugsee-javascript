@@ -155,6 +155,7 @@ function uploadTransport() {
 // --- harness -------------------------------------------------------------------------------------
 
 const clients: Bugsee[] = [];
+const clientsStop = (): Array<Promise<boolean>> => clients.splice(0).map((c) => c.stop());
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   resetBrowserDeviceIdCache();
@@ -1115,6 +1116,116 @@ describe('launch', () => {
     );
     await new Promise((r) => setTimeout(r, 0));
     expect(getBattery).not.toHaveBeenCalled();
+  });
+
+  describe('default sensor traces (tracker-backed producers, no sampler override)', () => {
+    // The shipped path: no `systemMetricsSampler`, so heap / connection / orientation come from the
+    // trackers over the injected window + the live globals.
+    const noSampler = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => {
+      const { systemMetricsSampler: _legacy, ...rest } = baseOptions(over);
+      return rest;
+    };
+    const stubSensors = (): void => {
+      vi.stubGlobal('navigator', {
+        onLine: true,
+        deviceMemory: 4,
+        connection: { type: 'wifi', effectiveType: '4g' },
+      });
+      vi.stubGlobal('performance', {
+        memory: { usedJSHeapSize: 10, totalJSHeapSize: 20, jsHeapSizeLimit: 100 },
+      });
+      vi.stubGlobal('screen', { orientation: { type: 'portrait-primary', angle: 0 } });
+    };
+
+    it('captures heap, advertised RAM, connection and orientation from the real globals', async () => {
+      stubSensors();
+      const store = memStore();
+      await launchTracked('tok', noSampler({ captureStore: store }));
+      const rows = new Map(
+        ((await drain(store, 'traces.system')) ?? []).map((e) => {
+          const d = e.data as { name: string; value: unknown };
+          return [d.name, d.value];
+        }),
+      );
+      expect(rows.get('ram_js_heap_total')).toBe(100);
+      expect(rows.get('ram_js_heap_free')).toBe(90);
+      expect(rows.get('ram_js_heap_used')).toBe(10);
+      expect(rows.get('ram_system_advertised')).toBe(4 * 1024 ** 3);
+      expect(rows.get('connection')).toMatchObject({ type: 'wifi', effective_type: '4g' });
+      expect(rows.get('orientation')).toBe(1);
+    });
+
+    it('listens on the INJECTED window for connectivity only while capturing, and releases it on stop', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        // the system-events source listens on the same window, so isolate the trace trackers
+        noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
+      );
+      expect(w.count('online')).toBe(1);
+      expect(w.count('offline')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      await client.stop();
+      expect(w.count('online')).toBe(0);
+      expect(w.count('offline')).toBe(0);
+      expect(w.count('orientationchange')).toBe(0);
+    });
+
+    it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const timers = vi.fn(() => 'h');
+      await launchTracked(
+        'tok',
+        noSampler({
+          window: w.win,
+          captureStore: memStore(),
+          captureSystemTraces: false,
+          captureSystemEvents: false, // the events source listens on the same window
+          scheduler: { setInterval: timers, clearInterval: () => {} },
+        }),
+      );
+      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      // the capture-store tick may use the scheduler; the heap poll must not add its own 1 s timer
+      const heapTimers = timers.mock.calls.length;
+      expect(heapTimers).toBeLessThanOrEqual(1);
+    });
+
+    it('drives the heap poll through the launch scheduler (one extra interval only where the engine has performance.memory)', async () => {
+      const intervals = async (withHeap: boolean): Promise<number> => {
+        stubSensors();
+        if (!withHeap) vi.stubGlobal('performance', {});
+        const timers = vi.fn((_cb: () => void, _ms: number) => 'h');
+        await launchTracked(
+          'tok',
+          noSampler({
+            captureStore: memStore(),
+            scheduler: { setInterval: timers, clearInterval: () => {} },
+          }),
+        );
+        return timers.mock.calls.filter(([, ms]) => ms === 1000).length;
+      };
+      const without = await intervals(false);
+      await Promise.all(clientsStop());
+      const withHeap = await intervals(true);
+      expect(withHeap).toBe(without + 1);
+    });
+
+    it('an offline event is captured as a not_reachable connection row', async () => {
+      stubSensors();
+      const nav = (globalThis as { navigator: { onLine: boolean } }).navigator;
+      const w = fakeWindow();
+      const store = memStore();
+      await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+      nav.onLine = false;
+      w.emit('offline', {});
+      const types = ((await drain(store, 'traces.system')) ?? [])
+        .map((e) => e.data as { name: string; value: { type?: string } })
+        .filter((d) => d.name === 'connection')
+        .map((d) => d.value.type);
+      expect(types).toEqual(['wifi', 'not_reachable']);
+    });
   });
 
   it('wires the network capture provider (captureNetwork on): a fetch yields a network entry', async () => {

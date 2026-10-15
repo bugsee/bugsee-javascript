@@ -3,11 +3,11 @@ import {
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTraceProducers,
-  createBrowserSystemTracesSampler,
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
+  defaultBrowserTraceEnv,
   parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
@@ -672,8 +672,18 @@ export function launchWithSeams(
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
-      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      // `systemMetricsSampler` is now only an override; the default traces are tracker-backed producers.
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler }
+        : {}),
+      producers: createBrowserSystemTraceProducers(
+        {
+          ...defaultBrowserTraceEnv(),
+          ...(win !== undefined ? { window: win } : {}),
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        },
+        options.onError,
+      ),
       refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

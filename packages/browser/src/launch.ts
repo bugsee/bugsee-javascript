@@ -92,8 +92,7 @@ import {
 } from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserSystemTracesSampler } from './system-metrics';
-import { createBrowserSystemTraceProducers } from './trace-producers';
+import { createBrowserSystemTraceProducers, defaultBrowserTraceEnv } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -439,7 +438,10 @@ export interface BugseeLaunchOptions {
   triggerPipeline?: TriggerPipeline;
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
-  /** System-traces sampler. Default the performance.memory sampler. */
+  /**
+   * LEGACY polled system-traces override, read every tick next to the default producers. The default
+   * traces (heap, connection, orientation, battery) are tracker-backed producers, not a sampler.
+   */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
   bundleStore?: BundleStore;
@@ -841,8 +843,18 @@ async function buildLaunch(
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
-      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      // `systemMetricsSampler` is now only an override; the default traces are tracker-backed producers.
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler }
+        : {}),
+      producers: createBrowserSystemTraceProducers(
+        {
+          ...defaultBrowserTraceEnv(),
+          window: win,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        },
+        options.onError,
+      ),
       refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
