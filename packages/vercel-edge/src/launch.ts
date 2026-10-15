@@ -9,6 +9,7 @@ import {
   BUGSEE_SDK_VERSION,
   type BugseeClient,
   BugseeStatus,
+  bundledAppIdentity,
   type CaptureStore,
   CaptureStoreToken,
   type Clock,
@@ -31,6 +32,7 @@ import {
   type HttpTransport,
   type LifecycleEventsListener,
   type RequestContext,
+  resolveAppIdentity,
   resolveFailOnBoolean,
   resolveLaunchOptions,
   resolveMaxPartitions,
@@ -43,6 +45,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
 import { describeValue, reportGuarded } from '@bugsee/util';
+import { EDGE_APP_VERSION_HINT, edgeAppIdentity, warnToConsole } from './app-identity';
 import { createEdgeUnhandledRejectionProvider, type EdgeGlobalEvents } from './detection';
 import { buildEdgeEnvironment } from './environment';
 import {
@@ -277,6 +280,12 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
   const uploader = createBundleUploader(transport);
   const uploadPipeline = createUploadPipeline({ api, uploader });
 
+  const appIdentity = resolveAppIdentity(
+    { version: options.appVersion, build: options.appBuild },
+    [bundledAppIdentity, edgeAppIdentity],
+    warnToConsole,
+    EDGE_APP_VERSION_HINT,
+  );
   const getEnvironment = () =>
     buildEdgeEnvironment({
       sdkVersion,
@@ -284,8 +293,8 @@ export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = 
       ...(options.runtimeVersion !== undefined ? { runtimeVersion: options.runtimeVersion } : {}),
       options: resolved.canonical,
       ...(options.appId !== undefined ? { appId: options.appId } : {}),
-      ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-      ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+      ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+      ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
     });
 
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);

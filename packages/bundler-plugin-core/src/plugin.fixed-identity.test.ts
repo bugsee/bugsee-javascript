@@ -1,0 +1,245 @@
+// The upload / registration label and the constants the app actually reads must agree, on every bundler:
+//  - a version/build the user defines themselves IS the identity (a JSON string literal), and an expression
+//    we cannot read is never replaced by a different auto-detected value (explicit values only);
+//  - Rollup and a webpack without a DefinePlugin cannot be told what the bundle reports, so Rollup bakes the
+//    value itself and an un-bakeable path labels with explicit values only.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { UnpluginOptions } from 'unplugin';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CI_COMMIT_ENV_VARS } from './app-identity';
+import type { BugseePluginOptions, ResolvedPluginOptions } from './resolve';
+
+const { uploadSpy } = vi.hoisted(() => ({
+  uploadSpy: vi.fn(async (_resolved: unknown, _outDir: string, _deps?: unknown) => undefined),
+}));
+vi.mock('./resolve', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./resolve')>()),
+  runPluginUpload: uploadSpy,
+}));
+
+const { bugseeUnpluginFactory } = await import('./plugin');
+
+const make = (options: BugseePluginOptions): UnpluginOptions =>
+  bugseeUnpluginFactory({ appToken: 't', ...options }, { framework: 'rollup' }) as UnpluginOptions;
+
+let web: string;
+let repo: string;
+let mid: string;
+
+beforeAll(() => {
+  repo = mkdtempSync(join(tmpdir(), 'bugsee-fixed-identity-'));
+  web = join(repo, 'apps', 'web');
+  mkdirSync(join(web, 'dist'), { recursive: true });
+  writeFileSync(join(web, 'package.json'), '{"name":"web","version":"2.4.1"}');
+  mid = join(repo, 'apps', 'mid');
+  mkdirSync(join(mid, 'dist'), { recursive: true });
+  writeFileSync(join(mid, 'package.json'), '{"name":"mid","version":"1.0.0"}');
+});
+afterAll(() => {
+  rmSync(repo, { recursive: true, force: true });
+});
+beforeEach(() => {
+  uploadSpy.mockClear();
+  vi.stubEnv('BUGSEE_APP_VERSION', '');
+  vi.stubEnv('BUGSEE_APP_BUILD', '');
+  for (const name of CI_COMMIT_ENV_VARS) {
+    vi.stubEnv(name, '');
+  }
+});
+
+const uploaded = (call = 0): ResolvedPluginOptions =>
+  uploadSpy.mock.calls[call]?.[0] as ResolvedPluginOptions;
+
+type ViteConfig = (c: { root?: string; define?: Record<string, unknown> }) => unknown;
+const viteConfig = (p: UnpluginOptions): ViteConfig =>
+  (p.vite as unknown as { config: ViteConfig }).config;
+type WriteBundle = (output: { dir?: string }) => Promise<void>;
+const viteWriteBundle = (p: UnpluginOptions): WriteBundle =>
+  (p.vite as unknown as { writeBundle: WriteBundle }).writeBundle;
+
+const VERSION = '__BUGSEE_APP_VERSION__';
+const BUILD = '__BUGSEE_APP_BUILD__';
+
+describe('a user define of the identity constants is the identity for the upload too', () => {
+  it('vite: a string-literal define is uploaded (not the package.json version)', async () => {
+    const plugin = make({});
+    viteConfig(plugin)({ root: web, define: { [VERSION]: JSON.stringify('9.9.9') } });
+    await viteWriteBundle(plugin)({ dir: join(web, 'dist') });
+    expect(uploaded().appVersion).toBe('9.9.9');
+  });
+
+  it('vite: an expression define is NOT replaced by the detected version — explicit values only', async () => {
+    const plugin = make({});
+    viteConfig(plugin)({ root: web, define: { [VERSION]: 'process.env.APP_VERSION' } });
+    await viteWriteBundle(plugin)({ dir: join(web, 'dist') });
+    expect(uploaded().appVersion).toBe('0.0.0');
+    const explicit = make({ appVersion: '3.0.0' });
+    viteConfig(explicit)({ root: web, define: { [VERSION]: 'process.env.APP_VERSION' } });
+    await viteWriteBundle(explicit)({ dir: join(web, 'dist') });
+    expect(uploaded(1).appVersion).toBe('3.0.0');
+  });
+
+  it('vite: the other, undefined constant is still detected and baked', async () => {
+    const plugin = make({ appBuild: 'b1' });
+    const result = viteConfig(plugin)({
+      root: web,
+      define: { [VERSION]: JSON.stringify('9.9.9') },
+    }) as { define: Record<string, string> };
+    expect(result.define).toEqual({ [BUILD]: '"b1"' });
+    await viteWriteBundle(plugin)({ dir: join(web, 'dist') });
+    expect(uploaded()).toMatchObject({ appVersion: '9.9.9', appBuild: 'b1' });
+  });
+
+  it('esbuild: the user define is the uploaded identity', async () => {
+    const plugin = make({});
+    const options: { define?: Record<string, string>; absWorkingDir?: string } = {
+      absWorkingDir: web,
+      define: { [VERSION]: JSON.stringify('9.9.9') },
+    };
+    (plugin.esbuild as unknown as { config: (o: unknown) => void }).config(options);
+    expect(options.define?.[VERSION]).toBe('"9.9.9"'); // the user's own value is kept
+    await (plugin.rollup as unknown as { writeBundle: WriteBundle }).writeBundle({
+      dir: join(web, 'dist'),
+    });
+    expect(uploaded().appVersion).toBe('9.9.9');
+  });
+
+  it('webpack: an existing DefinePlugin of the constant is the uploaded identity', async () => {
+    const taps: Array<() => Promise<void>> = [];
+    const compiler = {
+      context: web,
+      options: {
+        plugins: [{ definitions: { [VERSION]: JSON.stringify('9.9.9') } }],
+        output: { path: join(web, 'dist') },
+      },
+      hooks: { afterEmit: { tapPromise: (_n: string, fn: () => Promise<void>) => taps.push(fn) } },
+      webpack: {
+        DefinePlugin: class {
+          apply() {}
+        },
+      },
+    };
+    (make({}).webpack as (c: unknown) => void)(compiler);
+    await taps[0]?.();
+    expect(uploaded().appVersion).toBe('9.9.9');
+  });
+
+  it("webpack 4 (no DefinePlugin of its own) still honours the user's own DefinePlugin literal", async () => {
+    const taps: Array<() => Promise<void>> = [];
+    const compiler = {
+      context: web,
+      options: {
+        plugins: [{ definitions: { [VERSION]: JSON.stringify('9.9.9') } }],
+        output: { path: join(web, 'dist') },
+      },
+      hooks: { afterEmit: { tapPromise: (_n: string, fn: () => Promise<void>) => taps.push(fn) } },
+    };
+    (make({}).webpack as (c: unknown) => void)(compiler);
+    await taps[0]?.();
+    expect(uploaded()).toMatchObject({ appVersion: '9.9.9', appBuild: '0' });
+  });
+
+  it('rspack: a user-defined constant is not baked again, and the other still is', () => {
+    const applied: Array<Record<string, string>> = [];
+    const compiler = {
+      context: web,
+      options: { plugins: [{ definitions: { [VERSION]: '"9.9.9"' } }], output: {} },
+      hooks: { afterEmit: { tapPromise: () => undefined } },
+      rspack: {
+        DefinePlugin: class {
+          constructor(readonly definitions: Record<string, string>) {}
+          apply() {
+            applied.push(this.definitions);
+          }
+        },
+      },
+    };
+    (make({ appBuild: 'b1' }).rspack as (c: unknown) => void)(compiler);
+    expect(applied).toEqual([{ [BUILD]: '"b1"' }]);
+  });
+});
+
+describe('a webpack/rspack with no DefinePlugin cannot bake: label with explicit values only', () => {
+  const noDefine = (taps: Array<() => Promise<void>>) => ({
+    context: web,
+    options: { plugins: [], output: { path: join(web, 'dist') } },
+    hooks: { afterEmit: { tapPromise: (_n: string, fn: () => Promise<void>) => taps.push(fn) } },
+  });
+
+  it('does not upload the package.json version the bundle will never report', async () => {
+    const taps: Array<() => Promise<void>> = [];
+    (make({}).webpack as (c: unknown) => void)(noDefine(taps));
+    await taps[0]?.();
+    expect(uploaded()).toMatchObject({ appVersion: '0.0.0', appBuild: '0' });
+  });
+
+  it('still honours an explicit appVersion / appBuild', async () => {
+    const taps: Array<() => Promise<void>> = [];
+    (make({ appVersion: '5.0.0', appBuild: '12' }).webpack as (c: unknown) => void)(noDefine(taps));
+    await taps[0]?.();
+    expect(uploaded()).toMatchObject({ appVersion: '5.0.0', appBuild: '12' });
+  });
+});
+
+describe('rollup bakes the identity itself', () => {
+  type RenderChunk = (
+    code: string,
+    chunk: unknown,
+    output: { dir?: string; file?: string },
+  ) => { code: string; map: { mappings: string } } | null;
+  const renderChunk = (p: UnpluginOptions): RenderChunk =>
+    (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+  const rollupWrite = (p: UnpluginOptions): WriteBundle =>
+    (p.rollup as unknown as { writeBundle: WriteBundle }).writeBundle;
+  const dist = () => ({ dir: join(web, 'dist') });
+
+  it('replaces the free constants with the detected values and returns a source map', () => {
+    const code = `const v = typeof ${VERSION} === 'string' ? ${VERSION} : '0.0.0'; const b = ${BUILD};`;
+    const out = renderChunk(make({ appBuild: 'b1' }))(code, {}, dist());
+    expect(out?.code).toBe(
+      `const v = typeof "2.4.1" === 'string' ? "2.4.1" : '0.0.0'; const b = "b1";`,
+    );
+    expect(out?.map.mappings).not.toBe('');
+  });
+
+  it('the map is character-precise (hires), so a replacement does not shift every later column', () => {
+    const out = renderChunk(make({}))(`aaaa; f(${VERSION}); bbbb; cccc`, {}, dist());
+    // one segment per untouched character, not one per token
+    expect(out?.map.mappings.split(',').length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('does not touch a longer identifier, a property of the same name, or a chunk without the constant', () => {
+    const plugin = make({});
+    const code = `x.${VERSION}; ${VERSION}2; $${VERSION}; ${VERSION}$;`;
+    expect(renderChunk(plugin)(code, {}, dist())).toBeNull();
+    expect(renderChunk(plugin)('const a = 1;', {}, dist())).toBeNull();
+  });
+
+  it('resolves from the output file directory when there is no dir', () => {
+    const out = renderChunk(make({}))(`f(${VERSION})`, {}, { file: join(web, 'dist', 'a.js') });
+    expect(out?.code).toBe('f("2.4.1")');
+  });
+
+  it('bakes nothing when disabled, when nothing was found, or when the output directory is unknown', () => {
+    expect(renderChunk(make({ disabled: true }))(`f(${VERSION})`, {}, dist())).toBeNull();
+    expect(renderChunk(make({}))(`f(${VERSION})`, {}, { dir: join(repo, 'nowhere') })).toBeNull();
+    expect(renderChunk(make({}))(`f(${VERSION})`, {}, {})).toBeNull();
+  });
+
+  it('the upload carries the value that was baked even if package.json changes mid-build', async () => {
+    const plugin = make({});
+    renderChunk(plugin)(`f(${VERSION})`, {}, { dir: join(mid, 'dist') });
+    writeFileSync(join(mid, 'package.json'), '{"name":"mid","version":"7.7.7"}');
+    await rollupWrite(plugin)({ dir: join(mid, 'dist') });
+    expect(uploaded().appVersion).toBe('1.0.0');
+  });
+
+  it('the upload carries exactly the value that was baked, per output directory', async () => {
+    const plugin = make({});
+    renderChunk(plugin)(`f(${VERSION})`, {}, dist());
+    await rollupWrite(plugin)(dist());
+    expect(uploaded().appVersion).toBe('2.4.1');
+  });
+});

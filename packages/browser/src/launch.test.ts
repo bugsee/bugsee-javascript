@@ -2647,3 +2647,84 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
     ]);
   });
 });
+
+describe('app identity resolution', () => {
+  const metaDocument = (meta: Record<string, string>) =>
+    ({
+      ...fakeWindow().win,
+      querySelector: (selector: string) => {
+        const name = /meta\[name="([^"]+)"\]/.exec(selector)?.[1] ?? '';
+        const content = meta[name];
+        return content === undefined ? null : { getAttribute: () => content };
+      },
+    }) as unknown as Document;
+
+  const launchApp = async (over: Partial<BugseeLaunchOptions> = {}) => {
+    const { client, internals } = await launchCore('tok', baseOptions({ carrier: {}, ...over }));
+    clients.push(client);
+    return {
+      app: internals?.getEnvironment().app,
+      version: internals?.appVersion,
+      build: internals?.appBuild,
+    };
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the build-time constants and forwards them on the internals', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await launchApp();
+    expect(out.app).toMatchObject({ version: '4.5.6', build: '777' });
+    expect([out.version, out.build]).toEqual(['4.5.6', '777']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('lets explicit options win over the build-time constants', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    const out = await launchApp({ appVersion: '1.0.0', appBuild: '5' });
+    expect(out.app).toMatchObject({ version: '1.0.0', build: '5' });
+  });
+
+  it('reads <meta name="bugsee:app-version|app-build"> from the page document', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await launchApp({
+      document: metaDocument({ 'bugsee:app-version': '8.1.0', 'bugsee:app-build': '812' }),
+    });
+    expect(out.app).toMatchObject({ version: '8.1.0', build: '812' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('prefers the build-time constant over a meta tag', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    const out = await launchApp({
+      document: metaDocument({ 'bugsee:app-version': '8.1.0', 'bugsee:app-build': '812' }),
+    });
+    expect(out.app).toMatchObject({ version: '4.5.6', build: '812' });
+  });
+
+  it('warns exactly once when no version can be found, and falls back to the defaults', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await launchApp({ document: metaDocument({}) });
+    expect(out.app).toMatchObject({ version: '0.0.0', build: '0' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('app version');
+    const text = String(warn.mock.calls[0]?.[0]);
+    expect(text).toContain('appVersion');
+    expect(text).toContain('Vite or webpack plugin');
+    expect(text).toContain('__BUGSEE_APP_VERSION__');
+    expect(text).toContain('bugsee:app-version');
+    expect(text).not.toMatch(/\bBUGSEE_APP_VERSION\b/);
+  });
+
+  it('survives a window without a document', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await launchApp({ window: fakeWindow().win });
+    expect(out.app).toMatchObject({ version: '0.0.0' });
+  });
+});

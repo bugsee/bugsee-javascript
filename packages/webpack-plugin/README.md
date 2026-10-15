@@ -37,7 +37,7 @@ Without a token (neither `appToken` nor the `BUGSEE_APP_TOKEN` environment varia
 ## Options
 
 - `appToken`: your Bugsee app token. Falls back to `BUGSEE_APP_TOKEN`.
-- `appVersion`, `appBuild`: recorded with the uploaded maps. Fall back to `BUGSEE_APP_VERSION` and `BUGSEE_APP_BUILD`.
+- `appVersion`, `appBuild`: recorded with the uploaded maps, and baked into your bundle so the Bugsee SDK in your app reports the same release without you passing `appVersion` to `launch()`. The version comes from the option, then `BUGSEE_APP_VERSION`, then the `version` in the nearest `package.json` at or above your bundler's project directory (Vite `root`, webpack `context`; not the repository root, so a monorepo app reports its own version). If that nearest `package.json` has no version, there is none: a workspace or parent version is not adopted. Blank or whitespace-only values count as unset. The build comes from the option, then `BUGSEE_APP_BUILD`, then the commit id your CI provides (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`, `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`). When nothing is found the upload uses `0.0.0` / `0` and nothing is baked in. The values are baked in even with no app token, and never override a `define` you set yourself; `disabled: true` turns it off.
 - `deleteMaps`: delete the `.map` files from the output after upload. Default `true`.
 - `stripSourcesContent`: upload maps without embedded source code, if you do not want your source to leave the build machine. Default `false`.
 - `failOnError`: fail the build if the upload fails. Default `false`, so a failed upload never breaks a deploy.

@@ -1683,3 +1683,48 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
     expect(await run(false)).toEqual([LifecycleEvents.Launching, LifecycleEvents.Launched]);
   });
 });
+
+describe('app identity resolution', () => {
+  const reportedApp = async (over: Partial<BugseeWorkerLaunchOptions> = {}) => {
+    const transport = uploadTransport();
+    const client = track('tok', baseOptions({ transport, carrier: {}, ...over }));
+    await client.logException(new Error('x'));
+    await client.flush();
+    return issueJson(transport).environment.app;
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the build-time constants and does not warn', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await reportedApp()).toMatchObject({ version: '4.5.6', build: '777' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('lets explicit options win over the build-time constants', async () => {
+    vi.stubGlobal('__BUGSEE_APP_VERSION__', '4.5.6');
+    vi.stubGlobal('__BUGSEE_APP_BUILD__', '777');
+    expect(await reportedApp({ appVersion: '1.0.0', appBuild: '5' })).toMatchObject({
+      version: '1.0.0',
+      build: '5',
+    });
+  });
+
+  it('warns exactly once when no version can be found, and falls back to the defaults', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('app version');
+    const text = String(warn.mock.calls[0]?.[0]);
+    expect(text).toContain('appVersion');
+    expect(text).toContain('Vite or webpack plugin');
+    expect(text).toContain('__BUGSEE_APP_VERSION__');
+    expect(text).not.toContain('bugsee:app-version');
+    expect(text).not.toMatch(/\bBUGSEE_APP_VERSION\b/);
+  });
+});

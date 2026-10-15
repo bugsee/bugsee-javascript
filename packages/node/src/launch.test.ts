@@ -2235,7 +2235,8 @@ describe('launchCore', () => {
     clients.push(client);
     expect(internals?.baseUrl).toBe('https://eu.bugsee.test');
     expect(internals?.onError).toBe(onError);
-    expect(internals?.appVersion).toBeUndefined();
+    // A package.json version is found for a launch with no explicit one, and no warning is printed.
+    expect(internals?.appVersion).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('internals carries a request-scoped activeSpanStore keyed off the launch’s own context store', () => {
@@ -3161,5 +3162,124 @@ describe('launch — application frame paths', () => {
     expect(parseLocation('/Users/jane/work/acme/src/a.js:1:1').file).toBe(
       '/Users/jane/work/acme/src/a.js',
     );
+  });
+});
+
+describe('app identity detection', () => {
+  const launchIdentity = (over: Partial<BugseeLaunchOptions> = {}) => {
+    const transport = uploadTransport();
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({ carrier: {}, transport, captureStore: memStore(), ...over }),
+    );
+    clients.push(client);
+    return { client, internals, transport };
+  };
+  const reportedApp = async (
+    client: { logException(e: Error): Promise<unknown> },
+    transport: ReturnType<typeof uploadTransport>,
+  ) => {
+    await client.logException(new Error('x'));
+    return (
+      JSON.parse(String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body)) as {
+        environment: EnvironmentEnvelope;
+      }
+    ).environment.app;
+  };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('puts the detected version and build in the report environment and the internals', async () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '7.1.0');
+    vi.stubEnv('BUGSEE_APP_BUILD', '');
+    vi.stubEnv('GITHUB_SHA', 'cafe1234');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { client, internals, transport } = launchIdentity();
+    expect(internals?.appVersion).toBe('7.1.0');
+    expect(internals?.appBuild).toBe('cafe1234');
+    expect(await reportedApp(client, transport)).toMatchObject({
+      version: '7.1.0',
+      build: 'cafe1234',
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('lets explicit options win over every detected value', async () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '7.1.0');
+    vi.stubEnv('BUGSEE_APP_BUILD', '99');
+    const { client, transport } = launchIdentity({
+      appVersion: '1.0.0',
+      appBuild: '5',
+      appIdentitySource: () => ({ version: '8.0.0', build: '8' }),
+    });
+    expect(await reportedApp(client, transport)).toMatchObject({ version: '1.0.0', build: '5' });
+  });
+
+  it('consults appIdentitySource before the environment', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '7.1.0');
+    vi.stubEnv('BUGSEE_APP_BUILD', '99');
+    const { internals } = launchIdentity({ appIdentitySource: () => ({ version: '8.0.0' }) });
+    expect(internals?.appVersion).toBe('8.0.0');
+    expect(internals?.appBuild).toBe('99'); // the source had no build, so the next one answers
+  });
+
+  it('starts the package.json search at appRoot', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    vi.stubEnv('npm_package_version', '');
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-appid-'));
+    writeFileSync(join(dir, 'package.json'), '{"version":"3.3.3"}');
+    expect(launchIdentity({ appRoot: dir }).internals?.appVersion).toBe('3.3.3');
+  });
+
+  it('a repeat launch() is ignored before identity is resolved: no second package.json read or warning', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    vi.stubEnv('npm_package_version', '');
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('gone');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const carrier = {};
+    const identitySource = vi.fn(() => undefined);
+    launchIdentity({ carrier, appRoot: '', appIdentitySource: identitySource });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const resolvedCalls = identitySource.mock.calls.length; // once per field (version, build)
+    expect(resolvedCalls).toBeGreaterThan(0);
+    const onError = vi.fn();
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier,
+        appRoot: '',
+        appIdentitySource: identitySource,
+        onError,
+        captureStore: memStore(),
+      }),
+    );
+    expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch notice
+    expect(warn).toHaveBeenCalledTimes(1); // still the one warning
+    expect(identitySource).toHaveBeenCalledTimes(resolvedCalls); // identity was not resolved again
+    // Restore here: a later test spying on the same method would otherwise inherit these call counts.
+    warn.mockRestore();
+    cwd.mockRestore();
+  });
+
+  it('warns once, through console.warn, when no version can be found', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    vi.stubEnv('npm_package_version', '');
+    vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('gone');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { internals } = launchIdentity({ appRoot: '' });
+    expect(internals?.appVersion).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('app version');
+    const text = String(warn.mock.calls[0]?.[0]);
+    expect(text).toContain('appVersion');
+    expect(text).toContain('BUGSEE_APP_VERSION');
+    expect(text).toContain('package.json');
   });
 });

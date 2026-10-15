@@ -12,6 +12,59 @@ const noVcs = { resolveVcs: async (): Promise<undefined> => undefined };
 /** VCS collection precedes the upload, so the upload starts a tick later than the call. */
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 
+/** No package.json anywhere: resolution falls through to the placeholders. */
+const noPackage = {
+  cwd: () => '/nowhere',
+  readFile: (): string => {
+    throw new Error('ENOENT');
+  },
+};
+
+describe('resolvePluginOptions app identity', () => {
+  const pkg = {
+    cwd: () => '/app',
+    readFile: (path: string): string => {
+      if (path === '/app/package.json') {
+        return '{"version":"4.5.6"}';
+      }
+      throw new Error('ENOENT');
+    },
+  };
+
+  it('falls back to package.json version and CI commit, and defines both', () => {
+    const r = resolvePluginOptions({}, { GITHUB_SHA: 'deadbeef' }, pkg);
+    expect(r.appVersion).toBe('4.5.6');
+    expect(r.appBuild).toBe('deadbeef');
+    expect(r.identityDefines).toEqual({
+      __BUGSEE_APP_VERSION__: '"4.5.6"',
+      __BUGSEE_APP_BUILD__: '"deadbeef"',
+    });
+  });
+
+  it('defines even without a token (the plugin is otherwise inactive)', () => {
+    const r = resolvePluginOptions({}, {}, pkg);
+    expect(r.enabled).toBe(false);
+    expect(r.identityDefines).toEqual({ __BUGSEE_APP_VERSION__: '"4.5.6"' });
+  });
+
+  it('defines nothing when disabled, yet still resolves the values', () => {
+    const r = resolvePluginOptions({ disabled: true, appVersion: '1.0.0' }, {}, pkg);
+    expect(r.appVersion).toBe('1.0.0');
+    expect(r.identityDefines).toEqual({});
+  });
+
+  it('does not define the placeholders', () => {
+    expect(resolvePluginOptions({ appToken: 't' }, {}, noPackage).identityDefines).toEqual({});
+  });
+
+  it('survives a throwing process.cwd()', () => {
+    const cwd = () => {
+      throw new Error('ENOENT uv_cwd');
+    };
+    expect(() => resolvePluginOptions({}, {}, { cwd })).not.toThrow();
+  });
+});
+
 describe('resolvePluginOptions', () => {
   it('uses explicit options, preferring them over env vars', () => {
     const r = resolvePluginOptions(
@@ -43,9 +96,10 @@ describe('resolvePluginOptions', () => {
   });
 
   it('applies defaults (version 0.0.0, build 0, deleteMaps true, dryRun false)', () => {
-    const r = resolvePluginOptions({ appToken: 't' }, {});
+    const r = resolvePluginOptions({ appToken: 't' }, {}, noPackage);
     expect(r.appVersion).toBe('0.0.0');
     expect(r.appBuild).toBe('0');
+    expect(r.identityDefines).toEqual({});
     expect(r.deleteMaps).toBe(true);
     expect(r.dryRun).toBe(false);
     expect(r.endpoint).toBeUndefined();
@@ -307,6 +361,7 @@ describe('runPluginUpload — VCS metadata collection', () => {
     const resolved = resolvePluginOptions(
       { appToken: 't', projectRoot: '/repo', commit: sha, allowDirtyCommit: true },
       {},
+      noPackage,
     );
     await runPluginUpload(resolved, '/out-vcs-1', { uploadSourcemaps, resolveVcs });
 
