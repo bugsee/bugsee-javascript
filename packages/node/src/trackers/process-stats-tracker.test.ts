@@ -288,6 +288,74 @@ describe('ProcessStatsTracker', () => {
     expect(errors).toHaveLength(1);
   });
 
+  it('current() after a failed activation RETRIES it (timer + event-loop source) instead of accepting a baseline from an unarmed tracker', () => {
+    const errors: unknown[] = [];
+    const calls: string[] = [];
+    let broken = true;
+    const eventLoop: EventLoopSource = {
+      read: () => undefined,
+      start: () => void calls.push('start'),
+      stop: () => void calls.push('stop'),
+    };
+    const { tracker, fs } = mk({
+      cpuUsage: () => {
+        if (broken) throw new Error('cpu boom');
+        return { user: 0, system: 0 };
+      },
+      eventLoop,
+      onError: (e) => errors.push(e),
+    });
+    const got: ProcessStats[] = [];
+    tracker.on('stats', (s) => got.push(s)); // activation fails, subscriber stays registered
+    expect(fs.sets()).toBe(0);
+    broken = false;
+    expect(tracker.current().memory).toEqual(mem); // the retry succeeds before the baseline is read
+    expect(fs.sets()).toBe(1);
+    expect(calls).toEqual(['start']);
+    fs.tick();
+    expect(got).toHaveLength(1); // the already-registered subscriber now receives ticks
+    expect(tracker.current()).toBe(got[0]);
+    expect(errors).toHaveLength(1);
+    // the retry happens once: a further current() does not re-activate
+    tracker.current();
+    expect(fs.sets()).toBe(1);
+    expect(calls).toEqual(['start']);
+  });
+
+  it('current() after a failed activation whose retry ALSO fails propagates the failure (and a later current() retries again)', () => {
+    const errors: unknown[] = [];
+    let broken = true;
+    const { tracker, fs } = mk({
+      cpuUsage: () => {
+        if (broken) throw new Error('cpu boom');
+        return { user: 0, system: 0 };
+      },
+      onError: (e) => errors.push(e),
+    });
+    tracker.on('stats', () => {});
+    expect(() => tracker.current()).toThrow('cpu boom');
+    expect(fs.sets()).toBe(0);
+    broken = false;
+    expect(() => tracker.current()).not.toThrow();
+    expect(fs.sets()).toBe(1);
+  });
+
+  it('a pending activation failure is cleared on deactivation: current() with no subscribers does not activate', () => {
+    let broken = true;
+    const { tracker, fs } = mk({
+      cpuUsage: () => {
+        if (broken) throw new Error('cpu boom');
+        return { user: 0, system: 0 };
+      },
+      onError: () => {},
+    });
+    const off = tracker.on('stats', () => {});
+    off();
+    broken = false;
+    tracker.current();
+    expect(fs.sets()).toBe(0); // no subscriber → no retry, no timer
+  });
+
   it('a throwing setInterval at activation stops the already-started event-loop source', () => {
     const errors: unknown[] = [];
     const calls: string[] = [];

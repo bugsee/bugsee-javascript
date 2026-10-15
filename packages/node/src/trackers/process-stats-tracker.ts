@@ -74,6 +74,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   #lastCpu = { user: 0, system: 0 };
   #lastWallMs = 0;
   #cached: ProcessStats | undefined;
+  #activationFailed = false;
 
   constructor(deps: ProcessStatsDeps = {}) {
     super(deps.onError);
@@ -92,17 +93,36 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
     this.#onError = deps.onError;
   }
 
-  /** Latest stats (read once on activation, then replaced on every poll). Safe for many callers. */
+  /**
+   * Latest stats (read once on activation, then replaced on every poll). Safe for many callers. If the
+   * activation failed, this RETRIES it first (a failure propagates) so a producer never takes a baseline
+   * from a tracker that has no timer and would otherwise stay silent until every subscriber left.
+   */
   current(): ProcessStats {
+    if (this.#activationFailed) {
+      this.#activate();
+      this.#activationFailed = false;
+    }
     this.#cached ??= this.#read();
     return this.#cached;
   }
 
   // Guarded: InterceptorBase marks the tracker active (and the subscriber is already registered) BEFORE
   // this runs, so a throw escaping here would leave an "active" tracker with no timer and leak the
-  // subscribing producer's listener. A failure is reported and everything started is unwound; the
-  // tracker then re-tries on its next activation (after the current subscribers leave).
+  // subscribing producer's listener. A failure is reported, everything started is unwound, and the
+  // failure is remembered so the next current() retries (deactivation clears it; the next activation
+  // retries too).
   protected onActivate(): void {
+    try {
+      this.#activate();
+    } catch (error) {
+      this.#activationFailed = true;
+      this.#onError?.(error);
+    }
+  }
+
+  // Starts everything or unwinds what it started and rethrows.
+  #activate(): void {
     try {
       this.#lastCpu = this.#d.cpuUsage();
       this.#lastWallMs = this.#d.monotonicNowMs();
@@ -113,13 +133,12 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
       }
       this.#timer = this.#d.scheduler.setInterval(() => this.#poll(), this.#d.intervalMs);
     } catch (error) {
-      this.#onError?.(error);
-      this.#timer = null;
       try {
         this.#stopEventLoop();
       } catch {
-        /* best-effort unwind; the original failure is the one reported */
+        /* best-effort unwind; the original failure is the one thrown */
       }
+      throw error;
     }
   }
 
@@ -135,6 +154,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
     this.#timer = null;
     this.#stopEventLoop();
     this.#cached = undefined;
+    this.#activationFailed = false;
   }
 
   #poll(): void {
