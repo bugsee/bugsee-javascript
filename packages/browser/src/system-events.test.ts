@@ -177,4 +177,22 @@ describe('createBrowserSystemEventsSource', () => {
     expect(win.count('pagehide')).toBe(1);
     off();
   });
+
+  it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
+    const { env, win } = fakeEnv();
+    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const source = createBrowserSystemEventsSource({ ...env, lifecycle });
+    const events: SystemEvent[] = [];
+    const first = source.onAny((_s, e) => events.push(e));
+    first();
+    expect(win.count('online')).toBe(0);
+    const second = source.onAny((_s, e) => events.push(e));
+    win.emit('online', {});
+    expect(events).toEqual([
+      { name: 'process_started' },
+      { name: 'process_started' },
+      { name: 'online' },
+    ]);
+    second();
+  });
 });

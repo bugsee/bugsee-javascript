@@ -459,7 +459,7 @@ describe('launch', () => {
     const w = fakeWindow();
     const doc = fakeWindow();
     const docWin = { ...doc.win, visibilityState: 'hidden' };
-    await launchTracked(
+    const client = await launchTracked(
       'tok',
       baseOptions({
         window: w.win,
@@ -476,6 +476,9 @@ describe('launch', () => {
       (e) => (e.data as { name: string }).name,
     );
     expect(names).toContain('process_background');
+    await client.stop();
+    expect(w.count('online') + w.count('orientationchange')).toBe(0);
+    expect(doc.count('visibilitychange')).toBe(0);
   });
 
   // Re-pointed from "captures a document interaction (click) as an events.user entry". What that test

@@ -166,4 +166,18 @@ describe('PageLifecycleTracker', () => {
     });
     expect(() => t.on('online', () => {})()).not.toThrow();
   });
+
+  it('a throwing consumer is reported and the other consumers still receive the event', () => {
+    const { win, doc } = mkEnv();
+    const onError = vi.fn();
+    const t = new PageLifecycleTracker({ window: win, document: doc }, onError);
+    const seen: string[] = [];
+    t.on('online', () => {
+      throw new Error('consumer');
+    });
+    t.on('online', () => seen.push('second'));
+    expect(() => win.fire('online')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(['second']);
+  });
 });

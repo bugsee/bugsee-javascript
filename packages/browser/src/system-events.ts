@@ -28,17 +28,17 @@ export interface BrowserSystemEventsEnv {
   document?: DocumentLike;
   screen?: ScreenLike;
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
-  lifecycle?: PageLifecycleTracker;
+  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
   onError?: (error: unknown) => void;
 }
 
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
-  readonly #lifecycle: PageLifecycleTracker;
+  readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
   readonly #screen: ScreenLike | undefined;
   #unsubscribe: Array<() => void> = [];
 
-  constructor(lifecycle: PageLifecycleTracker, screenLike: ScreenLike | undefined) {
+  constructor(lifecycle: Pick<PageLifecycleTracker, 'on'>, screenLike: ScreenLike | undefined) {
     super();
     this.#lifecycle = lifecycle;
     this.#screen = screenLike;
