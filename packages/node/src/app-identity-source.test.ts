@@ -36,6 +36,21 @@ describe('createNodeAppIdentitySource version', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it('trims padding from environment values (a trailing newline from a shell or CI export)', () => {
+    const source = createNodeAppIdentitySource({
+      env: { BUGSEE_APP_VERSION: ' 1.0.0\n', BUGSEE_APP_BUILD: '\tabc123 ' },
+      cwd: () => '/app',
+      readFile: files({}),
+    });
+    expect(source()).toEqual({ version: '1.0.0', build: 'abc123' });
+    const npm = createNodeAppIdentitySource({
+      env: { npm_package_version: '2.0.0\n', GITHUB_SHA: ' deadbeef\n' },
+      cwd: () => '/app',
+      readFile: files({}),
+    });
+    expect(npm()).toEqual({ version: '2.0.0', build: 'deadbeef' });
+  });
+
   it('falls back to npm_package_version, ignoring blank values', () => {
     const source = createNodeAppIdentitySource({
       env: { BUGSEE_APP_VERSION: '  ', npm_package_version: '2.0.0' },

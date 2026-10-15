@@ -46,7 +46,7 @@ const firstSet = (
   for (const name of names) {
     const value = env[name];
     if (present(value)) {
-      return value;
+      return value.trim();
     }
   }
   return undefined;

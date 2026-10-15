@@ -30,11 +30,11 @@ export const edgeAppIdentity = (): AppIdentity | undefined => {
   }
   const identity: AppIdentity = {};
   if (present(env.BUGSEE_APP_VERSION)) {
-    identity.version = env.BUGSEE_APP_VERSION;
+    identity.version = env.BUGSEE_APP_VERSION.trim();
   }
   const build = [env.BUGSEE_APP_BUILD, env.VERCEL_GIT_COMMIT_SHA].find(present);
   if (build !== undefined) {
-    identity.build = build;
+    identity.build = build.trim();
   }
   return identity;
 };

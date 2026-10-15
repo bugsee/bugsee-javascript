@@ -550,6 +550,21 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // but application frames have no such landmark.
   setStackAppRoot(options.appRoot ?? safeCwd());
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
+  const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
+
+  // Bugsee is a per-process singleton: if a client was already launched (same SDK version on
+  // the process Carrier), warn and return it rather than building a second client / second handler set.
+  const carrier = options.carrier;
+  const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
+  if (alreadyLaunched !== undefined) {
+    options.onError?.(
+      new Error(
+        'Bugsee.launch() called more than once in this process; the repeat call is ignored',
+      ),
+    );
+    return { client: alreadyLaunched, internals: undefined };
+  }
+
   // Settled once: the explicit options win, then build-time constants, the caller's source, and finally
   // what the process environment and package.json say. A missing version is warned about, once.
   const appIdentity = resolveAppIdentity(
@@ -567,20 +582,6 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     warnToConsole,
     'Pass `appVersion` (and `appBuild`) to launch(), set BUGSEE_APP_VERSION (and BUGSEE_APP_BUILD), or give your package.json a version.',
   );
-  const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
-
-  // Bugsee is a per-process singleton: if a client was already launched (same SDK version on
-  // the process Carrier), warn and return it rather than building a second client / second handler set.
-  const carrier = options.carrier;
-  const alreadyLaunched = getCarrierClient<Bugsee>(carrier);
-  if (alreadyLaunched !== undefined) {
-    options.onError?.(
-      new Error(
-        'Bugsee.launch() called more than once in this process; the repeat call is ignored',
-      ),
-    );
-    return { client: alreadyLaunched, internals: undefined };
-  }
 
   // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
   // coordinators query (by each provider's controllingOption identifier), the OptionsContainer

@@ -101,6 +101,21 @@ describe('resolveAppIdentity', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('treats a whitespace-only explicit value as unset (a stray newline is not a choice)', () => {
+    const resolved = resolveAppIdentity({ version: ' \n', build: '\t' }, [
+      () => ({ version: '1.0.0', build: '3' }),
+    ]);
+    expect(resolved).toEqual({ version: '1.0.0', build: '3' });
+    const none = resolveAppIdentity({ version: '  ' }, []);
+    expect(none.version).toBeUndefined();
+  });
+
+  it('keeps a padded but non-blank explicit value exactly as given', () => {
+    expect(resolveAppIdentity({ version: ' 2.0.0 ' }, [() => ({ version: '1.0.0' })]).version).toBe(
+      ' 2.0.0 ',
+    );
+  });
+
   it('takes each field from the first source that has it', () => {
     const resolved = resolveAppIdentity({}, [
       () => ({ version: '1.0.0' }),

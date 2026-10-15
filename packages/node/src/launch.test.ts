@@ -3041,6 +3041,38 @@ describe('app identity detection', () => {
     expect(launchIdentity({ appRoot: dir }).internals?.appVersion).toBe('3.3.3');
   });
 
+  it('a repeat launch() is ignored before identity is resolved: no second package.json read or warning', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '');
+    vi.stubEnv('npm_package_version', '');
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('gone');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const carrier = {};
+    const identitySource = vi.fn(() => undefined);
+    launchIdentity({ carrier, appRoot: '', appIdentitySource: identitySource });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const resolvedCalls = identitySource.mock.calls.length; // once per field (version, build)
+    expect(resolvedCalls).toBeGreaterThan(0);
+    const onError = vi.fn();
+    launchTracked(
+      'tok',
+      baseOptions({
+        carrier,
+        appRoot: '',
+        appIdentitySource: identitySource,
+        onError,
+        captureStore: memStore(),
+      }),
+    );
+    expect(onError).toHaveBeenCalledTimes(1); // the repeat-launch notice
+    expect(warn).toHaveBeenCalledTimes(1); // still the one warning
+    expect(identitySource).toHaveBeenCalledTimes(resolvedCalls); // identity was not resolved again
+    // Restore here: a later test spying on the same method would otherwise inherit these call counts.
+    warn.mockRestore();
+    cwd.mockRestore();
+  });
+
   it('warns once, through console.warn, when no version can be found', () => {
     vi.stubEnv('BUGSEE_APP_VERSION', '');
     vi.stubEnv('npm_package_version', '');

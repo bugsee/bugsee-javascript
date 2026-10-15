@@ -29,8 +29,9 @@ const usable = (value: unknown): value is string =>
   typeof value === 'string' && value.trim() !== '';
 
 /**
- * Settles the app identity: an explicit option wins (an empty string is an explicit choice), otherwise
- * each field comes from the first source that has a usable value. A missing version is reported once
+ * Settles the app identity: an explicit option wins (an empty string is an explicit choice; a
+ * whitespace-only one is a stray newline, not a choice, and counts as unset), otherwise each field comes
+ * from the first source that has a usable value. A missing version is reported once
  * through `warn`; a missing build is not (it is a refinement of the version). `hint` says how THIS runtime
  * is told its version (a browser has no environment variables, a server does) and ends the warning.
  */
@@ -43,7 +44,7 @@ export const resolveAppIdentity = (
   const resolved: AppIdentity = {};
   for (const field of ['version', 'build'] as const) {
     const given = explicit[field];
-    if (given !== undefined) {
+    if (given !== undefined && (given === '' || usable(given))) {
       resolved[field] = given;
       continue;
     }

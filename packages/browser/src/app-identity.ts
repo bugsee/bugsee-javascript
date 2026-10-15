@@ -9,8 +9,13 @@ export const warnToConsole = (message: string): void => {
 export const BROWSER_APP_VERSION_HINT =
   'Pass `appVersion` (and `appBuild`) to launch(), use the Bugsee Vite or webpack plugin (it defines `__BUGSEE_APP_VERSION__`), set that constant yourself, or add <meta name="bugsee:app-version" content="...">.';
 
-const metaContent = (doc: Document, name: string): string | undefined =>
-  doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content') ?? undefined;
+// Trimmed here, at the source: a template often leaves padding or a newline in the attribute, and the
+// resolver keeps what a source hands it exactly (a build-time constant must stay byte-for-byte what was
+// uploaded). A blank attribute is no value.
+const metaContent = (doc: Document, name: string): string | undefined => {
+  const content = doc.querySelector(`meta[name="${name}"]`)?.getAttribute('content')?.trim();
+  return content === undefined || content === '' ? undefined : content;
+};
 
 /** Reads the app version/build a page declares through `<meta name="bugsee:app-version|app-build">`. */
 export const metaAppIdentity =
