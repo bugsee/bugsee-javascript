@@ -2,7 +2,7 @@ import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
-  createGuardedSystemMetricsSampler,
+  createNodeSystemTraceProducers,
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
@@ -13,7 +13,7 @@ import { denoSystemProbe } from './environment';
 // node:fs, node:process, node:worker_threads, node:inspector), so this reuses the ENTIRE @bugsee/node
 // composition (transport, fs storage, node:http capture, crash detection, durable queue + capture recovery,
 // CPU profiling, ANR/hang detection) and only swaps the two Deno-specific defaults: the system probe (reports
-// platform.type 'deno' + the Deno version) and the guarded system-metrics sampler (partial perf_hooks).
+// platform.type 'deno' + the Deno version) and the guarded system trace producers (partial perf_hooks).
 // Diagnostics that touch a partially-supported API (node:inspector / worker_threads) are capability-guarded
 // in the node tier, so they self-disable where Deno lacks them. Both defaults remain overridable (a
 // caller-supplied option spreads AFTER them).
@@ -26,7 +26,12 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // 160.956ms, bun 146.634ms, deno 0.065ms. Reporting 0.065ms through a 150ms freeze reads as a
     // healthy process, so the lag traces are omitted here rather than fabricated. ELU self-disables on
     // its own tell (a zero `idle`), so it needs no flag.
-    systemMetricsSampler: createGuardedSystemMetricsSampler({ measuresEventLoopDelay: false }),
+    systemTraceProducers: createNodeSystemTraceProducers({
+      measuresEventLoopDelay: false,
+      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, and deliberately AFTER `...options` so a caller cannot switch them
     // back on. This is not a preference: with `includeCaught` Deno FREEZES. Measured with the real SDK

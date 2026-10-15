@@ -1014,6 +1014,105 @@ describe('launch', () => {
     expect(await drain(store, 'traces.system')).toBeUndefined();
   });
 
+  const batteryManager = () => ({
+    level: 0.5,
+    charging: true,
+    addEventListener() {},
+    removeEventListener() {},
+  });
+
+  it('drives battery/charging through the real provider: getBattery is called and traces are stored', async () => {
+    const getBattery = vi.fn(() => Promise.resolve(batteryManager()));
+    vi.stubGlobal('navigator', { getBattery });
+    const store = memStore();
+    await launchTracked('tok', baseOptions({ captureStore: store }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(getBattery).toHaveBeenCalledTimes(1);
+    const traces = (await drain(store, 'traces.system'))?.map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 50 }));
+    expect(traces).toContainEqual(
+      expect.objectContaining({ name: 'charging', value: { state: 2 } }),
+    );
+  });
+
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        ...batteryManager(),
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    await launchTracked('tok', baseOptions({ captureStore: memStore(), onError }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('battery add refused');
+  });
+
+  it.each([
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s, exactly the floor
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor (2 x the 1s interval)
+    { maxRecordingTime: 600, refreshMs: 10_000 }, // 150s clamped down to 10s
+  ])('refreshes the held battery trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      vi.stubGlobal('navigator', { getBattery: () => Promise.resolve(batteryManager()) });
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          maxRecordingTime,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return `h${ticks.length}`;
+            },
+            clearInterval: () => {},
+          },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 0)); // getBattery resolves: the held baseline at t=0
+      const battery = async () =>
+        ((await drain(store, 'traces.system')) ?? []).filter(
+          (e) => (e.data as { name: string }).name === 'battery',
+        ).length;
+      const tick = () => {
+        for (const t of ticks.filter((x) => x.ms === 1000)) t.cb();
+      };
+      expect(await battery()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick();
+      expect(await battery()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick();
+      expect(await battery()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never calls getBattery when captureSystemTraces is false', async () => {
+    const getBattery = vi.fn(() => Promise.resolve(batteryManager()));
+    vi.stubGlobal('navigator', { getBattery });
+    await launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), captureSystemTraces: false }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(getBattery).not.toHaveBeenCalled();
+  });
+
   it('wires the network capture provider (captureNetwork on): a fetch yields a network entry', async () => {
     const slot = globalThis as unknown as {
       fetch?: (i: unknown, init?: unknown) => Promise<unknown>;

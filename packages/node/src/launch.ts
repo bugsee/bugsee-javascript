@@ -6,8 +6,10 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
+  type TraceProducer,
   type TraceSample,
 } from '@bugsee/capture';
 import {
@@ -133,7 +135,7 @@ import type { TraceResponseConfig } from './server-instrument';
 import { createSourceContextEnricher, type SourceContextOptions } from './source-context';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
-import { createNodeSystemMetricsSampler } from './system-metrics';
+import { createNodeSystemTraceProducers } from './trace-producers';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
 // @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
@@ -383,6 +385,18 @@ export interface BugseeLaunchOptions {
   hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
   /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
   systemMetricsSampler?: () => readonly TraceSample[];
+  /**
+   * Trace producers (each subscribes to trackers; the provider starts/stops them). Default: the node set
+   * (`createNodeSystemTraceProducers`, wired to this launch's `scheduler`/`onError`). A supplied
+   * `systemMetricsSampler` wins over this.
+   *
+   * PER-LAUNCH ONLY: producers are stateful — a producer's `start()` is a no-op while it is already started —
+   * so never share one array across clients; build a fresh set for each launch (it is RESET on relaunch).
+   * On Bun/Deno a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
+   * default set, including its gates (e.g. Deno's event-loop-lag opt-out), so pass
+   * `createNodeSystemTraceProducers({ measuresEventLoopDelay: false, … })` yourself there.
+   */
+  systemTraceProducers?: readonly TraceProducer[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
   bundleStore?: BundleStore;
   /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
@@ -863,7 +877,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   }
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createNodeSystemMetricsSampler(),
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
+        : {
+            producers:
+              options.systemTraceProducers ??
+              createNodeSystemTraceProducers({
+                // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+                ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+                ...(options.onError !== undefined ? { onError: options.onError } : {}),
+              }),
+          }),
+      refreshMs: deriveRefreshMs(maxRecordingTime * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

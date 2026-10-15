@@ -911,6 +911,114 @@ describe('launch (webview)', () => {
     expect(traces.some((e) => JSON.stringify(e.p).includes('wv_metric'))).toBe(true);
   });
 
+  it('streams battery/charging ({state}) from the browser battery producer', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {},
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getBattery).toHaveBeenCalledTimes(1);
+      const traces = entriesOfType(fake.msgs(), 'traces.system').map(
+        (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+      );
+      expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 100 }));
+      expect(traces).toContainEqual(
+        expect.objectContaining({ name: 'charging', value: { state: 3 } }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+  ])('refreshes the held battery trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const fake = fakeGlobal();
+    vi.stubGlobal('navigator', {
+      getBattery: () =>
+        Promise.resolve({
+          level: 1,
+          charging: true,
+          addEventListener() {},
+          removeEventListener() {},
+        }),
+    });
+    try {
+      vi.setSystemTime(0);
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          maxRecordingTime,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+            },
+            clearInterval: () => {},
+          },
+        } as Partial<BugseeWebViewLaunchOptions>),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const battery = () =>
+        entriesOfType(fake.msgs(), 'traces.system').filter(
+          (e) => (e.p as unknown as { data: { name: string } }).data.name === 'battery',
+        ).length;
+      const tick = () => {
+        for (const t of ticks.filter((x) => x.ms === 1000)) t.cb();
+      };
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick();
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick();
+      expect(battery()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    try {
+      track('tok', baseOptions({ global: fake.global, onError }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+        'battery add refused',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off', async () => {
     const fake = fakeGlobal();
     const client = track('tok', baseOptions({ global: fake.global }));

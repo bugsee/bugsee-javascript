@@ -14,6 +14,7 @@ import {
   createSystemEventsProvider,
   createSystemTracesProvider,
   createVideoAuxProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
   type TraceSample,
@@ -92,6 +93,7 @@ import {
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTracesSampler } from './system-metrics';
+import { createBrowserSystemTraceProducers } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -796,6 +798,9 @@ async function buildLaunch(
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

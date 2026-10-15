@@ -2,6 +2,7 @@ import {
   bindInputBlackout,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
+  createBrowserSystemTraceProducers,
   createBrowserSystemTracesSampler,
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
@@ -17,6 +18,7 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type TraceSample,
 } from '@bugsee/capture';
@@ -671,6 +673,9 @@ export function launchWithSeams(
   client.addCaptureProvider(
     createSystemTracesProvider({
       sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

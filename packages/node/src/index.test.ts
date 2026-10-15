@@ -45,6 +45,8 @@ const EXPECTED_EXPORTS = [
   'createNodeRequestContextStore',
   'createNodeSystemEventsSource',
   'createNodeSystemMetricsSampler',
+  'createNodeSystemTraceProducers',
+  'ProcessStatsTracker',
   'createProfilingController',
   'createRequestScopedActiveSpanStore',
   'createUncaughtExceptionProvider',

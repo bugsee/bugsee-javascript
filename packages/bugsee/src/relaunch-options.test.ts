@@ -121,7 +121,11 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `instanceIdentity` (node) is a per-instance identity: a pinned one must never be shared by two instances,
  *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
- *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list).
+ *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list);
+ *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
+ *    no-op while it is already started, so an instance still running on another client would silently no-op
+ *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
+ *    relaunch therefore builds the runtime's fresh default set.
  */
 const RESET_OPTIONS: readonly string[] = [
   'app',
@@ -196,6 +200,7 @@ const RESET_OPTIONS: readonly string[] = [
   'reportTrigger',
   'shutdownTimeoutMs',
   'startInBlackout',
+  'systemTraceProducers',
   'traceInteractions',
   'traceNavigations',
   'tracePropagationOrigin',

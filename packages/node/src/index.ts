@@ -122,3 +122,9 @@ export {
 } from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
+export { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+export {
+  type EventLoopSource,
+  type ProcessStats,
+  ProcessStatsTracker,
+} from './trackers/process-stats-tracker';
