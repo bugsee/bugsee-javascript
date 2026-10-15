@@ -147,4 +147,24 @@ describe('MemoryTracker', () => {
     t.on('memory', () => {})(); // activate (no timer), deactivate
     expect(s.clearInterval).toHaveBeenCalledTimes(1);
   });
+
+  it('a throwing scheduler is reported, not thrown out of on(); a later subscriber re-arms nothing but the tracker still releases cleanly', () => {
+    const onError = vi.fn();
+    const t = new MemoryTracker({
+      memory: () => mem(1),
+      scheduler: {
+        setInterval: () => {
+          throw new Error('no timers');
+        },
+        clearInterval: vi.fn(),
+      },
+      onError,
+    });
+    let off: (() => void) | undefined;
+    expect(() => {
+      off = t.on('memory', () => {});
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(() => off?.()).not.toThrow(); // no timer was armed, so nothing to clear
+  });
 });

@@ -50,9 +50,6 @@ const opts = (over: Partial<BugseeLaunchOptions>): BugseeLaunchOptions => ({
   systemMetricsSampler: () => [],
   captureNetwork: false,
   replay: false,
-  // Traces are irrelevant here and would give stop() captured data to persist, which this file's tight
-  // 5-step stop-deadline budget does not allow for (an empty legacy sampler used to guarantee none).
-  captureSystemTraces: false,
   persist: true,
   deviceIdEnv: {
     localStorage: { getItem: () => 'dev', setItem: () => {}, removeItem: () => {} },

@@ -188,6 +188,11 @@ export interface BrowserTraceEnv extends BatteryEnv {
   screen?: OrientationEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange`. */
   window?: ConnectionEnv['window'];
+  /**
+   * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
+   * connection and orientation traces (as on Node), so the sensor producers must not also emit them.
+   */
+  sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
 }
@@ -226,10 +231,12 @@ export function createBrowserSystemTraceProducers(
 ): TraceProducer[] {
   const perf = env.performance;
   const nav = env.navigator;
+  const battery = new BatteryProducer(
+    new BatteryTracker(env.getBattery ? { getBattery: env.getBattery } : {}, onError),
+  );
+  if (env.sensors === false) return [battery];
   return [
-    new BatteryProducer(
-      new BatteryTracker(env.getBattery ? { getBattery: env.getBattery } : {}, onError),
-    ),
+    battery,
     new MemoryProducer(
       new MemoryTracker({
         // Read through `env.performance` on every poll: `performance.memory` is a live getter.

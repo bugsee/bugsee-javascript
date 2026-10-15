@@ -66,7 +66,13 @@ export class MemoryTracker extends InterceptorBase<{ memory: MemoryState }> {
       this.#onError?.(error);
     }
     if (!supported) return;
-    this.#timer = this.#scheduler.setInterval(() => this.#poll(), this.#intervalMs);
+    // Guarded like the other trackers: the subscriber is already registered, so a throwing scheduler must
+    // be reported here, not leak out of on() and strand an "active" tracker with a leaked listener.
+    try {
+      this.#timer = this.#scheduler.setInterval(() => this.#poll(), this.#intervalMs);
+    } catch (error) {
+      this.#onError?.(error);
+    }
   }
 
   protected override onDeactivate(): void {

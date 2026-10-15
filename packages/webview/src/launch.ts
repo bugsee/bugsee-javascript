@@ -672,13 +672,14 @@ export function launchWithSeams(
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // `systemMetricsSampler` is now only an override; the default traces are tracker-backed producers.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
           ...defaultBrowserTraceEnv(),
+          ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           ...(win !== undefined ? { window: win } : {}),
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

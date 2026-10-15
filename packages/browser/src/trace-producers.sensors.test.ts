@@ -388,4 +388,14 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
     ]);
     expect(out).toEqual([{ name: 'orientation', value: 0 }]);
   });
+
+  it('sensors:false builds the battery producer only (a custom sampler replaces the sensor traces)', () => {
+    expect(
+      createBrowserSystemTraceProducers({
+        sensors: false,
+        performance: { memory: heap(1, 3) },
+        navigator: { onLine: true },
+      }).map((p) => p.name),
+    ).toEqual(['battery']);
+  });
 });

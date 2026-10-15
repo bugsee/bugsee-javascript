@@ -393,7 +393,7 @@ solid), in slices:
   event-driven `BatteryTracker`, not the sampler) to the existing `ram_js_heap_*`. Android trace-name parity; degrades per-API.
 - **BT1 — browser traces onto trackers (DONE, `feat/browser-trackers`):** the rest of the browser `traces.system`
   sampler moved onto the ST0′ tracker/producer structure and **`createBrowserSystemTracesSampler` / `BrowserTracesEnv`
-  are deleted** (`systemMetricsSampler` stays as a legacy override only). New `InterceptorBase` trackers in
+  are deleted** (`systemMetricsSampler` stays as a legacy override that REPLACES the heap/connection/orientation traces, as on Node; battery still runs). New `InterceptorBase` trackers in
   `packages/browser/src/trackers/`: `MemoryTracker` (the one `performance.memory` poll timer, started only on a
   subscriber and never where the engine has no `performance.memory`), `ConnectionTracker` (`online`/`offline` + `navigator.connection`
   `change`), `OrientationTracker` (`screen.orientation` `change` + `orientationchange`). Producers: `MemoryProducer`

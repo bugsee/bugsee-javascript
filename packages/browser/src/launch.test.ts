@@ -1212,6 +1212,28 @@ describe('launch', () => {
       expect(withHeap).toBe(without + 1);
     });
 
+    it('a systemMetricsSampler REPLACES the sensor traces (no duplicate heap rows, no sensor listeners); battery still runs', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          window: w.win,
+          captureStore: store,
+          captureSystemEvents: false,
+          systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
+        }),
+      );
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string; value: unknown }).name,
+      );
+      expect(names.filter((n) => n === 'ram_js_heap_used')).toHaveLength(1);
+      expect(names).not.toContain('connection');
+      expect(names).not.toContain('orientation');
+      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+    });
+
     it('an offline event is captured as a not_reachable connection row', async () => {
       stubSensors();
       const nav = (globalThis as { navigator: { onLine: boolean } }).navigator;

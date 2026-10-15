@@ -439,8 +439,8 @@ export interface BugseeLaunchOptions {
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
   /**
-   * LEGACY polled system-traces override, read every tick next to the default producers. The default
-   * traces (heap, connection, orientation, battery) are tracker-backed producers, not a sampler.
+   * LEGACY polled system-traces override. It REPLACES the default heap/connection/orientation traces (as on
+   * Node); battery stays a tracker-backed producer. The defaults are producers, not a sampler.
    */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
@@ -843,13 +843,14 @@ async function buildLaunch(
   client.addCaptureProvider(network.provider);
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // `systemMetricsSampler` is now only an override; the default traces are tracker-backed producers.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
           ...defaultBrowserTraceEnv(),
+          ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           window: win,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
