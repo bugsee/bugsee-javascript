@@ -135,6 +135,19 @@ const indexedDbPresent = (): boolean => {
   }
 };
 
+/**
+ * Whether the page exposes Web Locks (`navigator.locks`, a secure-context API); a throwing getter counts as
+ * absent. Without it a previous launch's durable data is never recovered or swept (liveness cannot tell a
+ * dead sibling from a live one), so the unattended persist default requires it.
+ */
+const navigatorLocksPresent = (): boolean => {
+  try {
+    return (globalThis as { navigator?: { locks?: unknown } }).navigator?.locks != null;
+  } catch {
+    return false;
+  }
+};
+
 const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
@@ -595,12 +608,16 @@ async function buildLaunch(
   // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
   // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
   // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
-  // Durable by default wherever an IndexedDB object exists, so the rolling window survives a reload or a
-  // browser restart. `persist: false` opts out; a non-boolean value is OFF and reported. Presence is all
-  // that is probed: if the store later cannot commit, writes fail into `onError` (best effort).
+  // Durable by default wherever an IndexedDB object AND Web Locks exist, so the rolling window survives a
+  // reload or a browser restart. Locks are required because recovery and the sweep of a previous launch's
+  // prefix both run through the liveness lock: without them the old data is never read or deleted and each
+  // reload would strand up to `maxDataSize` in the origin's shared quota. An explicit `persist: true` still
+  // opts into that no-locks degrade. `persist: false` opts out; a non-boolean value is OFF and reported.
+  // Presence is all that is probed: if the store later cannot commit, writes fail into `onError`.
   const persist =
     options.persist === undefined
-      ? options.indexedDB !== undefined || indexedDbPresent()
+      ? (options.indexedDB !== undefined || indexedDbPresent()) &&
+        (options.locks !== undefined || navigatorLocksPresent())
       : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
   const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;

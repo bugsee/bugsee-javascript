@@ -1341,6 +1341,62 @@ describe('launch', () => {
       );
     });
 
+    // Reload survival and prefix GC both need Web Locks (recoverIfDead is a no-op without them), so the
+    // unattended default must not strand ~10 MB per launch in the origin's quota.
+    it('stays in memory by default when IndexedDB exists but Web Locks do not', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+      expect(await databaseNames(idb)).not.toContain(captureDatabaseName('tok'));
+    });
+
+    it('persists by default when IndexedDB and the page navigator.locks are both present', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+      await launchTracked('tok', baseOptions({ persist: undefined }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats a throwing navigator getter as no Web Locks instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      vi.stubGlobal('navigator', {
+        get locks(): never {
+          throw new Error('denied');
+        },
+      });
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(client.isLaunched()).toBe(true);
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+    });
+
+    it('explicit persist:true still opts into the documented no-locks degrade', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      await launchTracked('tok', baseOptions({ persist: true }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('an injected locks manager counts as Web Locks availability for the default', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('navigator', {});
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
     it('stays in memory when persist is false, even with IndexedDB available', async () => {
       const idb = new IDBFactory();
       vi.stubGlobal('indexedDB', idb);

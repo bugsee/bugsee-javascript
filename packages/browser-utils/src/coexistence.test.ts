@@ -406,6 +406,20 @@ describe('createCoexistence — bundle queue', () => {
     expect(pipeline.enqueue).not.toHaveBeenCalled(); // no ids discovered → nothing recovered
   });
 
+  it('a throwing navigator.locks getter (sandboxed frame) degrades like absent locks instead of throwing', () => {
+    vi.stubGlobal('navigator', {
+      get locks(): never {
+        throw new Error('denied');
+      },
+    });
+    const onError = vi.fn();
+    expect(() =>
+      createCoexistence({ appToken: TOK, persist: true, indexedDB: new IDBFactory(), onError }),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1); // the one-time unavailable warning
+    expect((onError.mock.calls[0]?.[0] as Error).message).toContain('navigator.locks unavailable');
+  });
+
   it('degrades when Web Locks is unavailable: still persists locally, recovers no sibling', async () => {
     vi.stubGlobal('navigator', undefined); // no navigator.locks
     const idb = new IDBFactory();
