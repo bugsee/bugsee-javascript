@@ -5,10 +5,11 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bugseeEsbuildPlugin } from '@bugsee/bundler-plugin-core';
+import { bugseeEsbuildPlugin, bugseeRollupPlugin } from '@bugsee/bundler-plugin-core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import { build as esbuild } from 'esbuild';
+import { rollup } from 'rollup';
 import { build as viteBuild } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import webpack from 'webpack';
@@ -110,5 +111,39 @@ describe('app identity is baked into the bundle', () => {
     expect(out).toContain('7.8.9-e2e');
     expect(out).toContain('build-e2e');
     expect(out).not.toContain('__BUGSEE_APP_VERSION__');
+  });
+
+  // Rollup has no `define`: the plugin rewrites each rendered chunk (with a source map) instead.
+  it('rollup replaces both constants in the rendered chunk and keeps a source map', async () => {
+    writeFileSync(
+      join(dir, 'rollup-entry.js'),
+      SOURCE.replace(/^declare .*$/gm, '').replace('export const', 'const'),
+    );
+    const outDir = join(dir, 'rollup-out');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-entry.js'),
+      plugins: [bugseeRollupPlugin(IDENTITY)],
+    });
+    await bundle.write({ dir: outDir, format: 'es', sourcemap: true });
+    await bundle.close();
+    const out = readFileSync(join(outDir, 'rollup-entry.js'), 'utf8');
+    expect(out).toContain('7.8.9-e2e');
+    expect(out).toContain('build-e2e');
+    expect(out).not.toContain('__BUGSEE_APP_VERSION__');
+    const map = JSON.parse(readFileSync(join(outDir, 'rollup-entry.js.map'), 'utf8')) as {
+      mappings: string;
+    };
+    expect(map.mappings.length).toBeGreaterThan(0);
+  });
+
+  it('a disabled plugin leaves the identifiers alone (rollup)', async () => {
+    const outDir = join(dir, 'rollup-disabled');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-entry.js'),
+      plugins: [bugseeRollupPlugin({ ...IDENTITY, disabled: true })],
+    });
+    await bundle.write({ dir: outDir, format: 'es' });
+    await bundle.close();
+    expect(readFileSync(join(outDir, 'rollup-entry.js'), 'utf8')).toContain('no-version');
   });
 });

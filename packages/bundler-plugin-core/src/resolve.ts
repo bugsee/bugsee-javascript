@@ -2,7 +2,12 @@
 // with environment variables, applies defaults, and decides whether the plugin is active (a token is
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
-import { type AppIdentityDeps, appIdentityDefines, findAppIdentity } from './app-identity';
+import {
+  type AppIdentityDeps,
+  appIdentityDefines,
+  type FixedIdentity,
+  findAppIdentity,
+} from './app-identity';
 import {
   uploadSourcemaps as defaultUploadSourcemaps,
   type UploadSourcemapsResult,
@@ -24,7 +29,9 @@ export interface BugseePluginOptions {
    * App version. Falls back to `BUGSEE_APP_VERSION`, then the `version` of the nearest package.json at or
    * above the bundler's project directory (a nearest package.json without a version means none), else
    * `0.0.0`. A blank or whitespace-only value counts as unset. A real value is also baked into the bundle
-   * for the app's runtime SDK to read.
+   * for the app's runtime SDK to read (not on webpack 4, which cannot bake: only an explicit value is used
+   * there). A string `define` of `__BUGSEE_APP_VERSION__` in your own config wins for the upload too; an
+   * expression you define makes the upload use only this explicit option / `BUGSEE_APP_VERSION`.
    */
   appVersion?: string;
   /**
@@ -194,8 +201,9 @@ export function resolveIdentity(
   env: EnvRecord,
   root: string | undefined,
   deps: AppIdentityDeps = {},
+  fixed: FixedIdentity = {},
 ): ResolvedIdentity {
-  const found = findAppIdentity(options, env, deps, root);
+  const found = findAppIdentity(options, env, deps, root, fixed);
   return {
     appVersion: found.version ?? '0.0.0',
     appBuild: found.build ?? '0',

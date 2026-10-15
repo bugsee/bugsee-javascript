@@ -30,6 +30,7 @@
   "dependencies": {
     "@bugsee/bugsee-cli": "^0.7.11",
     "@bugsee/core": "workspace:*",
+    "magic-string": "^0.30.21",
     "unplugin": "^2.3.10"
   },
   "devDependencies": {

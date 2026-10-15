@@ -69,28 +69,79 @@ function nonBlank(value: string | undefined): string | undefined {
 }
 
 /**
+ * A constant the app's own bundler config already defines, as far as we can read it. A string is the value
+ * the app will report (a JSON string literal), so it is also the identity to upload. `null` is a definition we
+ * cannot read (an expression, a non-string): it is what the app reports, so no auto-detected value may be
+ * uploaded in its place — only values the user gave explicitly. `undefined` means the constant is free and
+ * detection applies.
+ */
+export interface FixedIdentity {
+  version?: string | null;
+  build?: string | null;
+}
+
+/** Both constants unreadable: a bundler path that cannot be told what the bundle will report. */
+export const UNBAKEABLE_IDENTITY: FixedIdentity = { version: null, build: null };
+
+/** The string a `define` value spells as a JSON string literal; null for anything else (or a blank one). */
+function literalString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === 'string' && parsed.trim() !== '' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What the user's own `define` entries (Vite, esbuild, a DefinePlugin) already fix for the two constants. */
+export function fixedIdentityFromDefines(
+  defines: Record<string, unknown> | undefined,
+): FixedIdentity {
+  const has = (key: string): boolean => defines !== undefined && key in defines;
+  return {
+    ...(has(APP_VERSION_DEFINE) ? { version: literalString(defines?.[APP_VERSION_DEFINE]) } : {}),
+    ...(has(APP_BUILD_DEFINE) ? { build: literalString(defines?.[APP_BUILD_DEFINE]) } : {}),
+  };
+}
+
+/**
  * Resolve version and build. Version: option, `BUGSEE_APP_VERSION`, the nearest package.json from `root`
  * (the BUNDLER's project directory, not the VCS root). Build: option, `BUGSEE_APP_BUILD`, a CI commit id.
  * A blank option or variable is "unset" everywhere, so it falls through rather than being uploaded or baked.
  * `root` (or, without one, `process.cwd()`) is consulted only when nothing earlier answered, and a throwing
- * working directory just means "not found".
+ * working directory just means "not found". A `fixed` value (see FixedIdentity) overrides all of that for its
+ * field: a literal is used as is; an unreadable one restricts the field to the explicit option / `BUGSEE_*`
+ * variable, with no package.json or CI-commit detection.
  */
 export function findAppIdentity(
   options: { appVersion?: string; appBuild?: string },
   env: EnvRecord,
   deps: AppIdentityDeps = {},
   root?: string,
+  fixed: FixedIdentity = {},
 ): FoundAppIdentity {
-  let version = nonBlank(options.appVersion) ?? firstEnv(env, ['BUGSEE_APP_VERSION']);
-  if (version === undefined) {
-    try {
-      version = findPackageVersion(root ?? (deps.cwd ?? process.cwd)(), deps.readFile);
-    } catch {
-      version = undefined;
+  const explicitVersion = nonBlank(options.appVersion) ?? firstEnv(env, ['BUGSEE_APP_VERSION']);
+  let version: string | undefined;
+  if (fixed.version !== undefined) {
+    version = fixed.version ?? explicitVersion;
+  } else {
+    version = explicitVersion;
+    if (version === undefined) {
+      try {
+        version = findPackageVersion(root ?? (deps.cwd ?? process.cwd)(), deps.readFile);
+      } catch {
+        version = undefined;
+      }
     }
   }
+  const explicitBuild = nonBlank(options.appBuild) ?? firstEnv(env, ['BUGSEE_APP_BUILD']);
   const build =
-    nonBlank(options.appBuild) ?? firstEnv(env, ['BUGSEE_APP_BUILD', ...CI_COMMIT_ENV_VARS]);
+    fixed.build !== undefined
+      ? (fixed.build ?? explicitBuild)
+      : (explicitBuild ?? firstEnv(env, CI_COMMIT_ENV_VARS));
   return { version, build };
 }
 

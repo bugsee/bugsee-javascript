@@ -4,6 +4,8 @@
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
 import { dirname, resolve } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
+import { type FixedIdentity, fixedIdentityFromDefines, UNBAKEABLE_IDENTITY } from './app-identity';
+import { bakeIdentity } from './bake-identity';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -76,28 +78,48 @@ type DefinePluginCtor = new (
   apply(compiler: unknown): void;
 };
 
+/** Everything the user's own `DefinePlugin` instances (they expose `.definitions`) already define. */
+function pluginDefinitions(compiler: {
+  options: { plugins?: unknown[] };
+}): Record<string, unknown> {
+  const taken: Record<string, unknown> = {};
+  for (const plugin of compiler.options.plugins ?? []) {
+    const definitions = (plugin as { definitions?: unknown } | null)?.definitions;
+    if (typeof definitions === 'object' && definitions !== null) {
+      Object.assign(taken, definitions);
+    }
+  }
+  return taken;
+}
+
+/**
+ * What the app's own webpack/rspack config fixes for the identity constants. Without a `DefinePlugin` of the
+ * bundler's own (webpack 4) nothing can be baked, so a key the user did not define is unreadable too.
+ */
+function webpackFixedIdentity(
+  DefinePlugin: DefinePluginCtor | undefined,
+  taken: Record<string, unknown>,
+): FixedIdentity {
+  return {
+    ...(DefinePlugin === undefined ? UNBAKEABLE_IDENTITY : {}),
+    ...fixedIdentityFromDefines(taken),
+  };
+}
+
 /**
  * Add the app-identity constants through the bundler's own `DefinePlugin`, skipping any key the user
- * already defines (their `DefinePlugin` instances expose `.definitions`) so an explicit definition wins.
+ * already defines so an explicit definition wins (and, being fixed, is what the upload carries too).
  */
 function injectDefines(
-  compiler: { options: { plugins?: unknown[] } },
+  compiler: object,
   DefinePlugin: DefinePluginCtor | undefined,
   defines: Record<string, string>,
+  taken: Record<string, unknown>,
 ): void {
   if (DefinePlugin === undefined) {
     return;
   }
-  const taken = new Set<string>();
-  for (const plugin of compiler.options.plugins ?? []) {
-    const definitions = (plugin as { definitions?: unknown } | null)?.definitions;
-    if (typeof definitions === 'object' && definitions !== null) {
-      for (const key of Object.keys(definitions)) {
-        taken.add(key);
-      }
-    }
-  }
-  const free = Object.fromEntries(Object.entries(defines).filter(([key]) => !taken.has(key)));
+  const free = Object.fromEntries(Object.entries(defines).filter(([key]) => !(key in taken)));
   if (Object.keys(free).length > 0) {
     new DefinePlugin(free).apply(compiler);
   }
@@ -135,15 +157,29 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // The app identity comes from the BUNDLER's project directory (Vite `root`, webpack `context`, esbuild
   // `absWorkingDir`), which the hooks report; `projectRoot` is for VCS only. ONE resolution per build feeds
   // both the baked `define`s and the upload / registration, so the two cannot disagree. A bundler with no
-  // such hook (Rollup) resolves lazily from the output directory upward, as `package_id` does.
+  // such hook (Rollup) resolves lazily from the output directory upward, as `package_id` does, once per
+  // directory: the chunk it bakes and the upload for that directory use the same answer. A constant the
+  // user's own config already defines is `fixed` (see FixedIdentity), so the upload matches what the app reads.
   let bundlerIdentity: ResolvedIdentity | undefined;
-  const identityFromRoot = (root: string | undefined): ResolvedIdentity => {
-    bundlerIdentity = resolveIdentity(options, process.env, root);
+  const identityFromRoot = (root: string | undefined, fixed?: FixedIdentity): ResolvedIdentity => {
+    bundlerIdentity = resolveIdentity(options, process.env, root, {}, fixed);
     return bundlerIdentity;
+  };
+  const identityByOutDir = new Map<string, ResolvedIdentity>();
+  const identityForOutput = (outDir: string): ResolvedIdentity => {
+    if (bundlerIdentity !== undefined) {
+      return bundlerIdentity;
+    }
+    let identity = identityByOutDir.get(outDir);
+    if (identity === undefined) {
+      identity = resolveIdentity(options, process.env, outDir);
+      identityByOutDir.set(outDir, identity);
+    }
+    return identity;
   };
   const forOutput = (outDir: string): typeof resolved => ({
     ...resolved,
-    ...(bundlerIdentity ?? resolveIdentity(options, process.env, outDir)),
+    ...identityForOutput(outDir),
   });
 
   // What the bundler says about THIS build — whether it is production, and the configuration's name.
@@ -189,6 +225,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         // is left alone. Vite resolves a relative `root` against the cwd, so this does too.
         const { identityDefines } = identityFromRoot(
           config.root !== undefined && config.root !== '' ? resolve(config.root) : undefined,
+          fixedIdentityFromDefines(config.define),
         );
         const define = Object.fromEntries(
           Object.entries(identityDefines).filter(
@@ -217,11 +254,24 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       },
       writeBundle: (output: OutputLike) => uploadForOutput(output, viteBuild),
     },
-    rollup: { writeBundle: (output: OutputLike) => uploadForOutput(output, {}) },
+    rollup: {
+      // Rollup has no `define`: bake the constants into each rendered chunk (with a source map), from the same
+      // per-output-directory identity the upload uses.
+      renderChunk(code: string, _chunk: unknown, output: OutputLike) {
+        const outDir = resolveOutputDir(output);
+        return outDir === undefined
+          ? null
+          : bakeIdentity(code, identityForOutput(outDir).identityDefines);
+      },
+      writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
+    },
     esbuild: {
       // esbuild's `define` is a plain string map; a key the user already set is kept.
       config(initialOptions: { define?: Record<string, string>; absWorkingDir?: string }) {
-        const { identityDefines } = identityFromRoot(initialOptions.absWorkingDir);
+        const { identityDefines } = identityFromRoot(
+          initialOptions.absWorkingDir,
+          fixedIdentityFromDefines(initialOptions.define),
+        );
         const define = { ...identityDefines, ...initialOptions.define };
         if (Object.keys(define).length > 0) {
           initialOptions.define = define;
@@ -229,12 +279,22 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       },
     },
     rspack(compiler: WebpackCompilerLike) {
-      const { identityDefines } = identityFromRoot(compiler.context);
-      injectDefines(compiler, compiler.rspack?.DefinePlugin, identityDefines);
+      const DefinePlugin = compiler.rspack?.DefinePlugin;
+      const taken = pluginDefinitions(compiler);
+      const { identityDefines } = identityFromRoot(
+        compiler.context,
+        webpackFixedIdentity(DefinePlugin, taken),
+      );
+      injectDefines(compiler, DefinePlugin, identityDefines, taken);
     },
     webpack(compiler: WebpackCompilerLike) {
-      const { identityDefines } = identityFromRoot(compiler.context);
-      injectDefines(compiler, compiler.webpack?.DefinePlugin, identityDefines);
+      const DefinePlugin = compiler.webpack?.DefinePlugin;
+      const taken = pluginDefinitions(compiler);
+      const { identityDefines } = identityFromRoot(
+        compiler.context,
+        webpackFixedIdentity(DefinePlugin, taken),
+      );
+      injectDefines(compiler, DefinePlugin, identityDefines, taken);
       // Whether THIS compilation's bundles were stamped in the build. Reset per compilation, so in
       // watch mode a stamp from the previous build cannot vouch for this one.
       let preStamped = false;

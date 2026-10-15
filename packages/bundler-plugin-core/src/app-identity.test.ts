@@ -4,6 +4,8 @@ import {
   CI_COMMIT_ENV_VARS,
   findAppIdentity,
   findPackageVersion,
+  fixedIdentityFromDefines,
+  UNBAKEABLE_IDENTITY,
 } from './app-identity';
 
 const files = (map: Record<string, string>) => (path: string) => {
@@ -153,5 +155,89 @@ describe('appIdentityDefines', () => {
       __BUGSEE_APP_BUILD__: '"5"',
     });
     expect(appIdentityDefines({ version: undefined, build: undefined })).toEqual({});
+  });
+});
+
+describe("fixedIdentityFromDefines: what the app's OWN define says the runtime will read", () => {
+  it('is empty when the user defined neither key (both are free to detect)', () => {
+    expect(fixedIdentityFromDefines(undefined)).toEqual({});
+    expect(fixedIdentityFromDefines({ OTHER: '1' })).toEqual({});
+  });
+
+  it('reads a JSON string literal as the value the app will report', () => {
+    expect(
+      fixedIdentityFromDefines({
+        __BUGSEE_APP_VERSION__: JSON.stringify('2.4.1'),
+        __BUGSEE_APP_BUILD__: JSON.stringify('abc'),
+      }),
+    ).toEqual({ version: '2.4.1', build: 'abc' });
+  });
+
+  it('marks an expression, a non-string, a non-string literal or a blank literal as unreadable (null)', () => {
+    for (const value of ['process.env.V', "'2.4.1'", '1', '{"a":1}', '""', '"  "', 5, null, {}]) {
+      expect(fixedIdentityFromDefines({ __BUGSEE_APP_VERSION__: value })).toEqual({
+        version: null,
+      });
+      expect(fixedIdentityFromDefines({ __BUGSEE_APP_BUILD__: value })).toEqual({ build: null });
+    }
+  });
+
+  it('a key that is present with an undefined value still counts as defined (unreadable)', () => {
+    expect(fixedIdentityFromDefines({ __BUGSEE_APP_VERSION__: undefined })).toEqual({
+      version: null,
+    });
+  });
+
+  it('keeps the two keys independent', () => {
+    expect(fixedIdentityFromDefines({ __BUGSEE_APP_BUILD__: '"7"' })).toEqual({ build: '7' });
+  });
+
+  it('UNBAKEABLE_IDENTITY fixes both as unreadable', () => {
+    expect(UNBAKEABLE_IDENTITY).toEqual({ version: null, build: null });
+  });
+});
+
+describe('findAppIdentity with a fixed identity', () => {
+  const read = files({ '/app/package.json': '{"version":"1.0.0"}' });
+  const env = { BUGSEE_APP_VERSION: 'env-v', BUGSEE_APP_BUILD: 'env-b', GITHUB_SHA: 'sha' };
+
+  it('a literal wins over the option, the environment, package.json and the CI commit', () => {
+    expect(
+      findAppIdentity({ appVersion: 'opt', appBuild: 'optb' }, env, { readFile: read }, '/app', {
+        version: '9.9.9',
+        build: 'fixed-b',
+      }),
+    ).toEqual({ version: '9.9.9', build: 'fixed-b' });
+  });
+
+  it('an unreadable fixed value uses ONLY explicit values (option, then BUGSEE_* env)', () => {
+    const fixed = { version: null, build: null };
+    expect(findAppIdentity({ appVersion: 'opt' }, env, { readFile: read }, '/app', fixed)).toEqual({
+      version: 'opt',
+      build: 'env-b',
+    });
+    expect(findAppIdentity({}, env, { readFile: read }, '/app', fixed)).toEqual({
+      version: 'env-v',
+      build: 'env-b',
+    });
+  });
+
+  it('an unreadable fixed value never falls back to package.json or the CI commit', () => {
+    expect(
+      findAppIdentity({}, { GITHUB_SHA: 'sha' }, { readFile: read }, '/app', {
+        version: null,
+        build: null,
+      }),
+    ).toEqual({ version: undefined, build: undefined });
+  });
+
+  it('only the fixed field changes; the other is still detected', () => {
+    expect(
+      findAppIdentity({}, { GITHUB_SHA: 'sha' }, { readFile: read }, '/app', { version: null }),
+    ).toEqual({ version: undefined, build: 'sha' });
+    expect(findAppIdentity({}, {}, { readFile: read }, '/app', { build: null })).toEqual({
+      version: '1.0.0',
+      build: undefined,
+    });
   });
 });
