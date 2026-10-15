@@ -1397,6 +1397,45 @@ describe('launch', () => {
       );
     });
 
+    // The reported effective options must say what is actually in effect, not the static `false` default.
+    describe('the effective persist option follows the capability-based default', () => {
+      const PERSIST = 'com.bugsee.option.browser.persist';
+      it('reports true when the default turns persistence on', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('reports false when Web Locks are missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('reports false when IndexedDB is missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', undefined);
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('leaves an explicit true alone, even without Web Locks', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: true }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('leaves an explicit false alone, even where the default would persist', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: false }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+    });
+
     it('stays in memory when persist is false, even with IndexedDB available', async () => {
       const idb = new IDBFactory();
       vi.stubGlobal('indexedDB', idb);

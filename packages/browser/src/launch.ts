@@ -389,8 +389,10 @@ export interface BugseeLaunchOptions {
   /**
    * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
    * reload or a browser restart and a report interrupted mid-upload is re-uploaded on the next launch.
-   * On by default wherever IndexedDB is available (otherwise in-memory); `false` keeps everything in
-   * memory. An explicit `bundleStore` or `captureStore` overrides the matching part.
+   * On by default wherever the page has BOTH IndexedDB and Web Locks (`navigator.locks`, or an injected
+   * `locks`): without locks a previous launch's data is never recovered or cleaned up, so the default stays
+   * in memory and nothing survives a reload. `true` persists anyway (best effort, no cross-tab recovery);
+   * `false` keeps everything in memory. An explicit `bundleStore` or `captureStore` overrides the matching part.
    */
   persist?: boolean;
   /**
@@ -619,6 +621,9 @@ async function buildLaunch(
       ? (options.indexedDB !== undefined || indexedDbPresent()) &&
         (options.locks !== undefined || navigatorLocksPresent())
       : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
+  // The canonical record is what the client and `sdk.options` report as in effect: say what the capability
+  // check decided instead of the static `false` default (for an explicit or invalid value this is a no-op).
+  resolved.canonical[PERSIST_OPTION_KEY] = persist;
   const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
