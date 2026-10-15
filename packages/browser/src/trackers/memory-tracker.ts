@@ -66,6 +66,9 @@ export class MemoryTracker extends InterceptorBase<{ memory: MemoryState }> {
       this.#onError?.(error);
     }
     if (!supported) return;
+    // A handle still held here means the last release threw, so that timer may still be live. Retry the
+    // release; if it fails again, keep polling on that timer rather than arm a second one (duplicate rows).
+    if (this.#timer !== null && !this.#release()) return;
     // Guarded like the other trackers: the subscriber is already registered, so a throwing scheduler must
     // be reported here, not leak out of on() and strand an "active" tracker with a leaked listener.
     try {
@@ -76,13 +79,19 @@ export class MemoryTracker extends InterceptorBase<{ memory: MemoryState }> {
   }
 
   protected override onDeactivate(): void {
-    if (this.#timer === null) return;
-    const timer = this.#timer;
-    this.#timer = null; // forget the handle first: a throwing clearInterval must not leave a stale one
+    this.#release();
+  }
+
+  /** Clears the timer. The handle is dropped only once the clear succeeded; a failure is reported and kept. */
+  #release(): boolean {
+    if (this.#timer === null) return true;
     try {
-      this.#scheduler.clearInterval(timer);
+      this.#scheduler.clearInterval(this.#timer);
+      this.#timer = null;
+      return true;
     } catch (error) {
       this.#onError?.(error);
+      return false;
     }
   }
 

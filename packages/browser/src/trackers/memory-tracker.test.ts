@@ -168,7 +168,7 @@ describe('MemoryTracker', () => {
     expect(() => off?.()).not.toThrow(); // no timer was armed, so nothing to clear
   });
 
-  it('a throwing clearInterval is reported, not thrown from the last unsubscribe, and the next activation re-arms', () => {
+  it('a throwing clearInterval is reported and the handle kept: a later activation retries it and never double-arms', () => {
     const onError = vi.fn();
     const s = mkScheduler();
     let boom = true;
@@ -186,9 +186,43 @@ describe('MemoryTracker', () => {
     const off = t.on('memory', () => {});
     expect(() => off()).not.toThrow();
     expect(onError).toHaveBeenCalledTimes(1);
+    expect(s.live()).toBe(1); // the refused clear left it live
+    // re-activation while the clear still fails: reuse the live timer, arm no second one
+    const got: unknown[] = [];
+    const off2 = t.on('memory', (m) => got.push(m));
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(s.setInterval).toHaveBeenCalledTimes(1);
+    s.tick();
+    expect(got).toHaveLength(1); // exactly one poller feeds the subscriber
+    // once the scheduler recovers, the next release succeeds and the cycle is clean again
     boom = false;
+    off2();
+    expect(s.live()).toBe(0);
     t.on('memory', () => {})();
     expect(s.setInterval).toHaveBeenCalledTimes(2);
-    expect(onError).toHaveBeenCalledTimes(1);
+    expect(s.live()).toBe(0);
+  });
+
+  it('re-activation retries a refused clear and, when it succeeds, arms a fresh timer', () => {
+    const s = mkScheduler();
+    let boom = true;
+    const t = new MemoryTracker({
+      memory: () => mem(1),
+      scheduler: {
+        ...s,
+        clearInterval: (h: unknown) => {
+          if (boom) throw new Error('clear refused');
+          s.clearInterval(h);
+        },
+      },
+      onError: () => {},
+    });
+    t.on('memory', () => {})(); // release refused: handle kept
+    boom = false;
+    const off = t.on('memory', () => {}); // retry succeeds -> old cleared, new armed
+    expect(s.setInterval).toHaveBeenCalledTimes(2);
+    expect(s.live()).toBe(1);
+    off();
+    expect(s.live()).toBe(0);
   });
 });
