@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OrientationTracker } from './orientation-tracker';
+import { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<() => void>>();
@@ -159,5 +160,19 @@ describe('OrientationTracker', () => {
     t.on('state', () => {})();
     t.on('state', () => {})();
     expect(removes).toHaveBeenCalledTimes(2);
+  });
+
+  it('with a shared lifecycle it takes orientationchange from it and releases the subscription on stop', () => {
+    const win = mkTarget();
+    const orientation = Object.assign(mkTarget(), { type: 'portrait-primary', angle: 0 });
+    const lifecycle = new PageLifecycleTracker({ window: win as never });
+    const t = new OrientationTracker({ lifecycle, window: win, screen: { orientation } });
+    const seen: unknown[] = [];
+    const off = t.on('state', (s) => seen.push(s));
+    expect(win.count()).toBe(4); // lifecycle's own four window listeners; the tracker added none
+    win.fire('orientationchange');
+    expect(seen).toEqual([{ type: 'portrait-primary', angle: 0 }]);
+    off();
+    expect(win.count() + orientation.count()).toBe(0);
   });
 });

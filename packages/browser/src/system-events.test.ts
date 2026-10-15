@@ -1,6 +1,7 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
+import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -142,6 +143,38 @@ describe('createBrowserSystemEventsSource', () => {
     const off = source.onAny(() => {});
     expect(win.count('pagehide')).toBe(1);
     expect(doc.count('visibilitychange')).toBe(1);
+    off();
+  });
+
+  it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
+    const { env, win, doc } = fakeEnv();
+    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const a = activate({ ...env, lifecycle });
+    const b = activate({ ...env, lifecycle });
+    // two sources over ONE tracker → one listener per type
+    expect(win.count('online')).toBe(1);
+    expect(doc.count('visibilitychange')).toBe(1);
+    win.emit('offline', {});
+    expect(a.events.at(-1)).toEqual({ name: 'offline' });
+    expect(b.events.at(-1)).toEqual({ name: 'offline' });
+    a.off();
+    expect(win.count('offline')).toBe(1); // still held by the other source
+    b.off();
+    expect(win.count('offline')).toBe(0);
+  });
+
+  it('reports a lifecycle failure to the injected onError, not into event dispatch', () => {
+    const { env, win, doc } = fakeEnv();
+    const onError = vi.fn();
+    Object.defineProperty(env.document, 'visibilityState', {
+      get(): never {
+        throw new Error('getter');
+      },
+    });
+    const { off } = activate({ ...env, onError });
+    expect(() => doc.emit('visibilitychange', {})).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(win.count('pagehide')).toBe(1);
     off();
   });
 });

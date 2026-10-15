@@ -18,6 +18,7 @@ import {
   type OrientationState,
   OrientationTracker,
 } from './trackers/orientation-tracker';
+import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -195,6 +196,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
+  /** Shared page-lifecycle tracker for connection/orientation; when absent each listens on `window`. */
+  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
 }
 
 /** The real globals, read lazily (workers / Node tests may have none of them). */
@@ -249,6 +252,7 @@ export function createBrowserSystemTraceProducers(
     new ConnectionProducer(
       new ConnectionTracker(
         {
+          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
           ...(env.window !== undefined ? { window: env.window } : {}),
           ...(nav !== undefined ? { navigator: nav } : {}),
         },
@@ -258,6 +262,7 @@ export function createBrowserSystemTraceProducers(
     new OrientationProducer(
       new OrientationTracker(
         {
+          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
           ...(env.window !== undefined ? { window: env.window } : {}),
           ...(env.screen !== undefined ? { screen: env.screen } : {}),
         },

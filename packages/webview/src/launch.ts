@@ -8,6 +8,7 @@ import {
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
   defaultBrowserTraceEnv,
+  PageLifecycleTracker,
   parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
@@ -670,6 +671,14 @@ export function launchWithSeams(
   client.addCaptureProvider(network.provider);
   // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
+  // ONE lifecycle tracker over the host page's window+document, shared by the traces and the events source.
+  const lifecycle = new PageLifecycleTracker(
+    {
+      ...(win !== undefined ? { window: win } : {}),
+      ...(domDocument !== undefined ? { document: domDocument } : {}),
+    },
+    options.onError,
+  );
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
@@ -681,6 +690,7 @@ export function launchWithSeams(
           ...defaultBrowserTraceEnv(),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           ...(win !== undefined ? { window: win } : {}),
+          lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
         options.onError,
@@ -695,7 +705,8 @@ export function launchWithSeams(
       createSystemEventsProvider(
         createBrowserSystemEventsSource({
           window: win,
-          ...(domDocument !== undefined ? { document: domDocument } : {}),
+          lifecycle,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
         }),
       ),
     );

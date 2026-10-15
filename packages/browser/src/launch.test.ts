@@ -454,6 +454,30 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
+  it('ONE shared lifecycle tracker serves traces and events: a single listener per type; visibility reaches events.system via the injected document', async () => {
+    const store = memStore();
+    const w = fakeWindow();
+    const doc = fakeWindow();
+    const docWin = { ...doc.win, visibilityState: 'hidden' };
+    await launchTracked(
+      'tok',
+      baseOptions({
+        window: w.win,
+        document: docWin as unknown as Document,
+        captureStore: store,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    // traces (connection/orientation) AND the events source are both live, yet each type is bound once
+    expect(w.count('online')).toBe(1);
+    expect(w.count('orientationchange')).toBe(1);
+    doc.emit('visibilitychange', {});
+    const names = ((await drain(store, 'events.system')) ?? []).map(
+      (e) => (e.data as { name: string }).name,
+    );
+    expect(names).toContain('process_background');
+  });
+
   // Re-pointed from "captures a document interaction (click) as an events.user entry". What that test
   // was really protecting: launch() actually WIRES the DOM input source into the client, so a real
   // document interaction lands in the bundle. That still matters — but the stream it lands in was the

@@ -91,6 +91,11 @@ export {
   defaultBrowserTraceEnv,
 } from './trace-producers';
 export {
+  type PageLifecycleEnv,
+  type PageLifecycleEvents,
+  PageLifecycleTracker,
+} from './trackers/page-lifecycle-tracker';
+export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
   type UiBreadcrumbEnv,

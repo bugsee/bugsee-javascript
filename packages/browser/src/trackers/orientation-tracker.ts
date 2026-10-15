@@ -1,4 +1,5 @@
 import { InterceptorBase } from '@bugsee/core';
+import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 // Browser screen-orientation TRACKER (mirrors the mobile tracker/producer split): reports the current
 // `screen.orientation` {type, angle} on every change. Both `screen.orientation` `change` and the window's
@@ -14,6 +15,8 @@ interface TargetLike {
   removeEventListener(type: string, listener: () => void): void;
 }
 export interface OrientationEnv {
+  /** Shared lifecycle tracker for `orientationchange`; when absent it is listened for on `window`. */
+  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
   window?: TargetLike;
   screen?: {
     orientation?: { type: string; angle: number } & Partial<TargetLike>;
@@ -25,6 +28,7 @@ export class OrientationTracker extends InterceptorBase<{ state: OrientationStat
   readonly #env: OrientationEnv;
   readonly #onError: ((error: unknown) => void) | undefined;
   #attached: Array<{ target: Partial<TargetLike>; type: string }> = [];
+  #subscriptions: Array<() => void> = [];
 
   readonly #onChange = (): void => {
     try {
@@ -57,13 +61,21 @@ export class OrientationTracker extends InterceptorBase<{ state: OrientationStat
   protected onActivate(): void {
     try {
       this.#listen(this.#env.screen?.orientation, 'change');
-      this.#listen(this.#env.window, 'orientationchange');
+      const lifecycle = this.#env.lifecycle;
+      if (lifecycle !== undefined) {
+        this.#subscriptions.push(lifecycle.on('orientationchange', this.#onChange));
+      } else {
+        this.#listen(this.#env.window, 'orientationchange');
+      }
     } catch (error) {
       this.#onError?.(error);
     }
   }
 
   protected override onDeactivate(): void {
+    const subscriptions = this.#subscriptions;
+    this.#subscriptions = [];
+    for (const off of subscriptions) off();
     const attached = this.#attached;
     this.#attached = [];
     for (const { target, type } of attached) {

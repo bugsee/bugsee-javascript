@@ -961,7 +961,8 @@ describe('launch (webview)', () => {
         expect(rows.get('ram_js_heap_used')).toBe(10);
         expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
         expect(rows.get('orientation')).toBe(3);
-        expect(w.count('online', 'offline', 'orientationchange')).toBe(6);
+        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
       } finally {
