@@ -167,4 +167,28 @@ describe('MemoryTracker', () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(() => off?.()).not.toThrow(); // no timer was armed, so nothing to clear
   });
+
+  it('a throwing clearInterval is reported, not thrown from the last unsubscribe, and the next activation re-arms', () => {
+    const onError = vi.fn();
+    const s = mkScheduler();
+    let boom = true;
+    const t = new MemoryTracker({
+      memory: () => mem(1),
+      scheduler: {
+        ...s,
+        clearInterval: (h: unknown) => {
+          if (boom) throw new Error('clear refused');
+          s.clearInterval(h);
+        },
+      },
+      onError,
+    });
+    const off = t.on('memory', () => {});
+    expect(() => off()).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    boom = false;
+    t.on('memory', () => {})();
+    expect(s.setInterval).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });

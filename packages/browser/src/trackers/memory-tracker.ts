@@ -77,8 +77,13 @@ export class MemoryTracker extends InterceptorBase<{ memory: MemoryState }> {
 
   protected override onDeactivate(): void {
     if (this.#timer === null) return;
-    this.#scheduler.clearInterval(this.#timer);
-    this.#timer = null;
+    const timer = this.#timer;
+    this.#timer = null; // forget the handle first: a throwing clearInterval must not leave a stale one
+    try {
+      this.#scheduler.clearInterval(timer);
+    } catch (error) {
+      this.#onError?.(error);
+    }
   }
 
   #poll(): void {
