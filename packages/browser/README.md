@@ -19,6 +19,12 @@ What it contains:
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/browser
 - Bugsee: https://bugsee.com
 
+## Persistence
+
+By default the rolling capture window and the queue of reports waiting to upload are kept in IndexedDB, so, where the browser supports it, the recent past survives a page reload or a browser restart, and a report interrupted mid-upload is sent on the next visit. Data is stored in per-app databases named `bugsee-<hash>`, `bugsee-capture-<hash>` and `bugsee-markers-<hash>`.
+
+Pass `persist: false` to keep everything in memory instead. The default applies only when the page exposes both an IndexedDB object and Web Locks (`navigator.locks`, which needs a secure `https://` context; Safari before 15.4 and some embedded WebViews lack it): without locks a previous visit's data can never be recovered or cleaned up, so the SDK stays in memory instead. Pass `persist: true` to store anyway. If the browser refuses to store data (over quota, some private modes), writes fail best-effort and are reported to `onError`; the SDK does not switch to memory at that point. Any `persist` value other than `true` or `false` counts as off and is reported.
+
 ## License
 
 MIT. See the LICENSE file.

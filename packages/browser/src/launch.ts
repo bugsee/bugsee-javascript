@@ -125,6 +125,30 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
+/** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
+const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
+
+/** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
+const indexedDbPresent = (): boolean => {
+  try {
+    return (globalThis as { indexedDB?: unknown }).indexedDB != null;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the page exposes Web Locks (`navigator.locks`, a secure-context API); a throwing getter counts as
+ * absent. Without it a previous launch's durable data is never recovered or swept (liveness cannot tell a
+ * dead sibling from a live one), so the unattended persist default requires it.
+ */
+const navigatorLocksPresent = (): boolean => {
+  try {
+    return (globalThis as { navigator?: { locks?: unknown } }).navigator?.locks != null;
+  } catch {
+    return false;
+  }
+};
 
 const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
@@ -160,6 +184,9 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: true,
     ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   },
+  // Persistence collects data at rest, so only boolean `true`/`false` count: anything else is OFF and reported
+  // (the launch substitutes the IndexedDB default only when the option is absent).
+  { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -362,9 +389,12 @@ export interface BugseeLaunchOptions {
   /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
   maxDataSize?: number;
   /**
-   * Persist the bundle queue to IndexedDB so a crash report survives a reload/kill mid-upload and is
-   * re-uploaded on the next launch (guaranteed crash delivery). Off by default (in-memory only). An
-   * explicit `bundleStore` overrides this.
+   * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
+   * reload or a browser restart and a report interrupted mid-upload is re-uploaded on the next launch.
+   * On by default wherever the page has BOTH IndexedDB and Web Locks (`navigator.locks`, or an injected
+   * `locks`): without locks a previous launch's data is never recovered or cleaned up, so the default stays
+   * in memory and nothing survives a reload. `true` persists anyway (best effort, no cross-tab recovery);
+   * `false` keeps everything in memory. An explicit `bundleStore` or `captureStore` overrides the matching part.
    */
   persist?: boolean;
   /**
@@ -582,11 +612,25 @@ async function buildLaunch(
   // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
   // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
   // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
-  const durableCapture = options.persist === true && options.captureStore === undefined;
+  // Durable by default wherever an IndexedDB object AND Web Locks exist, so the rolling window survives a
+  // reload or a browser restart. Locks are required because recovery and the sweep of a previous launch's
+  // prefix both run through the liveness lock: without them the old data is never read or deleted and each
+  // reload would strand up to `maxDataSize` in the origin's shared quota. An explicit `persist: true` still
+  // opts into that no-locks degrade. `persist: false` opts out; a non-boolean value is OFF and reported.
+  // Presence is all that is probed: if the store later cannot commit, writes fail into `onError`.
+  const persist =
+    options.persist === undefined
+      ? (options.indexedDB !== undefined || indexedDbPresent()) &&
+        (options.locks !== undefined || navigatorLocksPresent())
+      : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
+  // The canonical record is what the client and `sdk.options` report as in effect: say what the capability
+  // check decided instead of the static `false` default (for an explicit or invalid value this is a no-op).
+  resolved.canonical[PERSIST_OPTION_KEY] = persist;
+  const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
     appToken,
-    persist: options.persist === true,
+    persist,
     captureRecovery: durableCapture,
     ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),

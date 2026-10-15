@@ -106,6 +106,15 @@ export interface Coexistence {
   release(): void;
 }
 
+/** The page's `navigator.locks`, or undefined when absent; a throwing getter (sandboxed frames) counts as absent. */
+function pageLocks(): LockManagerLike | undefined {
+  try {
+    return (globalThis as { navigator?: { locks?: LockManagerLike } }).navigator?.locks;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Build the multi-instance-safe coexistence root for a launch (bundle queue + optional capture/markers). */
 export function createCoexistence(options: CoexistenceOptions): Coexistence {
   const { appToken, persist, captureRecovery, bundleOverride, onError } = options;
@@ -153,7 +162,7 @@ export function createCoexistence(options: CoexistenceOptions): Coexistence {
   // Hold the instance lock for this realm's lifetime iff there is per-instance durable data a sibling could
   // recover. The same lock covers bundles + chunks + markers (all keyed by this instanceId).
   const liveness = createWebLockLiveness(
-    options.locks ?? (globalThis as { navigator?: { locks?: LockManagerLike } }).navigator?.locks,
+    options.locks ?? pageLocks(),
     onError !== undefined ? (message) => onError(new Error(message)) : undefined,
   );
   const coexisting = bundleShared !== undefined || captureShared !== undefined;

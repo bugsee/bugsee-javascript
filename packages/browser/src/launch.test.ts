@@ -179,6 +179,7 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
+  persist: false, // tests opt in; the shipped default is on wherever IndexedDB exists
   deviceIdEnv: {
     localStorage: testDeviceIdLocalStorage(),
     randomUUID: () => TEST_DEVICE_ID,
@@ -375,7 +376,10 @@ describe('launch', () => {
   });
 
   it('does not register bundleStore in in-memory mode', async () => {
-    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ persist: false, captureStore: memStore() }),
+    );
     expect(() => client.getService(BundleStoreToken)).toThrow();
   });
 
@@ -1412,6 +1416,185 @@ describe('launch', () => {
     await new Promise((r) => setTimeout(r, 0)); // let async hydration settle
   });
 
+  describe('persist default', () => {
+    const databaseNames = async (idb: IDBFactory): Promise<string[]> =>
+      (await idb.databases()).map((d) => d.name ?? '');
+
+    it('persists by default when IndexedDB is available: the capture database is created', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      await launchTracked('tok', baseOptions({ persist: undefined, locks: fakeWebLocks() }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats an injected indexedDB as availability too', async () => {
+      const idb = new IDBFactory();
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    // Reload survival and prefix GC both need Web Locks (recoverIfDead is a no-op without them), so the
+    // unattended default must not strand ~10 MB per launch in the origin's quota.
+    it('stays in memory by default when IndexedDB exists but Web Locks do not', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+      expect(await databaseNames(idb)).not.toContain(captureDatabaseName('tok'));
+    });
+
+    it('persists by default when IndexedDB and the page navigator.locks are both present', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+      await launchTracked('tok', baseOptions({ persist: undefined }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats a throwing navigator getter as no Web Locks instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      vi.stubGlobal('navigator', {
+        get locks(): never {
+          throw new Error('denied');
+        },
+      });
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(client.isLaunched()).toBe(true);
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+    });
+
+    it('explicit persist:true still opts into the documented no-locks degrade', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      await launchTracked('tok', baseOptions({ persist: true }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('an injected locks manager counts as Web Locks availability for the default', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('navigator', {});
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    // The reported effective options must say what is actually in effect, not the static `false` default.
+    describe('the effective persist option follows the capability-based default', () => {
+      const PERSIST = 'com.bugsee.option.browser.persist';
+      it('reports true when the default turns persistence on', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('reports false when Web Locks are missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('reports false when IndexedDB is missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', undefined);
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('leaves an explicit true alone, even without Web Locks', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: true }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('leaves an explicit false alone, even where the default would persist', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: false }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+    });
+
+    it('stays in memory when persist is false, even with IndexedDB available', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      const client = await launchTracked('tok', baseOptions({ persist: false }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+
+    it('stays in memory when there is no IndexedDB at all', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+
+    it('treats a throwing indexedDB getter as absent instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      Object.defineProperty(globalThis, 'indexedDB', {
+        configurable: true,
+        get: () => {
+          throw new Error('denied');
+        },
+      });
+      try {
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.isLaunched()).toBe(true);
+        expect(() => client.getService(BundleStoreToken)).toThrow();
+      } finally {
+        Object.defineProperty(globalThis, 'indexedDB', {
+          configurable: true,
+          writable: true,
+          value: undefined,
+        });
+      }
+    });
+
+    // Persisting writes captured data at rest, so a non-boolean never turns it on, and it is reported.
+    it.each([
+      0,
+      '',
+      'false',
+      'true',
+      1,
+      null,
+    ])('persist=%j (invalid) is OFF even with IndexedDB available, and reports', async (bad) => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ persist: bad as never, onError, locks: fakeWebLocks() }),
+      );
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('persist must be a boolean'),
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
   it('threads onError into the persistent capture store', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory());
     const client = await launchTracked('tok', baseOptions({ persist: true, onError: vi.fn() }));
@@ -2022,7 +2205,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   });
 
   it('builds no marker store without persist', async () => {
-    const client = await launchTracked('tok', baseOptions({})); // in-memory store
+    const client = await launchTracked('tok', baseOptions({ persist: false })); // in-memory store
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
@@ -2585,7 +2768,12 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
         lifecycleEventsListener: (type) => seen.push(type),
       }),
     );
-    // let the dead-sibling recovery finish (its marker is swept when it is done)
+    // let the dead-sibling recovery finish (its marker is swept when it is done). The event can lag on a slow
+    // machine, so wait for it for a bounded time; the cases that expect silence simply run out the clock.
+    const deadline = Date.now() + 1500;
+    while (!seen.includes(LifecycleEvents.RelaunchedAfterCrash) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     await new Promise((r) => setTimeout(r, 50));
     return seen;
   };

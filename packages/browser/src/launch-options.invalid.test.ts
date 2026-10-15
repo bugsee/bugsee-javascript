@@ -43,6 +43,7 @@ const start = async (over: Record<string, unknown>) => {
     systemProbe: probe,
     systemMetricsSampler: () => [],
     captureNetwork: false,
+    persist: false,
     replay: false,
     onError,
     captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
