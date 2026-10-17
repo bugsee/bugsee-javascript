@@ -242,3 +242,52 @@ describe('createCaptureCoordinator — one failing provider never costs the othe
     expect((errors[0] as Error).message).toBe('a stop failed');
   });
 });
+
+describe('createCaptureCoordinator — re-entrancy and a hostile gate', () => {
+  it('an onError that stops the coordinator mid-start ends the start: later providers are not started, nothing spurious is reported', () => {
+    const errors: unknown[] = [];
+    let co: ReturnType<typeof createCaptureCoordinator> | undefined;
+    co = createCaptureCoordinator(init, (e) => {
+      errors.push(e);
+      co?.stop();
+    });
+    const bad = makeProvider('bad');
+    (bad.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('bad start failed');
+    });
+    const plain = makeProvider('plain');
+    const gated = makeProvider('gated', 'x');
+    for (const p of [bad, plain, gated]) co.addProvider(p);
+    expect(() => co?.start(options, enableAll)).not.toThrow();
+    expect(plain.start).not.toHaveBeenCalled();
+    expect(gated.start).not.toHaveBeenCalled();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['bad start failed']);
+  });
+
+  it('a throwing gate isolates that provider only: reported, the others still start', () => {
+    const errors: unknown[] = [];
+    const co = createCaptureCoordinator(init, (e) => errors.push(e));
+    const a = makeProvider('a', 'boom');
+    const b = makeProvider('b', 'fine');
+    co.addProvider(a);
+    co.addProvider(b);
+    expect(() =>
+      co.start(options, (opt) => {
+        if (opt === 'boom') throw new Error('gate failed');
+        return true;
+      }),
+    ).not.toThrow();
+    expect(a.start).not.toHaveBeenCalled();
+    expect(b.start).toHaveBeenCalledTimes(1);
+    expect((errors[0] as Error).message).toBe('gate failed');
+  });
+
+  it('a provider added after a stop is not started by the stale session', () => {
+    const co = createCaptureCoordinator(init);
+    co.start(options, enableAll);
+    co.stop();
+    const late = makeProvider('late');
+    co.addProvider(late);
+    expect(late.start).not.toHaveBeenCalled();
+  });
+});

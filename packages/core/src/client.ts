@@ -1829,8 +1829,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       try {
         captureCoordinator.start(launchOptions, isEnabled);
       } catch (error) {
-        /* v8 ignore next 2 -- belt and braces: the coordinator already isolates every provider failure */
+        /* v8 ignore next 2 -- belt and braces: the coordinator isolates provider and gate failures */
         onError(error);
+      }
+      if (mine !== generation) {
+        return; // a reporter stopped the client while the capture providers started
       }
       try {
         detectionCoordinator.start(context, isEnabled, (request) => {
@@ -1840,8 +1843,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           }
         });
       } catch (error) {
-        /* v8 ignore next 2 -- belt and braces: the coordinator already isolates every provider failure */
+        /* v8 ignore next 2 -- belt and braces: the coordinator isolates provider and gate failures */
         onError(error);
+      }
+      if (mine !== generation) {
+        return; // a reporter stopped the client while the detection providers started
       }
       // Drive part rotation + out-of-window cleanup while launched (Android PartManager tick). Guarded: a
       // capture tick must NEVER throw out of the timer (it would surface as an uncaughtException and could

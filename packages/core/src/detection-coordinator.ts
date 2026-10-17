@@ -43,17 +43,19 @@ export function createDetectionCoordinator(
   let session: Session | null = null;
 
   const startProvider = (provider: DetectionProvider, active: Session): void => {
-    if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
+    try {
+      // The gate is inside the guard too: a throwing option gate costs that provider, not the whole start.
+      if (provider.controllingOption !== undefined && !active.gate(provider.controllingOption)) {
+        return;
+      }
+      provider.start(active.client, active.onReport);
+      started.add(provider);
+    } catch (error) {
+      report(error);
       try {
-        provider.start(active.client, active.onReport);
-        started.add(provider);
-      } catch (error) {
-        report(error);
-        try {
-          provider.stop();
-        } catch {
-          /* best-effort; the start failure is the one reported */
-        }
+        provider.stop();
+      } catch {
+        /* best-effort; the start failure is the one reported */
       }
     }
   };
@@ -77,9 +79,11 @@ export function createDetectionCoordinator(
       if (session !== null) {
         throw new Error('DetectionCoordinator is already started');
       }
-      session = { client, gate: isEnabled, onReport };
+      const active: Session = { client, gate: isEnabled, onReport };
+      session = active;
       for (const provider of providers) {
-        startProvider(provider, session);
+        if (session !== active) break; // stopped mid-start (e.g. by a reporter): do not start on a dead session
+        startProvider(provider, active);
       }
     },
 

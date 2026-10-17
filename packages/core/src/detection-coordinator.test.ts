@@ -190,3 +190,49 @@ describe('createDetectionCoordinator — one failing provider never costs the ot
     expect((errors[0] as Error).message).toBe('a stop failed');
   });
 });
+
+describe('createDetectionCoordinator — re-entrancy and a hostile gate', () => {
+  it('an onError that stops the coordinator mid-start ends the start with no spurious errors', () => {
+    const errors: unknown[] = [];
+    let co: ReturnType<typeof createDetectionCoordinator> | undefined;
+    co = createDetectionCoordinator((e) => {
+      errors.push(e);
+      co?.stop();
+    });
+    const bad = makeProvider('bad');
+    (bad.provider.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('bad start failed');
+    });
+    const after = makeProvider('after');
+    const gated = makeProvider('gated', 'x');
+    co.addProvider(bad.provider);
+    co.addProvider(after.provider);
+    co.addProvider(gated.provider);
+    expect(() => co?.start(client, enableAll, noReport)).not.toThrow();
+    expect(after.provider.start).not.toHaveBeenCalled();
+    expect(gated.provider.start).not.toHaveBeenCalled();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['bad start failed']);
+  });
+
+  it('a throwing gate isolates that provider only', () => {
+    const errors: unknown[] = [];
+    const co = createDetectionCoordinator((e) => errors.push(e));
+    const a = makeProvider('a', 'boom');
+    const b = makeProvider('b', 'fine');
+    co.addProvider(a.provider);
+    co.addProvider(b.provider);
+    expect(() =>
+      co.start(
+        client,
+        (opt) => {
+          if (opt === 'boom') throw new Error('gate failed');
+          return true;
+        },
+        noReport,
+      ),
+    ).not.toThrow();
+    expect(a.provider.start).not.toHaveBeenCalled();
+    expect(b.provider.start).toHaveBeenCalledTimes(1);
+    expect((errors[0] as Error).message).toBe('gate failed');
+  });
+});

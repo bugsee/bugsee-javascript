@@ -49,17 +49,19 @@ export function createCaptureCoordinator(
   let session: Session | null = null;
 
   const startProvider = (provider: CaptureProvider, active: Session): void => {
-    if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
+    try {
+      // The gate is inside the guard too: a throwing option gate costs that provider, not the whole start.
+      if (provider.controllingOption !== undefined && !active.gate(provider.controllingOption)) {
+        return;
+      }
+      provider.start(active.options);
+      started.add(provider);
+    } catch (error) {
+      report(error);
       try {
-        provider.start(active.options);
-        started.add(provider);
-      } catch (error) {
-        report(error);
-        try {
-          provider.stop(); // it may be half started: release whatever it attached
-        } catch {
-          /* best-effort; the start failure is the one reported */
-        }
+        provider.stop(); // it may be half started: release whatever it attached
+      } catch {
+        /* best-effort; the start failure is the one reported */
       }
     }
   };
@@ -85,9 +87,13 @@ export function createCaptureCoordinator(
       if (session !== null) {
         throw new Error('CaptureCoordinator is already started');
       }
-      session = { options, gate: isEnabled };
+      const active: Session = { options, gate: isEnabled };
+      session = active;
       for (const provider of providers) {
-        startProvider(provider, session);
+        // A reporter (or provider) may have stopped this coordinator mid-start: the session is gone, so stop here
+        // rather than start providers on a dead session.
+        if (session !== active) break;
+        startProvider(provider, active);
       }
     },
 

@@ -1404,6 +1404,59 @@ describe('createClient — lifecycle', () => {
     );
   });
 
+  it('an onError that stops the client during launch ends the launch: nothing starts afterwards and the client stays stopped', () => {
+    let client: ReturnType<typeof createClient> | undefined;
+    const onError = vi.fn(() => {
+      void client?.stop();
+    });
+    const timers: unknown[] = [];
+    client = createClient({
+      onError,
+      scheduler: {
+        setInterval: (cb: () => void) => {
+          timers.push(cb);
+          return 'h';
+        },
+        clearInterval: () => {},
+      },
+    });
+    const bad = gatedCaptureProvider('bad');
+    vi.mocked(bad.start).mockImplementation(() => {
+      throw new Error('capture failed');
+    });
+    const det = detectionProvider('det');
+    client.addCaptureProvider(bad);
+    client.addDetectionProvider(det);
+    client.launch();
+    expect(client.isLaunched()).toBe(false);
+    expect(det.start).not.toHaveBeenCalled();
+    expect(timers).toEqual([]); // no tick timer was left running on a stopped client
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('an onError that stops the client when a DETECTION provider fails leaves no tick timer and a stopped client', () => {
+    let client: ReturnType<typeof createClient> | undefined;
+    const timers: unknown[] = [];
+    client = createClient({
+      onError: () => void client?.stop(),
+      scheduler: {
+        setInterval: (cb: () => void) => {
+          timers.push(cb);
+          return 'h';
+        },
+        clearInterval: () => {},
+      },
+    });
+    const bad = detectionProvider('bad-det');
+    vi.mocked(bad.start).mockImplementation(() => {
+      throw new Error('detection failed');
+    });
+    client.addDetectionProvider(bad);
+    client.launch();
+    expect(client.isLaunched()).toBe(false);
+    expect(timers).toEqual([]);
+  });
+
   it('inits a registered capture provider with the capture pipeline (operations/aggregator)', () => {
     const client = createClient();
     const provider = gatedCaptureProvider('net');
