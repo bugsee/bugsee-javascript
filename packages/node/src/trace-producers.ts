@@ -1,3 +1,6 @@
+import { totalmem } from 'node:os';
+import process from 'node:process';
+import { getHeapStatistics } from 'node:v8';
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import {
   createGuardedElu,
@@ -10,8 +13,13 @@ import {
   type ProcessStatsDeps,
   ProcessStatsTracker,
 } from './trackers/process-stats-tracker';
+import {
+  createAvailableMemoryReader,
+  createMemoryLimitReader,
+  createV8HeapReader,
+} from './trackers/runtime-readers';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): five producers over ONE shared
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers over ONE shared
 // ProcessStatsTracker.
 
 abstract class StatsProducer extends TraceProducerBase {
@@ -77,6 +85,46 @@ class EventLoopUtilizationProducer extends StatsProducer {
   }
 }
 
+// `ram_js_heap_*` is the CEILING-based view shared with the browser and Android (`total` = the heap limit),
+// so it is NOT an alias of `process_memory_heap_*` (committed heap). Only `used` is the same number.
+class V8HeapProducer extends StatsProducer {
+  readonly name = 'v8-heap';
+  protected publish(s: ProcessStats): void {
+    const h = s.v8Heap;
+    if (h === undefined) return;
+    this.emit('v8_heap_size_limit', h.limit);
+    this.emit('v8_heap_available', h.available);
+    this.emit('v8_heap_malloced', h.malloced);
+    this.emit('v8_heap_peak_malloced', h.peakMalloced);
+    this.emit('ram_js_heap_total', h.limit);
+    this.emit('ram_js_heap_used', h.used);
+    this.emit('ram_js_heap_free', Math.max(h.limit - h.used, 0));
+  }
+}
+
+// Emitted every tick, never held for the provider's refresh: a cap can be lifted at runtime, and a held value
+// would then be re-recorded as a stale limit instead of being omitted.
+class MemoryLimitProducer extends StatsProducer {
+  readonly name = 'process-memory-limit';
+  protected publish(s: ProcessStats): void {
+    if (s.memoryLimit !== undefined) this.emit('process_memory_limit', s.memoryLimit);
+  }
+}
+
+class AvailableMemoryProducer extends StatsProducer {
+  readonly name = 'system-memory-available';
+  protected publish(s: ProcessStats): void {
+    if (s.availableMemory !== undefined) this.emit('ram_system_available', s.availableMemory);
+  }
+}
+
+class UptimeProducer extends StatsProducer {
+  readonly name = 'process-uptime';
+  protected publish(s: ProcessStats): void {
+    this.emit('process_uptime_s', s.uptimeS);
+  }
+}
+
 export interface NodeTraceProducerDeps extends ProcessStatsDeps {
   /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
@@ -86,10 +134,29 @@ export interface NodeTraceProducerDeps extends ProcessStatsDeps {
    * is never even constructed.
    */
   measuresEventLoopDelay?: boolean;
+  /**
+   * Is `v8.getHeapStatistics()` a real V8 heap with a ceiling? Default `true`. Bun's is JSC-derived (its
+   * `heap_size_limit` is not a ceiling, so `limit - used` means nothing, and it costs ~1000x Node per call —
+   * measured), so `@bugsee/bun` passes `false` and `v8_heap_*` / `ram_js_heap_*` are omitted.
+   */
+  measuresV8Heap?: boolean;
+  /**
+   * Is `process.availableMemory()` comparable to the Node figure? Default `true`. It is not on Bun/Deno:
+   * Deno answered 23 GB against Node's 3.4 GB on one macOS host, and on Linux both ignore the container
+   * cap (11.2 GB under `docker -m 256m` where Node answers 253 MB). `@bugsee/deno` and `@bugsee/bun`
+   * pass `false` and `ram_system_available` is omitted there.
+   */
+  measuresAvailableMemory?: boolean;
 }
 
 export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {}): TraceProducer[] {
-  const { perfHooks, measuresEventLoopDelay = true, ...rest } = deps;
+  const {
+    perfHooks,
+    measuresEventLoopDelay = true,
+    measuresV8Heap = true,
+    measuresAvailableMemory = true,
+    ...rest
+  } = deps;
   const perf = perfHooks ?? realPerfHooks;
   // `??` / conditional spreads (never a bare `...rest` over defaults): an explicit `undefined` must not
   // clobber a default, and `eventLoop` must be ABSENT (not undefined) when the runtime cannot measure it.
@@ -100,6 +167,17 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     ...rest,
     ...(eventLoop !== undefined ? { eventLoop } : {}),
     eventLoopUtilization: rest.eventLoopUtilization ?? createGuardedElu(perf.eventLoopUtilization),
+    // Same rule as `eventLoop`: an injected reader wins, otherwise the default is wired only where the runtime
+    // can give a true value; an unwired reader means the field is ABSENT.
+    ...optionalReader('v8Heap', rest.v8Heap, measuresV8Heap, () =>
+      createV8HeapReader(getHeapStatistics),
+    ),
+    ...optionalReader('memoryLimit', rest.memoryLimit, true, () =>
+      createMemoryLimitReader(process, totalmem),
+    ),
+    ...optionalReader('availableMemory', rest.availableMemory, measuresAvailableMemory, () =>
+      createAvailableMemoryReader(process),
+    ),
   });
   return [
     new ProcessMemoryProducer(tracker),
@@ -107,5 +185,20 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new CpuProducer(tracker),
     new EventLoopLagProducer(tracker),
     new EventLoopUtilizationProducer(tracker),
+    new V8HeapProducer(tracker),
+    new MemoryLimitProducer(tracker),
+    new AvailableMemoryProducer(tracker),
+    new UptimeProducer(tracker),
   ];
+}
+
+/** `{ [key]: reader }` for an injected reader, else the default when `enabled`, else nothing. */
+function optionalReader<K extends string, R>(
+  key: K,
+  injected: R | undefined,
+  enabled: boolean,
+  make: () => R,
+): { [P in K]?: R } {
+  const reader = injected ?? (enabled ? make() : undefined);
+  return (reader !== undefined ? { [key]: reader } : {}) as { [P in K]?: R };
 }

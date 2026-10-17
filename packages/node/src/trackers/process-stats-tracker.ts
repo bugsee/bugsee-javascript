@@ -1,6 +1,7 @@
 import { cpus, freemem, totalmem } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { InterceptorBase, type Scheduler } from '@bugsee/core';
+import type { V8HeapStats } from './runtime-readers';
 
 // Shared node process-stats TRACKER (mirrors the mobile tracker/producer split): ONE timer aggregates
 // memory / system RAM / CPU deltas (+ optional event-loop sources) into a ProcessStats object that many
@@ -26,6 +27,12 @@ export interface ProcessStats {
   cpu: { userDelta: number; systemDelta: number; processPct: number };
   eventLoop?: { meanMs: number; maxMs: number; p99Ms: number };
   utilization?: number;
+  /** Whole seconds since process start. Portable, so always present. */
+  uptimeS: number;
+  /** Each optional field is ABSENT (never zero) when its reader is not wired or cannot answer. */
+  v8Heap?: V8HeapStats;
+  memoryLimit?: number;
+  availableMemory?: number;
 }
 
 export interface ProcessStatsDeps {
@@ -38,6 +45,12 @@ export interface ProcessStatsDeps {
   eventLoop?: EventLoopSource;
   /** ELU delta 0..1 per call, or undefined when unavailable. Default: none. */
   eventLoopUtilization?: () => number | undefined;
+  /** Seconds since process start (fractions floored). Default `process.uptime()`. */
+  uptime?: () => number;
+  /** Optional readers; each answers undefined when the runtime cannot give a true value. Default: none. */
+  v8Heap?: () => V8HeapStats | undefined;
+  memoryLimit?: () => number | undefined;
+  availableMemory?: () => number | undefined;
   scheduler?: Scheduler;
   intervalMs?: number;
   onError?: (error: unknown) => void;
@@ -59,6 +72,7 @@ interface ResolvedDeps {
   systemMemory: () => { total: number; free: number };
   cpuCount: () => number;
   monotonicNowMs: () => number;
+  uptime: () => number;
   scheduler: Scheduler;
   intervalMs: number;
 }
@@ -69,6 +83,9 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   readonly #eventLoop: EventLoopSource | undefined;
   readonly #eventLoopUtilization: (() => number | undefined) | undefined;
   readonly #onError: ((error: unknown) => void) | undefined;
+  readonly #v8Heap: (() => V8HeapStats | undefined) | undefined;
+  readonly #memoryLimit: (() => number | undefined) | undefined;
+  readonly #availableMemory: (() => number | undefined) | undefined;
   #timer: unknown = null;
   #eventLoopRunning = false;
   #lastCpu = { user: 0, system: 0 };
@@ -85,12 +102,16 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
       systemMemory: deps.systemMemory ?? (() => ({ total: totalmem(), free: freemem() })),
       cpuCount: deps.cpuCount ?? (() => cpus().length),
       monotonicNowMs: deps.monotonicNowMs ?? (() => performance.now()),
+      uptime: deps.uptime ?? (() => process.uptime()),
       scheduler: deps.scheduler ?? defaultScheduler,
       intervalMs: deps.intervalMs ?? 1000,
     };
     this.#eventLoop = deps.eventLoop;
     this.#eventLoopUtilization = deps.eventLoopUtilization;
     this.#onError = deps.onError;
+    this.#v8Heap = deps.v8Heap;
+    this.#memoryLimit = deps.memoryLimit;
+    this.#availableMemory = deps.availableMemory;
   }
 
   /**
@@ -170,6 +191,8 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   }
 
   #read(): ProcessStats {
+    // Read before any baseline moves: a throw here fails the whole poll, and must not advance the CPU window.
+    const uptimeS = Math.floor(this.#d.uptime());
     const memory = this.#d.memoryUsage();
     const systemMemory = this.#d.systemMemory();
     const cpu = this.#d.cpuUsage();
@@ -186,12 +209,29 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
         : 0;
     const eventLoop = this.#eventLoop?.read();
     const utilization = this.#eventLoopUtilization?.();
+    const v8Heap = this.#optional(this.#v8Heap);
+    const memoryLimit = this.#optional(this.#memoryLimit);
+    const availableMemory = this.#optional(this.#availableMemory);
     return {
       memory,
       systemMemory,
       cpu: { userDelta, systemDelta, processPct },
       ...(eventLoop !== undefined ? { eventLoop } : {}),
       ...(utilization !== undefined ? { utilization } : {}),
+      uptimeS,
+      ...(v8Heap !== undefined ? { v8Heap } : {}),
+      ...(memoryLimit !== undefined ? { memoryLimit } : {}),
+      ...(availableMemory !== undefined ? { availableMemory } : {}),
     };
+  }
+
+  /** An optional reader failing drops only its own field: it must not take the memory/cpu row with it. */
+  #optional<T>(read: (() => T | undefined) | undefined): T | undefined {
+    try {
+      return read?.();
+    } catch (error) {
+      this.#onError?.(error);
+      return undefined;
+    }
   }
 }

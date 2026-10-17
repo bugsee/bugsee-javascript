@@ -284,6 +284,13 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     );
   });
 
+  it('opts out of ram_system_available only (Deno answers a different quantity) and keeps the V8 heap (real V8)', () => {
+    track(launchCore('tok', base()).client);
+    const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
+    expect(arg?.measuresAvailableMemory).toBe(false);
+    expect(arg).not.toHaveProperty('measuresV8Heap'); // the node default (true) applies
+  });
+
   it('injects the node trace producers (not a legacy sampler) and they feed traces.system', async () => {
     vi.mocked(createNodeSystemTraceProducers).mockClear();
     const store = memStore();

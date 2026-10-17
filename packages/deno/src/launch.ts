@@ -28,6 +28,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // its own tell (a zero `idle`), so it needs no flag.
     systemTraceProducers: createNodeSystemTraceProducers({
       measuresEventLoopDelay: false,
+      // Deno's `process.availableMemory()` is not the Node quantity: 23 GB vs 3.4 GB on one macOS host, and on
+      // Linux it ignores the container cap (11.2 GB under `docker -m 256m` vs Node's 253 MB).
+      measuresAvailableMemory: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),

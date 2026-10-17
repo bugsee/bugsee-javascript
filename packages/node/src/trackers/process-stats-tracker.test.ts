@@ -443,4 +443,125 @@ describe('ProcessStatsTracker', () => {
     expect(calls).toEqual(['start']);
     expect(fs.sets()).toBe(0);
   });
+
+  describe('runtime-depth readers (v8 heap, memory limit, available memory, uptime)', () => {
+    const heap = { limit: 100, used: 30, available: 70, malloced: 5, peakMalloced: 6 };
+
+    it('carries uptime in whole seconds, and no optional field when no reader is given', () => {
+      const { tracker } = mk({ uptime: () => 12.9 });
+      const stats = tracker.current();
+      expect(stats.uptimeS).toBe(12);
+      expect(stats).not.toHaveProperty('v8Heap');
+      expect(stats).not.toHaveProperty('memoryLimit');
+      expect(stats).not.toHaveProperty('availableMemory');
+    });
+
+    it('defaults uptime to process.uptime()', () => {
+      const spy = vi.spyOn(process, 'uptime').mockReturnValue(99.5);
+      try {
+        expect(mk().tracker.current().uptimeS).toBe(99);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('exposes each injected reader, on the baseline and on every poll', () => {
+      let used = 30;
+      const { tracker, fs } = mk({
+        v8Heap: () => ({ ...heap, used }),
+        memoryLimit: () => 777,
+        availableMemory: () => 555,
+        uptime: () => 3,
+      });
+      const seen: ProcessStats[] = [];
+      tracker.on('stats', (s) => seen.push(s));
+      expect(tracker.current()).toMatchObject({
+        v8Heap: heap,
+        memoryLimit: 777,
+        availableMemory: 555,
+        uptimeS: 3,
+      });
+      used = 31;
+      fs.tick();
+      expect(seen[0]?.v8Heap?.used).toBe(31);
+      expect(seen[0]?.memoryLimit).toBe(777);
+      expect(seen[0]?.availableMemory).toBe(555);
+    });
+
+    it('omits a field whose reader answers undefined', () => {
+      const { tracker } = mk({
+        v8Heap: () => undefined,
+        memoryLimit: () => undefined,
+        availableMemory: () => undefined,
+      });
+      const stats = tracker.current();
+      expect(stats).not.toHaveProperty('v8Heap');
+      expect(stats).not.toHaveProperty('memoryLimit');
+      expect(stats).not.toHaveProperty('availableMemory');
+    });
+
+    it('a throwing reader is reported and ONLY its field is dropped (memory/cpu/other readers survive)', () => {
+      const onError = vi.fn();
+      const { tracker, fs } = mk({
+        v8Heap: () => {
+          throw new Error('v8');
+        },
+        memoryLimit: () => 777,
+        availableMemory: () => {
+          throw new Error('avail');
+        },
+        onError,
+      });
+      const seen: ProcessStats[] = [];
+      tracker.on('stats', (s) => seen.push(s));
+      const base = tracker.current();
+      expect(base.memory).toEqual(mem);
+      expect(base.memoryLimit).toBe(777);
+      expect(base).not.toHaveProperty('v8Heap');
+      expect(base).not.toHaveProperty('availableMemory');
+      expect(onError).toHaveBeenCalledTimes(2);
+      fs.tick();
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.memoryLimit).toBe(777);
+      expect(onError).toHaveBeenCalledTimes(4);
+    });
+
+    it('a throwing uptime reader does not advance the CPU baseline: the next delta covers the whole gap', () => {
+      let fail = true;
+      const { tracker, fs, advance } = mk({
+        uptime: () => {
+          if (fail) throw new Error('uptime');
+          return 1;
+        },
+        onError: () => {},
+      });
+      const seen: ProcessStats[] = [];
+      tracker.on('stats', (s) => seen.push(s));
+      advance({ user: 100, system: 40 }, 1000);
+      fs.tick(); // fails: nothing emitted, baseline untouched
+      fail = false;
+      advance({ user: 300, system: 100 }, 2000);
+      fs.tick();
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.cpu).toMatchObject({ userDelta: 300, systemDelta: 100 });
+    });
+
+    it('a throwing uptime reader is reported and the stats are not emitted for that poll', () => {
+      const onError = vi.fn();
+      let fail = false;
+      const { tracker, fs } = mk({
+        uptime: () => {
+          if (fail) throw new Error('uptime');
+          return 1;
+        },
+        onError,
+      });
+      const seen: ProcessStats[] = [];
+      tracker.on('stats', (s) => seen.push(s));
+      fail = true;
+      fs.tick();
+      expect(seen).toEqual([]);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+  });
 });
