@@ -39,6 +39,10 @@ const constDeps = (over: NodeTraceProducerDeps = {}): NodeTraceProducerDeps => (
   cpuUsage: () => ({ user: 100_000, system: 200_000 }),
   cpuCount: () => 2,
   monotonicNowMs: () => 1000,
+  uptime: () => 42.7,
+  v8Heap: () => ({ limit: 1000, used: 300, available: 700, malloced: 11, peakMalloced: 12 }),
+  memoryLimit: () => 500,
+  availableMemory: () => 250,
   ...over,
 });
 
@@ -109,10 +113,131 @@ describe('createNodeSystemTraceProducers', () => {
       ['process_memory_external', 40],
       ['process_memory_heap_total', 20],
       ['process_memory_heap_used', 30],
+      ['process_memory_limit', 500],
       ['process_memory_rss', 10],
+      ['process_uptime_s', 42],
+      ['ram_js_heap_free', 700],
+      ['ram_js_heap_total', 1000],
+      ['ram_js_heap_used', 300],
+      ['ram_system_available', 250],
       ['ram_system_free', 400],
       ['ram_system_total', 1000],
+      ['v8_heap_available', 700],
+      ['v8_heap_malloced', 11],
+      ['v8_heap_peak_malloced', 12],
+      ['v8_heap_size_limit', 1000],
     ]);
+  });
+
+  describe('runtime-depth traces', () => {
+    const run = (over: NodeTraceProducerDeps) => {
+      const h = harness(constDeps({ eventLoop, eventLoopUtilization: () => 0.5, ...over }));
+      h.startAll();
+      return h;
+    };
+
+    it('ram_js_heap_* is the CEILING-based view: total = limit, used = used, free = limit - used', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 900, used: 250, available: 1, malloced: 2, peakMalloced: 3 }),
+      });
+      expect(h.got.get('ram_js_heap_total')).toBe(900);
+      expect(h.got.get('ram_js_heap_used')).toBe(250);
+      expect(h.got.get('ram_js_heap_free')).toBe(650);
+    });
+
+    it('ram_js_heap_free never goes negative when used overshoots the limit', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 100, used: 130, available: 0, malloced: 0, peakMalloced: 0 }),
+      });
+      expect(h.got.get('ram_js_heap_free')).toBe(0);
+    });
+
+    it('v8_heap_* carry their own quantities, distinct from ram_js_heap_* and process_memory_heap_*', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 900, used: 250, available: 111, malloced: 22, peakMalloced: 33 }),
+      });
+      expect(h.got.get('v8_heap_size_limit')).toBe(900);
+      expect(h.got.get('v8_heap_available')).toBe(111);
+      expect(h.got.get('v8_heap_malloced')).toBe(22);
+      expect(h.got.get('v8_heap_peak_malloced')).toBe(33);
+      expect(h.got.get('process_memory_heap_total')).toBe(20); // committed heap, untouched
+    });
+
+    it('re-emits changed values on each tick', () => {
+      let used = 300;
+      const h = run({
+        v8Heap: () => ({ limit: 1000, used, available: 700, malloced: 11, peakMalloced: 12 }),
+      });
+      used = 400;
+      h.tick();
+      expect(h.got.get('ram_js_heap_used')).toBe(400);
+      expect(h.got.get('ram_js_heap_free')).toBe(600);
+    });
+
+    it('omits every v8/ram_js_heap trace when the heap reader answers undefined', () => {
+      const h = run({ v8Heap: () => undefined });
+      for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
+      expect(h.got.has('process_memory_rss')).toBe(true);
+    });
+
+    it('omits process_memory_limit / ram_system_available when their readers answer undefined', () => {
+      const h = run({ memoryLimit: () => undefined, availableMemory: () => undefined });
+      expect(h.got.has('process_memory_limit')).toBe(false);
+      expect(h.got.has('ram_system_available')).toBe(false);
+      expect(h.got.get('process_uptime_s')).toBe(42);
+    });
+
+    it('measuresV8Heap:false wires NO heap reader (Bun): nothing constructed, nothing emitted', () => {
+      const { v8Heap: _off, ...base } = constDeps({ eventLoop });
+      const h = harness({ ...base, measuresV8Heap: false });
+      h.startAll();
+      for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
+    });
+
+    it('measuresAvailableMemory:false omits ram_system_available even where the runtime answers (Bun/Deno)', () => {
+      const { availableMemory: _off, ...base } = constDeps({ eventLoop });
+      const h = harness({ ...base, measuresAvailableMemory: false });
+      h.startAll();
+      expect(h.got.has('ram_system_available')).toBe(false);
+    });
+
+    it('an injected reader wins over the measures* flag (as for the event-loop source)', () => {
+      const h = harness({
+        ...constDeps({ eventLoop }),
+        measuresV8Heap: false,
+        measuresAvailableMemory: false,
+      });
+      h.startAll();
+      expect(h.got.get('v8_heap_size_limit')).toBe(1000);
+      expect(h.got.get('ram_system_available')).toBe(250);
+    });
+
+    it('wires the real process.constrainedMemory() by default (a real cap is reported, no cap is not)', () => {
+      const proc = process as { constrainedMemory?: () => number };
+      const original = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
+      const set = (fn: () => number) =>
+        Object.defineProperty(process, 'constrainedMemory', { value: fn, configurable: true });
+      try {
+        set(() => 1234);
+        const { memoryLimit: _off, ...base } = constDeps({ eventLoop });
+        const capped = harness(base);
+        capped.startAll();
+        expect(capped.got.get('process_memory_limit')).toBe(1234);
+        set(() => 0);
+        const free = harness(base);
+        free.startAll();
+        expect(free.got.has('process_memory_limit')).toBe(false);
+      } finally {
+        if (original) Object.defineProperty(process, 'constrainedMemory', original);
+        else delete proc.constrainedMemory;
+      }
+    });
+
+    it('stopping the producers releases the timer exactly once', () => {
+      const h = run({});
+      h.stopAll();
+      expect(h.spy.cleared).toBe(1);
+    });
   });
 
   it('CPU producer: user, system and process% are each their own value (distinct non-zero steps)', () => {
@@ -218,7 +343,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(5);
+    expect(h.producers).toHaveLength(9);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} });
@@ -311,7 +436,7 @@ describe('createNodeSystemTraceProducers', () => {
     expect(typeof got.get('process_memory_rss')).toBe('number');
   });
 
-  it('with real node readers and one tick it emits the full 14-trace catalog, each a finite number', async () => {
+  it('with real node readers and one tick it emits the full catalog, each a finite number', async () => {
     const got = new Map<string, unknown>();
     let tick: (() => void) | undefined;
     const ps = createNodeSystemTraceProducers({
@@ -328,7 +453,10 @@ describe('createNodeSystemTraceProducers', () => {
     await new Promise((r) => setTimeout(r, 120));
     tick?.();
     for (const p of ps) p.stop();
-    expect([...got.keys()].sort()).toEqual([
+    // `process_memory_limit` exists only inside a real cgroup cap and `ram_system_available` only on
+    // Node >= 20.13, so each is checked for what the host can answer rather than demanded.
+    const optional = ['process_memory_limit', 'ram_system_available'];
+    expect([...got.keys()].filter((k) => !optional.includes(k)).sort()).toEqual([
       'cpu_usage_process',
       'cpu_usage_system',
       'cpu_usage_user',
@@ -341,9 +469,21 @@ describe('createNodeSystemTraceProducers', () => {
       'process_memory_heap_total',
       'process_memory_heap_used',
       'process_memory_rss',
+      'process_uptime_s',
+      'ram_js_heap_free',
+      'ram_js_heap_total',
+      'ram_js_heap_used',
       'ram_system_free',
       'ram_system_total',
+      'v8_heap_available',
+      'v8_heap_malloced',
+      'v8_heap_peak_malloced',
+      'v8_heap_size_limit',
     ]);
+    expect(got.has('ram_system_available')).toBe(
+      typeof (process as { availableMemory?: unknown }).availableMemory === 'function',
+    );
+    expect(Number(got.get('v8_heap_size_limit'))).toBeGreaterThan(0);
     for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
   });
 });

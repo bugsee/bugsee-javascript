@@ -20,6 +20,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
     systemTraceProducers: createNodeSystemTraceProducers({
+      // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call)
+      // and `availableMemory` is not the Node quantity (measured), so those traces are omitted here.
+      measuresV8Heap: false,
+      measuresAvailableMemory: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
