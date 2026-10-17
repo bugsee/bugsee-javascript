@@ -27,14 +27,23 @@ export interface PageLifecycleEnv {
 export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
   readonly name = 'browser-page-lifecycle';
   readonly #env: PageLifecycleEnv;
-  readonly #onError: ((error: unknown) => void) | undefined;
+  readonly #onError: (error: unknown) => void;
   #attached: Array<{ target: Partial<TargetLike>; type: string; listener: (e: unknown) => void }> =
     [];
 
   constructor(env: PageLifecycleEnv, onError?: (error: unknown) => void) {
-    super(onError);
+    // A throwing reporter must not escape into the host's event dispatch, so it is wrapped for the
+    // emitter and for the tracker's own catch paths alike.
+    const report = (error: unknown): void => {
+      try {
+        onError?.(error);
+      } catch {
+        /* the reporter itself failed; nothing left to tell */
+      }
+    };
+    super(report);
     this.#env = env;
-    this.#onError = onError;
+    this.#onError = report;
   }
 
   // Guarded: the tracker is already marked active before this runs, so a throwing target must be reported
@@ -54,7 +63,7 @@ export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
         this.#guard(() => this.emit('visibility', { visible: doc?.visibilityState === 'visible' })),
       );
     } catch (error) {
-      this.#onError?.(error);
+      this.#onError(error);
     }
   }
 
@@ -85,7 +94,7 @@ export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
     try {
       fn();
     } catch (error) {
-      this.#onError?.(error);
+      this.#onError(error);
     }
   }
 }

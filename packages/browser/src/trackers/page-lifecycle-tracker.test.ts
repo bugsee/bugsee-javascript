@@ -180,4 +180,32 @@ describe('PageLifecycleTracker', () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(seen).toEqual(['second']);
   });
+
+  it('a throwing onError never escapes: not from a failed read, a throwing consumer, or a failed attach', () => {
+    const onError = vi.fn(() => {
+      throw new Error('reporter');
+    });
+    const win = mkTarget();
+    const doc = mkTarget();
+    Object.defineProperty(doc, 'visibilityState', {
+      get(): never {
+        throw new Error('getter');
+      },
+    });
+    const t = new PageLifecycleTracker({ window: win, document: doc }, onError);
+    t.on('online', () => {
+      throw new Error('consumer');
+    });
+    t.on('visibility', () => {});
+    expect(() => doc.fire('visibilitychange')).not.toThrow();
+    expect(() => win.fire('online')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(2);
+
+    const bad = mkTarget();
+    bad.addEventListener = () => {
+      throw new Error('detached');
+    };
+    const t2 = new PageLifecycleTracker({ window: bad }, onError);
+    expect(() => t2.on('online', () => {})).not.toThrow();
+  });
 });
