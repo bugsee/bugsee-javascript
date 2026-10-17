@@ -130,3 +130,63 @@ describe('createDetectionCoordinator', () => {
     expect(co.providers).toHaveLength(1);
   });
 });
+
+describe('createDetectionCoordinator — one failing provider never costs the others', () => {
+  const failing = (name: string) => {
+    const p = makeProvider(name);
+    (p.provider.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error(`${name} start failed`);
+    });
+    return p;
+  };
+
+  it('a throwing start is reported, best-effort stopped, and later providers still start', () => {
+    const errors: unknown[] = [];
+    const co = createDetectionCoordinator((e) => errors.push(e));
+    const bad = failing('bad');
+    const after = makeProvider('after');
+    co.addProvider(bad.provider);
+    co.addProvider(after.provider);
+    expect(() => co.start(client, enableAll, noReport)).not.toThrow();
+    expect(after.provider.start).toHaveBeenCalledTimes(1);
+    expect(bad.provider.stop).toHaveBeenCalledTimes(1);
+    expect((errors[0] as Error).message).toBe('bad start failed');
+    co.stop();
+    expect(bad.provider.stop).toHaveBeenCalledTimes(1);
+    expect(after.provider.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('works without a sink; a throwing unwind or reporter changes nothing; a late provider is isolated', () => {
+    const co = createDetectionCoordinator();
+    const bad = failing('bad');
+    (bad.provider.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('unwind');
+    });
+    co.addProvider(bad.provider);
+    expect(() => co.start(client, enableAll, noReport)).not.toThrow();
+    const errors: unknown[] = [];
+    const co2 = createDetectionCoordinator((e) => {
+      errors.push(e);
+      throw new Error('reporter');
+    });
+    co2.start(client, enableAll, noReport);
+    expect(() => co2.addProvider(failing('late').provider)).not.toThrow();
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a throwing stop() does not strand the others', () => {
+    const errors: unknown[] = [];
+    const co = createDetectionCoordinator((e) => errors.push(e));
+    const a = makeProvider('a');
+    const b = makeProvider('b');
+    (a.provider.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('a stop failed');
+    });
+    co.addProvider(a.provider);
+    co.addProvider(b.provider);
+    co.start(client, enableAll, noReport);
+    expect(() => co.stop()).not.toThrow();
+    expect(b.provider.stop).toHaveBeenCalledTimes(1);
+    expect((errors[0] as Error).message).toBe('a stop failed');
+  });
+});

@@ -26,15 +26,35 @@ interface Session {
   onReport: ReportListener;
 }
 
-export function createDetectionCoordinator(): DetectionCoordinator {
+export function createDetectionCoordinator(
+  onError?: (error: unknown) => void,
+): DetectionCoordinator {
+  // ISOLATED, like the capture coordinator: a throwing provider is reported and best-effort stopped, and never
+  // prevents the providers after it from starting or stopping.
+  const report = (error: unknown): void => {
+    try {
+      onError?.(error);
+    } catch {
+      /* the reporter itself failed */
+    }
+  };
   const providers: DetectionProvider[] = [];
   const started = new Set<DetectionProvider>();
   let session: Session | null = null;
 
   const startProvider = (provider: DetectionProvider, active: Session): void => {
     if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
-      provider.start(active.client, active.onReport);
-      started.add(provider);
+      try {
+        provider.start(active.client, active.onReport);
+        started.add(provider);
+      } catch (error) {
+        report(error);
+        try {
+          provider.stop();
+        } catch {
+          /* best-effort; the start failure is the one reported */
+        }
+      }
     }
   };
 
@@ -65,7 +85,11 @@ export function createDetectionCoordinator(): DetectionCoordinator {
 
     stop(): void {
       for (const provider of started) {
-        provider.stop();
+        try {
+          provider.stop();
+        } catch (error) {
+          report(error);
+        }
       }
       started.clear();
       session = null;

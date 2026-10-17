@@ -1378,6 +1378,32 @@ describe('createClient — lifecycle', () => {
     expect(provider.start).toHaveBeenCalledTimes(1);
   });
 
+  it('a throwing capture or detection provider is reported to onError and the rest of the launch proceeds', () => {
+    const onError = vi.fn();
+    const client = createClient({ onError });
+    const badCapture = gatedCaptureProvider('bad-capture');
+    vi.mocked(badCapture.start).mockImplementation(() => {
+      throw new Error('capture failed');
+    });
+    const goodCapture = gatedCaptureProvider('good-capture');
+    const badDetection = detectionProvider('bad-detection');
+    vi.mocked(badDetection.start).mockImplementation(() => {
+      throw new Error('detection failed');
+    });
+    const goodDetection = detectionProvider('good-detection');
+    client.addCaptureProvider(badCapture);
+    client.addCaptureProvider(goodCapture);
+    client.addDetectionProvider(badDetection);
+    client.addDetectionProvider(goodDetection);
+    client.launch();
+    expect(client.isLaunched()).toBe(true);
+    expect(goodCapture.start).toHaveBeenCalledTimes(1);
+    expect(goodDetection.start).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toEqual(
+      expect.arrayContaining(['capture failed', 'detection failed']),
+    );
+  });
+
   it('inits a registered capture provider with the capture pipeline (operations/aggregator)', () => {
     const client = createClient();
     const provider = gatedCaptureProvider('net');

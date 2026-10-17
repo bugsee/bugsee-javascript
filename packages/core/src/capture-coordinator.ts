@@ -7,8 +7,9 @@ import type { CaptureProvider, CaptureProviderInit, OptionsContainer } from './c
 // stops the started ones, and providers may be added after start. The trigger-time buffer→serialize
 // wiring lives in the event pipeline.
 //
-// Deterministic by design: a throwing provider.start propagates. The Client wraps start() to honor
-// the "launch never throws" guarantee.
+// ISOLATED by design: a throwing provider.start/stop is reported (`onError`) and contained — it is best-effort
+// stopped (it may have attached part of itself before throwing) and never prevents the providers after it from
+// starting or stopping. One provider's hostile environment must not cost the customer every other capture.
 
 /** Returns whether a launch option (by key) is enabled. */
 export type OptionGate = (option: string) => boolean;
@@ -32,15 +33,34 @@ interface Session {
   gate: OptionGate;
 }
 
-export function createCaptureCoordinator(init: CaptureProviderInit): CaptureCoordinator {
+export function createCaptureCoordinator(
+  init: CaptureProviderInit,
+  onError?: (error: unknown) => void,
+): CaptureCoordinator {
+  const report = (error: unknown): void => {
+    try {
+      onError?.(error);
+    } catch {
+      /* the reporter itself failed */
+    }
+  };
   const providers: CaptureProvider[] = [];
   const started = new Set<CaptureProvider>();
   let session: Session | null = null;
 
   const startProvider = (provider: CaptureProvider, active: Session): void => {
     if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
-      provider.start(active.options);
-      started.add(provider);
+      try {
+        provider.start(active.options);
+        started.add(provider);
+      } catch (error) {
+        report(error);
+        try {
+          provider.stop(); // it may be half started: release whatever it attached
+        } catch {
+          /* best-effort; the start failure is the one reported */
+        }
+      }
     }
   };
 
@@ -73,7 +93,11 @@ export function createCaptureCoordinator(init: CaptureProviderInit): CaptureCoor
 
     stop(): void {
       for (const provider of started) {
-        provider.stop();
+        try {
+          provider.stop();
+        } catch (error) {
+          report(error);
+        }
       }
       started.clear();
       session = null;
