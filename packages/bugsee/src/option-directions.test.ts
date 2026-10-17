@@ -64,6 +64,7 @@ const DIRECTIONS: Record<string, Direction> = {
   reportPrioritySelectorEnabled: 'default',
   // node
   profiling: 'default', // default OFF
+  captureDiskSpace: 'default', // default OFF: only boolean true enables
   detectHangs: 'default', // default ON, a diagnostic
   captureLocalVariables: 'off',
   captureSourceContext: 'off',
