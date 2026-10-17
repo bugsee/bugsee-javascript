@@ -181,7 +181,11 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
       try {
         source?.stop();
       } catch (error) {
-        this.#onError?.(error); // reported, never thrown: one failing stop must not strand the other
+        try {
+          this.#onError?.(error); // reported, never thrown: one failing stop must not strand the other
+        } catch {
+          /* a failing reporter must not stop the remaining source either */
+        }
       }
     }
   }

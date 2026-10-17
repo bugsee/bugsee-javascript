@@ -555,9 +555,30 @@ describe('gc traces', () => {
     const { gc } = fakeGc();
     const h = harness(constDeps({ eventLoop, gc }));
     h.startAll();
+    h.tick();
     expect(h.got.get('gc_count')).toBe(3);
     expect(h.got.get('gc_pause_ms')).toBe(12.5);
     expect(h.got.get('gc_pause_max_ms')).toBe(8);
+  });
+
+  it('the start baseline carries NO gc traces: no interval has been observed yet, so a zero would be invented', () => {
+    const { gc } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    for (const name of GC) expect(h.got.has(name)).toBe(false);
+    expect(h.got.has('process_memory_rss')).toBe(true); // the other families still baseline
+  });
+
+  it('a producer restarting while the tracker stays active does not re-emit the last interval', () => {
+    const { gc } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    h.tick();
+    const gcProducer = h.producers.find((p) => p.name === 'gc');
+    const calls: string[] = [];
+    gcProducer?.stop();
+    gcProducer?.start({ emit: (n) => void calls.push(n) });
+    expect(calls).toEqual([]);
   });
 
   it('a quiet interval is a true zero, re-emitted every tick (never held)', () => {
@@ -567,9 +588,10 @@ describe('gc traces', () => {
     const h = harness(constDeps({ eventLoop, gc }));
     for (const p of h.producers) p.start({ emit: (n, v, _d, o) => void calls.push([n, v, o]) });
     h.tick();
+    h.tick();
     const per = (name: string) => calls.filter(([n]) => n === name);
     for (const name of GC) {
-      expect(per(name)).toHaveLength(2);
+      expect(per(name)).toHaveLength(2); // one per tick, the baseline has none
       expect(per(name).every(([, v, o]) => v === 0 && o?.hold === false)).toBe(true);
     }
     cur = undefined; // source went away: omitted, nothing carried forward
@@ -581,6 +603,7 @@ describe('gc traces', () => {
     const { gc } = fakeGc(() => undefined);
     const h = harness(constDeps({ eventLoop, gc }));
     h.startAll();
+    h.tick();
     for (const name of GC) expect(h.got.has(name)).toBe(false);
     expect(h.got.has('process_memory_rss')).toBe(true);
   });
@@ -627,7 +650,8 @@ describe('gc traces', () => {
     const h = harness({ ...constDeps({ eventLoop }), performanceObserver: Counting as never });
     h.startAll();
     expect(seen).toEqual([{ entryTypes: ['gc'] }]);
-    expect(h.got.get('gc_count')).toBe(0);
+    h.tick();
+    expect(h.got.get('gc_count')).toBe(0); // observed, quiet interval
     h.stopAll();
     expect(disconnects).toBe(1);
   });
@@ -636,12 +660,14 @@ describe('gc traces', () => {
     const { gc } = fakeGc();
     const h = harness({ ...constDeps({ eventLoop, gc }), measuresGc: false });
     h.startAll();
+    h.tick();
     expect(h.got.get('gc_count')).toBe(3);
   });
 
   it('an explicit undefined source does not clobber the real default (measuresGc true)', () => {
     const h = harness({ ...constDeps({ eventLoop }), gc: undefined });
     h.startAll();
+    h.tick();
     expect(h.got.has('gc_count')).toBe(true); // the real observer is wired (a quiet interval is a true zero)
     h.stopAll();
   });

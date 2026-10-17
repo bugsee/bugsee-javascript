@@ -31,7 +31,11 @@ abstract class StatsProducer extends TraceProducerBase {
   protected abstract publish(stats: ProcessStats): void;
   protected onStart(): void {
     this.#off = this.tracker.on('stats', (s) => this.publish(s)); // subscribing activates the tracker
-    this.publish(this.tracker.current()); // baseline
+    this.baseline(this.tracker.current());
+  }
+  /** The value emitted at start. Most families publish the current reading; interval-based ones override. */
+  protected baseline(stats: ProcessStats): void {
+    this.publish(stats);
   }
   protected override onStop(): void {
     this.#off?.();
@@ -123,6 +127,9 @@ class AvailableMemoryProducer extends StatsProducer {
 // stops answering must be omitted rather than re-recorded from a held value.
 class GcProducer extends StatsProducer {
   readonly name = 'gc';
+  // No baseline: the interval opens at activation, so nothing has been observed yet (a zero would be invented),
+  // and a restart while the tracker stays active would re-emit the last interval's cached counts.
+  protected override baseline(): void {}
   protected publish(s: ProcessStats): void {
     if (s.gc === undefined) return;
     this.emit('gc_count', s.gc.count);

@@ -574,6 +574,34 @@ describe('ProcessStatsTracker', () => {
       expect(got[0]?.gc).toEqual(interval);
     });
 
+    it('a throwing onError during a failing stop() does not strand the other source', () => {
+      const calls: string[] = [];
+      const eventLoop: EventLoopSource = {
+        read: () => undefined,
+        start: () => {},
+        stop: () => {
+          calls.push('el-stop');
+          throw new Error('el');
+        },
+      };
+      const { gc } = mkGc({
+        stop: () => {
+          calls.push('gc-stop');
+          throw new Error('gc');
+        },
+      });
+      const { tracker } = mk({
+        gc,
+        eventLoop,
+        onError: () => {
+          throw new Error('reporter');
+        },
+      });
+      const off = tracker.on('stats', () => {});
+      expect(() => off()).not.toThrow();
+      expect(calls.sort()).toEqual(['el-stop', 'gc-stop']);
+    });
+
     it('restarts the source on re-activation', () => {
       const { gc, calls } = mkGc();
       const { tracker } = mk({ gc });
