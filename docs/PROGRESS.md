@@ -63,7 +63,7 @@ Read this first; then `docs/design/sdk-design.md` (Draft v3) for the full archit
 - `buildNodeEnvironment(input, probe)` — §8.6 envelope via injectable `SystemProbe`. Applies `optionsToWire` to `sdk.options` (dots → colons; server treats dots as nested-document paths).
 - `createUncaughtExceptionProvider` / `createUnhandledRejectionProvider` — process-event detection, V8 stack parsed + scrubbed.
 - `createNodeHttpInterceptor` — wraps `node:http(s)` `request` + `get` (mechanism `'http'`), captures axios/got/node-fetch that bypass global fetch. **Transparent error handling**: re-raises the original error when it is the sole `'error'` listener so an otherwise-uncaught request error still crashes the app.
-- `createNodeSystemTraceProducers` (the DEFAULT since ST0′; the legacy `createNodeSystemMetricsSampler` below is now only the `systemMetricsSampler` override) / `createNodeSystemMetricsSampler` — process memory (rss/heapTotal/heapUsed/external/**arrayBuffers**), **system memory (`ram_system_total`/`ram_system_free` — Android parity)**, CPU user/system per-sample deltas + **normalized `cpu_usage_process` %** (over wall-time/cores), event-loop lag **mean/max/p99** + **utilization** (perf_hooks `monitorEventLoopDelay` + `eventLoopUtilization`). All readers injectable.
+- `createNodeSystemTraceProducers` (the only built-in node trace source; the legacy `createNodeSystemMetricsSampler` / `createGuardedSystemMetricsSampler` were deleted in ST0′-D, `systemMetricsSampler` remains as a caller-supplied override) — process memory (rss/heapTotal/heapUsed/external/**arrayBuffers**), **system memory (`ram_system_total`/`ram_system_free` — Android parity)**, CPU user/system per-sample deltas + **normalized `cpu_usage_process` %** (over wall-time/cores), event-loop lag **mean/max/p99** + **utilization** (perf_hooks `monitorEventLoopDelay` + `eventLoopUtilization`). All readers injectable.
 - `createNodeSystemEventsSource` — process lifecycle (`process_started` on activate, `process_exiting`, **`process_before_exit`** clean-drain, `process_warning`, and **`process_signal`** for SIGTERM/SIGINT). Signal capture is PASSIVE: it emits the event, and only when the SDK is the sole handler does it remove itself and **re-raise** (`process.kill`) to restore Node's default termination — so it never hangs a process or hijacks an app's own signal handler.
 - **`launch(appToken, options)`** — the composition root: builds the transport (internal-tagged), api/uploader/upload pipeline, durable wrapper (when `dataDir`/`bundleStore` present), env builder, store (in-memory / file-backed), resolves the friendly options once via `NODE_OPTION_DEFINITIONS`, registers gated capture providers (console→log; network umbrella with `node:http` folded in; system traces/events) + detection providers, calls `client.launch()`, runs durable `recover()` on start, installs the uncaughtException → `flush(timeout)` → `proc.exit(1)` policy (opt-out `exitOnUncaught`, default `shutdownTimeoutMs: 3000`), and augments `client.stop()` to remove its process listener. Returns the started `BugseeClient`.
 
@@ -125,7 +125,7 @@ Pluggable extensions (APM/replay/etc.) remain the contract for non-core features
 | Durable bundle queue | `BundleStore` (type) + `createDurableUploadPipeline` | `createNodeBundleStore` (fs files) | IndexedDB-backed |
 | Capture sources | `console`, `fetch`, `xhr`, `sendBeacon`, `ws`, `sse`, `webtransport` (self-skip if absent) | `node:http` added via `installNetworkCapture({ additionalSources })` | DOM-specific sources |
 | Process events | — | `process` (`uncaughtException`, `unhandledRejection`, `exit`, `warning`) | `window.onerror`, `unhandledrejection` |
-| System metrics | trace producers over shared trackers (`TraceProducer`); legacy `TraceSample[]` sampler still accepted | `createNodeSystemTraceProducers` (legacy `createNodeSystemMetricsSampler` only as an override) | `createBrowserSystemTracesSampler` (`performance.memory` etc.) + `createBrowserSystemTraceProducers` (battery) |
+| System metrics | trace producers over shared trackers (`TraceProducer`); legacy `TraceSample[]` sampler still accepted | `createNodeSystemTraceProducers` | `createBrowserSystemTracesSampler` (`performance.memory` etc.) + `createBrowserSystemTraceProducers` (battery) |
 | Clock / Scheduler / SystemProbe | injectable interfaces in core | real defaults (`Date.now`, `setInterval`, `os.*`) | platform defaults |
 
 Cross-runtime capture interceptors **self-skip when their global is absent**, so `@bugsee/capture` can be imported safely on any runtime; only the runtime-specific *additionalSources* differ.
@@ -694,9 +694,9 @@ composition (transport, fs storage, node:http capture, crash detection, durable 
 **CPU profiling, ANR/hang detection**) and overrides only the Deno identity probe (`platform.type: 'deno'`,
 version from `Deno.version.deno` with a node-compat fallback) + the guarded `perf_hooks` trace producers.
 - **Shared sampler refactor:** the guarded perf_hooks sampler moved from `@bugsee/bun` to `@bugsee/node` as
-  `createGuardedSystemMetricsSampler` (bun's local copy removed). Since ST0′ neither launch uses it: Bun + Deno
-  both pass `createNodeSystemTraceProducers` (whose lazy guarded event-loop sources replace it); it remains
-  exported as a legacy `systemMetricsSampler`.
+  `createGuardedSystemMetricsSampler` (bun's local copy removed). Since ST0′ neither launch used it (Bun + Deno
+  both pass `createNodeSystemTraceProducers`, whose lazy guarded event-loop sources replace it), and ST0′-D
+  deleted it along with `createNodeSystemMetricsSampler`.
 - **Verified on REAL Deno 2.8.3:** `Deno.version.deno` = '2.8.3' (note: `process.version` is the *node-compat*
   version, so the probe reads the Deno global, not `process.versions`); and ALL diagnostics primitives work —
   `node:inspector` Profiler (CPU profiling), `worker_threads` + `SharedArrayBuffer` + `Worker#unref` (ANR),

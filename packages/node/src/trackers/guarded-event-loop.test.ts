@@ -295,7 +295,7 @@ describe('createGuardedElu', () => {
   });
 });
 
-describe('realPerfHooks + eluUnavailable re-export', () => {
+describe('realPerfHooks + eluUnavailable', () => {
   it('wraps the live node:perf_hooks', () => {
     const h = realPerfHooks.monitorEventLoopDelay();
     expect(typeof h.enable).toBe('function');
@@ -306,7 +306,7 @@ describe('realPerfHooks + eluUnavailable re-export', () => {
         .utilization,
     ).toBe('number');
   });
-  it('re-exports eluUnavailable', () => {
+  it('eluUnavailable is true only for an all-zero delta (idle AND active zero)', () => {
     expect(eluUnavailable({ idle: 0, active: 0 })).toBe(true);
     expect(eluUnavailable({ idle: 1, active: 0 })).toBe(false);
   });

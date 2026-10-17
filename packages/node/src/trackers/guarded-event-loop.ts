@@ -1,5 +1,4 @@
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
-import { eluUnavailable } from '../system-metrics';
 import type { EventLoopSource } from './process-stats-tracker';
 
 // Guarded, LAZY event-loop sources for node-family runtimes with PARTIAL perf_hooks (Bun, Deno). Nothing is
@@ -35,7 +34,21 @@ export const realPerfHooks: PerfHooks = {
     (performance.eventLoopUtilization as (a?: Elu, b?: Elu) => Elu)(a, b),
 };
 
-export { eluUnavailable };
+/**
+ * Does this delta mean "the runtime does not implement ELU" rather than "the loop was idle"?
+ *
+ * `performance.eventLoopUtilization()` exists on Bun and Deno and does not throw — it simply answers
+ * `{idle:0, active:0, utilization:0}` for ever. Measured 2026-09-01, after a 120ms CPU burn and a 60ms
+ * sleep: node reported `{idle:61.0, active:0.118}` while Bun and Deno both reported zeros. A throw-guard
+ * cannot see that, so the SDK shipped a confident 0% utilization — which reads, to whoever opens the
+ * report, exactly like a perfectly healthy idle process.
+ *
+ * `idle` is the discriminator, not `utilization`: on any honest implementation idle accumulates
+ * wall-clock time between samples, so at a 1s cadence it cannot be zero. A process that genuinely did
+ * nothing reports utilization 0 with a non-zero idle, and that reading is true and worth keeping.
+ */
+export const eluUnavailable = (delta: { idle?: number; active?: number }): boolean =>
+  delta.idle === 0 && delta.active === 0;
 
 /** ns → ms; 0 when a sampled histogram still reports a non-finite field. */
 const lagMs = (ns: number): number => (Number.isFinite(ns) ? ns / 1e6 : 0);
