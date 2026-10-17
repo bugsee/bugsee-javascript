@@ -916,6 +916,16 @@ describe('launch (webview)', () => {
       const l = new Map<string, Set<(e: Event) => void>>();
       return {
         win: {
+          // a real window IS the global scope: the traces read these from THIS window, not the host globals
+          get navigator() {
+            return (globalThis as { navigator?: unknown }).navigator;
+          },
+          get performance() {
+            return (globalThis as { performance?: unknown }).performance;
+          },
+          get screen() {
+            return (globalThis as { screen?: unknown }).screen;
+          },
           addEventListener: (t: string, f: (e: Event) => void) => {
             const set = l.get(t) ?? new Set();
             set.add(f);

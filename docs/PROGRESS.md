@@ -401,8 +401,8 @@ solid), in slices:
   (event-driven, de-duplicated, held so the provider refresh keeps them in a rolling window). The producers read the LIVE
   `navigator`/`performance`/`screen`/`window` (`defaultBrowserTraceEnv()`); the old sampler copied `navigator` with a
   spread, which drops the prototype accessors (`onLine`, `connection`, `deviceMemory`) on a real browser. Launch passes
-  its injected `window` and `scheduler`. Still open: the shared `PageLifecycleTracker` (the events source and these trackers
-  each still attach their own `online`/`offline`/`orientationchange` listeners), then ST1+.
+  its injected `window` and `scheduler`. The shared `PageLifecycleTracker` is done: the events source and the connection/orientation trackers subscribe to it.
+- **ST4a (DONE, `feat/browser-app-state-fps`):** `app_state` (`AppStateProducer`: `foreground`/`background`, held step trace; the viewer's table is `started`/`foreground`/`background`) and `fps` (`FpsTracker` + `FpsProducer`: a `requestAnimationFrame` counter that runs ONLY while the page is visible — loop and timer torn down on hidden, a fresh window on visible, a zero-length window or no rAF emits nothing; a visible page with no frames is a true 0). The traces env is now built from the INJECTED window + document (`browserTraceEnvFrom`; no fallback to `globalThis`, so a window without `performance.memory` omits the heap). Still open in ST4: `main_thread_lag_ms` (needs the hidden-tab-vs-sync-block probe first), optional `screen_size`, ST4b events (`dark_mode_changed`, `freeze`/`resume`).
 - **ST0′ (DONE, `feat/trace-producers`):** `traces.system` is now producers over shared trackers.
   `@bugsee/capture` has `TraceProducer`/`TraceProducerBase`; the traces provider is a producer container
   (per-producer start/stop isolation, last-value refresh so a rolling window never loses a rarely-changing

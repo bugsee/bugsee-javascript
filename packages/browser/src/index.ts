@@ -87,6 +87,7 @@ export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './
 export { chargingToWire } from './system-trace-values';
 export {
   type BrowserTraceEnv,
+  browserTraceEnvFrom,
   createBrowserSystemTraceProducers,
   defaultBrowserTraceEnv,
 } from './trace-producers';

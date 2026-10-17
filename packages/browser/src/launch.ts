@@ -92,7 +92,7 @@ import {
 } from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserSystemTraceProducers, defaultBrowserTraceEnv } from './trace-producers';
+import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
 import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
@@ -856,9 +856,9 @@ async function buildLaunch(
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
-          ...defaultBrowserTraceEnv(),
+          // Every surface comes from the INJECTED window/document, never the host globals.
+          ...browserTraceEnvFrom(win, domDocument),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          window: win,
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

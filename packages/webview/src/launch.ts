@@ -1,5 +1,6 @@
 import {
   bindInputBlackout,
+  browserTraceEnvFrom,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTraceProducers,
@@ -687,9 +688,9 @@ export function launchWithSeams(
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
-          ...defaultBrowserTraceEnv(),
+          // Every surface comes from the INJECTED window/document; the host globals only without a window.
+          ...(win !== undefined ? browserTraceEnvFrom(win, domDocument) : defaultBrowserTraceEnv()),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          ...(win !== undefined ? { window: win } : {}),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
