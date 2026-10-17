@@ -98,20 +98,22 @@ describe('createObscuringChannel — hostile ambient performance', () => {
     }
   });
 
-  it('an injected now without its origin is not paired with the ambient origin', () => {
-    vi.stubGlobal('performance', { now: () => 1, timeOrigin: 9999 });
+  it('an injected half-pair (now without origin, or origin without now) is ignored: the ambient pair is used whole', () => {
+    vi.stubGlobal('performance', { now: () => 7, timeOrigin: 9999 });
     try {
-      const bridge = fakeBridge();
-      const channel = createObscuringChannel({
-        bridge,
-        document: fakeDoc({}),
-        seq: () => 1,
-        now: () => 42,
-        mutationObserver: undefined,
-      });
-      channel.start();
-      const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
-      expect([msg.mono, msg.o]).toEqual([42, 0]);
+      for (const half of [{ now: () => 42 }, { timeOrigin: 5 }]) {
+        const bridge = fakeBridge();
+        const channel = createObscuringChannel({
+          bridge,
+          document: fakeDoc({}),
+          seq: () => 1,
+          mutationObserver: undefined,
+          ...half,
+        });
+        channel.start();
+        const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+        expect([msg.mono, msg.o]).toEqual([7, 9999]);
+      }
     } finally {
       vi.unstubAllGlobals();
     }

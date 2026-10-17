@@ -437,6 +437,31 @@ describe('FpsTracker', () => {
     expect(got).toEqual([1]); // the failed window was not consumed: its 1 frame counts over the full 1000 ms
   });
 
+  it('a clock that throws while the loop starts rolls the start back, so the next visible event can start it', () => {
+    const errors: unknown[] = [];
+    const e = mkEnv({ visible: false });
+    let boom = true;
+    const t = new FpsTracker(
+      {
+        ...e.env,
+        now: () => {
+          if (boom) throw new Error('clock at start');
+          return e.env.now();
+        },
+      },
+      (err) => errors.push(err),
+    );
+    t.on('fps', () => {});
+    e.setVisible(true); // the clock throws: nothing may be left half started
+    expect((errors[0] as Error).message).toBe('clock at start');
+    expect(e.rafs.size).toBe(0);
+    expect(e.timers.live).toBe(0);
+    boom = false;
+    e.setVisible(true); // no hide in between: the tracker is not wedged in `running`
+    expect(e.rafs.size).toBe(1);
+    expect(e.timers.live).toBe(1);
+  });
+
   it('a throwing visibilityState read is treated as hidden and reported', () => {
     const errors: unknown[] = [];
     const e = mkEnv();

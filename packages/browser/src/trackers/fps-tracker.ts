@@ -102,8 +102,10 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
     this.#loop += 1;
     this.#seenFrame = false;
     this.#frames = 0;
-    this.#windowStart = this.#now();
     try {
+      // The clock read is inside the guarded setup: a throwing clock must roll the run back like any other setup
+      // failure, or `#running` would stay true with no loop and block every later start.
+      this.#windowStart = this.#now();
       this.#arm();
       this.#timer = this.#scheduler.setInterval(() => this.#tick(), this.#env.intervalMs ?? 1000);
     } catch (error) {

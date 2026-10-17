@@ -82,10 +82,12 @@ export function createObscuringChannel(opts: ObscuringChannelOptions): Obscuring
       return undefined;
     }
   })();
-  const now = opts.now ?? ambient?.now ?? ((): number => Date.now());
-  // An injected `now` without its origin cannot be paired with the AMBIENT origin (a different epoch): origin 0.
-  const timeOrigin =
-    opts.timeOrigin ?? (opts.now === undefined ? ambient?.timeOrigin : undefined) ?? 0;
+  // The pair is chosen as a UNIT: the injected one only when BOTH halves were injected, else the ambient pair,
+  // else the wall clock with origin 0 (an injected half is never mixed with a different epoch).
+  const { now, timeOrigin } =
+    opts.now !== undefined && opts.timeOrigin !== undefined
+      ? { now: opts.now, timeOrigin: opts.timeOrigin }
+      : (ambient ?? { now: (): number => Date.now(), timeOrigin: 0 });
 
   const post = (areas: readonly SecureArea[]): void => {
     bridge.post(
