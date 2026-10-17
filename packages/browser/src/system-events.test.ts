@@ -50,6 +50,119 @@ function activate(env: BrowserSystemEventsEnv) {
   return { events, off };
 }
 
+function fakeMedia(initial = false) {
+  const listeners = new Set<(e: { matches: boolean }) => void>();
+  const queries: string[] = [];
+  const list = {
+    matches: initial,
+    addEventListener: (_t: string, l: (e: { matches: boolean }) => void) => void listeners.add(l),
+    removeEventListener: (_t: string, l: (e: { matches: boolean }) => void) =>
+      void listeners.delete(l),
+  };
+  return {
+    matchMedia: (q: string) => {
+      queries.push(q);
+      return list;
+    },
+    fire: (matches: boolean) => {
+      for (const l of [...listeners]) l({ matches });
+    },
+    fireRaw: (e: { matches: boolean }) => {
+      for (const l of [...listeners]) l(e);
+    },
+    count: () => listeners.size,
+    queries,
+  };
+}
+
+describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => {
+  it('records dark_mode_changed with the new state from the injected matchMedia', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const { events } = activate({ ...env, matchMedia: m.matchMedia });
+    expect(m.queries).toEqual(['(prefers-color-scheme: dark)']);
+    m.fire(true);
+    m.fire(false);
+    expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
+      { name: 'dark_mode_changed', params: { dark: true } },
+      { name: 'dark_mode_changed', params: { dark: false } },
+    ]);
+  });
+
+  it('removes the media listener on deactivate', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const { off } = activate({ ...env, matchMedia: m.matchMedia });
+    expect(m.count()).toBe(1);
+    off();
+    expect(m.count()).toBe(0);
+  });
+
+  it('without matchMedia (a WindowEvents fake) the source still starts and emits no dark-mode event', () => {
+    const { env } = fakeEnv();
+    const { events } = activate(env);
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+  });
+
+  it('a matchMedia that throws is reported and does not abort the other signals', () => {
+    const { env, win } = fakeEnv();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: () => {
+        throw new Error('matchMedia blocked');
+      },
+      onError: (e) => errors.push(e),
+    });
+    win.emit('online', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    expect(errors.map((e) => (e as Error).message)).toEqual(['matchMedia blocked']);
+  });
+
+  it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
+    const { env, win } = fakeEnv();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: (() => ({ matches: false })) as never,
+      onError: (e) => errors.push(e),
+    });
+    win.emit('online', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    expect(errors).toEqual([]);
+  });
+
+  it('a change event whose matches getter throws is reported, never thrown into the browser dispatch', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: (e) => errors.push(e),
+    });
+    const hostile = {};
+    Object.defineProperty(hostile, 'matches', {
+      get(): never {
+        throw new Error('matches blocked');
+      },
+    });
+    expect(() => m.fireRaw(hostile as { matches: boolean })).not.toThrow();
+    expect((errors[0] as Error).message).toBe('matches blocked');
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+  });
+
+  it('records freeze and resume from the document (not the window)', () => {
+    const { env, win, doc } = fakeEnv();
+    const { events } = activate(env);
+    win.emit('freeze', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+    doc.emit('freeze', {});
+    doc.emit('resume', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'freeze', 'resume']);
+  });
+});
+
 describe('createBrowserSystemEventsSource', () => {
   it('emits process_started and registers every lifecycle listener on activate', () => {
     const { env, win, doc } = fakeEnv();

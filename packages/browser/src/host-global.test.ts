@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { hostGlobal } from './host-global';
+import { boundMatchMedia, hostGlobal, hostRead } from './host-global';
 import { createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import { createUiBreadcrumbSource } from './ui-breadcrumb-source';
@@ -82,5 +82,46 @@ describe('blocked host globals never throw out of the browser sources (launch mu
       off = installPageHideFlush(() => {}, {});
     }).not.toThrow();
     expect(() => off?.()).not.toThrow();
+  });
+});
+
+describe('hostRead / boundMatchMedia', () => {
+  it('hostRead returns the value, or undefined and a report when the read throws', () => {
+    expect(hostRead(() => 5)).toBe(5);
+    const errors: unknown[] = [];
+    expect(
+      hostRead(
+        () => {
+          throw new Error('blocked');
+        },
+        (e) => errors.push(e),
+      ),
+    ).toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it('boundMatchMedia binds to the window, and is undefined for no window, no method, or a throwing getter (reported)', () => {
+    const seen: unknown[] = [];
+    const win = {
+      matchMedia(this: unknown, q: string) {
+        seen.push(this, q);
+        return {} as MediaQueryList;
+      },
+    };
+    boundMatchMedia(win)?.('(x)');
+    expect(seen).toEqual([win, '(x)']);
+    const none: unknown[] = [];
+    expect(boundMatchMedia(undefined, (e) => none.push(e))).toBeUndefined();
+    expect(none).toEqual([]); // no window is a plain absence, not a failure
+    expect(boundMatchMedia({})).toBeUndefined();
+    const hostile = {};
+    Object.defineProperty(hostile, 'matchMedia', {
+      get(): never {
+        throw new Error('blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    expect(boundMatchMedia(hostile, (e) => errors.push(e))).toBeUndefined();
+    expect(errors).toHaveLength(1);
   });
 });
