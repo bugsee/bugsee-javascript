@@ -35,11 +35,23 @@ const closeQuietly = (pending: Promise<IDBDatabase> | undefined): void => {
 const reqError = (req: { error: DOMException | null }): Error =>
   req.error ?? new Error('indexedDB request failed');
 
+// The host's `indexedDB`: a sandboxed frame throws on the read itself. Unreadable = absent (the lazy `open()`
+// then rejects, which the store's callers already treat as "no persistence").
+function ambientIndexedDb(): IDBFactory {
+  try {
+    return globalThis.indexedDB;
+  } catch {
+    // Typed as present to match `globalThis.indexedDB`; the lazy `idb.open` inside the open promise then
+    // throws a TypeError, which rejects exactly like a host that has no IndexedDB at all.
+    return undefined as unknown as IDBFactory;
+  }
+}
+
 /** Build an {@link AsyncBlobStore} over IndexedDB (lazily opening the database on first use). */
 export function createIdbBlobStore(options: IdbBlobStoreOptions = {}): AsyncBlobStore {
   const databaseName = options.databaseName ?? 'bugsee';
   const storeName = options.storeName ?? 'bundles';
-  const idb = options.indexedDB ?? globalThis.indexedDB;
+  const idb = options.indexedDB ?? ambientIndexedDb();
 
   let dbPromise: Promise<IDBDatabase> | undefined;
   const open = (): Promise<IDBDatabase> => {
@@ -137,7 +149,7 @@ export interface AsyncKeyedStore {
 export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKeyedStore {
   const databaseName = options.databaseName ?? 'bugsee';
   const storeName = options.storeName ?? 'keyed';
-  const idb = options.indexedDB ?? globalThis.indexedDB;
+  const idb = options.indexedDB ?? ambientIndexedDb();
 
   let dbPromise: Promise<IDBDatabase> | undefined;
   const open = (): Promise<IDBDatabase> => {

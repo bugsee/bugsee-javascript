@@ -1,6 +1,7 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { WindowEvents } from './detection-providers';
+import { hostGlobal } from './host-global';
 import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 // Browser system-event SOURCE for @bugsee/capture's systemEventsProvider (the node lifecycle-source
@@ -78,19 +79,19 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  const win = env.window ?? (typeof window !== 'undefined' ? window : undefined);
-  const doc = env.document ?? (typeof document !== 'undefined' ? document : undefined);
+  // The host globals are read only when no lifecycle tracker was supplied: a supplied one already owns them.
   const lifecycle =
     env.lifecycle ??
-    new PageLifecycleTracker(
-      {
-        ...(win !== undefined ? { window: win } : {}),
-        ...(doc !== undefined ? { document: doc } : {}),
-      },
-      env.onError,
-    );
-  return new BrowserSystemEventsSource(
-    lifecycle,
-    env.screen ?? (typeof screen !== 'undefined' ? screen : undefined),
-  );
+    ((): PageLifecycleTracker => {
+      const win = env.window ?? hostGlobal('window', env.onError);
+      const doc = env.document ?? hostGlobal('document', env.onError);
+      return new PageLifecycleTracker(
+        {
+          ...(win !== undefined ? { window: win } : {}),
+          ...(doc !== undefined ? { document: doc } : {}),
+        },
+        env.onError,
+      );
+    })();
+  return new BrowserSystemEventsSource(lifecycle, env.screen ?? hostGlobal('screen', env.onError));
 }

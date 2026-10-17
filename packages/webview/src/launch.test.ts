@@ -916,6 +916,16 @@ describe('launch (webview)', () => {
       const l = new Map<string, Set<(e: Event) => void>>();
       return {
         win: {
+          // a real window IS the global scope: the traces read these from THIS window, not the host globals
+          get navigator() {
+            return (globalThis as { navigator?: unknown }).navigator;
+          },
+          get performance() {
+            return (globalThis as { performance?: unknown }).performance;
+          },
+          get screen() {
+            return (globalThis as { screen?: unknown }).screen;
+          },
           addEventListener: (t: string, f: (e: Event) => void) => {
             const set = l.get(t) ?? new Set();
             set.add(f);
@@ -965,6 +975,107 @@ describe('launch (webview)', () => {
         expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of [
+          'navigator',
+          'performance',
+          'screen',
+          'requestAnimationFrame',
+          'document',
+        ]) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toEqual(
+          expect.arrayContaining([
+            'navigator blocked',
+            'performance blocked',
+            'screen blocked',
+            'requestAnimationFrame blocked',
+            'document blocked',
+          ]),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        const doc = fakeDomDocument().document;
+        Object.assign(w.win, { document: doc });
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
+          'host document blocked',
+        );
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('with no window at all, a blocked host document never fails launch and is reported', () => {
+      stubSensors();
+      try {
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+          'host document blocked',
+        );
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose self/top relationship is unreadable counts as the top frame and is reported', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of ['self', 'top']) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toContain('top blocked');
+        // top frame: the full stack started, so the lifecycle listeners are attached
+        expect(w.count('online', 'offline', 'orientationchange')).toBeGreaterThan(0);
       } finally {
         vi.unstubAllGlobals();
       }
