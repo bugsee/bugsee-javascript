@@ -371,6 +371,34 @@ describe('FpsTracker', () => {
     expect((errors[0] as Error).message).toBe('rearm');
   });
 
+  it('a clock that throws skips that window (reported) and the next one recovers', () => {
+    const errors: unknown[] = [];
+    const e = mkEnv();
+    let boom = false;
+    const t = new FpsTracker(
+      {
+        ...e.env,
+        now: () => {
+          if (boom) throw new Error('clock');
+          return e.env.now();
+        },
+      },
+      (err) => errors.push(err),
+    );
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    e.advance(500);
+    e.frame();
+    boom = true;
+    expect(() => e.tick()).not.toThrow();
+    expect((errors[0] as Error).message).toBe('clock');
+    expect(got).toEqual([]);
+    boom = false;
+    e.advance(500);
+    e.tick();
+    expect(got).toEqual([1]); // the failed window was not consumed: its 1 frame counts over the full 1000 ms
+  });
+
   it('a throwing visibilityState read is treated as hidden and reported', () => {
     const errors: unknown[] = [];
     const e = mkEnv();

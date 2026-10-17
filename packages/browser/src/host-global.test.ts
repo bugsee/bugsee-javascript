@@ -65,6 +65,16 @@ describe('blocked host globals never throw out of the browser sources (launch mu
     expect(() => source(0)).not.toThrow();
     expect(source(0)).toEqual([]);
   });
+  it('ui breadcrumb source with a throwing global performance (timeOrigin)', () => {
+    saved.set('performance', Object.getOwnPropertyDescriptor(globalThis, 'performance'));
+    Object.defineProperty(globalThis, 'performance', {
+      configurable: true,
+      get(): never {
+        throw new Error('performance blocked');
+      },
+    });
+    expect(() => createUiBreadcrumbSource({ target: undefined })).not.toThrow();
+  });
   it('page-hide flush installs nothing instead of throwing', () => {
     block();
     let off: (() => void) | undefined;

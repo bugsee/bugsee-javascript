@@ -63,11 +63,24 @@ export function installPageHideFlush(onHide: () => void, env: PageHideFlushEnv =
     }
   };
 
-  win?.addEventListener('pagehide', onPageHide);
-  doc?.addEventListener('visibilitychange', onVisibilityChange);
+  // Each attach/detach is isolated: a window whose `addEventListener` throws (cross-origin proxy, torn-down
+  // frame) loses only its own listener, is reported, and never fails launch().
+  const attempt = (action: () => void): void => {
+    try {
+      action();
+    } catch (error) {
+      try {
+        env.onError?.(error);
+      } catch {
+        /* the reporter itself failed */
+      }
+    }
+  };
+  attempt(() => win?.addEventListener('pagehide', onPageHide));
+  attempt(() => doc?.addEventListener('visibilitychange', onVisibilityChange));
 
   return () => {
-    win?.removeEventListener('pagehide', onPageHide);
-    doc?.removeEventListener('visibilitychange', onVisibilityChange);
+    attempt(() => win?.removeEventListener('pagehide', onPageHide));
+    attempt(() => doc?.removeEventListener('visibilitychange', onVisibilityChange));
   };
 }

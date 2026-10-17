@@ -323,7 +323,7 @@ export function browserTraceEnvFrom(
 }
 
 /** The real globals, read lazily (workers / Node tests may have none of them). */
-export function defaultBrowserTraceEnv(): BrowserTraceEnv {
+export function defaultBrowserTraceEnv(onError?: (error: unknown) => void): BrowserTraceEnv {
   const g = globalThis as unknown as WindowSurfaces & {
     window?: BrowserTraceEnv['window'];
     document?: BrowserTraceEnv['document'];
@@ -332,13 +332,19 @@ export function defaultBrowserTraceEnv(): BrowserTraceEnv {
   const safe = <T>(get: () => T): T | undefined => {
     try {
       return get();
-    } catch {
+    } catch (error) {
+      try {
+        onError?.(error);
+      } catch {
+        /* the reporter itself failed */
+      }
       return undefined;
     }
   };
   const { window: _self, ...rest } = browserTraceEnvFrom(
     g,
     safe(() => g.document),
+    onError,
   );
   const w = safe(() => g.window);
   return { ...rest, ...(w !== undefined ? { window: w } : {}) };
@@ -349,6 +355,24 @@ export function defaultBrowserTraceEnv(): BrowserTraceEnv {
  * failure that happens after the fact (a battery manager that throws after `getBattery()` resolves, a
  * throwing `performance.memory` getter, a throwing event-path read), which would otherwise be swallowed.
  */
+// `env.performance.now` can be a hostile getter (a proxy): an unreadable one just means the tracker falls back to
+// its default clock.
+function safePerformanceNow(
+  env: BrowserTraceEnv,
+  onError: ((error: unknown) => void) | undefined,
+): unknown {
+  try {
+    return env.performance?.now;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      /* the reporter itself failed */
+    }
+    return undefined;
+  }
+}
+
 export function createBrowserSystemTraceProducers(
   env: BrowserTraceEnv = defaultBrowserTraceEnv(),
   onError?: (error: unknown) => void,
@@ -404,7 +428,7 @@ export function createBrowserSystemTraceProducers(
                 ...(env.cancelAnimationFrame !== undefined
                   ? { cancelAnimationFrame: env.cancelAnimationFrame }
                   : {}),
-                ...(env.performance?.now !== undefined
+                ...(safePerformanceNow(env, onError) !== undefined
                   ? { now: () => env.performance?.now?.() ?? 0 }
                   : {}),
                 ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),

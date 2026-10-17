@@ -1,6 +1,8 @@
 ---
 '@bugsee/browser': minor
 '@bugsee/webview': minor
+'@bugsee/browser-utils': patch
+'@bugsee/performance': patch
 ---
 
 Browser and WebView system traces gain `app_state` and `fps`:

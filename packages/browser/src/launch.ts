@@ -717,7 +717,11 @@ async function buildLaunch(
       try {
         return (win as { document?: Document }).document;
       } catch (error) {
-        options.onError?.(error);
+        try {
+          options.onError?.(error);
+        } catch {
+          /* the reporter itself failed */
+        }
         return undefined;
       }
     })();

@@ -631,7 +631,16 @@ export function launchWithSeams(
   // The client is still constructed and returned so the public signature holds and the host's `stop()`
   // works; it simply never starts.
   const w = win as { top?: unknown; self?: unknown } | undefined;
-  const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
+  // `self` is [Replaceable] (page script can shadow it with a throwing getter) and `top` can throw across origins:
+  // an unreadable frame relationship counts as the top frame — the page itself — and is reported.
+  const isTopFrame = ((): boolean => {
+    try {
+      return w?.top === undefined || w.top === (w.self ?? w);
+    } catch (error) {
+      neverThrow(() => options.onError?.(error), undefined);
+      return true;
+    }
+  })();
   // `win !== undefined` is not a redundant guard: it is what tells the type system that a sub-frame always
   // HAS a window. `isTopFrame` is derived from `win`, so `!isTopFrame` already implies it is defined —
   // spelling it here keeps the composer's `window` unconditional instead of leaving an unreachable branch.
@@ -698,7 +707,7 @@ export function launchWithSeams(
           ...(win !== undefined
             ? browserTraceEnvFrom(win, domDocument, options.onError)
             : {
-                ...defaultBrowserTraceEnv(),
+                ...defaultBrowserTraceEnv(options.onError),
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),

@@ -270,11 +270,70 @@ describe('browserTraceEnvFrom', () => {
       },
     });
     try {
-      expect(() => defaultBrowserTraceEnv()).not.toThrow();
+      const errors: unknown[] = [];
+      expect(() => defaultBrowserTraceEnv((e) => errors.push(e))).not.toThrow();
+      expect((errors[0] as Error).message).toBe('window blocked');
+      expect(() => defaultBrowserTraceEnv()).not.toThrow(); // no reporter
     } finally {
       if (original !== undefined) Object.defineProperty(globalThis, 'window', original);
       else delete (globalThis as { window?: unknown }).window;
     }
+  });
+
+  it('the default env reports a throwing global navigator/performance/screen read and omits only that surface', () => {
+    const keys = ['navigator', 'performance', 'screen'];
+    const saved = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+    for (const k of keys) {
+      Object.defineProperty(globalThis, k, {
+        configurable: true,
+        get(): never {
+          throw new Error(`${k} blocked`);
+        },
+      });
+    }
+    try {
+      const errors: unknown[] = [];
+      let env: ReturnType<typeof defaultBrowserTraceEnv> | undefined;
+      expect(() => {
+        env = defaultBrowserTraceEnv((e) => errors.push(e));
+      }).not.toThrow();
+      expect(env?.navigator).toBeUndefined();
+      expect(errors.map((e) => (e as Error).message).sort()).toEqual([
+        'navigator blocked',
+        'performance blocked',
+        'screen blocked',
+      ]);
+    } finally {
+      for (const [k, d] of saved) {
+        if (d !== undefined) Object.defineProperty(globalThis, k, d);
+        else delete (globalThis as Record<string, unknown>)[k];
+      }
+    }
+  });
+
+  it('a performance whose now getter throws costs only the fps clock: the producers still build and report', () => {
+    const page = mkPage();
+    const performance = {};
+    Object.defineProperty(performance, 'now', {
+      get(): never {
+        throw new Error('now blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    let built: TraceProducer[] = [];
+    expect(() => {
+      built = createBrowserSystemTraceProducers(
+        {
+          lifecycle: page.lifecycle,
+          performance,
+          document: page.doc,
+          requestAnimationFrame: () => 1,
+        },
+        (e) => errors.push(e),
+      );
+    }).not.toThrow();
+    expect(built.map((p) => p.name)).toContain('fps');
+    expect(errors.some((e) => (e as Error).message === 'now blocked')).toBe(true);
   });
 
   it('omits what the window lacks (a missing performance.memory is not borrowed from the global)', () => {

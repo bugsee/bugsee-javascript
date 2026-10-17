@@ -143,7 +143,13 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
   }
 
   #tick(): void {
-    const now = this.#now();
+    let now: number;
+    try {
+      now = this.#now();
+    } catch (error) {
+      this.#report(error); // an unreadable clock skips this window; it runs inside the host's timer dispatch
+      return;
+    }
     const elapsed = now - this.#windowStart;
     if (!(elapsed > 0)) return; // a zero-length window has no rate
     // No frame EVER in this run: rAF may be paused while the page still reports `visible` (an offscreen

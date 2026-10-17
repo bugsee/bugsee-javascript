@@ -1006,12 +1006,36 @@ describe('launch (webview)', () => {
             'navigator blocked',
             'performance blocked',
             'screen blocked',
+            'requestAnimationFrame blocked',
             'document blocked',
           ]),
         );
         void client;
       } finally {
         delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose self/top relationship is unreadable counts as the top frame and is reported', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of ['self', 'top']) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toContain('top blocked');
+        // top frame: the full stack started, so the lifecycle listeners are attached
+        expect(w.count('online', 'offline', 'orientationchange')).toBeGreaterThan(0);
+      } finally {
         vi.unstubAllGlobals();
       }
     });

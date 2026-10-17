@@ -79,16 +79,19 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  const win = env.window ?? hostGlobal('window', env.onError);
-  const doc = env.document ?? hostGlobal('document', env.onError);
+  // The host globals are read only when no lifecycle tracker was supplied: a supplied one already owns them.
   const lifecycle =
     env.lifecycle ??
-    new PageLifecycleTracker(
-      {
-        ...(win !== undefined ? { window: win } : {}),
-        ...(doc !== undefined ? { document: doc } : {}),
-      },
-      env.onError,
-    );
+    ((): PageLifecycleTracker => {
+      const win = env.window ?? hostGlobal('window', env.onError);
+      const doc = env.document ?? hostGlobal('document', env.onError);
+      return new PageLifecycleTracker(
+        {
+          ...(win !== undefined ? { window: win } : {}),
+          ...(doc !== undefined ? { document: doc } : {}),
+        },
+        env.onError,
+      );
+    })();
   return new BrowserSystemEventsSource(lifecycle, env.screen ?? hostGlobal('screen', env.onError));
 }

@@ -67,8 +67,24 @@ export interface ObscuringChannelOptions {
 export function createObscuringChannel(opts: ObscuringChannelOptions): ObscuringChannel {
   const { bridge, seq } = opts;
   const wallNow = opts.wallNow ?? ((): number => Date.now());
-  const now = opts.now ?? ((): number => performance.now());
-  const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
+  // The ambient `performance` is a host global: reading it can throw (hostile getter) or find nothing, and this
+  // runs inside launch(). Without it the clock degrades to the wall clock and the origin to 0.
+  const ambient = ((): { now: () => number; timeOrigin: number | undefined } | undefined => {
+    try {
+      const p = (globalThis as { performance?: { now?: () => number; timeOrigin?: number } })
+        .performance;
+      return p !== undefined && typeof p.now === 'function'
+        ? {
+            now: () => (p.now as () => number)(),
+            timeOrigin: typeof p.timeOrigin === 'number' ? p.timeOrigin : undefined,
+          }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const now = opts.now ?? ambient?.now ?? ((): number => Date.now());
+  const timeOrigin = opts.timeOrigin ?? ambient?.timeOrigin ?? 0;
 
   const post = (areas: readonly SecureArea[]): void => {
     bridge.post(

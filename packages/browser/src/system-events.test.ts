@@ -136,6 +136,21 @@ describe('createBrowserSystemEventsSource', () => {
       const off = source?.on('event', (e) => events.push(e));
       expect(events.map((e) => e.name)).toEqual(['process_started']);
       off?.();
+      // the failures are reported (each global read once), not swallowed silently
+      const errors: unknown[] = [];
+      createBrowserSystemEventsSource({ onError: (e) => errors.push(e) });
+      expect(errors.map((e) => (e as Error).message).sort()).toEqual([
+        'document blocked',
+        'screen blocked',
+        'window blocked',
+      ]);
+      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      const none: unknown[] = [];
+      createBrowserSystemEventsSource({
+        lifecycle: { on: () => () => {} },
+        onError: (e) => none.push(e),
+      });
+      expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
     } finally {
       for (const [key, d] of originals) {
         if (d !== undefined) Object.defineProperty(globalThis, key, d);

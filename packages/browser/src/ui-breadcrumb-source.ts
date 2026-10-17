@@ -213,13 +213,20 @@ class UiBreadcrumbSourceImpl extends InterceptorBase<{ breadcrumb: BreadcrumbInp
   }
 }
 
+// `performance.timeOrigin` off the host global; a throwing/absent `performance` just means no origin.
+function readTimeOrigin(): number | undefined {
+  try {
+    return (globalThis as { performance?: { timeOrigin?: number } }).performance?.timeOrigin;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createUiBreadcrumbSource(
   env: UiBreadcrumbEnv = {},
 ): Interceptor<{ breadcrumb: BreadcrumbInput }> {
   const target = env.target ?? hostGlobal<UiEventTarget>('document');
-  const origin =
-    env.timeOrigin ??
-    (globalThis as { performance?: { timeOrigin?: number } }).performance?.timeOrigin;
+  const origin = env.timeOrigin ?? readTimeOrigin();
   return new UiBreadcrumbSourceImpl(
     target,
     env.maskSelector ?? '[data-bugsee-hidden]',

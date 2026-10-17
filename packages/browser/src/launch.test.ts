@@ -1279,6 +1279,7 @@ describe('launch', () => {
         'screen',
         'requestAnimationFrame',
         'cancelAnimationFrame',
+        'visualViewport',
       ]) {
         hostile(key);
       }
@@ -1297,7 +1298,13 @@ describe('launch', () => {
         .map((c) => (c[0] as Error).message)
         .filter((m) => m.endsWith(' blocked'));
       expect(blocked).toEqual(
-        expect.arrayContaining(['navigator blocked', 'performance blocked', 'screen blocked']),
+        expect.arrayContaining([
+          'navigator blocked',
+          'performance blocked',
+          'screen blocked',
+          'requestAnimationFrame blocked',
+          'cancelAnimationFrame blocked',
+        ]),
       );
       await client.stop();
     });
