@@ -25,6 +25,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // Node's 253 MB), so those traces are omitted here.
       measuresV8Heap: false,
       measuresAvailableMemory: false,
+      // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
+      // zero would be a lie, so no observer is constructed and the gc traces are omitted.
+      measuresGc: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
