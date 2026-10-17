@@ -120,6 +120,18 @@ describe('createGuardedEventLoopSource', () => {
     expect(src.read()).toEqual({ meanMs: 5, maxMs: 0, p99Ms: 0 });
   });
 
+  it('treats an infinite reading as zero lag too (not only NaN)', () => {
+    const { monitor } = fakePerfHooks({
+      mean: Number.POSITIVE_INFINITY,
+      max: 4e6,
+      p99: Number.POSITIVE_INFINITY,
+      count: 1,
+    });
+    const src = createGuardedEventLoopSource(monitor);
+    src.start();
+    expect(src.read()).toEqual({ meanMs: 0, maxMs: 4, p99Ms: 0 });
+  });
+
   it('NO FABRICATED BASELINE: read() is undefined until the histogram has a sample (count 0), and does not reset it', () => {
     const readings = { mean: Number.NaN, max: 0, p99: 0, count: 0 };
     const { state, monitor } = fakePerfHooks(readings);

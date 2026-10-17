@@ -81,7 +81,7 @@ const eventLoop = {
 
 describe('createNodeSystemTraceProducers', () => {
   // Per-call constant increments: every read advances one fixed step, so whichever reader takes the
-  // baseline, each window is exactly one step — the producers and the legacy sampler see the SAME window.
+  // baseline, each window is exactly one step — every producer sees the SAME window.
   const steppingCpu = () => {
     let calls = 0;
     return {
@@ -309,5 +309,41 @@ describe('createNodeSystemTraceProducers', () => {
     for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
     for (const p of ps) p.stop();
     expect(typeof got.get('process_memory_rss')).toBe('number');
+  });
+
+  it('with real node readers and one tick it emits the full 14-trace catalog, each a finite number', async () => {
+    const got = new Map<string, unknown>();
+    let tick: (() => void) | undefined;
+    const ps = createNodeSystemTraceProducers({
+      scheduler: {
+        setInterval: (cb) => {
+          tick = cb;
+          return 'h';
+        },
+        clearInterval: () => {},
+      },
+    });
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    // let the real delay histogram take samples: an unsampled one is omitted by design, never reported as 0
+    await new Promise((r) => setTimeout(r, 120));
+    tick?.();
+    for (const p of ps) p.stop();
+    expect([...got.keys()].sort()).toEqual([
+      'cpu_usage_process',
+      'cpu_usage_system',
+      'cpu_usage_user',
+      'event_loop_lag_max_ms',
+      'event_loop_lag_ms',
+      'event_loop_lag_p99_ms',
+      'event_loop_utilization',
+      'process_memory_array_buffers',
+      'process_memory_external',
+      'process_memory_heap_total',
+      'process_memory_heap_used',
+      'process_memory_rss',
+      'ram_system_free',
+      'ram_system_total',
+    ]);
+    for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
   });
 });

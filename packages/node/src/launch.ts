@@ -383,7 +383,7 @@ export interface BugseeLaunchOptions {
   cpuProfiler?: CpuProfiler;
   /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
   hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
-  /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
+  /** Caller-supplied system-traces sampler; REPLACES the built-in `systemTraceProducers` when set. */
   systemMetricsSampler?: () => readonly TraceSample[];
   /**
    * Trace producers (each subscribes to trackers; the provider starts/stops them). Default: the node set
