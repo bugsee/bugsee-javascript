@@ -93,6 +93,7 @@ import {
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { createBrowserSystemTraceProducers, defaultBrowserTraceEnv } from './trace-producers';
+import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -841,6 +842,12 @@ async function buildLaunch(
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
+  // producers and the events source: the listeners are bound in a single place.
+  const lifecycle = new PageLifecycleTracker(
+    { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
+    options.onError,
+  );
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
@@ -852,6 +859,7 @@ async function buildLaunch(
           ...defaultBrowserTraceEnv(),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           window: win,
+          lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
         options.onError,
@@ -862,7 +870,13 @@ async function buildLaunch(
     }),
   );
   client.addCaptureProvider(
-    createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+    createSystemEventsProvider(
+      createBrowserSystemEventsSource({
+        window: win,
+        lifecycle,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
+    ),
   );
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
   // `input` stream (`input.json`). NOT `events.user` — that stream belongs to the application's own

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ConnectionTracker } from './connection-tracker';
+import { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<() => void>>();
@@ -185,5 +186,25 @@ describe('ConnectionTracker', () => {
     t.on('state', seen);
     win.fire('online');
     expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('with a shared lifecycle it takes online/offline from it and attaches NO window listener of its own', () => {
+    const win = mkTarget();
+    const connection = mkTarget();
+    const lifecycle = new PageLifecycleTracker({ window: win as never });
+    const t = new ConnectionTracker({
+      lifecycle,
+      window: win,
+      navigator: { onLine: true, connection },
+    });
+    const seen: unknown[] = [];
+    const off = t.on('state', (s) => seen.push(s));
+    expect(win.count()).toBe(4); // the lifecycle's own four window listeners; the tracker added none
+    expect(connection.count()).toBe(1);
+    win.fire('online');
+    win.fire('offline');
+    expect(seen).toHaveLength(2);
+    off();
+    expect(win.count() + connection.count()).toBe(0);
   });
 });

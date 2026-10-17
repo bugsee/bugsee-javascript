@@ -1,4 +1,5 @@
 import { InterceptorBase } from '@bugsee/core';
+import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 // Browser connectivity TRACKER (mirrors the mobile tracker/producer split): snapshots `navigator.onLine`
 // plus NetworkInformation whenever the browser says either changed — `online`/`offline` on the window and
@@ -23,6 +24,8 @@ interface TargetLike {
   removeEventListener(type: string, listener: () => void): void;
 }
 export interface ConnectionEnv {
+  /** Shared lifecycle tracker for `online`/`offline`; when absent they are listened for on `window`. */
+  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
   window?: TargetLike;
   navigator?: {
     /** NetworkInformation; it is an EventTarget where it exists, but the fields are what matter. */
@@ -36,6 +39,7 @@ export class ConnectionTracker extends InterceptorBase<{ state: ConnectionState 
   readonly #env: ConnectionEnv;
   readonly #onError: ((error: unknown) => void) | undefined;
   #attached: Array<{ target: Partial<TargetLike>; type: string }> = [];
+  #subscriptions: Array<() => void> = [];
 
   readonly #onChange = (): void => {
     try {
@@ -67,8 +71,16 @@ export class ConnectionTracker extends InterceptorBase<{ state: ConnectionState 
   // before the throw is still removed on deactivation.
   protected onActivate(): void {
     try {
-      this.#listen(this.#env.window, 'online');
-      this.#listen(this.#env.window, 'offline');
+      const lifecycle = this.#env.lifecycle;
+      if (lifecycle !== undefined) {
+        this.#subscriptions.push(
+          lifecycle.on('online', this.#onChange),
+          lifecycle.on('offline', this.#onChange),
+        );
+      } else {
+        this.#listen(this.#env.window, 'online');
+        this.#listen(this.#env.window, 'offline');
+      }
       this.#listen(this.#env.navigator?.connection, 'change');
     } catch (error) {
       this.#onError?.(error);
@@ -76,6 +88,9 @@ export class ConnectionTracker extends InterceptorBase<{ state: ConnectionState 
   }
 
   protected override onDeactivate(): void {
+    const subscriptions = this.#subscriptions;
+    this.#subscriptions = [];
+    for (const off of subscriptions) off();
     const attached = this.#attached;
     this.#attached = [];
     for (const { target, type } of attached) {
