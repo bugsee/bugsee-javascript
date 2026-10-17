@@ -19,7 +19,7 @@ import {
   createV8HeapReader,
 } from './trackers/runtime-readers';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): five producers over ONE shared
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers over ONE shared
 // ProcessStatsTracker.
 
 abstract class StatsProducer extends TraceProducerBase {
@@ -92,11 +92,11 @@ class V8HeapProducer extends StatsProducer {
   protected publish(s: ProcessStats): void {
     const h = s.v8Heap;
     if (h === undefined) return;
-    this.emit('v8_heap_size_limit', h.limit);
+    this.emitIfChanged('v8_heap_size_limit', h.limit); // static: held for the provider's refresh
     this.emit('v8_heap_available', h.available);
     this.emit('v8_heap_malloced', h.malloced);
     this.emit('v8_heap_peak_malloced', h.peakMalloced);
-    this.emit('ram_js_heap_total', h.limit);
+    this.emitIfChanged('ram_js_heap_total', h.limit);
     this.emit('ram_js_heap_used', h.used);
     this.emit('ram_js_heap_free', Math.max(h.limit - h.used, 0));
   }
@@ -105,7 +105,7 @@ class V8HeapProducer extends StatsProducer {
 class MemoryLimitProducer extends StatsProducer {
   readonly name = 'process-memory-limit';
   protected publish(s: ProcessStats): void {
-    if (s.memoryLimit !== undefined) this.emit('process_memory_limit', s.memoryLimit);
+    if (s.memoryLimit !== undefined) this.emitIfChanged('process_memory_limit', s.memoryLimit);
   }
 }
 
@@ -139,8 +139,9 @@ export interface NodeTraceProducerDeps extends ProcessStatsDeps {
    */
   measuresV8Heap?: boolean;
   /**
-   * Is `process.availableMemory()` comparable to the Node figure? Default `true`. Measured on one host:
-   * Node 3.4 GB, Bun 3.4 GB, Deno 23 GB — not the same quantity, so `@bugsee/deno` and `@bugsee/bun`
+   * Is `process.availableMemory()` comparable to the Node figure? Default `true`. It is not on Bun/Deno:
+   * Deno answered 23 GB against Node's 3.4 GB on one macOS host, and on Linux both ignore the container
+   * cap (11.2 GB under `docker -m 256m` where Node answers 253 MB). `@bugsee/deno` and `@bugsee/bun`
    * pass `false` and `ram_system_available` is omitted there.
    */
   measuresAvailableMemory?: boolean;

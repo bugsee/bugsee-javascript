@@ -526,6 +526,26 @@ describe('ProcessStatsTracker', () => {
       expect(onError).toHaveBeenCalledTimes(4);
     });
 
+    it('a throwing uptime reader does not advance the CPU baseline: the next delta covers the whole gap', () => {
+      let fail = true;
+      const { tracker, fs, advance } = mk({
+        uptime: () => {
+          if (fail) throw new Error('uptime');
+          return 1;
+        },
+        onError: () => {},
+      });
+      const seen: ProcessStats[] = [];
+      tracker.on('stats', (s) => seen.push(s));
+      advance({ user: 100, system: 40 }, 1000);
+      fs.tick(); // fails: nothing emitted, baseline untouched
+      fail = false;
+      advance({ user: 300, system: 100 }, 2000);
+      fs.tick();
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.cpu).toMatchObject({ userDelta: 300, systemDelta: 100 });
+    });
+
     it('a throwing uptime reader is reported and the stats are not emitted for that poll', () => {
       const onError = vi.fn();
       let fail = false;

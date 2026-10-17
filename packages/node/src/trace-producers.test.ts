@@ -212,6 +212,38 @@ describe('createNodeSystemTraceProducers', () => {
       expect(h.got.get('ram_system_available')).toBe(250);
     });
 
+    it('an explicit undefined reader does not clobber the wired default (measures* true)', () => {
+      const {
+        v8Heap: _a,
+        memoryLimit: _b,
+        availableMemory: _c,
+        ...base
+      } = constDeps({ eventLoop });
+      const h = harness({
+        ...base,
+        v8Heap: undefined,
+        memoryLimit: undefined,
+        availableMemory: undefined,
+      });
+      h.startAll();
+      expect(Number(h.got.get('v8_heap_size_limit'))).toBeGreaterThan(0); // the real node default, not absent
+    });
+
+    it('static limits are emitted on change only (held for refresh); live values every tick', () => {
+      const calls: Array<[string, { hold?: boolean } | undefined]> = [];
+      const h = harness(constDeps({ eventLoop }));
+      for (const p of h.producers) {
+        p.start({ emit: (n, _v, _d, o) => void calls.push([n, o]) });
+      }
+      h.tick();
+      const per = (name: string) => calls.filter(([n]) => n === name);
+      for (const name of ['v8_heap_size_limit', 'ram_js_heap_total', 'process_memory_limit']) {
+        expect(per(name)).toEqual([[name, { hold: true }]]); // unchanged value: once only
+      }
+      expect(per('ram_js_heap_used')).toHaveLength(2);
+      expect(per('ram_js_heap_used').every(([, o]) => o?.hold === false)).toBe(true);
+    });
+
     it('wires the real process.constrainedMemory() by default (a real cap is reported, no cap is not)', () => {
       const proc = process as { constrainedMemory?: () => number };
       const original = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');

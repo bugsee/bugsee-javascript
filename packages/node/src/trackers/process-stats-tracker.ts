@@ -191,6 +191,8 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   }
 
   #read(): ProcessStats {
+    // Read before any baseline moves: a throw here fails the whole poll, and must not advance the CPU window.
+    const uptimeS = Math.floor(this.#d.uptime());
     const memory = this.#d.memoryUsage();
     const systemMemory = this.#d.systemMemory();
     const cpu = this.#d.cpuUsage();
@@ -216,7 +218,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
       cpu: { userDelta, systemDelta, processPct },
       ...(eventLoop !== undefined ? { eventLoop } : {}),
       ...(utilization !== undefined ? { utilization } : {}),
-      uptimeS: Math.floor(this.#d.uptime()),
+      uptimeS,
       ...(v8Heap !== undefined ? { v8Heap } : {}),
       ...(memoryLimit !== undefined ? { memoryLimit } : {}),
       ...(availableMemory !== undefined ? { availableMemory } : {}),
