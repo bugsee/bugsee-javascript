@@ -124,6 +124,44 @@ describe('FpsTracker', () => {
     expect(got).toEqual([1, 0]);
   });
 
+  it('a mid-run rAF pause reports the drop to 0 ONCE, not a run of zeros, and measuring resumes cleanly', () => {
+    const e = mkEnv();
+    const t = new FpsTracker(e.env);
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    e.advance(1000);
+    for (let i = 0; i < 60; i++) e.frame(); // 60 frames in the first second
+    e.tick();
+    e.advance(1000);
+    e.tick(); // the first frameless window: reported as the drop
+    e.advance(1000);
+    e.tick(); // still frameless: paused, not a fresh zero
+    e.advance(1000);
+    e.tick();
+    expect(got).toEqual([60, 0]);
+    // rAF resumes after the stall: the first report covers only the time since the last tick, not the stall
+    e.advance(500);
+    for (let i = 0; i < 30; i++) e.frame();
+    e.advance(500);
+    e.tick();
+    expect(got).toEqual([60, 0, 30]);
+  });
+
+  it('frameless ticks before the first frame move the window forward, so the stall never dilutes the first measurement', () => {
+    const e = mkEnv();
+    const t = new FpsTracker(e.env);
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    for (let i = 0; i < 3; i++) {
+      e.advance(1000);
+      e.tick(); // nothing yet
+    }
+    for (let i = 0; i < 60; i++) e.frame();
+    e.advance(1000);
+    e.tick();
+    expect(got).toEqual([60]); // not 15 (60 frames over 4000 ms)
+  });
+
   it('a visible page that has never produced a frame reports nothing (rAF can be paused while visibility stays visible)', () => {
     const e = mkEnv();
     const t = new FpsTracker(e.env);

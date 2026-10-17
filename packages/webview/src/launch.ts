@@ -10,6 +10,7 @@ import {
   createWindowErrorProvider,
   defaultBrowserTraceEnv,
   hostGlobal,
+  hostRead,
   PageLifecycleTracker,
   parseStack,
   type WindowEvents,
@@ -608,7 +609,12 @@ export function launchWithSeams(
   // performance streams land in later slices.)
   const win = options.window ?? hostGlobal<WindowEvents>('window', options.onError);
   // Reading a host global can throw (blocked frame, hostile proxy): that must not fail launch.
-  const domDocument = options.document ?? hostGlobal<Document>('document', options.onError);
+  // `options.document`, else the INJECTED window's document, else (no window at all) the host document.
+  const domDocument =
+    options.document ??
+    (win !== undefined
+      ? hostRead(() => (win as unknown as { document?: Document }).document, options.onError)
+      : hostGlobal<Document>('document', options.onError));
 
   // === SUB-FRAME: obscuring only, and nothing else =============================================
   //

@@ -76,8 +76,44 @@ describe('createObscuringChannel — hostile ambient performance', () => {
       }).not.toThrow();
       expect(() => built?.channel.start()).not.toThrow();
       expect(built?.bridge.posted.length ?? 0).toBeGreaterThan(0);
+      const msg = JSON.parse(built?.bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect(Number.isFinite(msg.mono)).toBe(true);
+      expect(msg.o).toBe(0);
     } finally {
       if (original !== undefined) Object.defineProperty(globalThis, 'performance', original);
+    }
+  });
+
+  it('now and timeOrigin degrade as a unit: a performance with now() but no numeric timeOrigin uses the wall clock with origin 0', () => {
+    vi.stubGlobal('performance', { now: () => 1234 }); // page-relative ms: pairing it with origin 0 would be 1970
+    try {
+      const { channel, bridge } = build();
+      channel.start();
+      const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect(msg.o).toBe(0);
+      expect(msg.mono).not.toBe(1234); // the page-relative clock was NOT used
+      expect(msg.mono).toBeGreaterThan(1_000_000_000_000); // the wall clock (epoch ms), consistent with origin 0
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an injected now without its origin is not paired with the ambient origin', () => {
+    vi.stubGlobal('performance', { now: () => 1, timeOrigin: 9999 });
+    try {
+      const bridge = fakeBridge();
+      const channel = createObscuringChannel({
+        bridge,
+        document: fakeDoc({}),
+        seq: () => 1,
+        now: () => 42,
+        mutationObserver: undefined,
+      });
+      channel.start();
+      const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect([msg.mono, msg.o]).toEqual([42, 0]);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 

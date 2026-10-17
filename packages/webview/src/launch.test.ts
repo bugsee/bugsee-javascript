@@ -980,11 +980,17 @@ describe('launch (webview)', () => {
       }
     });
 
-    it('a window whose getters throw, and a blocked global document, never fail launch', () => {
+    it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
       stubSensors();
       try {
         const w = fakeWin();
-        for (const key of ['navigator', 'performance', 'screen', 'requestAnimationFrame']) {
+        for (const key of [
+          'navigator',
+          'performance',
+          'screen',
+          'requestAnimationFrame',
+          'document',
+        ]) {
           Object.defineProperty(w.win, key, {
             get(): never {
               throw new Error(`${key} blocked`);
@@ -992,14 +998,8 @@ describe('launch (webview)', () => {
             configurable: true,
           });
         }
-        Object.defineProperty(globalThis, 'document', {
-          get(): never {
-            throw new Error('document blocked');
-          },
-          configurable: true,
-        });
         const onError = vi.fn();
-        const client = track('tok', baseOptions({ window: w.win, onError }));
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
         const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
         expect(messages).toEqual(
           expect.arrayContaining([
@@ -1010,7 +1010,48 @@ describe('launch (webview)', () => {
             'document blocked',
           ]),
         );
-        void client;
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        const doc = fakeDomDocument().document;
+        Object.assign(w.win, { document: doc });
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
+          'host document blocked',
+        );
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('with no window at all, a blocked host document never fails launch and is reported', () => {
+      stubSensors();
+      try {
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+          'host document blocked',
+        );
       } finally {
         delete (globalThis as { document?: unknown }).document;
         vi.unstubAllGlobals();

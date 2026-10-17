@@ -69,22 +69,23 @@ export function createObscuringChannel(opts: ObscuringChannelOptions): Obscuring
   const wallNow = opts.wallNow ?? ((): number => Date.now());
   // The ambient `performance` is a host global: reading it can throw (hostile getter) or find nothing, and this
   // runs inside launch(). Without it the clock degrades to the wall clock and the origin to 0.
-  const ambient = ((): { now: () => number; timeOrigin: number | undefined } | undefined => {
+  // `now` and `timeOrigin` are posted as a PAIR (native computes timeOrigin + mono), so they degrade as ONE unit:
+  // without both a usable `now()` and a numeric `timeOrigin`, the wall clock is used with an origin of 0.
+  const ambient = ((): { now: () => number; timeOrigin: number } | undefined => {
     try {
       const p = (globalThis as { performance?: { now?: () => number; timeOrigin?: number } })
         .performance;
-      return p !== undefined && typeof p.now === 'function'
-        ? {
-            now: () => (p.now as () => number)(),
-            timeOrigin: typeof p.timeOrigin === 'number' ? p.timeOrigin : undefined,
-          }
+      return p !== undefined && typeof p.now === 'function' && typeof p.timeOrigin === 'number'
+        ? { now: () => (p.now as () => number)(), timeOrigin: p.timeOrigin }
         : undefined;
     } catch {
       return undefined;
     }
   })();
   const now = opts.now ?? ambient?.now ?? ((): number => Date.now());
-  const timeOrigin = opts.timeOrigin ?? ambient?.timeOrigin ?? 0;
+  // An injected `now` without its origin cannot be paired with the AMBIENT origin (a different epoch): origin 0.
+  const timeOrigin =
+    opts.timeOrigin ?? (opts.now === undefined ? ambient?.timeOrigin : undefined) ?? 0;
 
   const post = (areas: readonly SecureArea[]): void => {
     bridge.post(

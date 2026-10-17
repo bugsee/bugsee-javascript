@@ -6,8 +6,9 @@ import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 // frames, and a permanent rAF loop there would burn battery and keep the page awake — so the loop and the
 // timer are torn down on `hidden` and a fresh window starts on `visible` (a long hidden stretch must never
 // leak into the next window). Hidden, unmeasurable, or without rAF it emits NOTHING: omit, never zero.
-// Once frames have flowed in a run, a window without any is a true 0 (the main thread stopped painting); before
-// the first frame nothing is reported, since rAF can be paused while the page still says `visible`.
+// Once frames have flowed, the first window without any is reported as 0 (the main thread stopped painting) and a
+// continuing stall then goes quiet; before the first frame nothing is reported. rAF can be paused while the page
+// still says `visible`, so a run of zeros would be invented.
 
 export interface FpsEnv {
   /** Shared lifecycle tracker for visibility changes. */
@@ -154,8 +155,14 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
     if (!(elapsed > 0)) return; // a zero-length window has no rate
     // No frame EVER in this run: rAF may be paused while the page still reports `visible` (an offscreen
     // cross-origin iframe, an occluded window), so a 0 would be invented. Once frames have flowed, 0 is true.
-    if (!this.#seenFrame) return;
+    if (!this.#seenFrame) {
+      this.#windowStart = now; // the stalled stretch must not dilute the first measured window
+      return;
+    }
     const fps = Math.round(((this.#frames * 1000) / elapsed) * 10) / 10;
+    // A window with no frames after frames had flowed is reported (the drop to 0) ONCE; rAF can also be paused
+    // while the page still says `visible`, so a continuing stall goes quiet instead of a run of fabricated zeros.
+    if (this.#frames === 0) this.#seenFrame = false;
     this.#frames = 0;
     this.#windowStart = now;
     this.emit('fps', fps); // the emitter isolates and reports a throwing consumer

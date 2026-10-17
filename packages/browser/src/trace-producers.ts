@@ -350,11 +350,6 @@ export function defaultBrowserTraceEnv(onError?: (error: unknown) => void): Brow
   return { ...rest, ...(w !== undefined ? { window: w } : {}) };
 }
 
-/**
- * The browser trace producers (battery first). Nothing activates at call time. `onError` receives a
- * failure that happens after the fact (a battery manager that throws after `getBattery()` resolves, a
- * throwing `performance.memory` getter, a throwing event-path read), which would otherwise be swallowed.
- */
 // `env.performance.now` can be a hostile getter (a proxy): an unreadable one just means the tracker falls back to
 // its default clock.
 function safePerformanceNow(
@@ -373,6 +368,11 @@ function safePerformanceNow(
   }
 }
 
+/**
+ * The browser trace producers (battery first). Nothing activates at call time. `onError` receives a
+ * failure that happens after the fact (a battery manager that throws after `getBattery()` resolves, a
+ * throwing `performance.memory` getter, a throwing event-path read), which would otherwise be swallowed.
+ */
 export function createBrowserSystemTraceProducers(
   env: BrowserTraceEnv = defaultBrowserTraceEnv(),
   onError?: (error: unknown) => void,
@@ -429,7 +429,9 @@ export function createBrowserSystemTraceProducers(
                   ? { cancelAnimationFrame: env.cancelAnimationFrame }
                   : {}),
                 ...(safePerformanceNow(env, onError) !== undefined
-                  ? { now: () => env.performance?.now?.() ?? 0 }
+                  ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
+                    // rather than answering a made-up 0.
+                    { now: () => (env.performance as { now(): number }).now() }
                   : {}),
                 ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
               },
