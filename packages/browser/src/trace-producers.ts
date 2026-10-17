@@ -258,7 +258,7 @@ export interface BrowserTraceEnv extends BatteryEnv {
   cancelAnimationFrame?: FpsEnv['cancelAnimationFrame'];
   /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
-   * connection and orientation traces (as on Node), so the sensor producers must not also emit them.
+   * connection, orientation, `app_state` and `fps` traces (as on Node), so the sensor producers must not also emit them.
    */
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */

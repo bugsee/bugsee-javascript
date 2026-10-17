@@ -1378,12 +1378,25 @@ describe('launch', () => {
       it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {
         stubSensors();
         const d = mkDoc(true);
+        const w = fakeWindow();
+        let armed = 0;
+        Object.assign(w.win, {
+          requestAnimationFrame() {
+            armed += 1;
+            return armed;
+          },
+        });
         const store = memStore();
         await launchTracked(
           'tok',
-          baseOptions({ document: d.doc as unknown as Document, captureStore: store }),
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
         );
         expect(await rowsOf(store, 'app_state')).toEqual([]);
+        expect(armed).toBe(0); // no frame loop was even built
       });
     });
 

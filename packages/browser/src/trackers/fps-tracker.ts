@@ -6,7 +6,8 @@ import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 // frames, and a permanent rAF loop there would burn battery and keep the page awake — so the loop and the
 // timer are torn down on `hidden` and a fresh window starts on `visible` (a long hidden stretch must never
 // leak into the next window). Hidden, unmeasurable, or without rAF it emits NOTHING: omit, never zero.
-// A visible page that produced no frames reports a true 0 (the main thread really did not paint).
+// Once frames have flowed in a run, a window without any is a true 0 (the main thread stopped painting); before
+// the first frame nothing is reported, since rAF can be paused while the page still says `visible`.
 
 export interface FpsEnv {
   /** Shared lifecycle tracker for visibility changes. */
@@ -28,8 +29,10 @@ const defaultScheduler: Scheduler = {
 
 // `performance.now()` where it exists (monotonic), else the wall clock: a window is a few hundred ms to seconds,
 // so a clock step is the lesser evil next to reporting nothing.
-const defaultNow = (): number =>
-  typeof performance?.now === 'function' ? performance.now() : Date.now();
+const defaultNow = (): number => {
+  const p = (globalThis as { performance?: { now?: () => number } }).performance;
+  return typeof p?.now === 'function' ? p.now() : Date.now();
+};
 
 export class FpsTracker extends InterceptorBase<{ fps: number }> {
   readonly name = 'browser-fps';
@@ -42,7 +45,9 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
   #raf: number | undefined;
   #running = false;
   #frames = 0;
+  #seenFrame = false;
   #windowStart = 0;
+  #loop = 0;
 
   constructor(env: FpsEnv, onError?: (error: unknown) => void) {
     // A throwing reporter must not escape into the host's frame/timer dispatch.
@@ -63,9 +68,11 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
   // Guarded: the tracker is already marked active before this runs, so a throwing environment must be
   // reported here rather than leak out of `on()`.
   protected onActivate(): void {
-    if (typeof this.#env.requestAnimationFrame !== 'function') return; // no frames to count: omit
+    // No frames to count, or no visibility events to gate on (a hidden tab must never keep a frame loop): omit.
+    if (typeof this.#env.requestAnimationFrame !== 'function' || this.#env.lifecycle === undefined)
+      return;
     try {
-      this.#subscription = this.#env.lifecycle?.on('visibility', ({ visible }) =>
+      this.#subscription = this.#env.lifecycle.on('visibility', ({ visible }) =>
         visible ? this.#startLoop() : this.#stopLoop(),
       );
       if (this.#isVisible()) this.#startLoop();
@@ -91,6 +98,8 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
   #startLoop(): void {
     if (this.#running) return;
     this.#running = true;
+    this.#loop += 1;
+    this.#seenFrame = false;
     this.#frames = 0;
     this.#windowStart = this.#now();
     try {
@@ -118,8 +127,12 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
   }
 
   #arm(): void {
+    const loop = this.#loop;
     this.#raf = this.#env.requestAnimationFrame?.(() => {
-      if (!this.#running) return; // a frame already in flight when the loop stopped
+      // A frame already in flight when its loop stopped (cancelAnimationFrame missing or failed) must not count
+      // or re-arm — not even after a restart, or two loops would run and fps would read double.
+      if (!this.#running || loop !== this.#loop) return;
+      this.#seenFrame = true;
       this.#frames += 1;
       try {
         this.#arm();
@@ -133,6 +146,9 @@ export class FpsTracker extends InterceptorBase<{ fps: number }> {
     const now = this.#now();
     const elapsed = now - this.#windowStart;
     if (!(elapsed > 0)) return; // a zero-length window has no rate
+    // No frame EVER in this run: rAF may be paused while the page still reports `visible` (an offscreen
+    // cross-origin iframe, an occluded window), so a 0 would be invented. Once frames have flowed, 0 is true.
+    if (!this.#seenFrame) return;
     const fps = Math.round(((this.#frames * 1000) / elapsed) * 10) / 10;
     this.#frames = 0;
     this.#windowStart = now;

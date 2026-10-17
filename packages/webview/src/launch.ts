@@ -252,7 +252,11 @@ export interface BugseeWebViewLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real WebView runtime.
   /** The WebView global hosting the native bridge + the `__bugsee_bridge` control entry. Default `globalThis`. */
   global?: object;
-  /** Window event target for system events (pagehide…). Default the global `window`. */
+  /**
+   * The window the SDK is bound to: event target for system events (pagehide…) AND the source of the traces'
+   * `navigator` / `performance` / `screen` / `requestAnimationFrame` (an absent one omits its trace). Default the
+   * global `window`.
+   */
   window?: WindowEvents;
   /** DOM document for user-input capture (clicks/keys/…). Default `window.document`. */
   document?: Document;
@@ -682,14 +686,19 @@ export function launchWithSeams(
   );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
           // Every surface comes from the INJECTED window/document; the host globals only without a window.
-          ...(win !== undefined ? browserTraceEnvFrom(win, domDocument) : defaultBrowserTraceEnv()),
+          ...(win !== undefined
+            ? browserTraceEnvFrom(win, domDocument)
+            : {
+                ...defaultBrowserTraceEnv(),
+                ...(domDocument !== undefined ? { document: domDocument } : {}),
+              }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

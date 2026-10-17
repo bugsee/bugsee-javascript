@@ -415,7 +415,11 @@ export interface BugseeLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real browser runtime.
   /** HTTP primitive. Default the browser fetch transport. */
   transport?: HttpTransport;
-  /** Window event target for detection + system events. Default the global `window`. */
+  /**
+   * The window the SDK is bound to: event target for detection + system events, AND the source of the traces'
+   * `navigator` / `performance` / `screen` / `requestAnimationFrame` (an absent one omits its trace; nothing falls
+   * back to the host globals). Default the global `window`.
+   */
   window?: WindowEvents;
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
@@ -850,7 +854,7 @@ async function buildLaunch(
   );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),

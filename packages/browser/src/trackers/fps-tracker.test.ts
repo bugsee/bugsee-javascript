@@ -110,14 +110,61 @@ describe('FpsTracker', () => {
     expect(got[1]).toBe(2);
   });
 
-  it('a visible page with no frames reports a true 0 fps', () => {
+  it('once frames have been seen, a window with none is a true 0 (the main thread stopped painting)', () => {
+    const e = mkEnv();
+    const t = new FpsTracker(e.env);
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    e.advance(500);
+    e.frame();
+    e.advance(500);
+    e.tick();
+    e.advance(1000);
+    e.tick();
+    expect(got).toEqual([1, 0]);
+  });
+
+  it('a visible page that has never produced a frame reports nothing (rAF can be paused while visibility stays visible)', () => {
     const e = mkEnv();
     const t = new FpsTracker(e.env);
     const got: number[] = [];
     t.on('fps', (v) => got.push(v));
     e.advance(1000);
     e.tick();
-    expect(got).toEqual([0]);
+    e.advance(1000);
+    e.tick();
+    expect(got).toEqual([]);
+  });
+
+  it('a hide/show restarts that rule: no frame yet in the new run means nothing is reported', () => {
+    const e = mkEnv();
+    const t = new FpsTracker(e.env);
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    e.advance(500);
+    e.frame();
+    e.setVisible(false);
+    e.setVisible(true);
+    e.advance(1000);
+    e.tick();
+    expect(got).toEqual([]);
+  });
+
+  it('a stale frame callback from before a hide never joins the loop started after the show (no cancelAnimationFrame)', () => {
+    const e = mkEnv({ noCancel: true });
+    const t = new FpsTracker(e.env);
+    const got: number[] = [];
+    t.on('fps', (v) => got.push(v));
+    const stale = [...e.rafs.values()];
+    e.setVisible(false);
+    e.setVisible(true);
+    e.rafs.delete(1); // the first loop's handle is not cancellable: it stays queued in a real browser
+    for (const cb of stale) cb(0); // the old frame fires after the restart
+    expect(e.rafs.size).toBe(1); // only the NEW loop's frame is pending: the old one did not re-arm
+    e.advance(1000);
+    e.frame();
+    e.tick();
+    expect(got).toEqual([1]);
   });
 
   it('a zero-length window reports nothing (never a division by zero)', () => {
@@ -220,16 +267,15 @@ describe('FpsTracker', () => {
     expect(() => e.setVisible(false)).not.toThrow();
   });
 
-  it('with no lifecycle it still measures while the document is visible (no gating events)', () => {
+  it('with no lifecycle it measures nothing: without visibility events a hidden tab could not be gated', () => {
     const e = mkEnv();
     const { lifecycle: _l, ...rest } = e.env;
-    const t = new FpsTracker(rest);
-    const got: number[] = [];
-    t.on('fps', (v) => got.push(v));
-    e.advance(1000);
-    e.frame();
-    e.tick();
-    expect(got).toEqual([1]);
+    const errors: unknown[] = [];
+    const t = new FpsTracker(rest, (err) => errors.push(err));
+    t.on('fps', () => {});
+    expect(e.rafs.size).toBe(0);
+    expect(e.timers.set).toBe(0);
+    expect(errors).toEqual([]); // a deliberate omission, not a failure
   });
 
   it('a throwing requestAnimationFrame is reported and the tracker stays usable', () => {
@@ -359,6 +405,7 @@ describe('FpsTracker', () => {
       vi.setSystemTime(0);
       const frames: Array<() => void> = [];
       const t = new FpsTracker({
+        lifecycle: { on: () => () => {} },
         document: { visibilityState: 'visible' },
         requestAnimationFrame: (cb) => {
           frames.push(() => cb(0));
@@ -383,6 +430,7 @@ describe('FpsTracker', () => {
     try {
       const frames: Array<() => void> = [];
       const t = new FpsTracker({
+        lifecycle: { on: () => () => {} },
         document: { visibilityState: 'visible' },
         requestAnimationFrame: (cb) => {
           frames.push(() => cb(0));
