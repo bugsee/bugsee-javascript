@@ -84,9 +84,12 @@ export {
 } from './report-dialog';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
-export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
 export { chargingToWire } from './system-trace-values';
-export { createBrowserSystemTraceProducers } from './trace-producers';
+export {
+  type BrowserTraceEnv,
+  createBrowserSystemTraceProducers,
+  defaultBrowserTraceEnv,
+} from './trace-producers';
 export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
