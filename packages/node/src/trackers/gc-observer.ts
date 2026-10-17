@@ -59,12 +59,14 @@ export function createGcSource(
     start() {
       if (unusable) return;
       acc = { count: 0, pauseMs: 0, maxPauseMs: 0 };
-      const created: ObserverLike = new Observer((list) => {
-        if (observer === created) add(list.getEntries()); // a stopped observer's late delivery is ignored
-      });
+      let created: ObserverLike | undefined;
       try {
-        created.observe({ entryTypes: ['gc'] });
-        observer = created;
+        const own: ObserverLike = new Observer((list) => {
+          if (observer === own) add(list.getEntries()); // a stopped observer's late delivery is ignored
+        });
+        created = own;
+        own.observe({ entryTypes: ['gc'] });
+        observer = own;
       } catch {
         unusable = true; // a runtime that refuses the entry type must not abort SDK startup
         disconnect(created);

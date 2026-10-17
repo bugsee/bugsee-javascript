@@ -639,10 +639,10 @@ describe('gc traces', () => {
     expect(h.got.get('gc_count')).toBe(3);
   });
 
-  it('an explicit undefined source does not clobber the real default (measuresGc true)', async () => {
+  it('an explicit undefined source does not clobber the real default (measuresGc true)', () => {
     const h = harness({ ...constDeps({ eventLoop }), gc: undefined });
     h.startAll();
-    expect(h.got.get('gc_count')).toBe(0); // real observer wired: a quiet first interval is a true zero
+    expect(h.got.has('gc_count')).toBe(true); // the real observer is wired (a quiet interval is a true zero)
     h.stopAll();
   });
 

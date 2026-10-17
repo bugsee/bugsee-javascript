@@ -180,8 +180,8 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
     for (const source of [eventLoop, gc]) {
       try {
         source?.stop();
-      } catch {
-        /* best-effort */
+      } catch (error) {
+        this.#onError?.(error); // reported, never thrown: one failing stop must not strand the other
       }
     }
   }
@@ -224,11 +224,12 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
         ? ((userDelta + systemDelta) / (wallMsDelta * 1000) / this.#d.cpuCount()) * 100
         : 0;
     const eventLoop = this.#eventLoop?.read();
-    const gc = this.#optional(() => this.#gc?.read());
     const utilization = this.#eventLoopUtilization?.();
     const v8Heap = this.#optional(this.#v8Heap);
     const memoryLimit = this.#optional(this.#memoryLimit);
     const availableMemory = this.#optional(this.#availableMemory);
+    // Read LAST: it drains the interval, so nothing that can still fail the poll may run after it.
+    const gc = this.#optional(() => this.#gc?.read());
     return {
       memory,
       systemMemory,

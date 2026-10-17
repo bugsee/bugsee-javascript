@@ -176,6 +176,22 @@ describe('createGcSource', () => {
     expect(() => s2.stop()).not.toThrow();
   });
 
+  it('a constructor that throws degrades to omitted (start() does not throw, no retry)', () => {
+    let constructed = 0;
+    class Throws {
+      constructor() {
+        constructed += 1;
+        throw new Error('no observers here');
+      }
+    }
+    const src = createGcSource(Throws as never);
+    expect(() => src.start()).not.toThrow();
+    expect(src.read()).toBeUndefined();
+    expect(() => src.stop()).not.toThrow();
+    src.start();
+    expect(constructed).toBe(1);
+  });
+
   it('a throwing takeRecords makes that read omitted, not a throw', () => {
     const fake = fakePerformanceObserver({ takeRecordsThrows: true });
     const src = createGcSource(fake.ctor);

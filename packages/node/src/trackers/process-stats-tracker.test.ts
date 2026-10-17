@@ -407,7 +407,7 @@ describe('ProcessStatsTracker', () => {
     expect(calls).toEqual([]);
   });
 
-  it('a throwing event-loop stop() during the activation unwind is swallowed (the original error is reported)', () => {
+  it('a throwing event-loop stop() during the activation unwind is reported and the original error is too', () => {
     const errors: unknown[] = [];
     const eventLoop: EventLoopSource = {
       read: () => undefined,
@@ -424,7 +424,7 @@ describe('ProcessStatsTracker', () => {
     };
     const { tracker } = mk({ eventLoop, scheduler, onError: (e) => errors.push(e) });
     expect(() => tracker.on('stats', () => {})).not.toThrow();
-    expect(errors.map((e) => (e as Error).message)).toEqual(['no timers']);
+    expect(errors.map((e) => (e as Error).message).sort()).toEqual(['no timers', 'stop boom']);
   });
 
   it('an event-loop source whose start() throws is reported and is NOT stopped (it never started)', () => {
@@ -538,10 +538,40 @@ describe('ProcessStatsTracker', () => {
           throw new Error('gc');
         },
       });
-      const { tracker } = mk({ gc, eventLoop });
+      const errors: unknown[] = [];
+      const { tracker } = mk({ gc, eventLoop, onError: (e) => errors.push(e) });
       const off = tracker.on('stats', () => {});
       expect(() => off()).not.toThrow();
       expect(calls.sort()).toEqual(['el-stop', 'gc-stop']);
+      expect(errors.map((e) => (e as Error).message).sort()).toEqual(['el', 'gc']);
+    });
+
+    it('a poll that fails before gc is read does not drain the interval', () => {
+      let reads = 0;
+      let boom = true;
+      const { gc } = mkGc({
+        read: () => {
+          reads += 1;
+          return interval;
+        },
+      });
+      const { tracker, fs } = mk({
+        gc,
+        eventLoopUtilization: () => {
+          if (boom) throw new Error('elu');
+          return 0.1;
+        },
+        onError: () => {},
+      });
+      const got: ProcessStats[] = [];
+      tracker.on('stats', (st) => got.push(st));
+      // the activation baseline is read lazily, so the first poll is the failing one
+      fs.tick();
+      expect(got).toHaveLength(0);
+      expect(reads).toBe(0);
+      boom = false;
+      fs.tick();
+      expect(got[0]?.gc).toEqual(interval);
     });
 
     it('restarts the source on re-activation', () => {
