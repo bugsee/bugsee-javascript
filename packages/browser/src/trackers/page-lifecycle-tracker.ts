@@ -11,6 +11,9 @@ export interface PageLifecycleEvents {
   pagehide: { persisted: boolean };
   /** `visibilitychange`, reduced to whether the document is now visible. */
   visibility: { visible: boolean };
+  /** Page Lifecycle `freeze` / `resume`: fired on the DOCUMENT and they do not bubble, so never listened for on window. */
+  freeze: undefined;
+  resume: undefined;
   online: undefined;
   offline: undefined;
   orientationchange: undefined;
@@ -58,6 +61,9 @@ export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
       );
       for (const type of ['online', 'offline', 'orientationchange'] as const) {
         this.#listen(win, type, () => this.#guard(() => this.emit(type, undefined)));
+      }
+      for (const type of ['freeze', 'resume'] as const) {
+        this.#listen(doc, type, () => this.#guard(() => this.emit(type, undefined)));
       }
       this.#listen(doc, 'visibilitychange', () =>
         this.#guard(() => this.emit('visibility', { visible: doc?.visibilityState === 'visible' })),

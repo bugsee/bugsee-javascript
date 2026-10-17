@@ -492,6 +492,103 @@ describe('launch', () => {
     expect(doc.count('visibilitychange')).toBe(0);
   });
 
+  describe('dark mode, freeze and resume events (from the injected window + document)', () => {
+    const mkMedia = () => {
+      const l = new Set<(e: { matches: boolean }) => void>();
+      const thisSeen: unknown[] = [];
+      return {
+        thisSeen,
+        l,
+        matchMedia(this: unknown, _q: string) {
+          thisSeen.push(this);
+          return {
+            matches: false,
+            addEventListener: (_t: string, f: (e: { matches: boolean }) => void) => void l.add(f),
+            removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void l.delete(f),
+          };
+        },
+      };
+    };
+    const names = async (store: ReturnType<typeof memStore>) =>
+      ((await drain(store, 'events.system')) ?? []).map(
+        (e) => e.data as { name: string; params?: unknown },
+      );
+
+    it('records dark_mode_changed from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
+      const w = fakeWindow();
+      const m = mkMedia();
+      Object.assign(w.win, { matchMedia: m.matchMedia });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, captureStore: store }),
+      );
+      expect(m.thisSeen).toEqual([w.win]); // called as a method of ITS window
+      for (const f of [...m.l]) f({ matches: true });
+      expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
+        expect.objectContaining({ name: 'dark_mode_changed', params: { dark: true } }),
+      ]);
+      await client.stop();
+      expect(m.l.size).toBe(0);
+    });
+
+    it('a window without matchMedia emits no dark-mode event and still starts input', async () => {
+      const store = memStore();
+      await launchTracked('tok', baseOptions({ captureStore: store }));
+      expect((await names(store)).map((e) => e.name)).not.toContain('dark_mode_changed');
+    });
+
+    it('a window whose matchMedia getter or call throws never fails launch (reported)', async () => {
+      for (const kind of ['getter', 'call']) {
+        const w = fakeWindow();
+        if (kind === 'getter') {
+          Object.defineProperty(w.win, 'matchMedia', {
+            get(): never {
+              throw new Error('matchMedia blocked');
+            },
+          });
+        } else {
+          Object.assign(w.win, {
+            matchMedia() {
+              throw new Error('matchMedia blocked');
+            },
+          });
+        }
+        const onError = vi.fn();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ window: w.win, captureStore: memStore(), onError }),
+        );
+        expect(
+          onError.mock.calls.map((c) => (c[0] as Error).message),
+          kind,
+        ).toContain('matchMedia blocked');
+        await client.stop(); // one launch per process: release it before the next iteration
+      }
+    });
+
+    it('records freeze and resume from the injected DOCUMENT (a window listener never sees them)', async () => {
+      const w = fakeWindow();
+      const doc = fakeWindow();
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          window: w.win,
+          document: doc.win as unknown as Document,
+          captureStore: store,
+        }),
+      );
+      w.emit('freeze', {});
+      expect((await names(store)).map((e) => e.name)).not.toContain('freeze');
+      doc.emit('freeze', {});
+      doc.emit('resume', {});
+      const got = (await names(store)).map((e) => e.name);
+      expect(got).toEqual(expect.arrayContaining(['freeze', 'resume']));
+    });
+  });
+
   // Re-pointed from "captures a document interaction (click) as an events.user entry". What that test
   // was really protecting: launch() actually WIRES the DOM input source into the client, so a real
   // document interaction lands in the bundle. That still matters — but the stream it lands in was the
