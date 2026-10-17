@@ -12,7 +12,7 @@ import {
 } from './trackers/process-stats-tracker';
 
 // Node `traces.system` producers (mirrors the mobile tracker/producer split): five producers over ONE shared
-// ProcessStatsTracker, emitting exactly the trace names/values of the legacy createNodeSystemMetricsSampler.
+// ProcessStatsTracker.
 
 abstract class StatsProducer extends TraceProducerBase {
   #off: (() => void) | undefined;

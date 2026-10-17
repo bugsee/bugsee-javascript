@@ -16,7 +16,7 @@ import { launch, launchCore } from './launch';
 
 // The event-loop-lag OPT-OUT is pure WIRING from this tier: what the flag DOES (omitting the three lag
 // traces rather than reporting zeros) is pinned behaviourally in
-// `node/src/guarded-system-metrics.test.ts`. What only this tier can decide is that Deno is a runtime
+// `node/src/trace-producers.test.ts` (`measuresEventLoopDelay:false never constructs a histogram`). What only this tier can decide is that Deno is a runtime
 // that must set it, so that is what is pinned here — against the call.
 vi.mock('@bugsee/node', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node')>();

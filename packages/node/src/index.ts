@@ -65,11 +65,6 @@ export {
   wrapFetchHandler,
 } from './fetch-server-wrap';
 export {
-  createGuardedSystemMetricsSampler,
-  type GuardedSystemMetricsDeps,
-  type PerfHooks,
-} from './guarded-system-metrics';
-export {
   createHangDetectionProvider,
   type HangDetectionProviderDeps,
 } from './hang-detection-provider';
@@ -121,8 +116,8 @@ export {
   startServerSpan,
 } from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
-export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
 export { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+export type { PerfHooks } from './trackers/guarded-event-loop';
 export {
   type EventLoopSource,
   type ProcessStats,

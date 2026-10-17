@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { createNodeSystemMetricsSampler } from './system-metrics';
 import { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
 
 function harness(deps: NodeTraceProducerDeps) {
@@ -82,7 +81,7 @@ const eventLoop = {
 
 describe('createNodeSystemTraceProducers', () => {
   // Per-call constant increments: every read advances one fixed step, so whichever reader takes the
-  // baseline, each window is exactly one step — the producers and the legacy sampler see the SAME window.
+  // baseline, each window is exactly one step — every producer sees the SAME window.
   const steppingCpu = () => {
     let calls = 0;
     return {
@@ -94,24 +93,26 @@ describe('createNodeSystemTraceProducers', () => {
     };
   };
 
-  it('emits the SAME trace names and values as the legacy sampler (parity, non-zero CPU window)', () => {
+  it('emits the full node catalog with exact values (non-zero CPU window)', () => {
     const h = harness(constDeps({ ...steppingCpu(), eventLoop, eventLoopUtilization: () => 0.5 }));
     h.startAll();
     h.tick();
-    const { eventLoop: _source, ...legacyDeps } = constDeps(steppingCpu());
-    const legacy = createNodeSystemMetricsSampler({
-      ...legacyDeps,
-      eventLoop: eventLoop.read,
-      eventLoopUtilization: () => 0.5,
-    })();
-    expect([...h.got.keys()].sort()).toEqual(legacy.map((s) => s.name).sort());
-    for (const s of legacy) expect(h.got.get(s.name)).toBe(s.value);
-    expect(h.got.get('cpu_usage_process')).toBe(7.5); // a real, non-zero window on both sides
-    expect(h.got.get('process_memory_rss')).toBe(10);
-    expect(h.got.get('ram_system_total')).toBe(1000);
-    expect(h.got.get('event_loop_lag_max_ms')).toBe(2);
-    expect(h.got.get('event_loop_utilization')).toBe(0.5);
-    expect(h.got.size).toBe(14);
+    expect([...h.got.entries()].sort(([x], [y]) => x.localeCompare(y))).toEqual([
+      ['cpu_usage_process', 7.5],
+      ['cpu_usage_system', 50000],
+      ['cpu_usage_user', 100000],
+      ['event_loop_lag_max_ms', 2],
+      ['event_loop_lag_ms', 1],
+      ['event_loop_lag_p99_ms', 3],
+      ['event_loop_utilization', 0.5],
+      ['process_memory_array_buffers', 50],
+      ['process_memory_external', 40],
+      ['process_memory_heap_total', 20],
+      ['process_memory_heap_used', 30],
+      ['process_memory_rss', 10],
+      ['ram_system_free', 400],
+      ['ram_system_total', 1000],
+    ]);
   });
 
   it('CPU producer: user, system and process% are each their own value (distinct non-zero steps)', () => {
@@ -308,5 +309,41 @@ describe('createNodeSystemTraceProducers', () => {
     for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
     for (const p of ps) p.stop();
     expect(typeof got.get('process_memory_rss')).toBe('number');
+  });
+
+  it('with real node readers and one tick it emits the full 14-trace catalog, each a finite number', async () => {
+    const got = new Map<string, unknown>();
+    let tick: (() => void) | undefined;
+    const ps = createNodeSystemTraceProducers({
+      scheduler: {
+        setInterval: (cb) => {
+          tick = cb;
+          return 'h';
+        },
+        clearInterval: () => {},
+      },
+    });
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    // let the real delay histogram take samples: an unsampled one is omitted by design, never reported as 0
+    await new Promise((r) => setTimeout(r, 120));
+    tick?.();
+    for (const p of ps) p.stop();
+    expect([...got.keys()].sort()).toEqual([
+      'cpu_usage_process',
+      'cpu_usage_system',
+      'cpu_usage_user',
+      'event_loop_lag_max_ms',
+      'event_loop_lag_ms',
+      'event_loop_lag_p99_ms',
+      'event_loop_utilization',
+      'process_memory_array_buffers',
+      'process_memory_external',
+      'process_memory_heap_total',
+      'process_memory_heap_used',
+      'process_memory_rss',
+      'ram_system_free',
+      'ram_system_total',
+    ]);
+    for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
   });
 });

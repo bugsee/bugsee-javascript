@@ -5,7 +5,7 @@ import { InterceptorBase, type Scheduler } from '@bugsee/core';
 // Shared node process-stats TRACKER (mirrors the mobile tracker/producer split): ONE timer aggregates
 // memory / system RAM / CPU deltas (+ optional event-loop sources) into a ProcessStats object that many
 // per-trace producers read. Attaches nothing until its first subscriber; the last unsubscribe releases
-// the timer and stops the event-loop source. The cpu% arithmetic is identical to system-metrics.ts.
+// the timer and stops the event-loop source.
 
 export interface EventLoopSource {
   /** Mean/max/p99 lag (ms) since the previous read, or undefined when the runtime cannot measure it. */
