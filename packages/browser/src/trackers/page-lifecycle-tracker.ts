@@ -62,12 +62,14 @@ export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
       for (const type of ['online', 'offline', 'orientationchange'] as const) {
         this.#listen(win, type, () => this.#guard(() => this.emit(type, undefined)));
       }
-      for (const type of ['freeze', 'resume'] as const) {
-        this.#listen(doc, type, () => this.#guard(() => this.emit(type, undefined)));
-      }
       this.#listen(doc, 'visibilitychange', () =>
         this.#guard(() => this.emit('visibility', { visible: doc?.visibilityState === 'visible' })),
       );
+      // After visibilitychange: a document that refuses only the newer Page Lifecycle types must not cost
+      // foreground/background (and app_state / fps) for an optional signal.
+      for (const type of ['freeze', 'resume'] as const) {
+        this.#listen(doc, type, () => this.#guard(() => this.emit(type, undefined)));
+      }
     } catch (error) {
       this.#onError(error);
     }

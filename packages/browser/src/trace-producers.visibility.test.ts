@@ -137,7 +137,7 @@ describe('FpsProducer', () => {
     cbs[0]?.();
     timer?.();
     expect(out).toEqual([{ name: 'fps', value: 1, hold: false }]);
-    expect(page.doc.count()).toBe(3); // visibilitychange + freeze + resume (the shared lifecycle's document listeners) // subscribed to visibility
+    expect(page.doc.count()).toBe(3); // subscribed: visibilitychange + freeze + resume
     p.stop();
     expect(page.doc.count()).toBe(0); // the tracker was released with the last subscriber
     now = 2000;

@@ -533,10 +533,32 @@ describe('launch', () => {
       expect(m.l.size).toBe(0);
     });
 
-    it('a window without matchMedia emits no dark-mode event and still starts input', async () => {
-      const store = memStore();
-      await launchTracked('tok', baseOptions({ captureStore: store }));
-      expect((await names(store)).map((e) => e.name)).not.toContain('dark_mode_changed');
+    it('a window without matchMedia emits no dark-mode event (silently), never falls back to the host global, and still starts input', async () => {
+      const hostCalls: string[] = [];
+      vi.stubGlobal('matchMedia', (q: string) => {
+        hostCalls.push(q);
+        return {};
+      });
+      try {
+        const store = memStore();
+        const doc = fakeWindow();
+        const onError = vi.fn();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            document: doc.win as unknown as Document,
+            captureStore: store,
+            onError,
+          }),
+        );
+        expect(hostCalls).toEqual([]); // the host's matchMedia is never consulted
+        expect(onError).not.toHaveBeenCalled(); // absence is not a failure
+        expect(doc.count('pointerdown')).toBeGreaterThan(0); // input capture started (document-bound)
+        expect((await names(store)).map((e) => e.name)).not.toContain('dark_mode_changed');
+        await client.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it('a window whose matchMedia getter or call throws never fails launch (reported)', async () => {
@@ -556,14 +578,20 @@ describe('launch', () => {
           });
         }
         const onError = vi.fn();
+        const store = memStore();
         const client = await launchTracked(
           'tok',
-          baseOptions({ window: w.win, captureStore: memStore(), onError }),
+          baseOptions({ window: w.win, captureStore: store, onError }),
         );
         expect(
           onError.mock.calls.map((c) => (c[0] as Error).message),
           kind,
         ).toContain('matchMedia blocked');
+        // the other signals still started despite the failure
+        expect(
+          (await names(store)).map((e) => e.name),
+          kind,
+        ).toContain('process_started');
         await client.stop(); // one launch per process: release it before the next iteration
       }
     });

@@ -58,11 +58,34 @@ describe('PageLifecycleTracker', () => {
     expect(seen).toEqual(['freeze', 'resume']);
   });
 
-  it('freeze/resume without a document attach nothing and do not throw', () => {
+  it('freeze/resume without a document attach nothing (not on the window either) and do not throw', () => {
     const { win } = mkEnv();
     const t = new PageLifecycleTracker({ window: win });
-    expect(() => t.on('freeze', () => {})()).not.toThrow();
-    expect(win.count()).toBe(0);
+    let off: (() => void) | undefined;
+    expect(() => {
+      off = t.on('freeze', () => {});
+    }).not.toThrow();
+    expect(win.count('freeze')).toBe(0); // checked while SUBSCRIBED
+    expect(win.count('resume')).toBe(0);
+    expect(win.count()).toBe(4); // only the window's own pagehide/online/offline/orientationchange
+    off?.();
+  });
+
+  it('a document that refuses only freeze/resume still delivers visibility', () => {
+    const { win, doc } = mkEnv();
+    const realAdd = doc.addEventListener;
+    doc.addEventListener = (type, f) => {
+      if (type === 'freeze' || type === 'resume') throw new Error('newer types refused');
+      realAdd(type, f);
+    };
+    const errors: unknown[] = [];
+    const t = new PageLifecycleTracker({ window: win, document: doc }, (e) => errors.push(e));
+    const seen: boolean[] = [];
+    t.on('visibility', (e) => seen.push(e.visible));
+    doc.visibilityState = 'hidden';
+    doc.fire('visibilitychange');
+    expect(seen).toEqual([false]);
+    expect(errors).toHaveLength(1);
   });
 
   it('releases everything on the last unsubscribe and re-attaches on the next subscriber', () => {
