@@ -6,8 +6,9 @@ import { bytesToMegabytes } from '@bugsee/protocol';
 // `disk_mem_free` / `disk_mem_total` (Android parity, binary integer MB like the environment envelope) for the
 // filesystem the SDK's data directory lives on — NOT `/` or the cwd: it is that volume's space. Opt-in and only
 // created when there IS a data directory, so an in-memory launch never reports a disk it does not use. Polled
-// every few seconds off the event loop (`fs.promises.statfs`), change-driven and held like the other
-// change-driven traces so the provider keeps it in a rolling window.
+// every few seconds off the event loop (`fs.promises.statfs`). Emitted every poll and NOT held: a held value
+// would be re-recorded by the provider for the rest of the session after statfs starts failing (the data dir
+// removed, a dead mount), reporting a disk reading that is no longer true.
 
 export interface StatFsResult {
   bsize: number;
@@ -46,6 +47,7 @@ class DiskSpaceProducer extends TraceProducerBase {
   readonly #statfs: StatFs | undefined;
   #timer: unknown = null;
   #inFlight = false;
+  #failing = false;
   #generation = 0;
 
   constructor(deps: DiskSpaceDeps) {
@@ -68,9 +70,11 @@ class DiskSpaceProducer extends TraceProducerBase {
   }
 
   protected override onStop(): void {
-    // A read still in flight is abandoned: the next start() opens a new generation (so it can never land) and
-    // this frees the in-flight latch it would otherwise hold for ever. Until then the base class drops emits.
+    // A read still in flight is abandoned: a new generation means it can neither report nor emit when it
+    // settles, and clearing the latch lets the next start() read.
+    this.#generation += 1;
     this.#inFlight = false;
+    this.#failing = false;
     if (this.#timer !== null) (this.#deps.scheduler ?? defaultScheduler).clearInterval(this.#timer);
   }
 
@@ -87,12 +91,15 @@ class DiskSpaceProducer extends TraceProducerBase {
       (s) => {
         if (generation !== this.#generation) return;
         this.#inFlight = false;
+        this.#failing = false;
         this.#publish(s);
       },
       (error: unknown) => {
         if (generation !== this.#generation) return;
         this.#inFlight = false;
-        this.#deps.onError?.(error);
+        // One report per failure streak: a removed data dir fails every 5 s and must not flood onError.
+        if (!this.#failing) this.#deps.onError?.(error);
+        this.#failing = true;
       },
     );
   }
@@ -100,8 +107,8 @@ class DiskSpaceProducer extends TraceProducerBase {
   // Omit, never zero: an unsane reading emits nothing. `bavail` may legitimately be 0 (a full disk).
   #publish(s: StatFsResult): void {
     if (!isPositive(s.bsize) || !isCount(s.bavail) || !isPositive(s.blocks)) return;
-    this.emitIfChanged('disk_mem_free', bytesToMegabytes(s.bsize * s.bavail));
-    this.emitIfChanged('disk_mem_total', bytesToMegabytes(s.bsize * s.blocks));
+    this.emit('disk_mem_free', bytesToMegabytes(s.bsize * s.bavail));
+    this.emit('disk_mem_total', bytesToMegabytes(s.bsize * s.blocks));
   }
 }
 

@@ -1511,43 +1511,48 @@ describe('launch — system trace producers', () => {
       await client.stop(50);
     });
 
-    it('is OFF by default, and for any non-boolean-true value', async () => {
+    // The producer reads statfs SYNCHRONOUSLY when it starts (launch), so "never called" needs no waiting.
+    it('is OFF by default, and for any non-boolean-true value', () => {
       for (const v of [undefined, 'true', 1, {}, 'false', 0, null]) {
         const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
-        const store = memStore();
-        const client = launchTracked(
+        const paths: string[] = [];
+        launchTracked(
           'tok',
           baseOptions({
             dataDir: dir,
-            captureStore: store,
+            captureStore: memStore(),
             systemMetricsSampler: undefined,
+            diskStatfs: async (path) => {
+              paths.push(path);
+              return { bsize: 1, bavail: 1, blocks: 1 };
+            },
             ...(v === undefined ? {} : { captureDiskSpace: v as unknown as boolean }),
           }),
         );
-        await new Promise((r) => setTimeout(r, 40));
-        expect(await diskNames(store), String(v)).toEqual([]);
-        await client.stop(50);
+        expect(paths, String(v)).toEqual([]);
       }
     });
 
-    it('is omitted when the data dir is unusable and the launch degrades to memory', async () => {
+    it('is omitted when the data dir is unusable and the launch degrades to memory', () => {
       const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
       const file = join(dir, 'not-a-dir');
       writeFileSync(file, 'x');
-      const store = memStore();
-      const client = launchTracked(
+      const paths: string[] = [];
+      launchTracked(
         'tok',
         baseOptions({
           dataDir: file,
-          captureStore: store,
+          captureStore: memStore(),
           systemMetricsSampler: undefined,
           captureDiskSpace: true,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1, bavail: 1, blocks: 1 };
+          },
           onError: () => {},
         }),
       );
-      await new Promise((r) => setTimeout(r, 60));
-      expect(await diskNames(store)).toEqual([]);
-      await client.stop(50);
+      expect(paths).toEqual([]);
     });
 
     it('is added to caller-supplied systemTraceProducers too (the opt-in is explicit)', async () => {

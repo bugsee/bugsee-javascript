@@ -1,5 +1,5 @@
 import type { Scheduler } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 
 function fakeScheduler() {
@@ -79,23 +79,22 @@ describe('createDiskSpaceProducer', () => {
     ]);
   });
 
-  it('is change-driven and held: an unchanged MB is not re-emitted, a changed one is, and every emit is held', async () => {
+  it('is POLLED, not held: every read emits, and a read that later fails leaves a gap instead of a frozen value', async () => {
     let free = 10 * 256;
     const r = run(() => ({ bsize: 4096, bavail: free, blocks: 100 * 256 }));
     r.producer.start(r.sink);
     await flush();
-    r.fs.tick();
-    await flush();
-    expect(r.calls).toHaveLength(2); // second read unchanged
-    free = 10 * 256 + 100; // < 1 MB more: same integer MB
-    r.fs.tick();
-    await flush();
-    expect(r.calls).toHaveLength(2);
     free = 9 * 256;
     r.fs.tick();
     await flush();
-    expect(names(r.calls).slice(2)).toEqual([['disk_mem_free', 9]]);
-    expect(r.calls.every(([, , o]) => o?.hold === true)).toBe(true);
+    expect(names(r.calls)).toEqual([
+      ['disk_mem_free', 10],
+      ['disk_mem_total', 100],
+      ['disk_mem_free', 9],
+      ['disk_mem_total', 100],
+    ]);
+    // hold:false = the provider never re-records it, so a failing statfs cannot leave a stale value in the window
+    expect(r.calls.every(([, , o]) => o?.hold === false)).toBe(true);
   });
 
   it('a full disk is a true 0 MB free, not an omission', async () => {
@@ -141,6 +140,43 @@ describe('createDiskSpaceProducer', () => {
       ['disk_mem_free', 1],
       ['disk_mem_total', 2],
     ]);
+  });
+
+  it('reports a failure streak once, and again after a recovery (no flood every 5 s)', async () => {
+    let fail = true;
+    const r = run(() => (fail ? new Error('ENOENT') : { bsize: 4096, bavail: 256, blocks: 512 }));
+    r.producer.start(r.sink);
+    await flush();
+    for (let i = 0; i < 3; i++) {
+      r.fs.tick();
+      await flush();
+    }
+    expect(r.errors).toHaveLength(1);
+    fail = false;
+    r.fs.tick();
+    await flush();
+    fail = true;
+    r.fs.tick();
+    await flush();
+    expect(r.errors).toHaveLength(2);
+    r.producer.stop(); // a new session starts a new streak
+    r.producer.start(r.sink);
+    await flush();
+    expect(r.errors).toHaveLength(3);
+  });
+
+  it('a read abandoned by stop() reports nothing when it fails afterwards (no restart needed)', async () => {
+    let reject: (() => void) | undefined;
+    const slow: StatFs = () =>
+      new Promise((_resolve, rej) => {
+        reject = () => rej(new Error('late'));
+      });
+    const r = run(() => ({ bsize: 1, bavail: 1, blocks: 1 }), { statfs: slow });
+    r.producer.start(r.sink);
+    r.producer.stop();
+    reject?.();
+    await flush();
+    expect(r.errors).toEqual([]);
   });
 
   it('a synchronously throwing statfs is reported too, and onError is optional', async () => {
@@ -265,6 +301,33 @@ describe('createDiskSpaceProducer', () => {
       emit() {},
     });
     expect(seen).toEqual([5000, 123]);
+  });
+
+  it("the default timer is unref'd (never keeps the process alive) and is cleared on stop", () => {
+    const real = globalThis.setInterval;
+    const realClear = globalThis.clearInterval;
+    const handle = { unref: vi.fn() };
+    const cleared: unknown[] = [];
+    const intervals: unknown[] = [];
+    globalThis.setInterval = ((_cb: unknown, ms: unknown) => {
+      intervals.push(ms);
+      return handle;
+    }) as never;
+    globalThis.clearInterval = ((h: unknown) => void cleared.push(h)) as never;
+    try {
+      const p = createDiskSpaceProducer({
+        dataDir: '/d',
+        statfs: async () => ({ bsize: 1, bavail: 1, blocks: 1 }),
+      });
+      p.start({ emit() {} });
+      expect(handle.unref).toHaveBeenCalledTimes(1);
+      expect(intervals).toEqual([5000]);
+      p.stop();
+      expect(cleared).toEqual([handle]);
+    } finally {
+      globalThis.setInterval = real;
+      globalThis.clearInterval = realClear;
+    }
   });
 
   it('stop() before start() is harmless', async () => {
