@@ -31,6 +31,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // Deno's `process.availableMemory()` is not the Node quantity: 23 GB vs 3.4 GB on one macOS host, and on
       // Linux it ignores the container cap (11.2 GB under `docker -m 256m` vs Node's 253 MB).
       measuresAvailableMemory: false,
+      // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
+      measuresGc: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),

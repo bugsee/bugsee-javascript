@@ -2,6 +2,7 @@ import { totalmem } from 'node:os';
 import process from 'node:process';
 import { getHeapStatistics } from 'node:v8';
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
+import { createGcSource, type ObserverCtor } from './trackers/gc-observer';
 import {
   createGuardedElu,
   createGuardedEventLoopSource,
@@ -19,7 +20,7 @@ import {
   createV8HeapReader,
 } from './trackers/runtime-readers';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers over ONE shared
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers over ONE shared
 // ProcessStatsTracker.
 
 abstract class StatsProducer extends TraceProducerBase {
@@ -118,6 +119,18 @@ class AvailableMemoryProducer extends StatsProducer {
   }
 }
 
+// Emitted every tick, never held: a quiet interval is a TRUE zero (the observer is running), and a source that
+// stops answering must be omitted rather than re-recorded from a held value.
+class GcProducer extends StatsProducer {
+  readonly name = 'gc';
+  protected publish(s: ProcessStats): void {
+    if (s.gc === undefined) return;
+    this.emit('gc_count', s.gc.count);
+    this.emit('gc_pause_ms', s.gc.pauseMs);
+    this.emit('gc_pause_max_ms', s.gc.maxPauseMs);
+  }
+}
+
 class UptimeProducer extends StatsProducer {
   readonly name = 'process-uptime';
   protected publish(s: ProcessStats): void {
@@ -147,6 +160,14 @@ export interface NodeTraceProducerDeps extends ProcessStatsDeps {
    * pass `false` and `ram_system_available` is omitted there.
    */
   measuresAvailableMemory?: boolean;
+  /**
+   * Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`. It is blind on Bun and
+   * Deno (0 entries after heavy churn and forced GC — measured), where a quiet-looking zero would be a lie, so
+   * `@bugsee/bun` / `@bugsee/deno` pass `false` and no observer is ever constructed.
+   */
+  measuresGc?: boolean;
+  /** Test seam for the GC observer constructor. Default `node:perf_hooks`. */
+  performanceObserver?: ObserverCtor;
 }
 
 export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {}): TraceProducer[] {
@@ -155,6 +176,8 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     measuresEventLoopDelay = true,
     measuresV8Heap = true,
     measuresAvailableMemory = true,
+    measuresGc = true,
+    performanceObserver,
     ...rest
   } = deps;
   const perf = perfHooks ?? realPerfHooks;
@@ -163,8 +186,10 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
   const eventLoop =
     rest.eventLoop ??
     (measuresEventLoopDelay ? createGuardedEventLoopSource(perf.monitorEventLoopDelay) : undefined);
+  const gc = rest.gc ?? (measuresGc ? createGcSource(performanceObserver) : undefined);
   const tracker = new ProcessStatsTracker({
     ...rest,
+    ...(gc !== undefined ? { gc } : {}),
     ...(eventLoop !== undefined ? { eventLoop } : {}),
     eventLoopUtilization: rest.eventLoopUtilization ?? createGuardedElu(perf.eventLoopUtilization),
     // Same rule as `eventLoop`: an injected reader wins, otherwise the default is wired only where the runtime
@@ -188,6 +213,7 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new V8HeapProducer(tracker),
     new MemoryLimitProducer(tracker),
     new AvailableMemoryProducer(tracker),
+    new GcProducer(tracker),
     new UptimeProducer(tracker),
   ];
 }

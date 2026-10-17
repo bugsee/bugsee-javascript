@@ -1,5 +1,6 @@
 import type { Scheduler } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
+import type { GcSource } from './gc-observer';
 import {
   type EventLoopSource,
   type ProcessStats,
@@ -442,6 +443,114 @@ describe('ProcessStatsTracker', () => {
     expect((errors[0] as Error).message).toBe('start boom');
     expect(calls).toEqual(['start']);
     expect(fs.sets()).toBe(0);
+  });
+
+  describe('gc source', () => {
+    const interval = { count: 2, pauseMs: 9, maxPauseMs: 6 };
+    const mkGc = (over: Partial<GcSource> = {}) => {
+      const calls: string[] = [];
+      const gc: GcSource = {
+        start: () => void calls.push('start'),
+        stop: () => void calls.push('stop'),
+        read: () => interval,
+        ...over,
+      };
+      return { gc, calls };
+    };
+
+    it('starts on the first subscriber, stops on the last, and starts nothing before', () => {
+      const { gc, calls } = mkGc();
+      const { tracker } = mk({ gc });
+      expect(calls).toEqual([]);
+      const off = tracker.on('stats', () => {});
+      expect(calls).toEqual(['start']);
+      off();
+      expect(calls).toEqual(['start', 'stop']);
+    });
+
+    it('carries the interval on the baseline and on every poll; absent when the source answers undefined or is not wired', () => {
+      const { gc } = mkGc();
+      const { tracker, fs } = mk({ gc });
+      const got: ProcessStats[] = [];
+      tracker.on('stats', (st) => got.push(st));
+      expect(tracker.current().gc).toEqual(interval);
+      fs.tick();
+      expect(got[0]?.gc).toEqual(interval);
+
+      const none = mk({ gc: mkGc({ read: () => undefined }).gc });
+      none.tracker.on('stats', () => {});
+      expect('gc' in none.tracker.current()).toBe(false);
+      const unwired = mk();
+      unwired.tracker.on('stats', () => {});
+      expect('gc' in unwired.tracker.current()).toBe(false);
+    });
+
+    it('a throwing read is reported and only gc is dropped', () => {
+      const errors: unknown[] = [];
+      const { gc } = mkGc({
+        read: () => {
+          throw new Error('gc read');
+        },
+      });
+      const { tracker } = mk({ gc, onError: (e) => errors.push(e) });
+      tracker.on('stats', () => {});
+      const cur = tracker.current();
+      expect('gc' in cur).toBe(false);
+      expect(cur.memory).toEqual(mem);
+      expect((errors[0] as Error).message).toBe('gc read');
+    });
+
+    it('a failed activation after gc started stops it; a gc whose start() throws is reported and not stopped', () => {
+      const a = mkGc();
+      const scheduler: Scheduler = {
+        setInterval: () => {
+          throw new Error('no timers');
+        },
+        clearInterval: () => {},
+      };
+      mk({ gc: a.gc, scheduler }).tracker.on('stats', () => {})();
+      expect(a.calls).toEqual(['start', 'stop']); // stopped once by the unwind, never again on release
+
+      const errors: unknown[] = [];
+      const b = mkGc({
+        start: () => {
+          throw new Error('start boom');
+        },
+      });
+      mk({ gc: b.gc, onError: (e) => errors.push(e) }).tracker.on('stats', () => {})();
+      expect((errors[0] as Error).message).toBe('start boom');
+      expect(b.calls).toEqual([]);
+    });
+
+    it('a throwing gc stop() does not strand the event-loop source stop (and vice versa)', () => {
+      const calls: string[] = [];
+      const eventLoop: EventLoopSource = {
+        read: () => undefined,
+        start: () => {},
+        stop: () => {
+          calls.push('el-stop');
+          throw new Error('el');
+        },
+      };
+      const { gc } = mkGc({
+        stop: () => {
+          calls.push('gc-stop');
+          throw new Error('gc');
+        },
+      });
+      const { tracker } = mk({ gc, eventLoop });
+      const off = tracker.on('stats', () => {});
+      expect(() => off()).not.toThrow();
+      expect(calls.sort()).toEqual(['el-stop', 'gc-stop']);
+    });
+
+    it('restarts the source on re-activation', () => {
+      const { gc, calls } = mkGc();
+      const { tracker } = mk({ gc });
+      tracker.on('stats', () => {})();
+      tracker.on('stats', () => {});
+      expect(calls).toEqual(['start', 'stop', 'start']);
+    });
   });
 
   describe('runtime-depth readers (v8 heap, memory limit, available memory, uptime)', () => {
