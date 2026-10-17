@@ -4,6 +4,7 @@ import {
   AppStateProducer,
   browserTraceEnvFrom,
   createBrowserSystemTraceProducers,
+  defaultBrowserTraceEnv,
   FpsProducer,
 } from './trace-producers';
 import { FpsTracker } from './trackers/fps-tracker';
@@ -201,6 +202,79 @@ describe('browserTraceEnvFrom', () => {
     expect(env.requestAnimationFrame?.(() => {})).toBe(7);
     env.cancelAnimationFrame?.(1);
     expect(calls).toEqual([win, win]);
+  });
+
+  it('a window whose getters throw (cross-origin proxy, torn-down frame) never throws: each surface is omitted and reported', () => {
+    const win = {};
+    for (const key of [
+      'navigator',
+      'performance',
+      'screen',
+      'requestAnimationFrame',
+      'cancelAnimationFrame',
+    ]) {
+      Object.defineProperty(win, key, {
+        get(): never {
+          throw new Error(`${key} blocked`);
+        },
+      });
+    }
+    const errors: unknown[] = [];
+    let env: ReturnType<typeof browserTraceEnvFrom> | undefined;
+    expect(() => {
+      env = browserTraceEnvFrom(win, undefined, (e) => errors.push(e));
+    }).not.toThrow();
+    expect(Object.keys(env ?? {})).toEqual(['window']);
+    expect(errors.map((e) => (e as Error).message).sort()).toEqual([
+      'cancelAnimationFrame blocked',
+      'navigator blocked',
+      'performance blocked',
+      'requestAnimationFrame blocked',
+      'screen blocked',
+    ]);
+  });
+
+  it('one throwing surface does not take the others with it, and onError is optional', () => {
+    const screen = { orientation: { type: 'portrait-primary', angle: 0 } };
+    const win = { screen };
+    Object.defineProperty(win, 'performance', {
+      get(): never {
+        throw new Error('perf blocked');
+      },
+    });
+    const env = browserTraceEnvFrom(win, undefined);
+    expect(env.screen).toBe(screen);
+    expect(env.performance).toBeUndefined();
+  });
+
+  it('a navigator whose getBattery getter throws loses only the battery', () => {
+    const navigator = { onLine: true };
+    Object.defineProperty(navigator, 'getBattery', {
+      get(): never {
+        throw new Error('battery blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    const env = browserTraceEnvFrom({ navigator }, undefined, (e) => errors.push(e));
+    expect(env.navigator).toBe(navigator);
+    expect(env.getBattery).toBeUndefined();
+    expect((errors[0] as Error).message).toBe('battery blocked');
+  });
+
+  it('a throwing global window getter does not break defaultBrowserTraceEnv', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      get(): never {
+        throw new Error('window blocked');
+      },
+    });
+    try {
+      expect(() => defaultBrowserTraceEnv()).not.toThrow();
+    } finally {
+      if (original !== undefined) Object.defineProperty(globalThis, 'window', original);
+      else delete (globalThis as { window?: unknown }).window;
+    }
   });
 
   it('omits what the window lacks (a missing performance.memory is not borrowed from the global)', () => {

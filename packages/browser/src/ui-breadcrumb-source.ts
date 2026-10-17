@@ -8,6 +8,7 @@ import {
   InterceptorBase,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
+import { hostGlobal } from './host-global';
 import { describeTarget } from './input-source';
 
 // Browser UI-BREADCRUMB SOURCE — the DOM analog of Android's gesture-to-breadcrumb producer
@@ -215,8 +216,7 @@ class UiBreadcrumbSourceImpl extends InterceptorBase<{ breadcrumb: BreadcrumbInp
 export function createUiBreadcrumbSource(
   env: UiBreadcrumbEnv = {},
 ): Interceptor<{ breadcrumb: BreadcrumbInput }> {
-  const target =
-    env.target ?? (typeof document !== 'undefined' ? (document as UiEventTarget) : undefined);
+  const target = env.target ?? hostGlobal<UiEventTarget>('document');
   const origin =
     env.timeOrigin ??
     (globalThis as { performance?: { timeOrigin?: number } }).performance?.timeOrigin;

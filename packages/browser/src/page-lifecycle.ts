@@ -1,5 +1,6 @@
 import { guarded } from '@bugsee/core';
 import type { WindowEvents } from './detection-providers';
+import { hostGlobal } from './host-global';
 
 // WAVE 6.2 — the last reliable moment to write, in a browser that never promises another one.
 //
@@ -29,10 +30,9 @@ export interface PageHideFlushEnv {
   onError?: (error: unknown) => void;
 }
 
-const globalWindow = (): WindowEvents | undefined =>
-  (globalThis as { window?: WindowEvents }).window;
+const globalWindow = (): WindowEvents | undefined => hostGlobal<WindowEvents>('window');
 const globalDocument = (): VisibilityDocument | undefined =>
-  (globalThis as { document?: VisibilityDocument }).document;
+  hostGlobal<VisibilityDocument>('document');
 
 /**
  * Call `onHide` at the last moment the page is reliably alive; returns an uninstall function.

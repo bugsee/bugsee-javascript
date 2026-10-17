@@ -7,6 +7,7 @@ import {
   isSensitiveInput,
 } from '@bugsee/core';
 import { componentNameFromElement } from './component-name';
+import { hostGlobal } from './host-global';
 import { androidKeyCode, androidMetaState } from './keycodes';
 import { penAngles } from './pen-angles';
 
@@ -803,8 +804,7 @@ export function bindInputBlackout(source: object, gate: BlackoutGate | undefined
 export function createBrowserInputSource(
   env: BrowserInputEnv = {},
 ): Interceptor<{ input: InputEventDetail }> {
-  const target =
-    env.target ?? (typeof document !== 'undefined' ? (document as InputEventTarget) : undefined);
+  const target = env.target ?? hostGlobal<InputEventTarget>('document');
   return new BrowserInputSource(
     target,
     env.maskSelector ?? '[data-bugsee-hidden]',

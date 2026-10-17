@@ -9,6 +9,7 @@ import {
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
   defaultBrowserTraceEnv,
+  hostGlobal,
   PageLifecycleTracker,
   parseStack,
   type WindowEvents,
@@ -605,8 +606,9 @@ export function launchWithSeams(
   // state-change half of that split (change/submit/focus → `ui.*` breadcrumbs). Each carrier-shared
   // interceptor self-skips when its controllingOption is off. (The DOM viewtree + obscuring + error/crash +
   // performance streams land in later slices.)
-  const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
-  const domDocument = options.document ?? (globalThis as { document?: Document }).document;
+  const win = options.window ?? hostGlobal<WindowEvents>('window', options.onError);
+  // Reading a host global can throw (blocked frame, hostile proxy): that must not fail launch.
+  const domDocument = options.document ?? hostGlobal<Document>('document', options.onError);
 
   // === SUB-FRAME: obscuring only, and nothing else =============================================
   //
@@ -694,7 +696,7 @@ export function launchWithSeams(
         {
           // Every surface comes from the INJECTED window/document; the host globals only without a window.
           ...(win !== undefined
-            ? browserTraceEnvFrom(win, domDocument)
+            ? browserTraceEnvFrom(win, domDocument, options.onError)
             : {
                 ...defaultBrowserTraceEnv(),
                 ...(domDocument !== undefined ? { document: domDocument } : {}),

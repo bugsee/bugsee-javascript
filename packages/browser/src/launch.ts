@@ -710,8 +710,17 @@ async function buildLaunch(
       : createMemoryCaptureStore(storeBounds));
 
   // The DOM document drives BOTH input capture and the report-time viewtree (the same physical object).
+  // Reading `window.document` can throw (cross-origin proxy, torn-down frame): that must not fail launch.
   const domDocument: Document | undefined =
-    options.document ?? (win as { document?: Document }).document;
+    options.document ??
+    (() => {
+      try {
+        return (win as { document?: Document }).document;
+      } catch (error) {
+        options.onError?.(error);
+        return undefined;
+      }
+    })();
   // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
   // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
   const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
@@ -861,7 +870,7 @@ async function buildLaunch(
       producers: createBrowserSystemTraceProducers(
         {
           // Every surface comes from the INJECTED window/document, never the host globals.
-          ...browserTraceEnvFrom(win, domDocument),
+          ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

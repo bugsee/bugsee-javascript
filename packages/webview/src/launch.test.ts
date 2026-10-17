@@ -980,6 +980,42 @@ describe('launch (webview)', () => {
       }
     });
 
+    it('a window whose getters throw, and a blocked global document, never fail launch', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of ['navigator', 'performance', 'screen', 'requestAnimationFrame']) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        const client = track('tok', baseOptions({ window: w.win, onError }));
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toEqual(
+          expect.arrayContaining([
+            'navigator blocked',
+            'performance blocked',
+            'screen blocked',
+            'document blocked',
+          ]),
+        );
+        void client;
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
     it('a systemMetricsSampler replaces the sensor traces', () => {
       stubSensors();
       try {

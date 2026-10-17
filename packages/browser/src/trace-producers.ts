@@ -285,16 +285,33 @@ interface WindowSurfaces {
 export function browserTraceEnvFrom(
   source: object,
   document: BrowserTraceEnv['document'],
+  onError?: (error: unknown) => void,
 ): BrowserTraceEnv {
   const win = source as WindowSurfaces;
-  const nav = win.navigator;
-  const getBattery = nav?.getBattery;
-  const raf = win.requestAnimationFrame;
-  const caf = win.cancelAnimationFrame;
+  // Every read of the host's window is guarded: a cross-origin proxy or a torn-down frame throws from a plain
+  // property read, and that must cost only that one trace, never the customer's app (this runs inside launch()).
+  const read = <T>(get: () => T): T | undefined => {
+    try {
+      return get();
+    } catch (error) {
+      try {
+        onError?.(error);
+      } catch {
+        /* the reporter itself failed */
+      }
+      return undefined;
+    }
+  };
+  const nav = read(() => win.navigator);
+  const performance = read(() => win.performance);
+  const screen = read(() => win.screen);
+  const getBattery = nav === undefined ? undefined : read(() => nav.getBattery);
+  const raf = read(() => win.requestAnimationFrame);
+  const caf = read(() => win.cancelAnimationFrame);
   return {
     ...(nav !== undefined ? { navigator: nav } : {}),
-    ...(win.performance !== undefined ? { performance: win.performance } : {}),
-    ...(win.screen !== undefined ? { screen: win.screen } : {}),
+    ...(performance !== undefined ? { performance } : {}),
+    ...(screen !== undefined ? { screen } : {}),
     window: source as NonNullable<BrowserTraceEnv['window']>,
     ...(document !== undefined ? { document } : {}),
     ...(typeof raf === 'function' ? { requestAnimationFrame: (cb) => raf.call(win, cb) } : {}),
@@ -311,8 +328,20 @@ export function defaultBrowserTraceEnv(): BrowserTraceEnv {
     window?: BrowserTraceEnv['window'];
     document?: BrowserTraceEnv['document'];
   };
-  const { window: _self, ...rest } = browserTraceEnvFrom(g, g.document);
-  return { ...rest, ...(g.window !== undefined ? { window: g.window } : {}) };
+  // A blocked global (torn-down frame, hostile proxy) throws from the read itself: omit it, never throw.
+  const safe = <T>(get: () => T): T | undefined => {
+    try {
+      return get();
+    } catch {
+      return undefined;
+    }
+  };
+  const { window: _self, ...rest } = browserTraceEnvFrom(
+    g,
+    safe(() => g.document),
+  );
+  const w = safe(() => g.window);
+  return { ...rest, ...(w !== undefined ? { window: w } : {}) };
 }
 
 /**

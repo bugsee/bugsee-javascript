@@ -1263,6 +1263,63 @@ describe('launch', () => {
       expect(names).toContain('orientation'); // the other surfaces still come from the window
     });
 
+    it('a window whose getters throw never fails launch: each surface is omitted and reported, the rest still record', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const hostile = (key: string): void =>
+        void Object.defineProperty(w.win, key, {
+          get(): never {
+            throw new Error(`${key} blocked`);
+          },
+          configurable: true,
+        });
+      for (const key of [
+        'navigator',
+        'performance',
+        'screen',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+      ]) {
+        hostile(key);
+      }
+      const onError = vi.fn();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, onError }),
+      );
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).not.toContain('ram_js_heap_used');
+      expect(names).not.toContain('orientation');
+      const blocked = onError.mock.calls
+        .map((c) => (c[0] as Error).message)
+        .filter((m) => m.endsWith(' blocked'));
+      expect(blocked).toEqual(
+        expect.arrayContaining(['navigator blocked', 'performance blocked', 'screen blocked']),
+      );
+      await client.stop();
+    });
+
+    it('a window whose document getter throws never fails launch (reported, no document-bound capture)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      Object.defineProperty(w.win, 'document', {
+        get(): never {
+          throw new Error('document blocked');
+        },
+        configurable: true,
+      });
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: memStore(), onError }),
+      );
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('document blocked');
+      await client.stop();
+    });
+
     describe('app_state and fps (visibility-gated, from the injected window + document)', () => {
       const mkDoc = (visible: boolean) => {
         const l = new Map<string, Set<(e: Event) => void>>();
