@@ -911,6 +911,78 @@ describe('launch (webview)', () => {
     expect(traces.some((e) => JSON.stringify(e.p).includes('wv_metric'))).toBe(true);
   });
 
+  describe('sensor traces from the tracker-backed producers', () => {
+    const fakeWin = () => {
+      const l = new Map<string, Set<(e: Event) => void>>();
+      return {
+        win: {
+          addEventListener: (t: string, f: (e: Event) => void) => {
+            const set = l.get(t) ?? new Set();
+            set.add(f);
+            l.set(t, set);
+          },
+          removeEventListener: (t: string, f: (e: Event) => void) => void l.get(t)?.delete(f),
+        },
+        count: (...types: string[]) => types.reduce((n, t) => n + (l.get(t)?.size ?? 0), 0),
+      };
+    };
+    const stubSensors = (): void => {
+      vi.stubGlobal('navigator', { onLine: true, connection: { type: 'cellular' } });
+      vi.stubGlobal('performance', {
+        now: () => Date.now(),
+        memory: { usedJSHeapSize: 10, totalJSHeapSize: 20, jsHeapSizeLimit: 100 },
+      });
+      vi.stubGlobal('screen', { orientation: { type: 'landscape-primary', angle: 90 } });
+    };
+
+    // The webview events source ALSO listens for these three on the window: 3 events + 3 sensors by default.
+    const listeners = (over: Partial<BugseeWebViewLaunchOptions>) => {
+      const w = fakeWin();
+      const client = track(
+        'tok',
+        baseOptions({ global: fakeGlobal().global, window: w.win, ...over }),
+      );
+      return { client, n: () => w.count('online', 'offline', 'orientationchange') };
+    };
+
+    it('streams heap, connection and orientation, and listens on the injected window only while capturing', async () => {
+      stubSensors();
+      try {
+        const fake = fakeGlobal();
+        const w = fakeWin();
+        const client = track('tok', baseOptions({ global: fake.global, window: w.win }));
+        await new Promise((r) => setTimeout(r, 0));
+        const rows = new Map(
+          entriesOfType(fake.msgs(), 'traces.system').map((e) => {
+            const d = (e.p as unknown as { data: { name: string; value: unknown } }).data;
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('ram_js_heap_used')).toBe(10);
+        expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
+        expect(rows.get('orientation')).toBe(3);
+        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
+        await client.stop();
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a systemMetricsSampler replaces the sensor traces', () => {
+      stubSensors();
+      try {
+        const replaced = listeners({
+          systemMetricsSampler: () => [{ name: 'wv_metric', value: 7 }],
+        }).n();
+        expect(replaced).toBe(3); // only the events source
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   it('streams battery/charging ({state}) from the browser battery producer', async () => {
     const fake = fakeGlobal();
     const getBattery = vi.fn(() =>

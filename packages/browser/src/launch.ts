@@ -92,8 +92,8 @@ import {
 } from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserSystemTracesSampler } from './system-metrics';
-import { createBrowserSystemTraceProducers } from './trace-producers';
+import { createBrowserSystemTraceProducers, defaultBrowserTraceEnv } from './trace-producers';
+import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -439,7 +439,10 @@ export interface BugseeLaunchOptions {
   triggerPipeline?: TriggerPipeline;
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
-  /** System-traces sampler. Default the performance.memory sampler. */
+  /**
+   * LEGACY polled system-traces override. It REPLACES the default heap/connection/orientation traces (as on
+   * Node); battery stays a tracker-backed producer. The defaults are producers, not a sampler.
+   */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
   bundleStore?: BundleStore;
@@ -839,17 +842,41 @@ async function buildLaunch(
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
+  // producers and the events source: the listeners are bound in a single place.
+  const lifecycle = new PageLifecycleTracker(
+    { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
+    options.onError,
+  );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
-      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler }
+        : {}),
+      producers: createBrowserSystemTraceProducers(
+        {
+          ...defaultBrowserTraceEnv(),
+          ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          window: win,
+          lifecycle,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        },
+        options.onError,
+      ),
       refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
   client.addCaptureProvider(
-    createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+    createSystemEventsProvider(
+      createBrowserSystemEventsSource({
+        window: win,
+        lifecycle,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
+    ),
   );
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
   // `input` stream (`input.json`). NOT `events.user` — that stream belongs to the application's own

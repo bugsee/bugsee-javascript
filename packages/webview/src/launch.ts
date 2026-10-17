@@ -3,11 +3,12 @@ import {
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTraceProducers,
-  createBrowserSystemTracesSampler,
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
+  defaultBrowserTraceEnv,
+  PageLifecycleTracker,
   parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
@@ -670,10 +671,30 @@ export function launchWithSeams(
   client.addCaptureProvider(network.provider);
   // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
+  // ONE lifecycle tracker over the host page's window+document, shared by the traces and the events source.
+  const lifecycle = new PageLifecycleTracker(
+    {
+      ...(win !== undefined ? { window: win } : {}),
+      ...(domDocument !== undefined ? { document: domDocument } : {}),
+    },
+    options.onError,
+  );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
-      producers: createBrowserSystemTraceProducers(undefined, options.onError),
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler }
+        : {}),
+      producers: createBrowserSystemTraceProducers(
+        {
+          ...defaultBrowserTraceEnv(),
+          ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          ...(win !== undefined ? { window: win } : {}),
+          lifecycle,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        },
+        options.onError,
+      ),
       refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
@@ -684,7 +705,8 @@ export function launchWithSeams(
       createSystemEventsProvider(
         createBrowserSystemEventsSource({
           window: win,
-          ...(domDocument !== undefined ? { document: domDocument } : {}),
+          lifecycle,
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
         }),
       ),
     );
