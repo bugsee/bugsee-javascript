@@ -44,6 +44,13 @@ export function createCaptureCoordinator(
       /* the reporter itself failed */
     }
   };
+  const stopQuietly = (provider: CaptureProvider): void => {
+    try {
+      provider.stop();
+    } catch {
+      /* best-effort; the start failure (if any) is the one reported */
+    }
+  };
   const providers: CaptureProvider[] = [];
   const started = new Set<CaptureProvider>();
   let session: Session | null = null;
@@ -55,14 +62,18 @@ export function createCaptureCoordinator(
         return;
       }
       provider.start(active.options);
+      if (session !== active) {
+        // Stopped (and maybe relaunched) while this provider was starting: it must not be recorded against the
+        // dead session, so release it now.
+        stopQuietly(provider);
+        return;
+      }
       started.add(provider);
     } catch (error) {
+      // Unwind BEFORE reporting: a reporter may stop and relaunch, and a stale stop afterwards would unhook the
+      // provider the new session just started.
+      stopQuietly(provider); // it may be half started: release whatever it attached
       report(error);
-      try {
-        provider.stop(); // it may be half started: release whatever it attached
-      } catch {
-        /* best-effort; the start failure is the one reported */
-      }
     }
   };
 
@@ -98,15 +109,20 @@ export function createCaptureCoordinator(
     },
 
     stop(): void {
-      for (const provider of started) {
+      // Detach the session first and report only AFTER every stop() has run: a reporter that relaunches would
+      // otherwise have its fresh providers stopped by this (stale) loop.
+      const running = [...started];
+      started.clear();
+      session = null;
+      const errors: unknown[] = [];
+      for (const provider of running) {
         try {
           provider.stop();
         } catch (error) {
-          report(error);
+          errors.push(error);
         }
       }
-      started.clear();
-      session = null;
+      for (const error of errors) report(error);
     },
   };
 }

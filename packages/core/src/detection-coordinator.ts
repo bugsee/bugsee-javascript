@@ -38,6 +38,13 @@ export function createDetectionCoordinator(
       /* the reporter itself failed */
     }
   };
+  const stopQuietly = (provider: DetectionProvider): void => {
+    try {
+      provider.stop();
+    } catch {
+      /* best-effort; the start failure (if any) is the one reported */
+    }
+  };
   const providers: DetectionProvider[] = [];
   const started = new Set<DetectionProvider>();
   let session: Session | null = null;
@@ -49,14 +56,14 @@ export function createDetectionCoordinator(
         return;
       }
       provider.start(active.client, active.onReport);
+      if (session !== active) {
+        stopQuietly(provider); // stopped (maybe relaunched) while starting: do not record it on the dead session
+        return;
+      }
       started.add(provider);
     } catch (error) {
+      stopQuietly(provider); // unwind BEFORE reporting, so a relaunching reporter is not undone
       report(error);
-      try {
-        provider.stop();
-      } catch {
-        /* best-effort; the start failure is the one reported */
-      }
     }
   };
 
@@ -88,15 +95,18 @@ export function createDetectionCoordinator(
     },
 
     stop(): void {
-      for (const provider of started) {
+      const running = [...started];
+      started.clear();
+      session = null;
+      const errors: unknown[] = [];
+      for (const provider of running) {
         try {
           provider.stop();
         } catch (error) {
-          report(error);
+          errors.push(error);
         }
       }
-      started.clear();
-      session = null;
+      for (const error of errors) report(error); // after every stop(): a relaunching reporter is not undone
     },
   };
 }

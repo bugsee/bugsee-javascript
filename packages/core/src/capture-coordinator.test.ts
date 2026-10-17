@@ -291,3 +291,71 @@ describe('createCaptureCoordinator — re-entrancy and a hostile gate', () => {
     expect(late.start).not.toHaveBeenCalled();
   });
 });
+
+describe('createCaptureCoordinator — re-entrant reporters cannot corrupt a session', () => {
+  it('a provider whose start() stops the coordinator is released, not recorded on the dead session', () => {
+    let co: ReturnType<typeof createCaptureCoordinator> | undefined;
+    co = createCaptureCoordinator(init);
+    const p = makeProvider('p');
+    (p.start as ReturnType<typeof vi.fn>).mockImplementation(() => co?.stop());
+    co.addProvider(p);
+    co.start(options, enableAll);
+    expect(p.stop).toHaveBeenCalledTimes(1); // released immediately
+    co.stop();
+    expect(p.stop).toHaveBeenCalledTimes(1); // and not stopped again from a stale `started`
+  });
+
+  it('a failing start is unwound BEFORE it is reported, so a reporter that relaunches keeps its fresh provider', () => {
+    const order: string[] = [];
+    let attempt = 0;
+    let co: ReturnType<typeof createCaptureCoordinator> | undefined;
+    co = createCaptureCoordinator(init, () => {
+      order.push('report');
+      if (attempt === 1) {
+        co?.stop();
+        co?.start(options, enableAll); // relaunch from the reporter: the provider starts fine this time
+      }
+    });
+    const p = makeProvider('p');
+    (p.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      attempt += 1;
+      order.push(`start${attempt}`);
+      if (attempt === 1) throw new Error('first start fails');
+    });
+    (p.stop as ReturnType<typeof vi.fn>).mockImplementation(() => order.push('stop'));
+    co.addProvider(p);
+    co.start(options, enableAll);
+    expect(order).toEqual(['start1', 'stop', 'report', 'start2']); // no stale stop after the relaunch
+    co.stop();
+    expect(order.at(-1)).toBe('stop');
+  });
+
+  it('stop() reports stop failures only after every provider has stopped, so a relaunching reporter is not undone', () => {
+    const order: string[] = [];
+    let co: ReturnType<typeof createCaptureCoordinator> | undefined;
+    let relaunched = false;
+    co = createCaptureCoordinator(init, () => {
+      order.push('report');
+      if (!relaunched) {
+        relaunched = true;
+        co?.start(options, enableAll);
+      }
+    });
+    const a = makeProvider('a');
+    const b = makeProvider('b');
+    (a.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('a-stop');
+      throw new Error('a stop failed');
+    });
+    (b.stop as ReturnType<typeof vi.fn>).mockImplementation(() => order.push('b-stop'));
+    co.addProvider(a);
+    co.addProvider(b);
+    co.start(options, enableAll);
+    co.stop();
+    expect(order).toEqual(['a-stop', 'b-stop', 'report']);
+    expect(a.start).toHaveBeenCalledTimes(2); // the relaunch from the reporter really started again
+    expect(b.stop).toHaveBeenCalledTimes(1); // and the old loop did not stop the fresh session's providers
+    co.stop();
+    expect(b.stop).toHaveBeenCalledTimes(2); // the relaunched session is still tracked and stops normally
+  });
+});

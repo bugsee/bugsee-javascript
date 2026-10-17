@@ -236,3 +236,68 @@ describe('createDetectionCoordinator — re-entrancy and a hostile gate', () => 
     expect((errors[0] as Error).message).toBe('gate failed');
   });
 });
+
+describe('createDetectionCoordinator — re-entrant reporters cannot corrupt a session', () => {
+  it('a provider whose start() stops the coordinator is released, not recorded on the dead session', () => {
+    let co: ReturnType<typeof createDetectionCoordinator> | undefined;
+    co = createDetectionCoordinator();
+    const { provider } = makeProvider('p');
+    (provider.start as ReturnType<typeof vi.fn>).mockImplementation(() => co?.stop());
+    co.addProvider(provider);
+    co.start(client, enableAll, noReport);
+    expect(provider.stop).toHaveBeenCalledTimes(1);
+    co.stop();
+    expect(provider.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing start is unwound BEFORE it is reported, so a relaunching reporter keeps its fresh provider', () => {
+    const order: string[] = [];
+    let attempt = 0;
+    let co: ReturnType<typeof createDetectionCoordinator> | undefined;
+    co = createDetectionCoordinator(() => {
+      order.push('report');
+      if (attempt === 1) {
+        co?.stop();
+        co?.start(client, enableAll, noReport);
+      }
+    });
+    const { provider } = makeProvider('p');
+    (provider.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      attempt += 1;
+      order.push(`start${attempt}`);
+      if (attempt === 1) throw new Error('first start fails');
+    });
+    (provider.stop as ReturnType<typeof vi.fn>).mockImplementation(() => order.push('stop'));
+    co.addProvider(provider);
+    co.start(client, enableAll, noReport);
+    expect(order).toEqual(['start1', 'stop', 'report', 'start2']);
+  });
+
+  it('stop() reports stop failures only after every provider has stopped', () => {
+    const order: string[] = [];
+    let co: ReturnType<typeof createDetectionCoordinator> | undefined;
+    let relaunched = false;
+    co = createDetectionCoordinator(() => {
+      order.push('report');
+      if (!relaunched) {
+        relaunched = true;
+        co?.start(client, enableAll, noReport);
+      }
+    });
+    const a = makeProvider('a');
+    const b = makeProvider('b');
+    (a.provider.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('a-stop');
+      throw new Error('a stop failed');
+    });
+    (b.provider.stop as ReturnType<typeof vi.fn>).mockImplementation(() => order.push('b-stop'));
+    co.addProvider(a.provider);
+    co.addProvider(b.provider);
+    co.start(client, enableAll, noReport);
+    co.stop();
+    expect(order).toEqual(['a-stop', 'b-stop', 'report']);
+    expect(b.provider.stop).toHaveBeenCalledTimes(1);
+    co.stop();
+    expect(b.provider.stop).toHaveBeenCalledTimes(2); // the relaunched session is still tracked
+  });
+});
