@@ -92,20 +92,22 @@ class V8HeapProducer extends StatsProducer {
   protected publish(s: ProcessStats): void {
     const h = s.v8Heap;
     if (h === undefined) return;
-    this.emitIfChanged('v8_heap_size_limit', h.limit); // static: held for the provider's refresh
+    this.emit('v8_heap_size_limit', h.limit);
     this.emit('v8_heap_available', h.available);
     this.emit('v8_heap_malloced', h.malloced);
     this.emit('v8_heap_peak_malloced', h.peakMalloced);
-    this.emitIfChanged('ram_js_heap_total', h.limit);
+    this.emit('ram_js_heap_total', h.limit);
     this.emit('ram_js_heap_used', h.used);
     this.emit('ram_js_heap_free', Math.max(h.limit - h.used, 0));
   }
 }
 
+// Emitted every tick, never held for the provider's refresh: a cap can be lifted at runtime, and a held value
+// would then be re-recorded as a stale limit instead of being omitted.
 class MemoryLimitProducer extends StatsProducer {
   readonly name = 'process-memory-limit';
   protected publish(s: ProcessStats): void {
-    if (s.memoryLimit !== undefined) this.emitIfChanged('process_memory_limit', s.memoryLimit);
+    if (s.memoryLimit !== undefined) this.emit('process_memory_limit', s.memoryLimit);
   }
 }
 

@@ -229,19 +229,22 @@ describe('createNodeSystemTraceProducers', () => {
       expect(Number(h.got.get('v8_heap_size_limit'))).toBeGreaterThan(0); // the real node default, not absent
     });
 
-    it('static limits are emitted on change only (held for refresh); live values every tick', () => {
-      const calls: Array<[string, { hold?: boolean } | undefined]> = [];
-      const h = harness(constDeps({ eventLoop }));
+    it('no runtime-depth trace is held for refresh: a value that later becomes unavailable must not be re-recorded as stale', () => {
+      let limit: number | undefined = 500;
+      const calls: Array<[string, unknown, { hold?: boolean } | undefined]> = [];
+      const h = harness(constDeps({ eventLoop, memoryLimit: () => limit }));
       for (const p of h.producers) {
-        p.start({ emit: (n, _v, _d, o) => void calls.push([n, o]) });
+        p.start({ emit: (n, v, _d, o) => void calls.push([n, v, o]) });
       }
       h.tick();
       const per = (name: string) => calls.filter(([n]) => n === name);
       for (const name of ['v8_heap_size_limit', 'ram_js_heap_total', 'process_memory_limit']) {
-        expect(per(name)).toEqual([[name, { hold: true }]]); // unchanged value: once only
+        expect(per(name)).toHaveLength(2); // baseline + tick, even though the value did not change
+        expect(per(name).every(([, , o]) => o?.hold === false)).toBe(true);
       }
-      expect(per('ram_js_heap_used')).toHaveLength(2);
-      expect(per('ram_js_heap_used').every(([, o]) => o?.hold === false)).toBe(true);
+      limit = undefined; // the cap is lifted
+      h.tick();
+      expect(per('process_memory_limit')).toHaveLength(2); // nothing further: omitted, not carried forward
     });
 
     it('wires the real process.constrainedMemory() by default (a real cap is reported, no cap is not)', () => {
