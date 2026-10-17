@@ -309,5 +309,7 @@ describe('realPerfHooks + eluUnavailable', () => {
   it('eluUnavailable is true only for an all-zero delta (idle AND active zero)', () => {
     expect(eluUnavailable({ idle: 0, active: 0 })).toBe(true);
     expect(eluUnavailable({ idle: 1, active: 0 })).toBe(false);
+    expect(eluUnavailable({ idle: 0, active: 1 })).toBe(false); // busy with no idle is a real reading
+    expect(eluUnavailable({ active: 0 })).toBe(false); // no `idle` field: cannot claim unavailable
   });
 });
