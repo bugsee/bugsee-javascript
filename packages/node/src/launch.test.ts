@@ -3174,20 +3174,30 @@ describe('launch — hardwareExtras (environment.hardware.gpu seam)', () => {
 
   it('a report assembled after the extra settles carries hardware.gpu; one before does not', async () => {
     let gpu: { vendor: string; renderer: string } | undefined;
-    const launched = launchCore(
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
       'tok',
       baseOptions({
-        carrier: {},
+        transport,
         captureStore: memStore(),
         hardwareExtras: () => (gpu ? { gpu } : undefined),
       }),
     );
-    clients.push(launched.client);
-    const before = launched.internals?.getEnvironment().hardware as Record<string, unknown>;
-    expect(before).not.toHaveProperty('gpu');
+    const hardwareOf = (put: Uint8Array) =>
+      (
+        JSON.parse(strFromU8(unzipSync(put)['request.json'] as Uint8Array)) as {
+          environment: EnvironmentEnvelope;
+        }
+      ).environment.hardware as Record<string, unknown>;
+
+    await client.logException(new Error('before'));
+    expect(puts).toHaveLength(1);
+    expect(hardwareOf(puts[0] as Uint8Array)).not.toHaveProperty('gpu');
+
     gpu = { vendor: 'Apple', renderer: 'M3' };
-    const after = launched.internals?.getEnvironment().hardware as Record<string, unknown>;
-    expect(after.gpu).toEqual({ vendor: 'Apple', renderer: 'M3' });
+    await client.logException(new Error('after'));
+    expect(puts).toHaveLength(2);
+    expect(hardwareOf(puts[1] as Uint8Array).gpu).toEqual({ vendor: 'Apple', renderer: 'M3' });
   });
 
   it('the uploaded session environment carries hardware.gpu, and a throwing extra reaches onError without failing the report', async () => {

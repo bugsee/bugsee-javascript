@@ -63,6 +63,7 @@ const EXPECTED_EXPORTS = [
   'openServerRequest',
   'realSystemProbe',
   'runServerRequest',
+  'sanitizeHardwareGpu',
   'startServerSpan',
   'wrapFetchHandler',
 ] as const;

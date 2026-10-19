@@ -12,18 +12,23 @@ import type { HardwareExtras, HardwareGpu } from '@bugsee/node';
 
 /** The slice of Electron's `app` the cache needs. Optional on `ElectronAppLike`: older Electron has none. */
 export interface ElectronGpuSourceLike {
-  getGPUInfo(type: 'basic'): Promise<unknown>;
+  getGPUInfo(type: GpuInfoType): Promise<unknown>;
 }
+
+/** Electron's `app.getGPUInfo` argument. */
+export type GpuInfoType = 'basic' | 'complete';
 
 export interface GpuInfoCacheOptions {
   /** Electron's `app` (or anything with `getGPUInfo`). When absent or without `getGPUInfo`, nothing is ever cached. */
   source?: Partial<ElectronGpuSourceLike> | undefined;
+  /** The `getGPUInfo` argument. Default `'basic'`. */
+  type?: GpuInfoType;
   /** Sink for a rejected/throwing `getGPUInfo` (omit-never-fabricate: the error is reported, the field is absent). */
   onError?: (error: unknown) => void;
 }
 
 export interface GpuInfoCache {
-  /** Kick `getGPUInfo('basic')` once. A second call while started is a no-op. Never throws. */
+  /** Kick `getGPUInfo(type)` once. A second call while started is a no-op. Never throws. */
   start(): void;
   /** Abort: a late resolve is ignored and the cached value is dropped. A later `start()` begins afresh. */
   stop(): void;
@@ -32,32 +37,43 @@ export interface GpuInfoCache {
 }
 
 const nonEmpty = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 
 /**
- * Maps Electron's `'basic'` GPU info to `{vendor, renderer}` defensively. The shape is UNVERIFIED against a
- * real Electron: `basic` is documented as `{ gpuDevice: [{ vendorId, deviceId, active, vendorString?,
- * deviceString?, … }] }`. The ACTIVE device is used (or the only device when exactly one is listed — never a
- * guess among several); `vendorString`/`deviceString` fill `vendor`/`renderer` ONLY when they are real
- * strings. A numeric id is never turned into a vendor name. Nothing usable → `undefined`.
+ * Maps Electron's GPU info to the `hardware.gpu` block, defensively. The shapes are UNVERIFIED against a real
+ * Electron: `'basic'` is documented as `{ gpuDevice: [{ vendorId, deviceId, active, vendorString?,
+ * deviceString?, … }], auxAttributes? }` and often carries only the numeric ids; `'complete'` is heavier and
+ * is expected to carry `auxAttributes.glVendor/glRenderer/glVersion/glExtensions`.
+ *
+ * The ACTIVE device is used (or the only device when exactly one is listed — never a guess among several):
+ * `vendorString` -> `vendor`, `deviceString` -> `renderer`. `auxAttributes` (when present) fills what the
+ * device left empty: `glVendor` -> `vendor`, `glRenderer` -> `renderer`, `glVersion` -> `gl_version`,
+ * `glExtensions` -> `gl_extensions` (a string). Values are trimmed and empty/whitespace-only ones dropped; a
+ * numeric id is NEVER turned into a name. Nothing usable -> `undefined`.
  */
 export function mapGpuInfo(info: unknown): HardwareGpu | undefined {
   if (typeof info !== 'object' || info === null) return undefined;
-  const devices = (info as { gpuDevice?: unknown }).gpuDevice;
-  if (!Array.isArray(devices)) return undefined;
-  const objects = devices.filter(
-    (d): d is Record<string, unknown> => typeof d === 'object' && d !== null,
-  );
+  const { gpuDevice, auxAttributes } = info as { gpuDevice?: unknown; auxAttributes?: unknown };
+  const objects = Array.isArray(gpuDevice)
+    ? gpuDevice.filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
+    : [];
   const device =
     objects.find((d) => d.active === true) ?? (objects.length === 1 ? objects[0] : undefined);
-  if (device === undefined) return undefined;
-  const vendor = nonEmpty(device.vendorString);
-  const renderer = nonEmpty(device.deviceString);
-  if (vendor === undefined && renderer === undefined) return undefined;
-  return {
+  const aux =
+    typeof auxAttributes === 'object' && auxAttributes !== null
+      ? (auxAttributes as Record<string, unknown>)
+      : {};
+  const vendor = nonEmpty(device?.vendorString) ?? nonEmpty(aux.glVendor);
+  const renderer = nonEmpty(device?.deviceString) ?? nonEmpty(aux.glRenderer);
+  const glVersion = nonEmpty(aux.glVersion);
+  const glExtensions = nonEmpty(aux.glExtensions);
+  const gpu: HardwareGpu = {
     ...(vendor !== undefined ? { vendor } : {}),
     ...(renderer !== undefined ? { renderer } : {}),
+    ...(glVersion !== undefined ? { gl_version: glVersion } : {}),
+    ...(glExtensions !== undefined ? { gl_extensions: glExtensions } : {}),
   };
+  return Object.keys(gpu).length > 0 ? gpu : undefined;
 }
 
 export function createGpuInfoCache(options: GpuInfoCacheOptions = {}): GpuInfoCache {
@@ -81,7 +97,7 @@ export function createGpuInfoCache(options: GpuInfoCacheOptions = {}): GpuInfoCa
       const source = options.source;
       if (source === undefined || typeof source.getGPUInfo !== 'function') return;
       try {
-        Promise.resolve(source.getGPUInfo('basic')).then(
+        Promise.resolve(source.getGPUInfo(options.type ?? 'basic')).then(
           (info) => {
             if (mine !== generation) return; // stopped (or restarted) since: ignore, never write
             try {

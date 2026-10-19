@@ -51,6 +51,7 @@ export {
   type NodeEnvironmentInput,
   realSystemProbe,
   type SystemProbe,
+  sanitizeHardwareGpu,
 } from './environment';
 export {
   createEventLoopWatchdog,

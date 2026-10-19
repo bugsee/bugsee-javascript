@@ -59,6 +59,48 @@ describe('mapGpuInfo', () => {
     ).toBeUndefined();
   });
 
+  it('fills vendor/renderer/gl_version/gl_extensions from auxAttributes (trimmed)', () => {
+    expect(
+      mapGpuInfo({
+        gpuDevice: [
+          { vendorId: 4318, deviceId: 7, active: true, vendorString: '', deviceString: '' },
+        ],
+        auxAttributes: {
+          glVendor: ' NVIDIA Corporation ',
+          glRenderer: 'RTX 4090/PCIe',
+          glVersion: 'OpenGL ES 3.0',
+          glExtensions: 'GL_A GL_B',
+        },
+      }),
+    ).toEqual({
+      vendor: 'NVIDIA Corporation',
+      renderer: 'RTX 4090/PCIe',
+      gl_version: 'OpenGL ES 3.0',
+      gl_extensions: 'GL_A GL_B',
+    });
+  });
+
+  it('works from auxAttributes alone (no gpuDevice), and device strings win over aux per field', () => {
+    expect(mapGpuInfo({ auxAttributes: { glRenderer: 'R' } })).toEqual({ renderer: 'R' });
+    expect(
+      mapGpuInfo({
+        gpuDevice: [{ active: true, vendorString: 'DevVendor' }],
+        auxAttributes: { glVendor: 'AuxVendor', glRenderer: 'AuxRenderer' },
+      }),
+    ).toEqual({ vendor: 'DevVendor', renderer: 'AuxRenderer' });
+  });
+
+  it('drops blank / non-string aux values and ignores a non-object aux; ids never become names', () => {
+    expect(
+      mapGpuInfo({
+        gpuDevice: [{ active: true, vendorId: 4318, deviceId: 1 }],
+        auxAttributes: { glVendor: '  ', glRenderer: 5, glVersion: null, glExtensions: ['A'] },
+      }),
+    ).toBeUndefined();
+    expect(mapGpuInfo({ gpuDevice: [], auxAttributes: 'x' })).toBeUndefined();
+    expect(mapGpuInfo({ gpuDevice: [], auxAttributes: null })).toBeUndefined();
+  });
+
   it.each([
     ['undefined', undefined],
     ['null', null],
@@ -85,6 +127,15 @@ describe('createGpuInfoCache', () => {
     d.resolve(info);
     await flush();
     expect(cache.current()).toEqual({ gpu: { vendor: 'V', renderer: 'R' } });
+  });
+
+  it("passes the configured type to getGPUInfo (default 'basic')", () => {
+    const complete = vi.fn(() => new Promise<unknown>(() => {}));
+    createGpuInfoCache({ source: { getGPUInfo: complete }, type: 'complete' }).start();
+    expect(complete).toHaveBeenCalledExactlyOnceWith('complete');
+    const dflt = vi.fn(() => new Promise<unknown>(() => {}));
+    createGpuInfoCache({ source: { getGPUInfo: dflt } }).start();
+    expect(dflt).toHaveBeenCalledExactlyOnceWith('basic');
   });
 
   it('kicks getGPUInfo once even when start() is called repeatedly', () => {

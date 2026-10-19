@@ -108,7 +108,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  * "this is not deployment identity and not an integration seam". Notes on the ones that look otherwise:
  *  - `lifecycleEventsListener` is held on the carrier slot (`setProcessLifecycleEventsListener`), so it
  *    survives a relaunch without being re-passed;
- *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `bridge`, `post`, `launch`, `onSessionId`,
+ *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `gpuInfoType`, `bridge`, `post`, `launch`, `onSessionId`,
  *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (Electron has no
  *    `relaunch()`), and keeping them would pin Electron objects on `globalThis` for nothing;
  *  - `appToken` (the Cloudflare and Nuxt adapters accept it inside their options object) is the token itself,
@@ -122,8 +122,6 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list);
- *  - `hardwareExtras` (node; set by the Electron composition from its GPU cache) is a per-launch closure over
- *    that composition's own state, like the Electron handles above, so a relaunch does not keep it;
  *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
  *    no-op while it is already started, so an instance still running on another client would silently no-op
  *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
@@ -133,6 +131,7 @@ const RESET_OPTIONS: readonly string[] = [
   'app',
   'appToken',
   'flushTimeoutMs',
+  'gpuInfoType',
   'injectTraceMeta',
   'instanceIdentity',
   'onSpanProcessor',
@@ -163,7 +162,6 @@ const RESET_OPTIONS: readonly string[] = [
   'hangFairMs',
   'hangMediumMs',
   'hangSevereMs',
-  'hardwareExtras',
   'holdBlackout',
   'instrumentIncomingRequests',
   'ipcMain',

@@ -6,6 +6,7 @@ import {
   osPlatformToWire,
   realSystemProbe,
   type SystemProbe,
+  sanitizeHardwareGpu,
 } from './environment';
 
 const fakeProbe: SystemProbe = {
@@ -237,12 +238,12 @@ describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
       vendor: 'Apple',
       renderer: 'M3',
       gl_version: 'OpenGL ES 3.0',
-      gl_extensions: ['A', 'B'],
+      gl_extensions: 'A B',
     };
     expect(build(() => ({ gpu }))).toEqual({ ...closed, gpu });
   });
 
-  it('accepts gl_extensions as a string and a partial block', () => {
+  it('accepts a partial block with gl_extensions as a string', () => {
     expect(build(() => ({ gpu: { renderer: 'R', gl_extensions: 'A B' } })).gpu).toEqual({
       renderer: 'R',
       gl_extensions: 'A B',
@@ -263,7 +264,10 @@ describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
     ['an empty gpu', { gpu: {} }],
     ['a non-object gpu', { gpu: 'nvidia' }],
     ['a null gpu', { gpu: null }],
-    ['only ill-typed fields', { gpu: { vendor: 5, renderer: '', gl_extensions: [1, ''] } }],
+    [
+      'only ill-typed / blank / array fields',
+      { gpu: { vendor: 5, renderer: '', gl_version: '   ', gl_extensions: ['A'] } },
+    ],
   ])('adds nothing when the extra returns %s', (_name, value) => {
     expect(build(() => value)).toEqual(closed);
   });
@@ -277,7 +281,15 @@ describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
       ),
     ).toEqual(closed);
     expect(errors).toEqual([]);
-    expect(build(() => ({ gpu: { vendor: 'V', gl_extensions: '' } })).gpu).toEqual({ vendor: 'V' });
+    expect(build(() => ({ gpu: { vendor: 'V', gl_extensions: ' ' } })).gpu).toEqual({
+      vendor: 'V',
+    });
+  });
+
+  it('trims strings and drops whitespace-only ones', () => {
+    expect(
+      build(() => ({ gpu: { vendor: '  Apple ', renderer: ' \t', gl_version: ' 3.0\n' } })).gpu,
+    ).toEqual({ vendor: 'Apple', gl_version: '3.0' });
   });
 
   it('drops unknown keys, at the top level and inside gpu', () => {
@@ -314,5 +326,14 @@ describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
         throw new Error('sink');
       }),
     ).toEqual(closed);
+  });
+});
+
+describe('sanitizeHardwareGpu (exported)', () => {
+  it('returns a trimmed copy of the known keys, or undefined', () => {
+    expect(sanitizeHardwareGpu({ vendor: ' V ', junk: 1 })).toEqual({ vendor: 'V' });
+    expect(sanitizeHardwareGpu({ vendor: ' ' })).toBeUndefined();
+    expect(sanitizeHardwareGpu(null)).toBeUndefined();
+    expect(sanitizeHardwareGpu('x')).toBeUndefined();
   });
 });

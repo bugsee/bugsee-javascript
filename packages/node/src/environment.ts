@@ -62,7 +62,7 @@ export interface HardwareGpu {
   vendor?: string;
   renderer?: string;
   gl_version?: string;
-  gl_extensions?: string[] | string;
+  gl_extensions?: string;
 }
 
 /**
@@ -73,24 +73,20 @@ export interface HardwareExtras {
   gpu?: HardwareGpu;
 }
 
-const GPU_STRING_KEYS = ['vendor', 'renderer', 'gl_version'] as const;
+const GPU_KEYS = ['vendor', 'renderer', 'gl_version', 'gl_extensions'] as const;
 
-// Defensive copy of the GPU block: only the four known keys, only well-typed non-empty values. Returns
-// undefined when nothing usable remains, so no empty `gpu: {}` is ever reported.
-function sanitizeGpu(raw: unknown): HardwareGpu | undefined {
+/**
+ * Defensive copy of a GPU block: only the four known keys, only strings, trimmed, whitespace-only dropped.
+ * Returns undefined when nothing usable remains, so no empty `gpu: {}` is ever reported. Exported so a
+ * platform composition (Electron) merges caller/cache GPU blocks by the same rules.
+ */
+export function sanitizeHardwareGpu(raw: unknown): HardwareGpu | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const source = raw as Record<string, unknown>;
   const gpu: HardwareGpu = {};
-  for (const key of GPU_STRING_KEYS) {
+  for (const key of GPU_KEYS) {
     const value = source[key];
-    if (typeof value === 'string' && value !== '') gpu[key] = value;
-  }
-  const ext = source.gl_extensions;
-  if (typeof ext === 'string' && ext !== '') {
-    gpu.gl_extensions = ext;
-  } else if (Array.isArray(ext)) {
-    const list = ext.filter((e): e is string => typeof e === 'string' && e !== '');
-    if (list.length > 0) gpu.gl_extensions = list;
+    if (typeof value === 'string' && value.trim() !== '') gpu[key] = value.trim();
   }
   return Object.keys(gpu).length > 0 ? gpu : undefined;
 }
@@ -102,7 +98,7 @@ function readHardwareExtras(
 ): { gpu: HardwareGpu } | undefined {
   if (extras === undefined) return undefined;
   try {
-    const gpu = sanitizeGpu(extras()?.gpu);
+    const gpu = sanitizeHardwareGpu(extras()?.gpu);
     return gpu !== undefined ? { gpu } : undefined;
   } catch (error) {
     try {

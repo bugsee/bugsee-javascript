@@ -7,7 +7,12 @@
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
 import { BlackoutToken, CaptureStoreToken } from '@bugsee/core';
-import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/node';
+import {
+  type Bugsee,
+  type BugseeLaunchOptions,
+  launchCore,
+  sanitizeHardwareGpu,
+} from '@bugsee/node';
 import {
   type CrashReporterLike,
   getCrashDumpsDirectory,
@@ -28,11 +33,11 @@ export interface ElectronAppLike {
    * the active device's strings (when Electron supplies them) are reported as `environment.hardware.gpu` on
    * every report assembled after it settles. A rejection, or an app without it, just omits the field.
    */
-  getGPUInfo?(type: 'basic'): Promise<unknown>;
+  getGPUInfo?(type: 'basic' | 'complete'): Promise<unknown>;
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
-import { createGpuInfoCache } from './gpu-info-cache';
+import { createGpuInfoCache, type GpuInfoType } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
@@ -44,6 +49,15 @@ import {
 import { createRendererGoneHandler } from './renderer-gone';
 import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
 import type { VideoCaptureSource } from './video-capture';
+
+// An error sink must never throw into the host app's shutdown/launch path.
+function reportSafely(sink: ((error: unknown) => void) | undefined, error: unknown): void {
+  try {
+    sink?.(error);
+  } catch {
+    // the sink itself failed
+  }
+}
 
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
@@ -68,6 +82,13 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * `ipcMain`, so @bugsee/electron keeps no electron dependency.
    */
   app?: ElectronAppLike;
+  /**
+   * The `app.getGPUInfo` argument used for `environment.hardware.gpu`. Default `'basic'`. `'complete'` is
+   * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
+   * UNVERIFIED against a real Electron: `'basic'` often has only numeric vendor/device ids, in which case no
+   * `hardware.gpu` is reported rather than a guess.
+   */
+  gpuInfoType?: GpuInfoType;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
@@ -80,8 +101,16 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
-  const { ipcMain, app, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } =
-    options;
+  const {
+    ipcMain,
+    app,
+    gpuInfoType,
+    crashReporter,
+    crashReporterExtra,
+    video,
+    launch,
+    ...nodeOptions
+  } = options;
 
   // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -116,23 +145,26 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // GPU for environment.hardware.gpu: the cache is read LIVE by the node environment builder on every
   // assemble (so a GPU that settles after launch lands on the next report); it is only STARTED once this
-  // launch is known to be the first (below). A caller-supplied `hardwareExtras` WINS for `gpu`; the cache
-  // fills in only when the caller supplied none (or it threw / returned no gpu).
+  // launch is known to be the first (below). Precedence is FIELD-WISE: the cache's fields, overridden by
+  // whatever non-empty string fields a caller-supplied `hardwareExtras` gives (so a caller that supplies only
+  // `gl_version` keeps the cache's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
+  // throws (reported), leaves the cache's GPU untouched.
   const gpuCache = createGpuInfoCache({
     source: app,
+    ...(gpuInfoType !== undefined ? { type: gpuInfoType } : {}),
     ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
   });
   const callerExtras = nodeOptions.hardwareExtras;
   nodeOptions.hardwareExtras = () => {
-    if (callerExtras !== undefined) {
-      try {
-        const own = callerExtras();
-        if (own?.gpu !== undefined) return own;
-      } catch (error) {
-        nodeOptions.onError?.(error);
-      }
+    const cached = gpuCache.current();
+    if (callerExtras === undefined) return cached;
+    try {
+      const own = sanitizeHardwareGpu(callerExtras()?.gpu);
+      return own === undefined ? cached : { gpu: { ...cached?.gpu, ...own } };
+    } catch (error) {
+      reportSafely(nodeOptions.onError, error);
+      return cached;
     }
-    return gpuCache.current();
   };
 
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
@@ -247,7 +279,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       receiver.stop();
       videoController?.stop(); // stop pixel capture
     } catch (error) {
-      nodeOptions.onError?.(error);
+      reportSafely(nodeOptions.onError, error);
     }
     return stop(timeout);
   }) as Bugsee['stop'];
