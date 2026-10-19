@@ -525,13 +525,25 @@ section corrects. Android reference: `library/src/main/java/com/bugsee/library/s
    guards, tests), so "global" means **one instance per window object**: `trackerFor(window, create)` over a `WeakMap`,
    with a default for the host's own `window`; a `reset()` for tests. Every host read stays guarded (`hostRead`).
 
+6. **Trackers are the abstraction layer over the runtime/system APIs** (owner, 2026-10-19), not mere event
+   re-translators, so they live in a DEDICATED package `@bugsee/trackers` BELOW `@bugsee/core` (core imports it and
+   re-exports the foundation names): a runtime-portable root entry (multi-key emitter, `InterceptorBase`, the registry,
+   contracts) plus `./browser`, `./node`, `./electron` subpath entries holding the platform implementations (the only
+   places that touch DOM / `node:*` / Electron APIs, through injected env objects). Platform packages
+   (`@bugsee/browser`, `@bugsee/node`, `@bugsee/electron`) keep only composition (launch wiring, producers).
+7. **Per-launch config on a shared singleton.** The registry's `for(key, create, rebind)` hands every later request's
+   config (error sink, capabilities such as `getBattery`) to the existing tracker (`rebind`, latest launch wins); an IDLE
+   tracker may also re-bind the window/document it attaches to, an ACTIVE one keeps its bindings and reports the mismatch.
+   Keying: the object the tracker listens on (document for Application, window otherwise); there is no silent
+   host-global fallback when a window was injected.
+
 ### 15.2 Browser tracker catalog
 | Tracker | Absorbs today's | Notifications (stages) |
 |---|---|---|
 | **Application** | `PageLifecycleTracker`, `app_state` | `visibility`, `pagehide`, `freeze`, `resume`, `state` (foreground/background) |
 | **UI/Display** | `OrientationTracker`, `ScreenSizeTracker` (#75), `FpsTracker`, dark-mode `matchMedia`, viewport | `orientation`, `screenSize` ({width,height,dpr}), `colorScheme`, `frameRate`, `viewport`, display-mode/`reducedMotion`/contrast where cheap |
 | **Connectivity** | `ConnectionTracker` | `online`/`offline`, `networkInfo` (Network Information API, §15.3) |
-| **Power** | `BatteryTracker` | `battery` (level/charging), `chargingTime`, `dischargingTime` (Battery Status API, §15.3) |
+| **Power** | `BatteryTracker` | one `state` stage ({level, charging, chargingTimeS?, dischargingTimeS?}) fed by all four Battery Status events (§15.3); more stages (e.g. low-battery) only where an API exists |
 | **Process** | `MemoryTracker`, `MainThreadLagTracker` (#75), uptime | `heap`, `mainThreadLag`, `idle` (§15.3), `uptime` |
 | **Storage** | — | `storageEstimate` ({usage, quota, persisted?}) |
 | **Environment** | — | `language`, `timezone`, `privateMode`, `displayMode`, `permissions`, … (§15.3) |
