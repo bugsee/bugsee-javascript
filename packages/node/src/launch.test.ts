@@ -1477,6 +1477,137 @@ describe('launch — system trace producers', () => {
     }
   });
 
+  describe('captureDiskSpace (opt-in disk_mem_* for the data dir volume)', () => {
+    const diskNames = async (store: ReturnType<typeof memStore>) =>
+      ((await drain(store, 'traces.system')) ?? [])
+        .map((e) => e.data as { name: string; value: number })
+        .filter((d) => d.name.startsWith('disk_mem_'));
+    const waitForDisk = async (store: ReturnType<typeof memStore>) => {
+      for (let i = 0; i < 100; i++) {
+        const got = await diskNames(store);
+        if (got.length > 0) return got;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return [];
+    };
+
+    it('reports integer-MB free/total of the dataDir volume when enabled', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+        }),
+      );
+      const got = await waitForDisk(store);
+      const total = got.find((d) => d.name === 'disk_mem_total')?.value;
+      const free = got.find((d) => d.name === 'disk_mem_free')?.value;
+      expect(Number.isInteger(total) && (total as number) > 0).toBe(true);
+      expect(Number.isInteger(free) && (free as number) <= (total as number)).toBe(true);
+      await client.stop(50);
+    });
+
+    // The producer reads statfs SYNCHRONOUSLY when it starts (launch), so "never called" needs no waiting.
+    it('is OFF by default, and for any non-boolean-true value', () => {
+      for (const v of [undefined, 'true', 1, {}, 'false', 0, null]) {
+        const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+        const paths: string[] = [];
+        launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            captureStore: memStore(),
+            systemMetricsSampler: undefined,
+            diskStatfs: async (path) => {
+              paths.push(path);
+              return { bsize: 1, bavail: 1, blocks: 1 };
+            },
+            ...(v === undefined ? {} : { captureDiskSpace: v as unknown as boolean }),
+          }),
+        );
+        expect(paths, String(v)).toEqual([]);
+      }
+    });
+
+    it('is omitted when the data dir is unusable and the launch degrades to memory', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const file = join(dir, 'not-a-dir');
+      writeFileSync(file, 'x');
+      const paths: string[] = [];
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: file,
+          captureStore: memStore(),
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1, bavail: 1, blocks: 1 };
+          },
+          onError: () => {},
+        }),
+      );
+      expect(paths).toEqual([]);
+    });
+
+    it('is added to caller-supplied systemTraceProducers too (the opt-in is explicit)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      let ownStarted = false;
+      const own: TraceProducer = {
+        name: 'own',
+        start: () => {
+          ownStarted = true;
+        },
+        stop: () => {},
+      };
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [own],
+          captureDiskSpace: true,
+        }),
+      );
+      expect((await waitForDisk(store)).length).toBeGreaterThan(0);
+      expect(ownStarted).toBe(true); // the caller's producers are kept, the disk one is added
+      await client.stop(50);
+    });
+
+    it('measures the effective data dir (never / or the cwd), through the statfs seam', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      const paths: string[] = [];
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1024 * 1024, bavail: 5, blocks: 9 };
+          },
+        }),
+      );
+      const got = await waitForDisk(store);
+      expect(paths[0]).toBe(dir);
+      expect(got.map((d) => [d.name, d.value]).sort()).toEqual([
+        ['disk_mem_free', 5],
+        ['disk_mem_total', 9],
+      ]);
+      await client.stop(50);
+    });
+  });
+
   it('the DEFAULT producers sample through the injected scheduler (no real timer)', async () => {
     const fs = fakeScheduler();
     const store = memStore();
