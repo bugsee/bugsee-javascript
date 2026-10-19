@@ -47,6 +47,15 @@ describe('BatteryProducer', () => {
     offOther();
   });
 
+  it('charging with an unusable level emits no battery and the charging (not full) wire state', async () => {
+    const m = mkManager(Number.NaN, true);
+    const { out } = run(
+      createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+    );
+    await flush();
+    expect(out).toEqual([{ name: 'charging', value: { state: 2 } }]);
+  });
+
   it('emits battery (rounded percent) and charging ({state}) once the manager resolves, then only on change', async () => {
     const m = mkManager(0.426, true);
     const { out, p } = run(

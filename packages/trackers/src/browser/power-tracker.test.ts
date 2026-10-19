@@ -99,6 +99,32 @@ describe('PowerTracker', () => {
     expect(t.current()).toEqual({ level: 0.5, charging: false });
   });
 
+  it('a tracker without getBattery that lost its subscriber does not start when rebind later supplies one', async () => {
+    const m = mkManager();
+    const getBattery = vi.fn(() => Promise.resolve(m));
+    const t = new PowerTracker({});
+    const off = t.on('state', () => {});
+    off();
+    t.rebind({ getBattery });
+    await flush();
+    expect(getBattery).not.toHaveBeenCalled();
+    expect(m.count()).toBe(0);
+  });
+
+  it('reset() while getBattery is in flight: the late resolve attaches nothing to the dropped tracker', async () => {
+    const m = mkManager();
+    let resolve: (v: BatteryManagerLike) => void = () => {};
+    const t = new PowerTracker({ getBattery: () => new Promise((r) => (resolve = r)) });
+    const seen: BatteryState[] = [];
+    t.on('state', (s) => seen.push(s));
+    t.reset();
+    resolve(m);
+    await flush();
+    expect(m.count()).toBe(0);
+    expect(seen).toEqual([]);
+    expect(t.current()).toBeUndefined();
+  });
+
   it('stop before resolve: the late resolve attaches nothing and emits nothing', async () => {
     const m = mkManager();
     let resolve: (v: BatteryManagerLike) => void = () => {};
@@ -569,6 +595,18 @@ describe('PowerTracker', () => {
       ]);
     });
 
+    it('omits a negative time and treats 0.995 as not full', async () => {
+      expect(await snap(Object.assign(mkManager(0.5, false), { dischargingTime: -0.5 }))).toEqual([
+        { level: 0.5, charging: false },
+      ]);
+      expect(await snap(Object.assign(mkManager(0.5, true), { chargingTime: -0.5 }))).toEqual([
+        { level: 0.5, charging: true },
+      ]);
+      expect(await snap(Object.assign(mkManager(0.995, true), { chargingTime: 0 }))).toEqual([
+        { level: 0.995, charging: true, chargingTimeS: 0 },
+      ]);
+    });
+
     it('omits a zero discharging time', async () => {
       expect(await snap(Object.assign(mkManager(0.5, false), { dischargingTime: 0 }))).toEqual([
         { level: 0.5, charging: false },
@@ -667,7 +705,7 @@ describe('PowerTracker', () => {
       resetPowerTracker({ window: w });
     });
 
-    it('a later getBattery replaces an unresolved one, but never a retained manager', async () => {
+    it('a later getBattery always replaces ours; a retained manager is reused without calling it', async () => {
       const w = {};
       const m1 = mkManager(0.5, false);
       const m2 = mkManager(0.9, false);
@@ -678,14 +716,14 @@ describe('PowerTracker', () => {
       const off = t.on('state', () => {});
       await flush();
       off();
-      powerTrackerFor({ window: w, getBattery: g2 }); // no resolved manager: replaced
+      powerTrackerFor({ window: w, getBattery: g2 }); // replaces the old one; no manager resolved yet, so it is called
       const seen: BatteryState[] = [];
       t.on('state', (s) => seen.push(s));
       await flush();
       expect(g1).toHaveBeenCalledTimes(1);
       expect(g2).toHaveBeenCalledTimes(1);
       expect(seen).toEqual([{ level: 0.5, charging: false }]);
-      powerTrackerFor({ window: w, getBattery: g3 }); // manager resolved: retained, g3 never used
+      powerTrackerFor({ window: w, getBattery: g3 }); // replaces the getter, but the resolved manager is retained and g3 is not called
       expect(g3).not.toHaveBeenCalled();
       resetPowerTracker({ window: w });
     });

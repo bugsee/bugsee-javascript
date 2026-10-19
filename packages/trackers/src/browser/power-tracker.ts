@@ -71,9 +71,9 @@ export class PowerTracker extends InterceptorBase<{ state: BatteryState }> {
 
   /**
    * Hand the latest launch's seams to this shared tracker. A defined `onError` replaces the reporter (undefined
-   * keeps it). A defined `getBattery` replaces ours only while we hold no resolved manager (a resolved manager is
-   * retained: it belongs to the same window) or when we had none at all; if the tracker is already running and
-   * had no getBattery at all, it asks right away instead of waiting for the next activation.
+   * keeps it). A defined `getBattery` ALWAYS replaces ours (an undefined one never clobbers it); a manager we already
+   * resolved is simply reused and the new `getBattery` is not called again (it belongs to the same window). If the
+   * tracker is running and had no getBattery at all, it asks right away instead of waiting for the next activation.
    */
   rebind(env: BatteryEnv, onError?: (error: unknown) => void): void {
     if (onError !== undefined) this.#report.fn = onError;
