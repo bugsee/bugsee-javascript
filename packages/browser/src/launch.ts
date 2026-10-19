@@ -83,6 +83,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+import { boundMatchMedia } from './host-global';
 import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
@@ -886,11 +887,14 @@ async function buildLaunch(
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
+  const matchMedia = boundMatchMedia(win, options.onError);
   client.addCaptureProvider(
     createSystemEventsProvider(
       createBrowserSystemEventsSource({
         window: win,
         lifecycle,
+        // from the INJECTED window (bound to it); never the host global
+        ...(matchMedia !== undefined ? { matchMedia } : {}),
         ...(options.onError !== undefined ? { onError: options.onError } : {}),
       }),
     ),

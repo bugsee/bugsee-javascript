@@ -21,3 +21,19 @@ export function hostGlobal<T = never>(
 ): T | undefined {
   return hostRead(() => (globalThis as unknown as Record<string, T | undefined>)[name], onError);
 }
+
+/**
+ * `win.matchMedia` bound to ITS window (never the host global), or undefined when the window has none or the
+ * read throws (reported). A method call on a detached `matchMedia` would throw "Illegal invocation".
+ */
+export function boundMatchMedia(
+  win: object | undefined,
+  onError?: (error: unknown) => void,
+): ((query: string) => MediaQueryList) | undefined {
+  if (win === undefined) return undefined;
+  const mm = hostRead(
+    () => (win as { matchMedia?: (query: string) => MediaQueryList }).matchMedia,
+    onError,
+  );
+  return typeof mm === 'function' ? (query) => mm.call(win, query) : undefined;
+}
