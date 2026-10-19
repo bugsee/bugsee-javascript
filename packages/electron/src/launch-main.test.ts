@@ -577,6 +577,18 @@ describe('launchMain — GPU info as environment.hardware.gpu (ST6a)', () => {
     expect(extrasOf(f)()).toBeUndefined();
   });
 
+  it('the wrapper keeps serving an already-resolved GPU after client.stop() (reports still draining)', async () => {
+    const f = fakeLaunch();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(async () => gpuInfo),
+    });
+    await flush();
+    await client.stop();
+    expect(extrasOf(f)()).toEqual({ gpu: { vendor: 'NVIDIA', renderer: 'RTX' } });
+  });
+
   it('an app without getGPUInfo (older Electron / bare fake) just omits, no error', async () => {
     const onError = vi.fn();
     const f = fakeLaunch();

@@ -16,21 +16,43 @@ function deferred<T>() {
 const basic = (devices: unknown[]) => ({ gpuDevice: devices });
 
 describe('mapGpuInfo', () => {
-  it('uses the ACTIVE device strings', () => {
+  it('uses the ACTIVE device strings, wherever it is in the list', () => {
+    const dev = (active: boolean, name: string) => ({
+      vendorId: 1,
+      deviceId: 2,
+      active,
+      vendorString: `${name}-vendor`,
+      deviceString: `${name}-device`,
+    });
+    const expected = (name: string) => ({ vendor: `${name}-vendor`, renderer: `${name}-device` });
+    expect(mapGpuInfo(basic([dev(true, 'A'), dev(false, 'B'), dev(false, 'C')]))).toEqual(
+      expected('A'),
+    );
+    expect(mapGpuInfo(basic([dev(false, 'A'), dev(true, 'B'), dev(false, 'C')]))).toEqual(
+      expected('B'),
+    );
+    expect(mapGpuInfo(basic([dev(false, 'A'), dev(false, 'B'), dev(true, 'C')]))).toEqual(
+      expected('C'),
+    );
+  });
+
+  it('takes the FIRST active device, and only a literal `active: true` counts', () => {
     expect(
       mapGpuInfo(
         basic([
-          { vendorId: 1, deviceId: 2, active: false, vendorString: 'Intel', deviceString: 'UHD' },
-          {
-            vendorId: 4318,
-            deviceId: 9,
-            active: true,
-            vendorString: 'NVIDIA',
-            deviceString: 'RTX',
-          },
+          { active: true, vendorString: 'First' },
+          { active: true, vendorString: 'Second' },
         ]),
       ),
-    ).toEqual({ vendor: 'NVIDIA', renderer: 'RTX' });
+    ).toEqual({ vendor: 'First' });
+    expect(
+      mapGpuInfo(
+        basic([
+          { active: 1, vendorString: 'A' },
+          { active: 'yes', vendorString: 'B' },
+        ]),
+      ),
+    ).toBeUndefined();
   });
 
   it('uses the only device when none is flagged active, but never guesses among several', () => {
@@ -245,13 +267,12 @@ describe('createGpuInfoCache', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('stop() drops an already-cached value', async () => {
+  it('stop() KEEPS an already-resolved value (reports still draining during stop must carry it)', async () => {
     const cache = createGpuInfoCache({ source: { getGPUInfo: async () => info } });
     cache.start();
     await flush();
-    expect(cache.current()).toBeDefined();
     cache.stop();
-    expect(cache.current()).toBeUndefined();
+    expect(cache.current()).toEqual({ gpu: { vendor: 'V', renderer: 'R' } });
   });
 
   it('a start() after stop() begins afresh, and the OLD promise cannot write into the new run', async () => {

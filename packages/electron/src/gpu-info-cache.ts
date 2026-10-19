@@ -30,7 +30,7 @@ export interface GpuInfoCacheOptions {
 export interface GpuInfoCache {
   /** Kick `getGPUInfo(type)` once. A second call while started is a no-op. Never throws. */
   start(): void;
-  /** Abort: a late resolve is ignored and the cached value is dropped. A later `start()` begins afresh. */
+  /** Abort the in-flight read: a late resolve/reject is ignored. An ALREADY-resolved value is kept (reports still draining on stop need it). */
   stop(): void;
   /** The cached `hardware` extra, or `undefined` while unsettled / failed / unusable. */
   current(): HardwareExtras | undefined;
@@ -116,8 +116,9 @@ export function createGpuInfoCache(options: GpuInfoCacheOptions = {}): GpuInfoCa
     },
     stop(): void {
       started = false;
-      generation++;
-      gpu = undefined;
+      generation++; // a late resolve/reject of the in-flight read is now ignored
+      // The cached value is deliberately KEPT: core `stop()` drains pending reports AFTER this runs, and
+      // they must still carry hardware.gpu. A new `launchMain` builds a new cache, so nothing leaks.
     },
     current(): HardwareExtras | undefined {
       return gpu === undefined ? undefined : { gpu: { ...gpu } };

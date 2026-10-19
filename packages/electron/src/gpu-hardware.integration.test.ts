@@ -86,6 +86,18 @@ describe('Electron GPU -> real node launch -> assembled report', () => {
     await client.stop();
   });
 
+  it('a report still draining while client.stop() runs keeps hardware.gpu', async () => {
+    const { client, puts } = launchWith({
+      on: () => {},
+      getGPUInfo: async () => ({ gpuDevice: [{ active: true, vendorString: 'NVIDIA' }] }),
+    });
+    await flush();
+    void client.logException(new Error('in flight'));
+    await client.stop(5000);
+    expect(puts).toHaveLength(1);
+    expect(hardwareOf(puts[0] as Uint8Array).gpu).toEqual({ vendor: 'NVIDIA' });
+  });
+
   it('a rejected getGPUInfo: launch succeeds, no unhandledRejection, node traces still emit, no gpu', async () => {
     const unhandled = vi.fn();
     process.on('unhandledRejection', unhandled);

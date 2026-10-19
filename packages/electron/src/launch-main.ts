@@ -85,8 +85,9 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   /**
    * The `app.getGPUInfo` argument used for `environment.hardware.gpu`. Default `'basic'`. `'complete'` is
    * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
-   * UNVERIFIED against a real Electron: `'basic'` often has only numeric vendor/device ids, in which case no
-   * `hardware.gpu` is reported rather than a guess.
+   * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
+   * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
+   * `'complete'` for the GL strings.
    */
   gpuInfoType?: GpuInfoType;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
@@ -149,6 +150,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // whatever non-empty string fields a caller-supplied `hardwareExtras` gives (so a caller that supplies only
   // `gl_version` keeps the cache's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
   // throws (reported), leaves the cache's GPU untouched.
+  // `hardwareExtras` is a KEPT relaunch option, so a node/umbrella `relaunch()` in an Electron main keeps THIS
+  // wrapper (closing over this cache): it keeps serving the cached GPU after a relaunch (stop() does not clear
+  // it), but a GPU that had not yet resolved before the relaunch is not re-requested.
   const gpuCache = createGpuInfoCache({
     source: app,
     ...(gpuInfoType !== undefined ? { type: gpuInfoType } : {}),
@@ -273,7 +277,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
-      gpuCache.stop(); // a late getGPUInfo resolve must not write after stop
+      gpuCache.stop(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
