@@ -217,6 +217,71 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
   });
 });
 
+describe('performance.now wiring (lag and fps)', () => {
+  // `now` throws unless it is invoked as a method of THIS performance object, like a real Performance.
+  const mkPerf = () => {
+    const perf = {
+      t: 0,
+      reads: 0,
+      now(this: unknown): number {
+        if (this !== perf) throw new TypeError('Illegal invocation');
+        perf.reads += 1;
+        return perf.t;
+      },
+    };
+    return perf;
+  };
+  const mkLifecycle = () => {
+    const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
+    return { doc, lifecycle: new PageLifecycleTracker({ window: mkTarget(), document: doc }) };
+  };
+
+  it('the lag and fps clocks are called as performance.now() (this === performance), with no error', () => {
+    const perf = mkPerf();
+    const { doc, lifecycle } = mkLifecycle();
+    const errors: unknown[] = [];
+    const ticks: Array<() => void> = [];
+    const ps = createBrowserSystemTraceProducers(
+      {
+        lifecycle,
+        document: doc,
+        performance: perf,
+        requestAnimationFrame: () => 1,
+        scheduler: {
+          setInterval: (cb) => {
+            ticks.push(cb);
+            return 1;
+          },
+          clearInterval: () => {},
+        },
+      },
+      (e) => errors.push(e),
+    );
+    const out: Emit[] = [];
+    for (const p of ps) if (p.name === 'main-thread-lag' || p.name === 'fps') p.start(sinkOf(out));
+    perf.t = 1000 + 12;
+    for (const tick of ticks) tick();
+    expect(errors).toEqual([]);
+    expect(out.find((o) => o.name === 'main_thread_lag_ms')?.value).toBe(12);
+    expect(perf.reads).toBeGreaterThanOrEqual(2); // fps and lag both read it at start
+  });
+
+  it('a performance.now getter that throws is reported ONCE, not once per consumer', () => {
+    const { doc, lifecycle } = mkLifecycle();
+    const perf = {};
+    Object.defineProperty(perf, 'now', {
+      get(): never {
+        throw new Error('now blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    createBrowserSystemTraceProducers({ lifecycle, document: doc, performance: perf }, (e) =>
+      errors.push(e),
+    );
+    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
+  });
+});
+
 describe('main_thread_lag_ms clock wiring', () => {
   it('a performance.now that is not a function omits the trace quietly (no timer, no error)', () => {
     const win = mkTarget();

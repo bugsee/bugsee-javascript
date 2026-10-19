@@ -79,7 +79,7 @@ describe('MainThreadLagTracker (timer drift)', () => {
     expect(got).toEqual([0, 0]);
   });
 
-  it('a block spanning a tick shows as the lateness of that tick: N ms block => N - interval... of drift', () => {
+  it('a block spanning a due tick shows as the lateness of that tick, once; the next on-time tick reads 0', () => {
     const e = mkEnv();
     const { got } = collect(new MainThreadLagTracker(e.env));
     e.advance(1000);
@@ -90,6 +90,15 @@ describe('MainThreadLagTracker (timer drift)', () => {
     e.advance(1000); // and the NEXT interval is measured from the late tick, so the block is not counted twice
     e.tick();
     expect(got).toEqual([0, 700, 0]);
+  });
+
+  it('a block shorter than the interval that crosses no due tick reads exactly 0 (the documented limit)', () => {
+    const e = mkEnv();
+    const { got } = collect(new MainThreadLagTracker(e.env));
+    e.advance(100); // a 100 ms block mid-interval...
+    e.advance(900); // ...the tick still fires on schedule
+    e.tick();
+    expect(got).toEqual([0]);
   });
 
   it('the first tick is measured against the run start + interval', () => {

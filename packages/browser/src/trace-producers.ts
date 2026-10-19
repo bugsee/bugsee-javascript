@@ -280,10 +280,11 @@ export class ScreenSizeProducer extends TraceProducerBase {
 }
 
 /**
- * `main_thread_lag_ms`: TIMER DRIFT — how late the 1 s sampling timer fired on the page's main thread (a long
- * task or block delays it by its length), emitted every tick, ONLY while the page is visible (a hidden tab's
- * throttled timers would paint a hang that did not happen). A measured ~0 is a true value and is emitted.
- * Includes timer throttling the browser applies to a page that still says `visible` (occluded window).
+ * `main_thread_lag_ms`: TIMER DRIFT — how late the 1 s sampling timer fired on the page's main thread, emitted
+ * every tick, ONLY while the page is visible (a hidden tab's throttled timers would paint a hang that did not
+ * happen). A measured ~0 is a true value and is emitted. A block of B >= 1 s reads between B - 1000 and B; a block
+ * shorter than 1 s that crosses no due tick reads 0 (see the tracker header for the numbers and the follow-ups).
+ * Throttling of a page that still says `visible` (occluded window) may read as lag (unverified).
  * Polled, so each value is emitted and never held or refreshed.
  */
 export class MainThreadLagProducer extends TraceProducerBase {
@@ -452,6 +453,8 @@ export function createBrowserSystemTraceProducers(
     new BatteryTracker(env.getBattery ? { getBattery: env.getBattery } : {}, onError),
   );
   if (env.sensors === false) return [battery];
+  // Read ONCE: a hostile `performance.now` getter must report one error, not one per consumer.
+  const clock = safePerformanceNow(env, onError);
   return [
     battery,
     new MemoryProducer(
@@ -502,7 +505,7 @@ export function createBrowserSystemTraceProducers(
                 lifecycle: env.lifecycle,
                 ...(env.document !== undefined ? { document: env.document } : {}),
                 // Only a real clock function is wired; anything else omits the trace quietly (no error).
-                ...(typeof safePerformanceNow(env, onError) === 'function'
+                ...(typeof clock === 'function'
                   ? { now: () => (env.performance as { now(): number }).now() }
                   : {}),
                 ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
@@ -521,7 +524,7 @@ export function createBrowserSystemTraceProducers(
                 ...(env.cancelAnimationFrame !== undefined
                   ? { cancelAnimationFrame: env.cancelAnimationFrame }
                   : {}),
-                ...(safePerformanceNow(env, onError) !== undefined
+                ...(clock !== undefined
                   ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
                     // rather than answering a made-up 0.
                     { now: () => (env.performance as { now(): number }).now() }

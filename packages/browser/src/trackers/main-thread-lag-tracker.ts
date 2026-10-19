@@ -1,20 +1,27 @@
 import { InterceptorBase, type Scheduler } from '@bugsee/core';
 import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 
-// Browser main-thread responsiveness TRACKER (`main_thread_lag_ms`): TIMER DRIFT, the classic event-loop-lag
-// technique (the same one Node's monitor uses). The sampling timer runs on the page's main thread, so on every
-// tick `lag = max(0, now - (previousTickTime + intervalMs))` is how late it fired: a long task, a layout storm
-// or a synchronous block delays the next tick by exactly its length. The first tick compares against the run's
-// start time + interval. A measured ~0 is a TRUE measurement and is emitted every tick.
+// Browser main-thread responsiveness TRACKER (`main_thread_lag_ms`): TIMER DRIFT. The sampling timer runs on the
+// page's main thread, so on every tick `lag = max(0, now - (previousTickTime + intervalMs))` is how late it fired.
+// The first tick compares against the run's start time + interval. A measured ~0 is a TRUE measurement and is
+// emitted every tick.
+//
+// What a reading means (measured in Chromium): a tick fires late by (block END - the first due time the block
+// covered). A block B >= 1 s therefore reads between B - 1000 and B (a 1800 ms block read 907..1797, a 2500 ms
+// block 1807). A block SHORTER than 1 s that does not cross a due tick reads exactly 0 — the chance is about
+// 1 - B/1000, so ~30% for a 700 ms block and ~90% for a 100 ms one. One block is reported once: the tick after
+// it is measured from the late tick and clamps to 0. This is NOT Node's event-loop monitor, which samples every
+// ~10 ms; sampling every 1000 ms is why short blocks can go unseen.
 //
 // Why not a MessageChannel ping: a ping only sees a block that begins while it is in flight, so most real
 // freezes read ~0.1 ms (measured in Chromium), and a tick that runs on the same thread never sees a ping
-// "still in flight". Timer drift sees every block that spans a tick.
+// "still in flight".
 //
-// Honest limit: it measures how late the sampling timer fires. That includes real jank, and ALSO timer
-// throttling the browser applies while the page still says `visible` (an occluded or minimised window, or a
-// background tab that never fired `visibilitychange`); such a stretch reads as lag even though nothing in the
-// page was slow.
+// Honest limit: it reports long freezes reliably and short jank only by luck. If short jank matters, the
+// follow-ups are a finer internal timer reporting the MAX drift per 1 s window, or
+// `PerformanceObserver('longtask')` where supported. It may also read timer throttling that a browser applies
+// to a page that still says `visible` (an occluded or minimised window, a background tab that never fired
+// `visibilitychange`) as lag; that is UNVERIFIED (it could not be reproduced headless).
 //
 // Measured ONLY while the page is visible (the same rule as `fps`). A hidden tab throttles timers to ~1 s then
 // ~1 min, which would paint a hang that never happened, so the timer is torn down on hidden and every visible
