@@ -7,13 +7,18 @@
 // "which instance belongs to which key" and the test/teardown `reset`.
 
 export interface TrackerRegistry<T extends object> {
-  /** The tracker for `key`, created by `create(key)` on first use. */
+  /**
+   * The tracker for `key`, created by `create(key)` on first use. If `create` itself re-enters `for` with the same key,
+   * the FIRST-registered instance is the singleton: the other is discarded and its `reset()` is NOT called, so a
+   * factory must not acquire resources it cannot lose.
+   */
   for(key: object, create: (key: object) => T): T;
   /** The existing tracker for `key`, without creating one. */
   peek(key: object): T | undefined;
   /**
-   * Drop `key`'s tracker so the next `for()` builds a fresh one. Calls the tracker's own `reset()` first when it has
-   * one (a throwing `reset()` never blocks the drop). A no-op for an unknown key.
+   * Detaches `key`'s tracker, THEN calls its own `reset()` if it has one, so the next `for()` builds a fresh one.
+   * During `reset()`, `peek(key)` is `undefined`, and anything `reset()` re-registers for the key is discarded
+   * (again without its `reset()` being called). A throwing `reset()` never blocks the drop. A no-op for an unknown key.
    */
   reset(key: object): void;
 }

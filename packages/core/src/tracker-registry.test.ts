@@ -39,7 +39,7 @@ describe('createTrackerRegistry (one tracker per window object — a singleton s
     expect(registry.peek(win)).toBe(t);
   });
 
-  it('reset(key) drops that key only, calling the tracker reset() first, and the next use creates a fresh one', () => {
+  it('reset(key) drops that key only, detaching the tracker and then calling its reset(), and the next use creates a fresh one', () => {
     const registry = createTrackerRegistry<Thing>();
     const w1 = {};
     const w2 = {};
