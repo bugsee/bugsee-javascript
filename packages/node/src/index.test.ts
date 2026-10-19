@@ -32,6 +32,8 @@ const EXPECTED_EXPORTS = [
   'LifecycleEvents',
   'addReportAttachment',
   'BugseeStatus',
+  'NODE_TRACE_OPTION_DEFINITIONS',
+  'NodeTraceOption',
   'PROFILING_OPTION_DEFINITIONS',
   'ProfilingOption',
   'RequestContextStoreToken',

@@ -99,7 +99,7 @@ describe('AppStateProducer', () => {
     const out: Emit[] = [];
     const p = new AppStateProducer(page.lifecycle, page.doc);
     p.start(sinkOf(out));
-    expect(page.doc.count()).toBe(1);
+    expect(page.doc.count()).toBe(3); // visibilitychange + freeze + resume (the shared lifecycle's document listeners)
     p.stop();
     expect(page.doc.count()).toBe(0);
     page.setVisible(false);
@@ -137,7 +137,7 @@ describe('FpsProducer', () => {
     cbs[0]?.();
     timer?.();
     expect(out).toEqual([{ name: 'fps', value: 1, hold: false }]);
-    expect(page.doc.count()).toBe(1); // subscribed to visibility
+    expect(page.doc.count()).toBe(3); // subscribed: visibilitychange + freeze + resume
     p.stop();
     expect(page.doc.count()).toBe(0); // the tracker was released with the last subscriber
     now = 2000;
