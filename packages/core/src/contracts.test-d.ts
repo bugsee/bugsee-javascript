@@ -3,6 +3,7 @@
 // type-checked (excess-property + missing-property checks).
 
 import { BugseeOption, type FileType, type NetworkEvent } from '@bugsee/protocol';
+import { InterceptorBase } from '@bugsee/trackers';
 import type {
   CaptureAggregator,
   CaptureDataEntry,
@@ -22,7 +23,6 @@ import type {
   OptionsContainer,
   StoredEntry,
 } from './contracts';
-import { InterceptorBase } from './interceptor-base';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 
 const noop = (): void => {};

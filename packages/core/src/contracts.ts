@@ -1,7 +1,9 @@
 import type { BugseeOptionTypes, FileType } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
-import type { EventSubscribable } from './emitter';
 import type { ReportingRequest } from './reporting';
+
+// The Interceptor contract now lives in @bugsee/trackers (the tracker layer is built on it); core re-exports the identical type.
+export type { Interceptor } from '@bugsee/trackers';
 
 // The Android-derived extension contracts. Sources (Interceptor / adapters via
 // OperationDispatcher) emit to hubs; consumers (CaptureProvider / DetectionProvider) and feature
@@ -34,24 +36,6 @@ export interface OperationDispatcher {
   registerObserver(observer: OperationObserver): () => void;
   /** Feed in an operation (called by middleware / injected code). */
   onOperation(operation: Operation): void;
-}
-
-/**
- * A source that owns a runtime hook and emits captured events to its listeners. It is a
- * listenable emitter: by extending {@link EventSubscribable} it lets other components subscribe to its
- * processing STAGES (`StageMap` maps stage name → payload — e.g. the network interceptor keys by
- * NetworkStage) through the contract alone, without the concrete impl. Observe-only: the contract
- * exposes the listener side (on/off/once/…), not emit — only the interceptor fires its own stages.
- * Client-independent: it emits via its own emitter, not a hub. Activation is explicit (start/stop) OR
- * driven by subscriber presence; {@link InterceptorBase} provides the reusable implementation.
- */
-export interface Interceptor<StageMap = Record<never, never>> extends EventSubscribable<StageMap> {
-  /** Component id. */
-  name: string;
-  /** Explicitly activate (install the runtime hook); subscriber presence also activates. Idempotent. */
-  start(): void;
-  /** Explicitly deactivate; subscriber presence may keep it active. */
-  stop(): void;
 }
 
 /**

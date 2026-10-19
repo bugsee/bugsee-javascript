@@ -450,6 +450,9 @@ importers:
       '@bugsee/service':
         specifier: workspace:*
         version: link:../service
+      '@bugsee/trackers':
+        specifier: workspace:*
+        version: link:../trackers
       '@bugsee/types':
         specifier: workspace:*
         version: link:../types
@@ -1244,6 +1247,8 @@ importers:
       vitest:
         specifier: ^4.0.0
         version: 4.1.7(@edge-runtime/vm@5.0.0)(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/coverage-v8@4.1.7)(jsdom@25.0.1)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.0))
+
+  packages/trackers: {}
 
   packages/types: {}
 

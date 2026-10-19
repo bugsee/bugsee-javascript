@@ -31,7 +31,8 @@
     "@bugsee/types": "workspace:*",
     "@bugsee/util": "workspace:*",
     "@bugsee/protocol": "workspace:*",
-    "@bugsee/service": "workspace:*"
+    "@bugsee/service": "workspace:*",
+    "@bugsee/trackers": "workspace:*"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
