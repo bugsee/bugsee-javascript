@@ -4,11 +4,18 @@
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
 import { dirname, resolve } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
-import { type FixedIdentity, fixedIdentityFromDefines, UNBAKEABLE_IDENTITY } from './app-identity';
+import {
+  APP_BUILD_DEFINE,
+  APP_VERSION_DEFINE,
+  type FixedIdentity,
+  fixedIdentityFromDefines,
+  UNBAKEABLE_IDENTITY,
+} from './app-identity';
 import { bakeIdentity } from './bake-identity';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
+  notify,
   type ResolvedIdentity,
   resolveIdentity,
   resolvePluginOptions,
@@ -125,6 +132,42 @@ function injectDefines(
   }
 }
 
+/** Each identity constant with the option / variable that answers it explicitly. */
+const IDENTITY_FIELDS = [
+  { field: 'version', key: APP_VERSION_DEFINE, option: 'appVersion', env: 'BUGSEE_APP_VERSION' },
+  { field: 'build', key: APP_BUILD_DEFINE, option: 'appBuild', env: 'BUGSEE_APP_BUILD' },
+] as const;
+
+/**
+ * The notices for every constant the plugin cannot read (`null` in `fixed`) and no explicit value answered
+ * (its key is then absent from `identityDefines`). The upload goes up WITHOUT that value rather than with a
+ * detected one the app never reports — debug IDs still match — and the user is told how to label it. A key
+ * in the user's own defines is their unreadable expression; any other was unreadable because the bundler
+ * has no DefinePlugin to bake with (webpack 4), where an explicit value is not baked either.
+ */
+function unreadableIdentityNotices(
+  fixed: FixedIdentity,
+  identityDefines: Record<string, string>,
+  userDefines: Record<string, unknown>,
+): string[] {
+  const notices: string[] = [];
+  for (const { field, key, option, env } of IDENTITY_FIELDS) {
+    if (fixed[field] !== null || key in identityDefines) {
+      continue;
+    }
+    notices.push(
+      key in userDefines
+        ? `your own define of ${key} is not a JSON string literal the plugin can read, so the source-map ` +
+            `upload carries no ${field} rather than a detected one your app does not report. Set \`${option}\` ` +
+            `on the plugin (or ${env}) to the value it evaluates to.`
+        : `this bundler has no DefinePlugin (webpack 4), so ${key} cannot be baked into the bundle and the ` +
+            `source-map upload carries no ${field}. Define it yourself with a DefinePlugin JSON string literal, ` +
+            `or set \`${option}\` on the plugin (or ${env}) and pass the same value to launch().`,
+    );
+  }
+  return notices;
+}
+
 /** A compilation's asset table as the core's `AssetStore`. */
 function webpackAssetStore(
   compilation: WebpackCompilationLike,
@@ -160,9 +203,19 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // such hook (Rollup) resolves lazily from the output directory upward, as `package_id` does, once per
   // directory: the chunk it bakes and the upload for that directory use the same answer. A constant the
   // user's own config already defines is `fixed` (see FixedIdentity), so the upload matches what the app reads.
+  // A constant it cannot read is reported (once per build configuration) when there is an upload to label.
   let bundlerIdentity: ResolvedIdentity | undefined;
-  const identityFromRoot = (root: string | undefined, fixed?: FixedIdentity): ResolvedIdentity => {
+  const identityFromRoot = (
+    root: string | undefined,
+    fixed: FixedIdentity,
+    userDefines: Record<string, unknown>,
+  ): ResolvedIdentity => {
     bundlerIdentity = resolveIdentity(options, process.env, root, {}, fixed);
+    if (resolved.enabled) {
+      unreadableIdentityNotices(fixed, bundlerIdentity.identityDefines, userDefines).forEach(
+        notify(resolved),
+      );
+    }
     return bundlerIdentity;
   };
   const identityByOutDir = new Map<string, ResolvedIdentity>();
@@ -226,6 +279,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         const { identityDefines } = identityFromRoot(
           config.root !== undefined && config.root !== '' ? resolve(config.root) : undefined,
           fixedIdentityFromDefines(config.define),
+          config.define ?? {},
         );
         const define = Object.fromEntries(
           Object.entries(identityDefines).filter(
@@ -271,6 +325,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         const { identityDefines } = identityFromRoot(
           initialOptions.absWorkingDir,
           fixedIdentityFromDefines(initialOptions.define),
+          initialOptions.define ?? {},
         );
         const define = { ...identityDefines, ...initialOptions.define };
         if (Object.keys(define).length > 0) {
@@ -284,6 +339,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       const { identityDefines } = identityFromRoot(
         compiler.context,
         webpackFixedIdentity(DefinePlugin, taken),
+        taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
     },
@@ -293,6 +349,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       const { identityDefines } = identityFromRoot(
         compiler.context,
         webpackFixedIdentity(DefinePlugin, taken),
+        taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
       // Whether THIS compilation's bundles were stamped in the build. Reset per compilation, so in

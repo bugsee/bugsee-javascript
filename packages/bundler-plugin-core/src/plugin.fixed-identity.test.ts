@@ -161,6 +161,130 @@ describe('a user define of the identity constants is the identity for the upload
   });
 });
 
+describe('an identity constant the plugin cannot read is REPORTED, not silently uploaded as 0.0.0', () => {
+  const expression = { [VERSION]: 'process.env.APP_VERSION', [BUILD]: 'process.env.APP_BUILD' };
+
+  it('vite: an expression define with no explicit value raises one notice per constant', () => {
+    const onNotice = vi.fn();
+    viteConfig(make({ onNotice }))({ root: web, define: expression });
+    expect(onNotice).toHaveBeenCalledTimes(2);
+    const [version, build] = onNotice.mock.calls.map(([m]) => m as string);
+    expect(version).toMatch(/^\[bugsee\] /);
+    expect(version).toContain(`your own define of ${VERSION}`);
+    expect(version).toContain('`appVersion`');
+    expect(version).toContain('(or BUGSEE_APP_VERSION)');
+    expect(version).not.toContain('appBuild');
+    expect(build).toContain(`your own define of ${BUILD}`);
+    expect(build).toContain('`appBuild`');
+    expect(build).toContain('(or BUGSEE_APP_BUILD)');
+  });
+
+  it('esbuild: the same notice for an expression define', () => {
+    const onNotice = vi.fn();
+    const options = { absWorkingDir: web, define: { [VERSION]: 'globalThis.v' } };
+    (make({ onNotice }).esbuild as unknown as { config: (o: unknown) => void }).config(options);
+    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice.mock.calls[0]?.[0]).toContain(`your own define of ${VERSION}`);
+  });
+
+  it.each([
+    'webpack',
+    'rspack',
+  ] as const)('%s 5: an expression in the user DefinePlugin is reported as their define, not as a missing DefinePlugin', (bundler) => {
+    const onNotice = vi.fn();
+    const DefinePlugin = class {
+      apply() {}
+    };
+    const compiler = {
+      context: web,
+      options: { plugins: [{ definitions: { [VERSION]: 'process.env.V' } }], output: {} },
+      hooks: { afterEmit: { tapPromise: () => undefined } },
+      [bundler]: { DefinePlugin },
+    };
+    (make({ onNotice, appBuild: 'b1' })[bundler] as (c: unknown) => void)(compiler);
+    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice.mock.calls[0]?.[0]).toContain(`your own define of ${VERSION}`);
+  });
+
+  it('an explicit value (option or env) answers the field, so nothing is reported for it', () => {
+    const onNotice = vi.fn();
+    viteConfig(make({ onNotice, appVersion: '3.0.0' }))({ root: web, define: expression });
+    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice.mock.calls[0]?.[0]).toContain(BUILD);
+    vi.stubEnv('BUGSEE_APP_BUILD', '77');
+    const quiet = vi.fn();
+    viteConfig(make({ onNotice: quiet, appVersion: '3.0.0' }))({ root: web, define: expression });
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
+  it('a string-literal define, or no define at all, is readable: no notice', () => {
+    const onNotice = vi.fn();
+    viteConfig(make({ onNotice }))({ root: web, define: { [VERSION]: '"9.9.9"' } });
+    viteConfig(make({ onNotice }))({ root: web });
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('nothing is uploaded without a token (or when disabled), so nothing is reported', () => {
+    const onNotice = vi.fn();
+    const noToken = bugseeUnpluginFactory(
+      { appToken: '', onNotice },
+      {
+        framework: 'rollup',
+      },
+    ) as UnpluginOptions;
+    viteConfig(noToken)({ root: web, define: expression });
+    viteConfig(make({ onNotice, disabled: true }))({ root: web, define: expression });
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('webpack 4 (no DefinePlugin): a constant it cannot bake is reported with the webpack-4 remedy', () => {
+    const onNotice = vi.fn();
+    const compiler = {
+      context: web,
+      options: { plugins: [], output: { path: join(web, 'dist') } },
+      hooks: { afterEmit: { tapPromise: () => undefined } },
+    };
+    (make({ onNotice }).webpack as (c: unknown) => void)(compiler);
+    expect(onNotice).toHaveBeenCalledTimes(2);
+    const [version] = onNotice.mock.calls.map(([m]) => m as string);
+    expect(version).toContain('no DefinePlugin');
+    expect(version).toContain(VERSION);
+    expect(version).not.toContain('your own define');
+    expect(version).toContain('launch()');
+  });
+
+  it("webpack 4: the user's own DefinePlugin literal answers its constant; only the other is reported", () => {
+    const onNotice = vi.fn();
+    const compiler = {
+      context: web,
+      options: { plugins: [{ definitions: { [VERSION]: '"9.9.9"' } }], output: {} },
+      hooks: { afterEmit: { tapPromise: () => undefined } },
+    };
+    (make({ onNotice }).webpack as (c: unknown) => void)(compiler);
+    expect(onNotice).toHaveBeenCalledTimes(1);
+    expect(onNotice.mock.calls[0]?.[0]).toContain(BUILD);
+  });
+
+  it('a throwing notice sink cannot break the build', () => {
+    const onNotice = vi.fn(() => {
+      throw new Error('host logger down');
+    });
+    expect(() => viteConfig(make({ onNotice }))({ root: web, define: expression })).not.toThrow();
+    expect(onNotice).toHaveBeenCalledTimes(2);
+  });
+
+  it('defaults to a console warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      viteConfig(make({}))({ root: web, define: { [VERSION]: 'x' } });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(`[bugsee] your own define of ${VERSION}`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('a webpack/rspack with no DefinePlugin cannot bake: label with explicit values only', () => {
   const noDefine = (taps: Array<() => Promise<void>>) => ({
     context: web,

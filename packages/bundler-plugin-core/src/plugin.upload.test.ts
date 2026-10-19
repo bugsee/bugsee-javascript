@@ -190,6 +190,11 @@ describe('the output hooks actually drive the upload', () => {
         webpack: {
           Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: DEV_TOOLING },
           sources: { RawSource },
+          // Every real webpack 5 has one; without it the plugin treats the build as webpack 4 and warns
+          // that the app identity cannot be baked.
+          DefinePlugin: class {
+            apply() {}
+          },
         },
         hooks: {
           ...base.compiler.hooks,

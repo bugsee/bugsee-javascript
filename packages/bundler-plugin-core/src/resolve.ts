@@ -400,7 +400,9 @@ async function collectVcs(
  * fail their pipeline on a non-empty list. Feeding a plain informational string about a dirty working
  * tree into it would break all four.
  */
-function notify(resolved: ResolvedPluginOptions): (message: string) => void {
+export function notify(
+  resolved: Pick<ResolvedPluginOptions, 'onNotice'>,
+): (message: string) => void {
   return (message) => {
     const text = `[bugsee] ${message}`;
     try {
