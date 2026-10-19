@@ -86,7 +86,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-import { boundMatchMedia } from './host-global';
+import { boundMatchMedia, hostRead } from './host-global';
 import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
@@ -669,7 +669,11 @@ async function buildLaunch(
     { version: options.appVersion, build: options.appBuild },
     [
       bundledAppIdentity,
-      metaAppIdentity(options.document ?? (win as { document?: Document }).document),
+      // guarded: reading a host window's `document` can throw (blocked frame) and must never fail launch
+      metaAppIdentity(
+        options.document ??
+          hostRead(() => (win as { document?: Document }).document, options.onError),
+      ),
     ],
     warnToConsole,
     BROWSER_APP_VERSION_HINT,
