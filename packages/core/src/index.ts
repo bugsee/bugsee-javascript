@@ -302,6 +302,7 @@ export {
   type StreamingCaptureEntry,
   type StreamingCaptureStoreOptions,
 } from './streaming-capture-store';
+export { createTrackerRegistry, type TrackerRegistry } from './tracker-registry';
 export type {
   BugseeApi,
   Bundle,
