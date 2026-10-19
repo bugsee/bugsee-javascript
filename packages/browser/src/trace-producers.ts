@@ -13,6 +13,7 @@ import {
   ConnectionTracker,
 } from './trackers/connection-tracker';
 import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
+import { type MainThreadLagEnv, MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
 import {
   type OrientationEnv,
@@ -20,6 +21,11 @@ import {
   OrientationTracker,
 } from './trackers/orientation-tracker';
 import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
+import {
+  type ScreenSizeEnv,
+  type ScreenSizeState,
+  ScreenSizeTracker,
+} from './trackers/screen-size-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -238,6 +244,63 @@ export class FpsProducer extends TraceProducerBase {
 }
 
 /**
+ * `screen_size` (JS-specific; deliberately NOT Android's `displays`, a display LIST): `{ width, height, dpr }` in
+ * CSS px, re-read on `resize` / `orientationchange`. A step curve, so it is held and de-duplicated (a resize that
+ * moved nothing is dropped); the initial value is emitted at start. Omitted entirely when the screen or the pixel
+ * ratio cannot be read as finite positive numbers.
+ */
+export class ScreenSizeProducer extends TraceProducerBase {
+  readonly name = 'screen-size';
+  readonly #tracker: ScreenSizeTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: ScreenSizeTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('state', (s) => this.#publish(s)); // subscribing attaches the listeners
+    const cur = this.#tracker.current();
+    if (cur !== undefined) this.#publish(cur);
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+
+  #publish(s: ScreenSizeState): void {
+    this.emitIfChanged('screen_size', { width: s.width, height: s.height, dpr: s.dpr });
+  }
+}
+
+/**
+ * `main_thread_lag_ms`: the latest `MessageChannel` round-trip delta, once per sampling tick, ONLY while the page
+ * is visible (a hidden tab's throttled timers would paint a hang that did not happen). Polled, so each value is
+ * emitted and never held or refreshed; nothing measured yet means nothing emitted.
+ */
+export class MainThreadLagProducer extends TraceProducerBase {
+  readonly name = 'main-thread-lag';
+  readonly #tracker: MainThreadLagTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: MainThreadLagTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('lag', (ms) => this.emit('main_thread_lag_ms', ms));
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+}
+
+/**
  * Injected browser surfaces. Each is optional and an absent one is simply not sampled; pass the LIVE
  * objects (`navigator`, `performance`, `screen`, `window`) — never a spread copy, since a real
  * `navigator` keeps `onLine` / `connection` / `deviceMemory` as accessors on its prototype.
@@ -248,17 +311,19 @@ export interface BrowserTraceEnv extends BatteryEnv {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
   };
-  screen?: OrientationEnv['screen'];
-  /** Source of `online` / `offline` / `orientationchange`. */
-  window?: ConnectionEnv['window'];
+  screen?: OrientationEnv['screen'] & ScreenSizeEnv['screen'];
+  /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
+  window?: ConnectionEnv['window'] & ScreenSizeEnv['window'];
   /** The document the SDK is bound to: visibility for `app_state` and `fps`. */
   document?: FpsEnv['document'];
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
   requestAnimationFrame?: FpsEnv['requestAnimationFrame'];
   cancelAnimationFrame?: FpsEnv['cancelAnimationFrame'];
+  /** `window.MessageChannel` (the injected window's constructor): drives `main_thread_lag_ms`. */
+  MessageChannel?: MainThreadLagEnv['MessageChannel'];
   /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
-   * connection, orientation, `app_state` and `fps` traces (as on Node), so the sensor producers must not also emit them.
+   * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
    */
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
@@ -273,6 +338,7 @@ interface WindowSurfaces {
   screen?: BrowserTraceEnv['screen'];
   requestAnimationFrame?: (callback: (timestamp: number) => void) => number;
   cancelAnimationFrame?: (handle: number) => void;
+  MessageChannel?: BrowserTraceEnv['MessageChannel'];
 }
 
 /**
@@ -308,6 +374,8 @@ export function browserTraceEnvFrom(
   const getBattery = nav === undefined ? undefined : read(() => nav.getBattery);
   const raf = read(() => win.requestAnimationFrame);
   const caf = read(() => win.cancelAnimationFrame);
+  // A constructor needs no `this`, so it is handed over as read (it still belongs to THIS window).
+  const messageChannel = read(() => win.MessageChannel);
   return {
     ...(nav !== undefined ? { navigator: nav } : {}),
     ...(performance !== undefined ? { performance } : {}),
@@ -316,6 +384,7 @@ export function browserTraceEnvFrom(
     ...(document !== undefined ? { document } : {}),
     ...(typeof raf === 'function' ? { requestAnimationFrame: (cb) => raf.call(win, cb) } : {}),
     ...(typeof caf === 'function' ? { cancelAnimationFrame: (h) => caf.call(win, h) } : {}),
+    ...(typeof messageChannel === 'function' ? { MessageChannel: messageChannel } : {}),
     ...(nav !== undefined && typeof getBattery === 'function'
       ? { getBattery: () => getBattery.call(nav) }
       : {}),
@@ -417,6 +486,30 @@ export function createBrowserSystemTraceProducers(
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle, env.document),
+          new ScreenSizeProducer(
+            new ScreenSizeTracker(
+              {
+                lifecycle: env.lifecycle,
+                ...(env.window !== undefined ? { window: env.window } : {}),
+                ...(env.screen !== undefined ? { screen: env.screen } : {}),
+              },
+              onError,
+            ),
+          ),
+          new MainThreadLagProducer(
+            new MainThreadLagTracker(
+              {
+                lifecycle: env.lifecycle,
+                ...(env.document !== undefined ? { document: env.document } : {}),
+                ...(env.MessageChannel !== undefined ? { MessageChannel: env.MessageChannel } : {}),
+                ...(safePerformanceNow(env, onError) !== undefined
+                  ? { now: () => (env.performance as { now(): number }).now() }
+                  : {}),
+                ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+              },
+              onError,
+            ),
+          ),
           new FpsProducer(
             new FpsTracker(
               {

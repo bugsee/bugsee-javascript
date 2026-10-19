@@ -1439,6 +1439,176 @@ describe('launch', () => {
         expect(armed).toBe(0);
       });
 
+      it('records screen_size {width,height,dpr} from the INJECTED window and follows its resize', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        Object.assign(w.win, { devicePixelRatio: 3 });
+        w.emit('resize', {});
+        expect(await rowsOf(store, 'screen_size')).toEqual([
+          { width: 390, height: 844, dpr: 2 },
+          { width: 390, height: 844, dpr: 3 },
+        ]);
+      });
+
+      it('screen_size is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
+        stubSensors(); // the stubbed screen has no width/height
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+      });
+
+      it('records main_thread_lag_ms from the INJECTED window MessageChannel while visible, re-arming and clearing on hide', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let clock = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: { now: () => clock },
+          configurable: true,
+        });
+        const chans: Array<{
+          posted: number;
+          closed: number;
+          port1: { onmessage: (() => void) | null };
+        }> = [];
+        class Ch {
+          port1: { onmessage: (() => void) | null; close: () => void };
+          port2: { postMessage: () => void; close: () => void };
+          constructor() {
+            const c = {
+              posted: 0,
+              closed: 0,
+              port1: {
+                onmessage: null as (() => void) | null,
+                close: () => {
+                  c.closed += 1;
+                },
+              },
+            };
+            this.port1 = c.port1;
+            this.port2 = {
+              postMessage: () => {
+                c.posted += 1;
+              },
+              close: () => {
+                c.closed += 1;
+              },
+            };
+            chans.push(c);
+          }
+        }
+        Object.assign(w.win, { MessageChannel: Ch });
+        const ticks: Array<() => void> = [];
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                if (ms === 1000) ticks.push(cb);
+                return 'h';
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        expect(chans).toHaveLength(1);
+        expect(chans[0]?.posted).toBe(1);
+        clock = 40;
+        chans[0]?.port1.onmessage?.();
+        expect(chans[0]?.posted).toBe(2); // re-armed on receipt
+        for (const t of ticks) t();
+        d.setVisible(false);
+        expect(chans[0]?.closed).toBe(2); // hidden: aborted
+        for (const t of ticks) t();
+        expect(await rowsOf(store, 'main_thread_lag_ms')).toEqual([40]);
+      });
+
+      it('a hidden injected document never creates a MessageChannel', async () => {
+        stubSensors();
+        const d = mkDoc(false);
+        const w = fakeWindow();
+        let created = 0;
+        Object.assign(w.win, {
+          MessageChannel: class {
+            constructor() {
+              created += 1;
+            }
+          },
+        });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: memStore(),
+          }),
+        );
+        expect(created).toBe(0);
+      });
+
+      it('a hostile MessageChannel / devicePixelRatio getter never fails launch and is reported', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        for (const key of ['MessageChannel', 'devicePixelRatio']) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        const store = memStore();
+        const client = await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError }),
+        );
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toEqual(
+          expect.arrayContaining(['MessageChannel blocked', 'devicePixelRatio blocked']),
+        );
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        await client.stop();
+      });
+
+      it('a systemMetricsSampler override builds neither screen_size nor the lag ping', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let created = 0;
+        Object.assign(w.win, {
+          devicePixelRatio: 2,
+          MessageChannel: class {
+            constructor() {
+              created += 1;
+            }
+          },
+        });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
+        );
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(created).toBe(0);
+      });
+
       it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {
         stubSensors();
         const d = mkDoc(true);

@@ -1015,6 +1015,105 @@ describe('launch (webview)', () => {
       }
     });
 
+    describe('screen_size and main_thread_lag_ms (from the injected window)', () => {
+      const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
+        entriesOfType(fake.msgs(), 'traces.system')
+          .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('streams screen_size {width,height,dpr} and a lag delta from the INJECTED window; none from a hidden page', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          let clock = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: { now: () => clock },
+            configurable: true,
+          });
+          let onmessage: (() => void) | null = null;
+          let created = 0;
+          class Ch {
+            port1 = {
+              set onmessage(f: (() => void) | null) {
+                onmessage = f;
+              },
+              close: () => {},
+            };
+            port2 = { postMessage: () => {}, close: () => {} };
+            constructor() {
+              created += 1;
+            }
+          }
+          Object.assign(w.win, { devicePixelRatio: 3, MessageChannel: Ch });
+          const dom = fakeDomDocument();
+          Object.assign(dom.document, { visibilityState: 'visible' });
+          const ticks: Array<() => void> = [];
+          track(
+            'tok',
+            baseOptions({
+              global: fake.global,
+              window: w.win,
+              document: dom.document as unknown as Document,
+              scheduler: {
+                setInterval: (cb, ms) => {
+                  if (ms === 1000) ticks.push(cb as () => void);
+                  return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+                },
+                clearInterval: () => {},
+              },
+            }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
+          expect(created).toBe(1);
+          clock = 25;
+          (onmessage as (() => void) | null)?.();
+          for (const t of ticks) t();
+          expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
+
+          // a hidden page never creates a channel
+          const hidden = fakeDomDocument();
+          Object.assign(hidden.document, { visibilityState: 'hidden' });
+          track(
+            'tok2',
+            baseOptions({
+              global: fakeGlobal().global,
+              window: w.win,
+              document: hidden.document as unknown as Document,
+            }),
+          );
+          expect(created).toBe(1);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile MessageChannel / devicePixelRatio getter never fails launch and is reported', () => {
+        stubSensors();
+        try {
+          const w = fakeWin();
+          for (const key of ['MessageChannel', 'devicePixelRatio']) {
+            Object.defineProperty(w.win, key, {
+              get(): never {
+                throw new Error(`${key} blocked`);
+              },
+              configurable: true,
+            });
+          }
+          const onError = vi.fn();
+          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+            'MessageChannel blocked',
+          );
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
     it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {
       stubSensors();
       try {
