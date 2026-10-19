@@ -3,6 +3,12 @@
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
 import {
+  type AppIdentityDeps,
+  appIdentityDefines,
+  type FixedIdentity,
+  findAppIdentity,
+} from './app-identity';
+import {
   uploadSourcemaps as defaultUploadSourcemaps,
   type UploadSourcemapsResult,
 } from './orchestrate';
@@ -19,9 +25,22 @@ import { resolveVcsMetadata as defaultResolveVcsMetadata, type VcsMetadata } fro
 export interface BugseePluginOptions {
   /** Bugsee app token. Falls back to `BUGSEE_APP_TOKEN`. Required to upload; absent ⇒ the plugin no-ops. */
   appToken?: string;
-  /** App version. Falls back to `BUGSEE_APP_VERSION`, else `0.0.0`. */
+  /**
+   * App version. Falls back to `BUGSEE_APP_VERSION`, then the `version` of the nearest package.json at or
+   * above the bundler's project directory (a nearest package.json without a version means none), else
+   * `0.0.0`. A blank or whitespace-only value counts as unset. A real value is also baked into the bundle
+   * for the app's runtime SDK to read (not on webpack 4, which cannot bake: only an explicit value is used
+   * there). A string `define` of `__BUGSEE_APP_VERSION__` in your own config wins for the upload too; an
+   * expression you define makes the upload use only this explicit option / `BUGSEE_APP_VERSION`.
+   */
   appVersion?: string;
-  /** Build number. Falls back to `BUGSEE_APP_BUILD`, else `0`. */
+  /**
+   * Build number. Falls back to `BUGSEE_APP_BUILD`, then a CI commit id (`GITHUB_SHA`,
+   * `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`,
+   * `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`), else `0`. A blank or
+   * whitespace-only value counts as unset. A real value is also baked into the bundle for the app's runtime
+   * SDK to read.
+   */
   appBuild?: string;
   /** API endpoint override. Falls back to `BUGSEE_ENDPOINT`. */
   endpoint?: string;
@@ -64,7 +83,11 @@ export interface BugseePluginOptions {
   commit?: string;
   /** Report a commit even when the working tree has uncommitted changes. Default `false`. */
   allowDirtyCommit?: boolean;
-  /** Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. */
+  /**
+   * Repository root the VCS resolver inspects. Defaults to the build's cwd, resolved lazily. It is for VCS
+   * only: the app version is read from the BUNDLER's project directory (Vite `root`, webpack `context`,
+   * esbuild `absWorkingDir`), so a monorepo app reports its own package.json. Pass `appVersion` to override.
+   */
   projectRoot?: string;
   /**
    * Where user-actionable NOTICES go — a malformed `commit`, a SHA dropped because the tree was dirty,
@@ -146,8 +169,46 @@ export interface ResolvedPluginOptions {
   registerBuild: RegisterBuildSetting;
   /** Explicit `package_id`; `undefined` means "the nearest package.json". */
   packageId: string | undefined;
+  /**
+   * `define` entries that bake the app's version/build into its bundle (`__BUGSEE_APP_VERSION__`,
+   * `__BUGSEE_APP_BUILD__`, JSON-encoded). Only values that were actually found are present — never the
+   * `0.0.0` / `0` placeholders — and the map is empty when the plugin is `disabled`.
+   *
+   * Deliberately independent of the token: the constants are harmless without one, and a build that
+   * uploads nothing still ships an app that should know its own version. `disabled: true` is the only
+   * switch that turns this off.
+   */
+  identityDefines: Record<string, string>;
   /** NODE_ENV as the plugin was configured under — the release signal for a bundler with no mode. */
   nodeEnv: string | undefined;
+}
+
+/** The app identity the upload / registration are labelled with, and the `define`s baked into the bundle. */
+export interface ResolvedIdentity {
+  appVersion: string;
+  appBuild: string;
+  identityDefines: Record<string, string>;
+}
+
+/**
+ * Settle the app identity from the options, the environment and the nearest package.json at or above
+ * `root`. `root` is the BUNDLER's project directory (Vite's `config.root`, webpack's `compiler.context`,
+ * esbuild's `absWorkingDir`), never the VCS root; without one, the working directory is used. The upload and
+ * the baked `define`s come from this one resolution, so they cannot disagree.
+ */
+export function resolveIdentity(
+  options: BugseePluginOptions,
+  env: EnvRecord,
+  root: string | undefined,
+  deps: AppIdentityDeps = {},
+  fixed: FixedIdentity = {},
+): ResolvedIdentity {
+  const found = findAppIdentity(options, env, deps, root, fixed);
+  return {
+    appVersion: found.version ?? '0.0.0',
+    appBuild: found.build ?? '0',
+    identityDefines: options.disabled ? {} : appIdentityDefines(found),
+  };
 }
 
 /** Merge plugin options with env vars, apply defaults, and decide whether the plugin is active. */
@@ -157,13 +218,15 @@ const runsByDir = new Map<string, Promise<PluginRunResult | undefined>>();
 export function resolvePluginOptions(
   options: BugseePluginOptions,
   env: EnvRecord,
+  deps: AppIdentityDeps = {},
 ): ResolvedPluginOptions {
   const appToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  // The BASELINE identity, from the working directory; never throws (see `projectRoot` on
+  // ResolvedPluginOptions). The bundler hooks refine it from the bundler's own project directory.
   return {
     enabled: !options.disabled && appToken !== '',
     appToken,
-    appVersion: options.appVersion ?? env.BUGSEE_APP_VERSION ?? '0.0.0',
-    appBuild: options.appBuild ?? env.BUGSEE_APP_BUILD ?? '0',
+    ...resolveIdentity(options, env, undefined, deps),
     endpoint: options.endpoint ?? env.BUGSEE_ENDPOINT,
     deleteMaps: options.deleteMaps ?? true,
     dryRun: options.dryRun ?? false,
@@ -337,7 +400,9 @@ async function collectVcs(
  * fail their pipeline on a non-empty list. Feeding a plain informational string about a dirty working
  * tree into it would break all four.
  */
-function notify(resolved: ResolvedPluginOptions): (message: string) => void {
+export function notify(
+  resolved: Pick<ResolvedPluginOptions, 'onNotice'>,
+): (message: string) => void {
   return (message) => {
     const text = `[bugsee] ${message}`;
     try {

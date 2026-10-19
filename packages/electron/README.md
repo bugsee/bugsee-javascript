@@ -57,6 +57,17 @@ launchRenderer('YOUR_APP_TOKEN');
 
 `video` (main process, opt-in) adds pixel video capture next to the default DOM replay. You supply the capture source (`video: { source }`).
 
+## App version and build
+
+If you pass `app` to `launchMain`, the SDK reports `app.getVersion()` as your app version, so a packaged app shows the version from its `package.json` without any extra setup. The order is:
+
+1. The `appVersion` and `appBuild` launch options. These always win.
+2. Values injected at build time.
+3. Your own `appIdentitySource`, if you pass one (it is asked first), then `app.getVersion()` for anything it left out.
+4. The `BUGSEE_APP_VERSION` and `BUGSEE_APP_BUILD` environment variables, the nearest `package.json`, and the commit variables set by CI systems, as described in the `@bugsee/node` documentation.
+
+Electron does not expose a build number, so set `appBuild` (or `BUGSEE_APP_BUILD`) if you want one; in CI the commit hash is picked up automatically.
+
 ## Links
 
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/electron
