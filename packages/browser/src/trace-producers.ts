@@ -13,7 +13,7 @@ import {
   ConnectionTracker,
 } from './trackers/connection-tracker';
 import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
-import { type MainThreadLagEnv, MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
+import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
 import {
   type OrientationEnv,
@@ -280,10 +280,11 @@ export class ScreenSizeProducer extends TraceProducerBase {
 }
 
 /**
- * `main_thread_lag_ms`: the latest `MessageChannel` round-trip delta, once per sampling tick, ONLY while the page
- * is visible (a hidden tab's throttled timers would paint a hang that did not happen). One ping per tick, never a
- * loop; a ping still pending at a tick reports its age. Polled, so each value is emitted and never held or
- * refreshed; nothing measured yet means nothing emitted.
+ * `main_thread_lag_ms`: TIMER DRIFT — how late the 1 s sampling timer fired on the page's main thread (a long
+ * task or block delays it by its length), emitted every tick, ONLY while the page is visible (a hidden tab's
+ * throttled timers would paint a hang that did not happen). A measured ~0 is a true value and is emitted.
+ * Includes timer throttling the browser applies to a page that still says `visible` (occluded window).
+ * Polled, so each value is emitted and never held or refreshed.
  */
 export class MainThreadLagProducer extends TraceProducerBase {
   readonly name = 'main-thread-lag';
@@ -324,8 +325,6 @@ export interface BrowserTraceEnv extends BatteryEnv {
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
   requestAnimationFrame?: FpsEnv['requestAnimationFrame'];
   cancelAnimationFrame?: FpsEnv['cancelAnimationFrame'];
-  /** `window.MessageChannel` (the injected window's constructor): drives `main_thread_lag_ms`. */
-  MessageChannel?: MainThreadLagEnv['MessageChannel'];
   /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
    * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
@@ -343,7 +342,6 @@ interface WindowSurfaces {
   screen?: BrowserTraceEnv['screen'];
   requestAnimationFrame?: (callback: (timestamp: number) => void) => number;
   cancelAnimationFrame?: (handle: number) => void;
-  MessageChannel?: BrowserTraceEnv['MessageChannel'];
 }
 
 /**
@@ -379,8 +377,6 @@ export function browserTraceEnvFrom(
   const getBattery = nav === undefined ? undefined : read(() => nav.getBattery);
   const raf = read(() => win.requestAnimationFrame);
   const caf = read(() => win.cancelAnimationFrame);
-  // A constructor needs no `this`, so it is handed over as read (it still belongs to THIS window).
-  const messageChannel = read(() => win.MessageChannel);
   return {
     ...(nav !== undefined ? { navigator: nav } : {}),
     ...(performance !== undefined ? { performance } : {}),
@@ -389,7 +385,6 @@ export function browserTraceEnvFrom(
     ...(document !== undefined ? { document } : {}),
     ...(typeof raf === 'function' ? { requestAnimationFrame: (cb) => raf.call(win, cb) } : {}),
     ...(typeof caf === 'function' ? { cancelAnimationFrame: (h) => caf.call(win, h) } : {}),
-    ...(typeof messageChannel === 'function' ? { MessageChannel: messageChannel } : {}),
     ...(nav !== undefined && typeof getBattery === 'function'
       ? { getBattery: () => getBattery.call(nav) }
       : {}),
@@ -506,7 +501,6 @@ export function createBrowserSystemTraceProducers(
               {
                 lifecycle: env.lifecycle,
                 ...(env.document !== undefined ? { document: env.document } : {}),
-                ...(env.MessageChannel !== undefined ? { MessageChannel: env.MessageChannel } : {}),
                 // Only a real clock function is wired; anything else omits the trace quietly (no error).
                 ...(typeof safePerformanceNow(env, onError) === 'function'
                   ? { now: () => (env.performance as { now(): number }).now() }

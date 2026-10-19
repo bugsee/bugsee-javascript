@@ -84,26 +84,15 @@ describe('ScreenSizeProducer', () => {
 });
 
 describe('MainThreadLagProducer', () => {
-  it('emits each tick latest delta as a POLLED value (hold:false), and nothing before one is measured', () => {
+  it('emits each tick drift as a POLLED value (hold:false), including a true 0, and releases on stop', () => {
     const win = mkTarget();
     const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
     const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
     let timer: (() => void) | undefined;
     let now = 0;
-    let onmessage: (() => void) | null = null;
-    class Ch {
-      port1 = {
-        set onmessage(f: (() => void) | null) {
-          onmessage = f;
-        },
-        close: () => {},
-      };
-      port2 = { postMessage: () => {}, close: () => {} };
-    }
     const tracker = new MainThreadLagTracker({
       lifecycle,
       document: doc,
-      MessageChannel: Ch as never,
       now: () => now,
       scheduler: {
         setInterval: (cb) => {
@@ -118,16 +107,19 @@ describe('MainThreadLagProducer', () => {
     expect(doc.count()).toBe(0);
     p.start(sinkOf(out));
     expect(out).toEqual([]); // nothing before the first tick
-    now = 120;
-    (onmessage as (() => void) | null)?.();
     now = 1000;
     timer?.();
-    expect(out).toEqual([{ name: 'main_thread_lag_ms', value: 120, hold: false }]);
+    now = 2000 + 120; // a 120 ms block spanning the second tick
+    timer?.();
+    expect(out).toEqual([
+      { name: 'main_thread_lag_ms', value: 0, hold: false },
+      { name: 'main_thread_lag_ms', value: 120, hold: false },
+    ]);
     expect(doc.count()).toBeGreaterThan(0); // the lifecycle attached its document listeners for us
     p.stop();
     expect(doc.count()).toBe(0);
     timer?.();
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(2);
   });
 });
 
@@ -153,26 +145,32 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
     ]);
   });
 
-  it('wires the env window/screen/document/MessageChannel/clock/scheduler into the trackers, nothing from globals', () => {
+  it('wires the env window/screen/document/clock/scheduler into the trackers, nothing from globals', () => {
+    let t = 777_000; // a distinctive clock value: only the INJECTED window's performance can produce it
     const win = Object.assign(mkTarget(), {
       devicePixelRatio: 2,
       screen: { width: 100, height: 200 },
-      performance: { now: () => 7 },
+      performance: { now: () => t },
     });
-    const posted: number[] = [];
-    class Ch {
-      port1 = { onmessage: null as unknown, close: () => {} };
-      port2 = { postMessage: () => void posted.push(1), close: () => {} };
-    }
-    Object.assign(win, { MessageChannel: Ch });
     const doc = { visibilityState: 'visible' };
     const lifecycle = new PageLifecycleTracker({
       window: win,
       document: Object.assign(mkTarget(), doc),
     });
+    let timer: (() => void) | undefined;
     const errors: unknown[] = [];
     const ps = createBrowserSystemTraceProducers(
-      { ...browserTraceEnvFrom(win, doc), lifecycle },
+      {
+        ...browserTraceEnvFrom(win, doc),
+        lifecycle,
+        scheduler: {
+          setInterval: (cb) => {
+            timer = cb;
+            return 1;
+          },
+          clearInterval: () => {},
+        },
+      },
       (e) => errors.push(e),
     );
     const out: Emit[] = [];
@@ -181,72 +179,70 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
     expect(out).toEqual([
       { name: 'screen_size', value: { width: 100, height: 200, dpr: 2 }, hold: true },
     ]);
-    expect(posted).toHaveLength(1); // the lag ping went through the INJECTED window's channel
+    t += 1000 + 33;
+    timer?.();
+    expect(out[1]).toEqual({ name: 'main_thread_lag_ms', value: 33, hold: false });
     expect(errors).toEqual([]);
   });
 
-  it('a window without a performance clock or MessageChannel starts no ping', () => {
+  it('a window without a performance clock starts no timer and reports nothing (no error)', () => {
     const win = Object.assign(mkTarget(), { screen: { width: 1, height: 1 }, devicePixelRatio: 1 });
     const doc = { visibilityState: 'visible' };
     const lifecycle = new PageLifecycleTracker({
       window: win,
       document: Object.assign(mkTarget(), doc),
     });
-    const env = browserTraceEnvFrom(win, doc);
-    expect(env.MessageChannel).toBeUndefined();
+    let timers = 0;
+    const errors: unknown[] = [];
+    const lag = createBrowserSystemTraceProducers(
+      {
+        ...browserTraceEnvFrom(win, doc),
+        lifecycle,
+        scheduler: {
+          setInterval: () => {
+            timers += 1;
+            return 1;
+          },
+          clearInterval: () => {},
+        },
+      },
+      (e) => errors.push(e),
+    ).find((p) => p.name === 'main-thread-lag');
     const out: Emit[] = [];
-    const lag = createBrowserSystemTraceProducers({ ...env, lifecycle }).find(
-      (p) => p.name === 'main-thread-lag',
-    );
     expect(() => lag?.start(sinkOf(out))).not.toThrow();
     expect(out).toEqual([]);
+    expect(errors).toEqual([]);
+    // the other lifecycle trace that needs a clock (fps) also uses its own timer; only count the lag producer's
+    expect(timers).toBe(0);
   });
 });
 
 describe('main_thread_lag_ms clock wiring', () => {
-  it('a performance.now that is not a function omits the trace quietly (no ping, no error)', () => {
+  it('a performance.now that is not a function omits the trace quietly (no timer, no error)', () => {
     const win = mkTarget();
     const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
     const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
-    let created = 0;
-    class Ch {
-      constructor() {
-        created += 1;
-      }
-    }
+    let timers = 0;
     const errors: unknown[] = [];
     const lag = createBrowserSystemTraceProducers(
       {
         lifecycle,
         document: doc,
-        MessageChannel: Ch as never,
         performance: { now: 5 as never },
+        scheduler: {
+          setInterval: () => {
+            timers += 1;
+            return 1;
+          },
+          clearInterval: () => {},
+        },
       },
       (e) => errors.push(e),
     ).find((p) => p.name === 'main-thread-lag');
     const out: Emit[] = [];
     lag?.start(sinkOf(out));
-    expect(created).toBe(0);
+    expect(timers).toBe(0);
     expect(errors).toEqual([]);
     expect(out).toEqual([]);
-  });
-});
-
-describe('browserTraceEnvFrom: MessageChannel', () => {
-  it("hands over THIS window's constructor, omits a non-constructor, and reports a hostile getter", () => {
-    class Ch {}
-    expect(browserTraceEnvFrom({ MessageChannel: Ch }, undefined).MessageChannel).toBe(Ch);
-    expect('MessageChannel' in browserTraceEnvFrom({ MessageChannel: 5 }, undefined)).toBe(false);
-    expect('MessageChannel' in browserTraceEnvFrom({}, undefined)).toBe(false);
-    const hostile = {};
-    Object.defineProperty(hostile, 'MessageChannel', {
-      get(): never {
-        throw new Error('MessageChannel blocked');
-      },
-    });
-    const errors: unknown[] = [];
-    const env = browserTraceEnvFrom(hostile, undefined, (e) => errors.push(e));
-    expect('MessageChannel' in env).toBe(false);
-    expect((errors[0] as Error).message).toBe('MessageChannel blocked');
   });
 });

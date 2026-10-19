@@ -1588,48 +1588,17 @@ describe('launch', () => {
         expect(await rowsOf(store, 'screen_size')).toEqual([]);
       });
 
-      it('records main_thread_lag_ms from the INJECTED window MessageChannel while visible, one ping per tick, clearing on hide', async () => {
+      it('records main_thread_lag_ms as timer drift on the INJECTED window clock, visible only, with a fresh baseline after a hide', async () => {
         stubSensors();
         const d = mkDoc(true);
         const w = fakeWindow();
-        let clock = 0;
+        let clock = 5_000;
         Object.defineProperty(w.win, 'performance', {
           value: { now: () => clock },
           configurable: true,
         });
-        const chans: Array<{
-          posted: number;
-          closed: number;
-          port1: { onmessage: (() => void) | null };
-        }> = [];
-        class Ch {
-          port1: { onmessage: (() => void) | null; close: () => void };
-          port2: { postMessage: () => void; close: () => void };
-          constructor() {
-            const c = {
-              posted: 0,
-              closed: 0,
-              port1: {
-                onmessage: null as (() => void) | null,
-                close: () => {
-                  c.closed += 1;
-                },
-              },
-            };
-            this.port1 = c.port1;
-            this.port2 = {
-              postMessage: () => {
-                c.posted += 1;
-              },
-              close: () => {
-                c.closed += 1;
-              },
-            };
-            chans.push(c);
-          }
-        }
-        Object.assign(w.win, { MessageChannel: Ch });
-        const ticks: Array<() => void> = [];
+        const live = new Map<number, () => void>();
+        let nextHandle = 1;
         const store = memStore();
         await launchTracked(
           'tok',
@@ -1639,37 +1608,47 @@ describe('launch', () => {
             captureStore: store,
             scheduler: {
               setInterval: (cb, ms) => {
-                if (ms === 1000) ticks.push(cb);
-                return 'h';
+                if (ms !== 1000) return 'other';
+                const h = nextHandle++;
+                live.set(h, cb);
+                return h;
               },
-              clearInterval: () => {},
+              clearInterval: (h) => void live.delete(h as number),
             },
           }),
         );
-        expect(chans).toHaveLength(1);
-        expect(chans[0]?.posted).toBe(1);
-        clock = 40;
-        chans[0]?.port1.onmessage?.();
-        expect(chans[0]?.posted).toBe(1); // a receipt never posts again
-        for (const t of ticks) t();
-        expect(chans[0]?.posted).toBe(2); // the tick emitted 40 and re-armed with exactly one ping
+        const runTicks = (): void => {
+          for (const cb of [...live.values()]) cb();
+        };
+        clock += 1000;
+        runTicks(); // on time
+        clock += 1000 + 300; // a 300 ms block spans the next tick
+        runTicks();
+        const before = live.size;
         d.setVisible(false);
-        expect(chans[0]?.closed).toBe(2); // hidden: aborted
-        for (const t of ticks) t();
-        expect(await rowsOf(store, 'main_thread_lag_ms')).toEqual([40]);
+        const hiddenTimers = live.size;
+        clock += 60_000;
+        d.setVisible(true); // a fresh baseline: the hidden minute is not lag
+        clock += 1000;
+        runTicks();
+        // fps shares the 1 s cadence but emits its own name; only the lag rows are read here
+        expect(await rowsOf(store, 'main_thread_lag_ms')).toEqual([0, 300, 0]);
+        expect(hiddenTimers).toBeLessThan(before); // hiding tore the sampling timer(s) down
       });
 
-      it('a hidden injected document never creates a MessageChannel', async () => {
+      it('a hidden injected document never reads the clock for lag (no timer is started)', async () => {
         stubSensors();
         const d = mkDoc(false);
         const w = fakeWindow();
-        let created = 0;
-        Object.assign(w.win, {
-          MessageChannel: class {
-            constructor() {
-              created += 1;
-            }
+        let reads = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
           },
+          configurable: true,
         });
         await launchTracked(
           'tok',
@@ -1679,21 +1658,19 @@ describe('launch', () => {
             captureStore: memStore(),
           }),
         );
-        expect(created).toBe(0);
+        expect(reads).toBe(0);
       });
 
-      it('a hostile MessageChannel / devicePixelRatio getter never fails launch and is reported', async () => {
+      it('a hostile devicePixelRatio getter never fails launch and is reported', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 390, height: 844 });
         const w = fakeWindow();
-        for (const key of ['MessageChannel', 'devicePixelRatio']) {
-          Object.defineProperty(w.win, key, {
-            get(): never {
-              throw new Error(`${key} blocked`);
-            },
-            configurable: true,
-          });
-        }
+        Object.defineProperty(w.win, 'devicePixelRatio', {
+          get(): never {
+            throw new Error('devicePixelRatio blocked');
+          },
+          configurable: true,
+        });
         const onError = vi.fn();
         const store = memStore();
         const client = await launchTracked(
@@ -1701,26 +1678,26 @@ describe('launch', () => {
           noSampler({ window: w.win, captureStore: store, onError }),
         );
         const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
-        expect(messages).toEqual(
-          expect.arrayContaining(['MessageChannel blocked', 'devicePixelRatio blocked']),
-        );
+        expect(messages).toContain('devicePixelRatio blocked');
         expect(await rowsOf(store, 'screen_size')).toEqual([]);
         await client.stop();
       });
 
-      it('a systemMetricsSampler override builds neither screen_size nor the lag ping', async () => {
+      it('a systemMetricsSampler override builds neither screen_size nor the lag timer', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 390, height: 844 });
         const d = mkDoc(true);
         const w = fakeWindow();
-        let created = 0;
-        Object.assign(w.win, {
-          devicePixelRatio: 2,
-          MessageChannel: class {
-            constructor() {
-              created += 1;
-            }
+        let reads = 0;
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
           },
+          configurable: true,
         });
         const store = memStore();
         await launchTracked(
@@ -1732,7 +1709,7 @@ describe('launch', () => {
           }),
         );
         expect(await rowsOf(store, 'screen_size')).toEqual([]);
-        expect(created).toBe(0);
+        expect(reads).toBe(0); // no lag timer was even built
       });
 
       it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {

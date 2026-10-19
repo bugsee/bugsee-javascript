@@ -1081,7 +1081,7 @@ describe('launch (webview)', () => {
           .filter((d) => d.name === name)
           .map((d) => d.value);
 
-      it('streams screen_size {width,height,dpr} and a lag delta from the INJECTED window; none from a hidden page', async () => {
+      it('streams screen_size {width,height,dpr} and timer-drift lag from the INJECTED window; none from a hidden page', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
@@ -1092,21 +1092,7 @@ describe('launch (webview)', () => {
             value: { now: () => clock },
             configurable: true,
           });
-          let onmessage: (() => void) | null = null;
-          let created = 0;
-          class Ch {
-            port1 = {
-              set onmessage(f: (() => void) | null) {
-                onmessage = f;
-              },
-              close: () => {},
-            };
-            port2 = { postMessage: () => {}, close: () => {} };
-            constructor() {
-              created += 1;
-            }
-          }
-          Object.assign(w.win, { devicePixelRatio: 3, MessageChannel: Ch });
+          Object.assign(w.win, { devicePixelRatio: 3 });
           const dom = fakeDomDocument();
           Object.assign(dom.document, { visibilityState: 'visible' });
           const ticks: Array<() => void> = [];
@@ -1127,13 +1113,21 @@ describe('launch (webview)', () => {
           );
           await new Promise((r) => setTimeout(r, 0));
           expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
-          expect(created).toBe(1);
-          clock = 25;
-          (onmessage as (() => void) | null)?.();
+          clock = 1000 + 25; // the first 1 s tick fires 25 ms late
           for (const t of ticks) t();
           expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
 
-          // a hidden page never creates a channel
+          // a hidden page never reads the clock for lag (no timer)
+          let hiddenReads = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: {
+              now: () => {
+                hiddenReads += 1;
+                return 0;
+              },
+            },
+            configurable: true,
+          });
           const hidden = fakeDomDocument();
           Object.assign(hidden.document, { visibilityState: 'hidden' });
           track(
@@ -1144,28 +1138,27 @@ describe('launch (webview)', () => {
               document: hidden.document as unknown as Document,
             }),
           );
-          expect(created).toBe(1);
+          expect(hiddenReads).toBe(0);
         } finally {
           vi.unstubAllGlobals();
         }
       });
 
-      it('a hostile MessageChannel / devicePixelRatio getter never fails launch and is reported', () => {
+      it('a hostile devicePixelRatio getter never fails launch and is reported', () => {
         stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
           const w = fakeWin();
-          for (const key of ['MessageChannel', 'devicePixelRatio']) {
-            Object.defineProperty(w.win, key, {
-              get(): never {
-                throw new Error(`${key} blocked`);
-              },
-              configurable: true,
-            });
-          }
+          Object.defineProperty(w.win, 'devicePixelRatio', {
+            get(): never {
+              throw new Error('devicePixelRatio blocked');
+            },
+            configurable: true,
+          });
           const onError = vi.fn();
           expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
           expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
-            'MessageChannel blocked',
+            'devicePixelRatio blocked',
           );
         } finally {
           vi.unstubAllGlobals();
