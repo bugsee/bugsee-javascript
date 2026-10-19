@@ -35,6 +35,27 @@ export const PROFILING_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   },
 ];
 
+export const NodeTraceOption = {
+  /** Report `disk_mem_free` / `disk_mem_total` for the volume the data dir lives on. Opt-in (iOS parity). */
+  CaptureDiskSpace: 'com.bugsee.option.node.capture-disk-space',
+} as const;
+
+declare module '@bugsee/protocol' {
+  interface BugseeOptionTypes {
+    'com.bugsee.option.node.capture-disk-space': boolean;
+  }
+}
+
+/** Disk space is opt-in: only boolean `true` enables it. */
+export const NODE_TRACE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
+  {
+    friendly: 'captureDiskSpace',
+    key: NodeTraceOption.CaptureDiskSpace,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+];
+
 /**
  * Node-local identifiers for the opt-in enrichment / instrumentation switches that used to be read raw
  * (`captureLocalVariables: 0`, `null`, `''` and `'false'` turned them ON). No cross-SDK identity.

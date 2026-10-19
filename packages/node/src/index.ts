@@ -93,7 +93,12 @@ export {
   type NodeRuntime,
   relaunch,
 } from './launch';
-export { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+export {
+  NODE_TRACE_OPTION_DEFINITIONS,
+  NodeTraceOption,
+  PROFILING_OPTION_DEFINITIONS,
+  ProfilingOption,
+} from './options';
 export {
   createProfilingController,
   type ProfilingController,

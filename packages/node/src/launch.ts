@@ -85,6 +85,7 @@ import {
   createUnhandledRejectionProvider,
   type ProcessEvents,
 } from './detection-providers';
+import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 import {
   buildNodeEnvironment,
   realSystemProbe,
@@ -112,7 +113,9 @@ import {
 } from './local-variables';
 import {
   NODE_PRIVACY_OPTION_DEFINITIONS,
+  NODE_TRACE_OPTION_DEFINITIONS,
   NodePrivacyOption,
+  NodeTraceOption,
   PROFILING_OPTION_DEFINITIONS,
   ProfilingOption,
 } from './options';
@@ -169,6 +172,7 @@ const NODE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  ...NODE_TRACE_OPTION_DEFINITIONS,
   ...NODE_PRIVACY_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
@@ -258,6 +262,10 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
   captureSystemEvents?: boolean;
+  /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
+  captureDiskSpace?: boolean;
+  /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
+  diskStatfs?: StatFs;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -875,19 +883,33 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   if (propagationDecorator !== undefined) {
     network.interceptor.addRequestDecorator(propagationDecorator);
   }
+  const baseTraceProducers =
+    options.systemTraceProducers ??
+    createNodeSystemTraceProducers({
+      // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+  // Opt-in disk space: the volume the SDK's data dir lives on, so only when there IS one (an in-memory or
+  // degraded launch has none, and never falls back to `/` or the cwd). Appended to caller-supplied producers
+  // too: the option is an explicit request, and Bun/Deno build their own producer list.
+  const traceProducers =
+    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+      ? [
+          ...baseTraceProducers,
+          createDiskSpaceProducer({
+            dataDir: effectiveDataDir,
+            ...(options.diskStatfs !== undefined ? { statfs: options.diskStatfs } : {}),
+            ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          }),
+        ]
+      : baseTraceProducers;
   client.addCaptureProvider(
     createSystemTracesProvider({
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
-        : {
-            producers:
-              options.systemTraceProducers ??
-              createNodeSystemTraceProducers({
-                // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
-                ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-                ...(options.onError !== undefined ? { onError: options.onError } : {}),
-              }),
-          }),
+        : { producers: traceProducers }),
       refreshMs: deriveRefreshMs(maxRecordingTime * 1000),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
