@@ -1,5 +1,14 @@
 // @bugsee/bundler-plugin-core — shared bundler-plugin engine. Collects build context and drives the Rust
 // `bugsee-cli` (sourcemaps inject + debug-files upload). Consumed by @bugsee/vite-plugin / @bugsee/webpack-plugin.
+
+export {
+  APP_BUILD_DEFINE,
+  APP_VERSION_DEFINE,
+  appIdentityDefines,
+  CI_COMMIT_ENV_VARS,
+  findAppIdentity,
+  findPackageVersion,
+} from './app-identity';
 export { deriveBuildUuid } from './build-id';
 export {
   defaultDeleteMapFiles,

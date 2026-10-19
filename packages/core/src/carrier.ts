@@ -284,6 +284,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'appId',
   'appVersion',
   'appBuild',
+  'appIdentitySource',
   'platformType',
   'sdkVersion',
   'runtimeVersion',

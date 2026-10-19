@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { BlackoutToken, CaptureStoreToken } from '@bugsee/core';
+import { type AppIdentity, BlackoutToken, CaptureStoreToken } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
@@ -20,6 +20,8 @@ import {
 } from './crash-reporter';
 /** The subset of Electron's `app` that the SDK needs. */
 export interface ElectronAppLike {
+  /** The app's version (Electron's `app.getVersion()`): used as the reported app version when set. */
+  getVersion?(): string;
   on(
     event: 'render-process-gone',
     listener: (
@@ -37,6 +39,7 @@ export interface ElectronAppLike {
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
+import { reportOncePerMessage } from '@bugsee/util';
 import { createGpuInfoCache, type GpuInfoType } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
@@ -100,6 +103,33 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   launch?: NodeLaunch;
 }
 
+const text = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() !== '' ? value : undefined;
+
+/** Merges identity sources field by field: the first source with a usable value for a field wins it. */
+const chainAppIdentity =
+  (first: (() => AppIdentity | undefined) | undefined, second: () => AppIdentity) =>
+  (): AppIdentity => {
+    let primary: AppIdentity | undefined;
+    try {
+      primary = first?.();
+    } catch {
+      primary = undefined;
+    }
+    let fallback: AppIdentity = {};
+    try {
+      fallback = second();
+    } catch {
+      // `app.getVersion()` can throw before the app is ready; the version is simply unknown then.
+    }
+    const version = text(primary?.version) ?? text(fallback.version);
+    const build = text(primary?.build) ?? text(fallback.build);
+    return {
+      ...(version !== undefined ? { version } : {}),
+      ...(build !== undefined ? { build } : {}),
+    };
+  };
+
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
   const {
@@ -112,6 +142,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     launch,
     ...nodeOptions
   } = options;
+
+  // The Electron app knows its own version (package.json of the packaged app); offer it behind any source
+  // the caller supplied, which is asked first.
+  if (app?.getVersion !== undefined) {
+    nodeOptions.appIdentitySource = chainAppIdentity(nodeOptions.appIdentitySource, () => ({
+      version: app.getVersion?.(),
+    }));
+  }
 
   // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -159,6 +197,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
   });
   const callerExtras = nodeOptions.hardwareExtras;
+  const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);
   nodeOptions.hardwareExtras = () => {
     const cached = gpuCache.current();
     if (callerExtras === undefined) return cached;
@@ -166,7 +205,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       const own = sanitizeHardwareGpu(callerExtras()?.gpu);
       return own === undefined ? cached : { gpu: { ...cached?.gpu, ...own } };
     } catch (error) {
-      reportSafely(nodeOptions.onError, error);
+      reportExtrasOnce(error); // a throwing caller extra is polled on every report: tell the host once
       return cached;
     }
   };

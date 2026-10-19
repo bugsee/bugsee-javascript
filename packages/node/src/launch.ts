@@ -13,6 +13,7 @@ import {
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  type AppIdentitySource,
   asInternalClient,
   BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
@@ -22,6 +23,7 @@ import {
   type BundleAssemblyContext,
   type BundleStore,
   BundleStoreToken,
+  bundledAppIdentity,
   type CaptureStore,
   ChunkStorageToken,
   type Clock,
@@ -54,6 +56,7 @@ import {
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
   relaunchWith,
+  resolveAppIdentity,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
@@ -77,7 +80,9 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
+import { createNodeAppIdentitySource } from './app-identity-source';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import { type CapturedDataStore, ensureSecureDataRoot, resolveDataLocation } from './data-location';
 import {
@@ -211,10 +216,23 @@ export interface BugseeLaunchOptions {
   appRoot?: string;
   /** app.package_id. */
   appId?: string;
-  /** app.version. */
+  /**
+   * app.version. When omitted it is detected: a build-time constant, then `appIdentitySource`, then the
+   * `BUGSEE_APP_VERSION` environment variable, then the nearest `package.json` (from `appRoot`, else the
+   * working directory). `npm_package_version` is not read: it names the package whose script started the
+   * process, which a child process inherits.
+   */
   appVersion?: string;
-  /** app.build. */
+  /**
+   * app.build. When omitted it is detected the same way; the environment step reads `BUGSEE_APP_BUILD`
+   * and the commit variables CI systems and hosts set (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, ...).
+   */
   appBuild?: string;
+  /**
+   * An extra place to look for the app version and build, consulted after build-time constants and
+   * before the environment and `package.json`. Desktop shells use it to supply their own version.
+   */
+  appIdentitySource?: AppIdentitySource;
   /** hardware.device_id — caller-supplied only; Node never generates or persists one. */
   deviceId?: string;
 
@@ -541,6 +559,12 @@ const safeCwd = (): string | undefined => {
   }
 };
 
+const warnToConsole = (message: string): void => {
+  (globalThis as unknown as { console?: { warn?: (message: string) => void } }).console?.warn?.(
+    message,
+  );
+};
+
 // The public composition root's lifecycle shell: it publishes Launched once a client was built (the Node
 // launch is synchronous, so Launching is never observable here) and records the arguments for relaunch().
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
@@ -575,6 +599,24 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     );
     return { client: alreadyLaunched, internals: undefined };
   }
+
+  // Settled once: the explicit options win, then build-time constants, the caller's source, and finally
+  // what the process environment and package.json say. A missing version is warned about, once.
+  const appIdentity = resolveAppIdentity(
+    {
+      ...(options.appVersion !== undefined ? { version: options.appVersion } : {}),
+      ...(options.appBuild !== undefined ? { build: options.appBuild } : {}),
+    },
+    [
+      bundledAppIdentity,
+      ...(options.appIdentitySource !== undefined ? [options.appIdentitySource] : []),
+      createNodeAppIdentitySource(
+        options.appRoot !== undefined ? { appRoot: options.appRoot } : {},
+      ),
+    ],
+    warnToConsole,
+    'Pass `appVersion` (and `appBuild`) to launch(), set BUGSEE_APP_VERSION (and BUGSEE_APP_BUILD), or give your package.json a version.',
+  );
 
   // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
   // coordinators query (by each provider's controllingOption identifier), the OptionsContainer
@@ -666,17 +708,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
   services.addService(defineService(SystemProbeToken, () => probe)); // container service
+  const environmentOnError = reportOncePerMessage(options.onError);
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
         sdkVersion,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
-        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+        ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
         ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
         ...(options.hardwareExtras !== undefined ? { hardwareExtras: options.hardwareExtras } : {}),
-        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        // a hardwareExtras that throws on every report build reaches the host sink once, not once per report
+        ...(options.onError !== undefined ? { onError: environmentOnError } : {}),
       },
       probe,
     );
@@ -1370,8 +1414,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     transport,
     getEnvironment,
     network,
-    appVersion: options.appVersion,
-    appBuild: options.appBuild,
+    appVersion: appIdentity.version,
+    appBuild: appIdentity.build,
     deviceId: options.deviceId,
     onError: options.onError,
     // The request-context store is the SAME instance registered as the ContextProvider above, so the

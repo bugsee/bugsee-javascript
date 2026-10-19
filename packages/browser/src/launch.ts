@@ -29,6 +29,7 @@ import {
   BugseeStatus,
   type BundleStore,
   BundleStoreToken,
+  bundledAppIdentity,
   type CaptureStore,
   type Clock,
   COMMON_OPTION_DEFINITIONS,
@@ -60,6 +61,7 @@ import {
   ReportMarkerStoreToken,
   recoverReports,
   relaunchWith,
+  resolveAppIdentity,
   resolveFailOnBoolean,
   resolveLaunchOptions,
   runLaunchRecovery,
@@ -74,6 +76,7 @@ import {
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
 import { reportGuarded } from '@bugsee/util';
+import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
 import type { WindowEvents } from './detection-providers';
 import { createUnhandledRejectionProvider, createWindowErrorProvider } from './detection-providers';
 import { type DeviceIdEnv, realDeviceIdEnv, resolveBrowserDeviceId } from './device-id';
@@ -83,7 +86,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-import { boundMatchMedia } from './host-global';
+import { boundMatchMedia, hostRead } from './host-global';
 import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
@@ -662,6 +665,19 @@ async function buildLaunch(
   // Browser environment envelope, rebuilt at each report. Canonical options are wire-translated inside.
   const probe = options.systemProbe ?? realBrowserProbe;
   services.addService(defineService(BrowserProbeToken, () => probe));
+  const appIdentity = resolveAppIdentity(
+    { version: options.appVersion, build: options.appBuild },
+    [
+      bundledAppIdentity,
+      // guarded: reading a host window's `document` can throw (blocked frame) and must never fail launch
+      metaAppIdentity(
+        options.document ??
+          hostRead(() => (win as { document?: Document }).document, options.onError),
+      ),
+    ],
+    warnToConsole,
+    BROWSER_APP_VERSION_HINT,
+  );
   const getEnvironment = () =>
     buildBrowserEnvironment(
       {
@@ -669,8 +685,8 @@ async function buildLaunch(
         deviceId,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
-        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+        ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
       },
       probe,
     );
@@ -1286,8 +1302,8 @@ async function buildLaunch(
     transport,
     getEnvironment,
     network,
-    appVersion: options.appVersion,
-    appBuild: options.appBuild,
+    appVersion: appIdentity.version,
+    appBuild: appIdentity.build,
     deviceId,
     onError: options.onError,
     activeSpanStore: undefined, // the single-slot default is correct here — see the interface note

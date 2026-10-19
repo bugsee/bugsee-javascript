@@ -669,6 +669,10 @@ describe('launchMain — GPU info as environment.hardware.gpu (ST6a)', () => {
     await flush();
     expect(extrasOf(f)()).toEqual({ gpu: { vendor: 'NVIDIA', renderer: 'RTX' } });
     expect(onError).toHaveBeenCalledWith(boom);
+    // polled on every report build: the same failure reaches the sink ONCE, a different one is still reported
+    extrasOf(f)();
+    extrasOf(f)();
+    expect(onError).toHaveBeenCalledTimes(1);
 
     const f2 = fakeLaunch();
     launchMain('tok', {
@@ -725,5 +729,66 @@ describe('launchMain — GPU info as environment.hardware.gpu (ST6a)', () => {
       app: appWith(getGPUInfo),
     });
     expect(getGPUInfo).not.toHaveBeenCalled();
+  });
+});
+
+describe('launchMain — app identity', () => {
+  const identityOf = (over: Partial<Parameters<typeof launchMain>[1]>) => {
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, ...over });
+    return f.received?.options.appIdentitySource;
+  };
+  const appWith = (getVersion: () => string) => ({ on: vi.fn(), getVersion }) as never;
+
+  it('offers app.getVersion() as the version source', () => {
+    expect(identityOf({ app: appWith(() => '4.2.0') })?.()).toEqual({ version: '4.2.0' });
+  });
+
+  it('passes no source when the app cannot report a version', () => {
+    expect(identityOf({ app: { on: vi.fn() } as never })).toBeUndefined();
+    expect(identityOf({})).toBeUndefined();
+  });
+
+  it('keeps a caller-supplied source untouched when there is no app version', () => {
+    const own = () => ({ version: '1.0.0' });
+    expect(identityOf({ appIdentitySource: own })).toBe(own);
+  });
+
+  it('asks the caller-supplied source first and fills the gaps from app.getVersion()', () => {
+    const app = appWith(() => '4.2.0');
+    expect(identityOf({ app, appIdentitySource: () => ({ version: '9.0.0' }) })?.()).toEqual({
+      version: '9.0.0',
+    });
+    expect(identityOf({ app, appIdentitySource: () => ({ build: '12' }) })?.()).toEqual({
+      version: '4.2.0',
+      build: '12',
+    });
+    expect(identityOf({ app, appIdentitySource: () => ({ version: ' ' }) })?.()).toEqual({
+      version: '4.2.0',
+    });
+    expect(identityOf({ app, appIdentitySource: () => undefined })?.()).toEqual({
+      version: '4.2.0',
+    });
+  });
+
+  it('lets a throwing caller source fall through to app.getVersion()', () => {
+    const source = identityOf({
+      app: appWith(() => '4.2.0'),
+      appIdentitySource: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(source?.()).toEqual({ version: '4.2.0' });
+  });
+
+  it('reports nothing, rather than throwing, when app.getVersion() throws', () => {
+    const app = appWith(() => {
+      throw new Error('not ready');
+    });
+    expect(identityOf({ app })?.()).toEqual({});
+  });
+
+  it('ignores an app.getVersion() that returns something other than text', () => {
+    expect(identityOf({ app: appWith(() => 5 as never) })?.()).toEqual({});
   });
 });

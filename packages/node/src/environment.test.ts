@@ -329,6 +329,31 @@ describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
   });
 });
 
+describe('sanitizeHardwareGpu: length bounds (the environment is rebuilt for every report)', () => {
+  it('truncates over-long fields (256 chars; gl_extensions 8192) and keeps values at the cap unchanged', () => {
+    const gpu = sanitizeHardwareGpu({
+      vendor: 'v'.repeat(300),
+      renderer: 'r'.repeat(256),
+      gl_version: 'g'.repeat(257),
+      gl_extensions: 'e'.repeat(10_000),
+    });
+    expect(gpu?.vendor).toBe('v'.repeat(256));
+    expect(gpu?.renderer).toBe('r'.repeat(256));
+    expect(gpu?.gl_version).toBe('g'.repeat(256));
+    expect(gpu?.gl_extensions).toBe('e'.repeat(8192));
+    expect(sanitizeHardwareGpu({ gl_extensions: 'x'.repeat(8192) })?.gl_extensions).toHaveLength(
+      8192,
+    );
+    expect(sanitizeHardwareGpu({ gl_extensions: 'x'.repeat(8193) })?.gl_extensions).toHaveLength(
+      8192,
+    );
+  });
+
+  it('trims BEFORE bounding, so padding does not eat the budget', () => {
+    expect(sanitizeHardwareGpu({ vendor: `  ${'v'.repeat(256)}  ` })?.vendor).toBe('v'.repeat(256));
+  });
+});
+
 describe('sanitizeHardwareGpu (exported)', () => {
   it('returns a trimmed copy of the known keys, or undefined', () => {
     expect(sanitizeHardwareGpu({ vendor: ' V ', junk: 1 })).toEqual({ vendor: 'V' });

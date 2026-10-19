@@ -75,8 +75,14 @@ export interface HardwareExtras {
 
 const GPU_KEYS = ['vendor', 'renderer', 'gl_version', 'gl_extensions'] as const;
 
+// The environment is rebuilt for EVERY report (and persisted with each queued bundle), so a block cannot be
+// unbounded: a GL extension list is a single multi-KB string. Longer values are TRUNCATED (kept, bounded).
+const MAX_GPU_FIELD_CHARS = 256;
+const MAX_GPU_EXTENSIONS_CHARS = 8192;
+
 /**
- * Defensive copy of a GPU block: only the four known keys, only strings, trimmed, whitespace-only dropped.
+ * Defensive copy of a GPU block: only the four known keys, only strings, trimmed, whitespace-only dropped, and
+ * length-bounded (256 chars per field, 8192 for `gl_extensions`; longer values are truncated, not dropped).
  * Returns undefined when nothing usable remains, so no empty `gpu: {}` is ever reported. Exported so a
  * platform composition (Electron) merges caller/cache GPU blocks by the same rules.
  */
@@ -86,7 +92,11 @@ export function sanitizeHardwareGpu(raw: unknown): HardwareGpu | undefined {
   const gpu: HardwareGpu = {};
   for (const key of GPU_KEYS) {
     const value = source[key];
-    if (typeof value === 'string' && value.trim() !== '') gpu[key] = value.trim();
+    if (typeof value !== 'string') continue;
+    const text = value.trim();
+    if (text === '') continue;
+    const cap = key === 'gl_extensions' ? MAX_GPU_EXTENSIONS_CHARS : MAX_GPU_FIELD_CHARS;
+    gpu[key] = text.length > cap ? text.slice(0, cap) : text;
   }
   return Object.keys(gpu).length > 0 ? gpu : undefined;
 }
