@@ -26,15 +26,44 @@ interface Session {
   onReport: ReportListener;
 }
 
-export function createDetectionCoordinator(): DetectionCoordinator {
+export function createDetectionCoordinator(
+  onError?: (error: unknown) => void,
+): DetectionCoordinator {
+  // ISOLATED, like the capture coordinator: a throwing provider is reported and best-effort stopped, and never
+  // prevents the providers after it from starting or stopping.
+  const report = (error: unknown): void => {
+    try {
+      onError?.(error);
+    } catch {
+      /* the reporter itself failed */
+    }
+  };
+  const stopQuietly = (provider: DetectionProvider): void => {
+    try {
+      provider.stop();
+    } catch {
+      /* best-effort; the start failure (if any) is the one reported */
+    }
+  };
   const providers: DetectionProvider[] = [];
   const started = new Set<DetectionProvider>();
   let session: Session | null = null;
 
   const startProvider = (provider: DetectionProvider, active: Session): void => {
-    if (provider.controllingOption === undefined || active.gate(provider.controllingOption)) {
+    try {
+      // The gate is inside the guard too: a throwing option gate costs that provider, not the whole start.
+      if (provider.controllingOption !== undefined && !active.gate(provider.controllingOption)) {
+        return;
+      }
       provider.start(active.client, active.onReport);
+      if (session !== active) {
+        stopQuietly(provider); // stopped (maybe relaunched) while starting: do not record it on the dead session
+        return;
+      }
       started.add(provider);
+    } catch (error) {
+      stopQuietly(provider); // unwind BEFORE reporting, so a relaunching reporter is not undone
+      report(error);
     }
   };
 
@@ -57,18 +86,27 @@ export function createDetectionCoordinator(): DetectionCoordinator {
       if (session !== null) {
         throw new Error('DetectionCoordinator is already started');
       }
-      session = { client, gate: isEnabled, onReport };
+      const active: Session = { client, gate: isEnabled, onReport };
+      session = active;
       for (const provider of providers) {
-        startProvider(provider, session);
+        if (session !== active) break; // stopped mid-start (e.g. by a reporter): do not start on a dead session
+        startProvider(provider, active);
       }
     },
 
     stop(): void {
-      for (const provider of started) {
-        provider.stop();
-      }
+      const running = [...started];
       started.clear();
       session = null;
+      const errors: unknown[] = [];
+      for (const provider of running) {
+        try {
+          provider.stop();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      for (const error of errors) report(error); // after every stop(): a relaunching reporter is not undone
     },
   };
 }

@@ -1,6 +1,7 @@
 import { cpus, freemem, totalmem } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { InterceptorBase, type Scheduler } from '@bugsee/core';
+import type { GcInterval, GcSource } from './gc-observer';
 import type { V8HeapStats } from './runtime-readers';
 
 // Shared node process-stats TRACKER (mirrors the mobile tracker/producer split): ONE timer aggregates
@@ -26,6 +27,8 @@ export interface ProcessStats {
   systemMemory: { total: number; free: number };
   cpu: { userDelta: number; systemDelta: number; processPct: number };
   eventLoop?: { meanMs: number; maxMs: number; p99Ms: number };
+  /** GC activity since the previous poll; ABSENT (never zero) when no GC source is running. */
+  gc?: GcInterval;
   utilization?: number;
   /** Whole seconds since process start. Portable, so always present. */
   uptimeS: number;
@@ -43,6 +46,8 @@ export interface ProcessStatsDeps {
   monotonicNowMs?: () => number;
   /** Lazily started on activation, stopped on deactivation. Default: none (lag omitted). */
   eventLoop?: EventLoopSource;
+  /** Lazily started on activation, stopped on deactivation. Default: none (gc omitted). */
+  gc?: GcSource;
   /** ELU delta 0..1 per call, or undefined when unavailable. Default: none. */
   eventLoopUtilization?: () => number | undefined;
   /** Seconds since process start (fractions floored). Default `process.uptime()`. */
@@ -81,6 +86,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   readonly name = 'node-process-stats';
   readonly #d: ResolvedDeps;
   readonly #eventLoop: EventLoopSource | undefined;
+  readonly #gc: GcSource | undefined;
   readonly #eventLoopUtilization: (() => number | undefined) | undefined;
   readonly #onError: ((error: unknown) => void) | undefined;
   readonly #v8Heap: (() => V8HeapStats | undefined) | undefined;
@@ -88,6 +94,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
   readonly #availableMemory: (() => number | undefined) | undefined;
   #timer: unknown = null;
   #eventLoopRunning = false;
+  #gcRunning = false;
   #lastCpu = { user: 0, system: 0 };
   #lastWallMs = 0;
   #cached: ProcessStats | undefined;
@@ -107,6 +114,7 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
       intervalMs: deps.intervalMs ?? 1000,
     };
     this.#eventLoop = deps.eventLoop;
+    this.#gc = deps.gc;
     this.#eventLoopUtilization = deps.eventLoopUtilization;
     this.#onError = deps.onError;
     this.#v8Heap = deps.v8Heap;
@@ -152,28 +160,40 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
         this.#eventLoop.start();
         this.#eventLoopRunning = true;
       }
+      if (this.#gc !== undefined) {
+        this.#gc.start();
+        this.#gcRunning = true;
+      }
       this.#timer = this.#d.scheduler.setInterval(() => this.#poll(), this.#d.intervalMs);
     } catch (error) {
-      try {
-        this.#stopEventLoop();
-      } catch {
-        /* best-effort unwind; the original failure is the one thrown */
-      }
+      this.#stopSources(); // best-effort unwind; the original failure is the one thrown
       throw error;
     }
   }
 
-  /** Stops the event-loop source only if this activation started it. */
-  #stopEventLoop(): void {
-    if (!this.#eventLoopRunning) return;
+  /** Stops each source only if this activation started it; one failing stop() must not strand the other. */
+  #stopSources(): void {
+    const eventLoop = this.#eventLoopRunning ? this.#eventLoop : undefined;
+    const gc = this.#gcRunning ? this.#gc : undefined;
     this.#eventLoopRunning = false;
-    this.#eventLoop?.stop();
+    this.#gcRunning = false;
+    for (const source of [eventLoop, gc]) {
+      try {
+        source?.stop();
+      } catch (error) {
+        try {
+          this.#onError?.(error); // reported, never thrown: one failing stop must not strand the other
+        } catch {
+          /* a failing reporter must not stop the remaining source either */
+        }
+      }
+    }
   }
 
   protected override onDeactivate(): void {
     if (this.#timer !== null) this.#d.scheduler.clearInterval(this.#timer); // none after a failed activation
     this.#timer = null;
-    this.#stopEventLoop();
+    this.#stopSources();
     this.#cached = undefined;
     this.#activationFailed = false;
   }
@@ -212,11 +232,14 @@ export class ProcessStatsTracker extends InterceptorBase<{ stats: ProcessStats }
     const v8Heap = this.#optional(this.#v8Heap);
     const memoryLimit = this.#optional(this.#memoryLimit);
     const availableMemory = this.#optional(this.#availableMemory);
+    // Read LAST: it drains the interval, so nothing that can still fail the poll may run after it.
+    const gc = this.#optional(() => this.#gc?.read());
     return {
       memory,
       systemMemory,
       cpu: { userDelta, systemDelta, processPct },
       ...(eventLoop !== undefined ? { eventLoop } : {}),
+      ...(gc !== undefined ? { gc } : {}),
       ...(utilization !== undefined ? { utilization } : {}),
       uptimeS,
       ...(v8Heap !== undefined ? { v8Heap } : {}),
