@@ -43,6 +43,55 @@ function fakeTarget(
   };
 }
 
+describe('installPageHideFlush — hostile targets never fail launch', () => {
+  const thrower = (label: string) => ({
+    addEventListener(): never {
+      throw new Error(`${label} attach blocked`);
+    },
+    removeEventListener(): never {
+      throw new Error(`${label} detach blocked`);
+    },
+  });
+
+  it('a window whose addEventListener throws is reported and the document listener still attaches', () => {
+    const doc = fakeTarget();
+    const errors: unknown[] = [];
+    let off: (() => void) | undefined;
+    expect(() => {
+      off = installPageHideFlush(() => {}, {
+        window: thrower('window'),
+        document: doc.target as never,
+        onError: (e) => errors.push(e),
+      });
+    }).not.toThrow();
+    expect((errors[0] as Error).message).toBe('window attach blocked');
+    expect(doc.count('visibilitychange')).toBe(1);
+    expect(() => off?.()).not.toThrow(); // the detach failure is reported too, never thrown
+    expect(errors.map((e) => (e as Error).message)).toEqual([
+      'window attach blocked',
+      'window detach blocked',
+    ]);
+    expect(doc.count('visibilitychange')).toBe(0);
+  });
+
+  it('a throwing document is isolated from the window, and a throwing reporter or none changes nothing', () => {
+    const win = fakeTarget();
+    expect(() =>
+      installPageHideFlush(() => {}, {
+        window: win.target,
+        document: thrower('document') as never,
+        onError: () => {
+          throw new Error('reporter');
+        },
+      })(),
+    ).not.toThrow();
+    expect(win.count('pagehide')).toBe(0); // attached then detached
+    expect(() =>
+      installPageHideFlush(() => {}, { window: thrower('w'), document: thrower('d') as never })(),
+    ).not.toThrow();
+  });
+});
+
 describe('installPageHideFlush', () => {
   it('flushes on pagehide', () => {
     const onHide = vi.fn();

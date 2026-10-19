@@ -92,7 +92,7 @@ import {
 } from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserSystemTraceProducers, defaultBrowserTraceEnv } from './trace-producers';
+import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
 import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
@@ -415,7 +415,11 @@ export interface BugseeLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real browser runtime.
   /** HTTP primitive. Default the browser fetch transport. */
   transport?: HttpTransport;
-  /** Window event target for detection + system events. Default the global `window`. */
+  /**
+   * The window the SDK is bound to: event target for detection + system events, AND the source of the traces'
+   * `navigator` / `performance` / `screen` / `requestAnimationFrame` (an absent one omits its trace; nothing falls
+   * back to the host globals). Default the global `window`.
+   */
   window?: WindowEvents;
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
@@ -706,8 +710,21 @@ async function buildLaunch(
       : createMemoryCaptureStore(storeBounds));
 
   // The DOM document drives BOTH input capture and the report-time viewtree (the same physical object).
+  // Reading `window.document` can throw (cross-origin proxy, torn-down frame): that must not fail launch.
   const domDocument: Document | undefined =
-    options.document ?? (win as { document?: Document }).document;
+    options.document ??
+    (() => {
+      try {
+        return (win as { document?: Document }).document;
+      } catch (error) {
+        try {
+          options.onError?.(error);
+        } catch {
+          /* the reporter itself failed */
+        }
+        return undefined;
+      }
+    })();
   // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
   // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
   const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
@@ -850,15 +867,15 @@ async function buildLaunch(
   );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
-          ...defaultBrowserTraceEnv(),
+          // Every surface comes from the INJECTED window/document, never the host globals.
+          ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          window: win,
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

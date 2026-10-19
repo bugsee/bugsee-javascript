@@ -1,5 +1,6 @@
 import {
   bindInputBlackout,
+  browserTraceEnvFrom,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTraceProducers,
@@ -8,6 +9,8 @@ import {
   createUnhandledRejectionProvider,
   createWindowErrorProvider,
   defaultBrowserTraceEnv,
+  hostGlobal,
+  hostRead,
   PageLifecycleTracker,
   parseStack,
   type WindowEvents,
@@ -251,7 +254,11 @@ export interface BugseeWebViewLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real WebView runtime.
   /** The WebView global hosting the native bridge + the `__bugsee_bridge` control entry. Default `globalThis`. */
   global?: object;
-  /** Window event target for system events (pagehide…). Default the global `window`. */
+  /**
+   * The window the SDK is bound to: event target for system events (pagehide…) AND the source of the traces'
+   * `navigator` / `performance` / `screen` / `requestAnimationFrame` (an absent one omits its trace). Default the
+   * global `window`.
+   */
   window?: WindowEvents;
   /** DOM document for user-input capture (clicks/keys/…). Default `window.document`. */
   document?: Document;
@@ -600,8 +607,14 @@ export function launchWithSeams(
   // state-change half of that split (change/submit/focus → `ui.*` breadcrumbs). Each carrier-shared
   // interceptor self-skips when its controllingOption is off. (The DOM viewtree + obscuring + error/crash +
   // performance streams land in later slices.)
-  const win = options.window ?? (globalThis as { window?: WindowEvents }).window;
-  const domDocument = options.document ?? (globalThis as { document?: Document }).document;
+  const win = options.window ?? hostGlobal<WindowEvents>('window', options.onError);
+  // Reading a host global can throw (blocked frame, hostile proxy): that must not fail launch.
+  // `options.document`, else the INJECTED window's document, else (no window at all) the host document.
+  const domDocument =
+    options.document ??
+    (win !== undefined
+      ? hostRead(() => (win as unknown as { document?: Document }).document, options.onError)
+      : hostGlobal<Document>('document', options.onError));
 
   // === SUB-FRAME: obscuring only, and nothing else =============================================
   //
@@ -624,7 +637,16 @@ export function launchWithSeams(
   // The client is still constructed and returned so the public signature holds and the host's `stop()`
   // works; it simply never starts.
   const w = win as { top?: unknown; self?: unknown } | undefined;
-  const isTopFrame = w?.top === undefined || w.top === (w.self ?? w);
+  // `self` is [Replaceable] (page script can shadow it with a throwing getter) and `top` can throw across origins:
+  // an unreadable frame relationship counts as the top frame — the page itself — and is reported.
+  const isTopFrame = ((): boolean => {
+    try {
+      return w?.top === undefined || w.top === (w.self ?? w);
+    } catch (error) {
+      neverThrow(() => options.onError?.(error), undefined);
+      return true;
+    }
+  })();
   // `win !== undefined` is not a redundant guard: it is what tells the type system that a sub-frame always
   // HAS a window. `isTopFrame` is derived from `win`, so `!isTopFrame` already implies it is defined —
   // spelling it here keeps the composer's `window` unconditional instead of leaving an unreachable branch.
@@ -681,15 +703,20 @@ export function launchWithSeams(
   );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
       producers: createBrowserSystemTraceProducers(
         {
-          ...defaultBrowserTraceEnv(),
+          // Every surface comes from the INJECTED window/document; the host globals only without a window.
+          ...(win !== undefined
+            ? browserTraceEnvFrom(win, domDocument, options.onError)
+            : {
+                ...defaultBrowserTraceEnv(options.onError),
+                ...(domDocument !== undefined ? { document: domDocument } : {}),
+              }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          ...(win !== undefined ? { window: win } : {}),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

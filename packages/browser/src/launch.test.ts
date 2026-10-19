@@ -85,6 +85,17 @@ const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 function fakeWindow() {
   const listeners = new Map<string, Set<(event: Event) => void>>();
   const win = {
+    // A real window IS the global scope: its navigator / performance / screen are the same objects the
+    // tests stub on the globals. The traces read them from THIS window (never from the host globals).
+    get navigator() {
+      return (globalThis as { navigator?: unknown }).navigator;
+    },
+    get performance() {
+      return (globalThis as { performance?: unknown }).performance;
+    },
+    get screen() {
+      return (globalThis as { screen?: unknown }).screen;
+    },
     addEventListener(type: string, listener: (event: Event) => void) {
       const set = listeners.get(type) ?? new Set();
       set.add(listener);
@@ -1237,6 +1248,220 @@ describe('launch', () => {
       await Promise.all(clientsStop());
       const withHeap = await intervals(true);
       expect(withHeap).toBe(without + 1);
+    });
+
+    it('reads every surface from the INJECTED window: a window without performance.memory omits the heap even when the host global has one', async () => {
+      stubSensors(); // the HOST global has a heap
+      const w = fakeWindow();
+      Object.defineProperty(w.win, 'performance', { value: {}, configurable: true });
+      const store = memStore();
+      await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).not.toContain('ram_js_heap_used');
+      expect(names).toContain('orientation'); // the other surfaces still come from the window
+    });
+
+    it('a window whose getters throw never fails launch: each surface is omitted and reported, the rest still record', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const hostile = (key: string): void =>
+        void Object.defineProperty(w.win, key, {
+          get(): never {
+            throw new Error(`${key} blocked`);
+          },
+          configurable: true,
+        });
+      for (const key of [
+        'navigator',
+        'performance',
+        'screen',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+        'visualViewport',
+      ]) {
+        hostile(key);
+      }
+      const onError = vi.fn();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, onError }),
+      );
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).not.toContain('ram_js_heap_used');
+      expect(names).not.toContain('orientation');
+      const blocked = onError.mock.calls
+        .map((c) => (c[0] as Error).message)
+        .filter((m) => m.endsWith(' blocked'));
+      expect(blocked).toEqual(
+        expect.arrayContaining([
+          'navigator blocked',
+          'performance blocked',
+          'screen blocked',
+          'requestAnimationFrame blocked',
+          'cancelAnimationFrame blocked',
+        ]),
+      );
+      await client.stop();
+    });
+
+    it('a window whose document getter throws never fails launch (reported, no document-bound capture)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      Object.defineProperty(w.win, 'document', {
+        get(): never {
+          throw new Error('document blocked');
+        },
+        configurable: true,
+      });
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: memStore(), onError }),
+      );
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('document blocked');
+      await client.stop();
+    });
+
+    describe('app_state and fps (visibility-gated, from the injected window + document)', () => {
+      const mkDoc = (visible: boolean) => {
+        const l = new Map<string, Set<(e: Event) => void>>();
+        const doc = {
+          visibilityState: visible ? 'visible' : 'hidden',
+          addEventListener: (t: string, f: (e: Event) => void) => {
+            const set = l.get(t) ?? new Set();
+            set.add(f);
+            l.set(t, set);
+          },
+          removeEventListener: (t: string, f: (e: Event) => void) => void l.get(t)?.delete(f),
+        };
+        return {
+          doc,
+          setVisible: (v: boolean) => {
+            doc.visibilityState = v ? 'visible' : 'hidden';
+            for (const f of [...(l.get('visibilitychange') ?? [])]) f({} as Event);
+          },
+        };
+      };
+      const rowsOf = async (store: ReturnType<typeof memStore>, name: string) =>
+        ((await drain(store, 'traces.system')) ?? [])
+          .map((e) => e.data as { name: string; value: unknown })
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('records app_state from the injected document in the Android vocabulary and follows it', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ document: d.doc as unknown as Document, captureStore: store }),
+        );
+        d.setVisible(false);
+        d.setVisible(true);
+        expect(await rowsOf(store, 'app_state')).toEqual([
+          'foreground',
+          'background',
+          'foreground',
+        ]);
+      });
+
+      it('runs the rAF loop on the INJECTED window only while visible and records the measured fps', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let clock = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: { now: () => clock },
+          configurable: true,
+        });
+        const frames: Array<() => void> = [];
+        const cancelled: number[] = [];
+        Object.assign(w.win, {
+          requestAnimationFrame(cb: (t: number) => void) {
+            frames.push(() => cb(0));
+            return frames.length;
+          },
+          cancelAnimationFrame(id: number) {
+            cancelled.push(id);
+          },
+        });
+        const ticks: Array<() => void> = [];
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                if (ms === 1000) ticks.push(cb);
+                return 'h';
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        expect(frames).toHaveLength(1); // visible: loop armed on the injected window
+        frames[0]?.(); // one frame, which re-arms
+        frames[1]?.();
+        clock = 500;
+        for (const t of ticks) t();
+        expect(await rowsOf(store, 'fps')).toEqual([4]); // 2 frames over 500 ms
+        d.setVisible(false);
+        expect(cancelled).toHaveLength(1); // hidden: the pending frame is cancelled
+      });
+
+      it('a hidden injected document never starts a frame loop', async () => {
+        stubSensors();
+        const d = mkDoc(false);
+        const w = fakeWindow();
+        let armed = 0;
+        Object.assign(w.win, {
+          requestAnimationFrame() {
+            armed += 1;
+            return armed;
+          },
+        });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: memStore(),
+          }),
+        );
+        expect(armed).toBe(0);
+      });
+
+      it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let armed = 0;
+        Object.assign(w.win, {
+          requestAnimationFrame() {
+            armed += 1;
+            return armed;
+          },
+        });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
+        );
+        expect(await rowsOf(store, 'app_state')).toEqual([]);
+        expect(armed).toBe(0); // no frame loop was even built
+      });
     });
 
     it('a systemMetricsSampler REPLACES the sensor traces (no duplicate heap rows, no sensor listeners); battery still runs', async () => {

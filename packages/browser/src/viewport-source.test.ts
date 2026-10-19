@@ -96,6 +96,37 @@ function harness(overrides: Partial<ViewportEnv> = {}): Harness {
   return { win, vv, scheduler, events, stop };
 }
 
+describe('createBrowserViewportSource: hostile windows', () => {
+  it('a window whose visualViewport getter throws builds and starts without throwing (no pinch data)', () => {
+    const win = new FakeWindow();
+    Object.defineProperty(win, 'visualViewport', {
+      get(): never {
+        throw new Error('visualViewport blocked');
+      },
+    });
+    const source = createBrowserViewportSource({ window: win as never });
+    const seen: unknown[] = [];
+    expect(() => source.on('viewport', (e) => seen.push(e))).not.toThrow();
+    expect(seen).toHaveLength(1); // the layout-viewport frame still reports
+  });
+
+  it('a blocked global window getter builds an inert source instead of throwing', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      get(): never {
+        throw new Error('window blocked');
+      },
+    });
+    try {
+      expect(() => createBrowserViewportSource({}).on('viewport', () => {})).not.toThrow();
+    } finally {
+      if (original !== undefined) Object.defineProperty(globalThis, 'window', original);
+      else delete (globalThis as { window?: unknown }).window;
+    }
+  });
+});
+
 describe('createBrowserViewportSource', () => {
   it('emits the frame once on activation, before any input can be recorded', () => {
     // The spec requires the first event unconditionally, not only on a change: a recording whose

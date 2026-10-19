@@ -1,4 +1,5 @@
 import { type BlackoutGate, CaptureDataEntryBase, type ReportSnapshotSource } from '@bugsee/core';
+import { hostGlobal } from './host-global';
 import { describeTarget } from './input-source';
 
 // Browser VIEW HIERARCHY (Android viewtree parity). A DOM-tree snapshot taken AT REPORT TIME (the
@@ -79,7 +80,7 @@ const buildNode = (el: SnapshotElement, mask: string): ViewNode | undefined => {
 };
 
 const resolveDocument = (env: DomSnapshotEnv): DocumentLike | undefined =>
-  env.document ?? (typeof document !== 'undefined' ? (document as DocumentLike) : undefined);
+  env.document ?? hostGlobal<DocumentLike>('document');
 
 /** Build a DOM view-hierarchy snapshotter (defaults to the global document). */
 export function createDomSnapshot(env: DomSnapshotEnv = {}): () => ViewNode | undefined {

@@ -116,6 +116,49 @@ describe('createBrowserSystemEventsSource', () => {
     expect(doc.count('visibilitychange')).toBe(0);
   });
 
+  it('blocked host globals (window / document / screen getters that throw) never throw out of the factory', () => {
+    const originals = new Map<string, PropertyDescriptor | undefined>();
+    for (const key of ['window', 'document', 'screen']) {
+      originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, {
+        configurable: true,
+        get(): never {
+          throw new Error(`${key} blocked`);
+        },
+      });
+    }
+    try {
+      let source: ReturnType<typeof createBrowserSystemEventsSource> | undefined;
+      expect(() => {
+        source = createBrowserSystemEventsSource({});
+      }).not.toThrow();
+      const events: SystemEvent[] = [];
+      const off = source?.on('event', (e) => events.push(e));
+      expect(events.map((e) => e.name)).toEqual(['process_started']);
+      off?.();
+      // the failures are reported (each global read once), not swallowed silently
+      const errors: unknown[] = [];
+      createBrowserSystemEventsSource({ onError: (e) => errors.push(e) });
+      expect(errors.map((e) => (e as Error).message).sort()).toEqual([
+        'document blocked',
+        'screen blocked',
+        'window blocked',
+      ]);
+      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      const none: unknown[] = [];
+      createBrowserSystemEventsSource({
+        lifecycle: { on: () => () => {} },
+        onError: (e) => none.push(e),
+      });
+      expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
+    } finally {
+      for (const [key, d] of originals) {
+        if (d !== undefined) Object.defineProperty(globalThis, key, d);
+        else delete (globalThis as Record<string, unknown>)[key];
+      }
+    }
+  });
+
   it('degrades gracefully when document is absent (no visibility events/listener)', () => {
     const { win } = fakeEnv();
     const { events, off } = activate({ window: win, document: undefined, screen: undefined });

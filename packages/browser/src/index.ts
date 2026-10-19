@@ -41,6 +41,7 @@ export {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+export { hostGlobal, hostRead } from './host-global';
 export {
   type BlackoutBindable,
   type BrowserInputEnv,
@@ -87,6 +88,7 @@ export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './
 export { chargingToWire } from './system-trace-values';
 export {
   type BrowserTraceEnv,
+  browserTraceEnvFrom,
   createBrowserSystemTraceProducers,
   defaultBrowserTraceEnv,
 } from './trace-producers';

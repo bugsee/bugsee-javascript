@@ -128,6 +128,30 @@ describe('createIdbBlobStore — durability is COMMIT, not request success', () 
   });
 });
 
+describe('a blocked global indexedDB (sandboxed frame: the read itself throws)', () => {
+  it('building either store never throws; an operation rejects like a host without IndexedDB', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      get(): never {
+        throw new Error('indexedDB blocked');
+      },
+    });
+    try {
+      let blob: ReturnType<typeof createIdbBlobStore> | undefined;
+      let keyed: ReturnType<typeof createIdbKeyedStore> | undefined;
+      expect(() => {
+        blob = createIdbBlobStore();
+        keyed = createIdbKeyedStore();
+      }).not.toThrow();
+      await expect(blob?.put('a', bytes(1))).rejects.toBeDefined();
+      await expect(keyed?.put('a', bytes(1))).rejects.toBeDefined();
+    } finally {
+      if (original !== undefined) Object.defineProperty(globalThis, 'indexedDB', original);
+    }
+  });
+});
+
 describe('createIdbBlobStore', () => {
   it('persists a value under an id and loads it back', async () => {
     const store = createIdbBlobStore({ indexedDB: new IDBFactory() });
