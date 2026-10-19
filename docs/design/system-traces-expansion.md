@@ -501,3 +501,87 @@ Verified by reading source: the mobile tracker/producer/provider structure (abov
 semantics, the JS store's window-based eviction with no part hook. Not verified: Android's polled-trace scheduling details,
 how `TraceFps`/FrameMetrics interplay would map to browser `rAF`, and whether per-launch (non-singleton) trackers need any
 registration with the internal DI container for multi-instance coexistence.
+
+## 15. Domain trackers (owner decision, 2026-10-19) — SUPERSEDES the per-signal trackers of §14.2
+
+§14 adopted the mobile tracker/producer split but the JS slices then built one small tracker per signal (orientation,
+fps, screen size, main-thread lag, GPU cache, GC observer, …). That is a misreading of the mobile design, which this
+section corrects. Android reference: `library/src/main/java/com/bugsee/library/shared/trackers/` (`BugseeTrackerBase`,
+`…UI`, `…Display`, `…Application`, `…Power`, `…Connectivity`, `…Process`, `…Storage`, `…Device`, `…Threading`).
+
+### 15.1 Principles
+1. **A tracker is a global singleton**, created on first need. Its lifetime is the application's, or it stops/resets when
+   the last subscriber leaves — **but only if that loses nothing a later subscription needs** (last screen size, battery
+   manager, GPU info, language, quota estimate are retained). The tracker decides; subscribers never do.
+2. **A tracker encapsulates a DOMAIN**, not a signal. All related notifications, caches and machinery live in one class
+   (or a small private group of classes). Nobody iterates through many trackers to find one.
+3. **A tracker emits as many related notifications as it can** — in JS: several stages on the existing
+   `InterceptorBase`/`MultiKeyEmitterBase` (the analog of Android's many-method listener interface with default no-ops:
+   `UIChangeListener.onOrientationChanged / onKeyboardVisibilityChanged / …`). Failure-isolated fan-out
+   (a throwing listener never breaks the others or the host's event dispatch) is already provided by the emitter.
+4. **Trackers may subscribe to other trackers** (Android: UI → Display, Activity). Producers and events sources are thin
+   consumers: they subscribe to notification kinds and map them to trace/event names and wire shapes.
+5. **Singleton vs the injected window.** The SDK binds to the window/document passed to `launch()` (hostile-frame
+   guards, tests), so "global" means **one instance per window object**: `trackerFor(window, create)` over a `WeakMap`,
+   with a default for the host's own `window`; a `reset()` for tests. Every host read stays guarded (`hostRead`).
+
+### 15.2 Browser tracker catalog
+| Tracker | Absorbs today's | Notifications (stages) |
+|---|---|---|
+| **Application** | `PageLifecycleTracker`, `app_state` | `visibility`, `pagehide`, `freeze`, `resume`, `state` (foreground/background) |
+| **UI/Display** | `OrientationTracker`, `ScreenSizeTracker` (#75), `FpsTracker`, dark-mode `matchMedia`, viewport | `orientation`, `screenSize` ({width,height,dpr}), `colorScheme`, `frameRate`, `viewport`, display-mode/`reducedMotion`/contrast where cheap |
+| **Connectivity** | `ConnectionTracker` | `online`/`offline`, `networkInfo` (Network Information API, §15.3) |
+| **Power** | `BatteryTracker` | `battery` (level/charging), `chargingTime`, `dischargingTime` (Battery Status API, §15.3) |
+| **Process** | `MemoryTracker`, `MainThreadLagTracker` (#75), uptime | `heap`, `mainThreadLag`, `idle` (§15.3), `uptime` |
+| **Storage** | — | `storageEstimate` ({usage, quota, persisted?}) |
+| **Environment** | — | `language`, `timezone`, `privateMode`, `displayMode`, `permissions`, … (§15.3) |
+
+Node/Bun/Deno: **Process** (absorbs `ProcessStatsTracker`, the GC observer, event loop, heap/limits, uptime) and **Storage**
+(the `disk_mem_*` poll, device volume of `effectiveDataDir`). Electron main: **Application**, **Display**, **Power**,
+**Process** (`app_metrics`, GPU info cache, `child-process-gone`, window focus/hang events; §P3). The producers that exist
+today keep their trace names and wire shapes; only their source changes.
+
+### 15.3 Owner additions (2026-10-19) and the facts they rest on
+1. **Storage (browser).** `navigator.storage.estimate()` → `{quota, usage}` (and `persisted()`), polled sparsely
+   (on activate, on visibility→visible, then a slow timer) because there is no change event. This is an **origin quota
+   estimate, not device free space**, and browsers fuzz/pad it (Safari and private windows especially), so it is reported
+   as approximate under a JS-specific name/shape (`storage_estimate` in integer MB `{usage, quota}`), NOT as the Android
+   `disk_mem_*` group, unless the viewer (Q5) is shown to treat the two alike.
+2. **Environment tracker.** Aggregates what can be observed about the runtime: `navigator.language(s)` + the
+   `languagechange` event, time zone (no event: re-read `Intl.DateTimeFormat().resolvedOptions().timeZone`/offset on tick and
+   on visibility), `matchMedia('(display-mode: …)')` (PWA/standalone), cookies enabled, secure context,
+   cross-origin isolation, service-worker controlled, `navigator.webdriver` (automation), Do-Not-Track/GPC, Permissions API
+   states **queried without prompting**, and **private/incognito detection**. Private-mode detection is heuristic and
+   browser-specific (quota size, storage/IndexedDB/OPFS behaviour) and changes between browser versions; it is reported
+   tri-state `yes | no | unknown` with the method used, never as a certainty. **Owner decision needed:** detecting
+   private browsing can read as circumventing the user's intent; propose default OFF behind an explicit launch option
+   (`captureEnvironmentHints`), with `language`/`timezone`/`displayMode` on by default. Change notifications become
+   `events.system` entries (`language_changed`, `timezone_changed`, `display_mode_changed`, `private_mode_detected`).
+3. **Connectivity.** Use the Network Information API where present (`navigator.connection`: `type` (Chromium/Android),
+   `effectiveType`, `downlink` (Mbps, capped), `downlinkMax`, `rtt` (coarsened), `saveData`, `change` event) — a fraction
+   of browsers (no Safari/Firefox), so every field is optional and omitted when absent. The `online`-first mapper stays
+   (`connection.change` does not fire on going offline). Extend the notification with `downlinkMax`.
+4. **Process: idle.** Two different things, both wanted:
+   - **User/screen idle** via the Idle Detection API (`IdleDetector`: `userState` active/idle, `screenState`
+     locked/unlocked; Chromium only, secure context, threshold ≥ 60 s). It needs a **permission prompt** (`requestPermission`,
+     user gesture): the SDK MUST NEVER trigger a prompt in the customer's app. It runs only when the Permissions API
+     already reports `idle-detection` as `granted`, otherwise the trace is omitted. Trace `user_idle_state`.
+   - **JS main-thread idle** via `requestIdleCallback` probing once per sampling tick (is an idle period granted, with what
+     `timeRemaining()` ≤ 50 ms) → `main_thread_idle_ms`; Safari has no `requestIdleCallback` (omit). Must be cheap (one
+     callback per tick, never a loop — see the main_thread_lag measurement in §P2) and gated to visible pages like fps/lag.
+5. **Power.** Use the Battery Status API in full: `level`, `charging`, `chargingTime`, `dischargingTime` with the
+   `levelchange`, `chargingchange`, `chargingtimechange`, `dischargingtimechange` events (Chromium-only, secure context,
+   `battery` permissions-policy; `Infinity` times are omitted, never sent). `battery` and `charging` keep their current
+   Android wire shapes; the times are new JS-specific traces (`battery_charging_time_s`, `battery_discharging_time_s`).
+
+### 15.4 Migration plan (each slice: test-first, mutator loop, Opus review, ready PR)
+- **TR0** foundation: per-window `trackerFor` registry + retention policy hook + `reset()` for tests; no behaviour change.
+- **TR1** Application (fold `PageLifecycleTracker` + `app_state`), **TR2** UI/Display (orientation, screen size, fps,
+  colour scheme, viewport; supersedes #75's `ScreenSizeTracker`), **TR3** Connectivity, **TR4** Power, **TR5** Process
+  (memory, main-thread lag, idle, uptime), **TR6** Storage, **TR7** Environment — browser, one PR each, producers rewired
+  onto the domain trackers with unchanged trace names and shapes.
+- **TR8** node Process (+ GC, event loop) and Storage consolidation; **TR9** Electron trackers (GPU cache folds into
+  the Electron Process/Display tracker; supersedes #73's `GpuInfoCache` placement).
+- Each tracker's retention rule is stated and tested ("stopping does not lose X"); each producer keeps its existing
+  omit-never-zero and guarded-host-read tests.
+
