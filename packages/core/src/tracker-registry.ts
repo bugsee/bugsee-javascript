@@ -22,12 +22,15 @@ export function createTrackerRegistry<T extends object>(): TrackerRegistry<T> {
   const trackers = new WeakMap<object, T>();
   return {
     for(key, create) {
-      let tracker = trackers.get(key);
-      if (tracker === undefined) {
-        tracker = create(key);
-        trackers.set(key, tracker);
-      }
-      return tracker;
+      const existing = trackers.get(key);
+      if (existing !== undefined) return existing;
+      const created = create(key);
+      // `create` may itself have asked for this key (a tracker built from a sibling tracker): the instance the
+      // registry already holds is THE singleton, so keep it and drop the one just built.
+      const raced = trackers.get(key);
+      if (raced !== undefined) return raced;
+      trackers.set(key, created);
+      return created;
     },
     peek: (key) => trackers.get(key),
     reset(key) {
@@ -37,7 +40,10 @@ export function createTrackerRegistry<T extends object>(): TrackerRegistry<T> {
       try {
         (tracker as { reset?: () => void }).reset?.();
       } catch {
-        /* best-effort: the drop already happened */
+        /* best-effort: the drop happens regardless */
+      } finally {
+        // a reset() that re-requested this key would otherwise leave a fresh tracker behind
+        trackers.delete(key);
       }
     },
   };

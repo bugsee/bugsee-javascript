@@ -71,18 +71,74 @@ describe('createTrackerRegistry (one tracker per window object — a singleton s
     expect(registry.peek(b)).toBeUndefined();
   });
 
-  it('holds keys weakly: the registry never keeps a torn-down window alive', async () => {
-    const registry = createTrackerRegistry<Thing>();
-    let win: object | undefined = {};
-    const ref = new WeakRef(win);
-    registry.for(win, () => new Thing());
-    win = undefined;
-    const gc = (globalThis as { gc?: () => void }).gc;
-    if (gc === undefined) return; // only observable with --expose-gc; the WeakMap guarantees it by construction
-    for (let i = 0; i < 10 && ref.deref() !== undefined; i++) {
-      gc();
-      await new Promise((r) => setTimeout(r, 0));
+  it('holds keys WEAKLY: the registry stores through a WeakMap (never a Map, which would leak every injected window)', () => {
+    const set = vi.spyOn(WeakMap.prototype, 'set');
+    const mapSet = vi.spyOn(Map.prototype, 'set');
+    try {
+      const registry = createTrackerRegistry<Thing>();
+      const win = {};
+      registry.for(win, () => new Thing());
+      expect(set.mock.calls.some(([key]) => key === win)).toBe(true);
+      expect(mapSet.mock.calls.some(([key]) => key === win)).toBe(false);
+    } finally {
+      set.mockRestore();
+      mapSet.mockRestore();
     }
-    expect(ref.deref()).toBeUndefined();
+  });
+
+  it('is re-entrancy safe: a factory that asks for the same key gets, and leaves, ONE tracker (the inner one)', () => {
+    const registry = createTrackerRegistry<{ id: string }>();
+    const win = {};
+    const created: string[] = [];
+    const outer = registry.for(win, (key) => {
+      const inner = registry.for(key, () => {
+        created.push('inner');
+        return { id: 'inner' };
+      });
+      created.push('outer');
+      return { id: inner.id === 'inner' ? 'outer' : 'x' };
+    });
+    expect(created).toEqual(['inner', 'outer']);
+    expect(registry.for(win, () => ({ id: 'never' }))).toBe(outer);
+    expect(registry.peek(win)).toBe(outer);
+    // the singleton is whichever instance the registry holds, and every caller got that same one
+    const inner = registry.peek(win);
+    expect(inner?.id).toBe('inner');
+    expect(outer).toBe(inner);
+  });
+
+  it('during reset() the tracker is already detached (a listener asking for the key sees no half-reset tracker)', () => {
+    const registry = createTrackerRegistry<{ reset(): void }>();
+    const win = {};
+    let during: unknown = 'unset';
+    registry.for(win, () => ({
+      reset: () => {
+        during = registry.peek(win);
+      },
+    }));
+    registry.reset(win);
+    expect(during).toBeUndefined();
+  });
+
+  it('reset(key) leaves the key EMPTY even if the tracker reset() re-requests it (or throws)', () => {
+    const registry = createTrackerRegistry<{ reset(): void }>();
+    const win = {};
+    registry.for(win, () => ({
+      reset: () => {
+        registry.for(win, () => ({ reset: () => {} })); // a reset that re-creates itself
+      },
+    }));
+    registry.reset(win);
+    expect(registry.peek(win)).toBeUndefined();
+
+    const w2 = {};
+    registry.for(w2, () => ({
+      reset: () => {
+        registry.for(w2, () => ({ reset: () => {} }));
+        throw new Error('then fails');
+      },
+    }));
+    expect(() => registry.reset(w2)).not.toThrow();
+    expect(registry.peek(w2)).toBeUndefined();
   });
 });
