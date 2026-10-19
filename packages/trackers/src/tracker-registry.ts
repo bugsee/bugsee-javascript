@@ -13,7 +13,7 @@ export interface TrackerRegistry<T extends object> {
    * factory must not acquire resources it cannot lose.
    *
    * `rebind` runs on every request AFTER the one that created the tracker (creation already used that caller's
-   * config): a relaunch on the same window shares the tracker but brings its own error sink / capabilities, and
+   * config), and also for the caller whose `create` lost a re-entrant race (its config went into the discarded instance): a relaunch on the same window shares the tracker but brings its own error sink / capabilities, and
    * `rebind` hands them to the shared instance (latest launch wins). A throwing `rebind` never fails the request.
    */
   for(key: object, create: (key: object) => T, rebind?: (tracker: T) => void): T;
@@ -31,20 +31,23 @@ export function createTrackerRegistry<T extends object>(): TrackerRegistry<T> {
   const trackers = new WeakMap<object, T>();
   return {
     for(key, create, rebind) {
-      const existing = trackers.get(key);
-      if (existing !== undefined) {
+      // A bad rebind must not cost the caller its tracker.
+      const rebound = (tracker: T): T => {
         try {
-          rebind?.(existing);
+          rebind?.(tracker);
         } catch {
-          /* a bad rebind must not cost the caller its tracker */
+          /* ignored */
         }
-        return existing;
-      }
+        return tracker;
+      };
+      const existing = trackers.get(key);
+      if (existing !== undefined) return rebound(existing);
       const created = create(key);
       // `create` may itself have asked for this key (a tracker built from a sibling tracker): the instance the
-      // registry already holds is THE singleton, so keep it and drop the one just built.
+      // registry already holds is THE singleton, so keep it and drop the one just built — but this caller's config
+      // went into the DISCARDED instance, so it is handed to the singleton through `rebind`.
       const raced = trackers.get(key);
-      if (raced !== undefined) return raced;
+      if (raced !== undefined) return rebound(raced);
       trackers.set(key, created);
       return created;
     },

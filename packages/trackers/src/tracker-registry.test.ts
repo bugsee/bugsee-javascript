@@ -35,6 +35,37 @@ describe('createTrackerRegistry (one tracker per window object — a singleton s
     expect(calls).toEqual(['B']);
   });
 
+  it('a caller whose factory lost a re-entrant race still gets its rebind applied to the singleton it receives', () => {
+    const registry = createTrackerRegistry<{ id: string; sink?: string }>();
+    const win = {};
+    const result = registry.for(
+      win,
+      (key) => {
+        registry.for(key, () => ({ id: 'inner' })); // installs the singleton first
+        return { id: 'outer-discarded', sink: 'B' };
+      },
+      (tracker) => {
+        tracker.sink = 'B';
+      },
+    );
+    expect(result.id).toBe('inner');
+    expect(result.sink).toBe('B'); // the outer caller's config reached the instance it got
+    // and a throwing rebind on that path still returns the singleton
+    const w2 = {};
+    expect(
+      registry.for(
+        w2,
+        (key) => {
+          registry.for(key, () => ({ id: 'inner2' }));
+          return { id: 'x' };
+        },
+        () => {
+          throw new Error('boom');
+        },
+      ).id,
+    ).toBe('inner2');
+  });
+
   it('a throwing rebind never breaks the request: the tracker is still returned', () => {
     const registry = createTrackerRegistry<Thing>();
     const win = {};
