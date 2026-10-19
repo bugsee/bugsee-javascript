@@ -166,6 +166,41 @@ describe('ScreenSizeTracker', () => {
     expect(w.count()).toBe(0);
   });
 
+  it('a throwing reporter never escapes on() or the event path', () => {
+    const w = mkWin();
+    (w.win as { addEventListener: unknown }).addEventListener = () => {
+      throw new Error('add');
+    };
+    const t = new ScreenSizeTracker({ window: w.win, screen: w.screen }, () => {
+      throw new Error('reporter');
+    });
+    expect(() => t.on('state', () => {})).not.toThrow();
+    const hostile = mkWin({
+      screen: {
+        get width(): number {
+          throw new Error('w');
+        },
+        height: 1,
+      },
+    });
+    expect(
+      new ScreenSizeTracker({ window: hostile.win, screen: hostile.screen }, () => {
+        throw new Error('reporter');
+      }).current(),
+    ).toBeUndefined();
+  });
+
+  it('a throwing subscriber with a throwing reporter does not escape the event dispatch', () => {
+    const w = mkWin();
+    const t = new ScreenSizeTracker({ window: w.win, screen: w.screen }, () => {
+      throw new Error('reporter');
+    });
+    t.on('state', () => {
+      throw new Error('subscriber');
+    });
+    expect(() => w.fire('resize')).not.toThrow();
+  });
+
   it('a throwing removeEventListener does not leak the other listener', () => {
     const w = mkWin();
     const real = (w.win as { removeEventListener: (t: string, f: () => void) => void })

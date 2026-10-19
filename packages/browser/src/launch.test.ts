@@ -1588,7 +1588,7 @@ describe('launch', () => {
         expect(await rowsOf(store, 'screen_size')).toEqual([]);
       });
 
-      it('records main_thread_lag_ms from the INJECTED window MessageChannel while visible, re-arming and clearing on hide', async () => {
+      it('records main_thread_lag_ms from the INJECTED window MessageChannel while visible, one ping per tick, clearing on hide', async () => {
         stubSensors();
         const d = mkDoc(true);
         const w = fakeWindow();
@@ -1650,8 +1650,9 @@ describe('launch', () => {
         expect(chans[0]?.posted).toBe(1);
         clock = 40;
         chans[0]?.port1.onmessage?.();
-        expect(chans[0]?.posted).toBe(2); // re-armed on receipt
+        expect(chans[0]?.posted).toBe(1); // a receipt never posts again
         for (const t of ticks) t();
+        expect(chans[0]?.posted).toBe(2); // the tick emitted 40 and re-armed with exactly one ping
         d.setVisible(false);
         expect(chans[0]?.closed).toBe(2); // hidden: aborted
         for (const t of ticks) t();

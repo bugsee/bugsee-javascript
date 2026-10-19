@@ -248,6 +248,10 @@ export class FpsProducer extends TraceProducerBase {
  * CSS px, re-read on `resize` / `orientationchange`. A step curve, so it is held and de-duplicated (a resize that
  * moved nothing is dropped); the initial value is emitted at start. Omitted entirely when the screen or the pixel
  * ratio cannot be read as finite positive numbers.
+ *
+ * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
+ * `resize`, so the value can go stale until the next one (a `(resolution: Xdppx)` media-query / `screen`
+ * change listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
  */
 export class ScreenSizeProducer extends TraceProducerBase {
   readonly name = 'screen-size';
@@ -277,8 +281,9 @@ export class ScreenSizeProducer extends TraceProducerBase {
 
 /**
  * `main_thread_lag_ms`: the latest `MessageChannel` round-trip delta, once per sampling tick, ONLY while the page
- * is visible (a hidden tab's throttled timers would paint a hang that did not happen). Polled, so each value is
- * emitted and never held or refreshed; nothing measured yet means nothing emitted.
+ * is visible (a hidden tab's throttled timers would paint a hang that did not happen). One ping per tick, never a
+ * loop; a ping still pending at a tick reports its age. Polled, so each value is emitted and never held or
+ * refreshed; nothing measured yet means nothing emitted.
  */
 export class MainThreadLagProducer extends TraceProducerBase {
   readonly name = 'main-thread-lag';
@@ -502,7 +507,8 @@ export function createBrowserSystemTraceProducers(
                 lifecycle: env.lifecycle,
                 ...(env.document !== undefined ? { document: env.document } : {}),
                 ...(env.MessageChannel !== undefined ? { MessageChannel: env.MessageChannel } : {}),
-                ...(safePerformanceNow(env, onError) !== undefined
+                // Only a real clock function is wired; anything else omits the trace quietly (no error).
+                ...(typeof safePerformanceNow(env, onError) === 'function'
                   ? { now: () => (env.performance as { now(): number }).now() }
                   : {}),
                 ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),

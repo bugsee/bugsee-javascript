@@ -117,10 +117,10 @@ describe('MainThreadLagProducer', () => {
     const p = new MainThreadLagProducer(tracker);
     expect(doc.count()).toBe(0);
     p.start(sinkOf(out));
-    timer?.();
-    expect(out).toEqual([]);
+    expect(out).toEqual([]); // nothing before the first tick
     now = 120;
     (onmessage as (() => void) | null)?.();
+    now = 1000;
     timer?.();
     expect(out).toEqual([{ name: 'main_thread_lag_ms', value: 120, hold: false }]);
     expect(doc.count()).toBeGreaterThan(0); // the lifecycle attached its document listeners for us
@@ -199,6 +199,35 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
       (p) => p.name === 'main-thread-lag',
     );
     expect(() => lag?.start(sinkOf(out))).not.toThrow();
+    expect(out).toEqual([]);
+  });
+});
+
+describe('main_thread_lag_ms clock wiring', () => {
+  it('a performance.now that is not a function omits the trace quietly (no ping, no error)', () => {
+    const win = mkTarget();
+    const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
+    const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
+    let created = 0;
+    class Ch {
+      constructor() {
+        created += 1;
+      }
+    }
+    const errors: unknown[] = [];
+    const lag = createBrowserSystemTraceProducers(
+      {
+        lifecycle,
+        document: doc,
+        MessageChannel: Ch as never,
+        performance: { now: 5 as never },
+      },
+      (e) => errors.push(e),
+    ).find((p) => p.name === 'main-thread-lag');
+    const out: Emit[] = [];
+    lag?.start(sinkOf(out));
+    expect(created).toBe(0);
+    expect(errors).toEqual([]);
     expect(out).toEqual([]);
   });
 });

@@ -5,13 +5,18 @@ import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 // `MessageChannel` and receiving it back on the same thread, i.e. how long a fresh task waited behind whatever
 // the main thread was doing. `MessageChannel`, not `setTimeout(0)`: timers are clamped to 4 ms.
 //
+// ONE ping per sampling tick, never a loop. A receipt must NOT post again: re-arming on receipt is a continuous
+// task loop (a whole core, starved idle callbacks) and it also overwrites a long-task delta with a ~0 one a few
+// microseconds later. Instead each tick, while visible:
+//   - no ping in flight: emit the delta the last receipt stored (if any, consumed), then post ONE new ping;
+//   - ping STILL in flight (the thread has been blocked since the last tick): post nothing and emit its age,
+//     `now - startedAt`, a lower bound on the lag, so a freeze is visible while it is happening. The completed
+//     delta is emitted on the following tick (the same stall is thus reported twice: its floor, then its size).
 // Measured ONLY while the page is visible (the same rule as `fps`). A hidden tab clamps timers and message
 // delivery to ~1 s and then ~1 min, so a hidden round-trip measures the browser's throttling and would paint a
-// hang that never happened. On hidden the run is torn down — the in-flight ping is aborted, the last delta is
-// CLEARED, nothing re-arms — and a fresh run starts on visible, reporting nothing until a ping that started AND
-// completed inside it lands. While visible the ping RE-ARMS on every receipt (a one-shot ping would freeze one
-// number for the whole session) and the latest delta is emitted once per sampling tick. No delta yet, no
-// MessageChannel, no clock, no lifecycle, or hidden: emit NOTHING — omit, never zero.
+// hang that never happened. On hidden the run is torn down — the in-flight ping is aborted, the delta CLEARED —
+// and a fresh run starts on visible. A failed post or clock is reported, clears the delta, and the next tick
+// retries. No MessageChannel, no clock, no lifecycle, or hidden: emit NOTHING — omit, never zero.
 
 export interface MessageChannelLike {
   port1: { onmessage: ((event: unknown) => void) | null; close(): void };
@@ -46,6 +51,8 @@ export class MainThreadLagTracker extends InterceptorBase<{ lag: number }> {
   #channel: MessageChannelLike | undefined;
   #running = false;
   #lastDelta: number | undefined;
+  #inFlight = false;
+  #startedAt = 0;
   #run = 0;
 
   constructor(env: MainThreadLagEnv, onError?: (error: unknown) => void) {
@@ -102,12 +109,13 @@ export class MainThreadLagTracker extends InterceptorBase<{ lag: number }> {
   #startRun(): void {
     if (this.#running) return;
     this.#running = true;
-    this.#lastDelta = undefined;
     try {
       const Channel = this.#env.MessageChannel as new () => MessageChannelLike;
       const channel = new Channel();
       this.#channel = channel;
-      this.#arm(channel, this.#run);
+      const run = this.#run;
+      channel.port1.onmessage = () => this.#onReceipt(run);
+      this.#ping(channel);
       this.#timer = this.#scheduler.setInterval(() => this.#tick(), this.#env.intervalMs ?? 1000);
     } catch (error) {
       this.#report(error);
@@ -134,26 +142,47 @@ export class MainThreadLagTracker extends InterceptorBase<{ lag: number }> {
     }
   }
 
-  // Posts one ping and installs the receipt handler that stores the delta and re-arms. Throws on a failing
-  // clock/channel: `#startRun` rolls back on it, the receipt handler reports it.
-  #arm(channel: MessageChannelLike, run: number): void {
-    const now = this.#env.now as () => number;
-    const startedAt = now();
-    channel.port1.onmessage = () => {
-      if (run !== this.#run) return; // `#stopRun` bumps the generation: a dead run's receipt is dropped
-      try {
-        const delta = now() - startedAt;
-        if (Number.isFinite(delta) && delta >= 0) this.#lastDelta = delta;
-        this.#arm(channel, run);
-      } catch (error) {
-        this.#lastDelta = undefined; // an unreadable clock/channel must not leave a frozen number behind
-        this.#report(error);
-      }
-    };
-    channel.port2.postMessage(undefined);
+  // Posts ONE ping. `#inFlight` is set before the post so a synchronous delivery is still seen as a receipt;
+  // a failed post un-sets it and throws (`#startRun` rolls back on it, `#tick` reports it).
+  #ping(channel: MessageChannelLike): void {
+    this.#startedAt = (this.#env.now as () => number)();
+    this.#inFlight = true;
+    try {
+      channel.port2.postMessage(undefined);
+    } catch (error) {
+      this.#inFlight = false;
+      throw error;
+    }
+  }
+
+  #onReceipt(run: number): void {
+    if (run !== this.#run) return; // `#stopRun` bumps the generation: a dead run's receipt is dropped
+    this.#inFlight = false;
+    try {
+      const delta = (this.#env.now as () => number)() - this.#startedAt;
+      if (Number.isFinite(delta) && delta >= 0) this.#lastDelta = delta;
+    } catch (error) {
+      this.#lastDelta = undefined;
+      this.#report(error);
+    }
   }
 
   #tick(): void {
-    if (this.#lastDelta !== undefined) this.emit('lag', this.#lastDelta);
+    const channel = this.#channel;
+    if (channel === undefined) return;
+    try {
+      if (this.#inFlight) {
+        // Blocked since the last tick: its age so far is the (lower-bound) lag. No second ping.
+        const age = (this.#env.now as () => number)() - this.#startedAt;
+        if (Number.isFinite(age) && age >= 0) this.emit('lag', age);
+        return;
+      }
+      const delta = this.#lastDelta;
+      this.#lastDelta = undefined;
+      if (delta !== undefined) this.emit('lag', delta);
+      this.#ping(channel);
+    } catch (error) {
+      this.#report(error); // nothing stale to clear: the delta was consumed above, or a ping is in flight
+    }
   }
 }
