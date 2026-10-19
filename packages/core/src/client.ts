@@ -810,7 +810,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // The capture-pipeline deps every provider gets once at registration (Android
   // BugseeCaptureDataProviderInit) — the data-plane subset of the Client, minus its registration seams.
   const captureProviderInit: CaptureProviderInit = { operations, captureAggregator };
-  const captureCoordinator = createCaptureCoordinator(captureProviderInit);
+  const captureCoordinator = createCaptureCoordinator(captureProviderInit, onError);
   const launchOptions = options.launchOptions ?? createOptionsContainer();
   // Launch options that arrive as untrusted strings are normalised once, here, with a warning: a typo
   // ('urgent', 'warn') must not leave a report with no severity or silently change what is captured.
@@ -856,7 +856,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
     'reportDefaultBugPriority',
     'high',
   );
-  const detectionCoordinator = createDetectionCoordinator();
+  const detectionCoordinator = createDetectionCoordinator(onError);
   const extensionRegistry = createExtensionRegistry();
   const scheduler = options.scheduler ?? defaultScheduler;
   services.addService(defineService(SchedulerToken, () => scheduler));
@@ -1829,7 +1829,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       try {
         captureCoordinator.start(launchOptions, isEnabled);
       } catch (error) {
+        /* v8 ignore next 2 -- belt and braces: the coordinator isolates provider and gate failures */
         onError(error);
+      }
+      if (mine !== generation) {
+        return; // a reporter stopped the client while the capture providers started
       }
       try {
         detectionCoordinator.start(context, isEnabled, (request) => {
@@ -1839,7 +1843,11 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           }
         });
       } catch (error) {
+        /* v8 ignore next 2 -- belt and braces: the coordinator isolates provider and gate failures */
         onError(error);
+      }
+      if (mine !== generation) {
+        return; // a reporter stopped the client while the detection providers started
       }
       // Drive part rotation + out-of-window cleanup while launched (Android PartManager tick). Guarded: a
       // capture tick must NEVER throw out of the timer (it would surface as an uncaughtException and could

@@ -122,10 +122,14 @@ describe('@bugsee/bun launch', () => {
     expect(names).toContain('cpu_usage_process');
   });
 
-  it('opts out of the V8 heap and available-memory traces (Bun: JSC heap, not comparable availableMemory)', () => {
+  it('opts out of the V8 heap, available-memory and gc traces (Bun: JSC heap, not comparable availableMemory, blind GC observer)', () => {
     track(launchCore('tok', base()).client);
     expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
-      expect.objectContaining({ measuresV8Heap: false, measuresAvailableMemory: false }),
+      expect.objectContaining({
+        measuresV8Heap: false,
+        measuresAvailableMemory: false,
+        measuresGc: false,
+      }),
     );
   });
 
