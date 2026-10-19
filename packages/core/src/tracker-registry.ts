@@ -11,8 +11,12 @@ export interface TrackerRegistry<T extends object> {
    * The tracker for `key`, created by `create(key)` on first use. If `create` itself re-enters `for` with the same key,
    * the FIRST-registered instance is the singleton: the other is discarded and its `reset()` is NOT called, so a
    * factory must not acquire resources it cannot lose.
+   *
+   * `rebind` runs on every request AFTER the one that created the tracker (creation already used that caller's
+   * config): a relaunch on the same window shares the tracker but brings its own error sink / capabilities, and
+   * `rebind` hands them to the shared instance (latest launch wins). A throwing `rebind` never fails the request.
    */
-  for(key: object, create: (key: object) => T): T;
+  for(key: object, create: (key: object) => T, rebind?: (tracker: T) => void): T;
   /** The existing tracker for `key`, without creating one. */
   peek(key: object): T | undefined;
   /**
@@ -26,9 +30,16 @@ export interface TrackerRegistry<T extends object> {
 export function createTrackerRegistry<T extends object>(): TrackerRegistry<T> {
   const trackers = new WeakMap<object, T>();
   return {
-    for(key, create) {
+    for(key, create, rebind) {
       const existing = trackers.get(key);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined) {
+        try {
+          rebind?.(existing);
+        } catch {
+          /* a bad rebind must not cost the caller its tracker */
+        }
+        return existing;
+      }
       const created = create(key);
       // `create` may itself have asked for this key (a tracker built from a sibling tracker): the instance the
       // registry already holds is THE singleton, so keep it and drop the one just built.

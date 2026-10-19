@@ -18,6 +18,38 @@ describe('createTrackerRegistry (one tracker per window object — a singleton s
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it('calls rebind on EVERY request after the first (a relaunch rebinds per-launch config to the shared tracker), never on creation', () => {
+    const registry = createTrackerRegistry<{ sink: string }>();
+    const win = {};
+    const calls: string[] = [];
+    const rebind = (sink: string) => (tracker: { sink: string }) => {
+      calls.push(sink);
+      tracker.sink = sink;
+    };
+    const first = registry.for(win, () => ({ sink: 'created-with-A' }), rebind('A'));
+    expect(calls).toEqual([]); // creation already used launch A's config
+    expect(registry.for(win, () => ({ sink: 'unused' }), rebind('B'))).toBe(first);
+    expect(first.sink).toBe('B');
+    expect(registry.for(win, () => ({ sink: 'unused' }))).toBe(first); // no rebind callback: untouched
+    expect(first.sink).toBe('B');
+    expect(calls).toEqual(['B']);
+  });
+
+  it('a throwing rebind never breaks the request: the tracker is still returned', () => {
+    const registry = createTrackerRegistry<Thing>();
+    const win = {};
+    const t = registry.for(win, () => new Thing());
+    expect(
+      registry.for(
+        win,
+        () => new Thing(),
+        () => {
+          throw new Error('rebind failed');
+        },
+      ),
+    ).toBe(t);
+  });
+
   it('keeps separate trackers per key (an injected window never shares state with the host window)', () => {
     const registry = createTrackerRegistry<Thing>();
     const w1 = {};
