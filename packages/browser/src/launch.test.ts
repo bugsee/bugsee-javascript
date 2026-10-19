@@ -85,6 +85,17 @@ const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
 function fakeWindow() {
   const listeners = new Map<string, Set<(event: Event) => void>>();
   const win = {
+    // A real window IS the global scope: its navigator / performance / screen are the same objects the
+    // tests stub on the globals. The traces read them from THIS window (never from the host globals).
+    get navigator() {
+      return (globalThis as { navigator?: unknown }).navigator;
+    },
+    get performance() {
+      return (globalThis as { performance?: unknown }).performance;
+    },
+    get screen() {
+      return (globalThis as { screen?: unknown }).screen;
+    },
     addEventListener(type: string, listener: (event: Event) => void) {
       const set = listeners.get(type) ?? new Set();
       set.add(listener);
@@ -155,6 +166,7 @@ function uploadTransport() {
 // --- harness -------------------------------------------------------------------------------------
 
 const clients: Bugsee[] = [];
+const clientsStop = (): Array<Promise<boolean>> => clients.splice(0).map((c) => c.stop());
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   resetBrowserDeviceIdCache();
@@ -179,6 +191,7 @@ const baseOptions = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptio
   systemProbe: probe,
   systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
   captureNetwork: false,
+  persist: false, // tests opt in; the shipped default is on wherever IndexedDB exists
   deviceIdEnv: {
     localStorage: testDeviceIdLocalStorage(),
     randomUUID: () => TEST_DEVICE_ID,
@@ -375,7 +388,10 @@ describe('launch', () => {
   });
 
   it('does not register bundleStore in in-memory mode', async () => {
-    const client = await launchTracked('tok', baseOptions({ captureStore: memStore() }));
+    const client = await launchTracked(
+      'tok',
+      baseOptions({ persist: false, captureStore: memStore() }),
+    );
     expect(() => client.getService(BundleStoreToken)).toThrow();
   });
 
@@ -447,6 +463,158 @@ describe('launch', () => {
     await launchTracked('tok', baseOptions({ captureStore: store }));
     const events = await drain(store, 'events.system');
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
+  });
+
+  it('ONE shared lifecycle tracker serves traces and events: a single listener per type; visibility reaches events.system via the injected document', async () => {
+    const store = memStore();
+    const w = fakeWindow();
+    const doc = fakeWindow();
+    const docWin = { ...doc.win, visibilityState: 'hidden' };
+    const client = await launchTracked(
+      'tok',
+      baseOptions({
+        window: w.win,
+        document: docWin as unknown as Document,
+        captureStore: store,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    // traces (connection/orientation) AND the events source are both live, yet each type is bound once
+    expect(w.count('online')).toBe(1);
+    expect(w.count('orientationchange')).toBe(1);
+    doc.emit('visibilitychange', {});
+    const names = ((await drain(store, 'events.system')) ?? []).map(
+      (e) => (e.data as { name: string }).name,
+    );
+    expect(names).toContain('process_background');
+    await client.stop();
+    expect(w.count('online') + w.count('orientationchange')).toBe(0);
+    expect(doc.count('visibilitychange')).toBe(0);
+  });
+
+  describe('dark mode, freeze and resume events (from the injected window + document)', () => {
+    const mkMedia = () => {
+      const l = new Set<(e: { matches: boolean }) => void>();
+      const thisSeen: unknown[] = [];
+      return {
+        thisSeen,
+        l,
+        matchMedia(this: unknown, _q: string) {
+          thisSeen.push(this);
+          return {
+            matches: false,
+            addEventListener: (_t: string, f: (e: { matches: boolean }) => void) => void l.add(f),
+            removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void l.delete(f),
+          };
+        },
+      };
+    };
+    const names = async (store: ReturnType<typeof memStore>) =>
+      ((await drain(store, 'events.system')) ?? []).map(
+        (e) => e.data as { name: string; params?: unknown },
+      );
+
+    it('records dark_mode_changed from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
+      const w = fakeWindow();
+      const m = mkMedia();
+      Object.assign(w.win, { matchMedia: m.matchMedia });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, captureStore: store }),
+      );
+      expect(m.thisSeen).toEqual([w.win]); // called as a method of ITS window
+      for (const f of [...m.l]) f({ matches: true });
+      expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
+        expect.objectContaining({ name: 'dark_mode_changed', params: { dark: true } }),
+      ]);
+      await client.stop();
+      expect(m.l.size).toBe(0);
+    });
+
+    it('a window without matchMedia emits no dark-mode event (silently), never falls back to the host global, and still starts input', async () => {
+      const hostCalls: string[] = [];
+      vi.stubGlobal('matchMedia', (q: string) => {
+        hostCalls.push(q);
+        return {};
+      });
+      try {
+        const store = memStore();
+        const doc = fakeWindow();
+        const onError = vi.fn();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({
+            document: doc.win as unknown as Document,
+            captureStore: store,
+            onError,
+          }),
+        );
+        expect(hostCalls).toEqual([]); // the host's matchMedia is never consulted
+        expect(onError).not.toHaveBeenCalled(); // absence is not a failure
+        expect(doc.count('pointerdown')).toBeGreaterThan(0); // input capture started (document-bound)
+        expect((await names(store)).map((e) => e.name)).not.toContain('dark_mode_changed');
+        await client.stop();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose matchMedia getter or call throws never fails launch (reported)', async () => {
+      for (const kind of ['getter', 'call']) {
+        const w = fakeWindow();
+        if (kind === 'getter') {
+          Object.defineProperty(w.win, 'matchMedia', {
+            get(): never {
+              throw new Error('matchMedia blocked');
+            },
+          });
+        } else {
+          Object.assign(w.win, {
+            matchMedia() {
+              throw new Error('matchMedia blocked');
+            },
+          });
+        }
+        const onError = vi.fn();
+        const store = memStore();
+        const client = await launchTracked(
+          'tok',
+          baseOptions({ window: w.win, captureStore: store, onError }),
+        );
+        expect(
+          onError.mock.calls.map((c) => (c[0] as Error).message),
+          kind,
+        ).toContain('matchMedia blocked');
+        // the other signals still started despite the failure
+        expect(
+          (await names(store)).map((e) => e.name),
+          kind,
+        ).toContain('process_started');
+        await client.stop(); // one launch per process: release it before the next iteration
+      }
+    });
+
+    it('records freeze and resume from the injected DOCUMENT (a window listener never sees them)', async () => {
+      const w = fakeWindow();
+      const doc = fakeWindow();
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          window: w.win,
+          document: doc.win as unknown as Document,
+          captureStore: store,
+        }),
+      );
+      w.emit('freeze', {});
+      expect((await names(store)).map((e) => e.name)).not.toContain('freeze');
+      doc.emit('freeze', {});
+      doc.emit('resume', {});
+      const got = (await names(store)).map((e) => e.name);
+      expect(got).toEqual(expect.arrayContaining(['freeze', 'resume']));
+    });
   });
 
   // Re-pointed from "captures a document interaction (click) as an events.user entry". What that test
@@ -1014,6 +1182,451 @@ describe('launch', () => {
     expect(await drain(store, 'traces.system')).toBeUndefined();
   });
 
+  const batteryManager = () => ({
+    level: 0.5,
+    charging: true,
+    addEventListener() {},
+    removeEventListener() {},
+  });
+
+  it('drives battery/charging through the real provider: getBattery is called and traces are stored', async () => {
+    const getBattery = vi.fn(() => Promise.resolve(batteryManager()));
+    vi.stubGlobal('navigator', { getBattery });
+    const store = memStore();
+    await launchTracked('tok', baseOptions({ captureStore: store }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(getBattery).toHaveBeenCalledTimes(1);
+    const traces = (await drain(store, 'traces.system'))?.map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 50 }));
+    expect(traces).toContainEqual(
+      expect.objectContaining({ name: 'charging', value: { state: 2 } }),
+    );
+  });
+
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        ...batteryManager(),
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    await launchTracked('tok', baseOptions({ captureStore: memStore(), onError }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('battery add refused');
+  });
+
+  it.each([
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s, exactly the floor
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor (2 x the 1s interval)
+    { maxRecordingTime: 600, refreshMs: 10_000 }, // 150s clamped down to 10s
+  ])('refreshes the held battery trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      vi.stubGlobal('navigator', { getBattery: () => Promise.resolve(batteryManager()) });
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          maxRecordingTime,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return `h${ticks.length}`;
+            },
+            clearInterval: () => {},
+          },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 0)); // getBattery resolves: the held baseline at t=0
+      const battery = async () =>
+        ((await drain(store, 'traces.system')) ?? []).filter(
+          (e) => (e.data as { name: string }).name === 'battery',
+        ).length;
+      const tick = () => {
+        for (const t of ticks.filter((x) => x.ms === 1000)) t.cb();
+      };
+      expect(await battery()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick();
+      expect(await battery()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick();
+      expect(await battery()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never calls getBattery when captureSystemTraces is false', async () => {
+    const getBattery = vi.fn(() => Promise.resolve(batteryManager()));
+    vi.stubGlobal('navigator', { getBattery });
+    await launchTracked(
+      'tok',
+      baseOptions({ captureStore: memStore(), captureSystemTraces: false }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(getBattery).not.toHaveBeenCalled();
+  });
+
+  describe('default sensor traces (tracker-backed producers, no sampler override)', () => {
+    // The shipped path: no `systemMetricsSampler`, so heap / connection / orientation come from the
+    // trackers over the injected window + the live globals.
+    const noSampler = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => {
+      const { systemMetricsSampler: _legacy, ...rest } = baseOptions(over);
+      return rest;
+    };
+    const stubSensors = (): void => {
+      vi.stubGlobal('navigator', {
+        onLine: true,
+        deviceMemory: 4,
+        connection: { type: 'wifi', effectiveType: '4g' },
+      });
+      vi.stubGlobal('performance', {
+        memory: { usedJSHeapSize: 10, totalJSHeapSize: 20, jsHeapSizeLimit: 100 },
+      });
+      vi.stubGlobal('screen', { orientation: { type: 'portrait-primary', angle: 0 } });
+    };
+
+    it('captures heap, advertised RAM, connection and orientation from the real globals', async () => {
+      stubSensors();
+      const store = memStore();
+      await launchTracked('tok', noSampler({ captureStore: store }));
+      const rows = new Map(
+        ((await drain(store, 'traces.system')) ?? []).map((e) => {
+          const d = e.data as { name: string; value: unknown };
+          return [d.name, d.value];
+        }),
+      );
+      expect(rows.get('ram_js_heap_total')).toBe(100);
+      expect(rows.get('ram_js_heap_free')).toBe(90);
+      expect(rows.get('ram_js_heap_used')).toBe(10);
+      expect(rows.get('ram_system_advertised')).toBe(4 * 1024 ** 3);
+      expect(rows.get('connection')).toMatchObject({ type: 'wifi', effective_type: '4g' });
+      expect(rows.get('orientation')).toBe(1);
+    });
+
+    it('listens on the INJECTED window for connectivity only while capturing, and releases it on stop', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        // the system-events source listens on the same window, so isolate the trace trackers
+        noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
+      );
+      expect(w.count('online')).toBe(1);
+      expect(w.count('offline')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      await client.stop();
+      expect(w.count('online')).toBe(0);
+      expect(w.count('offline')).toBe(0);
+      expect(w.count('orientationchange')).toBe(0);
+    });
+
+    it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const timers = vi.fn(() => 'h');
+      await launchTracked(
+        'tok',
+        noSampler({
+          window: w.win,
+          captureStore: memStore(),
+          captureSystemTraces: false,
+          captureSystemEvents: false, // the events source listens on the same window
+          scheduler: { setInterval: timers, clearInterval: () => {} },
+        }),
+      );
+      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      // the capture-store tick may use the scheduler; the heap poll must not add its own 1 s timer
+      const heapTimers = timers.mock.calls.length;
+      expect(heapTimers).toBeLessThanOrEqual(1);
+    });
+
+    it('drives the heap poll through the launch scheduler (one extra interval only where the engine has performance.memory)', async () => {
+      const intervals = async (withHeap: boolean): Promise<number> => {
+        stubSensors();
+        if (!withHeap) vi.stubGlobal('performance', {});
+        const timers = vi.fn((_cb: () => void, _ms: number) => 'h');
+        await launchTracked(
+          'tok',
+          noSampler({
+            captureStore: memStore(),
+            scheduler: { setInterval: timers, clearInterval: () => {} },
+          }),
+        );
+        return timers.mock.calls.filter(([, ms]) => ms === 1000).length;
+      };
+      const without = await intervals(false);
+      await Promise.all(clientsStop());
+      const withHeap = await intervals(true);
+      expect(withHeap).toBe(without + 1);
+    });
+
+    it('reads every surface from the INJECTED window: a window without performance.memory omits the heap even when the host global has one', async () => {
+      stubSensors(); // the HOST global has a heap
+      const w = fakeWindow();
+      Object.defineProperty(w.win, 'performance', { value: {}, configurable: true });
+      const store = memStore();
+      await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).not.toContain('ram_js_heap_used');
+      expect(names).toContain('orientation'); // the other surfaces still come from the window
+    });
+
+    it('a window whose getters throw never fails launch: each surface is omitted and reported, the rest still record', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const hostile = (key: string): void =>
+        void Object.defineProperty(w.win, key, {
+          get(): never {
+            throw new Error(`${key} blocked`);
+          },
+          configurable: true,
+        });
+      for (const key of [
+        'navigator',
+        'performance',
+        'screen',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+        'visualViewport',
+      ]) {
+        hostile(key);
+      }
+      const onError = vi.fn();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, onError }),
+      );
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).not.toContain('ram_js_heap_used');
+      expect(names).not.toContain('orientation');
+      const blocked = onError.mock.calls
+        .map((c) => (c[0] as Error).message)
+        .filter((m) => m.endsWith(' blocked'));
+      expect(blocked).toEqual(
+        expect.arrayContaining([
+          'navigator blocked',
+          'performance blocked',
+          'screen blocked',
+          'requestAnimationFrame blocked',
+          'cancelAnimationFrame blocked',
+        ]),
+      );
+      await client.stop();
+    });
+
+    it('a window whose document getter throws never fails launch (reported, no document-bound capture)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      Object.defineProperty(w.win, 'document', {
+        get(): never {
+          throw new Error('document blocked');
+        },
+        configurable: true,
+      });
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: memStore(), onError }),
+      );
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('document blocked');
+      await client.stop();
+    });
+
+    describe('app_state and fps (visibility-gated, from the injected window + document)', () => {
+      const mkDoc = (visible: boolean) => {
+        const l = new Map<string, Set<(e: Event) => void>>();
+        const doc = {
+          visibilityState: visible ? 'visible' : 'hidden',
+          addEventListener: (t: string, f: (e: Event) => void) => {
+            const set = l.get(t) ?? new Set();
+            set.add(f);
+            l.set(t, set);
+          },
+          removeEventListener: (t: string, f: (e: Event) => void) => void l.get(t)?.delete(f),
+        };
+        return {
+          doc,
+          setVisible: (v: boolean) => {
+            doc.visibilityState = v ? 'visible' : 'hidden';
+            for (const f of [...(l.get('visibilitychange') ?? [])]) f({} as Event);
+          },
+        };
+      };
+      const rowsOf = async (store: ReturnType<typeof memStore>, name: string) =>
+        ((await drain(store, 'traces.system')) ?? [])
+          .map((e) => e.data as { name: string; value: unknown })
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('records app_state from the injected document in the Android vocabulary and follows it', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ document: d.doc as unknown as Document, captureStore: store }),
+        );
+        d.setVisible(false);
+        d.setVisible(true);
+        expect(await rowsOf(store, 'app_state')).toEqual([
+          'foreground',
+          'background',
+          'foreground',
+        ]);
+      });
+
+      it('runs the rAF loop on the INJECTED window only while visible and records the measured fps', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let clock = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: { now: () => clock },
+          configurable: true,
+        });
+        const frames: Array<() => void> = [];
+        const cancelled: number[] = [];
+        Object.assign(w.win, {
+          requestAnimationFrame(cb: (t: number) => void) {
+            frames.push(() => cb(0));
+            return frames.length;
+          },
+          cancelAnimationFrame(id: number) {
+            cancelled.push(id);
+          },
+        });
+        const ticks: Array<() => void> = [];
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                if (ms === 1000) ticks.push(cb);
+                return 'h';
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        expect(frames).toHaveLength(1); // visible: loop armed on the injected window
+        frames[0]?.(); // one frame, which re-arms
+        frames[1]?.();
+        clock = 500;
+        for (const t of ticks) t();
+        expect(await rowsOf(store, 'fps')).toEqual([4]); // 2 frames over 500 ms
+        d.setVisible(false);
+        expect(cancelled).toHaveLength(1); // hidden: the pending frame is cancelled
+      });
+
+      it('a hidden injected document never starts a frame loop', async () => {
+        stubSensors();
+        const d = mkDoc(false);
+        const w = fakeWindow();
+        let armed = 0;
+        Object.assign(w.win, {
+          requestAnimationFrame() {
+            armed += 1;
+            return armed;
+          },
+        });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: memStore(),
+          }),
+        );
+        expect(armed).toBe(0);
+      });
+
+      it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let armed = 0;
+        Object.assign(w.win, {
+          requestAnimationFrame() {
+            armed += 1;
+            return armed;
+          },
+        });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
+        );
+        expect(await rowsOf(store, 'app_state')).toEqual([]);
+        expect(armed).toBe(0); // no frame loop was even built
+      });
+    });
+
+    it('a systemMetricsSampler REPLACES the sensor traces (no duplicate heap rows, no sensor listeners); battery still runs', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const store = memStore();
+      await launchTracked(
+        'tok',
+        baseOptions({
+          window: w.win,
+          captureStore: store,
+          captureSystemEvents: false,
+          systemMetricsSampler: () => [{ name: 'ram_js_heap_used', value: 42 }],
+        }),
+      );
+      const names = ((await drain(store, 'traces.system')) ?? []).map(
+        (e) => (e.data as { name: string; value: unknown }).name,
+      );
+      expect(names.filter((n) => n === 'ram_js_heap_used')).toHaveLength(1);
+      expect(names).not.toContain('connection');
+      expect(names).not.toContain('orientation');
+      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+    });
+
+    it('an offline event is captured as a not_reachable connection row', async () => {
+      stubSensors();
+      const nav = (globalThis as { navigator: { onLine: boolean } }).navigator;
+      const w = fakeWindow();
+      const store = memStore();
+      await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+      nav.onLine = false;
+      w.emit('offline', {});
+      const types = ((await drain(store, 'traces.system')) ?? [])
+        .map((e) => e.data as { name: string; value: { type?: string } })
+        .filter((d) => d.name === 'connection')
+        .map((d) => d.value.type);
+      expect(types).toEqual(['wifi', 'not_reachable']);
+    });
+  });
+
   it('wires the network capture provider (captureNetwork on): a fetch yields a network entry', async () => {
     const slot = globalThis as unknown as {
       fetch?: (i: unknown, init?: unknown) => Promise<unknown>;
@@ -1311,6 +1924,185 @@ describe('launch', () => {
     const client = await launchTracked('tok', baseOptions({ persist: true }));
     expect(client.isLaunched()).toBe(true);
     await new Promise((r) => setTimeout(r, 0)); // let async hydration settle
+  });
+
+  describe('persist default', () => {
+    const databaseNames = async (idb: IDBFactory): Promise<string[]> =>
+      (await idb.databases()).map((d) => d.name ?? '');
+
+    it('persists by default when IndexedDB is available: the capture database is created', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      await launchTracked('tok', baseOptions({ persist: undefined, locks: fakeWebLocks() }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats an injected indexedDB as availability too', async () => {
+      const idb = new IDBFactory();
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    // Reload survival and prefix GC both need Web Locks (recoverIfDead is a no-op without them), so the
+    // unattended default must not strand ~10 MB per launch in the origin's quota.
+    it('stays in memory by default when IndexedDB exists but Web Locks do not', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+      expect(await databaseNames(idb)).not.toContain(captureDatabaseName('tok'));
+    });
+
+    it('persists by default when IndexedDB and the page navigator.locks are both present', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+      await launchTracked('tok', baseOptions({ persist: undefined }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('treats a throwing navigator getter as no Web Locks instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      vi.stubGlobal('navigator', {
+        get locks(): never {
+          throw new Error('denied');
+        },
+      });
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(client.isLaunched()).toBe(true);
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+    });
+
+    it('explicit persist:true still opts into the documented no-locks degrade', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      vi.stubGlobal('navigator', {});
+      await launchTracked('tok', baseOptions({ persist: true }));
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    it('an injected locks manager counts as Web Locks availability for the default', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('navigator', {});
+      await launchTracked(
+        'tok',
+        baseOptions({ persist: undefined, indexedDB: idb, locks: fakeWebLocks() }),
+      );
+      await vi.waitFor(async () =>
+        expect(await databaseNames(idb)).toContain(captureDatabaseName('tok')),
+      );
+    });
+
+    // The reported effective options must say what is actually in effect, not the static `false` default.
+    describe('the effective persist option follows the capability-based default', () => {
+      const PERSIST = 'com.bugsee.option.browser.persist';
+      it('reports true when the default turns persistence on', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('reports false when Web Locks are missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('reports false when IndexedDB is missing and the default keeps memory', async () => {
+        vi.stubGlobal('indexedDB', undefined);
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+
+      it('leaves an explicit true alone, even without Web Locks', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', {});
+        const client = await launchTracked('tok', baseOptions({ persist: true }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(true);
+      });
+
+      it('leaves an explicit false alone, even where the default would persist', async () => {
+        vi.stubGlobal('indexedDB', new IDBFactory());
+        vi.stubGlobal('navigator', { locks: fakeWebLocks() });
+        const client = await launchTracked('tok', baseOptions({ persist: false }));
+        expect(client.getLaunchOptions()[PERSIST]).toBe(false);
+      });
+    });
+
+    it('stays in memory when persist is false, even with IndexedDB available', async () => {
+      const idb = new IDBFactory();
+      vi.stubGlobal('indexedDB', idb);
+      const client = await launchTracked('tok', baseOptions({ persist: false }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+
+    it('stays in memory when there is no IndexedDB at all', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
+    });
+
+    it('treats a throwing indexedDB getter as absent instead of failing launch', async () => {
+      vi.stubGlobal('indexedDB', undefined);
+      Object.defineProperty(globalThis, 'indexedDB', {
+        configurable: true,
+        get: () => {
+          throw new Error('denied');
+        },
+      });
+      try {
+        const client = await launchTracked('tok', baseOptions({ persist: undefined }));
+        expect(client.isLaunched()).toBe(true);
+        expect(() => client.getService(BundleStoreToken)).toThrow();
+      } finally {
+        Object.defineProperty(globalThis, 'indexedDB', {
+          configurable: true,
+          writable: true,
+          value: undefined,
+        });
+      }
+    });
+
+    // Persisting writes captured data at rest, so a non-boolean never turns it on, and it is reported.
+    it.each([
+      0,
+      '',
+      'false',
+      'true',
+      1,
+      null,
+    ])('persist=%j (invalid) is OFF even with IndexedDB available, and reports', async (bad) => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      const onError = vi.fn();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ persist: bad as never, onError, locks: fakeWebLocks() }),
+      );
+      expect(() => client.getService(BundleStoreToken)).toThrow();
+      expect(
+        onError.mock.calls.filter((c) =>
+          String((c[0] as Error).message).startsWith('persist must be a boolean'),
+        ),
+      ).toHaveLength(1);
+    });
   });
 
   it('threads onError into the persistent capture store', async () => {
@@ -1923,7 +2715,7 @@ describe('launch — capture recovery (multi-instance)', () => {
   });
 
   it('builds no marker store without persist', async () => {
-    const client = await launchTracked('tok', baseOptions({})); // in-memory store
+    const client = await launchTracked('tok', baseOptions({ persist: false })); // in-memory store
     expect(() => client.getService(ReportMarkerStoreToken)).toThrow();
   });
 
@@ -2486,7 +3278,12 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
         lifecycleEventsListener: (type) => seen.push(type),
       }),
     );
-    // let the dead-sibling recovery finish (its marker is swept when it is done)
+    // let the dead-sibling recovery finish (its marker is swept when it is done). The event can lag on a slow
+    // machine, so wait for it for a bounded time; the cases that expect silence simply run out the clock.
+    const deadline = Date.now() + 1500;
+    while (!seen.includes(LifecycleEvents.RelaunchedAfterCrash) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     await new Promise((r) => setTimeout(r, 50));
     return seen;
   };

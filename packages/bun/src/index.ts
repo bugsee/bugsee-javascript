@@ -1,7 +1,7 @@
 // @bugsee/bun — Bun platform. Bun is node-API-compatible, so this package IS @bugsee/node with
 // two Bun-specific overrides: launch()/launchCore() default the system probe (platform.type 'bun' + Bun
-// version) and the system-metrics sampler (guarded perf_hooks). The full node surface is re-exported; the
-// explicit launch/launchCore exports below shadow node's same-named exports.
+// version) and the system trace producers (createNodeSystemTraceProducers over guarded perf_hooks). The full
+// node surface is re-exported; the explicit launch/launchCore exports below shadow node's same-named exports.
 
 export * from '@bugsee/node';
 export {
@@ -13,5 +13,3 @@ export { bunSystemProbe, createBunSystemProbe } from './environment';
 export { launch, launchCore } from './launch';
 // Likewise `relaunch` re-runs THIS launch (the node one from `export *` would drop the runtime probe/gates).
 export { relaunch } from './relaunch';
-// The guarded sampler (createGuardedSystemMetricsSampler + PerfHooks + GuardedSystemMetricsDeps) is now
-// shared in @bugsee/node and surfaced via `export *` above — no Bun-specific copy.

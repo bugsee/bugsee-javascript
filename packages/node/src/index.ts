@@ -65,11 +65,6 @@ export {
   wrapFetchHandler,
 } from './fetch-server-wrap';
 export {
-  createGuardedSystemMetricsSampler,
-  type GuardedSystemMetricsDeps,
-  type PerfHooks,
-} from './guarded-system-metrics';
-export {
   createHangDetectionProvider,
   type HangDetectionProviderDeps,
 } from './hang-detection-provider';
@@ -98,7 +93,12 @@ export {
   type NodeRuntime,
   relaunch,
 } from './launch';
-export { PROFILING_OPTION_DEFINITIONS, ProfilingOption } from './options';
+export {
+  NODE_TRACE_OPTION_DEFINITIONS,
+  NodeTraceOption,
+  PROFILING_OPTION_DEFINITIONS,
+  ProfilingOption,
+} from './options';
 export {
   createProfilingController,
   type ProfilingController,
@@ -121,4 +121,10 @@ export {
   startServerSpan,
 } from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
-export { createNodeSystemMetricsSampler, type NodeSystemMetricsDeps } from './system-metrics';
+export { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+export type { PerfHooks } from './trackers/guarded-event-loop';
+export {
+  type EventLoopSource,
+  type ProcessStats,
+  ProcessStatsTracker,
+} from './trackers/process-stats-tracker';

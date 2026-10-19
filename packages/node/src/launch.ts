@@ -6,8 +6,10 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
+  type TraceProducer,
   type TraceSample,
 } from '@bugsee/capture';
 import {
@@ -87,6 +89,7 @@ import {
   createUnhandledRejectionProvider,
   type ProcessEvents,
 } from './detection-providers';
+import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 import {
   buildNodeEnvironment,
   realSystemProbe,
@@ -114,7 +117,9 @@ import {
 } from './local-variables';
 import {
   NODE_PRIVACY_OPTION_DEFINITIONS,
+  NODE_TRACE_OPTION_DEFINITIONS,
   NodePrivacyOption,
+  NodeTraceOption,
   PROFILING_OPTION_DEFINITIONS,
   ProfilingOption,
 } from './options';
@@ -137,7 +142,7 @@ import type { TraceResponseConfig } from './server-instrument';
 import { createSourceContextEnricher, type SourceContextOptions } from './source-context';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
-import { createNodeSystemMetricsSampler } from './system-metrics';
+import { createNodeSystemTraceProducers } from './trace-producers';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
 // @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
@@ -171,6 +176,7 @@ const NODE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  ...NODE_TRACE_OPTION_DEFINITIONS,
   ...NODE_PRIVACY_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
@@ -273,6 +279,10 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
   captureSystemEvents?: boolean;
+  /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
+  captureDiskSpace?: boolean;
+  /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
+  diskStatfs?: StatFs;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -398,8 +408,20 @@ export interface BugseeLaunchOptions {
   cpuProfiler?: CpuProfiler;
   /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
   hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
-  /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
+  /** Caller-supplied system-traces sampler; REPLACES the built-in `systemTraceProducers` when set. */
   systemMetricsSampler?: () => readonly TraceSample[];
+  /**
+   * Trace producers (each subscribes to trackers; the provider starts/stops them). Default: the node set
+   * (`createNodeSystemTraceProducers`, wired to this launch's `scheduler`/`onError`). A supplied
+   * `systemMetricsSampler` wins over this.
+   *
+   * PER-LAUNCH ONLY: producers are stateful — a producer's `start()` is a no-op while it is already started —
+   * so never share one array across clients; build a fresh set for each launch (it is RESET on relaunch).
+   * On Bun/Deno a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
+   * default set, including its gates (e.g. Deno's event-loop-lag opt-out), so pass
+   * `createNodeSystemTraceProducers({ measuresEventLoopDelay: false, … })` yourself there.
+   */
+  systemTraceProducers?: readonly TraceProducer[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
   bundleStore?: BundleStore;
   /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
@@ -902,9 +924,35 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   if (propagationDecorator !== undefined) {
     network.interceptor.addRequestDecorator(propagationDecorator);
   }
+  const baseTraceProducers =
+    options.systemTraceProducers ??
+    createNodeSystemTraceProducers({
+      // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+  // Opt-in disk space: the volume the SDK's data dir lives on, so only when there IS one (an in-memory or
+  // degraded launch has none, and never falls back to `/` or the cwd). Appended to caller-supplied producers
+  // too: the option is an explicit request, and Bun/Deno build their own producer list.
+  const traceProducers =
+    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+      ? [
+          ...baseTraceProducers,
+          createDiskSpaceProducer({
+            dataDir: effectiveDataDir,
+            ...(options.diskStatfs !== undefined ? { statfs: options.diskStatfs } : {}),
+            ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          }),
+        ]
+      : baseTraceProducers;
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createNodeSystemMetricsSampler(),
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
+        : { producers: traceProducers }),
+      refreshMs: deriveRefreshMs(maxRecordingTime * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );

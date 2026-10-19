@@ -14,6 +14,7 @@ import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TraceProducer } from '@bugsee/capture';
 import {
   type BundleStore,
   BundleStoreToken,
@@ -64,6 +65,7 @@ import { type SystemProbe, SystemProbeToken } from './environment';
 import type { HangLevel } from './event-loop-watchdog';
 import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
 import { createNodeRequestContextStore, RequestContextStoreToken } from './request-context-store';
+import { createNodeSystemTraceProducers } from './trace-producers';
 
 /** A test-only contributed service token (an "extension"). */
 const DemoExtToken = serviceToken<{ storeIsRegistered: boolean }>('demoExt');
@@ -1366,6 +1368,328 @@ function seedPriorGeneration(
     });
   }
 }
+
+describe('launch — system trace producers', () => {
+  const producerDeps = (fs: ReturnType<typeof fakeScheduler>) => {
+    const calls: string[] = [];
+    const perfHooks = {
+      monitorEventLoopDelay: () => {
+        calls.push('monitor');
+        return {
+          enable: () => void calls.push('enable'),
+          disable: () => void calls.push('disable'),
+          reset() {},
+          mean: 0,
+          max: 0,
+          percentile: () => 0,
+        };
+      },
+      eventLoopUtilization: () => ({ utilization: 0, idle: 1, active: 0 }),
+    };
+    return { calls, deps: { perfHooks, scheduler: fs.scheduler } };
+  };
+
+  it.each([
+    { label: 'lag measured', over: {} },
+    { label: 'lag opted out (Deno)', over: { measuresEventLoopDelay: false } },
+  ])('the producers ($label) attach nothing when captureSystemTraces is false, and release everything on stop()', async ({
+    over,
+  }) => {
+    const fs = fakeScheduler();
+    const trackerTimers = fakeScheduler(); // the shared tracker's OWN scheduler, separate from the launch's
+    const { calls, deps } = producerDeps(trackerTimers);
+    const lagMeasured = !('measuresEventLoopDelay' in over);
+    const off = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        captureSystemTraces: false,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: createNodeSystemTraceProducers({ ...deps, ...over }),
+      }),
+    );
+    expect(calls).toEqual([]);
+    expect(trackerTimers.calls).toHaveLength(0); // no sampling timer registered
+    await off.stop();
+    expect(calls).toEqual([]);
+    expect(trackerTimers.calls).toHaveLength(0);
+    const on = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: createNodeSystemTraceProducers({ ...deps, ...over }),
+      }),
+    );
+    expect(calls).toEqual(lagMeasured ? ['monitor', 'enable'] : []);
+    expect(trackerTimers.calls.map((c) => c.ms)).toEqual([1000]); // exactly one sampling timer
+    await on.stop();
+    expect(calls.at(-1)).toBe(lagMeasured ? 'disable' : undefined);
+  });
+
+  it.each([
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+    { maxRecordingTime: 8, refreshMs: 2000 }, // 8s/4 = 2s, exactly the floor
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor (2 x the 1s interval)
+    { maxRecordingTime: 600, refreshMs: 10_000 }, // 150s clamped down to 10s
+  ])('refreshes a held trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(0);
+      const fs = fakeScheduler();
+      const store = memStore();
+      const once: TraceProducer = {
+        name: 'once',
+        start: (sink) => sink.emit('held_trace', 1, undefined, { hold: true }),
+        stop: () => {},
+      };
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          scheduler: fs.scheduler,
+          maxRecordingTime,
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [once],
+        }),
+      );
+      const tick = fs.calls.find((c) => c.ms === 1000)?.cb;
+      const count = async () =>
+        ((await drain(store, 'traces.system')) ?? []).filter(
+          (e) => (e.data as { name: string }).name === 'held_trace',
+        ).length;
+      expect(await count()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick?.();
+      expect(await count()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick?.();
+      expect(await count()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('captureDiskSpace (opt-in disk_mem_* for the data dir volume)', () => {
+    const diskNames = async (store: ReturnType<typeof memStore>) =>
+      ((await drain(store, 'traces.system')) ?? [])
+        .map((e) => e.data as { name: string; value: number })
+        .filter((d) => d.name.startsWith('disk_mem_'));
+    const waitForDisk = async (store: ReturnType<typeof memStore>) => {
+      for (let i = 0; i < 100; i++) {
+        const got = await diskNames(store);
+        if (got.length > 0) return got;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return [];
+    };
+
+    it('reports integer-MB free/total of the dataDir volume when enabled', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+        }),
+      );
+      const got = await waitForDisk(store);
+      const total = got.find((d) => d.name === 'disk_mem_total')?.value;
+      const free = got.find((d) => d.name === 'disk_mem_free')?.value;
+      expect(Number.isInteger(total) && (total as number) > 0).toBe(true);
+      expect(Number.isInteger(free) && (free as number) <= (total as number)).toBe(true);
+      await client.stop(50);
+    });
+
+    // The producer reads statfs SYNCHRONOUSLY when it starts (launch), so "never called" needs no waiting.
+    it('is OFF by default, and for any non-boolean-true value', () => {
+      for (const v of [undefined, 'true', 1, {}, 'false', 0, null]) {
+        const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+        const paths: string[] = [];
+        launchTracked(
+          'tok',
+          baseOptions({
+            dataDir: dir,
+            captureStore: memStore(),
+            systemMetricsSampler: undefined,
+            diskStatfs: async (path) => {
+              paths.push(path);
+              return { bsize: 1, bavail: 1, blocks: 1 };
+            },
+            ...(v === undefined ? {} : { captureDiskSpace: v as unknown as boolean }),
+          }),
+        );
+        expect(paths, String(v)).toEqual([]);
+      }
+    });
+
+    it('is omitted when the data dir is unusable and the launch degrades to memory', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const file = join(dir, 'not-a-dir');
+      writeFileSync(file, 'x');
+      const paths: string[] = [];
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: file,
+          captureStore: memStore(),
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1, bavail: 1, blocks: 1 };
+          },
+          onError: () => {},
+        }),
+      );
+      expect(paths).toEqual([]);
+    });
+
+    it('is added to caller-supplied systemTraceProducers too (the opt-in is explicit)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      let ownStarted = false;
+      const own: TraceProducer = {
+        name: 'own',
+        start: () => {
+          ownStarted = true;
+        },
+        stop: () => {},
+      };
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [own],
+          captureDiskSpace: true,
+        }),
+      );
+      expect((await waitForDisk(store)).length).toBeGreaterThan(0);
+      expect(ownStarted).toBe(true); // the caller's producers are kept, the disk one is added
+      await client.stop(50);
+    });
+
+    it('measures the effective data dir (never / or the cwd), through the statfs seam', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const store = memStore();
+      const paths: string[] = [];
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: store,
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1024 * 1024, bavail: 5, blocks: 9 };
+          },
+        }),
+      );
+      const got = await waitForDisk(store);
+      expect(paths[0]).toBe(dir);
+      expect(got.map((d) => [d.name, d.value]).sort()).toEqual([
+        ['disk_mem_free', 5],
+        ['disk_mem_total', 9],
+      ]);
+      await client.stop(50);
+    });
+  });
+
+  it('the DEFAULT producers sample through the injected scheduler (no real timer)', async () => {
+    const fs = fakeScheduler();
+    const store = memStore();
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    const rss = async () =>
+      ((await drain(store, 'traces.system')) ?? []).filter(
+        (e) => (e.data as { name: string }).name === 'process_memory_rss',
+      ).length;
+    expect(await rss()).toBe(1); // the start baseline
+    for (const t of fs.calls.filter((c) => c.ms === 1000)) t.cb(); // every 1 s SDK timer, once
+    expect(await rss()).toBe(2); // the tracker's poll, driven by the fake scheduler
+  });
+
+  it('a throwing reader during a DEFAULT-producer poll reaches options.onError', () => {
+    const fs = fakeScheduler();
+    const onError = vi.fn();
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        onError,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    const spy = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      throw new Error('memoryUsage boom');
+    });
+    try {
+      for (const t of fs.calls.filter((c) => c.ms === 1000)) t.cb();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+
+  it('a legacy systemMetricsSampler still wins when supplied, and the producers are then not started', () => {
+    const start = vi.fn();
+    const spy: TraceProducer = { name: 'spy', start, stop: () => {} };
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        systemMetricsSampler: () => [{ name: 'x', value: 1 }],
+        systemTraceProducers: [spy],
+      }),
+    );
+    expect(client.isLaunched()).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('routes a throwing producer to onError and still launches', () => {
+    const onError = vi.fn();
+    const bad: TraceProducer = {
+      name: 'bad',
+      start: () => {
+        throw new Error('p boom');
+      },
+      stop: () => {},
+    };
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        onError,
+        systemMetricsSampler: undefined,
+        systemTraceProducers: [bad],
+      }),
+    );
+    expect(client.isLaunched()).toBe(true);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('p boom');
+  });
+});
 
 describe('launch — capture recovery', () => {
   // The launch generation is fixedClock.wallNow() = 1000, so prior gens use 500 (≠ 1000).

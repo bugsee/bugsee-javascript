@@ -312,7 +312,7 @@ describe('client.showReportDialog() — REAL Chromium end to end', () => {
         radius: getComputedStyle(root.querySelector('.bugsee-reporting-dialog-card') as Element)
           .borderRadius,
       }));
-      expect(styled).toEqual({ styleElements: 0, adopted: 1, radius: '8px' });
+      expect(styled).toEqual({ styleElements: 0, adopted: 1, radius: '12px' });
       expect(violations.map((v) => v.slice(0, 300))).toEqual([]);
       await context.close();
     } finally {

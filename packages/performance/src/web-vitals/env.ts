@@ -85,11 +85,20 @@ export function realWebVitalsEnv(): WebVitalsEnv {
     window?: EventTargetLike;
     queueMicrotask?: (callback: () => void) => void;
   };
+  // Every read of a host global is isolated: a blocked frame or hostile getter throws from the read itself,
+  // and this runs while the SDK is being wired. An unreadable surface is simply absent (no vitals from it).
+  const read = <T>(get: () => T): T | undefined => {
+    try {
+      return get();
+    } catch {
+      return undefined;
+    }
+  };
   return {
-    PerformanceObserver: g.PerformanceObserver,
-    performance: g.performance,
-    document: g.document,
-    window: g.window,
-    queueMicrotask: g.queueMicrotask,
+    PerformanceObserver: read(() => g.PerformanceObserver),
+    performance: read(() => g.performance),
+    document: read(() => g.document),
+    window: read(() => g.window),
+    queueMicrotask: read(() => g.queueMicrotask),
   };
 }

@@ -14,6 +14,7 @@ import {
   createSystemEventsProvider,
   createSystemTracesProvider,
   createVideoAuxProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
   type TraceSample,
@@ -85,6 +86,7 @@ import {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+import { boundMatchMedia } from './host-global';
 import { bindInputBlackout, createBrowserInputSource } from './input-source';
 import { installPageHideFlush } from './page-lifecycle';
 import {
@@ -94,7 +96,8 @@ import {
 } from './report-dialog';
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
-import { createBrowserSystemTracesSampler } from './system-metrics';
+import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
+import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -126,6 +129,30 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
+/** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
+const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
+
+/** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
+const indexedDbPresent = (): boolean => {
+  try {
+    return (globalThis as { indexedDB?: unknown }).indexedDB != null;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the page exposes Web Locks (`navigator.locks`, a secure-context API); a throwing getter counts as
+ * absent. Without it a previous launch's durable data is never recovered or swept (liveness cannot tell a
+ * dead sibling from a live one), so the unattended persist default requires it.
+ */
+const navigatorLocksPresent = (): boolean => {
+  try {
+    return (globalThis as { navigator?: { locks?: unknown } }).navigator?.locks != null;
+  } catch {
+    return false;
+  }
+};
 
 const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
@@ -161,6 +188,9 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: true,
     ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   },
+  // Persistence collects data at rest, so only boolean `true`/`false` count: anything else is OFF and reported
+  // (the launch substitutes the IndexedDB default only when the option is absent).
+  { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
   // The report dialog (`showReportDialog`) is browser/DOM-only. Defaults are the mobile SDKs': nothing
   // required, labels and the severity picker hidden, new bugs start at `high`.
   {
@@ -363,9 +393,12 @@ export interface BugseeLaunchOptions {
   /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
   maxDataSize?: number;
   /**
-   * Persist the bundle queue to IndexedDB so a crash report survives a reload/kill mid-upload and is
-   * re-uploaded on the next launch (guaranteed crash delivery). Off by default (in-memory only). An
-   * explicit `bundleStore` overrides this.
+   * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
+   * reload or a browser restart and a report interrupted mid-upload is re-uploaded on the next launch.
+   * On by default wherever the page has BOTH IndexedDB and Web Locks (`navigator.locks`, or an injected
+   * `locks`): without locks a previous launch's data is never recovered or cleaned up, so the default stays
+   * in memory and nothing survives a reload. `true` persists anyway (best effort, no cross-tab recovery);
+   * `false` keeps everything in memory. An explicit `bundleStore` or `captureStore` overrides the matching part.
    */
   persist?: boolean;
   /**
@@ -386,7 +419,11 @@ export interface BugseeLaunchOptions {
   // Injectable seams (advanced / tests) — defaults target the real browser runtime.
   /** HTTP primitive. Default the browser fetch transport. */
   transport?: HttpTransport;
-  /** Window event target for detection + system events. Default the global `window`. */
+  /**
+   * The window the SDK is bound to: event target for detection + system events, AND the source of the traces'
+   * `navigator` / `performance` / `screen` / `requestAnimationFrame` (an absent one omits its trace; nothing falls
+   * back to the host globals). Default the global `window`.
+   */
   window?: WindowEvents;
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
@@ -410,7 +447,10 @@ export interface BugseeLaunchOptions {
   triggerPipeline?: TriggerPipeline;
   /** System probe for the environment envelope. Default realBrowserProbe. */
   systemProbe?: BrowserProbe;
-  /** System-traces sampler. Default the performance.memory sampler. */
+  /**
+   * LEGACY polled system-traces override. It REPLACES the default heap/connection/orientation traces (as on
+   * Node); battery stays a tracker-backed producer. The defaults are producers, not a sampler.
+   */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
   bundleStore?: BundleStore;
@@ -583,11 +623,25 @@ async function buildLaunch(
   // for liveness, and recovers only DEAD siblings (never one a live tab holds). `durableCapture` builds the
   // per-instance capture/marker VIEWS the launch wraps; `recoverEnabled` additionally records + recovers
   // markers. A fresh instanceId per launch ⇒ self's namespaces are empty, so a prior crash is a dead sibling.
-  const durableCapture = options.persist === true && options.captureStore === undefined;
+  // Durable by default wherever an IndexedDB object AND Web Locks exist, so the rolling window survives a
+  // reload or a browser restart. Locks are required because recovery and the sweep of a previous launch's
+  // prefix both run through the liveness lock: without them the old data is never read or deleted and each
+  // reload would strand up to `maxDataSize` in the origin's shared quota. An explicit `persist: true` still
+  // opts into that no-locks degrade. `persist: false` opts out; a non-boolean value is OFF and reported.
+  // Presence is all that is probed: if the store later cannot commit, writes fail into `onError`.
+  const persist =
+    options.persist === undefined
+      ? (options.indexedDB !== undefined || indexedDbPresent()) &&
+        (options.locks !== undefined || navigatorLocksPresent())
+      : resolved.options.get<boolean>(PERSIST_OPTION_KEY, false);
+  // The canonical record is what the client and `sdk.options` report as in effect: say what the capability
+  // check decided instead of the static `false` default (for an explicit or invalid value this is a no-op).
+  resolved.canonical[PERSIST_OPTION_KEY] = persist;
+  const durableCapture = persist && options.captureStore === undefined;
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
     appToken,
-    persist: options.persist === true,
+    persist,
     captureRecovery: durableCapture,
     ...(options.bundleStore !== undefined ? { bundleOverride: options.bundleStore } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -669,8 +723,21 @@ async function buildLaunch(
       : createMemoryCaptureStore(storeBounds));
 
   // The DOM document drives BOTH input capture and the report-time viewtree (the same physical object).
+  // Reading `window.document` can throw (cross-origin proxy, torn-down frame): that must not fail launch.
   const domDocument: Document | undefined =
-    options.document ?? (win as { document?: Document }).document;
+    options.document ??
+    (() => {
+      try {
+        return (win as { document?: Document }).document;
+      } catch (error) {
+        try {
+          options.onError?.(error);
+        } catch {
+          /* the reporter itself failed */
+        }
+        return undefined;
+      }
+    })();
   // View hierarchy: a DOM snapshot PULLED at report assembly → a `viewtree` entry (browser/DOM-only,
   // gated). The source self-noops where there is no DOM, so it is safe to register unconditionally when on.
   const captureViewtree = resolved.options.get(BugseeOption.CaptureViewHierarchy, true);
@@ -805,14 +872,44 @@ async function buildLaunch(
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
+  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
+  // producers and the events source: the listeners are bound in a single place.
+  const lifecycle = new PageLifecycleTracker(
+    { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
+    options.onError,
+  );
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createBrowserSystemTracesSampler(),
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler }
+        : {}),
+      producers: createBrowserSystemTraceProducers(
+        {
+          // Every surface comes from the INJECTED window/document, never the host globals.
+          ...browserTraceEnvFrom(win, domDocument, options.onError),
+          ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          lifecycle,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        },
+        options.onError,
+      ),
+      refreshMs: deriveRefreshMs(resolved.options.get(BugseeOption.Duration, 60) * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
+  const matchMedia = boundMatchMedia(win, options.onError);
   client.addCaptureProvider(
-    createSystemEventsProvider(createBrowserSystemEventsSource({ window: win })),
+    createSystemEventsProvider(
+      createBrowserSystemEventsSource({
+        window: win,
+        lifecycle,
+        // from the INJECTED window (bound to it); never the host global
+        ...(matchMedia !== undefined ? { matchMedia } : {}),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
+    ),
   );
   // Input capture: one carrier-shared DOM source (capture-phase, passive, observe-only) → the dedicated
   // `input` stream (`input.json`). NOT `events.user` — that stream belongs to the application's own

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createObscuringChannel } from './obscuring-channel';
 import { FAIL_CLOSED_AREA } from './obscuring-source';
 import type { SecureMessage } from './protocol';
@@ -48,6 +48,104 @@ function setup(docAreas: Record<string, ReturnType<typeof el>[]>) {
   });
   return { bridge, doc, channel };
 }
+
+describe('createObscuringChannel — hostile ambient performance', () => {
+  const build = () => {
+    const bridge = fakeBridge();
+    const channel = createObscuringChannel({
+      bridge,
+      document: fakeDoc({}),
+      seq: () => 1,
+      mutationObserver: undefined,
+    });
+    return { bridge, channel };
+  };
+
+  it('a throwing global performance never throws out of construction; messages still post on the wall clock', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+    Object.defineProperty(globalThis, 'performance', {
+      configurable: true,
+      get(): never {
+        throw new Error('performance blocked');
+      },
+    });
+    try {
+      let built: ReturnType<typeof build> | undefined;
+      expect(() => {
+        built = build();
+      }).not.toThrow();
+      expect(() => built?.channel.start()).not.toThrow();
+      expect(built?.bridge.posted.length ?? 0).toBeGreaterThan(0);
+      const msg = JSON.parse(built?.bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect(Number.isFinite(msg.mono)).toBe(true);
+      expect(msg.o).toBe(0);
+    } finally {
+      if (original !== undefined) Object.defineProperty(globalThis, 'performance', original);
+    }
+  });
+
+  it('now and timeOrigin degrade as a unit: a performance with now() but no numeric timeOrigin uses the wall clock with origin 0', () => {
+    vi.stubGlobal('performance', { now: () => 1234 }); // page-relative ms: pairing it with origin 0 would be 1970
+    try {
+      const { channel, bridge } = build();
+      channel.start();
+      const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect(msg.o).toBe(0);
+      expect(msg.mono).not.toBe(1234); // the page-relative clock was NOT used
+      expect(msg.mono).toBeGreaterThan(1_000_000_000_000); // the wall clock (epoch ms), consistent with origin 0
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an injected half-pair (now without origin, or origin without now) is ignored: the ambient pair is used whole', () => {
+    vi.stubGlobal('performance', { now: () => 7, timeOrigin: 9999 });
+    try {
+      for (const half of [{ now: () => 42 }, { timeOrigin: 5 }]) {
+        const bridge = fakeBridge();
+        const channel = createObscuringChannel({
+          bridge,
+          document: fakeDoc({}),
+          seq: () => 1,
+          mutationObserver: undefined,
+          ...half,
+        });
+        channel.start();
+        const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+        expect([msg.mono, msg.o]).toEqual([7, 9999]);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a missing performance (or one without now/timeOrigin) degrades the same way', () => {
+    for (const perf of [undefined, {}, { now: () => 1 }]) {
+      vi.stubGlobal('performance', perf);
+      try {
+        const { channel, bridge } = build();
+        expect(() => channel.start()).not.toThrow();
+        expect(bridge.posted.length).toBeGreaterThan(0);
+        const msg = JSON.parse(bridge.posted[0] ?? '{}') as { o?: number };
+        expect(msg.o).toBe(0); // no usable origin: 0, never undefined/NaN
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it('uses the ambient performance clock and origin when they are real', () => {
+    vi.stubGlobal('performance', { now: () => 7.5, timeOrigin: 1234 });
+    try {
+      const { channel, bridge } = build();
+      channel.start();
+      const msg = JSON.parse(bridge.posted[0] ?? '{}') as { mono?: number; o?: number };
+      expect([msg.mono, msg.o]).toEqual([7.5, 1234]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe('createObscuringChannel — fail-closed snapshot', () => {
   /**

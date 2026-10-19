@@ -1,0 +1,693 @@
+import { describe, expect, it } from 'vitest';
+import { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+
+function harness(deps: NodeTraceProducerDeps) {
+  const got = new Map<string, unknown>();
+  const spy = { set: 0, cleared: 0 };
+  let tick: (() => void) | undefined;
+  const producers = createNodeSystemTraceProducers({
+    ...deps,
+    scheduler: {
+      setInterval: (cb) => {
+        spy.set += 1;
+        tick = cb;
+        return 'h';
+      },
+      clearInterval: () => {
+        spy.cleared += 1;
+      },
+    },
+  });
+  const sink = { emit: (n: string, v: unknown) => void got.set(n, v) };
+  return {
+    got,
+    spy,
+    producers,
+    startAll: () => {
+      for (const p of producers) p.start(sink);
+    },
+    stopAll: () => {
+      for (const p of producers) p.stop();
+    },
+    tick: () => tick?.(),
+  };
+}
+
+const constDeps = (over: NodeTraceProducerDeps = {}): NodeTraceProducerDeps => ({
+  memoryUsage: () => ({ rss: 10, heapTotal: 20, heapUsed: 30, external: 40, arrayBuffers: 50 }),
+  systemMemory: () => ({ total: 1000, free: 400 }),
+  cpuUsage: () => ({ user: 100_000, system: 200_000 }),
+  cpuCount: () => 2,
+  monotonicNowMs: () => 1000,
+  uptime: () => 42.7,
+  v8Heap: () => ({ limit: 1000, used: 300, available: 700, malloced: 11, peakMalloced: 12 }),
+  memoryLimit: () => 500,
+  availableMemory: () => 250,
+  ...over,
+});
+
+function fakePerfHooks(
+  elu: (a?: unknown, b?: unknown) => unknown = () => ({ idle: 5, active: 5, utilization: 0.3 }),
+) {
+  const state = { monitor: 0, enabled: false, disables: 0 };
+  const histogram = {
+    count: 3, // samples taken; 0 = nothing measured yet
+    enable() {
+      state.enabled = true;
+    },
+    disable() {
+      state.enabled = false;
+      state.disables += 1;
+    },
+    reset() {},
+    mean: 2e6,
+    max: 9e6,
+    percentile: () => 7e6,
+  };
+  return {
+    state,
+    histogram,
+    perfHooks: {
+      monitorEventLoopDelay: () => {
+        state.monitor += 1;
+        return histogram;
+      },
+      eventLoopUtilization: elu as never,
+    },
+  };
+}
+
+const eventLoop = {
+  read: () => ({ meanMs: 1, maxMs: 2, p99Ms: 3 }),
+  start: () => {},
+  stop: () => {},
+};
+
+describe('createNodeSystemTraceProducers', () => {
+  // Per-call constant increments: every read advances one fixed step, so whichever reader takes the
+  // baseline, each window is exactly one step — every producer sees the SAME window.
+  const steppingCpu = () => {
+    let calls = 0;
+    return {
+      cpuUsage: () => {
+        calls += 1;
+        return { user: calls * 100_000, system: calls * 50_000 };
+      },
+      monotonicNowMs: () => calls * 1000, // read right after cpuUsage: the same step
+    };
+  };
+
+  it('emits the full node catalog with exact values (non-zero CPU window)', () => {
+    const gc = {
+      start: () => {},
+      stop: () => {},
+      read: () => ({ count: 3, pauseMs: 12.5, maxPauseMs: 8 }),
+    };
+    const h = harness(
+      constDeps({ ...steppingCpu(), eventLoop, gc, eventLoopUtilization: () => 0.5 }),
+    );
+    h.startAll();
+    h.tick();
+    expect([...h.got.entries()].sort(([x], [y]) => x.localeCompare(y))).toEqual([
+      ['cpu_usage_process', 7.5],
+      ['cpu_usage_system', 50000],
+      ['cpu_usage_user', 100000],
+      ['event_loop_lag_max_ms', 2],
+      ['event_loop_lag_ms', 1],
+      ['event_loop_lag_p99_ms', 3],
+      ['event_loop_utilization', 0.5],
+      ['gc_count', 3],
+      ['gc_pause_max_ms', 8],
+      ['gc_pause_ms', 12.5],
+      ['process_memory_array_buffers', 50],
+      ['process_memory_external', 40],
+      ['process_memory_heap_total', 20],
+      ['process_memory_heap_used', 30],
+      ['process_memory_limit', 500],
+      ['process_memory_rss', 10],
+      ['process_uptime_s', 42],
+      ['ram_js_heap_free', 700],
+      ['ram_js_heap_total', 1000],
+      ['ram_js_heap_used', 300],
+      ['ram_system_available', 250],
+      ['ram_system_free', 400],
+      ['ram_system_total', 1000],
+      ['v8_heap_available', 700],
+      ['v8_heap_malloced', 11],
+      ['v8_heap_peak_malloced', 12],
+      ['v8_heap_size_limit', 1000],
+    ]);
+  });
+
+  describe('runtime-depth traces', () => {
+    const run = (over: NodeTraceProducerDeps) => {
+      const h = harness(constDeps({ eventLoop, eventLoopUtilization: () => 0.5, ...over }));
+      h.startAll();
+      return h;
+    };
+
+    it('ram_js_heap_* is the CEILING-based view: total = limit, used = used, free = limit - used', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 900, used: 250, available: 1, malloced: 2, peakMalloced: 3 }),
+      });
+      expect(h.got.get('ram_js_heap_total')).toBe(900);
+      expect(h.got.get('ram_js_heap_used')).toBe(250);
+      expect(h.got.get('ram_js_heap_free')).toBe(650);
+    });
+
+    it('ram_js_heap_free never goes negative when used overshoots the limit', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 100, used: 130, available: 0, malloced: 0, peakMalloced: 0 }),
+      });
+      expect(h.got.get('ram_js_heap_free')).toBe(0);
+    });
+
+    it('v8_heap_* carry their own quantities, distinct from ram_js_heap_* and process_memory_heap_*', () => {
+      const h = run({
+        v8Heap: () => ({ limit: 900, used: 250, available: 111, malloced: 22, peakMalloced: 33 }),
+      });
+      expect(h.got.get('v8_heap_size_limit')).toBe(900);
+      expect(h.got.get('v8_heap_available')).toBe(111);
+      expect(h.got.get('v8_heap_malloced')).toBe(22);
+      expect(h.got.get('v8_heap_peak_malloced')).toBe(33);
+      expect(h.got.get('process_memory_heap_total')).toBe(20); // committed heap, untouched
+    });
+
+    it('re-emits changed values on each tick', () => {
+      let used = 300;
+      const h = run({
+        v8Heap: () => ({ limit: 1000, used, available: 700, malloced: 11, peakMalloced: 12 }),
+      });
+      used = 400;
+      h.tick();
+      expect(h.got.get('ram_js_heap_used')).toBe(400);
+      expect(h.got.get('ram_js_heap_free')).toBe(600);
+    });
+
+    it('omits every v8/ram_js_heap trace when the heap reader answers undefined', () => {
+      const h = run({ v8Heap: () => undefined });
+      for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
+      expect(h.got.has('process_memory_rss')).toBe(true);
+    });
+
+    it('omits process_memory_limit / ram_system_available when their readers answer undefined', () => {
+      const h = run({ memoryLimit: () => undefined, availableMemory: () => undefined });
+      expect(h.got.has('process_memory_limit')).toBe(false);
+      expect(h.got.has('ram_system_available')).toBe(false);
+      expect(h.got.get('process_uptime_s')).toBe(42);
+    });
+
+    it('measuresV8Heap:false wires NO heap reader (Bun): nothing constructed, nothing emitted', () => {
+      const { v8Heap: _off, ...base } = constDeps({ eventLoop });
+      const h = harness({ ...base, measuresV8Heap: false });
+      h.startAll();
+      for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
+    });
+
+    it('measuresAvailableMemory:false omits ram_system_available even where the runtime answers (Bun/Deno)', () => {
+      const { availableMemory: _off, ...base } = constDeps({ eventLoop });
+      const h = harness({ ...base, measuresAvailableMemory: false });
+      h.startAll();
+      expect(h.got.has('ram_system_available')).toBe(false);
+    });
+
+    it('an injected reader wins over the measures* flag (as for the event-loop source)', () => {
+      const h = harness({
+        ...constDeps({ eventLoop }),
+        measuresV8Heap: false,
+        measuresAvailableMemory: false,
+      });
+      h.startAll();
+      expect(h.got.get('v8_heap_size_limit')).toBe(1000);
+      expect(h.got.get('ram_system_available')).toBe(250);
+    });
+
+    it('an explicit undefined reader does not clobber the wired default (measures* true)', () => {
+      const {
+        v8Heap: _a,
+        memoryLimit: _b,
+        availableMemory: _c,
+        ...base
+      } = constDeps({ eventLoop });
+      const h = harness({
+        ...base,
+        v8Heap: undefined,
+        memoryLimit: undefined,
+        availableMemory: undefined,
+      });
+      h.startAll();
+      expect(Number(h.got.get('v8_heap_size_limit'))).toBeGreaterThan(0); // the real node default, not absent
+    });
+
+    it('no runtime-depth trace is held for refresh: a value that later becomes unavailable must not be re-recorded as stale', () => {
+      let limit: number | undefined = 500;
+      const calls: Array<[string, unknown, { hold?: boolean } | undefined]> = [];
+      const h = harness(constDeps({ eventLoop, memoryLimit: () => limit }));
+      for (const p of h.producers) {
+        p.start({ emit: (n, v, _d, o) => void calls.push([n, v, o]) });
+      }
+      h.tick();
+      const per = (name: string) => calls.filter(([n]) => n === name);
+      for (const name of ['v8_heap_size_limit', 'ram_js_heap_total', 'process_memory_limit']) {
+        expect(per(name)).toHaveLength(2); // baseline + tick, even though the value did not change
+        expect(per(name).every(([, , o]) => o?.hold === false)).toBe(true);
+      }
+      limit = undefined; // the cap is lifted
+      h.tick();
+      expect(per('process_memory_limit')).toHaveLength(2); // nothing further: omitted, not carried forward
+    });
+
+    it('wires the real process.constrainedMemory() by default (a real cap is reported, no cap is not)', () => {
+      const proc = process as { constrainedMemory?: () => number };
+      const original = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
+      const set = (fn: () => number) =>
+        Object.defineProperty(process, 'constrainedMemory', { value: fn, configurable: true });
+      try {
+        set(() => 1234);
+        const { memoryLimit: _off, ...base } = constDeps({ eventLoop });
+        const capped = harness(base);
+        capped.startAll();
+        expect(capped.got.get('process_memory_limit')).toBe(1234);
+        set(() => 0);
+        const free = harness(base);
+        free.startAll();
+        expect(free.got.has('process_memory_limit')).toBe(false);
+      } finally {
+        if (original) Object.defineProperty(process, 'constrainedMemory', original);
+        else delete proc.constrainedMemory;
+      }
+    });
+
+    it('stopping the producers releases the timer exactly once', () => {
+      const h = run({});
+      h.stopAll();
+      expect(h.spy.cleared).toBe(1);
+    });
+  });
+
+  it('CPU producer: user, system and process% are each their own value (distinct non-zero steps)', () => {
+    let user = 0;
+    let system = 0;
+    let wall = 0;
+    const h = harness(
+      constDeps({
+        cpuUsage: () => ({ user, system }),
+        monotonicNowMs: () => wall,
+        cpuCount: () => 2,
+      }),
+    );
+    h.startAll();
+    user += 100_000; // µs
+    system += 50_000; // µs
+    wall += 1000; // ms
+    h.tick();
+    expect(h.got.get('cpu_usage_user')).toBe(100_000);
+    expect(h.got.get('cpu_usage_system')).toBe(50_000);
+    // (100 000 + 50 000) µs busy / (1 000 ms * 1 000) µs wall / 2 cores * 100 = 7.5 %
+    expect(h.got.get('cpu_usage_process')).toBe(7.5);
+  });
+
+  it('emits a baseline on start, before any tick', () => {
+    const h = harness(constDeps());
+    h.startAll();
+    expect(h.got.get('process_memory_rss')).toBe(10);
+    expect(h.got.get('cpu_usage_process')).toBe(0);
+  });
+
+  it('omits lag and utilization when no eventLoop / utilization source answers', () => {
+    const h = harness(
+      constDeps({ measuresEventLoopDelay: false, eventLoopUtilization: () => undefined }),
+    );
+    h.startAll();
+    h.tick();
+    expect(h.got.has('event_loop_lag_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_max_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_p99_ms')).toBe(false);
+    expect(h.got.has('event_loop_utilization')).toBe(false);
+    expect(h.got.has('process_memory_rss')).toBe(true);
+  });
+
+  it('omits lag (never zero) when the source read() is undefined', () => {
+    const h = harness(constDeps({ eventLoop: { ...eventLoop, read: () => undefined } }));
+    h.startAll();
+    h.tick();
+    expect(h.got.has('event_loop_lag_ms')).toBe(false);
+  });
+
+  it('measuresEventLoopDelay:false never constructs a histogram; ELU still reported', () => {
+    const { perfHooks, state } = fakePerfHooks();
+    const h = harness({ ...constDeps(), perfHooks, measuresEventLoopDelay: false });
+    h.startAll();
+    h.tick();
+    h.stopAll();
+    expect(state.monitor).toBe(0);
+    expect(h.got.has('event_loop_lag_ms')).toBe(false);
+    expect(h.got.get('event_loop_utilization')).toBe(0.3);
+  });
+
+  it('default perfHooks path reports lag from a real-shaped histogram, lazily', () => {
+    const { perfHooks, state } = fakePerfHooks();
+    const h = harness({ ...constDeps(), perfHooks });
+    expect(state.monitor).toBe(0);
+    expect(h.spy.set).toBe(0);
+    h.startAll();
+    h.tick();
+    expect(h.got.get('event_loop_lag_ms')).toBe(2);
+    expect(h.got.get('event_loop_lag_max_ms')).toBe(9);
+    expect(h.got.get('event_loop_lag_p99_ms')).toBe(7);
+  });
+
+  it('NO FABRICATED LAG BASELINE: lag is absent at start (empty histogram) and appears once it has sampled', () => {
+    const { perfHooks, histogram } = fakePerfHooks();
+    histogram.count = 0;
+    histogram.mean = Number.NaN;
+    const h = harness({ ...constDeps(), perfHooks });
+    h.startAll();
+    expect(h.got.has('process_memory_rss')).toBe(true); // the baseline itself was emitted
+    expect(h.got.has('event_loop_lag_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_max_ms')).toBe(false);
+    expect(h.got.has('event_loop_lag_p99_ms')).toBe(false);
+    histogram.count = 2;
+    histogram.mean = 4e6;
+    h.tick();
+    expect(h.got.get('event_loop_lag_ms')).toBe(4);
+    expect(h.got.get('event_loop_lag_max_ms')).toBe(9);
+    expect(h.got.get('event_loop_lag_p99_ms')).toBe(7);
+  });
+
+  it('real node perf_hooks: the start baseline carries NO lag traces (nothing measured yet)', () => {
+    const got = new Map<string, unknown>();
+    const ps = createNodeSystemTraceProducers();
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    for (const p of ps) p.stop();
+    expect(got.has('event_loop_lag_ms')).toBe(false);
+    expect(got.has('event_loop_lag_max_ms')).toBe(false);
+    expect(got.has('event_loop_lag_p99_ms')).toBe(false);
+  });
+
+  it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
+    const { perfHooks, state } = fakePerfHooks();
+    const h = harness({ ...constDeps(), perfHooks });
+    expect(h.producers).toHaveLength(10);
+    expect(state.monitor).toBe(0);
+    expect(h.spy.set).toBe(0);
+    h.producers[0]?.start({ emit: () => {} });
+    expect(h.spy.set).toBe(1);
+    expect(state.monitor).toBe(1);
+    expect(state.enabled).toBe(true);
+  });
+
+  it('stop of all producers disables the histogram and clears the interval', () => {
+    const { perfHooks, state } = fakePerfHooks();
+    const h = harness({ ...constDeps(), perfHooks });
+    h.startAll();
+    expect(h.spy.set).toBe(1); // one shared timer for five producers
+    h.stopAll();
+    expect(state.enabled).toBe(false);
+    expect(state.disables).toBe(1);
+    expect(h.spy.cleared).toBe(1);
+  });
+
+  it('a stopped producer no longer receives ticks', () => {
+    const h = harness(constDeps());
+    h.startAll();
+    h.stopAll();
+    h.got.clear();
+    h.tick();
+    expect(h.got.size).toBe(0);
+  });
+
+  it('shared tracker: three+ producers do not multiply the CPU baseline advance', () => {
+    let u = 0;
+    let w = 0;
+    const h = harness(
+      constDeps({
+        cpuUsage: () => {
+          u += 100_000;
+          return { user: u, system: 0 };
+        },
+        monotonicNowMs: () => {
+          w += 1000;
+          return w;
+        },
+      }),
+    );
+    h.startAll();
+    const baselineUser = h.got.get('cpu_usage_user');
+    h.tick();
+    // activation read 100k; the single first read (baseline) is 200k, tick is 300k => one window of 100k each
+    expect(baselineUser).toBe(100_000);
+    expect(h.got.get('cpu_usage_user')).toBe(100_000);
+  });
+
+  it('a restart re-emits the baseline', () => {
+    const h = harness(constDeps());
+    h.startAll();
+    h.stopAll();
+    h.got.clear();
+    h.startAll();
+    expect(h.got.get('ram_system_free')).toBe(400);
+    expect(h.spy.set).toBe(2);
+  });
+
+  it('a caller-supplied explicit reader wins over the guarded default', () => {
+    const { perfHooks } = fakePerfHooks();
+    const h = harness({ ...constDeps(), perfHooks, eventLoop, eventLoopUtilization: () => 0.9 });
+    h.startAll();
+    h.tick();
+    expect(h.got.get('event_loop_lag_ms')).toBe(1);
+    expect(h.got.get('event_loop_utilization')).toBe(0.9);
+  });
+
+  it('an explicit undefined reader does not clobber the guarded default', () => {
+    const { perfHooks } = fakePerfHooks();
+    const h = harness({
+      ...constDeps(),
+      perfHooks,
+      eventLoopUtilization: undefined,
+      eventLoop: undefined,
+    });
+    h.startAll();
+    h.tick();
+    expect(h.got.get('event_loop_utilization')).toBe(0.3);
+    expect(h.got.get('event_loop_lag_ms')).toBe(2);
+  });
+
+  it('works with real node perf_hooks and no injected readers', () => {
+    const got = new Map<string, unknown>();
+    const ps = createNodeSystemTraceProducers();
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    for (const p of ps) p.stop();
+    expect(typeof got.get('process_memory_rss')).toBe('number');
+  });
+
+  it('with real node readers and one tick it emits the full catalog, each a finite number', async () => {
+    const got = new Map<string, unknown>();
+    let tick: (() => void) | undefined;
+    const ps = createNodeSystemTraceProducers({
+      scheduler: {
+        setInterval: (cb) => {
+          tick = cb;
+          return 'h';
+        },
+        clearInterval: () => {},
+      },
+    });
+    for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
+    // let the real delay histogram take samples: an unsampled one is omitted by design, never reported as 0
+    await new Promise((r) => setTimeout(r, 120));
+    tick?.();
+    for (const p of ps) p.stop();
+    // `process_memory_limit` exists only inside a real cgroup cap and `ram_system_available` only on
+    // Node >= 20.13, so each is checked for what the host can answer rather than demanded.
+    const optional = ['process_memory_limit', 'ram_system_available'];
+    expect([...got.keys()].filter((k) => !optional.includes(k)).sort()).toEqual([
+      'cpu_usage_process',
+      'cpu_usage_system',
+      'cpu_usage_user',
+      'event_loop_lag_max_ms',
+      'event_loop_lag_ms',
+      'event_loop_lag_p99_ms',
+      'event_loop_utilization',
+      'gc_count',
+      'gc_pause_max_ms',
+      'gc_pause_ms',
+      'process_memory_array_buffers',
+      'process_memory_external',
+      'process_memory_heap_total',
+      'process_memory_heap_used',
+      'process_memory_rss',
+      'process_uptime_s',
+      'ram_js_heap_free',
+      'ram_js_heap_total',
+      'ram_js_heap_used',
+      'ram_system_free',
+      'ram_system_total',
+      'v8_heap_available',
+      'v8_heap_malloced',
+      'v8_heap_peak_malloced',
+      'v8_heap_size_limit',
+    ]);
+    expect(got.has('ram_system_available')).toBe(
+      typeof (process as { availableMemory?: unknown }).availableMemory === 'function',
+    );
+    expect(Number(got.get('v8_heap_size_limit'))).toBeGreaterThan(0);
+    for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
+  });
+});
+
+describe('gc traces', () => {
+  const interval = { count: 3, pauseMs: 12.5, maxPauseMs: 8 };
+  const fakeGc = (read: () => typeof interval | undefined = () => interval) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      gc: {
+        start: () => void calls.push('start'),
+        stop: () => void calls.push('stop'),
+        read,
+      },
+    };
+  };
+  const GC = ['gc_count', 'gc_pause_ms', 'gc_pause_max_ms'];
+
+  it('emits the per-interval count, summed pause and max pause from the injected source', () => {
+    const { gc } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    h.tick();
+    expect(h.got.get('gc_count')).toBe(3);
+    expect(h.got.get('gc_pause_ms')).toBe(12.5);
+    expect(h.got.get('gc_pause_max_ms')).toBe(8);
+  });
+
+  it('the start baseline carries NO gc traces: no interval has been observed yet, so a zero would be invented', () => {
+    const { gc } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    for (const name of GC) expect(h.got.has(name)).toBe(false);
+    expect(h.got.has('process_memory_rss')).toBe(true); // the other families still baseline
+  });
+
+  it('a producer restarting while the tracker stays active does not re-emit the last interval', () => {
+    const { gc } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    h.tick();
+    const gcProducer = h.producers.find((p) => p.name === 'gc');
+    const calls: string[] = [];
+    gcProducer?.stop();
+    gcProducer?.start({ emit: (n) => void calls.push(n) });
+    expect(calls).toEqual([]);
+  });
+
+  it('a quiet interval is a true zero, re-emitted every tick (never held)', () => {
+    let cur: typeof interval | undefined = { count: 0, pauseMs: 0, maxPauseMs: 0 };
+    const { gc } = fakeGc(() => cur);
+    const calls: Array<[string, unknown, { hold?: boolean } | undefined]> = [];
+    const h = harness(constDeps({ eventLoop, gc }));
+    for (const p of h.producers) p.start({ emit: (n, v, _d, o) => void calls.push([n, v, o]) });
+    h.tick();
+    h.tick();
+    const per = (name: string) => calls.filter(([n]) => n === name);
+    for (const name of GC) {
+      expect(per(name)).toHaveLength(2); // one per tick, the baseline has none
+      expect(per(name).every(([, v, o]) => v === 0 && o?.hold === false)).toBe(true);
+    }
+    cur = undefined; // source went away: omitted, nothing carried forward
+    h.tick();
+    expect(per('gc_count')).toHaveLength(2);
+  });
+
+  it('omits every gc trace when the source cannot answer', () => {
+    const { gc } = fakeGc(() => undefined);
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    h.tick();
+    for (const name of GC) expect(h.got.has(name)).toBe(false);
+    expect(h.got.has('process_memory_rss')).toBe(true);
+  });
+
+  it('starts the source with the first producer and stops it with the last', () => {
+    const { gc, calls } = fakeGc();
+    const h = harness(constDeps({ eventLoop, gc }));
+    h.startAll();
+    expect(calls).toEqual(['start']);
+    h.stopAll();
+    expect(calls).toEqual(['start', 'stop']);
+  });
+
+  it('measuresGc:false wires NO gc source (Bun/Deno): no observer is ever constructed, nothing emitted', () => {
+    let constructed = 0;
+    class Counting {
+      constructor() {
+        constructed += 1;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    const h = harness({
+      ...constDeps({ eventLoop }),
+      measuresGc: false,
+      performanceObserver: Counting as never,
+    });
+    h.startAll();
+    expect(constructed).toBe(0);
+    for (const name of GC) expect(h.got.has(name)).toBe(false);
+  });
+
+  it('measuresGc default wires the injected PerformanceObserver for the gc entry type and disconnects on stop', () => {
+    const seen: unknown[] = [];
+    let disconnects = 0;
+    class Counting {
+      observe(o: unknown) {
+        seen.push(o);
+      }
+      disconnect() {
+        disconnects += 1;
+      }
+    }
+    const h = harness({ ...constDeps({ eventLoop }), performanceObserver: Counting as never });
+    h.startAll();
+    expect(seen).toEqual([{ entryTypes: ['gc'] }]);
+    h.tick();
+    expect(h.got.get('gc_count')).toBe(0); // observed, quiet interval
+    h.stopAll();
+    expect(disconnects).toBe(1);
+  });
+
+  it('an injected source wins over measuresGc:false', () => {
+    const { gc } = fakeGc();
+    const h = harness({ ...constDeps({ eventLoop, gc }), measuresGc: false });
+    h.startAll();
+    h.tick();
+    expect(h.got.get('gc_count')).toBe(3);
+  });
+
+  it('an explicit undefined source does not clobber the real default (measuresGc true)', () => {
+    const h = harness({ ...constDeps({ eventLoop }), gc: undefined });
+    h.startAll();
+    h.tick();
+    expect(h.got.has('gc_count')).toBe(true); // the real observer is wired (a quiet interval is a true zero)
+    h.stopAll();
+  });
+
+  it('a real node GC is observed end to end', async () => {
+    const h = harness(constDeps({ eventLoop }));
+    h.startAll();
+    // churn until the engine collects (a scavenge needs no --expose-gc)
+    let junk: unknown[] = [];
+    let total = 0;
+    let pause = 0;
+    for (let round = 0; round < 200 && total === 0; round++) {
+      for (let i = 0; i < 50_000; i++) junk = [{ i, junk: i % 1000 === 0 ? [] : junk }];
+      await new Promise((r) => setTimeout(r, 5));
+      h.tick();
+      total += Number(h.got.get('gc_count'));
+      pause += Number(h.got.get('gc_pause_ms'));
+    }
+    h.stopAll();
+    expect(total).toBeGreaterThan(0);
+    expect(pause).toBeGreaterThan(0);
+  });
+});

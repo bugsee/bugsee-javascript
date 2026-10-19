@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ANDROID_ORIENTATION,
+  chargingToWire,
   connectionTypeToWire,
   orientationToWire,
 } from './system-trace-values';
@@ -160,6 +161,29 @@ describe('connectionTypeToWire', () => {
     for (const connection of inputs) {
       for (const online of [true, false]) {
         expect(RENDERABLE.has(connectionTypeToWire(connection, online))).toBe(true);
+      }
+    }
+  });
+});
+
+describe('chargingToWire', () => {
+  it('not charging is state 1 (unplugged), whatever the level', () => {
+    expect(chargingToWire({ charging: false, level: 0.5 })).toEqual({ state: 1 });
+    expect(chargingToWire({ charging: false, level: 1 })).toEqual({ state: 1 });
+  });
+  it('charging below full is state 2, including 0.99', () => {
+    expect(chargingToWire({ charging: true, level: 0.5 })).toEqual({ state: 2 });
+    expect(chargingToWire({ charging: true, level: 0.99 })).toEqual({ state: 2 });
+  });
+  it('charging at full is state 3', () => {
+    expect(chargingToWire({ charging: true, level: 1 })).toEqual({ state: 3 });
+  });
+  it('never carries a source key and never state 0', () => {
+    for (const charging of [true, false]) {
+      for (const level of [0, 0.5, 0.99, 1]) {
+        const w = chargingToWire({ charging, level });
+        expect(Object.keys(w)).toEqual(['state']);
+        expect(w.state).not.toBe(0);
       }
     }
   });

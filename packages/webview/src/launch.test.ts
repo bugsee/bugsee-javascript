@@ -339,6 +339,65 @@ describe('launch (webview)', () => {
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
   });
 
+  it('streams dark_mode_changed from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    const thisSeen: unknown[] = [];
+    const win = fakeEventTarget();
+    Object.assign(win.target, {
+      matchMedia(this: unknown) {
+        thisSeen.push(this);
+        return {
+          matches: false,
+          addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.add(f),
+          removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.delete(f),
+        };
+      },
+    });
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    expect(thisSeen).toEqual([win.target]);
+    for (const f of [...listeners]) f({ matches: true });
+    const has = (msgs: ReturnType<typeof fakeGlobal>) =>
+      entriesOfType(msgs.msgs(), 'events.system').some((e) =>
+        JSON.stringify(e.p).includes('dark_mode_changed'),
+      );
+    expect(has(fake)).toBe(true);
+
+    const plain = fakeGlobal();
+    track(
+      'tok2',
+      baseOptions({
+        global: plain.global,
+        window: fakeEventTarget().target as unknown as WindowEvents,
+      }),
+    );
+    expect(has(plain)).toBe(false);
+
+    const onError = vi.fn();
+    const hostile = fakeEventTarget();
+    Object.assign(hostile.target, {
+      matchMedia() {
+        throw new Error('matchMedia blocked');
+      },
+    });
+    expect(() =>
+      track(
+        'tok3',
+        baseOptions({
+          global: fakeGlobal().global,
+          window: hostile.target as unknown as WindowEvents,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('matchMedia blocked');
+  });
+
   it('streams the process_started system event when a window is present', () => {
     const fake = fakeGlobal();
     const win = fakeEventTarget();
@@ -909,6 +968,297 @@ describe('launch (webview)', () => {
     for (const cb of tickCbs) cb(); // a tick samples the metrics
     const traces = entriesOfType(fake.msgs(), 'traces.system');
     expect(traces.some((e) => JSON.stringify(e.p).includes('wv_metric'))).toBe(true);
+  });
+
+  describe('sensor traces from the tracker-backed producers', () => {
+    const fakeWin = () => {
+      const l = new Map<string, Set<(e: Event) => void>>();
+      return {
+        win: {
+          // a real window IS the global scope: the traces read these from THIS window, not the host globals
+          get navigator() {
+            return (globalThis as { navigator?: unknown }).navigator;
+          },
+          get performance() {
+            return (globalThis as { performance?: unknown }).performance;
+          },
+          get screen() {
+            return (globalThis as { screen?: unknown }).screen;
+          },
+          addEventListener: (t: string, f: (e: Event) => void) => {
+            const set = l.get(t) ?? new Set();
+            set.add(f);
+            l.set(t, set);
+          },
+          removeEventListener: (t: string, f: (e: Event) => void) => void l.get(t)?.delete(f),
+        },
+        count: (...types: string[]) => types.reduce((n, t) => n + (l.get(t)?.size ?? 0), 0),
+      };
+    };
+    const stubSensors = (): void => {
+      vi.stubGlobal('navigator', { onLine: true, connection: { type: 'cellular' } });
+      vi.stubGlobal('performance', {
+        now: () => Date.now(),
+        memory: { usedJSHeapSize: 10, totalJSHeapSize: 20, jsHeapSizeLimit: 100 },
+      });
+      vi.stubGlobal('screen', { orientation: { type: 'landscape-primary', angle: 90 } });
+    };
+
+    // The webview events source ALSO listens for these three on the window: 3 events + 3 sensors by default.
+    const listeners = (over: Partial<BugseeWebViewLaunchOptions>) => {
+      const w = fakeWin();
+      const client = track(
+        'tok',
+        baseOptions({ global: fakeGlobal().global, window: w.win, ...over }),
+      );
+      return { client, n: () => w.count('online', 'offline', 'orientationchange') };
+    };
+
+    it('streams heap, connection and orientation, and listens on the injected window only while capturing', async () => {
+      stubSensors();
+      try {
+        const fake = fakeGlobal();
+        const w = fakeWin();
+        const client = track('tok', baseOptions({ global: fake.global, window: w.win }));
+        await new Promise((r) => setTimeout(r, 0));
+        const rows = new Map(
+          entriesOfType(fake.msgs(), 'traces.system').map((e) => {
+            const d = (e.p as unknown as { data: { name: string; value: unknown } }).data;
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('ram_js_heap_used')).toBe(10);
+        expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
+        expect(rows.get('orientation')).toBe(3);
+        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
+        await client.stop();
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of [
+          'navigator',
+          'performance',
+          'screen',
+          'requestAnimationFrame',
+          'document',
+        ]) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toEqual(
+          expect.arrayContaining([
+            'navigator blocked',
+            'performance blocked',
+            'screen blocked',
+            'requestAnimationFrame blocked',
+            'document blocked',
+          ]),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        const doc = fakeDomDocument().document;
+        Object.assign(w.win, { document: doc });
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
+          'host document blocked',
+        );
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('with no window at all, a blocked host document never fails launch and is reported', () => {
+      stubSensors();
+      try {
+        Object.defineProperty(globalThis, 'document', {
+          get(): never {
+            throw new Error('host document blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ onError }))).not.toThrow();
+        expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+          'host document blocked',
+        );
+      } finally {
+        delete (globalThis as { document?: unknown }).document;
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a window whose self/top relationship is unreadable counts as the top frame and is reported', () => {
+      stubSensors();
+      try {
+        const w = fakeWin();
+        for (const key of ['self', 'top']) {
+          Object.defineProperty(w.win, key, {
+            get(): never {
+              throw new Error(`${key} blocked`);
+            },
+            configurable: true,
+          });
+        }
+        const onError = vi.fn();
+        expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toContain('top blocked');
+        // top frame: the full stack started, so the lifecycle listeners are attached
+        expect(w.count('online', 'offline', 'orientationchange')).toBeGreaterThan(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a systemMetricsSampler replaces the sensor traces', () => {
+      stubSensors();
+      try {
+        const replaced = listeners({
+          systemMetricsSampler: () => [{ name: 'wv_metric', value: 7 }],
+        }).n();
+        expect(replaced).toBe(3); // only the events source
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
+  it('streams battery/charging ({state}) from the browser battery producer', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {},
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getBattery).toHaveBeenCalledTimes(1);
+      const traces = entriesOfType(fake.msgs(), 'traces.system').map(
+        (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+      );
+      expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 100 }));
+      expect(traces).toContainEqual(
+        expect.objectContaining({ name: 'charging', value: { state: 3 } }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    { maxRecordingTime: 2, refreshMs: 2000 }, // 0.5s clamped up to the 2s floor
+    { maxRecordingTime: 20, refreshMs: 5000 }, // 20s/4 = 5s
+  ])('refreshes the held battery trace after $refreshMs ms (recording window $maxRecordingTime s)', async ({
+    maxRecordingTime,
+    refreshMs,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const fake = fakeGlobal();
+    vi.stubGlobal('navigator', {
+      getBattery: () =>
+        Promise.resolve({
+          level: 1,
+          charging: true,
+          addEventListener() {},
+          removeEventListener() {},
+        }),
+    });
+    try {
+      vi.setSystemTime(0);
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          maxRecordingTime,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+            },
+            clearInterval: () => {},
+          },
+        } as Partial<BugseeWebViewLaunchOptions>),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const battery = () =>
+        entriesOfType(fake.msgs(), 'traces.system').filter(
+          (e) => (e.p as unknown as { data: { name: string } }).data.name === 'battery',
+        ).length;
+      const tick = () => {
+        for (const t of ticks.filter((x) => x.ms === 1000)) t.cb();
+      };
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs - 1);
+      tick();
+      expect(battery()).toBe(1);
+      vi.setSystemTime(refreshMs);
+      tick();
+      expect(battery()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
+    const fake = fakeGlobal();
+    const getBattery = vi.fn(() =>
+      Promise.resolve({
+        level: 1,
+        charging: true,
+        addEventListener() {
+          throw new Error('battery add refused');
+        },
+        removeEventListener() {},
+      }),
+    );
+    vi.stubGlobal('navigator', { getBattery });
+    const onError = vi.fn();
+    try {
+      track('tok', baseOptions({ global: fake.global, onError }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+        'battery add refused',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('streams a logException as a crash ENTRY (always) but NO report trigger when the gate is off', async () => {

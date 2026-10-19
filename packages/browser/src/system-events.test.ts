@@ -1,6 +1,7 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
+import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,6 +49,119 @@ function activate(env: BrowserSystemEventsEnv) {
   const off = source.onAny((_stage, event) => events.push(event)); // subscribing activates the source
   return { events, off };
 }
+
+function fakeMedia(initial = false) {
+  const listeners = new Set<(e: { matches: boolean }) => void>();
+  const queries: string[] = [];
+  const list = {
+    matches: initial,
+    addEventListener: (_t: string, l: (e: { matches: boolean }) => void) => void listeners.add(l),
+    removeEventListener: (_t: string, l: (e: { matches: boolean }) => void) =>
+      void listeners.delete(l),
+  };
+  return {
+    matchMedia: (q: string) => {
+      queries.push(q);
+      return list;
+    },
+    fire: (matches: boolean) => {
+      for (const l of [...listeners]) l({ matches });
+    },
+    fireRaw: (e: { matches: boolean }) => {
+      for (const l of [...listeners]) l(e);
+    },
+    count: () => listeners.size,
+    queries,
+  };
+}
+
+describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => {
+  it('records dark_mode_changed with the new state from the injected matchMedia', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const { events } = activate({ ...env, matchMedia: m.matchMedia });
+    expect(m.queries).toEqual(['(prefers-color-scheme: dark)']);
+    m.fire(true);
+    m.fire(false);
+    expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
+      { name: 'dark_mode_changed', params: { dark: true } },
+      { name: 'dark_mode_changed', params: { dark: false } },
+    ]);
+  });
+
+  it('removes the media listener on deactivate', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const { off } = activate({ ...env, matchMedia: m.matchMedia });
+    expect(m.count()).toBe(1);
+    off();
+    expect(m.count()).toBe(0);
+  });
+
+  it('without matchMedia (a WindowEvents fake) the source still starts and emits no dark-mode event', () => {
+    const { env } = fakeEnv();
+    const { events } = activate(env);
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+  });
+
+  it('a matchMedia that throws is reported and does not abort the other signals', () => {
+    const { env, win } = fakeEnv();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: () => {
+        throw new Error('matchMedia blocked');
+      },
+      onError: (e) => errors.push(e),
+    });
+    win.emit('online', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    expect(errors.map((e) => (e as Error).message)).toEqual(['matchMedia blocked']);
+  });
+
+  it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
+    const { env, win } = fakeEnv();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: (() => ({ matches: false })) as never,
+      onError: (e) => errors.push(e),
+    });
+    win.emit('online', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    expect(errors).toEqual([]);
+  });
+
+  it('a change event whose matches getter throws is reported, never thrown into the browser dispatch', () => {
+    const { env } = fakeEnv();
+    const m = fakeMedia();
+    const errors: unknown[] = [];
+    const { events } = activate({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: (e) => errors.push(e),
+    });
+    const hostile = {};
+    Object.defineProperty(hostile, 'matches', {
+      get(): never {
+        throw new Error('matches blocked');
+      },
+    });
+    expect(() => m.fireRaw(hostile as { matches: boolean })).not.toThrow();
+    expect((errors[0] as Error).message).toBe('matches blocked');
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+  });
+
+  it('records freeze and resume from the document (not the window)', () => {
+    const { env, win, doc } = fakeEnv();
+    const { events } = activate(env);
+    win.emit('freeze', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+    doc.emit('freeze', {});
+    doc.emit('resume', {});
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'freeze', 'resume']);
+  });
+});
 
 describe('createBrowserSystemEventsSource', () => {
   it('emits process_started and registers every lifecycle listener on activate', () => {
@@ -115,6 +229,49 @@ describe('createBrowserSystemEventsSource', () => {
     expect(doc.count('visibilitychange')).toBe(0);
   });
 
+  it('blocked host globals (window / document / screen getters that throw) never throw out of the factory', () => {
+    const originals = new Map<string, PropertyDescriptor | undefined>();
+    for (const key of ['window', 'document', 'screen']) {
+      originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, {
+        configurable: true,
+        get(): never {
+          throw new Error(`${key} blocked`);
+        },
+      });
+    }
+    try {
+      let source: ReturnType<typeof createBrowserSystemEventsSource> | undefined;
+      expect(() => {
+        source = createBrowserSystemEventsSource({});
+      }).not.toThrow();
+      const events: SystemEvent[] = [];
+      const off = source?.on('event', (e) => events.push(e));
+      expect(events.map((e) => e.name)).toEqual(['process_started']);
+      off?.();
+      // the failures are reported (each global read once), not swallowed silently
+      const errors: unknown[] = [];
+      createBrowserSystemEventsSource({ onError: (e) => errors.push(e) });
+      expect(errors.map((e) => (e as Error).message).sort()).toEqual([
+        'document blocked',
+        'screen blocked',
+        'window blocked',
+      ]);
+      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      const none: unknown[] = [];
+      createBrowserSystemEventsSource({
+        lifecycle: { on: () => () => {} },
+        onError: (e) => none.push(e),
+      });
+      expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
+    } finally {
+      for (const [key, d] of originals) {
+        if (d !== undefined) Object.defineProperty(globalThis, key, d);
+        else delete (globalThis as Record<string, unknown>)[key];
+      }
+    }
+  });
+
   it('degrades gracefully when document is absent (no visibility events/listener)', () => {
     const { win } = fakeEnv();
     const { events, off } = activate({ window: win, document: undefined, screen: undefined });
@@ -143,5 +300,55 @@ describe('createBrowserSystemEventsSource', () => {
     expect(win.count('pagehide')).toBe(1);
     expect(doc.count('visibilitychange')).toBe(1);
     off();
+  });
+
+  it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
+    const { env, win, doc } = fakeEnv();
+    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const a = activate({ ...env, lifecycle });
+    const b = activate({ ...env, lifecycle });
+    // two sources over ONE tracker → one listener per type
+    expect(win.count('online')).toBe(1);
+    expect(doc.count('visibilitychange')).toBe(1);
+    win.emit('offline', {});
+    expect(a.events.at(-1)).toEqual({ name: 'offline' });
+    expect(b.events.at(-1)).toEqual({ name: 'offline' });
+    a.off();
+    expect(win.count('offline')).toBe(1); // still held by the other source
+    b.off();
+    expect(win.count('offline')).toBe(0);
+  });
+
+  it('reports a lifecycle failure to the injected onError, not into event dispatch', () => {
+    const { env, win, doc } = fakeEnv();
+    const onError = vi.fn();
+    Object.defineProperty(env.document, 'visibilityState', {
+      get(): never {
+        throw new Error('getter');
+      },
+    });
+    const { off } = activate({ ...env, onError });
+    expect(() => doc.emit('visibilitychange', {})).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(win.count('pagehide')).toBe(1);
+    off();
+  });
+
+  it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
+    const { env, win } = fakeEnv();
+    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const source = createBrowserSystemEventsSource({ ...env, lifecycle });
+    const events: SystemEvent[] = [];
+    const first = source.onAny((_s, e) => events.push(e));
+    first();
+    expect(win.count('online')).toBe(0);
+    const second = source.onAny((_s, e) => events.push(e));
+    win.emit('online', {});
+    expect(events).toEqual([
+      { name: 'process_started' },
+      { name: 'process_started' },
+      { name: 'online' },
+    ]);
+    second();
   });
 });

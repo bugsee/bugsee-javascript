@@ -28,13 +28,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@bugsee/bugsee-cli": "^0.7.11",
+    "@bugsee/bugsee-cli": "^0.7.13",
     "@bugsee/core": "workspace:*",
     "magic-string": "^0.30.21",
     "unplugin": "^2.3.10"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1"
+    "@types/node": "^22.20.5"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",

@@ -41,6 +41,7 @@ export {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+export { boundMatchMedia, hostGlobal, hostRead } from './host-global';
 export {
   type BlackoutBindable,
   type BrowserInputEnv,
@@ -84,7 +85,18 @@ export {
 } from './report-dialog';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
-export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
+export { chargingToWire } from './system-trace-values';
+export {
+  type BrowserTraceEnv,
+  browserTraceEnvFrom,
+  createBrowserSystemTraceProducers,
+  defaultBrowserTraceEnv,
+} from './trace-producers';
+export {
+  type PageLifecycleEnv,
+  type PageLifecycleEvents,
+  PageLifecycleTracker,
+} from './trackers/page-lifecycle-tracker';
 export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,

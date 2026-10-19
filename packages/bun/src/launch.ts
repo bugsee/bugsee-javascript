@@ -2,7 +2,7 @@ import { getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
-  createGuardedSystemMetricsSampler,
+  createNodeSystemTraceProducers,
   type LaunchResult,
   launchCore as nodeLaunchCore,
 } from '@bugsee/node';
@@ -13,13 +13,25 @@ import { bunSystemProbe } from './environment';
 // node:fs, process, timers), so this reuses the ENTIRE @bugsee/node composition (transport, fs storage,
 // node:http capture, crash detection, durable queue + capture recovery) and only swaps the two
 // Bun-specific defaults: the system probe (reports platform.type 'bun' + the Bun version) and the
-// system-metrics sampler (guarded perf_hooks). Both remain overridable — a caller-supplied option wins
+// system trace producers (guarded perf_hooks). Both remain overridable — a caller-supplied option wins
 // (it spreads AFTER the Bun defaults).
 
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
-    systemMetricsSampler: createGuardedSystemMetricsSampler(),
+    systemTraceProducers: createNodeSystemTraceProducers({
+      // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call),
+      // and on Linux `availableMemory` ignores the container cap (measured under `docker -m 256m`: 11.2 GB vs
+      // Node's 253 MB), so those traces are omitted here.
+      measuresV8Heap: false,
+      measuresAvailableMemory: false,
+      // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
+      // zero would be a lie, so no observer is constructed and the gc traces are omitted.
+      measuresGc: false,
+      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, after `...options` so a caller cannot switch them on. Measured on
     // Bun 1.4.0: `Debugger.enable` is REFUSED — `Inspector method "Debugger.enable" requires an active
