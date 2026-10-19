@@ -41,7 +41,7 @@ export {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
-export { hostGlobal, hostRead } from './host-global';
+export { boundMatchMedia, hostGlobal, hostRead } from './host-global';
 export {
   type BlackoutBindable,
   type BrowserInputEnv,

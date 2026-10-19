@@ -1,5 +1,6 @@
 import {
   bindInputBlackout,
+  boundMatchMedia,
   browserTraceEnvFrom,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
@@ -728,11 +729,13 @@ export function launchWithSeams(
     }),
   );
   if (win !== undefined) {
+    const matchMedia = boundMatchMedia(win, options.onError);
     client.addCaptureProvider(
       createSystemEventsProvider(
         createBrowserSystemEventsSource({
           window: win,
           lifecycle,
+          ...(matchMedia !== undefined ? { matchMedia } : {}),
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         }),
       ),

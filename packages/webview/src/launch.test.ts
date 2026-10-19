@@ -339,6 +339,65 @@ describe('launch (webview)', () => {
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
   });
 
+  it('streams dark_mode_changed from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    const thisSeen: unknown[] = [];
+    const win = fakeEventTarget();
+    Object.assign(win.target, {
+      matchMedia(this: unknown) {
+        thisSeen.push(this);
+        return {
+          matches: false,
+          addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.add(f),
+          removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.delete(f),
+        };
+      },
+    });
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    expect(thisSeen).toEqual([win.target]);
+    for (const f of [...listeners]) f({ matches: true });
+    const has = (msgs: ReturnType<typeof fakeGlobal>) =>
+      entriesOfType(msgs.msgs(), 'events.system').some((e) =>
+        JSON.stringify(e.p).includes('dark_mode_changed'),
+      );
+    expect(has(fake)).toBe(true);
+
+    const plain = fakeGlobal();
+    track(
+      'tok2',
+      baseOptions({
+        global: plain.global,
+        window: fakeEventTarget().target as unknown as WindowEvents,
+      }),
+    );
+    expect(has(plain)).toBe(false);
+
+    const onError = vi.fn();
+    const hostile = fakeEventTarget();
+    Object.assign(hostile.target, {
+      matchMedia() {
+        throw new Error('matchMedia blocked');
+      },
+    });
+    expect(() =>
+      track(
+        'tok3',
+        baseOptions({
+          global: fakeGlobal().global,
+          window: hostile.target as unknown as WindowEvents,
+          onError,
+        }),
+      ),
+    ).not.toThrow();
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('matchMedia blocked');
+  });
+
   it('streams the process_started system event when a window is present', () => {
     const fake = fakeGlobal();
     const win = fakeEventTarget();
