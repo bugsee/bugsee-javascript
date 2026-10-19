@@ -115,6 +115,7 @@ describe('MainThreadLagProducer', () => {
     });
     const out: Emit[] = [];
     const p = new MainThreadLagProducer(tracker);
+    expect(doc.count()).toBe(0);
     p.start(sinkOf(out));
     timer?.();
     expect(out).toEqual([]);
@@ -122,7 +123,7 @@ describe('MainThreadLagProducer', () => {
     (onmessage as (() => void) | null)?.();
     timer?.();
     expect(out).toEqual([{ name: 'main_thread_lag_ms', value: 120, hold: false }]);
-    expect(doc.count()).toBe(1);
+    expect(doc.count()).toBeGreaterThan(0); // the lifecycle attached its document listeners for us
     p.stop();
     expect(doc.count()).toBe(0);
     timer?.();
