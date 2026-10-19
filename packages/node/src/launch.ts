@@ -87,6 +87,7 @@ import {
 } from './detection-providers';
 import {
   buildNodeEnvironment,
+  type HardwareExtras,
   realSystemProbe,
   type SystemProbe,
   SystemProbeToken,
@@ -379,6 +380,15 @@ export interface BugseeLaunchOptions {
   captureStore?: CaptureStore;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
+  /**
+   * Extra `environment.hardware` data a platform extension can supply (today only `gpu`:
+   * `{vendor?, renderer?, gl_version?, gl_extensions?}`; @bugsee/electron fills it from `app.getGPUInfo`).
+   * Called LIVE on every environment assemble, so a value that settles after launch appears on the next
+   * report and is simply absent before. Only the typed `gpu` key is merged (unknown keys are dropped); it
+   * never overrides the built-in hardware fields; `undefined`, an empty/unusable result, or a throw adds
+   * nothing (a throw is reported through `onError`).
+   */
+  hardwareExtras?: () => HardwareExtras | undefined;
   /** CPU profiler override (advanced / tests — avoids the real node:inspector). Default the V8 profiler. */
   cpuProfiler?: CpuProfiler;
   /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
@@ -657,6 +667,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
         ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
         ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
         ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
+        ...(options.hardwareExtras !== undefined ? { hardwareExtras: options.hardwareExtras } : {}),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
       },
       probe,
     );

@@ -57,6 +57,63 @@ export const realSystemProbe: SystemProbe = {
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
 };
 
+/** The GPU block of `environment.hardware.gpu` (the viewer reads exactly these keys). */
+export interface HardwareGpu {
+  vendor?: string;
+  renderer?: string;
+  gl_version?: string;
+  gl_extensions?: string[] | string;
+}
+
+/**
+ * Extra `hardware` data a platform extension knows and Node cannot (e.g. Electron's GPU). Only the typed
+ * `gpu` key is merged; anything else the function returns is dropped.
+ */
+export interface HardwareExtras {
+  gpu?: HardwareGpu;
+}
+
+const GPU_STRING_KEYS = ['vendor', 'renderer', 'gl_version'] as const;
+
+// Defensive copy of the GPU block: only the four known keys, only well-typed non-empty values. Returns
+// undefined when nothing usable remains, so no empty `gpu: {}` is ever reported.
+function sanitizeGpu(raw: unknown): HardwareGpu | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const source = raw as Record<string, unknown>;
+  const gpu: HardwareGpu = {};
+  for (const key of GPU_STRING_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string' && value !== '') gpu[key] = value;
+  }
+  const ext = source.gl_extensions;
+  if (typeof ext === 'string' && ext !== '') {
+    gpu.gl_extensions = ext;
+  } else if (Array.isArray(ext)) {
+    const list = ext.filter((e): e is string => typeof e === 'string' && e !== '');
+    if (list.length > 0) gpu.gl_extensions = list;
+  }
+  return Object.keys(gpu).length > 0 ? gpu : undefined;
+}
+
+// Reads the extras LIVE; never throws (a throwing extra is reported and contributes nothing).
+function readHardwareExtras(
+  extras: (() => HardwareExtras | undefined) | undefined,
+  onError: ((error: unknown) => void) | undefined,
+): { gpu: HardwareGpu } | undefined {
+  if (extras === undefined) return undefined;
+  try {
+    const gpu = sanitizeGpu(extras()?.gpu);
+    return gpu !== undefined ? { gpu } : undefined;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // the error sink itself failed; nothing more to do
+    }
+    return undefined;
+  }
+}
+
 export interface NodeEnvironmentInput {
   /** SDK package version (sdk.version). */
   sdkVersion: string;
@@ -74,6 +131,10 @@ export interface NodeEnvironmentInput {
   debuggable?: boolean;
   /** hardware.device_id — persisted UUID supplied by the caller (null when none). */
   deviceId?: string;
+  /** Live source of extra hardware data (hardware.gpu), read on every build. */
+  hardwareExtras?: () => HardwareExtras | undefined;
+  /** Sink for a throwing `hardwareExtras`. */
+  onError?: (error: unknown) => void;
 }
 
 // os.platform() → the wire's platform.type. Named for the OS as a user knows it, and matching the set
@@ -115,6 +176,8 @@ export function buildNodeEnvironment(
       version: probe.runtimeVersion(),
     },
     hardware: {
+      // Typed extras first so the closed fields below always win.
+      ...readHardwareExtras(input.hardwareExtras, input.onError),
       model: probe.machine(),
       manufacturer: probe.osType(),
       cpu_count: probe.cpuCount(),

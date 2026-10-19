@@ -122,6 +122,8 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list);
+ *  - `hardwareExtras` (node; set by the Electron composition from its GPU cache) is a per-launch closure over
+ *    that composition's own state, like the Electron handles above, so a relaunch does not keep it;
  *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
  *    no-op while it is already started, so an instance still running on another client would silently no-op
  *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
@@ -161,6 +163,7 @@ const RESET_OPTIONS: readonly string[] = [
   'hangFairMs',
   'hangMediumMs',
   'hangSevereMs',
+  'hardwareExtras',
   'holdBlackout',
   'instrumentIncomingRequests',
   'ipcMain',

@@ -3163,3 +3163,63 @@ describe('launch — application frame paths', () => {
     );
   });
 });
+
+describe('launch — hardwareExtras (environment.hardware.gpu seam)', () => {
+  const sessionHardware = (transport: ReturnType<typeof uploadTransport>) =>
+    (
+      JSON.parse(String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body)) as {
+        environment: EnvironmentEnvelope;
+      }
+    ).environment.hardware as Record<string, unknown>;
+
+  it('a report assembled after the extra settles carries hardware.gpu; one before does not', async () => {
+    let gpu: { vendor: string; renderer: string } | undefined;
+    const launched = launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        hardwareExtras: () => (gpu ? { gpu } : undefined),
+      }),
+    );
+    clients.push(launched.client);
+    const before = launched.internals?.getEnvironment().hardware as Record<string, unknown>;
+    expect(before).not.toHaveProperty('gpu');
+    gpu = { vendor: 'Apple', renderer: 'M3' };
+    const after = launched.internals?.getEnvironment().hardware as Record<string, unknown>;
+    expect(after.gpu).toEqual({ vendor: 'Apple', renderer: 'M3' });
+  });
+
+  it('the uploaded session environment carries hardware.gpu, and a throwing extra reaches onError without failing the report', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        hardwareExtras: () => ({ gpu: { vendor: 'V', renderer: 'R' } }),
+      }),
+    );
+    await client.logException(new Error('x'));
+    expect(sessionHardware(transport).gpu).toEqual({ vendor: 'V', renderer: 'R' });
+
+    const transport2 = uploadTransport();
+    const errors: unknown[] = [];
+    const boom = new Error('boom');
+    const client2 = launchTracked(
+      'tok',
+      baseOptions({
+        transport: transport2,
+        captureStore: memStore(),
+        carrier: {},
+        onError: (e) => errors.push(e),
+        hardwareExtras: () => {
+          throw boom;
+        },
+      }),
+    );
+    await client2.logException(new Error('y'));
+    expect(sessionHardware(transport2)).not.toHaveProperty('gpu');
+    expect(errors).toContain(boom);
+  });
+});

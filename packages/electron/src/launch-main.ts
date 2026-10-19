@@ -23,9 +23,16 @@ export interface ElectronAppLike {
       details: { reason: string; exitCode?: number },
     ) => void,
   ): unknown;
+  /**
+   * Electron's `app.getGPUInfo` — optional. When present, `getGPUInfo('basic')` is kicked once at launch and
+   * the active device's strings (when Electron supplies them) are reported as `environment.hardware.gpu` on
+   * every report assembled after it settles. A rejection, or an app without it, just omits the field.
+   */
+  getGPUInfo?(type: 'basic'): Promise<unknown>;
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
+import { createGpuInfoCache } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
@@ -107,6 +114,27 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     }
   }
 
+  // GPU for environment.hardware.gpu: the cache is read LIVE by the node environment builder on every
+  // assemble (so a GPU that settles after launch lands on the next report); it is only STARTED once this
+  // launch is known to be the first (below). A caller-supplied `hardwareExtras` WINS for `gpu`; the cache
+  // fills in only when the caller supplied none (or it threw / returned no gpu).
+  const gpuCache = createGpuInfoCache({
+    source: app,
+    ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+  });
+  const callerExtras = nodeOptions.hardwareExtras;
+  nodeOptions.hardwareExtras = () => {
+    if (callerExtras !== undefined) {
+      try {
+        const own = callerExtras();
+        if (own?.gpu !== undefined) return own;
+      } catch (error) {
+        nodeOptions.onError?.(error);
+      }
+    }
+    return gpuCache.current();
+  };
+
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
@@ -114,6 +142,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   if (internals === undefined) {
     return client;
   }
+
+  gpuCache.start();
 
   // The main client's blackout: the one state the whole session follows (renderers and pixel video).
   const blackout = client.getService(BlackoutToken);
@@ -211,6 +241,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
+      gpuCache.stop(); // a late getGPUInfo resolve must not write after stop
       offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();

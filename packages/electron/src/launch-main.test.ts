@@ -508,3 +508,143 @@ describe('launchMain - blackout is forwarded to every renderer (privacy)', () =>
     expect(calls).toEqual(['start', 'stop', 'clear', 'start']);
   });
 });
+
+describe('launchMain — GPU info as environment.hardware.gpu (ST6a)', () => {
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const gpuInfo = {
+    gpuDevice: [
+      { vendorId: 4318, deviceId: 1, active: true, vendorString: 'NVIDIA', deviceString: 'RTX' },
+    ],
+  };
+  const extrasOf = (f: ReturnType<typeof fakeLaunch>) =>
+    (f.received as { options: BugseeLaunchOptions }).options.hardwareExtras as () => unknown;
+  const appWith = (getGPUInfo?: (t: 'basic') => Promise<unknown>) => ({
+    on: vi.fn(),
+    ...(getGPUInfo !== undefined ? { getGPUInfo } : {}),
+  });
+
+  it('a resolved getGPUInfo shows up on the NEXT environment assemble, not before', async () => {
+    let resolve!: (v: unknown) => void;
+    const getGPUInfo = vi.fn(() => new Promise<unknown>((r) => (resolve = r)));
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(getGPUInfo),
+    });
+    expect(getGPUInfo).toHaveBeenCalledExactlyOnceWith('basic');
+    expect(extrasOf(f)()).toBeUndefined();
+    resolve(gpuInfo);
+    await flush();
+    expect(extrasOf(f)()).toEqual({ gpu: { vendor: 'NVIDIA', renderer: 'RTX' } });
+  });
+
+  it('a rejected getGPUInfo: launch succeeds, no unhandledRejection, no gpu, error reported', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const boom = new Error('no acceleration');
+      const onError = vi.fn();
+      const f = fakeLaunch();
+      const client = launchMain('tok', {
+        ipcMain: fakeIpcMain().ipcMain,
+        launch: f.launch,
+        app: appWith(() => Promise.reject(boom)),
+        onError,
+      });
+      await flush();
+      await flush();
+      expect(client).toBe(f.client);
+      expect(extrasOf(f)()).toBeUndefined();
+      expect(onError).toHaveBeenCalledWith(boom);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it('a late resolve after client.stop() is ignored', async () => {
+    let resolve!: (v: unknown) => void;
+    const f = fakeLaunch();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(() => new Promise<unknown>((r) => (resolve = r))),
+    });
+    await client.stop();
+    resolve(gpuInfo);
+    await flush();
+    expect(extrasOf(f)()).toBeUndefined();
+  });
+
+  it('an app without getGPUInfo (older Electron / bare fake) just omits, no error', async () => {
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(),
+      onError,
+    });
+    await flush();
+    expect(extrasOf(f)()).toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('no app at all: hardwareExtras is still wired and answers undefined', () => {
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch });
+    expect(extrasOf(f)()).toBeUndefined();
+  });
+
+  it('a caller-supplied hardwareExtras gpu WINS over the cache', async () => {
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(async () => gpuInfo),
+      hardwareExtras: () => ({ gpu: { vendor: 'Mine' } }),
+    });
+    await flush();
+    expect(extrasOf(f)()).toEqual({ gpu: { vendor: 'Mine' } });
+  });
+
+  it('a caller extra with no gpu, or that throws, falls back to the cache (throw reported)', async () => {
+    const boom = new Error('caller');
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(async () => gpuInfo),
+      hardwareExtras: () => {
+        throw boom;
+      },
+      onError,
+    });
+    await flush();
+    expect(extrasOf(f)()).toEqual({ gpu: { vendor: 'NVIDIA', renderer: 'RTX' } });
+    expect(onError).toHaveBeenCalledWith(boom);
+
+    const f2 = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f2.launch,
+      app: appWith(async () => gpuInfo),
+      hardwareExtras: () => ({}),
+    });
+    await flush();
+    expect(extrasOf(f2)()).toEqual({ gpu: { vendor: 'NVIDIA', renderer: 'RTX' } });
+  });
+
+  it('a repeat launch (no internals) does not start the GPU read', () => {
+    const getGPUInfo = vi.fn(async () => gpuInfo);
+    const f = fakeLaunch({ internals: false });
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: appWith(getGPUInfo),
+    });
+    expect(getGPUInfo).not.toHaveBeenCalled();
+  });
+});
