@@ -328,6 +328,16 @@ describe('rollup bakes the identity itself', () => {
     expect(out?.map.mappings).not.toBe('');
   });
 
+  it('a versionless module-type marker package.json in the output dir does not hide the project version', async () => {
+    const out = join(web, 'dist', 'cjs');
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, 'package.json'), '{"type":"commonjs"}');
+    const plugin = make({});
+    expect(renderChunk(plugin)(`f(${VERSION})`, {}, { dir: out })?.code).toBe('f("2.4.1")');
+    await rollupWrite(plugin)({ dir: out });
+    expect(uploaded().appVersion).toBe('2.4.1');
+  });
+
   it('the map is character-precise (hires), so a replacement does not shift every later column', () => {
     const out = renderChunk(make({}))(`aaaa; f(${VERSION}); bbbb; cccc`, {}, dist());
     // one segment per untouched character, not one per token

@@ -3035,7 +3035,6 @@ describe('app identity detection', () => {
 
   it('starts the package.json search at appRoot', () => {
     vi.stubEnv('BUGSEE_APP_VERSION', '');
-    vi.stubEnv('npm_package_version', '');
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-appid-'));
     writeFileSync(join(dir, 'package.json'), '{"version":"3.3.3"}');
     expect(launchIdentity({ appRoot: dir }).internals?.appVersion).toBe('3.3.3');
@@ -3043,7 +3042,6 @@ describe('app identity detection', () => {
 
   it('a repeat launch() is ignored before identity is resolved: no second package.json read or warning', () => {
     vi.stubEnv('BUGSEE_APP_VERSION', '');
-    vi.stubEnv('npm_package_version', '');
     const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
       throw new Error('gone');
     });
@@ -3075,7 +3073,6 @@ describe('app identity detection', () => {
 
   it('warns once, through console.warn, when no version can be found', () => {
     vi.stubEnv('BUGSEE_APP_VERSION', '');
-    vi.stubEnv('npm_package_version', '');
     vi.spyOn(process, 'cwd').mockImplementation(() => {
       throw new Error('gone');
     });

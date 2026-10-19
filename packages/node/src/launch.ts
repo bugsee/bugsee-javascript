@@ -210,7 +210,9 @@ export interface BugseeLaunchOptions {
   appId?: string;
   /**
    * app.version. When omitted it is detected: a build-time constant, then `appIdentitySource`, then the
-   * `BUGSEE_APP_VERSION` / `npm_package_version` environment variables, then the nearest `package.json`.
+   * `BUGSEE_APP_VERSION` environment variable, then the nearest `package.json` (from `appRoot`, else the
+   * working directory). `npm_package_version` is not read: it names the package whose script started the
+   * process, which a child process inherits.
    */
   appVersion?: string;
   /**

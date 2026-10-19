@@ -89,18 +89,29 @@ export interface PackageVersionIo {
  * own version rather than the monorepo root's: a manifest that parses but has no usable version ENDS the
  * search with no version, while a missing or unparseable file keeps it walking. Searches at most
  * {@link PACKAGE_VERSION_MAX_DEPTH} directories. Never throws.
+ *
+ * `skipMarkers` also walks past a manifest with neither a usable version NOR a usable name: a module-scope
+ * marker such as the `{"type":"commonjs"}` a dual build leaves in `dist/cjs`, which describes no package.
+ * Only for a walk that starts INSIDE build output (Rollup's output directory); a named manifest still ends
+ * the search, so a workspace app is never given its root's version.
  */
 export const findNearestPackageVersion = (
   start: string,
   io: PackageVersionIo,
+  { skipMarkers = false }: { skipMarkers?: boolean } = {},
 ): string | undefined => {
   let dir = start;
   for (let depth = 0; depth < PACKAGE_VERSION_MAX_DEPTH; depth++) {
     try {
       const parsed: unknown = JSON.parse(io.readFile(io.join(dir, 'package.json')));
       if (typeof parsed === 'object' && parsed !== null) {
-        const version = (parsed as { version?: unknown }).version;
-        return usable(version) ? version.trim() : undefined;
+        const { version, name } = parsed as { version?: unknown; name?: unknown };
+        if (usable(version)) {
+          return version.trim();
+        }
+        if (!skipMarkers || usable(name)) {
+          return undefined;
+        }
       }
     } catch {
       // Missing, unreadable or invalid: keep walking.

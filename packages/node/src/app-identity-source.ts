@@ -53,9 +53,13 @@ const firstSet = (
 };
 
 /**
- * Finds the app's version and build on a server or desktop host: environment overrides first, then the
- * version npm exports to scripts, then the nearest `package.json` (a nearest manifest without a version means no version; a parent's is not adopted); the build comes from CI/host commit
- * variables. The `package.json` search is done lazily and at most once.
+ * Finds the app's version and build on a server or desktop host: `BUGSEE_APP_VERSION` first, then the nearest
+ * `package.json` from `appRoot` (else the working directory); a nearest manifest without a version means no
+ * version, and a parent's is not adopted. `npm_package_version` is deliberately NOT read: npm/pnpm export the
+ * version of the package whose SCRIPT runs and child processes inherit it, so a workspace-root `npm start`
+ * spawning an app would report the root's version while the bundler plugin (which walks package.json the same
+ * way) labels the maps with the app's own. The build comes from CI/host commit variables. The `package.json`
+ * search is done lazily and at most once.
  */
 export const createNodeAppIdentitySource = (
   options: NodeAppIdentitySourceOptions = {},
@@ -79,8 +83,7 @@ export const createNodeAppIdentitySource = (
   };
   return (): AppIdentity => {
     const identity: AppIdentity = {};
-    const version =
-      firstSet(env, ['BUGSEE_APP_VERSION', 'npm_package_version']) ?? fromPackageJson();
+    const version = firstSet(env, ['BUGSEE_APP_VERSION']) ?? fromPackageJson();
     if (version !== undefined) {
       identity.version = version;
     }

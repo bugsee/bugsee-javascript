@@ -25,7 +25,7 @@ const BUILD_VARS = [
 ];
 
 describe('createNodeAppIdentitySource version', () => {
-  it('prefers BUGSEE_APP_VERSION over npm_package_version and package.json', () => {
+  it('prefers BUGSEE_APP_VERSION over package.json', () => {
     const readFile = files({ '/app/package.json': '{"version":"3.0.0"}' });
     const source = createNodeAppIdentitySource({
       env: { BUGSEE_APP_VERSION: '1.0.0', npm_package_version: '2.0.0' },
@@ -43,21 +43,52 @@ describe('createNodeAppIdentitySource version', () => {
       readFile: files({}),
     });
     expect(source()).toEqual({ version: '1.0.0', build: 'abc123' });
-    const npm = createNodeAppIdentitySource({
-      env: { npm_package_version: '2.0.0\n', GITHUB_SHA: ' deadbeef\n' },
+    const ci = createNodeAppIdentitySource({
+      env: { GITHUB_SHA: ' deadbeef\n' },
       cwd: () => '/app',
       readFile: files({}),
     });
-    expect(npm()).toEqual({ version: '2.0.0', build: 'deadbeef' });
+    expect(ci()).toEqual({ build: 'deadbeef' });
   });
 
-  it('falls back to npm_package_version, ignoring blank values', () => {
+  it('ignores a blank BUGSEE_APP_VERSION and reads package.json', () => {
     const source = createNodeAppIdentitySource({
-      env: { BUGSEE_APP_VERSION: '  ', npm_package_version: '2.0.0' },
+      env: { BUGSEE_APP_VERSION: '  ' },
       cwd: () => '/app',
-      readFile: files({}),
+      readFile: files({ '/app/package.json': '{"version":"2.0.0"}' }),
     });
     expect(source()?.version).toBe('2.0.0');
+  });
+
+  // npm/pnpm export the version of the package whose SCRIPT is running, and child processes inherit it: a
+  // workspace-root `npm start` that spawns apps/api would report the root's version while the bundler
+  // plugin labels the maps with the app's own. The package.json walk is the one rule both sides share.
+  it('never reads npm_package_version: the app package.json (from appRoot) wins', () => {
+    const source = createNodeAppIdentitySource({
+      env: { npm_package_version: '0.0.0' },
+      cwd: () => '/ws',
+      appRoot: '/ws/apps/api',
+      readFile: files({
+        '/ws/apps/api/package.json': '{"version":"2.4.1"}',
+        '/ws/package.json': '{"version":"0.0.0"}',
+      }),
+    });
+    expect(source()).toEqual({ version: '2.4.1' });
+  });
+
+  it('never reads npm_package_version: nothing found means no version, not the inherited one', () => {
+    const versionless = createNodeAppIdentitySource({
+      env: { npm_package_version: '0.0.0' },
+      cwd: () => '/ws/apps/api',
+      readFile: files({ '/ws/apps/api/package.json': '{"name":"api"}' }),
+    });
+    expect(versionless()).toEqual({});
+    const gone = createNodeAppIdentitySource({
+      env: { npm_package_version: '0.0.0' },
+      cwd: () => undefined,
+      readFile: files({}),
+    });
+    expect(gone()).toEqual({});
   });
 
   it('reads the nearest package.json, walking up from the working directory', () => {

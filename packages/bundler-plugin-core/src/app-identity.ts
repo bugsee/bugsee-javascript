@@ -31,6 +31,12 @@ export const APP_BUILD_DEFINE = '__BUGSEE_APP_BUILD__';
 export interface AppIdentityDeps {
   readFile?: (path: string) => string;
   cwd?: () => string;
+  /**
+   * Walk past a version-less, name-less marker `package.json` (see `findNearestPackageVersion`). Set only
+   * when the walk starts in build OUTPUT (Rollup's output directory); the project-root walks keep the strict
+   * "nearest manifest wins" rule.
+   */
+  skipMarkers?: boolean;
 }
 
 /** The first non-blank value among the variables, trimmed. */
@@ -52,8 +58,9 @@ function firstEnv(env: EnvRecord, names: readonly string[]): string | undefined 
 export function findPackageVersion(
   from: string,
   readFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  skipMarkers = false,
 ): string | undefined {
-  return findNearestPackageVersion(resolve(from), { readFile, dirname, join });
+  return findNearestPackageVersion(resolve(from), { readFile, dirname, join }, { skipMarkers });
 }
 
 /** What was found; `undefined` for a value nothing supplied, so a real one is told apart from a default. */
@@ -131,7 +138,11 @@ export function findAppIdentity(
     version = explicitVersion;
     if (version === undefined) {
       try {
-        version = findPackageVersion(root ?? (deps.cwd ?? process.cwd)(), deps.readFile);
+        version = findPackageVersion(
+          root ?? (deps.cwd ?? process.cwd)(),
+          deps.readFile,
+          deps.skipMarkers,
+        );
       } catch {
         version = undefined;
       }

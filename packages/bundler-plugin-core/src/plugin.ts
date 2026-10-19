@@ -225,7 +225,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     }
     let identity = identityByOutDir.get(outDir);
     if (identity === undefined) {
-      identity = resolveIdentity(options, process.env, outDir);
+      // Starting inside build output, a `{"type":"commonjs"}` marker there is not the app's manifest.
+      identity = resolveIdentity(options, process.env, outDir, { skipMarkers: true });
       identityByOutDir.set(outDir, identity);
     }
     return identity;

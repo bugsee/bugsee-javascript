@@ -64,7 +64,7 @@ If you pass `app` to `launchMain`, the SDK reports `app.getVersion()` as your ap
 1. The `appVersion` and `appBuild` launch options. These always win.
 2. Values injected at build time.
 3. Your own `appIdentitySource`, if you pass one (it is asked first), then `app.getVersion()` for anything it left out.
-4. The `BUGSEE_APP_VERSION` and `BUGSEE_APP_BUILD` environment variables, `npm_package_version`, the nearest `package.json`, and the commit variables set by CI systems, as described in the `@bugsee/node` documentation.
+4. The `BUGSEE_APP_VERSION` and `BUGSEE_APP_BUILD` environment variables, the nearest `package.json`, and the commit variables set by CI systems, as described in the `@bugsee/node` documentation.
 
 Electron does not expose a build number, so set `appBuild` (or `BUGSEE_APP_BUILD`) if you want one; in CI the commit hash is picked up automatically.
 

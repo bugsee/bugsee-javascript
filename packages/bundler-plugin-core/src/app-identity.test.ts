@@ -89,6 +89,17 @@ describe('findAppIdentity', () => {
     expect(findAppIdentity({}, {}, { readFile: read, cwd }, '/root/app').version).toBe('7.0.0');
   });
 
+  it('skipMarkers walks past a versionless, nameless marker manifest (the default stops there)', () => {
+    const read = files({
+      '/proj/package.json': '{"name":"app","version":"2.4.1"}',
+      '/proj/dist/cjs/package.json': '{"type":"commonjs"}',
+    });
+    expect(
+      findAppIdentity({}, {}, { readFile: read, skipMarkers: true }, '/proj/dist/cjs').version,
+    ).toBe('2.4.1');
+    expect(findAppIdentity({}, {}, { readFile: read }, '/proj/dist/cjs').version).toBeUndefined();
+  });
+
   it('treats blank and whitespace-only options exactly like unset ones', () => {
     const deps = { readFile: files({ '/p/package.json': '{"version":"1.0.0"}' }), cwd: () => '/p' };
     for (const blank of ['', '   ', '\t\n']) {

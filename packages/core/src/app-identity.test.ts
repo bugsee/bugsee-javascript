@@ -71,6 +71,46 @@ describe('findNearestPackageVersion', () => {
     expect(findNearestPackageVersion('/a/b/c', files)).toBe('2.0.0');
   });
 
+  describe('with skipMarkers (a module-scope marker is not a package)', () => {
+    const marker = '{"type":"commonjs"}';
+
+    it('walks past a manifest with neither a version nor a name', () => {
+      const files = io({
+        '/p/package.json': '{"name":"app","version":"2.4.1"}',
+        '/p/dist/cjs/package.json': marker,
+      });
+      expect(findNearestPackageVersion('/p/dist/cjs', files, { skipMarkers: true })).toBe('2.4.1');
+      expect(findNearestPackageVersion('/p/dist/cjs', files)).toBeUndefined(); // the default is unchanged
+    });
+
+    it('a blank name is no name, so that manifest is a marker too', () => {
+      const files = io({
+        '/p/package.json': '{"version":"1.0.0"}',
+        '/p/dist/package.json': '{"name":" "}',
+      });
+      expect(findNearestPackageVersion('/p/dist', files, { skipMarkers: true })).toBe('1.0.0');
+    });
+
+    it('still stops at a NAMED manifest without a version: a parent version is not adopted', () => {
+      const files = io({
+        '/ws/package.json': '{"version":"0.0.0"}',
+        '/ws/apps/web/package.json': '{"name":"web"}',
+        '/ws/apps/web/dist/package.json': marker,
+      });
+      expect(
+        findNearestPackageVersion('/ws/apps/web/dist', files, { skipMarkers: true }),
+      ).toBeUndefined();
+    });
+
+    it('a manifest with a version answers whether or not it is named', () => {
+      const files = io({
+        '/p/package.json': '{"version":"9.0.0"}',
+        '/p/dist/package.json': '{"version":"3.0.0"}',
+      });
+      expect(findNearestPackageVersion('/p/dist', files, { skipMarkers: true })).toBe('3.0.0');
+    });
+  });
+
   it('returns undefined at the root when nothing is found', () => {
     expect(findNearestPackageVersion('/a/b', io({}))).toBeUndefined();
   });
