@@ -11,9 +11,18 @@ describe('@bugsee/trackers public surface', () => {
     ]);
   });
 
-  it('reserves the per-runtime entries as empty placeholders', async () => {
-    for (const entry of ['./browser/index', './node/index', './electron/index']) {
+  it('reserves the node/electron entries as empty placeholders', async () => {
+    for (const entry of ['./node/index', './electron/index']) {
       expect(Object.keys(await import(entry))).toEqual([]);
     }
+  });
+
+  it('exports the browser tracker values from ./browser', async () => {
+    expect(Object.keys(await import('./browser/index')).sort()).toEqual([
+      'PowerTracker',
+      'hostRead',
+      'powerTrackerFor',
+      'resetPowerTracker',
+    ]);
   });
 });

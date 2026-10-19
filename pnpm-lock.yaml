@@ -314,6 +314,9 @@ importers:
       '@bugsee/replay-canvas':
         specifier: workspace:*
         version: link:../replay-canvas
+      '@bugsee/trackers':
+        specifier: workspace:*
+        version: link:../trackers
     devDependencies:
       '@bugsee/util':
         specifier: workspace:*
