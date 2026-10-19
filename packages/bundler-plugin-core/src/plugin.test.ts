@@ -115,14 +115,14 @@ describe('the Vite plugin ensures source maps exist', () => {
     // choice, and exactly what a user who cares about this would pick. Overwriting it with `true` would
     // re-add the comment and ship a pointer to maps the plugin then deletes.
     const patch = viteConfigHook({ appToken: 'tok' })({ build: { sourcemap: 'hidden' } });
-    expect(patch).toBeUndefined();
+    expect(patch).not.toHaveProperty('build');
   });
 
   it('leaves `inline` alone too', () => {
     // Inline maps are embedded in the .js; there are no .map files to upload, but overriding the user's
     // explicit choice would change what ships to their users. Nothing to do here.
     const patch = viteConfigHook({ appToken: 'tok' })({ build: { sourcemap: 'inline' } });
-    expect(patch).toBeUndefined();
+    expect(patch).not.toHaveProperty('build');
   });
 
   it('does NOTHING when the plugin is disabled — the canary', () => {
@@ -134,7 +134,8 @@ describe('the Vite plugin ensures source maps exist', () => {
   it('does nothing when there is no app token', () => {
     // Without a token the plugin no-ops; emitting maps the user did not ask for would be a side effect
     // with no purpose.
+    // (The app-identity define is a separate, token-independent concern: plugin.define.test.ts.)
     const patch = viteConfigHook({})({});
-    expect(patch).toBeUndefined();
+    expect(patch).not.toHaveProperty('build');
   });
 });
