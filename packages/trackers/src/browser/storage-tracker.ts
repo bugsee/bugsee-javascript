@@ -142,7 +142,9 @@ export class StorageTracker extends InterceptorBase<{
     const at = this.#estimateAt;
     if (this.#estimate === undefined || at === undefined) return undefined;
     const limit = FRESH_INTERVALS * (this.#env.intervalMs ?? DEFAULT_INTERVAL_MS);
-    return this.#clock() - at <= limit ? this.#estimate : undefined;
+    const age = this.#clock() - at;
+    // A clock that stepped BACKWARDS (negative age) cannot vouch for freshness: treat it as stale.
+    return age >= 0 && age <= limit ? this.#estimate : undefined;
   }
 
   #clock(): number {
@@ -191,7 +193,9 @@ export class StorageTracker extends InterceptorBase<{
       }
       // Throttle: tab-switching must not turn into a stream of estimate() calls.
       const last = this.#lastPollAt;
-      if (last !== undefined && this.#clock() - last < VISIBILITY_MIN_GAP_MS) return;
+      // A backwards clock step (negative elapsed) counts as "the gap has elapsed": never suppress polling on it.
+      const elapsed = last === undefined ? undefined : this.#clock() - last;
+      if (elapsed !== undefined && elapsed >= 0 && elapsed < VISIBILITY_MIN_GAP_MS) return;
       this.#poll();
     };
     // Recorded BEFORE attaching so a failure still detaches exactly this (removing a never-added one is a no-op).

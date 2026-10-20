@@ -171,6 +171,16 @@ describe('StorageTracker', () => {
     expect(storage.estimate).toHaveBeenCalledTimes(3);
   });
 
+  it('a backwards clock step does not suppress a visibility poll (negative elapsed = gap elapsed)', async () => {
+    const storage = mkStorage();
+    const { tracker, document, clock } = setup(storage);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    clock.t -= 5_000;
+    document.fire();
+    expect(storage.estimate).toHaveBeenCalledTimes(2);
+  });
+
   describe('failure reporting (once per streak)', () => {
     it('reports a persistent failure once, not every tick, and again after a success', async () => {
       const storage = mkStorage(1, 2);
@@ -268,6 +278,18 @@ describe('StorageTracker', () => {
       expect(t.currentFresh()).toBeDefined();
       clock.t = 600_001;
       expect(t.currentFresh()).toBeUndefined();
+    });
+
+    it('a backwards clock step makes the estimate stale (age must be >= 0)', async () => {
+      const { tracker, clock } = setup();
+      const off = tracker.on('storageEstimate', () => {});
+      await flush();
+      off();
+      expect(tracker.currentFresh()).toBeDefined();
+      clock.t -= 1;
+      expect(tracker.currentFresh()).toBeUndefined();
+      clock.t += 1; // back to age 0
+      expect(tracker.currentFresh()).toBeDefined();
     });
 
     it('a fresh estimate resets the age; reset forgets it', async () => {
