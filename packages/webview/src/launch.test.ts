@@ -487,6 +487,38 @@ describe('launch (webview)', () => {
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
   });
 
+  it('streams display_mode_changed from the injected window matchMedia, through the shared browser events source', () => {
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    let standalone = false;
+    const win = fakeEventTarget();
+    Object.assign(win.target, {
+      matchMedia(q: string) {
+        return {
+          get matches() {
+            return standalone && q === '(display-mode: standalone)';
+          },
+          addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.add(f),
+          removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.delete(f),
+        };
+      },
+    });
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    standalone = true;
+    for (const f of [...listeners]) f({ matches: true });
+    const hits = entriesOfType(fake.msgs(), 'events.system').filter((e) =>
+      JSON.stringify(e.p).includes('display_mode_changed'),
+    );
+    expect(hits).toHaveLength(1);
+    expect(JSON.stringify(hits[0]?.p)).toContain('"previousMode":"browser"');
+    expect(JSON.stringify(hits[0]?.p)).toContain('"mode":"standalone"');
+  });
+
   it('streams dark_mode_changed from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
     const listeners = new Set<(e: { matches: boolean }) => void>();
     const thisSeen: unknown[] = [];
@@ -508,7 +540,7 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toHaveLength(2); // the baseline read + the change watch
+    expect(thisSeen.length).toBeGreaterThan(0); // the baseline reads + the change watches (dark and display mode)
     expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>

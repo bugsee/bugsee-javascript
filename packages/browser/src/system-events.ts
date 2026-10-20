@@ -29,6 +29,7 @@ import { hostGlobal, hostRead } from './host-global';
 //                            launch opts out with `captureEnvironmentHints: false`); `no`/`unknown` never produce an event (never claim certainty)
 //   orientation (UiTracker: screen.orientation change + orientationchange) → orientation_changed ({type, angle})
 //   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
+//   displayMode (UiTracker) → display_mode_changed ({mode: fullscreen|standalone|minimal-ui|browser, previousMode?} from display-mode)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
 /** The document surface the source needs: visibilitychange + the current visibility state. */
@@ -95,7 +96,7 @@ export interface BrowserSystemEventsEnv {
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
-  readonly #ui: Pick<UiTracker, 'on'>;
+  readonly #ui: Pick<UiTracker, 'on' | 'current'>;
   readonly #connectivity: Pick<ConnectivityTracker, 'on' | 'current'> | undefined;
   readonly #environment: EnvironmentSource;
   /** This source's own opt-out, enforced at the sink: the shared tracker may run the probe for another consumer. */
@@ -104,7 +105,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
-    ui: Pick<UiTracker, 'on'>,
+    ui: Pick<UiTracker, 'on' | 'current'>,
     connectivity: Pick<ConnectivityTracker, 'on' | 'current'> | undefined,
     environment: EnvironmentSource,
     onError: ((error: unknown) => void) | undefined,
@@ -150,6 +151,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         this.emit('event', { name: 'dark_mode_changed', params: { dark } }),
       ),
     ];
+    this.#subscribeDisplayMode();
     this.#subscribeConnectivity();
     // ONE subscription for every environment stage: the first subscriber activates the tracker, whose activation read
     // may emit (a change made while we were stopped) straight away, so a stage subscribed later would miss it.
@@ -187,6 +189,26 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     );
     const retained = this.#privateMode ? this.#environment.current?.().privateMode : undefined;
     if (retained?.private === 'yes' && !privateDelivered) deliverPrivate(retained.method);
+  }
+
+  /**
+   * display_mode_changed from the UiTracker's `displayMode` stage. The tracker de-duplicates and announces only a change
+   * (its baseline is silent), so `previousMode` is the mode this source last knew: read at subscription, then tracked.
+   * Omitted when the mode before could not be read (never guessed).
+   */
+  #subscribeDisplayMode(): void {
+    let previous: string | undefined;
+    this.#unsubscribe.push(
+      this.#ui.on('displayMode', ({ mode }) => {
+        const before = previous;
+        previous = mode;
+        this.emit('event', {
+          name: 'display_mode_changed',
+          params: { mode, ...(before !== undefined ? { previousMode: before } : {}) },
+        });
+      }),
+    );
+    previous = this.#ui.current('displayMode')?.mode;
   }
 
   /**

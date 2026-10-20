@@ -99,12 +99,156 @@ function fakeMedia(initial = false) {
   };
 }
 
+// One media list PER query, so display-mode (three queries) can be driven the way a browser answers it.
+function fakeQueries(matching: Record<string, boolean> = {}) {
+  const lists = new Map<
+    string,
+    { matches: boolean; listeners: Set<(e: { matches: boolean }) => void> }
+  >();
+  const list = (q: string) => {
+    let l = lists.get(q);
+    if (l === undefined) {
+      l = { matches: matching[q] ?? false, listeners: new Set() };
+      lists.set(q, l);
+    }
+    return l;
+  };
+  return {
+    matchMedia: (q: string) => {
+      const l = list(q);
+      return {
+        get matches() {
+          return l.matches;
+        },
+        addEventListener: (_t: string, fn: (e: { matches: boolean }) => void) =>
+          void l.listeners.add(fn),
+        removeEventListener: (_t: string, fn: (e: { matches: boolean }) => void) =>
+          void l.listeners.delete(fn),
+      };
+    },
+    /** The page enters `mode` ('browser' = none of the three): flip the queries and notify the changed ones. */
+    enter: (mode: 'fullscreen' | 'standalone' | 'minimal-ui' | 'browser') => {
+      const changed: Array<ReturnType<typeof list>> = [];
+      for (const m of ['fullscreen', 'standalone', 'minimal-ui']) {
+        const l = list(`(display-mode: ${m})`);
+        const next = m === mode;
+        if (l.matches === next) continue;
+        l.matches = next;
+        changed.push(l);
+      }
+      // the browser settles ALL the queries before any listener runs
+      for (const l of changed) for (const fn of [...l.listeners]) fn({ matches: l.matches });
+    },
+    listenerCount: () => [...lists.values()].reduce((n, l) => n + l.listeners.size, 0),
+  };
+}
+
+describe('createBrowserSystemEventsSource: display_mode_changed', () => {
+  it('records display_mode_changed with the new mode and the previous one', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries();
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    q.enter('standalone');
+    q.enter('fullscreen');
+    q.enter('browser');
+    expect(events.filter((e) => e.name === 'display_mode_changed')).toEqual([
+      { name: 'display_mode_changed', params: { mode: 'standalone', previousMode: 'browser' } },
+      { name: 'display_mode_changed', params: { mode: 'fullscreen', previousMode: 'standalone' } },
+      { name: 'display_mode_changed', params: { mode: 'browser', previousMode: 'fullscreen' } },
+    ]);
+  });
+
+  it('starts from the mode the page is already in (the baseline is state, not an event)', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries({ '(display-mode: standalone)': true });
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    expect(events).toEqual([{ name: 'process_started' }]);
+    q.enter('minimal-ui');
+    expect(events.at(-1)).toEqual({
+      name: 'display_mode_changed',
+      params: { mode: 'minimal-ui', previousMode: 'standalone' },
+    });
+  });
+
+  it('is not announced twice for the same mode (several queries flip for one transition)', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries({ '(display-mode: standalone)': true });
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    q.enter('fullscreen'); // standalone goes false AND fullscreen goes true: two query changes, one transition
+    expect(events.filter((e) => e.name === 'display_mode_changed')).toHaveLength(1);
+  });
+
+  it('omits previousMode when the mode before could not be read', () => {
+    const { env } = fakeEnv();
+    const lists: Array<(e: { matches: boolean }) => void> = [];
+    let readable = false;
+    const matchMedia = (q: string) => ({
+      get matches(): boolean {
+        // standalone is the only answer once readable; before that the query is unreadable (not a boolean)
+        return (readable ? q.includes('standalone') : undefined) as never;
+      },
+      addEventListener: (_t: string, fn: (e: { matches: boolean }) => void) => void lists.push(fn),
+      removeEventListener: () => {},
+    });
+    const { events } = activate({ ...env, matchMedia });
+    readable = true;
+    for (const fn of lists) fn({ matches: true });
+    expect(events.at(-1)).toStrictEqual({
+      name: 'display_mode_changed',
+      params: { mode: 'standalone' },
+    });
+  });
+
+  it('subscribes lazily, goes through the per-window UiTracker, and releases on deactivate', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries();
+    const source = createBrowserSystemEventsSource({ ...env, matchMedia: q.matchMedia });
+    expect(q.listenerCount()).toBe(0); // built, not subscribed
+    const off = source.onAny(() => {});
+    expect(q.listenerCount()).toBe(4); // display-mode: fullscreen + standalone + minimal-ui, and prefers-color-scheme
+    off();
+    expect(q.listenerCount()).toBe(0);
+  });
+
+  it('emits nothing without matchMedia', () => {
+    const { env } = fakeEnv();
+    const { events } = activate(env);
+    expect(events.map((e) => e.name)).not.toContain('display_mode_changed');
+  });
+
+  it('a hostile matchMedia (throws / non-boolean / null list) is reported and emits nothing', () => {
+    for (const matchMedia of [
+      () => {
+        throw new Error('blocked');
+      },
+      () => null,
+      () => ({ matches: 'yes' }),
+    ]) {
+      const { env } = fakeEnv();
+      const errors: unknown[] = [];
+      const { events } = activate({
+        ...env,
+        matchMedia: matchMedia as never,
+        onError: (e) => errors.push(e),
+      });
+      expect(events.map((e) => e.name)).toEqual(['process_started']);
+    }
+  });
+});
+
 describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => {
   it('records dark_mode_changed with the new state from the injected matchMedia', () => {
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { events } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(new Set(m.queries)).toEqual(new Set(['(prefers-color-scheme: dark)'])); // baseline read + watch
+    expect(new Set(m.queries)).toEqual(
+      new Set([
+        '(prefers-color-scheme: dark)',
+        '(display-mode: fullscreen)',
+        '(display-mode: standalone)',
+        '(display-mode: minimal-ui)',
+      ]),
+    ); // baseline reads + watches, for dark mode and display mode
     m.fire(true);
     m.fire(false);
     expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
@@ -142,7 +286,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { off } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(m.count()).toBe(1);
+    expect(m.count()).toBe(2); // the dark-mode listener and the display-mode one (one function over its three queries)
     off();
     expect(m.count()).toBe(0);
   });

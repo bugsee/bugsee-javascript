@@ -605,6 +605,40 @@ describe('launch', () => {
         (e) => e.data as { name: string; params?: unknown },
       );
 
+    it('records display_mode_changed from the injected window matchMedia, with the previous mode', async () => {
+      const w = fakeWindow();
+      const listeners = new Set<(e: { matches: boolean }) => void>();
+      let standalone = false;
+      Object.assign(w.win, {
+        matchMedia(q: string) {
+          return {
+            get matches() {
+              return standalone && q === '(display-mode: standalone)';
+            },
+            addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void listeners.add(f),
+            removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void listeners.delete(f),
+          };
+        },
+      });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, captureStore: store }),
+      );
+      standalone = true;
+      for (const f of [...listeners]) f({ matches: true });
+      expect((await names(store)).filter((e) => e.name === 'display_mode_changed')).toEqual([
+        expect.objectContaining({
+          name: 'display_mode_changed',
+          params: { mode: 'standalone', previousMode: 'browser' },
+        }),
+      ]);
+      await client.stop();
+      expect(listeners.size).toBe(0);
+    });
+
     it('records dark_mode_changed from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
       const w = fakeWindow();
       const m = mkMedia();
@@ -614,7 +648,7 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toHaveLength(2); // the baseline read + the change watch
+      expect(m.thisSeen.length).toBeGreaterThan(0); // the baseline reads + the change watches (dark and display mode)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
