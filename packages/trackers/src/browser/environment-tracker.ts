@@ -638,17 +638,20 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   ): void {
     const next: PermissionStates = {};
     const kept = this.#permissions;
+    let unusable = false; // a status ANSWERED but its state is not usable: that name's stale claim must go
     for (const { name, status } of answered) {
       const { state, threw } = this.#readState(name, status);
       const value = threw ? kept?.[name] : state;
       if (value !== undefined) next[name] = value;
+      else if (!threw) unusable = true;
     }
     for (const name of failedNames) {
       const value = kept?.[name]; // the query failed: keep the retained state of that name
       if (value !== undefined) next[name] = value;
     }
-    // Nothing usable (unsupported / every query failed): keep the retained snapshot, emit nothing.
-    if (Object.keys(next).length === 0) return;
+    // Nothing usable because nothing ANSWERED (unsupported / every query failed): keep the retained snapshot, emit
+    // nothing. An answer that was unusable does replace it (the stale claim is cleared).
+    if (Object.keys(next).length === 0 && !unusable) return;
     this.#commitPermissions(next);
   }
 
@@ -665,15 +668,19 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     // A retained yes/no is not probed again (it does not change within a page); an inconclusive one is retried.
     if (this.#private?.private === 'yes' || this.#private?.private === 'no') return;
     const mine = ++this.#privateEpoch;
-    const report = (e: unknown): void => this.#onError(e);
-    const storage = hostRead(
-      () => (this.#env.navigator as { storage?: unknown } | undefined)?.storage,
-      report,
-    ) as { estimate?: () => Promise<{ quota?: unknown }> } | undefined;
-    const estimate =
-      typeof storage === 'object' && storage !== null
-        ? hostRead(() => storage.estimate, report)
-        : undefined;
+    const { storage, estimate } = this.#streak('private:storage', (report) => {
+      const found = hostRead(
+        () => (this.#env.navigator as { storage?: unknown } | undefined)?.storage,
+        report,
+      ) as { estimate?: () => Promise<{ quota?: unknown }> } | undefined;
+      return {
+        storage: found,
+        estimate:
+          typeof found === 'object' && found !== null
+            ? hostRead(() => found.estimate, report)
+            : undefined,
+      };
+    });
     if (typeof estimate !== 'function') {
       this.#settlePrivate({ private: 'unknown' });
       return;
@@ -688,7 +695,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
       (raw) => {
         if (this.#privateEpoch !== mine) return;
         this.#privateFailing = false;
-        const quota = hostRead(() => raw?.quota, report);
+        const quota = this.#streak('private:quota', (report) => hostRead(() => raw?.quota, report));
         this.#settlePrivate(classifyQuota(quota));
       },
       (error: unknown) => {

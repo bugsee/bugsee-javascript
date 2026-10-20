@@ -1969,3 +1969,104 @@ describe('EnvironmentTracker: reset with subscribers, defaults and listener pins
     expect(tracker.current().language?.language).toBe('fr');
   });
 });
+
+describe('EnvironmentTracker: unusable answers and private-mode read streaks', () => {
+  it('an answered but UNUSABLE state replaces a retained one: the stale entry is cleared and the change emitted', async () => {
+    const status = mkStatus('granted');
+    const { tracker, seen, listen } = setup(
+      { permissions: { query: () => Promise.resolve(status) } },
+      { permissionNames: ['camera'] },
+    );
+    const off = listen();
+    await flush();
+    off();
+    status.state = 'weird'; // answers, but not a usable state
+    listen();
+    await flush();
+    expect(tracker.current().permissions).toEqual({});
+    expect(seen.filter(([n]) => n === 'permissions')).toEqual([
+      ['permissions', { camera: 'granted' }],
+      ['permissions', {}],
+    ]);
+  });
+
+  it('a throwing state with nothing retained yields no snapshot and no emission (a failed read is not an answer)', async () => {
+    const status = mkTarget();
+    Object.defineProperty(status, 'state', {
+      get(): string {
+        throw new Error('state');
+      },
+    });
+    const { tracker, seen, listen } = setup(
+      { permissions: { query: () => Promise.resolve(status) } },
+      { permissionNames: ['camera'] },
+    );
+    listen();
+    await flush();
+    expect(tracker.current().permissions).toBeUndefined();
+    expect(seen.filter(([n]) => n === 'permissions')).toEqual([]);
+  });
+
+  it('a FAILED query (or throwing state) still retains the snapshot and emits nothing', async () => {
+    let mode: 'ok' | 'reject' = 'ok';
+    const query = vi.fn(() =>
+      mode === 'ok' ? Promise.resolve(mkStatus('granted')) : Promise.reject(new Error('q')),
+    );
+    const { tracker, seen, listen } = setup(
+      { permissions: { query } },
+      { permissionNames: ['camera'] },
+    );
+    const off = listen();
+    await flush();
+    off();
+    mode = 'reject';
+    listen();
+    await flush();
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+  });
+
+  it('private mode: storage / estimate / quota getter failures are reported once per streak, recovery starts a new one', async () => {
+    const fail = { storage: true, quota: false };
+    const nav = {
+      get storage(): unknown {
+        if (fail.storage) throw new Error('storage');
+        return {
+          estimate: () =>
+            Promise.resolve({
+              get quota(): number {
+                if (fail.quota) throw new Error('quota');
+                return 500 * 1024 * 1024; // inconclusive: probed again on every restart
+              },
+            }),
+        };
+      },
+    };
+    const { tracker, onError, listen } = setup(nav as never, { detectPrivateMode: true });
+    const messages = () => onError.mock.calls.map(([e]) => (e as Error).message);
+    let off = listen();
+    await flush();
+    off();
+    off = listen();
+    await flush();
+    off();
+    expect(messages()).toEqual(['storage']); // the second failing probe is quiet
+    fail.storage = false;
+    off = listen(); // clean probe ends the streak
+    await flush();
+    off();
+    fail.quota = true;
+    off = listen();
+    await flush();
+    off();
+    off = listen();
+    await flush();
+    off();
+    expect(messages()).toEqual(['storage', 'quota']);
+    fail.storage = true;
+    listen();
+    await flush();
+    expect(messages()).toEqual(['storage', 'quota', 'storage']); // a new streak
+    expect(tracker.current().privateMode).toEqual({ private: 'unknown' });
+  });
+});

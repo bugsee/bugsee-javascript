@@ -483,6 +483,39 @@ describe('createBrowserSystemEventsSource', () => {
       }
     });
 
+    it('an omitted detectPrivateMode turns detection OFF even after an earlier source turned it on for the window', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const estimate = vi.fn(() => Promise.resolve({ quota: 10 }));
+      Object.assign(win, { navigator: { language: 'en-US', storage: { estimate } } });
+      try {
+        const on = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: true,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).toHaveBeenCalledTimes(1);
+        expect(on.events.at(-1)?.name).toBe('private_mode_detected');
+        on.off();
+        resetEnvironmentTracker({ window: win }); // forget the answer; keep nothing but the seam question
+        const first = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: true,
+        });
+        first.off();
+        estimate.mockClear();
+        const off = activate({ ...rest, lifecycle: lifecycleStub as never }); // option omitted
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).not.toHaveBeenCalled();
+        expect(off.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        off.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
     it('stops listening to the environment tracker on deactivate', () => {
       const environment = createMultiKeyEmitter<EnvironmentEvents>();
       const { events, off } = activate({ lifecycle: lifecycleStub as never, environment });

@@ -240,9 +240,9 @@ export function createBrowserSystemEventsSource(
           ...(doc !== undefined ? { document: doc } : {}),
           ...(nav !== undefined ? { navigator: nav } : {}),
           ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
-          ...(env.detectPrivateMode !== undefined
-            ? { detectPrivateMode: env.detectPrivateMode }
-            : {}),
+          // Always explicit: an omitted field would be RETAINED by the window's shared tracker (an earlier source
+          // may have turned detection on), and private-mode detection is opt-in.
+          detectPrivateMode: env.detectPrivateMode ?? false,
         },
         env.onError,
       );
