@@ -8,6 +8,15 @@ export {
   applicationTrackerFor,
   resetApplicationTracker,
 } from './application-tracker';
+export {
+  type ConnectivityEvents,
+  type ConnectivityHost,
+  type ConnectivityState,
+  ConnectivityTracker,
+  connectivityTrackerFor,
+  type NetworkInfo,
+  resetConnectivityTracker,
+} from './connectivity-tracker';
 export { hostRead } from './host-read';
 export {
   type BatteryEnv,

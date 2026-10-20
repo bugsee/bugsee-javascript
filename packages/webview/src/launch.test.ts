@@ -170,10 +170,11 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     const win = fakeEventTarget();
     const { document } = blockedDoc();
     track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
-    expect(win.count('online')).toBe(1);
+    // ApplicationTracker's temporary online stage + the ConnectivityTracker's own listener
+    expect(win.count('online')).toBe(2);
     const shared = applicationTrackerFor({ window: win.target as never, document });
     const off = shared.on('online', () => {});
-    expect(win.count('online')).toBe(1); // the SAME tracker: no second listener set
+    expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
     off();
   });
 
@@ -1097,8 +1098,9 @@ describe('launch (webview)', () => {
         expect(rows.get('ram_js_heap_used')).toBe(10);
         expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
         expect(rows.get('orientation')).toBe(3);
-        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
-        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
+        // ONE shared lifecycle tracker (traces + events source: 3 listeners, not 6) plus the domain ConnectivityTracker's
+        // own online/offline pair (it does not depend on the lifecycle tracker).
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(5);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
       } finally {

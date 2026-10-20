@@ -42,7 +42,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
-import { applicationTrackerFor } from '@bugsee/trackers/browser';
+import { applicationTrackerFor, connectivityTrackerFor } from '@bugsee/trackers/browser';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -480,8 +480,10 @@ describe('launch', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // traces (connection/orientation) AND the events source are both live, yet each type is bound once
-    expect(w.count('online')).toBe(1);
+    // traces (orientation) AND the events source share ONE lifecycle tracker (a single orientationchange listener);
+    // online/offline are bound twice: once by that lifecycle tracker (events) and once by the domain
+    // ConnectivityTracker, which owns its own connectivity listeners and does not depend on the lifecycle tracker.
+    expect(w.count('online')).toBe(2);
     expect(w.count('orientationchange')).toBe(1);
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
@@ -1401,13 +1403,47 @@ describe('launch', () => {
         // the system-events source listens on the same window, so isolate the trace trackers
         noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
       );
-      expect(w.count('online')).toBe(1);
-      expect(w.count('offline')).toBe(1);
+      // online/offline: the shared lifecycle tracker (orientation) + the ConnectivityTracker's own listeners
+      expect(w.count('online')).toBe(2);
+      expect(w.count('offline')).toBe(2);
       expect(w.count('orientationchange')).toBe(1);
       await client.stop();
       expect(w.count('online')).toBe(0);
       expect(w.count('offline')).toBe(0);
       expect(w.count('orientationchange')).toBe(0);
+    });
+
+    it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
+      vi.stubGlobal('navigator', {
+        onLine: true,
+        connection: { type: 'wifi', downlink: 10, downlinkMax: 100 },
+      });
+      const w = fakeWindow();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, captureSystemEvents: false }),
+      );
+      const before = w.count('online'); // lifecycle tracker + the connectivity tracker
+      // The singleton for this window is the one launch subscribed through: a new `ConnectivityTracker` would add
+      // another pair of window listeners here instead of sharing the first.
+      const off = connectivityTrackerFor({ window: w.win }).on('online', () => {});
+      expect(w.count('online')).toBe(before);
+      off();
+      expect(w.count('online')).toBe(before); // launch's own subscription still holds it
+      const rows = new Map(
+        ((await drain(store, 'traces.system')) ?? []).map((e) => {
+          const d = e.data as { name: string; value: unknown };
+          return [d.name, d.value];
+        }),
+      );
+      expect(rows.get('connection')).toMatchObject({
+        type: 'wifi',
+        link_downstream_kbps: 10_000,
+        link_downstream_max_kbps: 100_000,
+      });
+      await client.stop();
+      expect(w.count('online')).toBe(0);
     });
 
     it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {
