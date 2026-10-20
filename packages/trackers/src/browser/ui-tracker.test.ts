@@ -284,6 +284,92 @@ describe('UiTracker visualViewport stage', () => {
     expect(() => t.on('visualViewport', () => {})).not.toThrow();
   });
 
+  it("defaults to the window's own visualViewport when the env supplies none (read live)", () => {
+    const w = mkWorld();
+    const vv = mkVv();
+    const win = Object.assign(w.win, { visualViewport: vv });
+    const t = new UiTracker({ window: win });
+    expect(t.current('visualViewport')).toMatchObject({ scale: 1, width: 800 });
+    const got: unknown[] = [];
+    t.on('visualViewport', (s) => got.push(s));
+    expect(vv.count('resize')).toBe(1);
+    expect(vv.count('scroll')).toBe(1);
+    vv.scale = 3;
+    vv.fire('resize');
+    expect(got).toHaveLength(1);
+  });
+
+  it("an injected visualViewport wins over the window's; a null one on the window is no viewport", () => {
+    const w = mkWorld();
+    const own = mkVv();
+    const injected = mkVv();
+    injected.scale = 4;
+    const t = new UiTracker({
+      window: Object.assign(w.win, { visualViewport: own }),
+      visualViewport: injected,
+    });
+    expect(t.current('visualViewport')).toMatchObject({ scale: 4 });
+    expect(
+      new UiTracker({ window: { visualViewport: null } as never }).current('visualViewport'),
+    ).toBeUndefined();
+  });
+
+  it('a hostile window.visualViewport getter is reported once per read, never thrown', () => {
+    const errors: unknown[] = [];
+    const win = {
+      get visualViewport(): never {
+        throw new Error('blocked');
+      },
+    };
+    const t = new UiTracker({ window: win as never }, (e) => errors.push(e));
+    expect(t.current('visualViewport')).toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it.each([
+    'scale',
+    'offsetLeft',
+    'offsetTop',
+    'width',
+    'height',
+  ] as const)('a throwing %s getter is reported and only that field is omitted', (field) => {
+    const errors: unknown[] = [];
+    const vv = {
+      scale: 2,
+      offsetLeft: 1,
+      offsetTop: 2,
+      width: 3,
+      height: 4,
+    } as Record<string, unknown>;
+    Object.defineProperty(vv, field, {
+      get(): never {
+        throw new Error(`${field} blocked`);
+      },
+    });
+    const t = new UiTracker({ visualViewport: vv as never }, (e) => errors.push(e));
+    const expected: Record<string, number> = {
+      scale: 2,
+      offsetLeft: 1,
+      offsetTop: 2,
+      width: 3,
+      height: 4,
+    };
+    delete expected[field];
+    expect(t.current('visualViewport')).toEqual(expected);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe(`${field} blocked`);
+  });
+
+  it('a zero or negative scale / size is omitted, but a zero or negative offset is a position', () => {
+    const t = new UiTracker({
+      visualViewport: { scale: 0, offsetLeft: -5, offsetTop: 0, width: -1, height: 0 } as never,
+    });
+    expect(t.current('visualViewport')).toEqual({ offsetLeft: -5, offsetTop: 0 });
+    expect(
+      new UiTracker({ visualViewport: { scale: -2, width: 0 } as never }).current('visualViewport'),
+    ).toBeUndefined();
+  });
+
   it('a rebind to another visualViewport moves the listeners', () => {
     const vv1 = mkVv();
     const vv2 = mkVv();

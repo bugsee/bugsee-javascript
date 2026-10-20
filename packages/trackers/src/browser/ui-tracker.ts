@@ -106,6 +106,8 @@ export interface UiEnv {
     readonly devicePixelRatio?: unknown;
     readonly innerWidth?: unknown;
     readonly innerHeight?: unknown;
+    /** Where `visualViewport` defaults from when the env supplies none. */
+    readonly visualViewport?: UiEnv['visualViewport'] | null;
   };
   screen?: Partial<TargetLike> & {
     readonly width?: unknown;
@@ -115,7 +117,11 @@ export interface UiEnv {
       readonly angle?: unknown;
     };
   };
-  /** `window.visualViewport` (pinch zoom and the visible region); absent in older engines. */
+  /**
+   * `window.visualViewport` (pinch zoom and the visible region); absent in older engines. Defaults to the window's own
+   * (read guarded, live), so a consumer need not pass it — and passing it from one consumer only would look like a
+   * source change to the others' running stages.
+   */
   visualViewport?: Partial<TargetLike> & {
     readonly scale?: unknown;
     readonly offsetLeft?: unknown;
@@ -364,8 +370,8 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         return positive(width) && positive(height) ? { width, height } : undefined;
       }
       case 'visualViewport': {
-        const vv = hostRead(() => this.#env.visualViewport, report);
-        if (vv === undefined || vv === null) return undefined;
+        const vv = this.#visualViewport();
+        if (vv === undefined) return undefined;
         const state: VisualViewportState = {};
         const scale = hostRead(() => vv.scale, report);
         const offsetLeft = hostRead(() => vv.offsetLeft, report);
@@ -392,6 +398,14 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
           DISPLAY_MODES.map((mode) => this.#matches(`(display-mode: ${mode})`)),
         );
     }
+  }
+
+  /** The injected visual viewport, else the window's own; guarded and reported; undefined when there is none. */
+  #visualViewport(): UiEnv['visualViewport'] | undefined {
+    const injected = hostRead(() => this.#env.visualViewport, this.#report);
+    if (injected !== undefined && injected !== null) return injected;
+    const fromWindow = hostRead(() => this.#env.window?.visualViewport, this.#report);
+    return fromWindow ?? undefined;
   }
 
   #matches(query: string): boolean | undefined {
@@ -518,7 +532,7 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         kinds: ['visualViewport'],
         attach: (offs) => {
           const onChange = this.#guarded(() => this.#refresh(['visualViewport']));
-          const vv = env().visualViewport;
+          const vv = this.#visualViewport();
           this.#listen(offs, vv, 'resize', onChange);
           this.#listen(offs, vv, 'scroll', onChange);
         },

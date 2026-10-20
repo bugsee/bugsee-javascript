@@ -1788,6 +1788,46 @@ describe('launch', () => {
       resetUiTracker({ window: w.win });
     });
 
+    it("after a relaunch the shared UiTracker reports to the LATEST launch (the carrier-shared viewport source must not pin the first launch's onError)", async () => {
+      const armed = { on: false };
+      vi.stubGlobal('screen', {
+        get width(): number {
+          if (armed.on) throw new Error('screen.width blocked');
+          return 390;
+        },
+        height: 844,
+      });
+      stubSensors();
+      vi.stubGlobal('screen', {
+        get width(): number {
+          if (armed.on) throw new Error('screen.width blocked');
+          return 390;
+        },
+        height: 844,
+      });
+      const w = fakeWindow();
+      Object.assign(w.win, { innerWidth: 390, innerHeight: 844, devicePixelRatio: 2 });
+      const carrier = {};
+      const errA = vi.fn();
+      const errB = vi.fn();
+      const common = {
+        window: w.win,
+        carrier,
+        captureStore: memStore(),
+        captureSystemTraces: false,
+        captureSystemEvents: false,
+      };
+      const a = await launchTracked('tok', noSampler({ ...common, onError: errA }));
+      await a.stop();
+      await launchTracked('tok', noSampler({ ...common, captureStore: memStore(), onError: errB }));
+      armed.on = true;
+      w.emit('resize', {});
+      expect(errB).toHaveBeenCalled();
+      expect(errA).not.toHaveBeenCalled();
+      armed.on = false;
+      resetUiTracker({ window: w.win });
+    });
+
     it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
       vi.stubGlobal('navigator', {
         onLine: true,

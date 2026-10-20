@@ -710,4 +710,50 @@ describe('createBrowserViewportSource: listeners belong to the shared UiTracker'
       expect(offs).toHaveBeenCalledTimes(3 * cycle);
     }
   });
+
+  it('activating next to running traces/events stages neither re-attaches nor re-baselines them', () => {
+    // First launch: the traces/events consumers subscribe BEFORE the viewport source activates. The source must not
+    // hand the shared tracker anything that looks like a source change (it used to pass `visualViewport` alone).
+    const win = new FakeWindow();
+    const vv = new FakeVisualViewport();
+    Object.assign(win, {
+      visualViewport: vv,
+      screen: Object.assign(new FakeWindow(), { width: 1, height: 1 }),
+    });
+    const removed: string[] = [];
+    const realRemove = win.removeEventListener.bind(win);
+    win.removeEventListener = (type, listener) => {
+      removed.push(type);
+      realRemove(type, listener);
+    };
+    const doc = Object.assign(new FakeWindow(), { visibilityState: 'visible' });
+    let frames = 0;
+    const intervals = { set: 0, cleared: 0 };
+    const ui = uiTrackerFor({
+      window: win as never,
+      document: doc as never,
+      screen: (win as unknown as { screen: never }).screen,
+      requestAnimationFrame: () => ++frames,
+      cancelAnimationFrame: () => {},
+      scheduler: {
+        setInterval: () => ++intervals.set,
+        clearInterval: () => {
+          intervals.cleared += 1;
+        },
+      },
+    });
+    const offs = [ui.on('frameRate', () => {}), ui.on('orientation', () => {})];
+    const addsBefore = win.listenerCount + vv.listenerCount;
+    expect([frames, intervals.set]).toStrictEqual([1, 1]);
+
+    const stop = createBrowserViewportSource({ window: win }).on('viewport', () => {});
+
+    expect(removed).toStrictEqual([]); // nothing was detached
+    expect(intervals).toStrictEqual({ set: 1, cleared: 0 }); // the fps loop was not restarted
+    expect(frames).toBe(1);
+    expect(vv.listeners.get('resize')?.size).toBe(1); // the source's pinch wake-up rides the window's own visualViewport
+    expect(win.listenerCount + vv.listenerCount).toBeGreaterThan(addsBefore);
+    stop();
+    for (const off of offs) off();
+  });
 });

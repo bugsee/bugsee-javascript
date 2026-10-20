@@ -975,13 +975,12 @@ async function buildLaunch(
   // to guess the frame from `environment.hardware.screen` — the whole monitor, captured once at launch,
   // in CSS px, so it shrinks under page zoom while `clientX` does not, and the click renders off the
   // frame. Carrier-shared and gated by the same option as `input`, because it exists to place `input`.
+  // No `onError` here, deliberately: the source is carrier-shared (the FIRST launch's config wins), so a reporter
+  // captured now would be handed to the shared per-window UiTracker at every activation and pin the first launch's
+  // sink over a later launch's. The tracker's reporter is rebound by every launch's own consumers (latest wins).
   const viewportSource = getOrCreateInterceptor(
     'browser-viewport',
-    () =>
-      createBrowserViewportSource({
-        window: win,
-        ...(options.onError !== undefined ? { onError: options.onError } : {}),
-      }),
+    () => createBrowserViewportSource({ window: win }),
     carrier,
   );
   client.addCaptureProvider(createVideoAuxProvider(viewportSource));

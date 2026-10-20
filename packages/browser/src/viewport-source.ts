@@ -230,8 +230,10 @@ class BrowserViewportSource
       {
         window: win as NonNullable<UiEnv['window']>,
         ...(screen !== undefined ? { screen } : {}),
-        ...(this.#visualViewport !== undefined
-          ? { visualViewport: this.#visualViewport as NonNullable<UiEnv['visualViewport']> }
+        // Only an EXPLICIT injection: the tracker reads the window's own by default, and handing it the same object
+        // from this consumer alone would look like a source change (detach + re-baseline) to every stage already running.
+        ...(env.visualViewport != null
+          ? { visualViewport: env.visualViewport as NonNullable<UiEnv['visualViewport']> }
           : {}),
       },
       env.onError,
