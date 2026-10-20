@@ -177,6 +177,8 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   /** Failure streak flags (a failure is reported once, until a clean run). */
   #permissionsFailing = false;
   #privateFailing = false;
+  /** Streaks of the synchronous stages ('language' | 'timezone' | 'hints' | 'visibility'): reported once each. */
+  #failing = new Set<string>();
   #listeners: Array<{ target: Partial<TargetLike>; type: string; listener: () => void }> = [];
   #timer: { handle: unknown; scheduler: EnvironmentTimers } | undefined;
   #statuses: Array<{ status: Partial<TargetLike>; listener: () => void }> = [];
@@ -208,7 +210,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   rebind(env: EnvironmentEnv, onError?: (error: unknown) => void): void {
     if (onError !== undefined) this.#report.fn = onError;
     const old = this.#env;
-    const next = seamsOf(env, old);
+    const next = seamsOf(env, old, (e) => this.#onError(e));
     const moved =
       next.window !== old.window ||
       next.navigator !== old.navigator ||
@@ -258,6 +260,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     this.#private = undefined;
     this.#permissionsFailing = false;
     this.#privateFailing = false;
+    this.#failing.clear();
   }
 
   protected onActivate(): void {
@@ -282,10 +285,24 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     this.#detectPrivateMode();
   }
 
+  /**
+   * Runs one synchronous host read through a reporter that is quiet while the failure persists: the first failing run
+   * of a streak reports (every error of it), later failing runs say nothing, and a clean run ends the streak.
+   */
+  #streak<T>(key: string, read: (report: (error: unknown) => void) => T): T {
+    const errors: unknown[] = [];
+    const result = read((error) => void errors.push(error));
+    if (errors.length === 0) this.#failing.delete(key);
+    else if (!this.#failing.has(key)) {
+      this.#failing.add(key);
+      for (const error of errors) this.#onError(error);
+    }
+    return result;
+  }
+
   #visibility(): unknown {
-    return hostRead(
-      () => this.#env.document?.visibilityState,
-      (e) => this.#onError(e),
+    return this.#streak('visibility', (report) =>
+      hostRead(() => this.#env.document?.visibilityState, report),
     );
   }
 
@@ -375,10 +392,9 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     this.#publishHints();
   }
 
-  #readLanguage(): LanguageInfo | undefined {
+  #readLanguage(report: (error: unknown) => void): LanguageInfo | undefined {
     const nav = this.#env.navigator as { language?: unknown; languages?: unknown } | undefined;
     if (nav === undefined) return undefined;
-    const report = (e: unknown): void => this.#onError(e);
     const language = nonEmpty(hostRead(() => nav.language, report));
     const languages = hostRead(() => {
       const raw = nav.languages;
@@ -392,17 +408,16 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #publishLanguage(): void {
-    const next = this.#readLanguage();
+    const next = this.#streak('language', (report) => this.#readLanguage(report));
     if (next === undefined) return; // nothing readable: keep what we have, say nothing
     const previous = this.#language;
     this.#language = next;
     if (previous !== undefined && !same(previous, next)) {
-      this.emit('language', { ...next, previous });
+      this.emit('language', { ...copyLanguage(next), previous });
     }
   }
 
-  #readTimeZone(): TimeZoneInfo | undefined {
-    const report = (e: unknown): void => this.#onError(e);
+  #readTimeZone(report: (error: unknown) => void): TimeZoneInfo | undefined {
     const timeZone = nonEmpty(hostRead(this.#env.timeZoneId ?? defaultTimeZoneId, report));
     const offset = hostRead(this.#env.utcOffsetMinutes ?? defaultUtcOffset, report);
     const utcOffsetMinutes =
@@ -415,7 +430,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #publishTimeZone(): void {
-    const next = this.#readTimeZone();
+    const next = this.#streak('timezone', (report) => this.#readTimeZone(report));
     if (next === undefined) return;
     const previous = this.#timeZone;
     this.#timeZone = next;
@@ -424,8 +439,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     }
   }
 
-  #readHints(): EnvironmentHints | undefined {
-    const report = (e: unknown): void => this.#onError(e);
+  #readHints(report: (error: unknown) => void): EnvironmentHints | undefined {
     const nav = this.#env.navigator as Record<string, unknown> | undefined;
     const win = this.#env.window as Record<string, unknown> | undefined;
     const fromNav = (key: string): unknown => hostRead(() => nav?.[key], report);
@@ -458,11 +472,11 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #publishHints(): void {
-    const next = this.#readHints();
+    const next = this.#streak('hints', (report) => this.#readHints(report));
     if (next === undefined) return;
     const changed = !same(this.#hints, next);
     this.#hints = next;
-    if (changed) this.emit('hints', next);
+    if (changed) this.emit('hints', { ...next });
   }
 
   // ---- permissions (never prompts) ----
@@ -560,7 +574,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   #commitPermissions(next: PermissionStates): void {
     const changed = !same(this.#permissions, next);
     this.#permissions = next;
-    if (changed) this.emit('permissions', next);
+    if (changed) this.emit('permissions', { ...next });
   }
 
   // ---- private mode (opt-in heuristic) ----
@@ -607,7 +621,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
 
   #settlePrivate(result: PrivateModeResult): void {
     this.#private = result;
-    this.emit('privateMode', result);
+    this.emit('privateMode', { ...result });
   }
 }
 
@@ -618,6 +632,11 @@ function classifyQuota(quota: unknown): PrivateModeResult {
   if (quota < PRIVATE_QUOTA_BELOW_BYTES) return { private: 'yes', method: PRIVATE_MODE_METHOD };
   if (quota >= NORMAL_QUOTA_FROM_BYTES) return { private: 'no', method: PRIVATE_MODE_METHOD };
   return { private: 'unknown', method: PRIVATE_MODE_METHOD };
+}
+
+// `previous` needs no copy: it is the replaced reading, no longer retained.
+function copyLanguage(info: LanguageInfo): LanguageInfo {
+  return { ...info, ...(info.languages !== undefined ? { languages: [...info.languages] } : {}) };
 }
 
 function asTarget(value: unknown): Partial<TargetLike> | undefined {

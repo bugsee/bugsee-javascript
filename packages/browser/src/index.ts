@@ -26,7 +26,6 @@ export {
   type EnvironmentEvents,
   EnvironmentTracker,
   environmentTrackerFor,
-  resetEnvironmentTracker,
 } from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {

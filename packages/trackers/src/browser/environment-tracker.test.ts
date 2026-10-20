@@ -285,10 +285,22 @@ describe('EnvironmentTracker: timezone', () => {
       expect(vi.getTimerCount()).toBe(1);
       off();
       expect(vi.getTimerCount()).toBe(0);
-      const d = new EnvironmentTracker({});
-      d.on('timezone', () => {});
-      vi.advanceTimersByTime(60_000); // the default period elapses without incident
-      resetEnvironmentTracker({});
+      let offset = 0;
+      const d = new EnvironmentTracker({ timeZoneId: () => 'UTC', utcOffsetMinutes: () => offset });
+      const changes: unknown[] = [];
+      d.on('timezone', (e) => changes.push(e));
+      expect(vi.getTimerCount()).toBe(1);
+      offset = 60;
+      vi.advanceTimersByTime(59_999);
+      expect(changes).toEqual([]); // not before the default 60 s period
+      vi.advanceTimersByTime(1);
+      expect(changes).toEqual([
+        {
+          timeZone: 'UTC',
+          utcOffsetMinutes: 60,
+          previous: { timeZone: 'UTC', utcOffsetMinutes: 0 },
+        },
+      ]);
       d.reset();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -1316,5 +1328,221 @@ describe('EnvironmentTracker: guarded callbacks and comparison', () => {
     await flush();
     expect(seen.filter(([n]) => n === 'hints' || n === 'permissions')).toEqual([]);
     expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+  });
+});
+
+describe('EnvironmentTracker: failure streaks (reported once, then quiet until a clean run)', () => {
+  const boomOn = (flag: { on: boolean }, message: string) => {
+    if (flag.on) throw new Error(message);
+  };
+  const messages = (onError: ReturnType<typeof vi.fn>) =>
+    onError.mock.calls.map(([e]) => (e as Error).message);
+
+  it('language: a persistently failing read is reported once; recovery then a new failure reports again', () => {
+    const flag = { on: true };
+    const nav = {
+      get language(): string {
+        boomOn(flag, 'lang');
+        return 'en';
+      },
+    };
+    const { scheduler, onError, listen } = setup(nav);
+    listen(); // activation read fails
+    scheduler.tick();
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['lang']);
+    flag.on = false;
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['lang']);
+    flag.on = true;
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['lang', 'lang']);
+  });
+
+  it('time zone: once per streak', () => {
+    const flag = { on: true };
+    const { scheduler, onError, listen } = setup(undefined, {
+      timeZoneId: () => {
+        boomOn(flag, 'tz');
+        return 'UTC';
+      },
+    });
+    listen();
+    scheduler.tick();
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['tz']);
+    flag.on = false;
+    scheduler.tick();
+    flag.on = true;
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['tz', 'tz']);
+  });
+
+  it('hints: once per streak', () => {
+    const flag = { on: true };
+    const nav = {
+      language: 'en',
+      get cookieEnabled(): boolean {
+        boomOn(flag, 'hint');
+        return true;
+      },
+    };
+    const { scheduler, onError, listen } = setup(nav);
+    listen();
+    scheduler.tick();
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['hint']);
+    flag.on = false;
+    scheduler.tick();
+    flag.on = true;
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['hint', 'hint']);
+  });
+
+  it('visibility: once per streak (timer ticks and visibilitychange share it)', () => {
+    const flag = { on: true };
+    const document = mkTarget();
+    Object.defineProperty(document, 'visibilityState', {
+      get(): string {
+        boomOn(flag, 'vis');
+        return 'visible';
+      },
+    });
+    const { scheduler, onError, listen } = setup(undefined, { document });
+    listen();
+    scheduler.tick();
+    document.fire('visibilitychange');
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['vis']);
+    flag.on = false;
+    scheduler.tick();
+    flag.on = true;
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['vis', 'vis']);
+  });
+
+  it('a streak reports every error of its first run (two failing reads of one stage)', () => {
+    const nav = {
+      get language(): string {
+        throw new Error('a');
+      },
+      get languages(): string[] {
+        throw new Error('b');
+      },
+    };
+    const { scheduler, onError, listen } = setup(nav);
+    listen();
+    scheduler.tick();
+    expect(messages(onError)).toEqual(['a', 'b']);
+  });
+
+  it('reset() ends every streak, so the same failure is reported again afterwards', async () => {
+    const nav = {
+      get language(): string {
+        throw new Error('lang');
+      },
+      storage: { estimate: () => Promise.reject(new Error('quota')) },
+      permissions: { query: () => Promise.reject(new Error('perm')) },
+    };
+    const { tracker, onError, listen } = setup(nav, {
+      detectPrivateMode: true,
+      permissionNames: ['camera'],
+    });
+    const off = listen();
+    await flush();
+    expect(messages(onError).sort()).toEqual(['lang', 'perm', 'quota']);
+    off();
+    tracker.reset();
+    onError.mockClear();
+    listen();
+    await flush();
+    expect(messages(onError).sort()).toEqual(['lang', 'perm', 'quota']);
+  });
+});
+
+describe('EnvironmentTracker: rebind seams', () => {
+  it.each([
+    ['window', () => ({ window: mkTarget({ isSecureContext: true }) })],
+    ['navigator', () => ({ navigator: { language: 'fr' } })],
+    ['document', () => ({ document: mkDocument() })],
+    ['scheduler', () => ({ scheduler: mkScheduler() })],
+    ['intervalMs', () => ({ intervalMs: 999 })],
+  ])('changing ONLY %s on a running tracker re-attaches', (key, change) => {
+    const { tracker, win, document, scheduler, listen } = setup();
+    listen();
+    const swap = change() as Partial<EnvironmentEnv>;
+    const next = (swap.window ?? win) as ReturnType<typeof mkTarget>;
+    if (swap.window) wins.push(swap.window);
+    tracker.rebind(swap);
+    // detached from the OLD seams and attached to the (new or kept) ones, exactly once each
+    const nextDoc = (swap.document ?? document) as ReturnType<typeof mkTarget>;
+    const nextSched = (swap.scheduler ?? scheduler) as ReturnType<typeof mkScheduler>;
+    expect(next.count('languagechange')).toBe(1);
+    expect(nextDoc.count('visibilitychange')).toBe(1);
+    expect(nextSched.live.size).toBe(1);
+    if (key === 'window') expect(win.count()).toBe(0);
+    if (key === 'document') expect(document.count()).toBe(0);
+    if (key === 'scheduler') expect(scheduler.live.size).toBe(0);
+    if (key === 'intervalMs') expect(scheduler.periods).toEqual([777, 999]);
+    if (key === 'navigator') expect(tracker.current().language?.language).toBe('fr'); // re-read from the new navigator
+  });
+
+  it('timeZoneId / utcOffsetMinutes replace ours on rebind and survive a seam-less rebind', () => {
+    const { tracker, listen } = setup();
+    tracker.rebind({ timeZoneId: () => 'Asia/Tokyo', utcOffsetMinutes: () => 540 });
+    tracker.rebind({});
+    listen();
+    expect(tracker.current().timeZone).toEqual({ timeZone: 'Asia/Tokyo', utcOffsetMinutes: 540 });
+  });
+
+  it('a hostile getter on the rebind env is reported through the latest reporter, not thrown', () => {
+    const { tracker, onError } = setup();
+    const later = vi.fn();
+    const env = {
+      get window(): object {
+        throw new Error('hostile');
+      },
+    };
+    expect(() => tracker.rebind(env as EnvironmentEnv, later)).not.toThrow();
+    expect(later).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe('EnvironmentTracker: emitted payloads are copies', () => {
+  it('a subscriber mutating an emitted stage object cannot change the retained readings', async () => {
+    const perms = mkPermissions({ camera: 'granted' });
+    const { tracker, win, navigator, scheduler, zone, document, listen } = setup(
+      { language: 'en', languages: ['en'], cookieEnabled: true, permissions: perms },
+      { permissionNames: ['camera'], detectPrivateMode: true },
+    );
+    const got: Record<string, any> = {};
+    tracker.onAny((name, payload) => {
+      got[name] = payload;
+      const p = payload as Record<string, any>;
+      p.mutated = true;
+      p.languages?.push('xx');
+    });
+    void listen;
+    await flush();
+    navigator.language = 'de';
+    navigator.languages = ['de'];
+    win.fire('languagechange');
+    zone.offset = 180;
+    scheduler.tick();
+    expect(Object.keys(got).sort()).toEqual([
+      'hints',
+      'language',
+      'permissions',
+      'privateMode',
+      'timezone',
+    ]);
+    const cur = tracker.current();
+    expect(cur.language).toEqual({ language: 'de', languages: ['de'] });
+    expect(cur.timeZone).toEqual({ timeZone: 'Europe/Kyiv', utcOffsetMinutes: 180 });
+    expect(cur.hints).not.toHaveProperty('mutated');
+    expect(cur.permissions).toEqual({ camera: 'granted' });
+    expect(cur.privateMode).not.toHaveProperty('mutated');
+    void document;
   });
 });

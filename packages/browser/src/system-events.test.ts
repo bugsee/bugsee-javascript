@@ -426,7 +426,7 @@ describe('createBrowserSystemEventsSource', () => {
         previous: { timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 },
       });
       environment.emit('timezone', { utcOffsetMinutes: 60, previous: {} });
-      expect(events.slice(1)).toEqual([
+      expect(events.slice(1)).toStrictEqual([
         {
           name: 'language_changed',
           params: { language: 'uk-UA', languages: ['uk-UA', 'en'], previousLanguage: 'en-US' },

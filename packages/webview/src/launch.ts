@@ -734,7 +734,9 @@ export function launchWithSeams(
       createSystemEventsProvider(
         createBrowserSystemEventsSource({
           window: win,
+          ...(domDocument !== undefined ? { document: domDocument } : {}),
           lifecycle,
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           ...(matchMedia !== undefined ? { matchMedia } : {}),
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         }),

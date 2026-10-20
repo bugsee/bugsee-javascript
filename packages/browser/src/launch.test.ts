@@ -1474,6 +1474,51 @@ describe('launch', () => {
       }
     });
 
+    it('the launch document reaches the environment tracker: its visibility gates the slow tick and a return to visible re-reads', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const d = fakeWindow();
+      const vis = { state: 'visible' };
+      const document = Object.defineProperty({ ...d.win, body: {} }, 'visibilityState', {
+        get: () => vis.state,
+      }) as unknown as Document;
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        const tracker = environmentTrackerFor({ window: w.win });
+        const slow = ticks.filter((t) => t.ms === 60_000);
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 45);
+        vis.state = 'hidden';
+        slow[0]?.cb();
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: nothing re-read
+        vis.state = 'visible';
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-(real - 45) + 0);
+      } finally {
+        vi.restoreAllMocks();
+        environmentTrackerFor({ window: w.win }).reset();
+      }
+    });
+
     it('launch goes through the per-window EnvironmentTracker singleton (language/timezone on, private mode off by default)', async () => {
       stubSensors();
       const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
