@@ -475,7 +475,8 @@ describe('createBrowserSystemEventsSource', () => {
         storage: { estimate: vi.fn(() => Promise.resolve({ quota: 10 })) },
       };
       Object.assign(win, { navigator: nav });
-      let tick: () => void = () => {};
+      const noTick = () => {};
+      let tick: () => void = noTick;
       const scheduler = {
         setInterval: (cb: () => void) => {
           tick = cb;
@@ -504,9 +505,25 @@ describe('createBrowserSystemEventsSource', () => {
           name: 'private_mode_detected',
           params: { method: 'storage-quota' },
         });
-        expect(typeof tick).toBe('function');
+        expect(tick).not.toBe(noTick); // the injected scheduler reached the singleton's slow timer
+        const before = b.events.length;
+        const real = new Date().getTimezoneOffset();
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 60); // zone moved 1 h east
+        tick();
+        expect(b.events.slice(before)).toEqual([
+          {
+            name: 'timezone_changed',
+            params: {
+              timezone: expect.any(String),
+              utcOffsetMinutes: -(real - 60) + 0,
+              previousTimezone: expect.any(String),
+              previousUtcOffsetMinutes: -real + 0,
+            },
+          },
+        ]);
         b.off();
       } finally {
+        vi.restoreAllMocks();
         resetEnvironmentTracker({ window: win });
       }
     });

@@ -602,7 +602,11 @@ describe('EnvironmentTracker: permissions', () => {
     await flush();
     expect(tracker.current().permissions).toEqual({ camera: 'granted', microphone: 'denied' });
     // add throw + getter throw + state throw (watch listener not attached for hostileState: state read at publish)
-    expect(onError.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual([
+      'add',
+      'addget',
+      'state',
+    ]);
   });
 
   it('releases the status listeners on the last unsubscribe and ignores a late change', async () => {
@@ -1148,13 +1152,27 @@ describe('EnvironmentTracker: rebind', () => {
 });
 
 describe('environmentTrackerFor', () => {
-  it('is a singleton per window and rebinds on every later call', () => {
+  it('is a singleton per window and rebinds on every later call', async () => {
     const win = mkTarget();
     wins.push(win);
-    const a = environmentTrackerFor({ window: win, navigator: { language: 'en' } });
+    const probeError = new Error('quota');
+    const probe = vi.fn(() => Promise.reject(probeError));
+    const first = vi.fn();
+    const a = environmentTrackerFor(
+      { window: win, navigator: { language: 'en', storage: { estimate: probe } } },
+      first,
+    );
     const onError = vi.fn();
     const b = environmentTrackerFor({ window: win, detectPrivateMode: true }, onError);
     expect(b).toBe(a);
+    // the shared tracker answers to the SECOND call's seams: private mode on (probing the first call's navigator,
+    // which a partial env keeps) and the second call's reporter, not the first
+    b.onAny(() => {});
+    await flush();
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(probeError);
+    expect(first).not.toHaveBeenCalled();
     const other = mkTarget();
     wins.push(other);
     expect(environmentTrackerFor({ window: other })).not.toBe(a);
@@ -1180,7 +1198,31 @@ describe('environmentTrackerFor', () => {
     };
     const tracker = environmentTrackerFor(hostile, onError);
     expect(tracker).toBeInstanceOf(EnvironmentTracker);
-    expect(onError).toHaveBeenCalled();
+    // each hostile getter is read (and reported) exactly once per call
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['win', 'nav']);
+  });
+
+  it('reads env.window and env.navigator once per call (seams and key share the reading)', () => {
+    const win = mkTarget();
+    wins.push(win);
+    const nav = { language: 'en' };
+    let windowReads = 0;
+    let navigatorReads = 0;
+    const env: EnvironmentEnv = {
+      get window() {
+        windowReads += 1;
+        return win;
+      },
+      get navigator() {
+        navigatorReads += 1;
+        return nav;
+      },
+    };
+    const tracker = environmentTrackerFor(env);
+    expect([windowReads, navigatorReads]).toEqual([1, 1]);
+    expect(environmentTrackerFor(env)).toBe(tracker);
+    expect([windowReads, navigatorReads]).toEqual([2, 2]);
+    expect(environmentTrackerFor({ window: win })).toBe(tracker); // keyed on the window it read
   });
 
   it('resetEnvironmentTracker drops the singleton and releases its listeners', () => {
@@ -1192,5 +1234,87 @@ describe('environmentTrackerFor', () => {
     resetEnvironmentTracker({ window: win });
     expect(win.count()).toBe(0);
     expect(environmentTrackerFor({ window: win })).not.toBe(first);
+  });
+});
+
+describe('EnvironmentTracker: guarded callbacks and comparison', () => {
+  const poisonEmit = (tracker: EnvironmentTracker, error: Error) =>
+    vi
+      .spyOn(tracker as unknown as { emit(...a: unknown[]): void }, 'emit')
+      .mockImplementation(() => {
+        throw error;
+      });
+
+  it('a throwing timer callback is reported, never thrown, and the next tick still works', () => {
+    const { tracker, scheduler, zone, onError, listen } = setup();
+    listen();
+    const boom = new Error('emit');
+    const emit = poisonEmit(tracker, boom);
+    zone.offset = 180;
+    expect(() => scheduler.tick()).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(boom);
+    emit.mockRestore();
+    zone.offset = 240;
+    expect(() => scheduler.tick()).not.toThrow();
+    expect(tracker.current().timeZone).toEqual({ timeZone: 'Europe/Kyiv', utcOffsetMinutes: 240 });
+  });
+
+  it('a throwing PermissionStatus change listener is reported, never thrown into the DOM dispatch', async () => {
+    const perms = mkPermissions({ camera: 'granted' });
+    const { tracker, onError, listen } = setup(
+      { permissions: perms },
+      { permissionNames: ['camera'] },
+    );
+    listen();
+    await flush();
+    const boom = new Error('emit');
+    poisonEmit(tracker, boom);
+    const cam = perms.statuses.get('camera');
+    if (cam === undefined) throw new Error('no status');
+    cam.state = 'denied';
+    expect(() => cam.fire('change')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('compares readings regardless of key order (a re-ordered but equal permissions snapshot is not a change)', async () => {
+    const perms = mkPermissions({ camera: 'granted', microphone: 'denied' });
+    const { tracker, seen, listen } = setup(
+      { permissions: perms },
+      { permissionNames: ['camera', 'microphone'] },
+    );
+    const off = listen();
+    await flush();
+    expect(Object.keys(tracker.current().permissions ?? {})).toEqual(['camera', 'microphone']);
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+    off();
+    tracker.rebind({ permissionNames: ['microphone', 'camera'] });
+    listen();
+    await flush();
+    expect(Object.keys(tracker.current().permissions ?? {})).toEqual(['microphone', 'camera']);
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1); // same values: no re-emission
+    const cam = perms.statuses.get('camera');
+    if (cam === undefined) throw new Error('no status');
+    cam.state = 'denied';
+    cam.fire('change');
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(2); // a real change still emits
+  });
+
+  it('does not re-emit an unchanged hints / permissions snapshot to a restarted tracker (retained comparison)', async () => {
+    const perms = mkPermissions({ camera: 'granted' });
+    const { tracker, seen, listen } = setup(
+      { permissions: perms, cookieEnabled: true },
+      { permissionNames: ['camera'] },
+    );
+    const off = listen();
+    await flush();
+    expect(seen.filter(([n]) => n === 'hints' || n === 'permissions')).toHaveLength(2);
+    off();
+    seen.length = 0;
+    listen();
+    await flush();
+    expect(seen.filter(([n]) => n === 'hints' || n === 'permissions')).toEqual([]);
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
   });
 });

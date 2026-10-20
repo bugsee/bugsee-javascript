@@ -1433,6 +1433,47 @@ describe('launch', () => {
       }
     });
 
+    it('options.scheduler drives the environment tracker slow timer: a time-zone shift becomes a timezone_changed event', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        const slow = ticks.filter((t) => t.ms === 60_000); // the tracker's default cadence
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 120);
+        slow[0]?.cb();
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: { utcOffsetMinutes?: number } },
+        );
+        expect(
+          events
+            .filter((e) => e.name === 'timezone_changed')
+            .map((e) => e.params?.utcOffsetMinutes),
+        ).toEqual([-(real - 120) + 0]);
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
     it('launch goes through the per-window EnvironmentTracker singleton (language/timezone on, private mode off by default)', async () => {
       stubSensors();
       const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));

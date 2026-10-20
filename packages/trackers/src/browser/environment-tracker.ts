@@ -11,13 +11,17 @@ import { hostRead } from './host-read';
 //               No browser event exists, so it is RE-READ on a slow timer (default 60 s; ticks while the page is hidden
 //               are skipped) and on visibility -> visible. CHANGE-ONLY like `language` (a DST shift is an offset change).
 //   hints       {cookiesEnabled?, secureContext?, crossOriginIsolated?, serviceWorkerControlled?, automation?,
-//               doNotTrack?, globalPrivacyControl?}   SNAPSHOT: emitted for the first reading and on every change.
+//               doNotTrack?, globalPrivacyControl?}   SNAPSHOT: emitted for the first reading of this tracker and on
+//               every change after it; on a restart the reading is compared with the RETAINED one, so an unchanged
+//               reading is not emitted again (read it via `current()`).
 //               `automation` is `navigator.webdriver`; `doNotTrack`/`globalPrivacyControl` are the user's own
 //               preference signals, recorded as booleans (an unspecified/unknown DNT value is omitted).
 //   permissions {camera?: 'granted'|'denied'|'prompt', microphone?, geolocation?, notifications?, 'idle-detection'?}
 //               SNAPSHOT of the Permissions API states. Queried WITHOUT EVER PROMPTING: only `navigator.permissions
 //               .query()` is called (never requestPermission/getUserMedia/...), only the state STRING is kept (no
-//               stream, position or token is ever touched), and a PermissionStatus `change` event refreshes it. A name
+//               stream, position or token is ever touched), and a PermissionStatus `change` event refreshes it. Emitted
+//               for the first snapshot and on every change; on a restart it is compared with the RETAINED one (same as
+//               hints), so an unchanged snapshot is not emitted again (read it via `current()`). A name
 //               the browser does not know (query rejects with TypeError) is simply omitted, not an error.
 //   privateMode {private: 'yes'|'no'|'unknown', method?}   OFF unless `detectPrivateMode` is set (owner decision
 //               pending: detecting private browsing can read as circumventing the user's intent). A HEURISTIC, never a
@@ -31,7 +35,9 @@ import { hostRead } from './host-read';
 //
 // SINGLETON per key object (see `environmentTrackerFor`). RETENTION rule — what survives the last unsubscribe:
 //   * the LAST language / time zone / hints / permissions / private-mode readings (`current()` keeps answering with
-//     them, and the change-only stages keep comparing against them when the tracker is restarted).
+//     them, and language / time zone / hints / permissions keep comparing against them when the tracker is
+//     restarted: a late subscriber to a restarted tracker gets NO re-emission of an unchanged hints / permissions
+//     snapshot — only `privateMode` re-emits on every activation).
 // What does NOT survive: the DOM listeners (languagechange, visibilitychange, PermissionStatus change), the timer, and
 // any async work in flight (permission queries, the private-mode probe) — a stale promise is ignored when it settles.
 // The next subscriber re-reads everything.
@@ -140,7 +146,15 @@ const defaultTimeZoneId = (): unknown =>
   globalScope.Intl.DateTimeFormat().resolvedOptions().timeZone;
 const defaultUtcOffset = (): unknown => -new globalScope.Date().getTimezoneOffset();
 
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+// Key-order-insensitive structural form (objects with sorted keys, arrays in order): two readings holding the same
+// values are the same reading however their keys were assembled.
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, v: unknown) =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)))
+      : v,
+  );
+const same = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b);
 const nonEmpty = (value: unknown): string | undefined =>
   typeof value === 'string' && value !== '' ? value : undefined;
 const bool = (value: unknown): boolean | undefined =>
@@ -303,8 +317,12 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     try {
       const scheduler = this.#env.scheduler ?? defaultTimers;
       const handle = scheduler.setInterval(() => {
-        // A hidden page is not re-read (visibility -> visible re-reads on return).
-        if (this.#visibility() !== 'hidden') this.#refresh();
+        try {
+          // A hidden page is not re-read (visibility -> visible re-reads on return).
+          if (this.#visibility() !== 'hidden') this.#refresh();
+        } catch (error) {
+          this.#onError(error);
+        }
       }, this.#env.intervalMs ?? DEFAULT_INTERVAL_MS);
       this.#timer = { handle, scheduler };
     } catch (error) {
@@ -504,12 +522,16 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     if (target === undefined) return;
     const listener = (): void => {
       if (this.#epoch !== mine) return;
-      const state = this.#readState(status);
-      const next: PermissionStates = { ...this.#permissions };
-      if (state === undefined)
-        delete next[name]; // unreadable now: omit, never keep a stale claim
-      else next[name] = state;
-      this.#commitPermissions(next);
+      try {
+        const state = this.#readState(status);
+        const next: PermissionStates = { ...this.#permissions };
+        if (state === undefined)
+          delete next[name]; // unreadable now: omit, never keep a stale claim
+        else next[name] = state;
+        this.#commitPermissions(next);
+      } catch (error) {
+        this.#onError(error); // a DOM dispatch must never see a throw
+      }
     };
     const add = hostRead(
       () => target.addEventListener,
@@ -636,12 +658,17 @@ const registry = createTrackerRegistry<EnvironmentTracker>();
 
 // The key is the window the SDK is bound to; failing that the navigator; failing that the env object itself (an
 // ad-hoc env then gets a private tracker). Host reads are guarded AND reported.
-function keyOf(env: EnvironmentEnv, onError?: (error: unknown) => void): object {
-  const win = hostRead(() => env.window, onError);
+function keyFrom(env: EnvironmentEnv, win: unknown, nav: unknown): object {
   if (typeof win === 'object' && win !== null) return win;
-  const nav = hostRead(() => env.navigator, onError);
   if (typeof nav === 'object' && nav !== null) return nav;
   return env;
+}
+function keyOf(env: EnvironmentEnv, onError?: (error: unknown) => void): object {
+  return keyFrom(
+    env,
+    hostRead(() => env.window, onError),
+    hostRead(() => env.navigator, onError),
+  );
 }
 
 /**
@@ -652,9 +679,10 @@ export function environmentTrackerFor(
   env: EnvironmentEnv,
   onError?: (error: unknown) => void,
 ): EnvironmentTracker {
+  // window/navigator are read ONCE (by seamsOf); the registry key is derived from those same readings.
   const seams = seamsOf(env, {}, onError);
   return registry.for(
-    keyOf(env, onError),
+    keyFrom(env, seams.window, seams.navigator),
     () => new EnvironmentTracker(seams, onError),
     (tracker) => tracker.rebind(seams, onError),
   );
