@@ -1374,6 +1374,9 @@ function seedPriorGeneration(
 describe('launch — system trace producers', () => {
   it('the default producers go through the per-process ProcessTracker registry accessor', async () => {
     const fs = fakeScheduler();
+    // Deterministic core count: the real os.cpus() can be empty (some containers), which omits the cpu sample. The
+    // launch's rebind merges, so this seam survives it.
+    processTrackerFor({ cpuCount: () => 2 });
     launchTracked(
       'tok',
       baseOptions({
