@@ -51,6 +51,7 @@ function mkDetector() {
 function userIdleTracker(detector: ReturnType<typeof mkDetector>, state = 'granted') {
   class FakeDetector {
     constructor() {
+      // biome-ignore lint/correctness/noConstructorReturn: a test double hands the shared fake detector back from `new`.
       return detector as unknown as FakeDetector;
     }
   }
@@ -240,6 +241,7 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
     const detector = mkDetector();
     class FakeDetector {
       constructor() {
+        // biome-ignore lint/correctness/noConstructorReturn: a test double hands the shared fake detector back from `new`.
         return detector as unknown as FakeDetector;
       }
     }

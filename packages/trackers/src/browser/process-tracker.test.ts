@@ -61,8 +61,12 @@ function mkClock(start = 1000) {
   let t = start;
   return {
     performance: { now: () => t },
-    set: (v: number) => void (t = v),
-    advance: (d: number) => void (t += d),
+    set: (v: number) => {
+      t = v;
+    },
+    advance: (d: number) => {
+      t += d;
+    },
   };
 }
 
@@ -802,6 +806,23 @@ describe('ProcessTracker — idle (requestIdleCallback probe)', () => {
     expect(out).toEqual([]);
   });
 
+  it('a stale callback from a torn-down run neither emits to nor unblocks the next run', () => {
+    const { s, env, ric, callbacks } = idleEnv({ cancelIdleCallback: () => {} });
+    const t = new ProcessTracker(env);
+    const out: number[] = [];
+    const off = t.on('idle', () => {});
+    s.tick();
+    const stale = [...callbacks.values()][0];
+    off();
+    t.on('idle', (i) => out.push(i.idleMs));
+    s.tick(); // the new run's own probe is pending
+    expect(ric).toHaveBeenCalledTimes(2);
+    stale?.({ timeRemaining: () => 9 });
+    expect(out).toEqual([]);
+    s.tick(); // the stale callback did not clear the new run's pending probe
+    expect(ric).toHaveBeenCalledTimes(2);
+  });
+
   it('works without cancelIdleCallback, and reports a throwing cancel (timer still released)', () => {
     const noCancel = idleEnv({ cancelIdleCallback: undefined });
     const off = new ProcessTracker(noCancel.env).on('idle', () => {});
@@ -919,6 +940,7 @@ function userEnv(
     userState: unknown;
     screenState: unknown;
     constructor() {
+      // biome-ignore lint/correctness/noConstructorReturn: a test double hands the shared fake detector back from `new`.
       return detector as unknown as FakeDetector;
     }
   }
