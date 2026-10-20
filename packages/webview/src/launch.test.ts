@@ -1141,6 +1141,98 @@ describe('launch (webview)', () => {
       }
     });
 
+    describe('screen_size and main_thread_lag_ms (from the injected window)', () => {
+      const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
+        entriesOfType(fake.msgs(), 'traces.system')
+          .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('streams screen_size {width,height,dpr} and timer-drift lag from the INJECTED window; none from a hidden page', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          let clock = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: { now: () => clock },
+            configurable: true,
+          });
+          Object.assign(w.win, { devicePixelRatio: 3 });
+          const dom = fakeDomDocument();
+          Object.assign(dom.document, { visibilityState: 'visible' });
+          const ticks: Array<() => void> = [];
+          track(
+            'tok',
+            baseOptions({
+              global: fake.global,
+              window: w.win,
+              document: dom.document as unknown as Document,
+              scheduler: {
+                setInterval: (cb, ms) => {
+                  if (ms === 1000) ticks.push(cb as () => void);
+                  return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+                },
+                clearInterval: () => {},
+              },
+            }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
+          clock = 1000 + 25; // the first 1 s tick fires 25 ms late
+          for (const t of ticks) t();
+          expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
+
+          // a hidden page never reads the clock for lag (no timer)
+          let hiddenReads = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: {
+              now: () => {
+                hiddenReads += 1;
+                return 0;
+              },
+            },
+            configurable: true,
+          });
+          const hidden = fakeDomDocument();
+          Object.assign(hidden.document, { visibilityState: 'hidden' });
+          track(
+            'tok2',
+            baseOptions({
+              global: fakeGlobal().global,
+              window: w.win,
+              document: hidden.document as unknown as Document,
+            }),
+          );
+          expect(hiddenReads).toBe(0);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch and is reported', () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const w = fakeWin();
+          Object.defineProperty(w.win, 'devicePixelRatio', {
+            get(): never {
+              throw new Error('devicePixelRatio blocked');
+            },
+            configurable: true,
+          });
+          const onError = vi.fn();
+          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+            'devicePixelRatio blocked',
+          );
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
     it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {
       stubSensors();
       try {

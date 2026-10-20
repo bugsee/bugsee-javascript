@@ -80,6 +80,7 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeAppIdentitySource } from './app-identity-source';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
@@ -92,6 +93,7 @@ import {
 import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 import {
   buildNodeEnvironment,
+  type HardwareExtras,
   realSystemProbe,
   type SystemProbe,
   SystemProbeToken,
@@ -404,6 +406,15 @@ export interface BugseeLaunchOptions {
   captureStore?: CaptureStore;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
+  /**
+   * Extra `environment.hardware` data a platform extension can supply (today only `gpu`:
+   * `{vendor?, renderer?, gl_version?, gl_extensions?}`; @bugsee/electron fills it from `app.getGPUInfo`).
+   * Called LIVE on every environment assemble, so a value that settles after launch appears on the next
+   * report and is simply absent before. Only the typed `gpu` key is merged (unknown keys are dropped); it
+   * never overrides the built-in hardware fields; `undefined`, an empty/unusable result, or a throw adds
+   * nothing (a throw is reported through `onError`).
+   */
+  hardwareExtras?: () => HardwareExtras | undefined;
   /** CPU profiler override (advanced / tests — avoids the real node:inspector). Default the V8 profiler. */
   cpuProfiler?: CpuProfiler;
   /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
@@ -697,6 +708,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
   services.addService(defineService(SystemProbeToken, () => probe)); // container service
+  const environmentOnError = reportOncePerMessage(options.onError);
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
@@ -706,6 +718,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
         ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
         ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
         ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
+        ...(options.hardwareExtras !== undefined ? { hardwareExtras: options.hardwareExtras } : {}),
+        // a hardwareExtras that throws on every report build reaches the host sink once, not once per report
+        ...(options.onError !== undefined ? { onError: environmentOnError } : {}),
       },
       probe,
     );
