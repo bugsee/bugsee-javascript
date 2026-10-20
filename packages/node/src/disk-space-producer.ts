@@ -1,117 +1,52 @@
-import * as fsp from 'node:fs/promises';
 import { TraceProducerBase } from '@bugsee/capture';
-import type { Scheduler } from '@bugsee/core';
 import { bytesToMegabytes } from '@bugsee/protocol';
+import {
+  type DiskReading,
+  type StorageTracker,
+  type StorageTrackerEnv,
+  storageTrackerFor,
+} from '@bugsee/trackers/node';
 
 // `disk_mem_free` / `disk_mem_total` (Android parity, binary integer MB like the environment envelope) for the
 // filesystem the SDK's data directory lives on — NOT `/` or the cwd: it is that volume's space. Opt-in and only
-// created when there IS a data directory, so an in-memory launch never reports a disk it does not use. Polled
-// every few seconds off the event loop (`fs.promises.statfs`). Emitted every poll and NOT held: a held value
-// would be re-recorded by the provider for the rest of the session after statfs starts failing (the data dir
-// removed, a dead mount), reporting a disk reading that is no longer true.
+// created when there IS a data directory, so an in-memory launch never reports a disk it does not use.
+//
+// COMPOSITION only: the statfs read, its poll timer, failure-streak reporting and the omit-never-zero rule belong to
+// the per-process StorageTracker (`@bugsee/trackers/node`); this producer subscribes to its `disk` stage and maps it
+// to the two trace names. Emitted every poll and NOT held (`emit`, hold:false): a held value would be re-recorded by
+// the provider for the rest of the session after statfs starts failing (the data dir removed, a dead mount),
+// reporting a disk reading that is no longer true.
 
-export interface StatFsResult {
-  bsize: number;
-  bavail: number;
-  blocks: number;
-}
-export type StatFs = (path: string) => Promise<StatFsResult>;
+export type { StatFs } from '@bugsee/trackers/node';
 
-export interface DiskSpaceDeps {
+export interface DiskSpaceDeps extends Omit<StorageTrackerEnv, 'dataDir'> {
   /** The directory whose volume is measured (the launch's effective data dir). */
   dataDir: string;
-  /** Test seam. `null` = the runtime has no statfs (nothing is read). Default: `fs.promises.statfs` when present. */
-  statfs?: StatFs | null;
-  scheduler?: Scheduler;
-  /** Android reads disk every 5 s. */
-  intervalMs?: number;
   onError?: (error: unknown) => void;
 }
 
-// Unref'd so the producer never keeps a process alive.
-const defaultScheduler: Scheduler = {
-  setInterval: (cb, ms) => {
-    const h = setInterval(cb, ms);
-    (h as { unref?: () => void }).unref?.();
-    return h;
-  },
-  clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
-};
-
-const isCount = (n: number): boolean => Number.isFinite(n) && n >= 0;
-const isPositive = (n: number): boolean => Number.isFinite(n) && n > 0;
-
 class DiskSpaceProducer extends TraceProducerBase {
   readonly name = 'disk-space';
-  readonly #deps: DiskSpaceDeps;
-  readonly #statfs: StatFs | undefined;
-  #timer: unknown = null;
-  #inFlight = false;
-  #failing = false;
-  #generation = 0;
-
-  constructor(deps: DiskSpaceDeps) {
+  #off: (() => void) | undefined;
+  constructor(private readonly tracker: StorageTracker) {
     super();
-    this.#deps = deps;
-    // Namespace import: a Node without `statfs` (< 18.15) must degrade to "no traces", not fail to load.
-    const real = (fsp as { statfs?: StatFs }).statfs;
-    this.#statfs = deps.statfs === undefined ? real : (deps.statfs ?? undefined);
   }
-
+  // Subscribing arms the tracker's stage (an immediate read, then its own timer): no baseline to emit here.
   protected onStart(): void {
-    if (this.#statfs === undefined) return;
-    this.#generation += 1;
-    this.#read(this.#generation);
-    const generation = this.#generation;
-    this.#timer = (this.#deps.scheduler ?? defaultScheduler).setInterval(
-      () => this.#read(generation),
-      this.#deps.intervalMs ?? 5000,
-    );
+    this.#off = this.tracker.on('disk', (d) => this.publish(d));
   }
-
   protected override onStop(): void {
-    // A read still in flight is abandoned: a new generation means it can neither report nor emit when it
-    // settles, and clearing the latch lets the next start() read.
-    this.#generation += 1;
-    this.#inFlight = false;
-    this.#failing = false;
-    if (this.#timer !== null) (this.#deps.scheduler ?? defaultScheduler).clearInterval(this.#timer);
+    this.#off?.();
+    this.#off = undefined;
   }
-
-  #read(generation: number): void {
-    if (this.#inFlight || this.#statfs === undefined) return;
-    this.#inFlight = true;
-    let pending: Promise<StatFsResult>;
-    try {
-      pending = this.#statfs(this.#deps.dataDir);
-    } catch (error) {
-      pending = Promise.reject(error);
-    }
-    pending.then(
-      (s) => {
-        if (generation !== this.#generation) return;
-        this.#inFlight = false;
-        this.#failing = false;
-        this.#publish(s);
-      },
-      (error: unknown) => {
-        if (generation !== this.#generation) return;
-        this.#inFlight = false;
-        // One report per failure streak: a removed data dir fails every 5 s and must not flood onError.
-        if (!this.#failing) this.#deps.onError?.(error);
-        this.#failing = true;
-      },
-    );
-  }
-
-  // Omit, never zero: an unsane reading emits nothing. `bavail` may legitimately be 0 (a full disk).
-  #publish(s: StatFsResult): void {
-    if (!isPositive(s.bsize) || !isCount(s.bavail) || !isPositive(s.blocks)) return;
-    this.emit('disk_mem_free', bytesToMegabytes(s.bsize * s.bavail));
-    this.emit('disk_mem_total', bytesToMegabytes(s.bsize * s.blocks));
+  private publish(d: DiskReading): void {
+    this.emit('disk_mem_free', bytesToMegabytes(d.freeBytes));
+    this.emit('disk_mem_total', bytesToMegabytes(d.totalBytes));
   }
 }
 
 export function createDiskSpaceProducer(deps: DiskSpaceDeps): TraceProducerBase {
-  return new DiskSpaceProducer(deps);
+  const { onError, ...env } = deps;
+  // The per-process singleton: building the producer hands it THIS launch's data dir and seams (latest launch wins).
+  return new DiskSpaceProducer(storageTrackerFor(env, onError));
 }

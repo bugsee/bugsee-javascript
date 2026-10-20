@@ -64,10 +64,12 @@ const EXPECTED_EXPORTS = [
   'openServerRequest',
   'processTrackerFor',
   'resetProcessTracker',
+  'resetStorageTracker',
   'realSystemProbe',
   'runServerRequest',
   'sanitizeHardwareGpu',
   'startServerSpan',
+  'storageTrackerFor',
   'wrapFetchHandler',
 ] as const;
 
