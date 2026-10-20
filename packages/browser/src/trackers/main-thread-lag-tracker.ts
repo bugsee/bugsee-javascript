@@ -1,5 +1,5 @@
 import { InterceptorBase, type Scheduler } from '@bugsee/core';
-import type { PageLifecycleTracker } from './page-lifecycle-tracker';
+import type { ApplicationTracker } from '@bugsee/trackers/browser';
 
 // Browser main-thread responsiveness TRACKER (`main_thread_lag_ms`): TIMER DRIFT. The sampling timer runs on the
 // page's main thread, so on every tick `lag = max(0, now - (previousTickTime + intervalMs))` is how late it fired.
@@ -30,7 +30,7 @@ import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 export interface MainThreadLagEnv {
   /** Shared lifecycle tracker for visibility changes. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** Visibility is read here at activation; unknown (absent) counts as not visible. */
   document?: { readonly visibilityState?: string };
   /** Monotonic ms (the injected `performance.now`); absent omits the trace — no wall-clock guess. */

@@ -1,27 +1,30 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
+import { bytesToMegabytes } from '@bugsee/protocol';
 import {
+  type ApplicationTracker,
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
+  type ConnectivityState,
+  type ConnectivityTracker,
+  connectivityTrackerFor,
   type OrientationState,
   type PowerTracker,
   powerTrackerFor,
   type ScreenSizeState,
+  type StorageEstimate,
+  type StorageManagerLike,
+  type StorageTracker,
+  storageTrackerFor,
   type UiEnv,
   type UiTracker,
   uiTrackerFor,
 } from '@bugsee/trackers/browser';
 import { boundMatchMedia } from './host-global';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
-import {
-  type ConnectionEnv,
-  type ConnectionState,
-  ConnectionTracker,
-} from './trackers/connection-tracker';
 import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
-import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -77,6 +80,49 @@ export class BatteryProducer extends TraceProducerBase {
     if (this.#lastTime.get(name) === rounded) return;
     this.#lastTime.set(name, rounded);
     this.emit(name, rounded);
+  }
+}
+
+/**
+ * `navigator.storage.estimate()` → `storage_estimate` `{usage, quota}` in integer MB (floored, `bytesToMegabytes`).
+ * An ORIGIN quota ESTIMATE that browsers fuzz and pad — NOT device free space — so it is a JS-specific trace and
+ * deliberately not the Android `disk_mem_*` group. A key the browser did not give a usable number for is omitted
+ * (never 0); an estimate with neither key emits nothing.
+ *
+ * Held and de-duplicated (`emitIfChanged`): the tracker polls every few minutes, far longer than the default
+ * recording window, so a non-held value would almost never be inside a report. Known limit (owner decision pending,
+ * see docs/PROGRESS.md TR6): a held value cannot be retracted, so after failed polls the last known estimate keeps
+ * being re-recorded. usage below 1 MiB floors to 0 MB (an honest floor, not a measurement of zero).
+ */
+export class StorageProducer extends TraceProducerBase {
+  readonly name = 'storage';
+  readonly #tracker: StorageTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: StorageTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('storageEstimate', (e) => this.#publish(e));
+    // The retained estimate from an earlier subscription gives a value at once — but only while it is younger than
+    // 2x the poll interval: a held trace is re-recorded for as long as it lives, so an old snapshot must not seed it.
+    const cur = this.#tracker.currentFresh();
+    if (cur !== undefined) this.#publish(cur);
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+
+  #publish(e: StorageEstimate): void {
+    if (e.usageBytes === undefined && e.quotaBytes === undefined) return; // `persisted` alone is not a trace
+    this.emitIfChanged('storage_estimate', {
+      ...(e.usageBytes !== undefined ? { usage: bytesToMegabytes(e.usageBytes) } : {}),
+      ...(e.quotaBytes !== undefined ? { quota: bytesToMegabytes(e.quotaBytes) } : {}),
+    });
   }
 }
 
@@ -137,10 +183,10 @@ export class AdvertisedMemoryProducer extends TraceProducerBase {
 
 export class ConnectionProducer extends TraceProducerBase {
   readonly name = 'connection';
-  readonly #tracker: ConnectionTracker;
+  readonly #tracker: ConnectivityTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: ConnectionTracker) {
+  constructor(tracker: ConnectivityTracker) {
     super();
     this.#tracker = tracker;
   }
@@ -156,9 +202,10 @@ export class ConnectionProducer extends TraceProducerBase {
     this.#off = undefined;
   }
 
-  #publish({ onLine, connection }: ConnectionState): void {
+  #publish({ online, networkInfo: connection }: ConnectivityState): void {
+    if (online === undefined) return; // an unreadable onLine is not evidence of anything: no row
     this.emitIfChanged('connection', {
-      type: connectionTypeToWire(connection, onLine),
+      type: connectionTypeToWire(connection, online),
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
       // as undefined — an explicitly absent key is what the other tiers send.
       ...(connection?.effectiveType !== undefined
@@ -167,6 +214,10 @@ export class ConnectionProducer extends TraceProducerBase {
       // Android reports bandwidth in kbps (`link_downstream_kbps`); `downlink` is Mbps.
       ...(connection?.downlink !== undefined
         ? { link_downstream_kbps: Math.round(connection.downlink * 1000) }
+        : {}),
+      // `downlinkMax` (the link's ceiling, Mbps) rides the same unit; the key is additive detail on the open object.
+      ...(connection?.downlinkMax !== undefined
+        ? { link_downstream_max_kbps: Math.round(connection.downlinkMax * 1000) }
         : {}),
       ...(connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
       ...(connection?.saveData !== undefined ? { save_data: connection.saveData } : {}),
@@ -210,30 +261,22 @@ export class OrientationProducer extends TraceProducerBase {
  */
 export class AppStateProducer extends TraceProducerBase {
   readonly name = 'app-state';
-  readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
-  readonly #document: { readonly visibilityState?: string } | undefined;
+  readonly #application: Pick<ApplicationTracker, 'on' | 'current'>;
   #off: (() => void) | undefined;
 
-  constructor(
-    lifecycle: Pick<PageLifecycleTracker, 'on'>,
-    document: { readonly visibilityState?: string } | undefined,
-  ) {
+  constructor(application: Pick<ApplicationTracker, 'on' | 'current'>) {
     super();
-    this.#lifecycle = lifecycle;
-    this.#document = document;
+    this.#application = application;
   }
 
   protected onStart(): void {
-    this.#off = this.#lifecycle.on('visibility', ({ visible }) =>
-      this.emitIfChanged('app_state', visible ? 'foreground' : 'background'),
+    // Subscribe first (it activates the tracker and refreshes its retained state), then read the initial value.
+    this.#off = this.#application.on('state', ({ state }) =>
+      this.emitIfChanged('app_state', state),
     );
-    try {
-      const state = this.#document?.visibilityState;
-      if (state !== undefined)
-        this.emitIfChanged('app_state', state === 'visible' ? 'foreground' : 'background');
-    } catch {
-      /* an unreadable document yields no initial value; the next visibility change still reports */
-    }
+    // No known state (no/unreadable document) = no initial value; the next change still reports.
+    const initial = this.#application.current();
+    if (initial !== undefined) this.emitIfChanged('app_state', initial);
   }
 
   protected override onStop(): void {
@@ -334,13 +377,18 @@ export class MainThreadLagProducer extends TraceProducerBase {
  */
 export interface BrowserTraceEnv extends BatteryEnv {
   performance?: { readonly memory?: MemoryReading; now?(): number };
-  navigator?: ConnectionEnv['navigator'] & {
+  navigator?: {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
+    /** `navigator.storage` (absent in insecure contexts): origin quota estimate. */
+    readonly storage?: StorageManagerLike;
+    readonly onLine?: boolean;
+    /** NetworkInformation (read by the ConnectivityTracker). */
+    readonly connection?: object;
   };
   screen?: UiEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
-  window?: ConnectionEnv['window'] & UiEnv['window'];
+  window?: UiEnv['window'];
   /** The document the SDK is bound to: visibility for `app_state` and `fps`. */
   document?: UiEnv['document'] & { readonly visibilityState?: string };
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
@@ -355,8 +403,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
-  /** Shared page-lifecycle tracker for connection/orientation; when absent each listens on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  /** The shared ApplicationTracker feeding orientation, app_state and fps; when absent app_state/screen_size/fps are omitted (orientation comes from the UiTracker). */
+  lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
 }
 
 interface WindowSurfaces {
@@ -510,20 +558,22 @@ export function createBrowserSystemTraceProducers(
       }),
     ),
     new AdvertisedMemoryProducer(() => nav?.deviceMemory),
-    new ConnectionProducer(
-      new ConnectionTracker(
+    new StorageProducer(
+      storageTrackerFor(
         {
-          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
           ...(env.window !== undefined ? { window: env.window } : {}),
           ...(nav !== undefined ? { navigator: nav } : {}),
+          ...(env.document !== undefined ? { document: env.document } : {}),
+          ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
         },
         onError,
       ),
     ),
+    new ConnectionProducer(connectivityTrackerFor(env, onError)),
     new OrientationProducer(ui),
     ...(env.lifecycle !== undefined
       ? [
-          new AppStateProducer(env.lifecycle, env.document),
+          new AppStateProducer(env.lifecycle),
           new ScreenSizeProducer(ui),
           new MainThreadLagProducer(
             new MainThreadLagTracker(

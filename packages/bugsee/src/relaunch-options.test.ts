@@ -108,7 +108,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  * "this is not deployment identity and not an integration seam". Notes on the ones that look otherwise:
  *  - `lifecycleEventsListener` is held on the carrier slot (`setProcessLifecycleEventsListener`), so it
  *    survives a relaunch without being re-passed;
- *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `bridge`, `post`, `launch`, `onSessionId`,
+ *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `gpuInfoType`, `bridge`, `post`, `launch`, `onSessionId`,
  *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (Electron has no
  *    `relaunch()`), and keeping them would pin Electron objects on `globalThis` for nothing;
  *  - `appToken` (the Cloudflare and Nuxt adapters accept it inside their options object) is the token itself,
@@ -131,6 +131,7 @@ const RESET_OPTIONS: readonly string[] = [
   'app',
   'appToken',
   'flushTimeoutMs',
+  'gpuInfoType',
   'injectTraceMeta',
   'instanceIdentity',
   'onSpanProcessor',

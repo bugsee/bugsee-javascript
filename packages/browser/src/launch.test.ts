@@ -42,7 +42,14 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
-import { resetUiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
+import {
+  applicationTrackerFor,
+  connectivityTrackerFor,
+  resetStorageTracker,
+  resetUiTracker,
+  storageTrackerFor,
+  uiTrackerFor,
+} from '@bugsee/trackers/browser';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -480,8 +487,10 @@ describe('launch', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // traces (connection/orientation) AND the events source are both live, yet each type is bound once
-    expect(w.count('online')).toBe(1);
+    // traces (orientation) AND the events source share ONE lifecycle tracker (a single orientationchange listener);
+    // online/offline are bound twice: once by that lifecycle tracker (events) and once by the domain
+    // ConnectivityTracker, which owns its own connectivity listeners and does not depend on the lifecycle tracker.
+    expect(w.count('online')).toBe(2);
     expect(w.count('orientationchange')).toBe(1);
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
@@ -491,6 +500,80 @@ describe('launch', () => {
     await client.stop();
     expect(w.count('online') + w.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(0);
+  });
+
+  describe('launch goes through the ApplicationTracker registry', () => {
+    const blockedDoc = () => {
+      const doc = fakeWindow();
+      const boom = new Error('visibilityState blocked');
+      const state = { armed: false };
+      Object.defineProperty(doc.win, 'visibilityState', {
+        get() {
+          if (state.armed) throw boom;
+          return 'visible';
+        },
+      });
+      return { doc, boom, state, document: doc.win as unknown as Document };
+    };
+
+    it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners, not a second set', async () => {
+      const w = fakeWindow();
+      const { document } = blockedDoc();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, document, captureStore: memStore() }),
+      );
+      expect(w.count('online')).toBe(1);
+      const shared = applicationTrackerFor({ window: w.win as never, document });
+      const off = shared.on('online', () => {});
+      expect(w.count('online')).toBe(1); // the SAME tracker: one listener serves launch and this subscriber
+      off();
+    });
+
+    it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", async () => {
+      const w = fakeWindow();
+      const { doc, boom, state, document } = blockedDoc();
+      const first = vi.fn();
+      const second = vi.fn();
+      // The tracker's own read fails only while the event is dispatched (launch itself reads the document too).
+      const fireBlocked = () => {
+        state.armed = true;
+        try {
+          doc.emit('visibilitychange', {});
+        } catch {
+          /* a real DOM dispatch never propagates a listener's throw */
+        } finally {
+          state.armed = false;
+        }
+      };
+      const run = async (onError?: (e: unknown) => void) => {
+        const client = await launch(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            ...(onError !== undefined ? { onError } : {}),
+          }),
+        );
+        return client;
+      };
+      await (await run(first)).stop();
+      await (await run(second)).stop();
+      first.mockClear();
+      second.mockClear();
+      const live = await run(second);
+      clients.push(live);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+      expect(first).not.toHaveBeenCalledWith(boom);
+      await live.stop();
+      second.mockClear();
+      const bare = await run(); // no onError: must NOT silence the earlier launch's sink
+      clients.push(bare);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+    });
   });
 
   describe('dark mode, freeze and resume events (from the injected window + document)', () => {
@@ -1320,6 +1403,52 @@ describe('launch', () => {
       expect(rows.get('orientation')).toBe(1);
     });
 
+    it('captures storage_estimate (integer MB) through the per-window StorageTracker singleton', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', {
+        storage: {
+          estimate: () => Promise.resolve({ usage: 5 * 1024 * 1024 + 7, quota: 2 * 1024 ** 3 }),
+          persisted: () => Promise.resolve(true),
+        },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const rows = new Map(
+          ((await drain(store, 'traces.system')) ?? []).map((e) => {
+            const d = e.data as { name: string; value: unknown };
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('storage_estimate')).toEqual({ usage: 5, quota: 2048 });
+        // launch used the registry: the singleton for this window already holds the estimate
+        expect(storageTrackerFor({ window: w.win }).current()).toEqual({
+          usageBytes: 5 * 1024 * 1024 + 7,
+          quotaBytes: 2 * 1024 ** 3,
+          persisted: true,
+        });
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
+    });
+
+    it('a rejected storage.estimate() reaches options.onError and never fails launch', async () => {
+      stubSensors();
+      const boom = new Error('estimate refused');
+      vi.stubGlobal('navigator', { storage: { estimate: () => Promise.reject(boom) } });
+      const onError = vi.fn();
+      const w = fakeWindow();
+      try {
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: memStore(), onError }));
+        await new Promise((r) => setTimeout(r, 0));
+        expect(onError).toHaveBeenCalledWith(boom);
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
+    });
+
     it('listens on the INJECTED window for connectivity only while capturing, and releases it on stop', async () => {
       stubSensors();
       const w = fakeWindow();
@@ -1328,8 +1457,9 @@ describe('launch', () => {
         // the system-events source listens on the same window, so isolate the trace trackers
         noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
       );
-      expect(w.count('online')).toBe(1);
-      expect(w.count('offline')).toBe(1);
+      // online/offline: the shared lifecycle tracker (orientation) + the ConnectivityTracker's own listeners
+      expect(w.count('online')).toBe(2);
+      expect(w.count('offline')).toBe(2);
       expect(w.count('orientationchange')).toBe(1);
       await client.stop();
       expect(w.count('online')).toBe(0);
@@ -1355,6 +1485,39 @@ describe('launch', () => {
       await client.stop();
       expect(w.count('orientationchange')).toBe(0);
       resetUiTracker({ window: w.win });
+    });
+
+    it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
+      vi.stubGlobal('navigator', {
+        onLine: true,
+        connection: { type: 'wifi', downlink: 10, downlinkMax: 100 },
+      });
+      const w = fakeWindow();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, captureSystemEvents: false }),
+      );
+      const before = w.count('online'); // lifecycle tracker + the connectivity tracker
+      // The singleton for this window is the one launch subscribed through: a new `ConnectivityTracker` would add
+      // another pair of window listeners here instead of sharing the first.
+      const off = connectivityTrackerFor({ window: w.win }).on('online', () => {});
+      expect(w.count('online')).toBe(before);
+      off();
+      expect(w.count('online')).toBe(before); // launch's own subscription still holds it
+      const rows = new Map(
+        ((await drain(store, 'traces.system')) ?? []).map((e) => {
+          const d = e.data as { name: string; value: unknown };
+          return [d.name, d.value];
+        }),
+      );
+      expect(rows.get('connection')).toMatchObject({
+        type: 'wifi',
+        link_downstream_kbps: 10_000,
+        link_downstream_max_kbps: 100_000,
+      });
+      await client.stop();
+      expect(w.count('online')).toBe(0);
     });
 
     it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {

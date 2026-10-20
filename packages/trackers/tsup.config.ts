@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
 
-// The root entry plus the reserved per-runtime subpath entries (dist/{index,browser,node,electron}.*).
+// The root entry, the browser entry, and the reserved node/electron subpath entries (dist/{index,browser,node,electron}.*).
 export default defineConfig({
   ...baseConfig,
   entry: {

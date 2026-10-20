@@ -6,6 +6,7 @@ import {
   osPlatformToWire,
   realSystemProbe,
   type SystemProbe,
+  sanitizeHardwareGpu,
 } from './environment';
 
 const fakeProbe: SystemProbe = {
@@ -209,5 +210,155 @@ describe('realSystemProbe', () => {
     expect(realSystemProbe.freeMemory()).toBeLessThanOrEqual(os.totalmem());
     expect(typeof realSystemProbe.utcOffsetMinutes()).toBe('number');
     expect(typeof realSystemProbe.locale()).toBe('string');
+  });
+});
+
+describe('buildNodeEnvironment — hardwareExtras (hardware.gpu)', () => {
+  const closed = {
+    model: 'arm64',
+    manufacturer: 'Darwin',
+    cpu_count: 8,
+    memory_total: 16_384,
+    device_id: null,
+  };
+  const build = (extras?: () => unknown, onError?: (e: unknown) => void): Record<string, unknown> =>
+    buildNodeEnvironment(
+      {
+        sdkVersion: '1.0.0',
+        ...(extras !== undefined
+          ? { hardwareExtras: extras as () => { gpu?: { vendor?: string } } }
+          : {}),
+        ...(onError !== undefined ? { onError } : {}),
+      },
+      fakeProbe,
+    ).hardware as Record<string, unknown>;
+
+  it('merges a full gpu block alongside the closed fields', () => {
+    const gpu = {
+      vendor: 'Apple',
+      renderer: 'M3',
+      gl_version: 'OpenGL ES 3.0',
+      gl_extensions: 'A B',
+    };
+    expect(build(() => ({ gpu }))).toEqual({ ...closed, gpu });
+  });
+
+  it('accepts a partial block with gl_extensions as a string', () => {
+    expect(build(() => ({ gpu: { renderer: 'R', gl_extensions: 'A B' } })).gpu).toEqual({
+      renderer: 'R',
+      gl_extensions: 'A B',
+    });
+  });
+
+  it('reads the extra LIVE on every build', () => {
+    let value: unknown;
+    const extras = () => value;
+    expect(build(extras)).toEqual(closed);
+    value = { gpu: { vendor: 'V' } };
+    expect(build(extras).gpu).toEqual({ vendor: 'V' });
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['an empty object', {}],
+    ['an empty gpu', { gpu: {} }],
+    ['a non-object gpu', { gpu: 'nvidia' }],
+    ['a null gpu', { gpu: null }],
+    [
+      'only ill-typed / blank / array fields',
+      { gpu: { vendor: 5, renderer: '', gl_version: '   ', gl_extensions: ['A'] } },
+    ],
+  ])('adds nothing when the extra returns %s', (_name, value) => {
+    expect(build(() => value)).toEqual(closed);
+  });
+
+  it('null / non-object gpu is ignored quietly (not via a swallowed throw), and an empty gl_extensions string is dropped', () => {
+    const errors: unknown[] = [];
+    expect(
+      build(
+        () => ({ gpu: null }),
+        (e) => errors.push(e),
+      ),
+    ).toEqual(closed);
+    expect(errors).toEqual([]);
+    expect(build(() => ({ gpu: { vendor: 'V', gl_extensions: ' ' } })).gpu).toEqual({
+      vendor: 'V',
+    });
+  });
+
+  it('trims strings and drops whitespace-only ones', () => {
+    expect(
+      build(() => ({ gpu: { vendor: '  Apple ', renderer: ' \t', gl_version: ' 3.0\n' } })).gpu,
+    ).toEqual({ vendor: 'Apple', gl_version: '3.0' });
+  });
+
+  it('drops unknown keys, at the top level and inside gpu', () => {
+    const hw = build(() => ({ gpu: { vendor: 'V', secret: 'x' }, model: 'evil', extra: 1 }));
+    expect(hw).toEqual({ ...closed, gpu: { vendor: 'V' } });
+  });
+
+  it('never overrides the closed fields, even for a gpu-shaped hostile object', () => {
+    const hw = build(() => ({ gpu: { vendor: 'V' }, cpu_count: 99, device_id: 'x' }));
+    expect(hw.cpu_count).toBe(8);
+    expect(hw.device_id).toBeNull();
+  });
+
+  it('a throwing extra adds nothing and is reported through onError', () => {
+    const boom = new Error('boom');
+    const errors: unknown[] = [];
+    const hw = build(
+      () => {
+        throw boom;
+      },
+      (e) => errors.push(e),
+    );
+    expect(hw).toEqual(closed);
+    expect(errors).toEqual([boom]);
+  });
+
+  it('a throwing extra without onError, or with a throwing onError, still builds', () => {
+    const thrower = () => {
+      throw new Error('x');
+    };
+    expect(build(thrower)).toEqual(closed);
+    expect(
+      build(thrower, () => {
+        throw new Error('sink');
+      }),
+    ).toEqual(closed);
+  });
+});
+
+describe('sanitizeHardwareGpu: length bounds (the environment is rebuilt for every report)', () => {
+  it('truncates over-long fields (256 chars; gl_extensions 8192) and keeps values at the cap unchanged', () => {
+    const gpu = sanitizeHardwareGpu({
+      vendor: 'v'.repeat(300),
+      renderer: 'r'.repeat(256),
+      gl_version: 'g'.repeat(257),
+      gl_extensions: 'e'.repeat(10_000),
+    });
+    expect(gpu?.vendor).toBe('v'.repeat(256));
+    expect(gpu?.renderer).toBe('r'.repeat(256));
+    expect(gpu?.gl_version).toBe('g'.repeat(256));
+    expect(gpu?.gl_extensions).toBe('e'.repeat(8192));
+    expect(sanitizeHardwareGpu({ gl_extensions: 'x'.repeat(8192) })?.gl_extensions).toHaveLength(
+      8192,
+    );
+    expect(sanitizeHardwareGpu({ gl_extensions: 'x'.repeat(8193) })?.gl_extensions).toHaveLength(
+      8192,
+    );
+  });
+
+  it('trims BEFORE bounding, so padding does not eat the budget', () => {
+    expect(sanitizeHardwareGpu({ vendor: `  ${'v'.repeat(256)}  ` })?.vendor).toBe('v'.repeat(256));
+  });
+});
+
+describe('sanitizeHardwareGpu (exported)', () => {
+  it('returns a trimmed copy of the known keys, or undefined', () => {
+    expect(sanitizeHardwareGpu({ vendor: ' V ', junk: 1 })).toEqual({ vendor: 'V' });
+    expect(sanitizeHardwareGpu({ vendor: ' ' })).toBeUndefined();
+    expect(sanitizeHardwareGpu(null)).toBeUndefined();
+    expect(sanitizeHardwareGpu('x')).toBeUndefined();
   });
 });

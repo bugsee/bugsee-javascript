@@ -1,9 +1,13 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
-import { type UiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
+import {
+  type ApplicationTracker,
+  applicationTrackerFor,
+  type UiTracker,
+  uiTrackerFor,
+} from '@bugsee/trackers/browser';
 import type { WindowEvents } from './detection-providers';
 import { hostGlobal, hostRead } from './host-global';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 // Browser system-event SOURCE for @bugsee/capture's systemEventsProvider (the node lifecycle-source
 // analog). A listenable InterceptorBase: on activate it emits a 'process_started' marker and subscribes
@@ -48,18 +52,18 @@ export interface BrowserSystemEventsEnv {
    */
   matchMedia?: (query: string) => MediaQueryLike;
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   onError?: (error: unknown) => void;
 }
 
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
-  readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
+  readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
   readonly #ui: Pick<UiTracker, 'on'>;
   #unsubscribe: Array<() => void> = [];
 
   constructor(
-    lifecycle: Pick<PageLifecycleTracker, 'on'>,
+    lifecycle: Pick<ApplicationTracker, 'on'>,
     ui: Pick<UiTracker, 'on'>,
     onError?: (error: unknown) => void,
   ) {
@@ -114,14 +118,16 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  // ONE read of the window (injected, else the host's) serves the lifecycle tracker and the UI tracker.
-  const win = env.window ?? hostGlobal<WindowEvents>('window', env.onError);
+  // Host globals only when NEITHER window nor document was injected: an injected env never borrows the host's.
+  // ONE read of the window serves the lifecycle tracker and the UI tracker.
+  const injected = env.window !== undefined || env.document !== undefined;
+  const win = injected ? env.window : hostGlobal<WindowEvents>('window', env.onError);
   // The document is read only when no lifecycle tracker was supplied: a supplied one already owns it.
   const lifecycle =
     env.lifecycle ??
-    ((): PageLifecycleTracker => {
-      const doc = env.document ?? hostGlobal('document', env.onError);
-      return new PageLifecycleTracker(
+    ((): ApplicationTracker => {
+      const doc = injected ? env.document : hostGlobal('document', env.onError);
+      return applicationTrackerFor(
         {
           ...(win !== undefined ? { window: win } : {}),
           ...(doc !== undefined ? { document: doc } : {}),
