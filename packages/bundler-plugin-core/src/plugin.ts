@@ -27,6 +27,10 @@ import { type AssetStore, stampAssets } from './stamp-assets';
 export interface OutputLike {
   dir?: string;
   file?: string;
+  /** Output format (`es`, `cjs`, `iife`, `umd`, …); `es` is always strict. */
+  format?: string;
+  /** Whether Rollup emits `'use strict'` for the non-`es` formats (default true). */
+  strict?: boolean;
 }
 
 /** Resolve the build output directory from a rollup/vite output-options object. */
@@ -339,7 +343,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               );
             }
           },
+          output.format === 'es' || output.strict !== false,
         );
+      },
+      // A watch rebuild is a new build: warn again if it is again not baked.
+      buildStart() {
+        unbakedOutDirs.clear();
       },
       writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
     },

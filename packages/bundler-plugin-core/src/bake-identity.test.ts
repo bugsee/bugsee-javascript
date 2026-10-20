@@ -158,7 +158,10 @@ describe('bakeIdentity leaves a LOCAL binding of the same name alone', () => {
     ],
     ['a function declaration', `function ${V}() {} ${V}();`],
     ['a function declaration used before it is declared', `${V}(); function ${V}() {}`],
-    ['a function declared in a block', `{ function ${V}() {} } ${V}();`],
+    [
+      'a function declared in a block (sloppy: Annex B hoists it)',
+      `{ function ${V}() {} } ${V}();`,
+    ],
     ['a class declaration', `class ${V} {} new ${V}();`],
     [
       'a class expression name inside its body',
@@ -234,6 +237,117 @@ describe('bakeIdentity leaves a LOCAL binding of the same name alone', () => {
     expect(bake(`class C { static { var ${V}; } m() { return ${V}; } }`)).toBe(
       `class C { static { var ${V}; } m() { return "2.4.1"; } }`,
     );
+  });
+});
+
+describe('bakeIdentity strict mode scopes a block function to its block', () => {
+  const strict = (code: string) =>
+    bakeIdentity(code, defines, parse, undefined, true)?.code ?? null;
+
+  it('a function declared in a block does not shadow outside it in strict code', () => {
+    expect(strict(`{ function ${V}() {} ${V}(); } use(${V});`)).toBe(
+      `{ function ${V}() {} ${V}(); } use("2.4.1");`,
+    );
+  });
+
+  it('but a function declared at the top level of a function or module still shadows', () => {
+    expect(
+      strict(`function f() { ${V}(); function ${V}() {} } function ${B}() {} ${B}();`),
+    ).toBeNull();
+  });
+
+  it('a var in a block still hoists in strict code', () => {
+    expect(strict(`function f() { { var ${V}; } return ${V}; }`)).toBeNull();
+  });
+
+  it('sloppy code keeps Annex B hoisting (the default when strictness is unknown)', () => {
+    expect(bakeIdentity(`{ function ${V}() {} } ${V}();`, defines, parse)).toBeNull();
+    expect(
+      bakeIdentity(`{ function ${V}() {} } ${V}();`, defines, parse, undefined, false),
+    ).toBeNull();
+  });
+});
+
+describe('bakeIdentity scopes switch discriminants and default parameters exactly', () => {
+  it('a switch discriminant is read outside the case block, case tests and bodies inside it', () => {
+    expect(bake(`switch (${V}) { case 1: let ${V} = 1; use(${V}); }`)).toBe(
+      `switch ("2.4.1") { case 1: let ${V} = 1; use(${V}); }`,
+    );
+    expect(bake(`switch (a) { case ${V}: let ${V}; }`)).toBeNull();
+  });
+
+  it.each([
+    ['a body var', `function f(a = ${V}) { var ${V} = 1; return a; }`],
+    ['a body function', `function f(a = ${V}) { function ${V}() {} return a; }`],
+    ['an arrow body var', `const f = (a = ${V}) => { var ${V} = 1; return a; };`],
+    ['a closure default', `function f(a = () => ${V}) { var ${V} = 1; return a; }`],
+    ['a destructured default', `function f({ a = ${V} }) { var ${V} = 1; return a; }`],
+    ['a rest parameter', `function f(...[a = ${V}]) { let ${V} = 1; return a; }`],
+  ])('a default value does not see %s', (_, code) => {
+    expect(bake(code)).toBe(code.replace(/= ((\(\) => )?)__BUGSEE_APP_VERSION__/, '= $1"2.4.1"'));
+  });
+
+  it('the body does see its own var when parameters have defaults, and a param still shadows', () => {
+    expect(bake(`function f(a = 1) { var ${V} = 2; return ${V}; }`)).toBeNull();
+    expect(bake(`function f(${V} = 1) { var ${V}; return ${V}; }`)).toBeNull();
+    expect(bake(`function f(${V} = 1) { return ${V}; }`)).toBeNull();
+  });
+
+  it('a class name is in scope for its own computed keys and heritage', () => {
+    expect(bake(`const C = class ${V} { [${V}]() {} };`)).toBeNull();
+    expect(bake(`const C = class ${V} extends ${V}.base {};`)).toBeNull();
+    expect(bake(`class C extends ${V} { [${V}]() {} }`)).toBe(
+      `class C extends "2.4.1" { ["2.4.1"]() {} }`,
+    );
+  });
+
+  it('with simple parameters a body var and the parameter list share one scope', () => {
+    expect(bake(`function f(a, b) { var ${V} = 1; return ${V}; }`)).toBeNull();
+    expect(bake(`function f(a, ${B}) { var ${B}; return ${B}; }`)).toBeNull();
+  });
+});
+
+describe('bakeIdentity never throws while walking', () => {
+  it('routes a walk failure to onSkipped and leaves the chunk alone', () => {
+    const skipped = vi.fn();
+    const broken = () => ({
+      type: 'Program',
+      start: 0,
+      end: 0,
+      get body(): never {
+        throw new Error('visitor exploded');
+      },
+    });
+    expect(bakeIdentity(`f(${V})`, defines, broken, skipped)).toBeNull();
+    expect(skipped.mock.calls[0]?.[0]).toMatch(/could not be walked \(visitor exploded\)/);
+  });
+
+  it('survives a chunk nested deeper than the recursion limit', () => {
+    const skipped = vi.fn();
+    const deep = () => {
+      let node: Record<string, unknown> = { type: 'Identifier', name: V, start: 0, end: 1 };
+      for (let i = 0; i < 200000; i++) {
+        node = { type: 'ExpressionStatement', start: 0, end: 1, expression: node };
+      }
+      return { type: 'Program', start: 0, end: 1, body: [node] };
+    };
+    expect(bakeIdentity(`f(${V})`, defines, deep, skipped)).toBeNull();
+    expect(skipped.mock.calls[0]?.[0]).toMatch(/could not be walked/);
+  });
+
+  it('describes a non-Error walk failure and tolerates no callback', () => {
+    const odd = () => ({
+      type: 'Program',
+      start: 0,
+      end: 0,
+      get body(): never {
+        throw 'plain';
+      },
+    });
+    const skipped = vi.fn();
+    expect(bakeIdentity(`f(${V})`, defines, odd, skipped)).toBeNull();
+    expect(skipped.mock.calls[0]?.[0]).toContain('(plain)');
+    expect(bakeIdentity(`f(${V})`, defines, odd)).toBeNull();
   });
 });
 

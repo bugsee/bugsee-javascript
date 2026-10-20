@@ -194,6 +194,28 @@ describe('app identity is baked into the bundle', () => {
     expect(mod.build).toBe('b-local');
   });
 
+  // Rollup's ES output is strict: a function declared in a block is scoped to that block, so the read after
+  // it is the global and must be baked (a sloppy Annex B reading would leave it untouched).
+  it('rollup bakes the global read after a block-scoped function in strict output', async () => {
+    writeFileSync(
+      join(dir, 'rollup-block-fn.js'),
+      [
+        '{ function __BUGSEE_APP_BUILD__() {} __BUGSEE_APP_BUILD__(); }',
+        "export const r = typeof __BUGSEE_APP_BUILD__ === 'string' ? __BUGSEE_APP_BUILD__ : 'none';",
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-block-fn');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-block-fn.js'),
+      plugins: [bugseeRollupPlugin({ ...IDENTITY, appBuild: 'b-block' })],
+    });
+    await bundle.write({ dir: outDir, format: 'es', entryFileNames: '[name].mjs' });
+    await bundle.close();
+    const file = join(outDir, 'rollup-block-fn.mjs');
+    const mod = (await import(pathToFileURL(file).href)) as { r: string };
+    expect(mod.r).toBe('b-block');
+  });
+
   it('a disabled plugin leaves the identifiers alone (rollup)', async () => {
     const outDir = join(dir, 'rollup-disabled');
     const bundle = await rollup({

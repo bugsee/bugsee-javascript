@@ -405,6 +405,31 @@ describe('rollup bakes the identity itself', () => {
     expect(seen.every((entry) => entry === ctx)).toBe(true);
   });
 
+  it('bakes a global read past a block-scoped function only when the output is strict', () => {
+    const code = `{ function ${VERSION}() {} } use(${VERSION});`;
+    const bake = (output: object) => renderChunk(make({}))(code, {}, { ...dist(), ...output });
+    expect(bake({ format: 'es' })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'cjs' })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'es', strict: false })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'iife', strict: true })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'cjs', strict: false })).toBeNull();
+    expect(bake({ format: 'umd', strict: false })).toBeNull();
+  });
+
+  it('warns again after a new build starts (watch rebuild)', () => {
+    const warn = vi.fn();
+    const plugin = make({});
+    const hook = (plugin.rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    const buildStart = (plugin.rollup as unknown as { buildStart: () => void }).buildStart;
+    const bad = `with (o) { f(${VERSION}); }`;
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    expect(warn).toHaveBeenCalledTimes(1);
+    buildStart();
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
   it('without a parser in the context (not Rollup) nothing is guessed at: the chunk is left as is', () => {
     const hook = (make({}).rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
     expect(hook.call(undefined, `f(${VERSION})`, {}, dist())).toBeNull();

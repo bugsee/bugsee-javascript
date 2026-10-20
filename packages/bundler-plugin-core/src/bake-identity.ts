@@ -45,6 +45,8 @@ interface Read {
 
 interface Walk {
   names: ReadonlySet<string>;
+  /** Strict-mode code: a function declared in a block is scoped to that block (no Annex B hoisting). */
+  strict: boolean;
   /** Names of the constants bound by each enclosing scope, innermost last; a read bound here is a local. */
   scopes: Array<Set<string>>;
   out: Read[];
@@ -137,13 +139,14 @@ function declaredBy(statement: unknown, names: ReadonlySet<string>, into: Set<st
 }
 
 /**
- * `var` declarations hoist to the enclosing function, and a function declared inside a block is function-scoped
- * in sloppy code, so both are collected through nested blocks (not into nested functions).
+ * `var` declarations hoist to the enclosing function. In SLOPPY code (Annex B) a function declared inside a
+ * block is also function-scoped, so it is collected through nested blocks too; in strict code (ES modules, and
+ * the `use strict` Rollup emits for cjs/iife/umd) it stays in its block. Never into nested functions.
  */
-function hoisted(node: unknown, names: ReadonlySet<string>, into: Set<string>): void {
+function hoisted(node: unknown, walk: Walk, into: Set<string>): void {
   if (Array.isArray(node)) {
     for (const item of node) {
-      hoisted(item, names, into);
+      hoisted(item, walk, into);
     }
     return;
   }
@@ -151,65 +154,82 @@ function hoisted(node: unknown, names: ReadonlySet<string>, into: Set<string>): 
     return;
   }
   if (node.type === 'FunctionDeclaration') {
-    patternNames(node.id, names, into);
+    if (!walk.strict) {
+      patternNames(node.id, walk.names, into);
+    }
     return;
   }
   if (FUNCTIONS.has(node.type) || node.type === 'ClassBody') {
     return;
   }
   if (node.type === 'VariableDeclaration' && node.kind === 'var') {
-    declaredBy(node, names, into);
+    declaredBy(node, walk.names, into);
   }
   for (const value of Object.values(node)) {
-    hoisted(value, names, into);
+    hoisted(value, walk, into);
   }
 }
 
-/** The constants a node's own scope binds, or `undefined` when the node opens no scope. */
-function scopeOf(node: AstNode, names: ReadonlySet<string>): Set<string> | undefined {
-  const into = new Set<string>();
+/**
+ * The scopes a node opens: `own` covers all its children (for a function: its parameters), `body` (functions
+ * only) is a SEPARATE scope for the body, because a default value cannot see the body's `var`s.
+ */
+function scopesOf(
+  node: AstNode,
+  walk: Walk,
+): { own: Set<string>; body?: Set<string>; only?: string } | undefined {
+  const names = walk.names;
+  const own = new Set<string>();
   switch (node.type) {
     case 'Program':
-    case 'BlockStatement':
     case 'StaticBlock':
       for (const statement of node.body as unknown[]) {
-        declaredBy(statement, names, into);
+        declaredBy(statement, names, own);
       }
-      if (node.type !== 'BlockStatement') {
-        hoisted(node.body, names, into);
+      hoisted(node.body, walk, own);
+      return { own };
+    case 'BlockStatement':
+      for (const statement of node.body as unknown[]) {
+        declaredBy(statement, names, own);
       }
-      return into;
+      return { own };
     case 'SwitchStatement':
       for (const switchCase of node.cases as AstNode[]) {
         for (const statement of switchCase.consequent as unknown[]) {
-          declaredBy(statement, names, into);
+          declaredBy(statement, names, own);
         }
       }
-      return into;
+      // The discriminant is evaluated outside the case block.
+      return { own, only: 'cases' };
     case 'ForStatement':
-      declaredBy(node.init, names, into);
-      return into;
+      declaredBy(node.init, names, own);
+      return { own };
     case 'ForInStatement':
     case 'ForOfStatement':
-      declaredBy(node.left, names, into);
-      return into;
+      declaredBy(node.left, names, own);
+      return { own };
     case 'CatchClause':
-      patternNames(node.param, names, into);
-      return into;
+      patternNames(node.param, names, own);
+      return { own };
     case 'ClassExpression':
-      patternNames(node.id, names, into);
-      return into;
+      patternNames(node.id, names, own);
+      return { own };
     case 'FunctionDeclaration':
     case 'FunctionExpression':
-    case 'ArrowFunctionExpression':
-      for (const param of node.params as unknown[]) {
-        patternNames(param, names, into);
+    case 'ArrowFunctionExpression': {
+      const params = node.params as AstNode[];
+      for (const param of params) {
+        patternNames(param, names, own);
       }
       if (node.type === 'FunctionExpression') {
-        patternNames(node.id, names, into);
+        patternNames(node.id, names, own);
       }
-      hoisted(node.body, names, into);
-      return into;
+      // The body's own `var`s and (sloppy) functions: a scope of their own, so a default value cannot see them.
+      // With simple parameters the two scopes would be one; resolving through both stacked gives the same answer.
+      const body = new Set<string>();
+      hoisted(node.body, walk, body);
+      return { own, body };
+    }
     default:
       return undefined;
   }
@@ -237,10 +257,20 @@ function collectReads(node: AstNode, walk: Walk, binding: boolean): void {
     }
     return;
   }
-  const scope = scopeOf(node, walk.names);
-  if (scope !== undefined) {
-    walk.scopes.push(scope);
-  }
+  const scope = scopesOf(node, walk);
+  /** Visit a child with the scopes that apply to that key on the stack. */
+  const inScope = (key: string, run: () => void): void => {
+    const pushed: Set<string>[] = [];
+    if (scope !== undefined && (scope.only === undefined || scope.only === key)) {
+      pushed.push(scope.own);
+    }
+    if (scope?.body !== undefined && key === 'body') {
+      pushed.push(scope.body);
+    }
+    walk.scopes.push(...pushed);
+    run();
+    walk.scopes.length -= pushed.length;
+  };
   for (const [key, value] of Object.entries(node)) {
     // A statement label (`X: for …`, `break X`) is a name; the labelled body is still code.
     if (key === 'label') {
@@ -249,6 +279,7 @@ function collectReads(node: AstNode, walk: Walk, binding: boolean): void {
     // A non-computed property name (`o.X`, `{ X: 1 }`, `class { X() {} }`) is a name, not a read.
     if (key === 'key' || key === 'property') {
       if (node.computed === true) {
+        // (No node that opens a scope has a `key`/`property`, so the stack is already right here.)
         visit(value, walk, false);
       }
       continue;
@@ -274,10 +305,7 @@ function collectReads(node: AstNode, walk: Walk, binding: boolean): void {
       (binding &&
         !(node.type === 'AssignmentPattern' && key === 'right') &&
         node.type !== 'MemberExpression');
-    visit(value, walk, childBinding);
-  }
-  if (scope !== undefined) {
-    walk.scopes.pop();
+    inScope(key, () => visit(value, walk, childBinding));
   }
 }
 
@@ -296,13 +324,15 @@ function visit(value: unknown, walk: Walk, binding: boolean): void {
  * `{ X }` becomes `{ X: value }`. `null` when there is nothing to replace — including a chunk with no parser
  * or one the parser rejects, which is left exactly as Rollup produced it rather than guessed at — so Rollup
  * keeps the chunk (and its map) untouched. `onSkipped` is told why when a chunk that mentions a constant could
- * not be examined, so the caller can say the identity was not baked instead of failing silently.
+ * not be examined, so the caller can say the identity was not baked instead of failing silently. `strict` is
+ * whether the chunk is strict-mode code (default: sloppy, which binds more names and so bakes fewer reads).
  */
 export function bakeIdentity(
   code: string,
   defines: Record<string, string>,
   parse: ParseChunk | undefined,
   onSkipped?: (reason: string) => void,
+  strict = false,
 ): BakedChunk | null {
   const names = new Set(Object.keys(defines).filter((name) => code.includes(name)));
   if (names.size === 0) {
@@ -321,8 +351,16 @@ export function bakeIdentity(
     );
     return null;
   }
-  const walk: Walk = { names, scopes: [], out: [] };
-  visit(program, walk, false);
+  const walk: Walk = { names, strict, scopes: [], out: [] };
+  try {
+    visit(program, walk, false);
+  } catch (error) {
+    // A pathologically deep chunk overflows the recursive walk (RangeError): skip it, never fail the build.
+    onSkipped?.(
+      `the chunk could not be walked (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return null;
+  }
   if (walk.out.length === 0) {
     return null;
   }
