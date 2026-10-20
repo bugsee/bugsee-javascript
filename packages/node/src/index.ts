@@ -46,9 +46,12 @@ export {
 } from './detection-providers';
 export {
   buildNodeEnvironment,
+  type HardwareExtras,
+  type HardwareGpu,
   type NodeEnvironmentInput,
   realSystemProbe,
   type SystemProbe,
+  sanitizeHardwareGpu,
 } from './environment';
 export {
   createEventLoopWatchdog,

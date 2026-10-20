@@ -1,4 +1,4 @@
-import type { WindowEvents } from '@bugsee/browser';
+import { applicationTrackerFor, type WindowEvents } from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -115,6 +115,7 @@ function fakeEventTarget() {
     emit: (type: string, event: unknown) => {
       for (const l of [...(listeners.get(type) ?? [])]) l(event as Event);
     },
+    count: (type: string) => listeners.get(type)?.size ?? 0,
   };
 }
 
@@ -149,6 +150,73 @@ const baseOptions = (
   captureNetwork: false, // don't patch the real fetch/XHR globals in unit tests
   carrier: {}, // a fresh per-WebView carrier so the singleton + interceptors are isolated
   ...over,
+});
+
+describe('launch (webview) goes through the ApplicationTracker registry', () => {
+  const blockedDoc = () => {
+    const doc = fakeEventTarget();
+    const boom = new Error('visibilityState blocked');
+    const state = { armed: false };
+    Object.defineProperty(doc.target, 'visibilityState', {
+      get() {
+        if (state.armed) throw boom;
+        return 'visible';
+      },
+    });
+    return { doc, boom, state, document: doc.target as unknown as Document };
+  };
+
+  it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+    // ApplicationTracker's temporary online stage + the ConnectivityTracker's own listener
+    expect(win.count('online')).toBe(2);
+    const shared = applicationTrackerFor({ window: win.target as never, document });
+    const off = shared.on('online', () => {});
+    expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
+    off();
+  });
+
+  it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {
+    const win = fakeEventTarget();
+    const { doc, boom, state, document } = blockedDoc();
+    const first = vi.fn();
+    const second = vi.fn();
+    const fireBlocked = () => {
+      state.armed = true;
+      try {
+        doc.emit('visibilitychange', {});
+      } catch {
+        /* a real DOM dispatch never propagates a listener's throw */
+      } finally {
+        state.armed = false;
+      }
+    };
+    const run = (onError?: (e: unknown) => void) =>
+      launch(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document,
+          ...(onError !== undefined ? { onError } : {}),
+        }),
+      );
+    run(first).stop();
+    run(second).stop();
+    first.mockClear();
+    second.mockClear();
+    const live = run(second);
+    clients.push(live);
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+    expect(first).not.toHaveBeenCalledWith(boom);
+    live.stop();
+    second.mockClear();
+    clients.push(run()); // no onError: must NOT silence the earlier launch's sink
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+  });
 });
 
 describe('launch (webview)', () => {
@@ -1030,8 +1098,9 @@ describe('launch (webview)', () => {
         expect(rows.get('ram_js_heap_used')).toBe(10);
         expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
         expect(rows.get('orientation')).toBe(3);
-        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
-        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
+        // ONE shared lifecycle tracker (traces + events source: 3 listeners, not 6) plus the domain ConnectivityTracker's
+        // own online/offline pair (it does not depend on the lifecycle tracker).
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(5);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
       } finally {

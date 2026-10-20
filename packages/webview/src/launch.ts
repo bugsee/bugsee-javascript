@@ -1,4 +1,5 @@
 import {
+  applicationTrackerFor,
   bindInputBlackout,
   boundMatchMedia,
   browserTraceEnvFrom,
@@ -12,7 +13,6 @@ import {
   defaultBrowserTraceEnv,
   hostGlobal,
   hostRead,
-  PageLifecycleTracker,
   parseStack,
   type WindowEvents,
 } from '@bugsee/browser';
@@ -695,7 +695,7 @@ export function launchWithSeams(
   // HTTP server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
   // ONE lifecycle tracker over the host page's window+document, shared by the traces and the events source.
-  const lifecycle = new PageLifecycleTracker(
+  const lifecycle = applicationTrackerFor(
     {
       ...(win !== undefined ? { window: win } : {}),
       ...(domDocument !== undefined ? { document: domDocument } : {}),

@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { ApplicationTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   AppStateProducer,
@@ -8,7 +9,6 @@ import {
   FpsProducer,
 } from './trace-producers';
 import { FpsTracker } from './trackers/fps-tracker';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<(e: unknown) => void>>();
@@ -29,7 +29,7 @@ function mkTarget() {
 function mkPage(visible = true) {
   const win = mkTarget();
   const doc = Object.assign(mkTarget(), { visibilityState: visible ? 'visible' : 'hidden' });
-  const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
+  const lifecycle = new ApplicationTracker({ window: win, document: doc });
   return {
     win,
     doc,
@@ -56,7 +56,7 @@ describe('AppStateProducer', () => {
       const page = mkPage();
       page.doc.visibilityState = vis;
       const out: Emit[] = [];
-      new AppStateProducer(page.lifecycle, page.doc).start(sinkOf(out));
+      new AppStateProducer(page.lifecycle).start(sinkOf(out));
       expect(out).toEqual([{ name: 'app_state', value: want, hold: true }]);
     }
   });
@@ -64,7 +64,7 @@ describe('AppStateProducer', () => {
   it('follows visibility changes, held and de-duplicated', () => {
     const page = mkPage();
     const out: Emit[] = [];
-    new AppStateProducer(page.lifecycle, page.doc).start(sinkOf(out));
+    new AppStateProducer(page.lifecycle).start(sinkOf(out));
     page.setVisible(false);
     page.setVisible(false);
     page.setVisible(true);
@@ -72,32 +72,48 @@ describe('AppStateProducer', () => {
     expect(out.every((o) => o.hold === true)).toBe(true);
   });
 
-  it('with no document there is no initial value, but changes still report', () => {
-    const page = mkPage();
+  it('with no readable state there is no initial value, but changes still report', () => {
+    const doc = mkTarget(); // no visibilityState at all
+    const lifecycle = new ApplicationTracker({ window: mkTarget(), document: doc });
     const out: Emit[] = [];
-    new AppStateProducer(page.lifecycle, undefined).start(sinkOf(out));
+    new AppStateProducer(lifecycle).start(sinkOf(out));
     expect(out).toEqual([]);
-    page.setVisible(false);
+    Object.assign(doc, { visibilityState: 'hidden' });
+    doc.fire('visibilitychange');
     expect(out.map((o) => o.value)).toEqual(['background']);
   });
 
-  it('a throwing visibilityState read yields no initial value', () => {
-    const page = mkPage();
-    const doc = {};
+  it('a throwing visibilityState read yields no initial value and never throws', () => {
+    const doc = mkTarget();
     Object.defineProperty(doc, 'visibilityState', {
       get(): never {
         throw new Error('vis');
       },
     });
+    const errors: unknown[] = [];
+    const lifecycle = new ApplicationTracker({ document: doc }, (e) => errors.push(e));
     const out: Emit[] = [];
-    expect(() => new AppStateProducer(page.lifecycle, doc).start(sinkOf(out))).not.toThrow();
+    expect(() => new AppStateProducer(lifecycle).start(sinkOf(out))).not.toThrow();
     expect(out).toEqual([]);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('a producer started after a hidden gap reports the CURRENT state, not a stale one', () => {
+    const page = mkPage();
+    const first = new AppStateProducer(page.lifecycle);
+    const out: Emit[] = [];
+    first.start(sinkOf(out));
+    first.stop();
+    page.doc.visibilityState = 'hidden'; // while nobody listened
+    const out2: Emit[] = [];
+    new AppStateProducer(page.lifecycle).start(sinkOf(out2));
+    expect(out2.map((o) => o.value)).toEqual(['background']);
   });
 
   it('stop() releases the lifecycle subscription', () => {
     const page = mkPage();
     const out: Emit[] = [];
-    const p = new AppStateProducer(page.lifecycle, page.doc);
+    const p = new AppStateProducer(page.lifecycle);
     p.start(sinkOf(out));
     expect(page.doc.count()).toBe(3); // visibilitychange + freeze + resume (the shared lifecycle's document listeners)
     p.stop();

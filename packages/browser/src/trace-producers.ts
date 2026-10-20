@@ -2,9 +2,13 @@ import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
 import { bytesToMegabytes } from '@bugsee/protocol';
 import {
+  type ApplicationTracker,
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
+  type ConnectivityState,
+  type ConnectivityTracker,
+  connectivityTrackerFor,
   type PowerTracker,
   powerTrackerFor,
   type StorageEstimate,
@@ -13,11 +17,6 @@ import {
   storageTrackerFor,
 } from '@bugsee/trackers/browser';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
-import {
-  type ConnectionEnv,
-  type ConnectionState,
-  ConnectionTracker,
-} from './trackers/connection-tracker';
 import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
 import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
@@ -26,7 +25,6 @@ import {
   type OrientationState,
   OrientationTracker,
 } from './trackers/orientation-tracker';
-import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import {
   type ScreenSizeEnv,
   type ScreenSizeState,
@@ -190,10 +188,10 @@ export class AdvertisedMemoryProducer extends TraceProducerBase {
 
 export class ConnectionProducer extends TraceProducerBase {
   readonly name = 'connection';
-  readonly #tracker: ConnectionTracker;
+  readonly #tracker: ConnectivityTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: ConnectionTracker) {
+  constructor(tracker: ConnectivityTracker) {
     super();
     this.#tracker = tracker;
   }
@@ -209,9 +207,10 @@ export class ConnectionProducer extends TraceProducerBase {
     this.#off = undefined;
   }
 
-  #publish({ onLine, connection }: ConnectionState): void {
+  #publish({ online, networkInfo: connection }: ConnectivityState): void {
+    if (online === undefined) return; // an unreadable onLine is not evidence of anything: no row
     this.emitIfChanged('connection', {
-      type: connectionTypeToWire(connection, onLine),
+      type: connectionTypeToWire(connection, online),
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
       // as undefined — an explicitly absent key is what the other tiers send.
       ...(connection?.effectiveType !== undefined
@@ -220,6 +219,10 @@ export class ConnectionProducer extends TraceProducerBase {
       // Android reports bandwidth in kbps (`link_downstream_kbps`); `downlink` is Mbps.
       ...(connection?.downlink !== undefined
         ? { link_downstream_kbps: Math.round(connection.downlink * 1000) }
+        : {}),
+      // `downlinkMax` (the link's ceiling, Mbps) rides the same unit; the key is additive detail on the open object.
+      ...(connection?.downlinkMax !== undefined
+        ? { link_downstream_max_kbps: Math.round(connection.downlinkMax * 1000) }
         : {}),
       ...(connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
       ...(connection?.saveData !== undefined ? { save_data: connection.saveData } : {}),
@@ -261,30 +264,22 @@ export class OrientationProducer extends TraceProducerBase {
  */
 export class AppStateProducer extends TraceProducerBase {
   readonly name = 'app-state';
-  readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
-  readonly #document: { readonly visibilityState?: string } | undefined;
+  readonly #application: Pick<ApplicationTracker, 'on' | 'current'>;
   #off: (() => void) | undefined;
 
-  constructor(
-    lifecycle: Pick<PageLifecycleTracker, 'on'>,
-    document: { readonly visibilityState?: string } | undefined,
-  ) {
+  constructor(application: Pick<ApplicationTracker, 'on' | 'current'>) {
     super();
-    this.#lifecycle = lifecycle;
-    this.#document = document;
+    this.#application = application;
   }
 
   protected onStart(): void {
-    this.#off = this.#lifecycle.on('visibility', ({ visible }) =>
-      this.emitIfChanged('app_state', visible ? 'foreground' : 'background'),
+    // Subscribe first (it activates the tracker and refreshes its retained state), then read the initial value.
+    this.#off = this.#application.on('state', ({ state }) =>
+      this.emitIfChanged('app_state', state),
     );
-    try {
-      const state = this.#document?.visibilityState;
-      if (state !== undefined)
-        this.emitIfChanged('app_state', state === 'visible' ? 'foreground' : 'background');
-    } catch {
-      /* an unreadable document yields no initial value; the next visibility change still reports */
-    }
+    // No known state (no/unreadable document) = no initial value; the next change still reports.
+    const initial = this.#application.current();
+    if (initial !== undefined) this.emitIfChanged('app_state', initial);
   }
 
   protected override onStop(): void {
@@ -385,15 +380,18 @@ export class MainThreadLagProducer extends TraceProducerBase {
  */
 export interface BrowserTraceEnv extends BatteryEnv {
   performance?: { readonly memory?: MemoryReading; now?(): number };
-  navigator?: ConnectionEnv['navigator'] & {
+  navigator?: {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
     /** `navigator.storage` (absent in insecure contexts): origin quota estimate. */
     readonly storage?: StorageManagerLike;
+    readonly onLine?: boolean;
+    /** NetworkInformation (read by the ConnectivityTracker). */
+    readonly connection?: object;
   };
   screen?: OrientationEnv['screen'] & ScreenSizeEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
-  window?: ConnectionEnv['window'] & ScreenSizeEnv['window'];
+  window?: OrientationEnv['window'] & ScreenSizeEnv['window'];
   /** The document the SDK is bound to: visibility for `app_state` and `fps`. */
   document?: FpsEnv['document'];
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
@@ -406,8 +404,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
-  /** Shared page-lifecycle tracker for connection/orientation; when absent each listens on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  /** The shared ApplicationTracker feeding orientation, app_state and fps; when absent orientation listens on `window` and app_state/fps are omitted. */
+  lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
 }
 
 interface WindowSurfaces {
@@ -548,16 +546,7 @@ export function createBrowserSystemTraceProducers(
         onError,
       ),
     ),
-    new ConnectionProducer(
-      new ConnectionTracker(
-        {
-          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
-          ...(env.window !== undefined ? { window: env.window } : {}),
-          ...(nav !== undefined ? { navigator: nav } : {}),
-        },
-        onError,
-      ),
-    ),
+    new ConnectionProducer(connectivityTrackerFor(env, onError)),
     new OrientationProducer(
       new OrientationTracker(
         {
@@ -570,7 +559,7 @@ export function createBrowserSystemTraceProducers(
     ),
     ...(env.lifecycle !== undefined
       ? [
-          new AppStateProducer(env.lifecycle, env.document),
+          new AppStateProducer(env.lifecycle),
           new ScreenSizeProducer(
             new ScreenSizeTracker(
               {
