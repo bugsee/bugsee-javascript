@@ -509,6 +509,9 @@ importers:
       '@bugsee/browser':
         specifier: workspace:*
         version: link:../browser
+      '@bugsee/capture':
+        specifier: workspace:*
+        version: link:../capture
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -518,6 +521,9 @@ importers:
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@bugsee/trackers':
+        specifier: workspace:*
+        version: link:../trackers
     devDependencies:
       '@bugsee/util':
         specifier: workspace:*

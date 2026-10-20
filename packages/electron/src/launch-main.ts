@@ -6,13 +6,15 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { type AppIdentity, BlackoutToken, CaptureStoreToken } from '@bugsee/core';
+import { type AppIdentity, BlackoutToken, CaptureStoreToken, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
+  createNodeSystemTraceProducers,
   launchCore,
   sanitizeHardwareGpu,
 } from '@bugsee/node';
+import { electronProcessTrackerFor, type GpuInfoType } from '@bugsee/trackers/electron';
 import {
   type CrashReporterLike,
   getCrashDumpsDirectory,
@@ -31,6 +33,22 @@ export interface ElectronAppLike {
     ) => void,
   ): unknown;
   /**
+   * `child-process-gone` (a GPU/utility process died) is watched ONLY while system events are captured, through the
+   * shared ElectronProcessTracker. When `removeListener`/`off` is missing the listener is never attached (it could not
+   * be released on `client.stop()`).
+   */
+  on(event: 'child-process-gone', listener: (event: unknown, details: unknown) => void): unknown;
+  removeListener?(
+    event: 'child-process-gone',
+    listener: (event: unknown, details: unknown) => void,
+  ): unknown;
+  off?(event: 'child-process-gone', listener: (event: unknown, details: unknown) => void): unknown;
+  /**
+   * Electron's `app.getAppMetrics` — optional. When present and system traces are captured, per-process CPU/memory is
+   * reported as the `app_metrics` trace (polled by the ElectronProcessTracker; absent fields are omitted, never zero).
+   */
+  getAppMetrics?(): unknown;
+  /**
    * Electron's `app.getGPUInfo` — optional. When present, `getGPUInfo('basic')` is kicked once at launch and
    * the active device's strings (when Electron supplies them) are reported as `environment.hardware.gpu` on
    * every report assembled after it settles. A rejection, or an app without it, just omits the field.
@@ -40,7 +58,6 @@ export interface ElectronAppLike {
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
-import { createGpuInfoCache, type GpuInfoType } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
@@ -51,6 +68,8 @@ import {
 } from './pixel-video-controller';
 import { createRendererGoneHandler } from './renderer-gone';
 import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
+import { createElectronSystemEventsSource } from './system-events';
+import { createElectronSystemTraceProducers } from './system-traces';
 import type { VideoCaptureSource } from './video-capture';
 
 /** The node `launchCore` shape, injectable for tests. */
@@ -81,7 +100,9 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
    * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
    * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
-   * `'complete'` for the GL strings.
+   * `'complete'` for the GL strings. A usable result is kept for the life of the `app` object; a later launch (after
+   * `client.stop()`) asks again when the earlier read rejected or returned nothing usable, or when it asks for a
+   * different type (a failed re-ask keeps the earlier usable value).
    */
   gpuInfoType?: GpuInfoType;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
@@ -173,24 +194,75 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     }
   }
 
-  // GPU for environment.hardware.gpu: the cache is read LIVE by the node environment builder on every
-  // assemble (so a GPU that settles after launch lands on the next report); it is only STARTED once this
-  // launch is known to be the first (below). Precedence is FIELD-WISE: the cache's fields, overridden by
+  // The Electron PROCESS tracker (`@bugsee/trackers/electron`): the one per-`app` singleton that owns everything the
+  // `app` object can say about the app's processes, and so feeds ALL of the following (this file is composition):
+  //  - the `app_metrics` trace (a producer subscribed to its `appMetrics` stage);
+  //  - the `child_process_gone` system event (the lazy mux subscribes to its `childProcessGone` stage);
+  //  - `environment.hardware.gpu` (its once-only `getGPUInfo` read, below).
+  // Without an `app` there is nothing to read, so there is no tracker and none of it is wired. The SAME is true of a
+  // REPEAT call: `launchCore` returns the running client untouched, but building the tracker (or the node producers)
+  // first would rebind the shared trackers' onError/scheduler and tear down the live launch's timer and listener. So a
+  // repeat is detected up front (the carrier already holds a client, exactly `launchCore`'s own test) and touches
+  // nothing.
+  const repeat = getCarrierClient(nodeOptions.carrier) !== undefined;
+  const tracker =
+    app !== undefined && !repeat
+      ? electronProcessTrackerFor(
+          {
+            app,
+            ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
+          },
+          nodeOptions.onError,
+        )
+      : undefined;
+
+  // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
+  // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
+  // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
+  // node set never emits. Not built when the legacy `systemMetricsSampler` replaces the producer list (they would never
+  // start).
+  if (tracker !== undefined && nodeOptions.systemMetricsSampler === undefined) {
+    nodeOptions.systemTraceProducers = [
+      ...(nodeOptions.systemTraceProducers ??
+        createNodeSystemTraceProducers({
+          ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
+          ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+        })),
+      ...createElectronSystemTraceProducers(tracker),
+    ];
+  }
+
+  // System events: ONE `events.system` provider exists, so the node events source is wrapped by a LAZY mux that adds
+  // `child_process_gone`. The mux attaches (inner node handlers + the `app` listener) only when the provider subscribes,
+  // i.e. only while `captureSystemEvents` is on, and releases both on `client.stop()`. A caller-supplied wrapper is
+  // applied first (it sees the plain node source), ours wraps its result.
+  if (tracker !== undefined) {
+    const callerWrap = nodeOptions.wrapSystemEventsSource;
+    nodeOptions.wrapSystemEventsSource = (inner) =>
+      createElectronSystemEventsSource(
+        callerWrap === undefined ? inner : callerWrap(inner),
+        tracker,
+        nodeOptions.onError,
+      );
+  }
+
+  // GPU for environment.hardware.gpu: the tracker's settled GPU is read LIVE by the node environment builder on every
+  // assemble (so a GPU that settles after launch lands on the next report); the read is only REQUESTED once this
+  // launch is known to be the first (below). Precedence is FIELD-WISE: the tracker's fields, overridden by
   // whatever non-empty string fields a caller-supplied `hardwareExtras` gives (so a caller that supplies only
-  // `gl_version` keeps the cache's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
-  // throws (reported), leaves the cache's GPU untouched.
-  // `hardwareExtras` is a KEPT relaunch option, so a node/umbrella `relaunch()` in an Electron main keeps THIS
-  // wrapper (closing over this cache): it keeps serving the cached GPU after a relaunch (stop() does not clear
-  // it), but a GPU that had not yet resolved before the relaunch is not re-requested.
-  const gpuCache = createGpuInfoCache({
-    source: app,
-    ...(gpuInfoType !== undefined ? { type: gpuInfoType } : {}),
-    ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
-  });
+  // `gl_version` keeps the tracker's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
+  // throws (reported), leaves the tracker's GPU untouched.
+  // RELAUNCH: `@bugsee/node`/the umbrella do export `relaunch()`, and it is not Electron-aware. `hardwareExtras` is a KEPT
+  // relaunch option, so a relaunch keeps THIS wrapper (closing over the tracker) and `hardware.gpu` keeps being served
+  // (stop() does not clear it; a GPU that had not yet resolved is not re-requested). `systemTraceProducers` and
+  // `wrapSystemEventsSource` are RESET options, so a relaunched client has the plain node producers and events source:
+  // `app_metrics` and `child_process_gone` stop until `launchMain` is called again (the carrier client must be cleared
+  // by a stop for that, as for any launch).
   const callerExtras = nodeOptions.hardwareExtras;
   const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);
   nodeOptions.hardwareExtras = () => {
-    const cached = gpuCache.current();
+    const gpu = tracker?.current('gpu');
+    const cached = gpu === undefined ? undefined : { gpu };
     if (callerExtras === undefined) return cached;
     try {
       const own = sanitizeHardwareGpu(callerExtras()?.gpu);
@@ -204,12 +276,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
-  // returns the already-wired client untouched, so all Electron wiring hangs off the first-launch internals.
+  // returns the already-wired client untouched (nothing above bound the shared trackers for it, see `repeat`), so all
+  // Electron wiring hangs off the first-launch internals.
   if (internals === undefined) {
     return client;
   }
 
-  gpuCache.start();
+  tracker?.requestGpuInfo(gpuInfoType);
 
   // The main client's blackout: the one state the whole session follows (renderers and pixel video).
   const blackout = client.getService(BlackoutToken);
@@ -307,7 +380,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
-      gpuCache.stop(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
+      tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();

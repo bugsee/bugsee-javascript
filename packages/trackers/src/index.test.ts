@@ -11,10 +11,6 @@ describe('@bugsee/trackers public surface', () => {
     ]);
   });
 
-  it('reserves the electron entry as an empty placeholder', async () => {
-    expect(Object.keys(await import('./electron/index'))).toEqual([]);
-  });
-
   it('exports the browser tracker values from ./browser', async () => {
     expect(Object.keys(await import('./browser/index')).sort()).toEqual([
       'ApplicationTracker',

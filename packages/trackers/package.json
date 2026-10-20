@@ -7,7 +7,7 @@
     "url": "git+https://github.com/bugsee/bugsee-javascript.git",
     "directory": "packages/trackers"
   },
-  "description": "Domain-tracker foundation: multi-key emitter, InterceptorBase and the per-window tracker registry, with a ./browser entry (ApplicationTracker, ConnectivityTracker, PowerTracker, ProcessTracker, StorageTracker, UiTracker, EnvironmentTracker, hostRead), a ./node entry shared by Node, Bun and Deno (ProcessTracker, StorageTracker and their guarded runtime sources) and a reserved ./electron platform entry",
+  "description": "Domain-tracker foundation: multi-key emitter, InterceptorBase and the per-window tracker registry, with a ./browser entry (ApplicationTracker, ConnectivityTracker, PowerTracker, ProcessTracker, StorageTracker, UiTracker, EnvironmentTracker, hostRead), a ./node entry shared by Node, Bun and Deno (ProcessTracker, StorageTracker and their guarded runtime sources) and an ./electron entry (the Electron main-process ProcessTracker: app metrics, child-process-gone and the once-only GPU info read)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
