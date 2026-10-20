@@ -496,9 +496,8 @@ deletion (#65) are merged, so the bare `sample()` adapter no longer coexists wit
 browser sampler (which also emitted `battery`/`charging`, the duplicate rows an interim reading of this section implied) is
 deleted and `systemMetricsSampler` survives only as an explicit caller override that REPLACES the sensor traces.
 
-The domain-tracker follow-on (§15) is tracked in §15.5; ST0′-era per-signal trackers that remain in `packages/browser/src/trackers/`
-(as of `main`: `MemoryTracker`, `FpsTracker`, `OrientationTracker`, `ScreenSizeTracker`, `MainThreadLagTracker`) are the ones §15.5
-still has to fold into domain trackers.
+The domain-tracker follow-on (§15) is tracked in §15.5; per-signal trackers that remain in `packages/browser/src/trackers/` on `main` (`MemoryTracker`, `OrientationTracker` from #62/BT1; `FpsTracker` from #69/ST4a;
+`ScreenSizeTracker`, `MainThreadLagTracker` from #75/ST4c) are the ones §15.5 still has to fold into domain trackers.
 
 ### 14.6 Verified / not verified
 Verified by reading source: the mobile tracker/producer/provider structure (above), `InterceptorBase`/`MultiKeyEmitterBase`
@@ -537,7 +536,7 @@ section corrects. Android reference: `library/src/main/java/com/bugsee/library/s
    (`@bugsee/browser`, `@bugsee/node`, `@bugsee/electron`) keep only composition (launch wiring, producers).
 7. **Per-launch config on a shared singleton.** The registry's `for(key, create, rebind)` hands every later request's
    config (error sink, capabilities such as `getBattery`) to the existing tracker (`rebind`, latest launch wins); an IDLE
-   tracker may also re-bind the window/document it attaches to, an ACTIVE one keeps its bindings and reports the mismatch.
+   tracker may also re-bind the window/document it attaches to, an ACTIVE one keeps its bindings and reports the mismatch. **As built (§15.5) this is narrowed:** only `ApplicationTracker` keeps its bindings while active; `ConnectivityTracker` and `UiTracker` re-attach a running tracker to the new objects, and `StorageTracker` applies new seams at the next activation.
    Keying: the object the tracker listens on (document for Application, window otherwise); there is no silent
    host-global fallback when a window was injected.
 
@@ -549,7 +548,7 @@ section corrects. Android reference: `library/src/main/java/com/bugsee/library/s
 | **Connectivity** | `ConnectionTracker` | `online`/`offline`, `networkInfo` (Network Information API, §15.3) |
 | **Power** | `BatteryTracker` | one `state` stage ({level, charging, chargingTimeS?, dischargingTimeS?}) fed by all four Battery Status events (§15.3); more stages (e.g. low-battery) only where an API exists |
 | **Process** | `MemoryTracker`, `MainThreadLagTracker` (#75), uptime | `heap`, `mainThreadLag`, `idle` (§15.3), `uptime` |
-| **Storage** | — | `storageEstimate` ({usage, quota, persisted?}) |
+| **Storage** | — | `storageEstimate` (as built: `{usageBytes?, quotaBytes?, persisted?}`; see §15.5, which supersedes this row) |
 | **Environment** | — | `language`, `timezone`, `privateMode`, `displayMode`, `permissions`, … (§15.3) |
 
 Node/Bun/Deno: **Process** (absorbs `ProcessStatsTracker`, the GC observer, event loop, heap/limits, uptime) and **Storage**
@@ -609,12 +608,12 @@ today keep their trace names and wire shapes; only their source changes.
 |---|---|---|---|---|
 | TR0 | #77 | `createTrackerRegistry` (`tracker-registry.ts`): per-key `WeakMap`; `for(key, create, rebind?)`, `peek`, `reset` | — | — |
 | TR1 | #79 | `ApplicationTracker` (`applicationTrackerFor`) | `pagehide {persisted}`, `visibility {visible}`, `state {state: foreground\|background}`, `freeze`, `resume`, plus TEMPORARY `online`, `offline`, `orientationchange` | `AppStateProducer` (`app_state`, via `state` + `current()`); events source; trace/event names unchanged |
-| TR3 | #80 | `ConnectivityTracker` | `online {online}`, `networkInfo {type?, effectiveType?, downlink?, downlinkMax?, rtt?, saveData?}`, aggregate `state {online?, networkInfo?}` (baseline of all three on activation) | `ConnectionProducer` → `connection` (unchanged shape; additive `link_downstream_max_kbps`) |
+| TR3 | #80 | `ConnectivityTracker` | `online {online}`, `networkInfo {type?, effectiveType?, downlink?, downlinkMax?, rtt?, saveData?}`, aggregate `state {online?, networkInfo?}` (activation emits a baseline of whichever of these have a value: `online` only when `navigator.onLine` is readable, `networkInfo` only where the API exists, `state` always) | `ConnectionProducer` → `connection` (unchanged shape; additive `link_downstream_max_kbps`) |
 | TR4 | #78 | `PowerTracker` | one stage `state {level?, charging, chargingTimeS?, dischargingTimeS?}`, fed by `levelchange`/`chargingchange`/`chargingtimechange`/`dischargingtimechange` | `BatteryProducer` → `battery`, `charging`, NEW `battery_charging_time_s`, `battery_discharging_time_s` |
 | TR6 | #81 | `StorageTracker` | one stage `storageEstimate {usageBytes?, quotaBytes?, persisted?}`; polls on activation, visibility→visible (throttled to 1/min), slow timer (default 5 min, skipped while hidden) | `StorageProducer` → NEW `storage_estimate {usage, quota}` in integer MB (floored); NOT the Android `disk_mem_*` group |
 
-Also merged but NOT yet domain trackers (still per-signal, in `packages/browser/src/trackers/`): #75 `screen_size` `{width, height, dpr}`
-(`ScreenSizeTracker`/`ScreenSizeProducer`) and `main_thread_lag_ms` (`MainThreadLagTracker`/`MainThreadLagProducer`); both are only built when a
+Also merged but NOT yet domain trackers (still per-signal, in `packages/browser/src/trackers/`): `MemoryTracker`, `FpsTracker`, `OrientationTracker`, and #75's `screen_size` `{width, height, dpr}`
+(`ScreenSizeTracker`/`ScreenSizeProducer`) and `main_thread_lag_ms` (`MainThreadLagTracker`/`MainThreadLagProducer`); the app_state/fps/screen_size/lag producers are only built when a
 shared `lifecycle` tracker is in the env. #73 (Electron GPU): GPU is ENVIRONMENT data, not a trace — `launchMain` passes a `hardwareExtras`
 closure over a `GpuInfoCache` (`packages/electron/src/launch-main.ts`) that fills `environment.hardware.gpu`, so it is not yet placed in an Electron
 Process/Display tracker (TR9).
@@ -623,17 +622,21 @@ Process/Display tracker (TR9).
 `screenSize {width, height, dpr}`, `viewport {width, height}`, `colorScheme {dark}`, `reducedMotion {reduce}`, `displayMode {mode}`, `frameRate` (number). Activation is
 PER STAGE (listeners/timers exist only while a subscriber wants a stage that needs them, via a new `MultiKeyEmitterBase.onListenersChanged` hook plus
 `listenerCount`); the de-duplication baseline is re-read silently when a stage goes from 0 to 1 listener. On that branch the browser package's
-`OrientationTracker` and `ScreenSizeTracker` are deleted, `ApplicationTracker` no longer binds `orientationchange`, and `OrientationProducer`/`ScreenSizeProducer`/`FpsProducer`
+`OrientationTracker`, `ScreenSizeTracker` and `FpsTracker` (with their tests) are deleted, `ApplicationTracker` no longer binds `orientationchange`, and `OrientationProducer`/`ScreenSizeProducer`/`FpsProducer`
 are rewired onto one `UiTracker` per window. Everything in this paragraph is subject to change until merged.
 
 **In progress (WIP branches, unfinished — no mutator loop / CI / review yet):** TR5 Process / `ProcessTracker` (#83, `feat/process-tracker`) and TR7 Environment /
 `EnvironmentTracker` (#84, `feat/environment-tracker`). Nothing in them is documented here as built.
 
-**Conventions every merged tracker follows (the "hardening pattern", each tested):**
-- Every host read goes through `hostRead` (hostile/throwing getters cost only their own field and are reported via `onError`); a field that is unusable
-  (non-finite, negative, wrong type, or a documented "no estimate" such as a zero `rtt`) is OMITTED, never sent as 0 and never fabricated.
-- The reporter is a mutable indirection (`#report.fn`) shared by the emitter and the tracker's own catch paths, and is wrapped so a throwing `onError` cannot escape
-  into a DOM dispatch; every DOM listener and timer callback is guarded.
+**Conventions the merged trackers follow (the "hardening pattern"; uneven in places, gaps listed):**
+- Host reads go through `hostRead` in most places (hostile getters cost only their own field and are reported via `onError`), and an unusable field is OMITTED rather than sent as 0
+  (non-finite, negative, or a documented "no estimate" such as a zero `rtt`). **Known gaps (verified in code):** `PowerTracker.#publish` reads `manager.level` and `manager.charging`
+  directly (`power-tracker.ts:177-178`) — `level` is range/type-checked and omitted when unusable, but `charging` is not type-checked; only the two time fields go through `hostRead`.
+  `ApplicationTracker.#listen` reads `target.addEventListener` unguarded (`application-tracker.ts:185-186`), relying on the surrounding `onActivate` try/catch.
+- Reporter handling differs per tracker. Connectivity, Power and Storage hold the reporter in a mutable `#report.fn` indirection (latest launch wins); Application uses an equivalent `sink.current`.
+  Only Application and Connectivity wrap the reporter in try/catch so a throwing `onError` cannot escape into a DOM dispatch. **Known gap:** Power's reporter (`power-tracker.ts:67`, `:89-91`) and
+  Storage's emitter reporter (`storage-tracker.ts:102`) are not wrapped, so a throwing `onError` on those paths is not contained, and no test is claimed for it. DOM listeners and timer
+  callbacks are guarded in the trackers that attach them.
 - Async reads carry a token (`PowerTracker` generation, `StorageTracker` epoch) so a promise settling after the last unsubscribe/reset is inert.
 - Each tracker states and tests a retention rule: Application retains the last `state`; Power the resolved `BatteryManager` + last snapshot; Storage the last estimate
   (`current()`; `currentFresh()` only while younger than 2x the poll interval); Connectivity caches nothing (reads `navigator` live). DOM listeners/timers are always released.
