@@ -45,7 +45,7 @@ function fakeEnv() {
   const doc = target();
   const state = { visibilityState: 'visible' as DocumentVisibilityState };
   const orientation = { type: 'portrait-primary' as OrientationType, angle: 0 };
-  // `navigator.onLine` is what the ConnectivityTracker reads: `connect(false)` goes offline and announces it, as a browser does.
+  // `connect(false)` goes offline and announces it, as a browser does (the online/offline EVENTS do not read onLine).
   const nav = { onLine: true };
   const connect = (online: boolean) => {
     nav.onLine = online;
@@ -144,6 +144,26 @@ function fakeQueries(matching: Record<string, boolean> = {}) {
 }
 
 describe('createBrowserSystemEventsSource: display_mode_changed', () => {
+  it('never announces a mode equal to the one it already knows (a re-baselined tracker re-announcing), then still follows real changes', () => {
+    const { env } = fakeEnv();
+    let announce: ((state: { mode: string }) => void) | undefined;
+    const ui = {
+      current: () => ({ mode: 'standalone' }),
+      on: (stage: string, cb: (state: never) => void) => {
+        if (stage === 'displayMode') announce = cb as never;
+        return () => {};
+      },
+    };
+    const { events } = activate({ ...env, ui: ui as never });
+    announce?.({ mode: 'standalone' });
+    expect(events).toEqual([{ name: 'process_started' }]);
+    announce?.({ mode: 'browser' });
+    announce?.({ mode: 'browser' });
+    expect(events.slice(1)).toEqual([
+      { name: 'display_mode_changed', params: { mode: 'browser', previousMode: 'standalone' } },
+    ]);
+  });
+
   it('records display_mode_changed with the new mode and the previous one', () => {
     const { env } = fakeEnv();
     const q = fakeQueries();
@@ -410,13 +430,21 @@ describe('createBrowserSystemEventsSource', () => {
     expect(events).toEqual([{ name: 'process_started' }]);
   });
 
-  it('a repeated announcement of the same state is not a transition', () => {
-    const { env, win, connect } = fakeEnv();
+  it('one event per DOM event, the kind taken from the event type: a flap that reads onLine true on both is not lost', () => {
+    const { env, win } = fakeEnv(); // navigator.onLine stays true throughout
     const { events } = activate(env);
-    win.emit('online', {}); // onLine is still true: nothing changed
-    connect(false);
     win.emit('offline', {});
-    connect(false);
+    win.emit('online', {});
+    win.emit('offline', {});
+    win.emit('offline', {}); // a repeat / synthetic dispatch is still an event
+    expect(events.slice(1).map((e) => e.name)).toEqual(['offline', 'online', 'offline', 'offline']);
+  });
+
+  it('an absent navigator.onLine (or no navigator) does not drop online/offline events', () => {
+    const { env, win } = fakeEnv();
+    Object.assign(win, { navigator: {} });
+    const { events } = activate(env);
+    win.emit('offline', {});
     expect(events.slice(1)).toEqual([{ name: 'offline' }]);
   });
 
@@ -428,9 +456,10 @@ describe('createBrowserSystemEventsSource', () => {
     const { off, events } = activate(env);
     expect(win.count('online')).toBe(1);
     expect(win.count('offline')).toBe(1);
-    // The tracker was ALREADY running (no baseline reached us): a repeat of the state we joined in is no transition.
-    win.emit('online', {});
+    // joining an already-running tracker announces nothing
     expect(events).toEqual([{ name: 'process_started' }]);
+    win.emit('online', {});
+    expect(events.at(-1)).toEqual({ name: 'online' });
     off();
     expect(win.count('online')).toBe(1); // still held by the other consumer
     offOther();
@@ -443,9 +472,9 @@ describe('createBrowserSystemEventsSource', () => {
     const on = vi.fn(() => () => {});
     const { events } = activate({
       ...env,
-      connectivity: { on, current: () => undefined } as never,
+      connectivity: { on } as never,
     });
-    expect(on).toHaveBeenCalledWith('online', expect.any(Function));
+    expect(on).toHaveBeenCalledWith('transition', expect.any(Function));
     expect(win.count('online')).toBe(0);
     expect(events).toEqual([{ name: 'process_started' }]);
   });
@@ -460,7 +489,7 @@ describe('createBrowserSystemEventsSource', () => {
     resetConnectivityTracker({ window: win });
   });
 
-  it('a window with no readable navigator announces no online/offline (the state cannot be read), and never throws', () => {
+  it('a window whose navigator getter throws still announces online/offline (the event type is the evidence) and never throws', () => {
     const { env, win } = fakeEnv();
     Object.defineProperty(win, 'navigator', {
       get(): never {
@@ -470,8 +499,8 @@ describe('createBrowserSystemEventsSource', () => {
     const errors: unknown[] = [];
     const { events } = activate({ ...env, onError: (e) => errors.push(e) });
     expect(() => win.emit('offline', {})).not.toThrow();
-    expect(events).toEqual([{ name: 'process_started' }]);
-    expect(errors.length).toBeGreaterThan(0);
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+    expect(errors.length).toBeGreaterThan(0); // the unreadable navigator is reported once
   });
 
   it('emits orientation_changed with the current screen orientation type + angle', () => {

@@ -540,7 +540,7 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen.length).toBeGreaterThan(0); // the baseline reads + the change watches (dark and display mode)
+    expect(thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
     expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>

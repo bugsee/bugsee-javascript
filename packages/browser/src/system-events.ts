@@ -20,8 +20,8 @@ import { hostGlobal, hostRead } from './host-global';
 // removes the listeners. Captured (Android events.system parity, web-native):
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
 //   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
-//   online / offline       → online / offline (connectivity transitions; the ConnectivityTracker's `online` stage, which
-//                            owns the window listeners and reads `navigator.onLine`; the activation baseline is not an event)
+//   online / offline       → online / offline (one event per DOM event; the ConnectivityTracker `transition` stage, its kind the
+//                            event's own type — never a navigator.onLine read; attaching is not an event)
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
 //   time zone / UTC offset → timezone_changed ({timezone?, utcOffsetMinutes?, previousTimezone?, previousUtcOffsetMinutes?})
 //   private-mode HEURISTIC → private_mode_detected ({method}) ONLY for a `yes` answer (a small storage quota; constrained
@@ -81,9 +81,11 @@ export interface BrowserSystemEventsEnv {
    * The shared connectivity tracker (owner of `online`/`offline`); when absent the window's singleton is used.
    * Never created without a window.
    */
-  connectivity?: Pick<ConnectivityTracker, 'on' | 'current'>;
+  connectivity?: Pick<ConnectivityTracker, 'on'>;
   /** The window's `navigator` for the connectivity tracker; default read (guarded) from the injected window. */
   navigator?: object;
+  /** The shared UI tracker; when absent the window's singleton is used. */
+  ui?: Pick<UiTracker, 'on' | 'current'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
   environment?: EnvironmentSource;
   /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). A `false` is also enforced at the event sink: `private_mode_detected` is never forwarded, even from a shared tracker another consumer enabled. */
@@ -97,7 +99,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
   readonly #ui: Pick<UiTracker, 'on' | 'current'>;
-  readonly #connectivity: Pick<ConnectivityTracker, 'on' | 'current'> | undefined;
+  readonly #connectivity: Pick<ConnectivityTracker, 'on'> | undefined;
   readonly #environment: EnvironmentSource;
   /** This source's own opt-out, enforced at the sink: the shared tracker may run the probe for another consumer. */
   readonly #privateMode: boolean;
@@ -106,7 +108,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
     ui: Pick<UiTracker, 'on' | 'current'>,
-    connectivity: Pick<ConnectivityTracker, 'on' | 'current'> | undefined,
+    connectivity: Pick<ConnectivityTracker, 'on'> | undefined,
     environment: EnvironmentSource,
     onError: ((error: unknown) => void) | undefined,
     detectPrivateMode: boolean,
@@ -201,6 +203,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     this.#unsubscribe.push(
       this.#ui.on('displayMode', ({ mode }) => {
         const before = previous;
+        if (mode === before) return; // not a change (a re-baselined tracker re-announcing what we already know)
         previous = mode;
         this.emit('event', {
           name: 'display_mode_changed',
@@ -212,27 +215,17 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   }
 
   /**
-   * online / offline from the ConnectivityTracker's `online` stage. That stage also announces a BASELINE (on its
-   * activation, and again if a relaunch moves its window), which is state, not a transition: only a CHANGE of the
-   * value since we started listening becomes an event.
+   * online / offline: one event per DOM event, from the ConnectivityTracker's `transition` stage (the kind is the event's
+   * own type, never a `navigator.onLine` read; nothing is announced for attaching).
    */
   #subscribeConnectivity(): void {
     const connectivity = this.#connectivity;
     if (connectivity === undefined) return;
-    let last: boolean | undefined;
-    let primed = false;
-    const off = connectivity.on('online', ({ online }) => {
-      if (!primed) {
-        last = online; // the baseline delivered by the activation this very `on()` caused
-        return;
-      }
-      if (online === last) return;
-      last = online;
-      this.emit('event', { name: online ? 'online' : 'offline' });
-    });
-    primed = true;
-    last ??= connectivity.current()?.online;
-    this.#unsubscribe.push(off);
+    this.#unsubscribe.push(
+      connectivity.on('transition', ({ online }) =>
+        this.emit('event', { name: online ? 'online' : 'offline' }),
+      ),
+    );
   }
 
   protected override onDeactivate(): void {
@@ -277,14 +270,16 @@ export function createBrowserSystemEventsSource(
       : hostGlobal('screen', env.onError));
   // The SAME per-window tracker the traces use (keyed on the window; a relaunch's seams merge into it). Without an
   // injected window it gets the host's, exactly as the lifecycle tracker does above.
-  const ui = uiTrackerFor(
-    {
-      ...(win !== undefined ? { window: win as UiEnvWindow } : {}),
-      ...(screen !== undefined ? { screen } : {}),
-      ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
-    },
-    env.onError,
-  );
+  const ui =
+    env.ui ??
+    uiTrackerFor(
+      {
+        ...(win !== undefined ? { window: win as UiEnvWindow } : {}),
+        ...(screen !== undefined ? { screen } : {}),
+        ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
+      },
+      env.onError,
+    );
   // The connectivity tracker owns `online`/`offline` (and `navigator.onLine`); there is nothing to listen to without a
   // window. The navigator comes from the injected window, exactly like the environment tracker's.
   const nav =

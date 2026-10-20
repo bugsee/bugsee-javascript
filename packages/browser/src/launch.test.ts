@@ -648,7 +648,7 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen.length).toBeGreaterThan(0); // the baseline reads + the change watches (dark and display mode)
+      expect(m.thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([

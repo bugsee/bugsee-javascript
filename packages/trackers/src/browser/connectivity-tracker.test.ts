@@ -504,6 +504,115 @@ describe('ConnectivityTracker', () => {
   });
 });
 
+describe('ConnectivityTracker transition stage', () => {
+  const seen = (t: ConnectivityTracker): boolean[] => {
+    const got: boolean[] = [];
+    t.on('transition', ({ online }) => got.push(online));
+    return got;
+  };
+
+  it('one transition per DOM online/offline event, the kind taken from the EVENT TYPE (never from navigator.onLine)', () => {
+    const win = mkWin();
+    const nav = mkNav(undefined, true);
+    const t = new ConnectivityTracker({ window: win, navigator: nav });
+    const got = seen(t);
+    // onLine stays true throughout: a flap that reads true on both events loses neither
+    win.fire('offline');
+    win.fire('online');
+    win.fire('offline');
+    expect(got).toEqual([false, true, false]);
+  });
+
+  it('a repeated or synthetic event is still one transition each (nothing is deduplicated or cross-checked)', () => {
+    const win = mkWin();
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav(undefined, true) });
+    const got = seen(t);
+    win.fire('offline'); // a synthetic dispatchEvent while onLine is true
+    win.fire('offline');
+    expect(got).toEqual([false, false]);
+  });
+
+  it('works with an absent onLine and with no navigator at all', () => {
+    const win = mkWin();
+    const t = new ConnectivityTracker({ window: win, navigator: {} });
+    const got = seen(t);
+    win.fire('offline');
+    const win2 = mkWin();
+    const t2 = new ConnectivityTracker({ window: win2 });
+    const got2 = seen(t2);
+    win2.fire('online');
+    expect([got, got2]).toEqual([[false], [true]]);
+  });
+
+  it('is not announced at attach, on a later join, or on a rebind of the window', () => {
+    const win = mkWin();
+    const nav = mkNav({ type: 'wifi' }, false);
+    const t = new ConnectivityTracker({ window: win, navigator: nav });
+    const got = seen(t);
+    expect(got).toEqual([]); // activation baseline is state, not a transition
+    t.on('state', () => {});
+    expect(got).toEqual([]);
+    const win2 = mkWin();
+    t.rebind({ window: win2 });
+    expect(got).toEqual([]);
+    win2.fire('online');
+    expect(got).toEqual([true]);
+  });
+
+  it('does not touch the connection or read the navigator unless a state-like stage is listened to', () => {
+    const win = mkWin();
+    let reads = 0;
+    const connection = mkTarget();
+    const nav = {
+      get onLine() {
+        reads += 1;
+        return true;
+      },
+      connection,
+    };
+    const t = new ConnectivityTracker({ window: win, navigator: nav });
+    const got = seen(t);
+    expect(connection.count()).toBe(0);
+    win.fire('offline');
+    expect(reads).toBe(0);
+    expect(got).toEqual([false]);
+    // a state-like subscriber arrives: the connection listener attaches and the baseline reaches it
+    const states: ConnectivityState[] = [];
+    const off = t.on('state', (s) => states.push(s));
+    expect(connection.count()).toBe(1);
+    expect(states).toHaveLength(1);
+    win.fire('online');
+    expect(states).toHaveLength(2);
+    off();
+    expect(connection.count()).toBe(0); // and detaches again with the last state-like listener
+    win.fire('offline');
+    expect(got).toEqual([false, true, false]);
+  });
+
+  it('shares ONE window online/offline pair with the state stages and releases it with the last listener', () => {
+    const win = mkWin();
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav() });
+    const offA = t.on('transition', () => {});
+    const offB = t.on('online', () => {});
+    expect(win.count()).toBe(2);
+    offA();
+    expect(win.count()).toBe(2);
+    offB();
+    expect(win.count()).toBe(0);
+  });
+
+  it('a throwing transition subscriber is reported, not thrown into the dispatch', () => {
+    const win = mkWin();
+    const onError = vi.fn();
+    const t = new ConnectivityTracker({ window: win }, onError);
+    t.on('transition', () => {
+      throw new Error('consumer');
+    });
+    expect(() => win.fire('offline')).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('connectivityTrackerFor', () => {
   it('is one singleton per window; a different window gets its own', () => {
     const w = mkWin();
