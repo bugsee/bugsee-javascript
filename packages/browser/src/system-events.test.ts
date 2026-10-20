@@ -556,6 +556,100 @@ describe('createBrowserSystemEventsSource', () => {
       out.off();
     });
 
+    it('a retained yes is re-delivered once to each new session (no re-probe); no / unknown stay silent; an opt-out stays silent', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const estimate = vi.fn(() => Promise.resolve({ quota: 10 }));
+      Object.assign(win, { navigator: { language: 'en-US', storage: { estimate } } });
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(first.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+        first.off();
+        estimate.mockClear();
+        // a later session on the same window (the tracker outlived the first one)
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).not.toHaveBeenCalled(); // not re-probed
+        expect(second.events.filter((e) => e.name === 'private_mode_detected')).toEqual([
+          { name: 'private_mode_detected', params: { method: 'storage-quota' } },
+        ]);
+        second.off();
+        // an opted-out session never gets it from the retained answer
+        const optedOut = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(optedOut.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        optedOut.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('a retained no is not delivered to a later session', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      Object.assign(win, {
+        navigator: {
+          language: 'en-US',
+          storage: { estimate: () => Promise.resolve({ quota: 2 * 1024 * 1024 * 1024 }) },
+        },
+      });
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(environmentTrackerFor({ window: win }).current().privateMode?.private).toBe('no');
+        first.off();
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(second.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        second.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('a retained yes read from the tracker is emitted on subscribe, once even if the activation also emits it; later answers still forward', () => {
+      const injected = createMultiKeyEmitter<EnvironmentEvents>();
+      const withCurrent = Object.assign(injected, {
+        current: () => ({ privateMode: { private: 'yes' as const, method: 'storage-quota' } }),
+      });
+      const out = activate({ lifecycle: lifecycleStub as never, environment: withCurrent });
+      expect(out.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+      injected.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      expect(out.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(2); // a new answer is still forwarded
+      out.off();
+      // the activation itself emits the same yes while subscribing: still one event
+      const loud = createMultiKeyEmitter<EnvironmentEvents>();
+      const onAny = loud.onAny.bind(loud);
+      const sub = Object.assign(loud, {
+        current: () => ({ privateMode: { private: 'yes' as const } }),
+        onAny: ((listener: Parameters<typeof onAny>[0]) => {
+          const off = onAny(listener);
+          loud.emit('privateMode', { private: 'yes' });
+          return off;
+        }) as typeof onAny,
+      });
+      const two = activate({ lifecycle: lifecycleStub as never, environment: sub });
+      expect(two.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+      two.off();
+      // an opted-out source never delivers a retained yes
+      const quiet = createMultiKeyEmitter<EnvironmentEvents>();
+      const held = Object.assign(quiet, {
+        current: () => ({ privateMode: { private: 'yes' as const } }),
+      });
+      const optedOut = activate({
+        lifecycle: lifecycleStub as never,
+        environment: held,
+        detectPrivateMode: false,
+      });
+      expect(optedOut.events.map((e) => e.name)).not.toContain('private_mode_detected');
+      optedOut.off();
+    });
+
     it('a language AND time-zone change while the source was stopped are BOTH reported on restart', () => {
       const { env, win } = fakeEnv();
       const { environment: _inert, ...rest } = env;

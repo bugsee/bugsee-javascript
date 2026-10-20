@@ -58,6 +58,10 @@ function defined(params: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** Injected globals (each defaults to the real global; an absent one is skipped). */
+/** What the source needs from the environment tracker; `current` lets it re-deliver a retained private-mode answer. */
+type EnvironmentSource = Pick<EnvironmentTracker, 'onAny'> &
+  Partial<Pick<EnvironmentTracker, 'current'>>;
+
 export interface BrowserSystemEventsEnv {
   window?: WindowEvents;
   document?: DocumentLike;
@@ -70,7 +74,7 @@ export interface BrowserSystemEventsEnv {
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
   lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
-  environment?: Pick<EnvironmentTracker, 'onAny'>;
+  environment?: EnvironmentSource;
   /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). A `false` is also enforced at the event sink: `private_mode_detected` is never forwarded, even from a shared tracker another consumer enabled. */
   detectPrivateMode?: boolean;
   /** Drives the time-zone re-read tick; default the global timers. Ignored when `environment` is supplied. */
@@ -82,7 +86,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
   readonly #ui: Pick<UiTracker, 'on'>;
-  readonly #environment: Pick<EnvironmentTracker, 'onAny'>;
+  readonly #environment: EnvironmentSource;
   /** This source's own opt-out, enforced at the sink: the shared tracker may run the probe for another consumer. */
   readonly #privateMode: boolean;
   #unsubscribe: Array<() => void> = [];
@@ -90,7 +94,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
     ui: Pick<UiTracker, 'on'>,
-    environment: Pick<EnvironmentTracker, 'onAny'>,
+    environment: EnvironmentSource,
     onError: ((error: unknown) => void) | undefined,
     detectPrivateMode: boolean,
   ) {
@@ -137,6 +141,13 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     ];
     // ONE subscription for every environment stage: the first subscriber activates the tracker, whose activation read
     // may emit (a change made while we were stopped) straight away, so a stage subscribed later would miss it.
+    // private_mode_detected is a PER-SESSION event but the tracker outlives sessions and never re-probes a retained
+    // yes/no: so a retained `yes` is re-delivered once on subscribe (unless the activation already delivered it).
+    let privateDelivered = false;
+    const deliverPrivate = (method: string | undefined): void => {
+      privateDelivered = true;
+      this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
+    };
     this.#unsubscribe.push(
       this.#environment.onAny((name, payload) => {
         if (name === 'language') {
@@ -158,12 +169,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
           });
         } else if (name === 'privateMode') {
           const { private: answer, method } = payload as EnvironmentEvents['privateMode'];
-          if (answer === 'yes' && this.#privateMode) {
-            this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
-          }
+          if (answer === 'yes' && this.#privateMode) deliverPrivate(method);
         }
       }),
     );
+    const retained = this.#privateMode ? this.#environment.current?.().privateMode : undefined;
+    if (retained?.private === 'yes' && !privateDelivered) deliverPrivate(retained.method);
   }
 
   protected override onDeactivate(): void {
@@ -218,7 +229,7 @@ export function createBrowserSystemEventsSource(
   );
   const environment =
     env.environment ??
-    ((): Pick<EnvironmentTracker, 'onAny'> => {
+    ((): EnvironmentSource => {
       const doc = hostDoc();
       const nav =
         win === undefined
