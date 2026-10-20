@@ -1689,6 +1689,112 @@ describe('EnvironmentTracker: a failing field keeps its retained value (no fake 
     status.fire('change');
     expect(onError).toHaveBeenCalledTimes(2);
   });
+
+  const throwingStatus = (flag: { on: boolean }, state: string, message: string) => {
+    const status = mkTarget();
+    Object.defineProperty(status, 'state', {
+      get() {
+        if (flag.on) throw new Error(message);
+        return state;
+      },
+    });
+    return status;
+  };
+
+  it('a throwing state read keeps the retained state: no fake {} change, no emission, then recovery is silent', async () => {
+    const flag = { on: false };
+    const status = throwingStatus(flag, 'granted', 'state');
+    const { tracker, seen, listen } = setup(
+      { permissions: { query: () => Promise.resolve(status) } },
+      { permissionNames: ['camera'] },
+    );
+    listen();
+    await flush();
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+    flag.on = true;
+    status.fire('change');
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    flag.on = false;
+    status.fire('change');
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+  });
+
+  it('a name whose re-query FAILS keeps its retained state; a TypeError (unsupported) omits it', async () => {
+    const mode = { mic: 'ok' as 'ok' | 'fail' | 'type' };
+    const query = vi.fn(({ name }: { name: string }) => {
+      if (name === 'microphone' && mode.mic === 'fail') return Promise.reject(new Error('mic'));
+      if (name === 'microphone' && mode.mic === 'type') return Promise.reject(new TypeError('x'));
+      return Promise.resolve(mkStatus(name === 'camera' ? 'granted' : 'denied'));
+    });
+    const { tracker, seen, onError, listen } = setup(
+      { permissions: { query } },
+      { permissionNames: ['camera', 'microphone'] },
+    );
+    let off = listen();
+    await flush();
+    const full = { camera: 'granted', microphone: 'denied' };
+    expect(tracker.current().permissions).toEqual(full);
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+    off();
+    mode.mic = 'fail';
+    off = listen();
+    await flush();
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['mic']);
+    expect(tracker.current().permissions).toEqual(full); // retained, not dropped
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1); // and no fake change
+    off();
+    mode.mic = 'type';
+    listen();
+    await flush();
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' }); // unsupported: omitted
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(2);
+  });
+
+  it('a state read that throws during a re-query keeps the retained state of that name', async () => {
+    const flag = { on: false };
+    const cam = throwingStatus(flag, 'granted', 'cam');
+    const mic = mkStatus('denied');
+    const query = ({ name }: { name: string }) => Promise.resolve(name === 'camera' ? cam : mic);
+    const { tracker, seen, listen } = setup(
+      { permissions: { query } },
+      { permissionNames: ['camera', 'microphone'] },
+    );
+    const off = listen();
+    await flush();
+    off();
+    flag.on = true;
+    listen();
+    await flush();
+    expect(tracker.current().permissions).toEqual({ camera: 'granted', microphone: 'denied' });
+    expect(seen.filter(([n]) => n === 'permissions')).toHaveLength(1);
+  });
+
+  it('state-read streaks are per permission name', async () => {
+    const camFlag = { on: true };
+    const micFlag = { on: true };
+    const cam = throwingStatus(camFlag, 'granted', 'cam');
+    const mic = throwingStatus(micFlag, 'denied', 'mic');
+    const query = ({ name }: { name: string }) => Promise.resolve(name === 'camera' ? cam : mic);
+    const { onError, listen } = setup(
+      { permissions: { query } },
+      { permissionNames: ['camera', 'microphone'] },
+    );
+    listen();
+    await flush();
+    // both names fail on the first run: BOTH are reported
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['cam', 'mic']);
+    cam.fire('change');
+    mic.fire('change');
+    expect(onError).toHaveBeenCalledTimes(2); // silent for both while the streaks last
+    // camera keeps failing while microphone is clean: camera stays quiet, microphone's clean run does not reset it
+    micFlag.on = false;
+    mic.fire('change');
+    cam.fire('change');
+    mic.fire('change');
+    cam.fire('change');
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('EnvironmentTracker: reset with subscribers, defaults and listener pins', () => {

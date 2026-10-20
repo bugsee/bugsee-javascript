@@ -29,7 +29,8 @@ import { hostRead } from './host-read';
 //               1 GiB suggests a normal one, anything between or unreadable is `unknown`). It emits once per detection
 //               (every activation), because it is the basis of the `private_mode_detected` event.
 //
-// Every value that cannot be read or is unusable is OMITTED, never fabricated. Host reads go through `hostRead`
+// Every value that is unusable (or that a read found nothing for) is OMITTED, never fabricated; a value whose read
+// THREW keeps its retained value (a transient failure is not a change). Host reads go through `hostRead`
 // (reported through `onError`, a throwing reporter never escapes) and never fail the launch. Permission-query
 // failures are reported once per failure streak.
 //
@@ -542,19 +543,25 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     if (typeof query !== 'function') return;
     const names = this.#env.permissionNames ?? DEFAULT_PERMISSION_NAMES;
     const errors: unknown[] = [];
-    const fail = (error: unknown): undefined => {
-      // An unknown permission NAME rejects with TypeError: that is "unsupported here", not a fault.
-      if (hostRead(() => (error as { name?: unknown }).name) !== 'TypeError') errors.push(error);
-      return undefined;
-    };
+    const failedNames = new Set<string>(); // names whose query FAILED (a fault): their retained state is kept
+    const fail =
+      (name: string) =>
+      (error: unknown): undefined => {
+        // An unknown permission NAME rejects with TypeError: that is "unsupported here", not a fault.
+        if (hostRead(() => (error as { name?: unknown }).name) !== 'TypeError') {
+          errors.push(error);
+          failedNames.add(name);
+        }
+        return undefined;
+      };
     const ask = (name: string): Promise<{ name: string; status: unknown } | undefined> => {
       try {
         return Promise.resolve(query.call(permissions, { name })).then(
           (status) => ({ name, status }),
-          fail,
+          fail(name),
         );
       } catch (error) {
-        return Promise.resolve(fail(error));
+        return Promise.resolve(fail(name)(error));
       }
     };
     void Promise.all(names.map(ask)).then((results) => {
@@ -568,15 +575,29 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
         (r): r is { name: string; status: unknown } => r !== undefined,
       );
       for (const { name, status } of answered) this.#watchStatus(name, status, mine);
-      this.#publishPermissions(answered);
+      this.#publishPermissions(answered, failedNames);
     });
   }
 
-  #readState(name: string, status: unknown): PermissionStateName | undefined {
+  /** `threw`: the read itself failed (keep the retained state); `state` undefined otherwise = unusable (omit). */
+  #readState(
+    name: string,
+    status: unknown,
+  ): { state: PermissionStateName | undefined; threw: boolean } {
+    let threw = false;
     const state = this.#streak(`permission:${name}`, (report) =>
-      hostRead(() => (status as { state?: unknown }).state, report),
+      hostRead(
+        () => (status as { state?: unknown }).state,
+        (error) => {
+          threw = true;
+          report(error);
+        },
+      ),
     );
-    return state === 'granted' || state === 'denied' || state === 'prompt' ? state : undefined;
+    return {
+      state: state === 'granted' || state === 'denied' || state === 'prompt' ? state : undefined,
+      threw,
+    };
   }
 
   #watchStatus(name: string, status: unknown, mine: number): void {
@@ -585,10 +606,11 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     const listener = (): void => {
       if (this.#epoch !== mine) return;
       try {
-        const state = this.#readState(name, status);
+        const { state, threw } = this.#readState(name, status);
+        if (threw) return; // a failed read is not a change: keep what we have
         const next: PermissionStates = { ...this.#permissions };
         if (state === undefined)
-          delete next[name]; // unreadable now: omit, never keep a stale claim
+          delete next[name]; // unusable now: omit, never keep a stale claim
         else next[name] = state;
         this.#commitPermissions(next);
       } catch (error) {
@@ -608,11 +630,20 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     }
   }
 
-  #publishPermissions(answered: Array<{ name: string; status: unknown }>): void {
+  #publishPermissions(
+    answered: Array<{ name: string; status: unknown }>,
+    failedNames: ReadonlySet<string>,
+  ): void {
     const next: PermissionStates = {};
+    const kept = this.#permissions;
     for (const { name, status } of answered) {
-      const state = this.#readState(name, status);
-      if (state !== undefined) next[name] = state;
+      const { state, threw } = this.#readState(name, status);
+      const value = threw ? kept?.[name] : state;
+      if (value !== undefined) next[name] = value;
+    }
+    for (const name of failedNames) {
+      const value = kept?.[name]; // the query failed: keep the retained state of that name
+      if (value !== undefined) next[name] = value;
     }
     // Nothing usable (unsupported / every query failed): keep the retained snapshot, emit nothing.
     if (Object.keys(next).length === 0) return;
