@@ -1,7 +1,7 @@
 # System traces expansion — competitor gap + mobile-parity port plan — DESIGNED, FROZEN (partially implemented; see §14.5/§15.5)
 
 **Status:** DESIGNED 2026-10-14; **FROZEN 2026-10-14 after review round 9** (PR #53); **§14 (2026-10-14) adopts the mobile tracker/producer structure and supersedes the lifecycle-seam mechanism in §5/§9/§12.** No further prose rewrites: remaining
-edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. **Partially implemented since: see §14.5 and §15.5 for what shipped and what is still open.** Built from five read-only research passes
+edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. **Partially implemented since: see §14.5 and §15.5 for what shipped and what is still open (as of 2026-10-20 the browser domain-tracker slices TR0–TR7 are all merged; TR8/TR9 are not started).** Built from five read-only research passes
 (competitor web, competitor server/cloud/edge, competitor Electron/desktop, Bugsee Android SDK, Bugsee iOS
 SDK). Every runtime-support claim marked **UNMEASURED** must be probed on the real runtime before the slice
 that depends on it starts (see §7) — on Bun/Deno "the call succeeded" is not evidence the thing happened
@@ -501,8 +501,7 @@ deletion (#65) are merged, so the bare `sample()` adapter no longer coexists wit
 browser sampler (which also emitted `battery`/`charging`, the duplicate rows an interim reading of this section implied) is
 deleted and `systemMetricsSampler` survives only as an explicit caller override that REPLACES the sensor traces.
 
-The domain-tracker follow-on (§15) is tracked in §15.5; per-signal trackers that remain in `packages/browser/src/trackers/` on `main` (`MemoryTracker`, `OrientationTracker` from #62/BT1; `FpsTracker` from #69/ST4a;
-`ScreenSizeTracker`, `MainThreadLagTracker` from #75/ST4c) are the ones §15.5 still has to fold into domain trackers.
+The domain-tracker follow-on (§15) is tracked in §15.5. The per-signal browser trackers that §14.5 originally listed as remaining (`MemoryTracker`, `OrientationTracker`, `FpsTracker`, `ScreenSizeTracker`, `MainThreadLagTracker`) were folded into the domain trackers by TR2 (#82) and TR5 (#83) and their files are deleted: `packages/browser/src/trackers/` no longer exists on `main`.
 
 ### 14.6 Verified / not verified
 Verified by reading source: the mobile tracker/producer/provider structure (above), `InterceptorBase`/`MultiKeyEmitterBase`
@@ -541,7 +540,7 @@ section corrects. Android reference: `library/src/main/java/com/bugsee/library/s
    (`@bugsee/browser`, `@bugsee/node`, `@bugsee/electron`) keep only composition (launch wiring, producers).
 7. **Per-launch config on a shared singleton.** The registry's `for(key, create, rebind)` hands every later request's
    config (error sink, capabilities such as `getBattery`) to the existing tracker (`rebind`, latest launch wins); an IDLE
-   tracker may also re-bind the window/document it attaches to, an ACTIVE one keeps its bindings and reports the mismatch. **As built (§15.5) this is narrowed:** only `ApplicationTracker` keeps its bindings while active; `ConnectivityTracker` and `UiTracker` re-attach a running tracker to the new objects, and `StorageTracker` applies new seams at the next activation.
+   tracker may also re-bind the window/document it attaches to, an ACTIVE one keeps its bindings and reports the mismatch. **As built (§15.5) this is narrowed:** only `ApplicationTracker` keeps its bindings while active; `ConnectivityTracker`, `UiTracker`, `ProcessTracker` and `EnvironmentTracker` stop/detach and re-attach a running tracker to the new seams (a seam that did not change leaves a running `ProcessTracker` alone), and `StorageTracker` applies new seams at the next activation.
    Keying: the object the tracker listens on (document for Application, window otherwise); there is no silent
    host-global fallback when a window was injected.
 
@@ -574,9 +573,9 @@ today keep their trace names and wire shapes; only their source changes.
    cross-origin isolation, service-worker controlled, `navigator.webdriver` (automation), Do-Not-Track/GPC, Permissions API
    states **queried without prompting**, and **private/incognito detection**. Private-mode detection is heuristic and
    browser-specific (quota size, storage/IndexedDB/OPFS behaviour) and changes between browser versions; it is reported
-   tri-state `yes | no | unknown` with the method used, never as a certainty. **Owner decision needed:** detecting
-   private browsing can read as circumventing the user's intent; propose default OFF behind an explicit launch option
-   (`captureEnvironmentHints`), with `language`/`timezone`/`displayMode` on by default (defaults for the other hint and permission fields: see §15.5 open decision 2). Change notifications become
+   tri-state `yes | no | unknown` with the method used, never as a certainty. **Open question (as originally written; SUPERSEDED by the as-built behaviour in §15.5):** detecting
+   private browsing can read as circumventing the user's intent; the proposal was default OFF behind an explicit launch option
+   (`captureEnvironmentHints`), with `language`/`timezone`/`displayMode` on by default. As built, the browser launch defaults `captureEnvironmentHints` to ON (opt-out), and the `hints`/`permissions` stages are not read by the launch (see §15.5, TR7 and open decision 5). Change notifications become
    `events.system` entries (`language_changed`, `timezone_changed`, `display_mode_changed`, `private_mode_detected`).
 3. **Connectivity.** Use the Network Information API where present (`navigator.connection`: `type` (Chromium/Android),
    `effectiveType`, `downlink` (Mbps, capped), `downlinkMax`, `rtt` (coarsened), `saveData`, `change` event) — a fraction
@@ -606,64 +605,78 @@ today keep their trace names and wire shapes; only their source changes.
 - Each tracker's retention rule is stated and tested ("stopping does not lose X"); each producer keeps its existing
   omit-never-zero and guarded-host-read tests.
 
-### 15.5 As-built status (verified against `main` and the open branches, 2026-10-20)
+### 15.5 As-built status (verified against `main` at `e3da3cd4`, 2026-10-20)
 
-**Merged on `main`** (implementations in `packages/trackers/src/browser/`, producers in `packages/browser/src/trace-producers.ts`):
+All browser domain-tracker slices TR0–TR7 are **merged on `main`** (implementations in `packages/trackers/src/browser/`, producers in `packages/browser/src/trace-producers.ts`, events source in `packages/browser/src/system-events.ts`, wiring in `packages/browser/src/launch.ts` and `packages/webview/src/launch.ts`):
 
 | Slice | PR | Tracker (`…For(env, onError)` / `reset…`) | Stages | Producer / traces |
 |---|---|---|---|---|
 | TR0 | #77 | `createTrackerRegistry` (`tracker-registry.ts`): per-key `WeakMap`; `for(key, create, rebind?)`, `peek`, `reset` | — | — |
-| TR1 | #79 | `ApplicationTracker` (`applicationTrackerFor`) | `pagehide {persisted}`, `visibility {visible}`, `state {state: foreground\|background}`, `freeze`, `resume`, plus TEMPORARY `online`, `offline`, `orientationchange` | `AppStateProducer` (`app_state`, via `state` + `current()`); events source; trace/event names unchanged |
+| TR1 | #79 | `ApplicationTracker` (`applicationTrackerFor`) | `pagehide {persisted}`, `visibility {visible}`, `state {state: foreground\|background}`, `freeze`, `resume`, plus TEMPORARY `online`, `offline` (the temporary `orientationchange` stage no longer exists: it moved to the UiTracker in TR2) | `AppStateProducer` (`app_state`, via `state` + `current()`); events source; trace/event names unchanged |
+| TR2 | #82 | `UiTracker` (`uiTrackerFor`, `resetUiTracker`) | `orientation {type?, angle?}`, `screenSize {width, height, dpr}`, `viewport {width, height}`, `colorScheme {dark}`, `reducedMotion {reduce}`, `displayMode {mode: fullscreen\|standalone\|minimal-ui\|browser}`, `frameRate` (number) | `OrientationProducer` → `orientation`; `ScreenSizeProducer` → `screen_size {width, height, dpr}`; `FpsProducer` → `fps`; events `orientation_changed`, `dark_mode_changed`. No producer reads `viewport`, `reducedMotion` or `displayMode` yet |
 | TR3 | #80 | `ConnectivityTracker` | `online {online}`, `networkInfo {type?, effectiveType?, downlink?, downlinkMax?, rtt?, saveData?}`, aggregate `state {online?, networkInfo?}` (activation emits a baseline of whichever of these have a value: `online` only when `navigator.onLine` is readable, `networkInfo` only where the API exists, `state` always) | `ConnectionProducer` → `connection` (unchanged shape; additive `link_downstream_max_kbps`) |
 | TR4 | #78 | `PowerTracker` | one stage `state {level?, charging, chargingTimeS?, dischargingTimeS?}`, fed by `levelchange`/`chargingchange`/`chargingtimechange`/`dischargingtimechange` | `BatteryProducer` → `battery`, `charging`, NEW `battery_charging_time_s`, `battery_discharging_time_s` |
+| TR5 | #83 | `ProcessTracker` (`processTrackerFor`, `resetProcessTracker`) | `heap {used, limit}`, `mainThreadLag {lagMs}`, `idle {idleMs}`, `userIdle {userState, screenState?}`, `uptime {uptimeMs}` | `MemoryProducer` → `ram_js_heap_{total,free,used}`; `MainThreadLagProducer` → `main_thread_lag_ms`; `MainThreadIdleProducer` → `main_thread_idle_ms`; `UserIdleProducer` → `user_idle_state`. No producer reads `uptime` yet |
 | TR6 | #81 | `StorageTracker` | one stage `storageEstimate {usageBytes?, quotaBytes?, persisted?}`; polls on activation, visibility→visible (throttled to 1/min), slow timer (default 5 min, skipped while hidden) | `StorageProducer` → NEW `storage_estimate {usage, quota}` in integer MB (floored); NOT the Android `disk_mem_*` group |
+| TR7 | #84 | `EnvironmentTracker` (`environmentTrackerFor`, `resetEnvironmentTracker`) | `language {language?, languages?, previous}`, `timezone {timeZone?, utcOffsetMinutes?, previous}`, `hints {cookiesEnabled?, secureContext?, crossOriginIsolated?, serviceWorkerControlled?, automation?, doNotTrack?, globalPrivacyControl?}`, `permissions {camera?, microphone?, geolocation?, notifications?, 'idle-detection'?}` (each `granted`\|`denied`\|`prompt`), `privateMode {private: yes\|no\|unknown, method?}` | no trace producer; the events source maps `language` → `language_changed`, `timezone` → `timezone_changed`, `privateMode` (`yes` only) → `private_mode_detected` |
 
-Also merged but NOT yet domain trackers (still per-signal, in `packages/browser/src/trackers/`): `MemoryTracker`, `FpsTracker`, `OrientationTracker`, and #75's `screen_size` `{width, height, dpr}`
-(`ScreenSizeTracker`/`ScreenSizeProducer`) and `main_thread_lag_ms` (`MainThreadLagTracker`/`MainThreadLagProducer`); the app_state/fps/screen_size/lag producers are only built when a
-shared `lifecycle` tracker is in the env. #73 (Electron GPU): GPU is ENVIRONMENT data, not a trace — `launchMain` passes a `hardwareExtras`
+Not a domain tracker: #73 (Electron GPU). GPU is ENVIRONMENT data, not a trace — `launchMain` passes a `hardwareExtras`
 closure over a `GpuInfoCache` (`packages/electron/src/launch-main.ts`) that fills `environment.hardware.gpu`, so it is not yet placed in an Electron
-Process/Display tracker (TR9).
+Process/Display tracker (TR9). Producer gating: the `app_state`, `screen_size`, `fps`, `main_thread_lag_ms` and `main_thread_idle_ms` producers are only built when a shared `lifecycle` tracker is in the env (`trace-producers.ts`).
 
-**In review (NOT merged): TR2 UI/Display, PR #82, branch `feat/ui-tracker`.** `UiTracker` (`uiTrackerFor`, `resetUiTracker`) with stages `orientation {type?, angle?}`,
-`screenSize {width, height, dpr}`, `viewport {width, height}`, `colorScheme {dark}`, `reducedMotion {reduce}`, `displayMode {mode}`, `frameRate` (number). Activation is
-PER STAGE (listeners/timers exist only while a subscriber wants a stage that needs them, via a new `MultiKeyEmitterBase.onListenersChanged` hook plus
-`listenerCount`); the de-duplication baseline is re-read silently when a stage goes from 0 to 1 listener. On that branch the browser package's
-`OrientationTracker`, `ScreenSizeTracker` and `FpsTracker` (with their tests) are deleted, `ApplicationTracker` no longer binds `orientationchange`, and `OrientationProducer`/`ScreenSizeProducer`/`FpsProducer`
-are rewired onto one `UiTracker` per window. Everything in this paragraph is subject to change until merged.
+**TR2 UI/Display (#82, merged).** Activation is PER STAGE: a listener/timer exists only while some subscriber wants a stage that needs it (window `resize`, `orientationchange` + `screen.orientation` `change`, `screen` `change`, one `matchMedia` query per scheme/motion/display-mode, and the rAF loop + interval + `visibilitychange` for `frameRate`), via `MultiKeyEmitterBase.listenerCount` and the `onListenersChanged` hook. Retention rule: only the env seams and the per-stage de-duplication baseline survive the last unsubscribe; the baseline is re-read silently when a stage goes from 0 to 1 listener and when a rebind swaps sources; `current(stage)` always reads live and is `undefined` when unavailable. Invalid values (non-finite or non-positive sizes, non-boolean queries) are omitted, never zeroed. Frame rate emits nothing while hidden or without rAF/`visibilitychange`; once frames have flowed, the first frameless window reports 0 and a continuing stall then goes quiet. An `orientation` event with nothing readable is emitted as a bare `{}`. The per-window tracker is shared by the traces and the events source. The browser package's `OrientationTracker`, `ScreenSizeTracker` and `FpsTracker` were deleted.
 
-**In review (NOT merged): TR5 Process / `ProcessTracker` (#83, `feat/process-tracker`) and TR7 Environment / `EnvironmentTracker` (#84, `feat/environment-tracker`).** Both are
-ready PRs that went through the mutator loop and several read-only Opus review rounds; their stage names and shapes are defined in `packages/trackers/src/browser/process-tracker.ts` /
-`environment-tracker.ts` on those branches and are subject to change until merged, so they are not catalogued here yet.
+**TR5 Process (#83, merged).** Five independent stages, each armed only while it has a listener (an `onAny` listener counts for all); `start()`/`stop()` do nothing here. A stage that cannot work (no `performance.memory`, no `requestIdleCallback`, no clock/lifecycle, no permission) stays inert until its listeners have all left and a new one arrives, or a rebind changes the seams. Non-finite or negative values are omitted, never zero. Stage semantics: `heap` polls `performance.memory` every tick (Chromium-only; `limit` is `jsHeapSizeLimit`); `mainThreadLag` is timer drift (`max(0, now - (previous tick + interval))`), measured only while the page is visible, with a fresh baseline on each visible start; `idle` is one `requestIdleCallback` probe per tick (`timeRemaining()` clamped to 50 ms; no sample when no idle period is granted); `userIdle` uses the Idle Detection API with a threshold floored at 60 s and starts the detector ONLY when `permissions.query({name: 'idle-detection'})` already reports `granted` (it never calls `requestPermission`; the permission `change` event is watched); `uptime` emits `performance.now()` each tick. `user_idle_state` is `locked` when `screenState` is `locked`, else `userState`, and the producer exists only for `captureUserIdle: true`. **Retention:** the last `userIdle` state is retained (`currentUserIdle()`; `currentUserIdleFresh()` seeds a held trace and is stricter: while armed it answers only once this run's detector has published, and with no armed stage only while younger than 2 thresholds); the heap is read live; uptime/idle/lag keep nothing; timers, lifecycle subscription, idle probe and detector do not survive. The reporter is wrapped so a throwing `onError` cannot escape.
+
+**TR7 Environment (#84, merged).** `language` and `timezone` are change-only (the first reading is a silent baseline; `timezone` is re-read on a 60 s timer, skipped while hidden, and on visibility→visible). `hints` and `permissions` are read ONLY when the env flags `observeHints` / `queryPermissions` are set; both default to false and neither the browser launch nor the events source sets them, so no `permissions.query()` call or `change` listener is made and the two stages reach no trace or event. `permissions` never prompts: only `navigator.permissions.query()` is called and only the state string is kept; a name the browser does not know is omitted. `privateMode` runs when `detectPrivateMode` is set (false at the tracker level); the only method is `storage-quota` (below 120 MiB → `yes`, at or above 1 GiB → `no`, else `unknown`, so constrained storage can false-positive). **Retention:** the last language/time zone/hints/permissions/private-mode readings are retained and compared on restart (an unchanged `hints`/`permissions` snapshot is not re-emitted; a retained `yes`/`no` is not re-probed, an `unknown` is retried); DOM listeners, the timer and in-flight async work do not survive.
+
+**Environment options and wiring (as built).**
+
+- `captureEnvironmentHints` (`com.bugsee.option.capture.environment-hints`, `BugseeOption.CaptureEnvironmentHints`): defaults to `true` in the browser launch (`packages/browser/src/launch.ts`) and is FAIL-CLOSED: a non-boolean value is treated as off and reported. It gates only private-mode detection; `false` opts out. The protocol layer defines the key and type only, not a default. Private-mode detection therefore defaults ON in the browser launch, a privacy trade-off worth keeping under review (open decision 5).
+- `language_changed` and `timezone_changed` are always observed (not gated by that option), in Browser and WebView.
+- The WebView launch (`packages/webview/src/launch.ts`) passes `detectPrivateMode: false` explicitly (so it never inherits ON from an earlier launch on the same window) and so never emits `private_mode_detected`.
+- `private_mode_detected` (`{method}`) is emitted only for a `yes` answer, never for `no`/`unknown`. It is a per-session event while the tracker outlives sessions and does not re-probe a retained answer, so the events source re-delivers a retained `yes` once on subscribe (unless the activation already delivered it). The opt-out is enforced at the sink as well: a source built with detection off never forwards `private_mode_detected`, even if another consumer enabled detection on the shared tracker.
+- `captureUserIdle` is OPT-IN, default `false` (only boolean `true` enables it; an invalid value stays off and is reported), same switch in Browser and WebView. Even when on, `user_idle_state` exists only if the page's `idle-detection` permission is already granted.
+- Changesets: `.changeset/browser-ui-tracker.md`, `browser-process-tracker.md`, `browser-environment-tracker.md`.
 
 **Conventions the merged trackers follow (the "hardening pattern"; uneven in places, gaps listed):**
 - Host reads go through `hostRead` in most places (hostile getters cost only their own field and are reported via `onError`), and an unusable field is OMITTED rather than sent as 0
   (non-finite, negative, or a documented "no estimate" such as a zero `rtt`). **Known gaps (verified in code):** `PowerTracker.#publish` reads `manager.level` and `manager.charging`
   directly (`power-tracker.ts:177-178`) — `level` is range/type-checked and omitted when unusable, but `charging` is not type-checked; only the two time fields go through `hostRead`.
-  `ApplicationTracker.#listen` reads `target.addEventListener` unguarded (`application-tracker.ts:185-186`), relying on the surrounding `onActivate` try/catch.
-- Reporter handling differs per tracker. Connectivity, Power and Storage hold the reporter in a mutable `#report.fn` indirection (latest launch wins); Application uses an equivalent `sink.current`.
-  Only Application and Connectivity wrap the reporter in try/catch so a throwing `onError` cannot escape into a DOM dispatch. **Known gap:** Power's reporter (`power-tracker.ts:67`, `:89-91`) and
+  `ApplicationTracker.#listen` reads `target.addEventListener` unguarded (`application-tracker.ts:184-185`), relying on the surrounding `onActivate` try/catch.
+- Reporter handling differs per tracker. Connectivity, Power, Storage, UI, Process and Environment hold the reporter in a mutable `#report.fn` / `#reporter.fn` indirection (latest launch wins); Application uses an equivalent `sink.current`.
+  Application, Connectivity, UI, Process and Environment wrap the reporter in try/catch so a throwing `onError` cannot escape into a DOM dispatch or timer. **Known gap:** Power's reporter (`power-tracker.ts:67`, `:89-91`) and
   Storage's emitter reporter (`storage-tracker.ts:102`) are not wrapped, so a throwing `onError` on those paths is not contained, and no test is claimed for it. DOM listeners and timer
   callbacks are guarded in the trackers that attach them.
 - Async reads carry a token (`PowerTracker` generation, `StorageTracker` epoch) so a promise settling after the last unsubscribe/reset is inert.
 - Each tracker states and tests a retention rule: Application retains the last `state`; Power the resolved `BatteryManager` + last snapshot; Storage the last estimate
-  (`current()`; `currentFresh()` only while younger than 2x the poll interval); Connectivity caches nothing (reads `navigator` live). DOM listeners/timers are always released.
+  (`current()`; `currentFresh()` only while younger than 2x the poll interval); Connectivity caches nothing (reads `navigator` live); UI keeps only its de-duplication baselines; Process the last user-idle state; Environment the last language/time zone/hints/permissions/private-mode readings (details in the TR2/TR5/TR7 notes above). DOM listeners/timers are always released.
 - **Rebind rule** (§15.1 #7, as built): `for(key, create, rebind)` calls `rebind` on every request after the creating one, including a caller whose `create` lost a
   re-entrant race; a throwing `rebind` never fails the request. Semantics are "latest launch wins" for `onError` (a defined one replaces, undefined keeps) and for
   defined seams (an undefined seam never clobbers). Application re-binds window/document only while IDLE and reports a mismatch once while ACTIVE; Storage applies
-  new seams from the NEXT activation; Connectivity moves a running tracker's listeners to a changed window/navigator. Keys: Application = document, else window, else a
-  module key; Power/Connectivity/Storage = window, else navigator, else the env object.
+  new seams from the NEXT activation; UI, Process and Environment re-attach a running tracker to changed seams (Process only when a seam actually changed); Connectivity moves a running tracker's listeners to a changed window/navigator. Keys: Application = document, else window, else a
+  module key; Power/Connectivity/Storage/Environment = window, else navigator, else the env object; UI = window, else screen, else the env object; Process = window, else performance, else the env object.
 
-**Open owner decisions (carried from the code and `docs/PROGRESS.md`):**
+**Open decisions (carried from the code and `docs/PROGRESS.md`):**
 1. **Held values cannot be retracted.** The provider re-records every held (`emitIfChanged`) value each `refreshMs`. `storage_estimate` is held (the 5 min poll exceeds the default
    60 s window), so after failed polls the last known estimate keeps being re-recorded; the `battery_*_time_s` traces avoid this by using plain non-held `emit` with a
    producer-side change-only guard, at the cost that an unchanged time ages out of the rolling window. Options: plain `emit` for storage, or a provider retract/release/end-marker mechanism.
-2. **Environment defaults (TR7, #84) — private mode and the other hint fields.** As implemented on the open #84 branch (NOT on `main`; may change before merge): `language`/`timezone` are on by default and reach the wire as `language_changed`/`timezone_changed`; private-mode detection is OFF unless the launch option `captureEnvironmentHints` is `true` (fail-closed; only a `yes` becomes an event). The `hints` stage (`navigator.webdriver`, Do-Not-Track/GPC, cookies-enabled, cross-origin-isolation, service-worker control) and the `permissions` stage (camera, microphone, geolocation, notifications, idle-detection, read via `permissions.query()` only — never prompting) are currently collected on every launch but have NO consumer and are NOT sent anywhere. **Undecided:** whether these two stages should be gated behind `captureEnvironmentHints` (or a sibling option) until a consumer exists, and whether DNT/GPC and permission states belong in the §1 privacy non-goals; `captureEnvironmentHints` currently gates only private-mode detection, so its name may need to change.
-3. **`main_thread_lag_ms` false spikes on suspend/pause.** The timer-drift measurement (§4) is gated on page visibility but not on system sleep or a debugger pause while the page stays `visible`: if `performance.now` advances across the suspend, the first tick after resume can record minutes or hours of "lag". Not yet handled in #75 or #83. Proposed follow-up: omit (never report) a tick whose elapsed time exceeds a documented multiple of the interval, reset the baseline on `resume`/`pageshow`, and test with a fake clock that jumps an hour.
-4. **Electron GPU `'complete'` vs `'basic'`.** `launchMain({gpuInfoType})` defaults to `'basic'`; `'complete'` is expected to carry the `auxAttributes` GL strings but is heavier.
+   Still true for `user_idle_state` (verified: `UserIdleProducer` uses `emitIfChanged`): the tracker drops its retained state when a running stage finds the permission not granted and
+   `currentUserIdleFresh()` stops seeding new subscribers from it, but it emits nothing on revoke, so a producer that already published the last value keeps it re-recorded until the producer stops.
+2. **`main_thread_lag_ms` false spikes on suspend/pause (verified still unhandled).** The lag stage is torn down on hidden and takes a fresh baseline on each visible start, but there is no cap and no
+   `resume`/`pageshow` reset: `lagMs = max(0, now - expectedAt)` is emitted for every tick. If the page stays `visible` across a system sleep or a debugger pause and `performance.now` advances, the first tick
+   after it can record minutes or hours of "lag". Proposed follow-up: omit a tick whose elapsed time exceeds a documented multiple of the interval, reset the baseline on `resume`/`pageshow`, and test with a fake clock that jumps an hour.
+3. **Electron GPU `'complete'` vs `'basic'` (unverified).** `launchMain({gpuInfoType})` defaults to `'basic'`; `'complete'` is expected to carry the `auxAttributes` GL strings but is heavier.
    Both mappings are UNVERIFIED against a real Electron (on macOS/Linux `'basic'` commonly yields only numeric ids, so `hardware.gpu` is then absent, never guessed).
+4. **`captureEnvironmentHints` name.** As built it gates only private-mode detection; `language_changed`/`timezone_changed` are not gated and `hints`/`permissions` are not read by the launch at all. Its name now overstates its scope.
+   Undecided: rename it, or widen it to gate the `hints`/`permissions` stages if a consumer for them is added (those stages are already off by default via the `observeHints`/`queryPermissions` tracker flags).
+5. **Privacy scope and the private-mode default.** Private-mode detection defaults ON in the browser launch (opt-out, fail-closed on invalid values); this is a privacy trade-off worth keeping under review, since detecting private browsing can read as circumventing the user's intent.
+   Undecided: whether DNT/GPC, automation and permission states (`hints`/`permissions`, currently unread) belong in the §1 privacy non-goals before any consumer reads them.
 
-**Remaining plan:** merge TR2 (#82) and migrate the remaining window-listener consumers onto `UiTracker` (e.g. `packages/browser/src/viewport-source.ts`, which today attaches its own
-`window`/`visualViewport` `resize`/`scroll` listeners); fold `MemoryTracker`/`MainThreadLagTracker` into TR5 and finish TR7; then **remove `ApplicationTracker`'s temporary
-`online`/`offline` stages** (still bound for the events source; Connectivity owns its own copies, so they are bound twice today); TR8 node/Bun/Deno Process (+ GC, event loop) and
-Storage consolidation (`packages/trackers/src/node/` is an empty placeholder today); TR9 Electron trackers (`packages/trackers/src/electron/` is an empty placeholder; GPU cache folds in).
+**Remaining plan:**
 
+- Migrate the remaining window-listener consumers onto `UiTracker`: `packages/browser/src/viewport-source.ts` still attaches its own `window` `resize` and `visualViewport` `resize`/`scroll` listeners (lines 194-196) although the tracker now has `viewport`/`screenSize` stages; no producer consumes `viewport`, `reducedMotion`, `displayMode` or the Process `uptime` stage yet.
+- Remove `ApplicationTracker`'s temporary `online`/`offline` stages: still bound (`application-tracker.ts:89`) for the events source (`system-events.ts`), while Connectivity owns its own copies, so they are bound twice today.
+- TR8: node/Bun/Deno Process (+ GC, event loop) and Storage consolidation (`packages/trackers/src/node/` is an empty placeholder today).
+- TR9: Electron trackers (`packages/trackers/src/electron/` is an empty placeholder; the GPU cache folds in).
+- Close the hardening gaps and open decisions above.
