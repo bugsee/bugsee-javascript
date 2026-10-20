@@ -82,6 +82,11 @@ describe('mapDisplay', () => {
     for (const r of [0, 90, 180, 270])
       expect(mapDisplay(display({ rotation: r }))?.rotation).toBe(r);
   });
+  it('drops id -1 (invalid / not yet known) but keeps -10 (the virtual unified display)', () => {
+    expect(mapDisplay(display({ id: -1 }))).toBeUndefined();
+    expect(mapDisplay(display({ id: -10 }))?.id).toBe(-10);
+    expect(mapDisplay(display({ id: 0 }))?.id).toBe(0);
+  });
   it('is undefined without a finite id or a positive size, and for non-objects', () => {
     expect(mapDisplay(display({ id: undefined }))).toBeUndefined();
     expect(mapDisplay(display({ id: Number.NaN }))).toBeUndefined();
@@ -200,9 +205,11 @@ describe('ElectronDisplayTracker', () => {
     it('is undefined for an empty list, a non-array, no getAllDisplays, or an unknown stage', () => {
       expect(track(fakeScreen(() => [])).current('displays')).toBeUndefined();
       expect(track(fakeScreen(() => ({}))).current('displays')).toBeUndefined();
+      const quiet = vi.fn();
       expect(
-        track(fakeScreen(undefined, { getAllDisplays: undefined })).current('displays'),
+        track(fakeScreen(undefined, { getAllDisplays: undefined }), quiet).current('displays'),
       ).toBeUndefined();
+      expect(quiet).not.toHaveBeenCalled(); // a missing method is absence, not an error
       expect(track(fakeScreen()).current('x' as 'displays')).toBeUndefined();
       expect(new ElectronDisplayTracker().current('displays')).toBeUndefined();
     });
@@ -226,6 +233,47 @@ describe('ElectronDisplayTracker', () => {
 
   it('a tracker with no screen attaches nothing', () => {
     new ElectronDisplayTracker().on('displayAdded', () => {});
+  });
+
+  describe('a screen whose property reads throw (Electron before app ready)', () => {
+    const hostile = (message: string) =>
+      new Proxy(
+        {},
+        {
+          get() {
+            throw new Error(message);
+          },
+        },
+      ) as ScreenSource;
+
+    it('subscribing never throws, nothing attaches, one report per stage attempt', () => {
+      const onError = vi.fn();
+      const screen = hostile('screen');
+      keys.push(screen);
+      const t = electronDisplayTrackerFor({ screen }, onError);
+      expect(() => t.on('displayAdded', () => {})).not.toThrow();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ message: 'screen' }),
+      );
+    });
+
+    it("current('displays') is undefined and reported: the getAllDisplays read is inside the guard", () => {
+      const onError = vi.fn();
+      const screen = hostile('read');
+      keys.push(screen);
+      const t = electronDisplayTrackerFor({ screen }, onError);
+      expect(t.current('displays')).toBeUndefined();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'read' }));
+    });
+  });
+
+  it('a list that is not an array (null, undefined, an object) is simply no list: undefined and NOT reported', () => {
+    for (const value of [null, undefined, {}, 'x']) {
+      const onError = vi.fn();
+      const s = fakeScreen(() => value);
+      expect(track(s, onError).current('displays')).toBeUndefined();
+      expect(onError).not.toHaveBeenCalled();
+    }
   });
 
   describe('registry', () => {

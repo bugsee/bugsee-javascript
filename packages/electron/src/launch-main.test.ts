@@ -1211,6 +1211,92 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(optsOf(f).systemTraceProducers).toBeUndefined();
   });
 
+  it('NEVER forwards the Electron objects or captureWindowEvents to the node launch', () => {
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: new FakeEmitter(),
+      powerMonitor: new FakeEmitter(),
+      screen: new FakeEmitter(),
+      BrowserWindow: { getAllWindows: () => [] },
+      captureWindowEvents: true,
+    });
+    const keys = Object.keys(optsOf(f));
+    for (const key of [
+      'app',
+      'powerMonitor',
+      'screen',
+      'BrowserWindow',
+      'captureWindowEvents',
+      'ipcMain',
+    ]) {
+      expect(keys).not.toContain(key);
+    }
+  });
+
+  it('captureWindowEvents:false turns the window domain off (no application tracker, no app listeners); the others stay', () => {
+    clear();
+    const app = new FakeEmitter();
+    const powerMonitor = new FakeEmitter();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      powerMonitor,
+      captureWindowEvents: false,
+    });
+    expect(accessors().application).not.toHaveBeenCalled();
+    expect(accessors().power).toHaveBeenCalledOnce();
+    const mux = wrapOf(f)(new Inner());
+    mux.on('event', () => {});
+    expect(app.table.get('browser-window-created')).toBeUndefined();
+    expect(app.table.get('web-contents-created')).toBeUndefined();
+    expect(powerMonitor.total()).toBe(6);
+  });
+
+  it.each([
+    null,
+    0,
+    '',
+    'false',
+    'true',
+    1,
+    {},
+  ])('an invalid captureWindowEvents (%j) is OFF and reported (fail closed)', (value) => {
+    clear();
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app: new FakeEmitter(),
+      onError,
+      captureWindowEvents: value as never,
+    });
+    expect(accessors().application).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: expect.stringContaining('captureWindowEvents') }),
+    );
+  });
+
+  it('captureWindowEvents:true and undefined keep the window domain on, without a report', () => {
+    for (const value of [true, undefined]) {
+      clear();
+      const onError = vi.fn();
+      launchMain('tok', {
+        ipcMain: fakeIpcMain().ipcMain,
+        launch: fakeLaunch().launch,
+        app: new FakeEmitter(),
+        onError,
+        ...(value !== undefined ? { captureWindowEvents: value } : {}),
+      });
+      expect(accessors().application).toHaveBeenCalledOnce();
+      expect(onError).not.toHaveBeenCalled();
+    }
+  });
+
   it('the mux handed to node is LAZY: until subscribed no domain listener exists; subscribing attaches all, unsubscribing releases all', () => {
     const powerMonitor = new FakeEmitter();
     const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });

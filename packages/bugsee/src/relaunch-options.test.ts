@@ -136,6 +136,7 @@ const RESET_OPTIONS: readonly string[] = [
   'BrowserWindow',
   'app',
   'appToken',
+  'captureWindowEvents',
   'flushTimeoutMs',
   'gpuInfoType',
   'injectTraceMeta',

@@ -6,7 +6,13 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { type AppIdentity, BlackoutToken, CaptureStoreToken, getCarrierClient } from '@bugsee/core';
+import {
+  type AppIdentity,
+  BlackoutToken,
+  CaptureStoreToken,
+  getCarrierClient,
+  resolveFailClosedBoolean,
+} from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
@@ -141,6 +147,11 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * for `window_*`/`renderer_*` events too (windows created later are always tracked through `app`).
    */
   BrowserWindow?: BrowserWindowSource;
+  /**
+   * Record `window_*` / `renderer_*` events (default `true`). They are ON whenever `app` is passed (and system events are
+   * captured), which adds two `app` listeners (`browser-window-created`, `web-contents-created`); pass `false` to opt out (any non-boolean value is OFF and reported).
+   */
+  captureWindowEvents?: boolean;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
@@ -186,6 +197,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     powerMonitor,
     screen,
     BrowserWindow,
+    captureWindowEvents,
     gpuInfoType,
     crashReporter,
     crashReporterExtra,
@@ -264,8 +276,16 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     screen !== undefined && !repeat
       ? electronDisplayTrackerFor({ screen }, nodeOptions.onError)
       : undefined;
+  // Default ON; fail closed like the other capture switches: anything but a boolean is OFF, and reported.
+  const windowEvents = resolveFailClosedBoolean(captureWindowEvents, true);
+  if (captureWindowEvents !== undefined && typeof captureWindowEvents !== 'boolean') {
+    reportGuarded(
+      nodeOptions.onError,
+      new TypeError('captureWindowEvents must be a boolean: window events are OFF'),
+    );
+  }
   const application =
-    app !== undefined && !repeat
+    app !== undefined && !repeat && windowEvents
       ? electronApplicationTrackerFor(
           { app, ...(BrowserWindow !== undefined ? { BrowserWindow } : {}) },
           nodeOptions.onError,
@@ -325,8 +345,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // relaunch option, so a relaunch keeps THIS wrapper (closing over the tracker) and `hardware.gpu` keeps being served
   // (stop() does not clear it; a GPU that had not yet resolved is not re-requested). `systemTraceProducers` and
   // `wrapSystemEventsSource` are RESET options, so a relaunched client has the plain node producers and events source:
-  // `app_metrics` and `child_process_gone` stop until `launchMain` is called again (the carrier client must be cleared
-  // by a stop for that, as for any launch).
+  // every Electron trace and event (`app_metrics`, `electron_displays`, `child_process_gone`, `power_*`, `display_*`,
+  // `window_*`, `renderer_*`) stops until `launchMain` is called again (the carrier client must be cleared by a stop for
+  // that, as for any launch).
   const callerExtras = nodeOptions.hardwareExtras;
   const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);
   nodeOptions.hardwareExtras = () => {

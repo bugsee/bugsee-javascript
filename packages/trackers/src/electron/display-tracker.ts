@@ -13,9 +13,14 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // `current('displays')` is a LIVE `screen.getAllDisplays()` read. {@link DisplayInfo} keeps only what is safe and stable:
 // `id`, `width`/`height` (Electron's `size`, device-independent pixels; `bounds` as a fallback), and, when Electron gave
 // them, `scaleFactor`, `rotation` (0/90/180/270), `internal`, `refreshRate` (Hz). A display with no usable id or size is
-// DROPPED, an empty list is `undefined`, and a throwing/hostile `getAllDisplays` is reported and omitted: nothing is
+// DROPPED (id -1 is Electron's 'invalid or not yet known' marker; id -10, the virtual unified display, is kept as
+// reported), an empty list is `undefined`, and a throwing/hostile `getAllDisplays` is reported and omitted: nothing is
 // fabricated and absence is never zero. Display `label`, `bounds` position and `workArea` are not kept.
 // `electron` is never imported: `screen` is INJECTED as a structural {@link ScreenSource}.
+//
+// HELD-VALUE CAVEAT for the `electron_displays` trace built on `displays`: a refresh that cannot read a usable list
+// emits nothing, so the previous list stays held (and is re-recorded every refreshMs). Absence is true only BEFORE the first
+// emit. This is the same open owner decision as storage_estimate / user_idle_state (docs/PROGRESS.md).
 //
 // SINGLETON per `screen` object (`electronDisplayTrackerFor`); a relaunch only rebinds the reporter.
 
@@ -66,6 +71,8 @@ export function mapDisplay(raw: unknown): DisplayInfo | undefined {
   const d = record(raw);
   if (d === undefined) return undefined;
   const id = finite(d.id);
+  // -1 is Electron's 'invalid or not yet known' id: never a real display. (-10 is the virtual unified display and is kept.)
+  if (id === -1) return undefined;
   const size = record(d.size) ?? record(d.bounds);
   const width = positive(size?.width);
   const height = positive(size?.height);
@@ -110,8 +117,10 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
   /** The live display list, or undefined when Electron cannot say (never an empty/zero list). */
   current(stage: 'displays'): ElectronDisplayEvents['displays'] | undefined {
     const screen = this.#screen;
-    if (stage !== 'displays' || typeof screen?.getAllDisplays !== 'function') return undefined;
+    if (stage !== 'displays' || screen === undefined) return undefined;
     try {
+      // inside the guard: Electron's real `screen` throws on ANY property read before the app is ready
+      if (typeof screen.getAllDisplays !== 'function') return undefined;
       const raw = screen.getAllDisplays();
       if (!Array.isArray(raw)) return undefined;
       const displays = raw.map(mapDisplay).filter((d): d is DisplayInfo => d !== undefined);

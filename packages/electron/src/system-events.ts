@@ -55,39 +55,55 @@ class ElectronSystemEventsSource extends InterceptorBase<Events> {
     this.emit('event', params === undefined ? { name } : { name, params });
   }
 
+  /**
+   * Subscribe once, isolated: a throwing subscription (a hostile Electron object) is reported and costs only itself.
+   * `onActivate` therefore never throws, so the provider always receives its unsubscribe and `stop()` always releases
+   * everything that DID attach (the inner node source's signal handlers included).
+   */
+  #sub(subscribe: () => () => void): void {
+    try {
+      this.#offs.push(subscribe());
+    } catch (error) {
+      reportGuarded(this.onError, error);
+    }
+  }
+
   protected onActivate(): void {
+    this.#offs = [];
     // inner FIRST: its `process_started` marker precedes anything the Electron side can say
-    this.#offs = [this.inner.on('event', (event) => this.emit('event', event))];
+    this.#sub(() => this.inner.on('event', (event) => this.emit('event', event)));
     const { process, power, display, application } = this.trackers;
     if (process !== undefined) {
-      this.#offs.push(
+      this.#sub(() =>
         process.on('childProcessGone', (gone) => this.#send('child_process_gone', { ...gone })),
       );
     }
     if (power !== undefined) {
-      this.#offs.push(
-        power.on('suspendResume', (p) => this.#send(`power_${p.state}`)),
-        power.on('lockScreen', (p) => this.#send(`power_${p.state}`)),
-        power.on('powerSource', (p) => this.#send(`power_${p.source}`)),
-      );
+      this.#sub(() => power.on('suspendResume', (p) => this.#send(`power_${p.state}`)));
+      this.#sub(() => power.on('lockScreen', (p) => this.#send(`power_${p.state}`)));
+      this.#sub(() => power.on('powerSource', (p) => this.#send(`power_${p.source}`)));
     }
     if (display !== undefined) {
-      this.#offs.push(
-        display.on('displayAdded', (d) => this.#send('display_added', { ...d })),
-        display.on('displayRemoved', (d) => this.#send('display_removed', { ...d })),
+      this.#sub(() => display.on('displayAdded', (d) => this.#send('display_added', { ...d })));
+      this.#sub(() => display.on('displayRemoved', (d) => this.#send('display_removed', { ...d })));
+      this.#sub(() =>
         display.on('displayMetricsChanged', (m) =>
           this.#send('display_metrics_changed', { ...m.display, changed: [...m.changed] }),
         ),
       );
     }
     if (application !== undefined) {
-      this.#offs.push(
+      this.#sub(() =>
         application.on('windowFocus', (w) =>
           this.#send(w.focused ? 'window_focus' : 'window_blur', ids(w, 'windowId')),
         ),
+      );
+      this.#sub(() =>
         application.on('windowVisibility', (w) =>
           this.#send(w.visible ? 'window_show' : 'window_hide', ids(w, 'windowId')),
         ),
+      );
+      this.#sub(() =>
         application.on('rendererResponsiveness', (r) =>
           this.#send(
             r.responsive ? 'renderer_responsive' : 'renderer_unresponsive',

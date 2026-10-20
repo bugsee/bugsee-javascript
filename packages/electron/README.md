@@ -51,7 +51,7 @@ launchRenderer('YOUR_APP_TOKEN');
 
 ## Options
 
-`launchMain(appToken, options)` takes `ipcMain` (required), `app`, `crashReporter`, `crashReporterExtra` and `video`, plus every `@bugsee/node` launch option (`appVersion`, `captureLogs`, `captureNetwork`, `maxRecordingTime`, `dataDir` and others).
+`launchMain(appToken, options)` takes `ipcMain` (required), `app`, `powerMonitor`, `screen`, `BrowserWindow`, `gpuInfoType`, `captureWindowEvents`, `crashReporter`, `crashReporterExtra` and `video`, plus every `@bugsee/node` launch option (`appVersion`, `captureLogs`, `captureNetwork`, `maxRecordingTime`, `dataDir` and others).
 
 `launchRenderer(appToken, options)` takes the `@bugsee/browser` launch options. Session replay is on by default and streams to the main process; pass `replay: false` to opt out.
 
@@ -80,14 +80,15 @@ A `relaunch()` from `@bugsee/node` or `@bugsee/bugsee` is not Electron-aware: af
 
 ## Power, display and window telemetry
 
-Pass any of `powerMonitor`, `screen` and `BrowserWindow` (the Electron objects, injected like `app`) to `launchMain`; a domain whose object is absent is simply off. Pass `screen` only after the app is ready.
+Pass any of `powerMonitor`, `screen` and `BrowserWindow` (the Electron objects, injected like `app`) to `launchMain`; a domain whose object is absent is simply off.
 
-- `powerMonitor` -> `events.system`: `power_suspend`, `power_resume`, `power_lock`, `power_unlock` (macOS/Windows), `power_ac`, `power_battery`. No params.
-- `screen` -> `events.system`: `display_added` and `display_removed` (`{ id, width, height, scaleFactor, rotation, internal, refreshRate }`, absent keys omitted) and `display_metrics_changed` (the same plus `changed`, Electron's changed metrics). It also feeds the `electron_displays` system trace (`{ displays: [{ id, width, height, scale_factor, rotation, internal, refresh_rate_hz }] }`, written when it changes; absent when Electron gives no usable list). The name is JS-specific: `displays` is reserved until an Android-shaped list is confirmed against the viewer.
-- `app` (plus `BrowserWindow` for windows that already exist) -> `events.system`: `window_focus`, `window_blur`, `window_show`, `window_hide` (`{ windowId }`), and `renderer_unresponsive` / `renderer_responsive` (`{ webContentsId }`). Windows created after `launchMain` are tracked too. The hang pair is listened for on `webContents` only, because `BrowserWindow` re-emits it and each hang would otherwise be recorded twice; a `<webview>` or `BrowserView` is covered when Electron announces it through `web-contents-created`.
+**Pass `screen` safely.** Electron's real `screen` throws on any property read until the app is ready, so `import { screen } from 'electron'` and passing it straight to a `launchMain` call made before `app.whenReady()` turns the display domain off (the failure is reported through `onError`; the launch and the other domains are unaffected). To get display telemetry, either call `launchMain` after `app.whenReady()`, or leave `screen` out of the early call. The `powerMonitor` has the same rule on some platforms.
+
+- `powerMonitor` -> `events.system`: `power_suspend`, `power_resume`, `power_lock`, `power_unlock`, `power_ac`, `power_battery`. No params. Platform dependent, per Electron's typings: `lock-screen`/`unlock-screen` are macOS and Windows, `on-ac` is macOS and Windows, and `on-battery` is macOS only, so an event that never fires is not evidence about the power state.
+- `screen` -> `events.system`: `display_added` and `display_removed` (`{ id, width, height, scaleFactor, rotation, internal, refreshRate }`, absent keys omitted; a display whose id is -1, Electron's "invalid or not yet known" marker, is ignored) and `display_metrics_changed` (the same plus `changed`, Electron's changed metrics). It also feeds the `electron_displays` system trace (`{ displays: [{ id, width, height, scale_factor, rotation, internal, refresh_rate_hz }] }`, written when it changes). The trace is absent only before its first value: if a later refresh cannot read a usable list, the previous list stays held and keeps being re-recorded (the same open decision as other held traces). The name is JS-specific: `displays` is reserved until an Android-shaped list is confirmed against the viewer.
+- `app` (plus `BrowserWindow` for windows that already exist) -> `events.system`: `window_focus`, `window_blur`, `window_show`, `window_hide` (`{ windowId }`), and `renderer_unresponsive` / `renderer_responsive` (`{ webContentsId }`). These are on whenever `app` is passed (they add two `app` listeners, `browser-window-created` and `web-contents-created`); pass `captureWindowEvents: false` to opt out. Windows created after `launchMain` are tracked too. The hang pair is listened for on `webContents` only, because `BrowserWindow` re-emits it and each hang would otherwise be recorded twice; a `<webview>` or `BrowserView` is covered when Electron announces it through `web-contents-created`.
 
 All of these events are recorded only while `captureSystemEvents` is on, the listeners are removed again by `client.stop()`, and a throwing Electron getter is reported through `onError` and never fails the launch. Window titles and URLs are never read.
-
 
 ## Links
 

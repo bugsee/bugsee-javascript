@@ -45,7 +45,24 @@ describe('reportTo', () => {
   });
 });
 
+const throwingProxy = (message = 'not ready') =>
+  new Proxy(
+    {},
+    {
+      get() {
+        throw new Error(message);
+      },
+    },
+  );
+
 describe('isReleasable', () => {
+  it('a source that throws on property read is NOT releasable, and the read is reported', () => {
+    const report = vi.fn();
+    expect(isReleasable(throwingProxy('screen'), report)).toBe(false);
+    expect(report).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'screen' }));
+    expect(() => isReleasable(throwingProxy())).not.toThrow(); // no reporter: still silent
+  });
+
   it('needs on AND (removeListener or off)', () => {
     expect(isReleasable(undefined)).toBe(false);
     expect(isReleasable({})).toBe(false);
@@ -57,6 +74,21 @@ describe('isReleasable', () => {
 });
 
 describe('bindAll', () => {
+  it('a source whose property reads throw: nothing attached, undefined, reported exactly once, never thrown', () => {
+    const a = emitter();
+    const report = vi.fn();
+    const release = bindAll(
+      [
+        { src: throwingProxy('proxy'), event: 'x', listener: () => {} },
+        { src: a, event: 'y', listener: () => {} },
+      ],
+      report,
+    );
+    expect(release).toBeUndefined();
+    expect(a.on).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'proxy' }));
+  });
+
   it('attaches every binding and the release removes the very wrappers it attached', () => {
     const a = emitter();
     const b = emitter();
@@ -221,6 +253,24 @@ describe('ElectronStageTracker', () => {
     t.dropAll();
     expect(t.released).toEqual(['a', 'b']);
     expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('a stage whose attach THROWS is reported, never thrown at the subscriber, and retried on the next change', () => {
+    const onError = vi.fn();
+    const t = new T(onError);
+    let boom = true;
+    const original = (t as unknown as { attachStage: (s: 'a' | 'b') => unknown }).attachStage.bind(
+      t,
+    );
+    (t as unknown as { attachStage: (s: 'a' | 'b') => unknown }).attachStage = (stage) => {
+      if (boom) throw new Error('attach');
+      return original(stage);
+    };
+    expect(() => t.on('a', () => {})).not.toThrow();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'attach' }));
+    boom = false;
+    t.on('b', () => {});
+    expect(t.attached).toEqual(['a', 'b']);
   });
 
   it('reset drops every listener and releases', () => {

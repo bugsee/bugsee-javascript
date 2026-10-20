@@ -413,3 +413,54 @@ describe('createElectronSystemEventsSource: domain trackers', () => {
     expect(inner.deactivations).toBe(1);
   });
 });
+
+describe('createElectronSystemEventsSource: a throwing domain subscription', () => {
+  it('is reported, does not abort the other domains, and stop() still releases the inner source and the rest', () => {
+    const powerMonitor = new FakeEmitter();
+    const app = new FakeEmitter();
+    const onError = vi.fn();
+    const power = new ElectronPowerTracker({ powerMonitor }, onError);
+    const application = new ElectronApplicationTracker({ app }, onError);
+    const display = {
+      on: () => {
+        throw new Error('display subscribe');
+      },
+    } as unknown as ElectronDisplayTracker;
+    const inner = new FakeInner();
+    const mux = createElectronSystemEventsSource(inner, { power, display, application }, onError);
+    const seen = vi.fn();
+    let off: () => void = () => {};
+    expect(() => {
+      off = mux.on('event', seen);
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'display subscribe' }));
+    // the domains AFTER the throwing one still work
+    app.emit(
+      'browser-window-created',
+      Object.assign(new FakeEmitter(), { id: 1, isDestroyed: () => false }),
+    );
+    powerMonitor.emit('suspend');
+    expect(names(seen)).toEqual(['process_started', 'power_suspend']);
+    off();
+    expect(inner.deactivations).toBe(1);
+    expect(powerMonitor.total()).toBe(0);
+    expect(app.total()).toBe(0);
+  });
+
+  it('a throwing inner subscription is reported and the Electron domains still attach', () => {
+    const powerMonitor = new FakeEmitter();
+    const onError = vi.fn();
+    const power = new ElectronPowerTracker({ powerMonitor }, onError);
+    const inner = {
+      on: () => {
+        throw new Error('inner');
+      },
+    } as unknown as FakeInner;
+    const mux = createElectronSystemEventsSource(inner, { power }, onError);
+    const seen = vi.fn();
+    expect(() => mux.on('event', seen)).not.toThrow();
+    powerMonitor.emit('on-ac');
+    expect(names(seen)).toEqual(['power_ac']);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'inner' }));
+  });
+});

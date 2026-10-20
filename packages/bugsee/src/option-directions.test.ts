@@ -109,6 +109,11 @@ const RAW_STRICT: Record<string, RawEntry> = {
     safe: 'on',
     why: 'INTERNAL hold, forwarded to the browser read above',
   },
+  'electron:captureWindowEvents': {
+    safe: 'off',
+    why: 'default ON, records window focus/renderer hangs: an invalid value is OFF + onError',
+    check: ['electron', /resolveFailClosedBoolean\(\s*captureWindowEvents/],
+  },
   'electron:recover': { safe: 'n/a', why: 'durability behaviour' },
   'node:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
   'node:exitOnUncaught': { safe: 'n/a', why: 'process policy' },

@@ -192,6 +192,64 @@ describe('ElectronApplicationTracker', () => {
     expect(seen.mock.calls.map((c) => c[0])).toEqual([{ focused: true }, { focused: true }]);
   });
 
+  it('a non-finite window/webContents id (NaN, Infinity) is omitted, a finite one kept', () => {
+    const s = setup();
+    const t = track(s);
+    const seen = vi.fn();
+    t.on('windowFocus', seen);
+    for (const id of [Number.NaN, Number.POSITIVE_INFINITY, 0]) {
+      const w = new FakeWindow(1);
+      w.id = id;
+      s.app.emit('browser-window-created', w);
+      w.emit('focus');
+    }
+    expect(seen.mock.calls.map((c) => c[0])).toEqual([
+      { focused: true },
+      { focused: true },
+      { focused: true, windowId: 0 },
+    ]);
+  });
+
+  it('a BrowserWindow whose property reads throw is reported once; windows created later are still tracked', () => {
+    const s = setup();
+    const onError = vi.fn();
+    keys.push(s.app);
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('not ready');
+        },
+      },
+    );
+    const t = electronApplicationTrackerFor({ app: s.app, BrowserWindow: hostile }, onError);
+    const seen = vi.fn();
+    t.on('windowFocus', seen);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: 'not ready' }),
+    );
+    const late = new FakeWindow(2);
+    s.app.emit('browser-window-created', late);
+    late.emit('focus');
+    expect(seen).toHaveBeenCalledOnce();
+  });
+
+  it('an app whose property reads throw: subscribing never throws, nothing attaches, reported', () => {
+    const onError = vi.fn();
+    const hostileApp = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('app');
+        },
+      },
+    );
+    keys.push(hostileApp);
+    const t = electronApplicationTrackerFor({ app: hostileApp }, onError);
+    expect(() => t.on('windowFocus', () => {})).not.toThrow();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'app' }));
+  });
+
   it("release removes EVERY listener: the app creation listener and each object's", () => {
     const w1 = new FakeWindow(1);
     const s = setup([w1]);

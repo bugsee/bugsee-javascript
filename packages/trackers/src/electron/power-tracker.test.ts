@@ -157,9 +157,11 @@ describe('ElectronPowerTracker', () => {
       expect(t.current('powerSource')).toEqual({ source: 'ac' });
     });
     it('is undefined (never guessed) without the method, with a non-boolean, or when it throws (reported)', () => {
+      const quiet = vi.fn();
       expect(
-        track(fakeMonitor({ isOnBatteryPower: undefined })).current('powerSource'),
+        track(fakeMonitor({ isOnBatteryPower: undefined }), quiet).current('powerSource'),
       ).toBeUndefined();
+      expect(quiet).not.toHaveBeenCalled(); // a missing method is absence, not an error
       const odd = fakeMonitor({ isOnBatteryPower: () => 'yes' });
       expect(track(odd).current('powerSource')).toBeUndefined();
       const onError = vi.fn();
@@ -174,6 +176,38 @@ describe('ElectronPowerTracker', () => {
     it('rejects an unknown stage name', () => {
       const t = track(fakeMonitor());
       expect(t.current('other' as 'powerSource')).toBeUndefined();
+    });
+  });
+
+  describe('a monitor whose property reads throw (host object not ready)', () => {
+    const hostile = (message: string) =>
+      new Proxy(
+        {},
+        {
+          get() {
+            throw new Error(message);
+          },
+        },
+      ) as PowerMonitorSource;
+
+    it('subscribing never throws, nothing attaches, the failure is reported once per attempt', () => {
+      const onError = vi.fn();
+      const monitor = hostile('power');
+      keys.push(monitor);
+      const t = electronPowerTrackerFor({ powerMonitor: monitor }, onError);
+      expect(() => t.on('suspendResume', () => {})).not.toThrow();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ message: 'power' }),
+      );
+    });
+
+    it("current('powerSource') answers undefined and reports (the property read is inside the guard)", () => {
+      const onError = vi.fn();
+      const monitor = hostile('read');
+      keys.push(monitor);
+      const t = electronPowerTrackerFor({ powerMonitor: monitor }, onError);
+      expect(t.current('powerSource')).toBeUndefined();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'read' }));
     });
   });
 

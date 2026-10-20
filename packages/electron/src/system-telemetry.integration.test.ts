@@ -331,14 +331,18 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
   const launchDomains = (
     w: ReturnType<typeof domainWorld>,
     over: Parameters<typeof launchWith>[0] = {},
+    fp = fakeProcess(),
   ) =>
-    launchWith({
-      app: w.app as never,
-      powerMonitor: w.powerMonitor,
-      screen: w.screen,
-      BrowserWindow: w.BrowserWindow,
-      ...over,
-    });
+    launchWith(
+      {
+        app: w.app as never,
+        powerMonitor: w.powerMonitor,
+        screen: w.screen,
+        BrowserWindow: w.BrowserWindow,
+        ...over,
+      },
+      fp,
+    );
 
   it('power, display and window events AND the electron_displays trace land in the uploaded bundle', async () => {
     const early = new Win(1);
@@ -449,6 +453,53 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
       fn.mock.calls.map((c) => (c[0] as Error).message);
     expect(messages(firstOnError)).toEqual(expect.arrayContaining(['remove-x', 'remove-win']));
     expect(messages(secondOnError).filter((m) => m.startsWith('remove-'))).toEqual([]);
+  });
+
+  const notReady = (message: string) =>
+    new Proxy(
+      {},
+      {
+        get() {
+          throw new Error(message);
+        },
+      },
+    );
+
+  it.each([
+    ['screen', 'screen not ready'],
+    ['powerMonitor', 'power not ready'],
+    ['BrowserWindow', 'window class not ready'],
+  ] as const)('an Electron %s whose property reads THROW (not ready) turns only that domain off: reported, other domains work, and stop() leaves NOTHING attached', async (which, message) => {
+    const w = domainWorld([]);
+    const onError = vi.fn();
+    const fp = fakeProcess();
+    const hostile = notReady(message);
+    const { client, puts } = launchDomains(
+      { ...w, [which]: hostile } as ReturnType<typeof domainWorld>,
+      { onError },
+      fp,
+    );
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message }));
+    // the node source is live and every healthy domain still records
+    expect(fp.count('warning')).toBe(1);
+    if (which !== 'powerMonitor') w.powerMonitor.emit('suspend');
+    const win = new Win(3);
+    w.app.emit('browser-window-created', win);
+    win.emit('focus');
+    await client.logException(new Error('x'));
+    const names = fileOf<{ name: string }>(puts[0] as Uint8Array, 'events.system.json').map(
+      (e) => e.name,
+    );
+    expect(names).toContain('window_focus');
+    if (which !== 'powerMonitor') expect(names).toContain('power_suspend');
+    await client.stop();
+    expect(fp.count('warning')).toBe(0);
+    expect(fp.count('beforeExit')).toBe(0);
+    expect(w.app.count('child-process-gone')).toBe(0);
+    expect(domainListeners(w)).toBe(0);
+    expect(win.total()).toBe(0);
+    if (which !== 'screen') expect(w.screen.total()).toBe(0);
+    if (which !== 'powerMonitor') expect(w.powerMonitor.total()).toBe(0);
   });
 
   it('a throwing powerMonitor/screen/BrowserWindow never fails launch; the other domains still work', async () => {

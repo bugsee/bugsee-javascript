@@ -46,13 +46,22 @@ export function reportTo(
   }
 }
 
-/** True when `src` can be listened to AND released again. */
-export function isReleasable(src: EmitterSource | undefined): src is EmitterSource {
-  return (
-    src !== undefined &&
-    typeof src.on === 'function' &&
-    (typeof src.removeListener === 'function' || typeof src.off === 'function')
-  );
+/**
+ * True when `src` can be listened to AND released again. Every host property read is guarded: Electron's real `screen`
+ * is a Proxy that THROWS on any property read before the app is ready, and that must mean "domain off", never a failed
+ * launch. A throwing read is reported (when a reporter is given) and answers false.
+ */
+export function isReleasable(src: EmitterSource | undefined, report?: Report): boolean {
+  if (src === undefined) return false;
+  try {
+    return (
+      typeof src.on === 'function' &&
+      (typeof src.removeListener === 'function' || typeof src.off === 'function')
+    );
+  } catch (error) {
+    report?.(error);
+    return false;
+  }
 }
 
 /**
@@ -61,7 +70,7 @@ export function isReleasable(src: EmitterSource | undefined): src is EmitterSour
  * disarms the wrappers first, then removes each listener in its own guard so one failing removal strands no other.
  */
 export function bindAll(bindings: readonly Binding[], report: Report): (() => void) | undefined {
-  if (!bindings.every((b) => isReleasable(b.src))) return undefined;
+  if (!bindings.every((b) => isReleasable(b.src, report))) return undefined; // reported at most once: `every` stops
   let live = true;
   const removers: Array<() => void> = [];
   const release = (): void => {
@@ -135,7 +144,12 @@ export abstract class ElectronStageTracker<E> extends InterceptorBase<E> {
       if (this.listenerCount(stage) === 0) {
         if (armed !== undefined) this.#detach(stage, armed);
       } else if (armed === undefined) {
-        const release = this.attachStage(stage); // retried on the next listener change / rebind when undefined
+        let release: (() => void) | undefined;
+        try {
+          release = this.attachStage(stage); // retried on the next listener change / rebind when undefined
+        } catch (error) {
+          this.report(error); // a hostile host object must not fail the subscriber (or the launch)
+        }
         if (release !== undefined) this.#released.set(stage, release);
       }
     }

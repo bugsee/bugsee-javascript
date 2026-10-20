@@ -12,6 +12,9 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // `current('powerSource')` is a LIVE read of `powerMonitor.isOnBatteryPower()`; it answers undefined when the monitor has
 // no such method, it throws (reported) or returns a non-boolean: a source is never guessed. `thermal-state-change` and
 // `speed-limit-change` are deliberately NOT mapped: they are macOS-only and the thermal state is not Android's int enum.
+// PLATFORM DEPENDENT: per Electron's typings `on-ac` is documented for macOS and Windows and `on-battery` for macOS
+// only, so on Linux (and `on-battery` on Windows) the event may simply never fire; `lock-screen`/`unlock-screen` are
+// macOS/Windows. Absence of an event is never evidence of a state: read `current('powerSource')` for the live value.
 // `electron` is never imported: the monitor is INJECTED as a structural {@link PowerMonitorSource}.
 //
 // SINGLETON per `powerMonitor` object (`electronPowerTrackerFor`); a relaunch only rebinds the reporter.
@@ -67,9 +70,10 @@ export class ElectronPowerTracker extends ElectronStageTracker<ElectronPowerEven
   /** The live power source: `battery` / `ac`, or undefined when the monitor cannot say (never guessed). */
   current(stage: 'powerSource'): ElectronPowerEvents['powerSource'] | undefined {
     const monitor = this.#monitor;
-    if (stage !== 'powerSource' || typeof monitor?.isOnBatteryPower !== 'function')
-      return undefined;
+    if (stage !== 'powerSource' || monitor === undefined) return undefined;
     try {
+      // inside the guard: a host object that is not ready can throw on ANY property read
+      if (typeof monitor.isOnBatteryPower !== 'function') return undefined;
       const onBattery = monitor.isOnBatteryPower();
       if (typeof onBattery !== 'boolean') return undefined;
       return { source: onBattery ? 'battery' : 'ac' };

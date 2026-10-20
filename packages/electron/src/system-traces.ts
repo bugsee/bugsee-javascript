@@ -33,9 +33,11 @@ import type {
 //   electron_displays = { displays: [{ id, width, height, scale_factor?, rotation?, internal?, refresh_rate_hz? }] }
 //
 // `width`/`height` are Electron's device-independent pixels (`Display.size`), `rotation` is 0/90/180/270, `refresh_rate_hz`
-// is `displayFrequency`; a key is omitted when Electron did not supply it, a display with no id/size is dropped, and with
-// no usable list the trace is absent (never `{displays: []}`). It is a HELD step trace (`emitIfChanged`): the list when
-// the producer starts, then the fresh list after every display added/removed/metrics-changed.
+// is `displayFrequency`; a key is omitted when Electron did not supply it, a display with no id/size (or id -1) is dropped, and
+// the trace is never `{displays: []}`. It is a HELD step trace (`emitIfChanged`): the list when the producer starts, then
+// the fresh list after every display added/removed/metrics-changed. HELD-VALUE CAVEAT: it is absent only BEFORE its first
+// emit. A later refresh that cannot read a usable list emits nothing and cannot retract, so the previous list stays held and
+// is re-recorded every refreshMs (same open owner decision as storage_estimate / user_idle_state, docs/PROGRESS.md).
 
 /** At most two decimals: Electron's float noise is not information. */
 const round2 = (value: number): number => Math.round(value * 100) / 100;
