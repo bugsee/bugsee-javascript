@@ -2,7 +2,7 @@ import { InterceptorBase } from '@bugsee/core';
 
 // Shared page-lifecycle TRACKER (the web analog of the mobile Application tracker that Android's TraceAppState
 // and EventApplicationLifecycle both subscribe to): the ONE owner of the window/document lifecycle listeners.
-// The system-events source and the connection/orientation trackers subscribe to it instead of each attaching
+// The system-events source and the connection tracker subscribe to it instead of each attaching
 // their own, so the injected window+document are bound in exactly one place. Listeners attach on the first
 // subscriber and are removed on the last.
 
@@ -16,7 +16,6 @@ export interface PageLifecycleEvents {
   resume: undefined;
   online: undefined;
   offline: undefined;
-  orientationchange: undefined;
 }
 interface TargetLike {
   addEventListener(type: string, listener: (event: unknown) => void): void;
@@ -59,7 +58,7 @@ export class PageLifecycleTracker extends InterceptorBase<PageLifecycleEvents> {
           this.emit('pagehide', { persisted: (e as { persisted?: boolean }).persisted === true }),
         ),
       );
-      for (const type of ['online', 'offline', 'orientationchange'] as const) {
+      for (const type of ['online', 'offline'] as const) {
         this.#listen(win, type, () => this.#guard(() => this.emit(type, undefined)));
       }
       this.#listen(doc, 'visibilitychange', () =>

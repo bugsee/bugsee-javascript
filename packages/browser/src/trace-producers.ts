@@ -4,29 +4,24 @@ import {
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
+  type OrientationState,
   type PowerTracker,
   powerTrackerFor,
+  type ScreenSizeState,
+  type UiEnv,
+  type UiTracker,
+  uiTrackerFor,
 } from '@bugsee/trackers/browser';
+import { boundMatchMedia } from './host-global';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
 import {
   type ConnectionEnv,
   type ConnectionState,
   ConnectionTracker,
 } from './trackers/connection-tracker';
-import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
 import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
-import {
-  type OrientationEnv,
-  type OrientationState,
-  OrientationTracker,
-} from './trackers/orientation-tracker';
 import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
-import {
-  type ScreenSizeEnv,
-  type ScreenSizeState,
-  ScreenSizeTracker,
-} from './trackers/screen-size-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -181,17 +176,17 @@ export class ConnectionProducer extends TraceProducerBase {
 
 export class OrientationProducer extends TraceProducerBase {
   readonly name = 'orientation';
-  readonly #tracker: OrientationTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: OrientationTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s));
-    const cur = this.#tracker.current();
+    this.#off = this.#tracker.on('orientation', (s) => this.#publish(s));
+    const cur = this.#tracker.current('orientation');
     if (cur !== undefined) this.#publish(cur);
   }
 
@@ -201,6 +196,8 @@ export class OrientationProducer extends TraceProducerBase {
   }
 
   #publish(s: OrientationState): void {
+    // A bare notification (the engine could not read an orientation) has nothing to report.
+    if (s.type === undefined || s.angle === undefined) return;
     this.emitIfChanged('orientation', orientationToWire(s.type, s.angle));
   }
 }
@@ -248,16 +245,16 @@ export class AppStateProducer extends TraceProducerBase {
 /** `fps` (Android parity): polled, so each window's rate is emitted and never held or refreshed. */
 export class FpsProducer extends TraceProducerBase {
   readonly name = 'fps';
-  readonly #tracker: FpsTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: FpsTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('fps', (fps) => this.emit('fps', fps));
+    this.#off = this.#tracker.on('frameRate', (fps) => this.emit('fps', fps));
   }
 
   protected override onStop(): void {
@@ -278,17 +275,17 @@ export class FpsProducer extends TraceProducerBase {
  */
 export class ScreenSizeProducer extends TraceProducerBase {
   readonly name = 'screen-size';
-  readonly #tracker: ScreenSizeTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: ScreenSizeTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s)); // subscribing attaches the listeners
-    const cur = this.#tracker.current();
+    this.#off = this.#tracker.on('screenSize', (s) => this.#publish(s)); // subscribing attaches the listeners
+    const cur = this.#tracker.current('screenSize');
     if (cur !== undefined) this.#publish(cur);
   }
 
@@ -341,14 +338,16 @@ export interface BrowserTraceEnv extends BatteryEnv {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
   };
-  screen?: OrientationEnv['screen'] & ScreenSizeEnv['screen'];
+  screen?: UiEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
-  window?: ConnectionEnv['window'] & ScreenSizeEnv['window'];
+  window?: ConnectionEnv['window'] & UiEnv['window'];
   /** The document the SDK is bound to: visibility for `app_state` and `fps`. */
-  document?: FpsEnv['document'];
+  document?: UiEnv['document'] & { readonly visibilityState?: string };
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
-  requestAnimationFrame?: FpsEnv['requestAnimationFrame'];
-  cancelAnimationFrame?: FpsEnv['cancelAnimationFrame'];
+  requestAnimationFrame?: UiEnv['requestAnimationFrame'];
+  cancelAnimationFrame?: UiEnv['cancelAnimationFrame'];
+  /** `window.matchMedia` bound to that window: colour scheme / reduced motion / display mode (UiTracker). */
+  matchMedia?: UiEnv['matchMedia'];
   /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
    * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
@@ -401,7 +400,9 @@ export function browserTraceEnvFrom(
   const getBattery = nav === undefined ? undefined : read(() => nav.getBattery);
   const raf = read(() => win.requestAnimationFrame);
   const caf = read(() => win.cancelAnimationFrame);
+  const matchMedia = boundMatchMedia(win, onError);
   return {
+    ...(matchMedia !== undefined ? { matchMedia } : {}),
     ...(nav !== undefined ? { navigator: nav } : {}),
     ...(performance !== undefined ? { performance } : {}),
     ...(screen !== undefined ? { screen } : {}),
@@ -476,6 +477,28 @@ export function createBrowserSystemTraceProducers(
   if (env.sensors === false) return [battery];
   // Read ONCE: a hostile `performance.now` getter must report one error, not one per consumer.
   const clock = safePerformanceNow(env, onError);
+  // ONE UI/display tracker per window serves orientation, screen_size and fps (and the events source).
+  const ui = uiTrackerFor(
+    {
+      ...(env.window !== undefined ? { window: env.window } : {}),
+      ...(env.screen !== undefined ? { screen: env.screen } : {}),
+      ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
+      ...(env.document !== undefined ? { document: env.document } : {}),
+      ...(env.requestAnimationFrame !== undefined
+        ? { requestAnimationFrame: env.requestAnimationFrame }
+        : {}),
+      ...(env.cancelAnimationFrame !== undefined
+        ? { cancelAnimationFrame: env.cancelAnimationFrame }
+        : {}),
+      ...(clock !== undefined
+        ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
+          // rather than answering a made-up 0.
+          { now: () => (env.performance as { now(): number }).now() }
+        : {}),
+      ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+    },
+    onError,
+  );
   return [
     battery,
     new MemoryProducer(
@@ -497,29 +520,11 @@ export function createBrowserSystemTraceProducers(
         onError,
       ),
     ),
-    new OrientationProducer(
-      new OrientationTracker(
-        {
-          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
-          ...(env.window !== undefined ? { window: env.window } : {}),
-          ...(env.screen !== undefined ? { screen: env.screen } : {}),
-        },
-        onError,
-      ),
-    ),
+    new OrientationProducer(ui),
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle, env.document),
-          new ScreenSizeProducer(
-            new ScreenSizeTracker(
-              {
-                lifecycle: env.lifecycle,
-                ...(env.window !== undefined ? { window: env.window } : {}),
-                ...(env.screen !== undefined ? { screen: env.screen } : {}),
-              },
-              onError,
-            ),
-          ),
+          new ScreenSizeProducer(ui),
           new MainThreadLagProducer(
             new MainThreadLagTracker(
               {
@@ -534,27 +539,7 @@ export function createBrowserSystemTraceProducers(
               onError,
             ),
           ),
-          new FpsProducer(
-            new FpsTracker(
-              {
-                lifecycle: env.lifecycle,
-                ...(env.document !== undefined ? { document: env.document } : {}),
-                ...(env.requestAnimationFrame !== undefined
-                  ? { requestAnimationFrame: env.requestAnimationFrame }
-                  : {}),
-                ...(env.cancelAnimationFrame !== undefined
-                  ? { cancelAnimationFrame: env.cancelAnimationFrame }
-                  : {}),
-                ...(clock !== undefined
-                  ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
-                    // rather than answering a made-up 0.
-                    { now: () => (env.performance as { now(): number }).now() }
-                  : {}),
-                ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
-              },
-              onError,
-            ),
-          ),
+          new FpsProducer(ui),
         ]
       : []),
   ];

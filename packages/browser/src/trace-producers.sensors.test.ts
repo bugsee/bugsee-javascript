@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { UiTracker } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdvertisedMemoryProducer,
@@ -9,7 +10,6 @@ import {
 } from './trace-producers';
 import { ConnectionTracker } from './trackers/connection-tracker';
 import { MemoryTracker } from './trackers/memory-tracker';
-import { OrientationTracker } from './trackers/orientation-tracker';
 
 type Row = { name: string; value: unknown };
 const startAll = (producers: readonly TraceProducer[]) => {
@@ -205,9 +205,7 @@ describe('ConnectionProducer', () => {
 describe('OrientationProducer', () => {
   it('emits the Android-enum INT, never the browser {type, angle} object', () => {
     const orientation = Object.assign(mkTarget(), { type: 'landscape-primary', angle: 90 });
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 3 }]); // LandscapeLeft
     orientation.type = 'portrait-primary';
     orientation.angle = 0;
@@ -219,7 +217,7 @@ describe('OrientationProducer', () => {
     const win = mkTarget();
     const orientation = Object.assign(mkTarget(), { type: 'portrait-primary', angle: 0 });
     const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ window: win, screen: { orientation } })),
+      new OrientationProducer(new UiTracker({ window: win, screen: { orientation } })),
     ]);
     orientation.type = 'landscape-secondary';
     orientation.angle = 270;
@@ -228,10 +226,15 @@ describe('OrientationProducer', () => {
     expect(out.map((r) => r.value)).toEqual([1, 4]);
   });
 
+  it('ignores a bare orientation notification (an orientationchange the engine cannot read)', () => {
+    const win = mkTarget();
+    const { out } = startAll([new OrientationProducer(new UiTracker({ window: win, screen: {} }))]);
+    win.fire('orientationchange');
+    expect(out).toEqual([]);
+  });
+
   it('emits nothing where the engine has no screen.orientation', () => {
-    expect(startAll([new OrientationProducer(new OrientationTracker({ screen: {} }))]).out).toEqual(
-      [],
-    );
+    expect(startAll([new OrientationProducer(new UiTracker({ screen: {} }))]).out).toEqual([]);
   });
 });
 
@@ -383,9 +386,7 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
 
   it('an unrecognised orientation type is Unknown even when the angle alone would say Portrait', () => {
     const orientation = { type: 'sideways', angle: 0 };
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 0 }]);
   });
 

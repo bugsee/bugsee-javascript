@@ -199,7 +199,7 @@ describe('ConnectionTracker', () => {
     });
     const seen: unknown[] = [];
     const off = t.on('state', (s) => seen.push(s));
-    expect(win.count()).toBe(4); // the lifecycle's own four window listeners; the tracker added none
+    expect(win.count()).toBe(3); // the lifecycle's own three window listeners; the tracker added none
     expect(connection.count()).toBe(1);
     win.fire('online');
     win.fire('offline');

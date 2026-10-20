@@ -42,6 +42,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { resetUiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -524,7 +525,8 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toEqual([w.win]); // called as a method of ITS window
+      expect(m.thisSeen.length).toBeGreaterThan(0);
+      expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
         expect.objectContaining({ name: 'dark_mode_changed', params: { dark: true } }),
@@ -1333,6 +1335,26 @@ describe('launch', () => {
       expect(w.count('online')).toBe(0);
       expect(w.count('offline')).toBe(0);
       expect(w.count('orientationchange')).toBe(0);
+    });
+
+    it('goes through the per-window UiTracker singleton (orientation/screen_size/fps/events share ONE set of listeners)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: memStore() }),
+      );
+      const before = w.count('orientationchange');
+      expect(before).toBe(1); // traces' orientation + the events source's orientation_changed: one listener
+      // Asking for the window's tracker returns the SAME one: subscribing adds no new window listener.
+      const ui = uiTrackerFor({ window: w.win });
+      const seen: unknown[] = [];
+      const off = ui.on('orientation', (s) => seen.push(s));
+      expect(w.count('orientationchange')).toBe(before);
+      off();
+      await client.stop();
+      expect(w.count('orientationchange')).toBe(0);
+      resetUiTracker({ window: w.win });
     });
 
     it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {

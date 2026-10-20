@@ -1,7 +1,8 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { type UiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
 import type { WindowEvents } from './detection-providers';
-import { hostGlobal } from './host-global';
+import { hostGlobal, hostRead } from './host-global';
 import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 // Browser system-event SOURCE for @bugsee/capture's systemEventsProvider (the node lifecycle-source
@@ -11,7 +12,8 @@ import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
 //   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
 //   online / offline       → online / offline (connectivity transitions)
-//   orientationchange      → orientation_changed ({type, angle} from screen.orientation)
+//   orientation (UiTracker) → orientation_changed ({type, angle} from screen.orientation)
+//   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
 /** The document surface the source needs: visibilitychange + the current visibility state. */
@@ -22,6 +24,8 @@ interface DocumentLike extends WindowEvents {
 interface ScreenLike {
   readonly orientation?: { readonly type: OrientationType; readonly angle: number };
 }
+
+type UiEnvWindow = NonNullable<Parameters<typeof uiTrackerFor>[0]['window']>;
 
 /** The slice of a `MediaQueryList` the dark-mode event needs. */
 interface MediaQueryLike {
@@ -51,15 +55,12 @@ export interface BrowserSystemEventsEnv {
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
-  readonly #screen: ScreenLike | undefined;
-  readonly #matchMedia: ((query: string) => MediaQueryLike) | undefined;
-  readonly #onError: (error: unknown) => void;
+  readonly #ui: Pick<UiTracker, 'on'>;
   #unsubscribe: Array<() => void> = [];
 
   constructor(
     lifecycle: Pick<PageLifecycleTracker, 'on'>,
-    screenLike: ScreenLike | undefined,
-    matchMedia?: (query: string) => MediaQueryLike,
+    ui: Pick<UiTracker, 'on'>,
     onError?: (error: unknown) => void,
   ) {
     // A throwing reporter must not escape into the browser's event dispatch or abort activation.
@@ -72,9 +73,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     };
     super(report);
     this.#lifecycle = lifecycle;
-    this.#screen = screenLike;
-    this.#matchMedia = matchMedia;
-    this.#onError = report;
+    this.#ui = ui;
   }
 
   protected onActivate(): void {
@@ -91,44 +90,18 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       l.on('resume', () => this.emit('event', { name: 'resume' })),
       l.on('online', () => this.emit('event', { name: 'online' })),
       l.on('offline', () => this.emit('event', { name: 'offline' })),
-      l.on('orientationchange', () => {
-        const orientation = this.#screen?.orientation;
+      // The UiTracker de-duplicates the double delivery (screen.orientation change + window orientationchange); an
+      // engine without a readable orientation still announces the bare event.
+      this.#ui.on('orientation', ({ type, angle }) =>
         this.emit('event', {
           name: 'orientation_changed',
-          ...(orientation !== undefined
-            ? { params: { type: orientation.type, angle: orientation.angle } }
-            : {}),
-        });
-      }),
+          ...(type !== undefined && angle !== undefined ? { params: { type, angle } } : {}),
+        }),
+      ),
+      this.#ui.on('colorScheme', ({ dark }) =>
+        this.emit('event', { name: 'dark_mode_changed', params: { dark } }),
+      ),
     ];
-    this.#watchDarkMode();
-  }
-
-  // `prefers-color-scheme` is a MediaQueryList you listen on (not a window event). Attached on its own, guarded:
-  // an unguarded throw here would abort the capture coordinator's start and every provider registered after
-  // the events source (input, viewtree, ...).
-  #watchDarkMode(): void {
-    try {
-      const list = this.#matchMedia?.('(prefers-color-scheme: dark)');
-      if (list === undefined || typeof list.addEventListener !== 'function') return;
-      const onChange = (event: { readonly matches: boolean }): void => {
-        try {
-          this.emit('event', { name: 'dark_mode_changed', params: { dark: event.matches } });
-        } catch (error) {
-          this.#onError(error); // never throw into the browser's event dispatch
-        }
-      };
-      list.addEventListener('change', onChange);
-      this.#unsubscribe.push(() => {
-        try {
-          list.removeEventListener?.('change', onChange);
-        } catch {
-          /* best-effort */
-        }
-      });
-    } catch (error) {
-      this.#onError(error);
-    }
   }
 
   protected override onDeactivate(): void {
@@ -155,10 +128,21 @@ export function createBrowserSystemEventsSource(
         env.onError,
       );
     })();
-  return new BrowserSystemEventsSource(
-    lifecycle,
-    env.screen ?? hostGlobal('screen', env.onError),
-    env.matchMedia,
+  // An injected window brings ITS screen (read guarded); only without a window does the host's global apply, so a
+  // window whose `screen` is blocked never borrows the host's into the shared per-window UI tracker.
+  const screen =
+    env.screen ??
+    (env.window !== undefined
+      ? hostRead(() => (env.window as { screen?: ScreenLike }).screen, env.onError)
+      : hostGlobal('screen', env.onError));
+  // The SAME per-window tracker the traces use (keyed on the window; a relaunch's seams merge into it).
+  const ui = uiTrackerFor(
+    {
+      ...(env.window !== undefined ? { window: env.window as UiEnvWindow } : {}),
+      ...(screen !== undefined ? { screen } : {}),
+      ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
+    },
     env.onError,
   );
+  return new BrowserSystemEventsSource(lifecycle, ui, env.onError);
 }

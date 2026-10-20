@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { UiTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   AppStateProducer,
@@ -7,7 +8,6 @@ import {
   defaultBrowserTraceEnv,
   FpsProducer,
 } from './trace-producers';
-import { FpsTracker } from './trackers/fps-tracker';
 import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 function mkTarget() {
@@ -113,8 +113,7 @@ describe('FpsProducer', () => {
     let timer: (() => void) | undefined;
     let now = 0;
     const cbs: Array<() => void> = [];
-    const tracker = new FpsTracker({
-      lifecycle: page.lifecycle,
+    const tracker = new UiTracker({
       document: page.doc,
       requestAnimationFrame: (cb) => {
         cbs.push(() => cb(0));
@@ -137,7 +136,7 @@ describe('FpsProducer', () => {
     cbs[0]?.();
     timer?.();
     expect(out).toEqual([{ name: 'fps', value: 1, hold: false }]);
-    expect(page.doc.count()).toBe(3); // subscribed: visibilitychange + freeze + resume
+    expect(page.doc.count()).toBe(1); // subscribed: the tracker's own visibilitychange (no page-lifecycle tracker)
     p.stop();
     expect(page.doc.count()).toBe(0); // the tracker was released with the last subscriber
     now = 2000;

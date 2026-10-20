@@ -9,3 +9,21 @@ export {
   powerTrackerFor,
   resetPowerTracker,
 } from './power-tracker';
+export {
+  type ColorSchemeState,
+  type DisplayModeName,
+  type DisplayModeState,
+  type MediaQueryListLike,
+  type OrientationState,
+  type ReducedMotionState,
+  resetUiTracker,
+  type ScreenSizeState,
+  type UiEnv,
+  type UiSchedulerLike,
+  type UiStage,
+  type UiStages,
+  type UiStateStage,
+  UiTracker,
+  uiTrackerFor,
+  type ViewportState,
+} from './ui-tracker';

@@ -80,13 +80,38 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { events } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(m.queries).toEqual(['(prefers-color-scheme: dark)']);
+    expect(new Set(m.queries)).toEqual(new Set(['(prefers-color-scheme: dark)'])); // baseline read + watch
     m.fire(true);
     m.fire(false);
     expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
       { name: 'dark_mode_changed', params: { dark: true } },
       { name: 'dark_mode_changed', params: { dark: false } },
     ]);
+  });
+
+  it('a throwing onError never escapes into the tracker-fed event dispatch', () => {
+    const { env, win, orientation } = fakeEnv();
+    const m = fakeMedia();
+    const { events } = activate({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: () => {
+        throw new Error('reporter');
+      },
+    });
+    const source = createBrowserSystemEventsSource({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: () => {
+        throw new Error('reporter');
+      },
+    });
+    source.on('event', () => {
+      throw new Error('consumer');
+    });
+    orientation.angle = 90;
+    expect(() => win.emit('orientationchange', {})).not.toThrow();
+    expect(events.map((e) => e.name)).toContain('orientation_changed');
   });
 
   it('removes the media listener on deactivate', () => {
@@ -116,7 +141,10 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     });
     win.emit('online', {});
     expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
-    expect(errors.map((e) => (e as Error).message)).toEqual(['matchMedia blocked']);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(new Set(errors.map((e) => (e as Error).message))).toEqual(
+      new Set(['matchMedia blocked']),
+    );
   });
 
   it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
