@@ -1023,9 +1023,26 @@ describe('EdgeContextStoreToken', () => {
 });
 
 describe('app identity resolution', () => {
-  const reportedApp = async (over: Partial<BugseeEdgeLaunchOptions> = {}) => {
+  // `processStub`, when given, replaces `globalThis.process` for the SYNCHRONOUS launch only (the app
+  // identity is resolved there) and is undone before any await. Vitest's withSafeTimers schedules
+  // `nextTick(() => { globalThis.process.nextTick = ... })` after every console/RPC send, so a tick landing
+  // while `process` is undefined throws "Cannot set properties of undefined (setting 'nextTick')".
+  const reportedApp = async (
+    over: Partial<BugseeEdgeLaunchOptions> = {},
+    processStub?: { value: unknown },
+  ) => {
     const transport = uploadTransport();
-    const client = launchTracked('tok', baseOptions({ transport, carrier: {}, ...over }));
+    let client: ReturnType<typeof launchTracked>;
+    if (processStub !== undefined) {
+      vi.stubGlobal('process', processStub.value);
+    }
+    try {
+      client = launchTracked('tok', baseOptions({ transport, carrier: {}, ...over }));
+    } finally {
+      if (processStub !== undefined) {
+        vi.unstubAllGlobals();
+      }
+    }
     await client.logException(new Error('x'));
     await client.flush();
     return issueJson(transport).environment.app;
@@ -1087,19 +1104,24 @@ describe('app identity resolution', () => {
   });
 
   it('copes with a process whose env throws', async () => {
-    vi.stubGlobal('process', {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const throwingEnv = {
       get env(): never {
         throw new Error('no env');
       },
+    };
+    expect(await reportedApp({}, { value: throwingEnv })).toMatchObject({
+      version: '0.0.0',
+      build: '0',
     });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
   });
 
   it('copes with a runtime that has no process', async () => {
-    vi.stubGlobal('process', undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(await reportedApp()).toMatchObject({ version: '0.0.0', build: '0' });
+    expect(await reportedApp({}, { value: undefined })).toMatchObject({
+      version: '0.0.0',
+      build: '0',
+    });
   });
 
   it('warns exactly once when no version can be found, and falls back to the defaults', async () => {
