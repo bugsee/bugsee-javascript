@@ -437,7 +437,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     const previous = this.#language;
     this.#language = next;
     if (previous !== undefined && !same(previous, next)) {
-      this.emit('language', { ...copyLanguage(next), previous });
+      this.emit('language', { ...copyLanguage(next), previous: copyLanguage(previous) });
     }
   }
 
@@ -713,7 +713,7 @@ function classifyQuota(quota: unknown): PrivateModeResult {
   return { private: 'unknown', method: PRIVATE_MODE_METHOD };
 }
 
-// `previous` needs no copy: it is the replaced reading, no longer retained.
+// Copied on every payload: a kept (failed-read) field shares its array between the old and the new reading.
 function copyLanguage(info: LanguageInfo): LanguageInfo {
   return { ...info, ...(info.languages !== undefined ? { languages: [...info.languages] } : {}) };
 }

@@ -1591,6 +1591,31 @@ describe('EnvironmentTracker: a failing field keeps its retained value (no fake 
     ]);
   });
 
+  it('a subscriber mutating previous.languages cannot corrupt the retained reading (kept array shared)', () => {
+    const state = { language: 'en', languagesFail: false };
+    const nav = {
+      get language(): string {
+        return state.language;
+      },
+      get languages(): string[] {
+        if (state.languagesFail) throw new Error('languages');
+        return ['en', 'de'];
+      },
+    };
+    const { tracker, win, listen } = setup(nav);
+    const got: Array<{ previous: { languages?: string[] } }> = [];
+    tracker.on('language', (e) => {
+      got.push(e as never);
+      e.previous.languages?.push('xx');
+    });
+    listen();
+    state.languagesFail = true; // the failing field keeps the retained array
+    state.language = 'fr';
+    win.fire('languagechange');
+    expect(got).toHaveLength(1);
+    expect(tracker.current().language).toEqual({ language: 'fr', languages: ['en', 'de'] });
+  });
+
   it('time zone: id or offset throwing once then recovering emits nothing', () => {
     const fail = { id: false, offset: false };
     const { tracker, scheduler, seen, listen } = setup(undefined, {

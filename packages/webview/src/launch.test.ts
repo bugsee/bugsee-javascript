@@ -237,6 +237,25 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     }
   });
 
+  it('never turns private-mode detection on, even when an earlier launch on the same window had it on', async () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    const estimate = vi.fn(() => Promise.resolve({ quota: 1 }));
+    const navigator = { language: 'en', storage: { estimate } };
+    Object.assign(win.target, { navigator });
+    try {
+      environmentTrackerFor({ window: win.target as never, navigator, detectPrivateMode: true });
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(estimate).toHaveBeenCalled(); // the storage trace probes it; private mode must not be inferred
+      expect(
+        environmentTrackerFor({ window: win.target as never }).current().privateMode,
+      ).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
   it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {
     const win = fakeEventTarget();
     const { doc, boom, state, document } = blockedDoc();

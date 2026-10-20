@@ -736,6 +736,7 @@ export function launchWithSeams(
           window: win,
           ...(domDocument !== undefined ? { document: domDocument } : {}),
           lifecycle,
+          detectPrivateMode: false, // explicit: never inherit ON from an earlier launch on the same window
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           ...(matchMedia !== undefined ? { matchMedia } : {}),
           ...(options.onError !== undefined ? { onError: options.onError } : {}),

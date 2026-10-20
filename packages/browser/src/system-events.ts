@@ -3,6 +3,7 @@ import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import {
   type ApplicationTracker,
   applicationTrackerFor,
+  type EnvironmentEvents,
   type EnvironmentTracker,
   environmentTrackerFor,
   hostRead,
@@ -64,7 +65,7 @@ export interface BrowserSystemEventsEnv {
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
   lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
-  environment?: Pick<EnvironmentTracker, 'on'>;
+  environment?: Pick<EnvironmentTracker, 'onAny'>;
   /** Run the private-mode heuristic (default false; see `captureEnvironmentHints`). Ignored when `environment` is supplied. */
   detectPrivateMode?: boolean;
   /** Drives the time-zone re-read tick; default the global timers. Ignored when `environment` is supplied. */
@@ -75,7 +76,7 @@ export interface BrowserSystemEventsEnv {
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
-  readonly #environment: Pick<EnvironmentTracker, 'on'>;
+  readonly #environment: Pick<EnvironmentTracker, 'onAny'>;
   readonly #screen: ScreenLike | undefined;
   readonly #matchMedia: ((query: string) => MediaQueryLike) | undefined;
   readonly #onError: (error: unknown) => void;
@@ -83,7 +84,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
-    environment: Pick<EnvironmentTracker, 'on'>,
+    environment: Pick<EnvironmentTracker, 'onAny'>,
     screenLike: ScreenLike | undefined,
     matchMedia?: (query: string) => MediaQueryLike,
     onError?: (error: unknown) => void,
@@ -129,27 +130,32 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       }),
     ];
     const env = this.#environment;
+    // ONE subscription for every stage: the first subscriber activates the tracker, whose activation read may emit
+    // (a change made while we were stopped) straight away, so a stage subscribed later would miss it.
     this.#unsubscribe.push(
-      env.on('language', ({ language, languages, previous }) =>
-        this.emit('event', {
-          name: 'language_changed',
-          params: defined({ language, languages, previousLanguage: previous.language }),
-        }),
-      ),
-      env.on('timezone', ({ timeZone, utcOffsetMinutes, previous }) =>
-        this.emit('event', {
-          name: 'timezone_changed',
-          params: defined({
-            timezone: timeZone,
-            utcOffsetMinutes,
-            previousTimezone: previous.timeZone,
-            previousUtcOffsetMinutes: previous.utcOffsetMinutes,
-          }),
-        }),
-      ),
-      env.on('privateMode', ({ private: answer, method }) => {
-        if (answer === 'yes') {
-          this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
+      env.onAny((name, payload) => {
+        if (name === 'language') {
+          const { language, languages, previous } = payload as EnvironmentEvents['language'];
+          this.emit('event', {
+            name: 'language_changed',
+            params: defined({ language, languages, previousLanguage: previous.language }),
+          });
+        } else if (name === 'timezone') {
+          const { timeZone, utcOffsetMinutes, previous } = payload as EnvironmentEvents['timezone'];
+          this.emit('event', {
+            name: 'timezone_changed',
+            params: defined({
+              timezone: timeZone,
+              utcOffsetMinutes,
+              previousTimezone: previous.timeZone,
+              previousUtcOffsetMinutes: previous.utcOffsetMinutes,
+            }),
+          });
+        } else if (name === 'privateMode') {
+          const { private: answer, method } = payload as EnvironmentEvents['privateMode'];
+          if (answer === 'yes') {
+            this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
+          }
         }
       }),
     );
@@ -221,7 +227,7 @@ export function createBrowserSystemEventsSource(
     })();
   const environment =
     env.environment ??
-    ((): Pick<EnvironmentTracker, 'on'> => {
+    ((): Pick<EnvironmentTracker, 'onAny'> => {
       const { win, doc } = hostSurfaces();
       const nav =
         win === undefined

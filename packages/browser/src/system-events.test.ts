@@ -35,7 +35,7 @@ function target() {
 
 // The environment tracker has its own listeners (languagechange, visibilitychange); tests of the LIFECYCLE wiring
 // inject an inert one so they count only the lifecycle's. The environment events are tested separately below.
-const inertEnvironment = { on: () => () => {} };
+const inertEnvironment = { onAny: () => () => {} };
 
 function fakeEnv() {
   const win = target();
@@ -457,6 +457,30 @@ describe('createBrowserSystemEventsSource', () => {
         { name: 'private_mode_detected', params: { method: 'storage-quota' } },
         { name: 'private_mode_detected', params: {} },
       ]);
+    });
+
+    it('a language AND time-zone change while the source was stopped are BOTH reported on restart', () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const nav = { language: 'en-US' };
+      Object.assign(win, { navigator: nav });
+      const real = new Date().getTimezoneOffset();
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        first.off(); // the tracker retains its readings
+        nav.language = 'de-DE';
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 60);
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        expect(second.events.map((e) => e.name)).toEqual([
+          'process_started',
+          'language_changed',
+          'timezone_changed',
+        ]);
+        second.off();
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: win });
+      }
     });
 
     it('stops listening to the environment tracker on deactivate', () => {
