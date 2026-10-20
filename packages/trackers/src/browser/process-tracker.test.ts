@@ -1717,6 +1717,83 @@ describe('processTrackerFor / rebind', () => {
     expect(t.currentUserIdleFresh()).toBeUndefined();
   });
 
+  it("an armed stage whose detector has not PUBLISHED yet never serves an older run's snapshot (pending or rejecting start())", async () => {
+    let at = 0;
+    const { env, detector } = userEnv({ now: () => at });
+    const t = new ProcessTracker(env);
+    const first = t.on('userIdle', () => {});
+    await flush();
+    first();
+    expect(t.currentUserIdle()).toBeDefined();
+    at = 10 * 60 * 60_000; // hours later
+    // a start() that never settles: the permission is granted and the detector exists, but nothing was read yet
+    detector.startResult = () => new Promise(() => {});
+    const second = t.on('userIdle', () => {});
+    await flush();
+    expect(detector.startCalls).toHaveLength(2);
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    second();
+    // a start() that REJECTS: the stale value must not become servable either
+    detector.startResult = () => Promise.reject(new Error('refused'));
+    t.on('userIdle', () => {});
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    await flush();
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('a synchronous query() failure leaves no armed run behind: the age-bounded read still works once listeners are gone', async () => {
+    let at = 0;
+    const { env, query } = userEnv({ now: () => at });
+    const t = new ProcessTracker(env);
+    const first = t.on('userIdle', () => {});
+    await flush();
+    first();
+    const state = { userState: 'active', screenState: 'unlocked' };
+    query.mockImplementation(() => {
+      throw new Error('query');
+    });
+    const second = t.on('userIdle', () => {}); // the stage cannot arm (inert)
+    second();
+    at = 1000;
+    expect(t.currentUserIdleFresh()).toEqual(state); // not stuck on a phantom run
+  });
+
+  it('every new reading re-stamps the age: the 2-threshold bound runs from the LATEST change', async () => {
+    let at = 0;
+    const { env, detector } = userEnv({ now: () => at });
+    const t = new ProcessTracker(env);
+    const off = t.on('userIdle', () => {});
+    await flush();
+    at = 100_000;
+    detector.userState = 'idle';
+    detector.fire(); // a later change
+    off();
+    at = 100_000 + 2 * USER_IDLE_MIN_THRESHOLD_MS; // at the bound measured from the LATEST reading
+    expect(t.currentUserIdleFresh()).toEqual({ userState: 'idle', screenState: 'unlocked' });
+    at += 1;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('reset() drops the listeners: removing one later does not re-arm another stage', () => {
+    const s = mkScheduler();
+    const t = new ProcessTracker(
+      asEnv({ scheduler: s, performance: { memory: mem(1), now: () => 1 } }),
+    );
+    const offHeap = t.on('heap', () => {});
+    const offUptime = t.on('uptime', () => {});
+    expect(s.live()).toBe(2);
+    t.reset();
+    expect(s.live()).toBe(0);
+    offHeap(); // a listener change after reset must not restart a stage for a subscriber that is gone
+    expect(s.live()).toBe(0);
+    offUptime();
+    expect(s.live()).toBe(0);
+    expect(s.setInterval).toHaveBeenCalledTimes(2);
+    // and the tracker is reusable
+    t.on('heap', () => {});
+    expect(s.live()).toBe(1);
+  });
+
   it('a revoke while NO stage is armed is only noticed by the next activation: the plain read is retained until then, the fresh read never seeds', async () => {
     const { env, status } = userEnv({ now: () => 0 });
     const t = new ProcessTracker(env);

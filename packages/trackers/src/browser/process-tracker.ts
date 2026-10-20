@@ -24,8 +24,8 @@ import { hostRead } from './host-read';
 //   * the last `userIdle` state (`currentUserIdle()`, a plain retained read; dropped from the tracker when the
 //     permission is found NOT granted by a RUNNING stage — a revoke while NO stage is armed is only noticed on the
 //     next activation's async re-query). `currentUserIdleFresh()` (the seed for a held trace) is stricter: while the
-//     stage is armed it answers only once its detector is live (permission re-confirmed this run; no age bound, a
-//     live detector reports changes only), and undefined while that re-query is pending or after a refusal/revoke;
+//     stage is armed it answers only once THIS run's detector has published (permission re-confirmed; no age bound, a
+//     live detector reports changes only), and undefined while that re-query or the detector's start() is pending, or after a refusal/revoke;
 //     with no armed stage it hands the state out only while younger than 2 detector thresholds. KNOWN LIMIT (owner decision pending, docs/PROGRESS.md TR5): the tracker emits nothing on
 //     revoke, and a HELD trace cannot be retracted, so a consumer that already published the last value keeps
 //     re-recording it until its producer stops; the drop above only stops the tracker serving it to NEW seeds, and
@@ -183,8 +183,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   readonly #inert = new Set<Stage>();
   /** Retained across deactivation (see the retention rule). */
   #userIdle: UserIdleState | undefined;
-  /** The armed user-idle run (its `detector` is set only while the permission is confirmed and the detector live). */
-  #userIdleRun: { detector?: IdleDetectorLike } | undefined;
+  /** The armed user-idle run (`published` once its detector has reported a reading this run). */
+  #userIdleRun: { published: boolean } | undefined;
   /** When `#userIdle` was read; only meaningful while `#userIdle` is defined (always set together). */
   #userIdleAt: number | undefined;
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
@@ -236,7 +236,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
 
   /** The live heap reading, or undefined when the engine has none, the read threw, or a figure is unusable. */
   currentHeap(): HeapState | undefined {
-    return this.#readHeap(this.#env).state;
+    return this.#readHeap(this.#env);
   }
 
   /** Last Idle Detection state; retained after the last unsubscribe. Undefined until one is read. */
@@ -251,11 +251,12 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
    * that publish the state as a HELD reading: a stale snapshot must not seed one.
    */
   currentUserIdleFresh(): UserIdleState | undefined {
-    // The stage is armed: the state is trustworthy exactly while its detector is live, i.e. once THIS run has
-    // re-confirmed the permission (a run still waiting on the async permission query cannot vouch for a snapshot
-    // that a revoke may have outdated, and a live detector's state does not age: it reports changes only).
+    // The stage is armed: the state is trustworthy exactly once THIS run's detector has PUBLISHED (the permission was
+    // re-confirmed and the detector's own start() settled with a reading). Until then the retained snapshot is from an
+    // earlier run: the permission query / start() may still be pending (or refuse), and a revoke may have outdated it.
+    // A published state does not age while its detector stays live: it reports changes only.
     const run = this.#userIdleRun;
-    if (run !== undefined) return run.detector !== undefined ? this.#userIdle : undefined;
+    if (run !== undefined) return run.published ? this.#userIdle : undefined;
     const at = this.#userIdleAt;
     if (this.#userIdle === undefined || at === undefined) return undefined;
     let age: number;
@@ -277,9 +278,12 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
       : USER_IDLE_MIN_THRESHOLD_MS;
   }
 
-  /** Test/teardown: release every stage and forget the retained state. */
+  /**
+   * Test/teardown: drop EVERY listener (which releases every stage, and keeps a later listener change from re-arming
+   * a stage for a subscriber that no longer exists) and forget the retained state.
+   */
   reset(): void {
-    this.#stopAll();
+    this.removeAllListeners();
     this.#userIdle = undefined;
   }
 
@@ -427,20 +431,13 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
 
   // ---- heap -------------------------------------------------------------------------------------------------------
 
-  #readHeap(env: ProcessEnv): { state: HeapState | undefined; threw: boolean } {
-    let threw = false;
-    const memory = hostRead(
-      () => env.performance?.memory,
-      (error) => {
-        threw = true;
-        this.#onError(error);
-      },
-    );
-    if (memory === undefined || memory === null) return { state: undefined, threw };
+  #readHeap(env: ProcessEnv): HeapState | undefined {
     const report = (error: unknown): void => this.#onError(error);
+    const memory = hostRead(() => env.performance?.memory, report);
+    if (memory === undefined || memory === null) return undefined;
     const used = hostRead(() => memory.usedJSHeapSize, report);
     const limit = hostRead(() => memory.jsHeapSizeLimit, report);
-    return { state: usable(used) && usable(limit) ? { used, limit } : undefined, threw };
+    return usable(used) && usable(limit) ? { used, limit } : undefined;
   }
 
   #startHeap(env: ProcessEnv): (() => void) | undefined {
@@ -456,7 +453,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     );
     if ((memory === undefined || memory === null) && !threw) return undefined;
     return this.#every(env, () => {
-      const { state } = this.#readHeap(env);
+      const state = this.#readHeap(env);
       if (state !== undefined) this.emit('heap', state);
     });
   }
@@ -589,8 +586,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
       controller?: AbortControllerLike;
       onChange?: () => void;
       detachPermission?: () => void;
-    } = { alive: true };
-    this.#userIdleRun = run;
+      published: boolean;
+    } = { alive: true, published: false };
 
     const publish = (detector: IdleDetectorLike): void => {
       const userState = hostRead(() => detector.userState, report);
@@ -600,6 +597,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         userState,
         ...(screenState === 'locked' || screenState === 'unlocked' ? { screenState } : {}),
       };
+      run.published = true;
       this.#userIdle = state;
       this.#userIdleAt = this.#stamp(env);
       this.emit('userIdle', state);
@@ -681,6 +679,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
       return undefined; // a synchronous throw from query() means the same
     }
 
+    this.#userIdleRun = run; // only once the stage is really armed (a synchronous query() failure returns above)
     return () => {
       run.alive = false;
       if (this.#userIdleRun === run) this.#userIdleRun = undefined;
