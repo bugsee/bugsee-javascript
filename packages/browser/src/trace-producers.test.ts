@@ -1,7 +1,7 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { PowerTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { BatteryProducer, createBrowserSystemTraceProducers } from './trace-producers';
-import { BatteryTracker } from './trackers/battery-tracker';
 
 function mkManager(level: number, charging: boolean) {
   const l = new Map<string, Set<() => void>>();
@@ -35,7 +35,7 @@ function run(producers: TraceProducer[]) {
 describe('BatteryProducer', () => {
   it('publishes the shared tracker current() at start when another subscriber already resolved it', async () => {
     const m = mkManager(0.25, false);
-    const tracker = new BatteryTracker({ getBattery: () => Promise.resolve(m) });
+    const tracker = new PowerTracker({ getBattery: () => Promise.resolve(m) });
     const offOther = tracker.on('state', () => {});
     await flush();
     const { out, p } = run([new BatteryProducer(tracker)]);
@@ -45,6 +45,15 @@ describe('BatteryProducer', () => {
     ]);
     p.stop();
     offOther();
+  });
+
+  it('charging with an unusable level emits no battery and the charging (not full) wire state', async () => {
+    const m = mkManager(Number.NaN, true);
+    const { out } = run(
+      createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+    );
+    await flush();
+    expect(out).toEqual([{ name: 'charging', value: { state: 2 } }]);
   });
 
   it('emits battery (rounded percent) and charging ({state}) once the manager resolves, then only on change', async () => {
@@ -70,7 +79,7 @@ describe('BatteryProducer', () => {
     m.charging = false;
     m.fire('chargingchange');
     expect(out.slice(4)).toEqual([{ name: 'charging', value: { state: 1 } }]);
-    expect(m.count()).toBe(2);
+    expect(m.count()).toBe(4);
     p.stop();
     expect(m.count()).toBe(0); // stop released the tracker's listeners
     m.level = 0.1;
@@ -78,22 +87,129 @@ describe('BatteryProducer', () => {
     expect(out).toHaveLength(5);
   });
 
-  it('a restart (stop, then start) re-fetches getBattery and re-emits the baseline', async () => {
+  it('a restart (stop, then start) reuses the retained manager (one getBattery) and re-emits a fresh baseline', async () => {
     const m = mkManager(0.5, false);
     const getBattery = vi.fn(() => Promise.resolve(m));
     const producers = createBrowserSystemTraceProducers({ getBattery });
     const first = run(producers);
     await flush();
-    first.p.stop(); // tracker deactivates -> current() undefined, listeners released
+    first.p.stop(); // listeners released, manager + snapshot retained
     expect(m.count()).toBe(0);
-    const again = run(producers); // nothing cached: emits only after the NEW getBattery resolves
-    expect(again.out).toEqual([]);
-    await flush();
-    expect(getBattery).toHaveBeenCalledTimes(2);
+    m.level = 0.4;
+    const again = run(producers);
+    expect(getBattery).toHaveBeenCalledTimes(1);
+    expect(m.count()).toBe(4);
     expect(again.out).toEqual([
-      { name: 'battery', value: 50 },
+      { name: 'battery', value: 40 },
       { name: 'charging', value: { state: 1 } },
     ]);
+  });
+
+  describe('time traces', () => {
+    const times = (out: Array<{ name: string; value: unknown }>) =>
+      out.filter((o) => o.name.endsWith('_time_s'));
+
+    it('emits integer-second battery_charging_time_s / battery_discharging_time_s, change-only', async () => {
+      const m = Object.assign(mkManager(0.5, true), { chargingTime: 600.4, dischargingTime: 7200 });
+      const { out } = run(
+        createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+      );
+      await flush();
+      expect(times(out)).toEqual([
+        { name: 'battery_charging_time_s', value: 600 },
+        { name: 'battery_discharging_time_s', value: 7200 },
+      ]);
+      m.fire('levelchange'); // unchanged -> nothing new
+      expect(times(out)).toHaveLength(2);
+      m.chargingTime = 300;
+      m.fire('chargingtimechange');
+      expect(times(out).slice(2)).toEqual([{ name: 'battery_charging_time_s', value: 300 }]);
+    });
+
+    it('omits a time that is not finite and never sends it as a number', async () => {
+      const m = Object.assign(mkManager(0.5, false), {
+        chargingTime: Infinity,
+        dischargingTime: NaN,
+      });
+      const { out } = run(
+        createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+      );
+      await flush();
+      expect(times(out)).toEqual([]);
+    });
+
+    it('is emitted NOT held (hold:false), so a vanished time is never refreshed as a stale value', async () => {
+      const m = Object.assign(mkManager(0.5, true), { chargingTime: 600 });
+      const calls: Array<{ name: string; hold: boolean | undefined }> = [];
+      const producer = createBrowserSystemTraceProducers({
+        getBattery: () => Promise.resolve(m),
+      })[0];
+      producer?.start({
+        emit: (name, _v, _d, o) => void calls.push({ name, hold: o?.hold }),
+      });
+      await flush();
+      expect(calls.find((c) => c.name === 'battery_charging_time_s')?.hold).toBe(false);
+      expect(calls.find((c) => c.name === 'battery')?.hold).toBe(true);
+    });
+
+    it('a time that disappears records nothing, and the same value reappearing is emitted again', async () => {
+      const m = Object.assign(mkManager(0.5, true), { chargingTime: 600 });
+      const { out } = run(
+        createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+      );
+      await flush();
+      m.chargingTime = Infinity;
+      m.fire('chargingtimechange');
+      expect(times(out)).toHaveLength(1);
+      m.chargingTime = 600;
+      m.fire('chargingtimechange');
+      expect(times(out)).toEqual([
+        { name: 'battery_charging_time_s', value: 600 },
+        { name: 'battery_charging_time_s', value: 600 },
+      ]);
+    });
+
+    it('a restart re-emits the times (dedupe memory is cleared on stop)', async () => {
+      const m = Object.assign(mkManager(0.5, true), { chargingTime: 600 });
+      const producers = createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) });
+      const first = run(producers);
+      await flush();
+      first.p.stop();
+      const again = run(producers);
+      expect(times(again.out)).toEqual([{ name: 'battery_charging_time_s', value: 600 }]);
+    });
+  });
+
+  it('an unusable level emits no battery trace (never NaN) but still emits charging', async () => {
+    const m = mkManager(Number.NaN, false);
+    const { out } = run(
+      createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+    );
+    await flush();
+    expect(out).toEqual([{ name: 'charging', value: { state: 1 } }]);
+  });
+
+  it('an unsupported browser (no getBattery) emits nothing and reports no error', async () => {
+    const onError = vi.fn();
+    const { out } = run(createBrowserSystemTraceProducers({}, onError));
+    await flush();
+    expect(out).toEqual([]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('producers built twice from one window share ONE power tracker (one getBattery)', async () => {
+    const m = mkManager(0.5, false);
+    const getBattery = vi.fn(() => Promise.resolve(m));
+    const win = { addEventListener: () => {}, removeEventListener: () => {} };
+    const a = run(createBrowserSystemTraceProducers({ window: win, getBattery }));
+    const b = run(createBrowserSystemTraceProducers({ window: win, getBattery }));
+    await flush();
+    expect(getBattery).toHaveBeenCalledTimes(1);
+    expect(m.count()).toBe(4);
+    a.p.stop();
+    expect(m.count()).toBe(4);
+    b.p.stop();
+    expect(m.count()).toBe(0);
   });
 
   it('forwards onError to the battery tracker: a throw after getBattery resolves is reported', async () => {

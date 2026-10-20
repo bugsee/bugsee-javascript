@@ -13,7 +13,7 @@ import {
   LifecycleEvents,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemProbe } from './environment';
 import {
   type Bugsee,
@@ -80,7 +80,14 @@ const okTransport = (): HttpTransport =>
 
 let nonce = 0;
 const dirs: string[] = [];
+// HERMETIC data root. Without it every launch('tok', ...) here shares `<tmpdir>/bugsee/<hash(tok)>` with every other
+// test (and every parallel worker) in the process tree; a dead sibling instance's incident marker left there by an
+// unrelated crash test makes this suite's launch emit RelaunchedAfterCrash at random (seen as a CI-only flake).
+const hermeticRoot = mkdtempSync(join(tmpdir(), 'bugsee-lifecycle-root-'));
+afterAll(() => rmSync(hermeticRoot, { recursive: true, force: true }));
+
 const opts = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => ({
+  dataRootBase: hermeticRoot,
   process: fakeProcess().proc,
   transport: okTransport(),
   systemProbe: probe,
