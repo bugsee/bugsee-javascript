@@ -2,9 +2,11 @@ import type { SystemEvent } from '@bugsee/capture';
 import { createMultiKeyEmitter } from '@bugsee/trackers';
 import {
   ApplicationTracker,
+  connectivityTrackerFor,
   type EnvironmentEvents,
   environmentTrackerFor,
   resetApplicationTracker,
+  resetConnectivityTracker,
   resetEnvironmentTracker,
 } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +45,12 @@ function fakeEnv() {
   const doc = target();
   const state = { visibilityState: 'visible' as DocumentVisibilityState };
   const orientation = { type: 'portrait-primary' as OrientationType, angle: 0 };
+  // `navigator.onLine` is what the ConnectivityTracker reads: `connect(false)` goes offline and announces it, as a browser does.
+  const nav = { onLine: true };
+  const connect = (online: boolean) => {
+    nav.onLine = online;
+    win.emit(online ? 'online' : 'offline', {});
+  };
   const document = {
     addEventListener: doc.addEventListener,
     removeEventListener: doc.removeEventListener,
@@ -51,12 +59,12 @@ function fakeEnv() {
     },
   };
   const env: BrowserSystemEventsEnv = {
-    window: win,
+    window: Object.assign(win, { navigator: nav }),
     document,
     screen: { orientation },
     environment: inertEnvironment as never,
   };
-  return { env, win, doc, state, orientation };
+  return { env, win, doc, state, orientation, nav, connect };
 }
 
 function activate(env: BrowserSystemEventsEnv) {
@@ -146,7 +154,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
   });
 
   it('a matchMedia that throws is reported and does not abort the other signals', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const errors: unknown[] = [];
     const { events } = activate({
       ...env,
@@ -155,8 +163,8 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
       },
       onError: (e) => errors.push(e),
     });
-    win.emit('online', {});
-    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    connect(false);
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'offline']);
     expect(errors.length).toBeGreaterThan(0);
     expect(new Set(errors.map((e) => (e as Error).message))).toEqual(
       new Set(['matchMedia blocked']),
@@ -164,15 +172,15 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
   });
 
   it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const errors: unknown[] = [];
     const { events } = activate({
       ...env,
       matchMedia: (() => ({ matches: false })) as never,
       onError: (e) => errors.push(e),
     });
-    win.emit('online', {});
-    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    connect(false);
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'offline']);
     expect(errors).toEqual([]);
   });
 
@@ -213,7 +221,7 @@ describe('createBrowserSystemEventsSource', () => {
     const { events } = activate(env);
     expect(events).toEqual([{ name: 'process_started' }]);
     expect(win.count('pagehide')).toBe(1);
-    expect(win.count('online')).toBe(1);
+    expect(win.count('online')).toBe(1); // the ConnectivityTracker's
     expect(win.count('offline')).toBe(1);
     expect(win.count('orientationchange')).toBe(1);
     expect(doc.count('visibilitychange')).toBe(1);
@@ -244,11 +252,82 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('emits online / offline on connectivity transitions', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const { events } = activate(env);
-    win.emit('online', {});
+    connect(false);
+    connect(true);
+    expect(events.slice(1)).toEqual([{ name: 'offline' }, { name: 'online' }]);
+  });
+
+  it('the activation baseline is state, not a transition: nothing is emitted for it', () => {
+    const { env, nav } = fakeEnv();
+    nav.onLine = false; // already offline when capture starts
+    const { events } = activate(env);
+    expect(events).toEqual([{ name: 'process_started' }]);
+  });
+
+  it('a repeated announcement of the same state is not a transition', () => {
+    const { env, win, connect } = fakeEnv();
+    const { events } = activate(env);
+    win.emit('online', {}); // onLine is still true: nothing changed
+    connect(false);
     win.emit('offline', {});
-    expect(events.slice(1)).toEqual([{ name: 'online' }, { name: 'offline' }]);
+    connect(false);
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+  });
+
+  it('goes through the per-window ConnectivityTracker: ONE online/offline listener shared with other consumers', () => {
+    const { env, win, nav } = fakeEnv();
+    const other = connectivityTrackerFor({ window: win, navigator: nav });
+    const offOther = other.on('online', () => {});
+    expect(win.count('online')).toBe(1);
+    const { off, events } = activate(env);
+    expect(win.count('online')).toBe(1);
+    expect(win.count('offline')).toBe(1);
+    // The tracker was ALREADY running (no baseline reached us): a repeat of the state we joined in is no transition.
+    win.emit('online', {});
+    expect(events).toEqual([{ name: 'process_started' }]);
+    off();
+    expect(win.count('online')).toBe(1); // still held by the other consumer
+    offOther();
+    expect(win.count('online')).toBe(0);
+    resetConnectivityTracker({ window: win });
+  });
+
+  it('an injected connectivity tracker replaces the window singleton', () => {
+    const { env, win } = fakeEnv();
+    const on = vi.fn(() => () => {});
+    const { events } = activate({
+      ...env,
+      connectivity: { on, current: () => undefined } as never,
+    });
+    expect(on).toHaveBeenCalledWith('online', expect.any(Function));
+    expect(win.count('online')).toBe(0);
+    expect(events).toEqual([{ name: 'process_started' }]);
+  });
+
+  it("a navigator injected explicitly is the one read (not the window's)", () => {
+    const { env, win } = fakeEnv();
+    const nav = { onLine: true };
+    const { events } = activate({ ...env, navigator: nav });
+    nav.onLine = false;
+    win.emit('offline', {});
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+    resetConnectivityTracker({ window: win });
+  });
+
+  it('a window with no readable navigator announces no online/offline (the state cannot be read), and never throws', () => {
+    const { env, win } = fakeEnv();
+    Object.defineProperty(win, 'navigator', {
+      get(): never {
+        throw new Error('navigator blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    const { events } = activate({ ...env, onError: (e) => errors.push(e) });
+    expect(() => win.emit('offline', {})).not.toThrow();
+    expect(events).toEqual([{ name: 'process_started' }]);
+    expect(errors.length).toBeGreaterThan(0);
   });
 
   it('emits orientation_changed with the current screen orientation type + angle', () => {
@@ -419,20 +498,22 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
-    const { env, win, doc } = fakeEnv();
+    const { env, win, doc, connect } = fakeEnv();
     const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const a = activate({ ...env, lifecycle });
     const b = activate({ ...env, lifecycle });
     // two sources over ONE tracker → one listener per type
-    expect(win.count('online')).toBe(1);
+    expect(win.count('pagehide')).toBe(1);
+    expect(win.count('online')).toBe(1); // ConnectivityTracker, shared per window
     expect(doc.count('visibilitychange')).toBe(1);
-    win.emit('offline', {});
+    connect(false);
     expect(a.events.at(-1)).toEqual({ name: 'offline' });
     expect(b.events.at(-1)).toEqual({ name: 'offline' });
     a.off();
     expect(win.count('offline')).toBe(1); // still held by the other source
     b.off();
     expect(win.count('offline')).toBe(0);
+    expect(win.count('pagehide')).toBe(0);
   });
 
   it('reports a lifecycle failure to the injected onError, not into event dispatch', () => {
@@ -451,7 +532,7 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
-    const { env, win } = fakeEnv();
+    const { env, win, connect } = fakeEnv();
     const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const source = createBrowserSystemEventsSource({ ...env, lifecycle });
     const events: SystemEvent[] = [];
@@ -459,11 +540,11 @@ describe('createBrowserSystemEventsSource', () => {
     first();
     expect(win.count('online')).toBe(0);
     const second = source.onAny((_s, e) => events.push(e));
-    win.emit('online', {});
+    connect(false);
     expect(events).toEqual([
       { name: 'process_started' },
       { name: 'process_started' },
-      { name: 'online' },
+      { name: 'offline' },
     ]);
     second();
   });

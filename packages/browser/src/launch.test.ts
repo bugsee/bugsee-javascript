@@ -491,10 +491,11 @@ describe('launch', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // traces (orientation) AND the events source share ONE lifecycle tracker (a single orientationchange listener);
-    // online/offline are bound twice: once by that lifecycle tracker (events) and once by the domain
-    // ConnectivityTracker, which owns its own connectivity listeners and does not depend on the lifecycle tracker.
-    expect(w.count('online')).toBe(2);
+    // traces (orientation) AND the events source share ONE UiTracker (a single orientationchange listener);
+    // online/offline are bound ONCE, by the domain ConnectivityTracker that both the connection trace and the
+    // online/offline events subscribe to (the ApplicationTracker no longer binds them).
+    expect(w.count('online')).toBe(1);
+    expect(w.count('offline')).toBe(1);
     expect(w.count('orientationchange')).toBe(1);
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
@@ -527,10 +528,11 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, document, captureStore: memStore() }),
       );
-      expect(w.count('online')).toBe(1);
+      const before = w.count('pagehide');
+      expect(before).toBeGreaterThan(0);
       const shared = applicationTrackerFor({ window: w.win as never, document });
-      const off = shared.on('online', () => {});
-      expect(w.count('online')).toBe(1); // the SAME tracker: one listener serves launch and this subscriber
+      const off = shared.on('pagehide', () => {});
+      expect(w.count('pagehide')).toBe(before); // the SAME tracker: one listener serves launch and this subscriber
       off();
     });
 
@@ -1683,9 +1685,9 @@ describe('launch', () => {
         // the system-events source listens on the same window, so isolate the trace trackers
         noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
       );
-      // online/offline: the shared lifecycle tracker (orientation) + the ConnectivityTracker's own listeners
-      expect(w.count('online')).toBe(2);
-      expect(w.count('offline')).toBe(2);
+      // online/offline: bound ONCE, by the ConnectivityTracker (the lifecycle tracker no longer binds them)
+      expect(w.count('online')).toBe(1);
+      expect(w.count('offline')).toBe(1);
       expect(w.count('orientationchange')).toBe(1);
       await client.stop();
       expect(w.count('online')).toBe(0);
@@ -1763,7 +1765,7 @@ describe('launch', () => {
         'tok',
         noSampler({ window: w.win, captureStore: store, captureSystemEvents: false }),
       );
-      const before = w.count('online'); // lifecycle tracker + the connectivity tracker
+      const before = w.count('online'); // the connectivity tracker's alone
       // The singleton for this window is the one launch subscribed through: a new `ConnectivityTracker` would add
       // another pair of window listeners here instead of sharing the first.
       const off = connectivityTrackerFor({ window: w.win }).on('online', () => {});
