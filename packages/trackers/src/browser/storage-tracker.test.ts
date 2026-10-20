@@ -563,6 +563,103 @@ describe('StorageTracker', () => {
       });
     });
 
+    describe('partial polls merge into the retained estimate', () => {
+      const first = { usageBytes: 1, quotaBytes: 10, persisted: true };
+
+      it('a later estimate() rejection keeps usage/quota, takes the new persisted, and does not renew the age', async () => {
+        const storage = mkStorage(1, 10, true);
+        const { tracker, scheduler, clock, seen } = setup(storage);
+        tracker.on('storageEstimate', (e) => seen.push(e));
+        await flush();
+        expect(tracker.current()).toEqual(first);
+        storage.estimate.mockImplementation(() => Promise.reject(new Error('estimate down')));
+        storage.persisted.mockImplementation(() => Promise.resolve(false));
+        clock.t += 1234;
+        scheduler.tick();
+        await flush();
+        expect(tracker.current()).toEqual({ usageBytes: 1, quotaBytes: 10, persisted: false });
+        expect(seen.at(-1)).toEqual({ usageBytes: 1, quotaBytes: 10, persisted: false });
+        // age is still that of the usage/quota refresh (t0), not of the persisted-only poll
+        clock.t += 1234 + 1; // 2x1234 + 1 after t0
+        expect(tracker.currentFresh()).toBeUndefined();
+      });
+
+      it('keeps each of usage and quota independently (only one was ever known)', async () => {
+        for (const [known, other] of [
+          [{ usage: 5, quota: null }, { usageBytes: 5 }],
+          [{ usage: null, quota: 7 }, { quotaBytes: 7 }],
+        ] as const) {
+          const storage = {
+            estimate: vi.fn(() => Promise.resolve(known)),
+            persisted: vi.fn(() => Promise.resolve(true)),
+          };
+          const { tracker, scheduler } = setup(storage as unknown as StorageManagerLike);
+          tracker.on('storageEstimate', () => {});
+          await flush();
+          storage.estimate.mockImplementation(() => Promise.reject(new Error('down')));
+          scheduler.tick();
+          await flush();
+          expect(tracker.current()).toEqual({ ...other, persisted: true });
+        }
+      });
+
+      it('refreshing only usage, or only quota, renews the age', async () => {
+        for (const answer of [
+          { usage: 3, quota: null },
+          { usage: null, quota: 3 },
+        ]) {
+          const storage = mkStorage(1, 10, true);
+          const { tracker, scheduler, clock } = setup(storage);
+          tracker.on('storageEstimate', () => {});
+          await flush();
+          clock.t += 2 * 1234;
+          storage.estimate.mockImplementation(() => Promise.resolve(answer));
+          scheduler.tick();
+          await flush();
+          clock.t += 2 * 1234; // 2x after the refresh, 4x after the first poll
+          expect(tracker.currentFresh()).toBeDefined();
+        }
+      });
+
+      it('a later persisted() rejection keeps the retained persisted and takes the new usage/quota', async () => {
+        const storage = mkStorage(1, 10, true);
+        const { tracker, scheduler } = setup(storage);
+        tracker.on('storageEstimate', () => {});
+        await flush();
+        storage.estimate.mockImplementation(() => Promise.resolve({ usage: 2, quota: 20 }));
+        storage.persisted.mockImplementation(() => Promise.reject(new Error('persisted down')));
+        scheduler.tick();
+        await flush();
+        expect(tracker.current()).toEqual({ usageBytes: 2, quotaBytes: 20, persisted: true });
+      });
+
+      it('an estimate() that ANSWERS with an unusable number drops that field rather than keeping the old one', async () => {
+        const storage = mkStorage(1, 10, true);
+        const { tracker, scheduler } = setup(storage);
+        tracker.on('storageEstimate', () => {});
+        await flush();
+        storage.estimate.mockImplementation(() =>
+          Promise.resolve({ usage: Number.NaN, quota: 20 }),
+        );
+        scheduler.tick();
+        await flush();
+        expect(tracker.current()).toEqual({ quotaBytes: 20, persisted: true });
+      });
+
+      it('an estimate() that answers with nothing usable does not renew the age or the usage/quota', async () => {
+        const storage = mkStorage(1, 10, true);
+        const { tracker, scheduler, clock } = setup(storage);
+        tracker.on('storageEstimate', () => {});
+        await flush();
+        storage.estimate.mockImplementation(() => Promise.resolve({ usage: -1, quota: -1 }));
+        clock.t += 2 * 1234 + 1;
+        scheduler.tick();
+        await flush();
+        expect(tracker.current()).toEqual({ persisted: true });
+        expect(tracker.currentFresh()).toBeUndefined();
+      });
+    });
+
     it('a poll in flight at the last unsubscribe is inert when it settles', async () => {
       let resolve!: (v: { usage: number; quota: number }) => void;
       const storage = {

@@ -16,7 +16,8 @@ import { hostRead } from './host-read';
 //
 // SINGLETON per key object (see `storageTrackerFor`). RETENTION rule — what survives the last unsubscribe:
 //   * the LAST estimate (`current()` keeps answering with it, so a later subscriber gets a value immediately, and a
-//     failed poll never erases it). It may be stale: every activation polls again and emits the fresh value.
+//     failed poll never erases it; a PARTIAL poll — one call failed — keeps the retained fields that call would have
+//     refreshed, and the estimate's age only advances when usage/quota were refreshed). It may be stale: every activation polls again and emits the fresh value.
 // What does NOT survive: the timer and the visibility listener — both are released when nobody subscribes. A poll in
 // flight at that moment is IGNORED when it settles (an epoch token, bumped by every poll/stop/reset), so a stale
 // promise can neither emit nor overwrite the retained estimate. A poll superseded by a newer one is ignored too.
@@ -299,15 +300,32 @@ export class StorageTracker extends InterceptorBase<{
     const report = (e: unknown): void => this.#onError(e);
     const usageBytes = bytes(hostRead(() => raw?.usage, report));
     const quotaBytes = bytes(hostRead(() => raw?.quota, report));
-    const estimate: StorageEstimate = {
+    const fresh: StorageEstimate = {
       ...(usageBytes !== undefined ? { usageBytes } : {}),
       ...(quotaBytes !== undefined ? { quotaBytes } : {}),
       ...(typeof persisted === 'boolean' ? { persisted } : {}),
     };
     // Nothing usable (both calls failed/unsupported): keep the retained estimate, emit nothing.
-    if (Object.keys(estimate).length === 0) return;
+    if (Object.keys(fresh).length === 0) return;
+    // PARTIAL result: a call that FAILED (estimate() rejected -> `raw` undefined; persisted() failed ->
+    // undefined) contributes nothing, so its retained fields are kept. A call that ANSWERED replaces its fields
+    // (an unusable number is omitted, not papered over with an old one).
+    const kept = this.#estimate;
+    const estimate: StorageEstimate = {
+      ...(raw === undefined && kept?.usageBytes !== undefined
+        ? { usageBytes: kept.usageBytes }
+        : {}),
+      ...(raw === undefined && kept?.quotaBytes !== undefined
+        ? { quotaBytes: kept.quotaBytes }
+        : {}),
+      ...(persisted === undefined && kept?.persisted !== undefined
+        ? { persisted: kept.persisted }
+        : {}),
+      ...fresh,
+    };
     this.#estimate = estimate;
-    this.#estimateAt = this.#clock();
+    // Age tracks usage/quota only: a persisted-only refresh must not make old usage/quota look fresh.
+    if (usageBytes !== undefined || quotaBytes !== undefined) this.#estimateAt = this.#clock();
     this.emit('storageEstimate', estimate);
   }
 }
