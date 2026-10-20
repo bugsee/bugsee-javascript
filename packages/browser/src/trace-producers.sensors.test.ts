@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { ConnectivityTracker } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdvertisedMemoryProducer,
@@ -7,7 +8,6 @@ import {
   MemoryProducer,
   OrientationProducer,
 } from './trace-producers';
-import { ConnectionTracker } from './trackers/connection-tracker';
 import { MemoryTracker } from './trackers/memory-tracker';
 import { OrientationTracker } from './trackers/orientation-tracker';
 
@@ -133,10 +133,17 @@ describe('AdvertisedMemoryProducer', () => {
 describe('ConnectionProducer', () => {
   it('emits a TRANSPORT type the viewer can render, with effectiveType kept as detail', () => {
     // `type` must be a CONNECTION_STATES key; it used to carry effectiveType ('4g'), in no table.
-    const t = new ConnectionTracker({
+    const t = new ConnectivityTracker({
       navigator: {
         onLine: true,
-        connection: { type: 'wifi', effectiveType: '4g', downlink: 10, rtt: 50, saveData: false },
+        connection: {
+          type: 'wifi',
+          effectiveType: '4g',
+          downlink: 10,
+          downlinkMax: 100,
+          rtt: 50,
+          saveData: false,
+        },
       },
     });
     expect(startAll([new ConnectionProducer(t)]).out).toEqual([
@@ -146,6 +153,7 @@ describe('ConnectionProducer', () => {
           type: 'wifi',
           effective_type: '4g',
           link_downstream_kbps: 10_000, // downlink is Mbps; Android reports kbps
+          link_downstream_max_kbps: 100_000,
           rtt: 50,
           save_data: false,
         },
@@ -157,7 +165,7 @@ describe('ConnectionProducer', () => {
     const win = mkTarget();
     const nav = { onLine: true, connection: { type: 'wifi' } };
     const { out } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     nav.onLine = false;
     win.fire('offline');
@@ -166,7 +174,7 @@ describe('ConnectionProducer', () => {
 
   it('still emits (type unknown) with NO NetworkInformation, because onLine alone is worth a row', () => {
     expect(
-      startAll([new ConnectionProducer(new ConnectionTracker({ navigator: { onLine: true } }))])
+      startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: { onLine: true } }))])
         .out,
     ).toEqual([{ name: 'connection', value: { type: 'unknown' } }]);
   });
@@ -175,7 +183,7 @@ describe('ConnectionProducer', () => {
     const win = mkTarget();
     const nav = { onLine: true };
     const { out } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     win.fire('online');
     expect(out).toHaveLength(1);
@@ -184,15 +192,28 @@ describe('ConnectionProducer', () => {
     expect(out).toHaveLength(2);
   });
 
+  it('producers built twice from one window share ONE connectivity tracker (one listener pair)', () => {
+    const win = mkTarget();
+    const nav = { onLine: true };
+    const pick = () =>
+      named(createBrowserSystemTraceProducers({ window: win, navigator: nav }), ['connection']);
+    const a = startAll(pick());
+    const b = startAll(pick());
+    expect(win.count()).toBe(2); // ONE online + offline pair, shared; a per-producer tracker would make it 4
+    a.stop();
+    b.stop();
+    expect(win.count()).toBe(0);
+  });
+
   it('emits nothing with no navigator at all', () => {
-    expect(startAll([new ConnectionProducer(new ConnectionTracker({}))]).out).toEqual([]);
+    expect(startAll([new ConnectionProducer(new ConnectivityTracker({}))]).out).toEqual([]);
   });
 
   it('stop() releases the tracker listeners and late events write nothing', () => {
     const win = mkTarget();
     const nav = { onLine: true };
     const { out, stop } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     stop();
     expect(win.count()).toBe(0);
