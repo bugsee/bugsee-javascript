@@ -9,6 +9,7 @@
 // `electron` is injected (`ElectronGpuSourceLike`); this package keeps no electron dependency.
 
 import type { HardwareExtras, HardwareGpu } from '@bugsee/node';
+import { reportGuarded } from '@bugsee/util';
 
 /** The slice of Electron's `app` the cache needs. Optional on `ElectronAppLike`: older Electron has none. */
 export interface ElectronGpuSourceLike {
@@ -81,13 +82,8 @@ export function createGpuInfoCache(options: GpuInfoCacheOptions = {}): GpuInfoCa
   let started = false;
   let gpu: HardwareGpu | undefined;
 
-  const report = (error: unknown): void => {
-    try {
-      options.onError?.(error);
-    } catch {
-      // the error sink itself failed; the cache must stay silent toward the host app
-    }
-  };
+  // absorbs a throwing sink AND a rejected promise from an async one; the cache stays silent toward the host
+  const report = (error: unknown): void => reportGuarded(options.onError, error);
 
   return {
     start(): void {

@@ -218,6 +218,25 @@ describe('createGpuInfoCache', () => {
     }
   });
 
+  it('an async onError that rejects leaves NO unhandledRejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      createGpuInfoCache({
+        source: { getGPUInfo: () => Promise.reject(new Error('x')) },
+        onError: async () => {
+          throw new Error('async sink');
+        },
+      }).start();
+      await flush();
+      await flush();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('a synchronous throw from getGPUInfo is reported, not propagated', () => {
     const boom = new Error('sync');
     const onError = vi.fn();

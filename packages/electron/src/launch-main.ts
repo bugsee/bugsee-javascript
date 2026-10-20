@@ -39,7 +39,7 @@ export interface ElectronAppLike {
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
-import { reportOncePerMessage } from '@bugsee/util';
+import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createGpuInfoCache, type GpuInfoType } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
@@ -52,15 +52,6 @@ import {
 import { createRendererGoneHandler } from './renderer-gone';
 import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
 import type { VideoCaptureSource } from './video-capture';
-
-// An error sink must never throw into the host app's shutdown/launch path.
-function reportSafely(sink: ((error: unknown) => void) | undefined, error: unknown): void {
-  try {
-    sink?.(error);
-  } catch {
-    // the sink itself failed
-  }
-}
 
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
@@ -322,7 +313,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       receiver.stop();
       videoController?.stop(); // stop pixel capture
     } catch (error) {
-      reportSafely(nodeOptions.onError, error);
+      reportGuarded(nodeOptions.onError, error);
     }
     return stop(timeout);
   }) as Bugsee['stop'];

@@ -720,6 +720,30 @@ describe('launchMain — GPU info as environment.hardware.gpu (ST6a)', () => {
     expect(f.stop).toHaveBeenCalled();
   });
 
+  it('an async onError that rejects during stop leaves NO unhandledRejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const ipc = fakeIpcMain();
+      ipc.ipcMain.removeListener.mockImplementation(() => {
+        throw new Error('ipc broke');
+      });
+      const f = fakeLaunch();
+      const client = launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        onError: async () => {
+          throw new Error('async sink');
+        },
+      });
+      await expect(client.stop()).resolves.toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('a repeat launch (no internals) does not start the GPU read', () => {
     const getGPUInfo = vi.fn(async () => gpuInfo);
     const f = fakeLaunch({ internals: false });
