@@ -27,6 +27,7 @@ describe('@bugsee/trackers public surface', () => {
       'PRIVATE_QUOTA_BELOW_BYTES',
       'PowerTracker',
       'StorageTracker',
+      'UiTracker',
       'applicationTrackerFor',
       'connectivityTrackerFor',
       'environmentTrackerFor',
@@ -37,7 +38,9 @@ describe('@bugsee/trackers public surface', () => {
       'resetEnvironmentTracker',
       'resetPowerTracker',
       'resetStorageTracker',
+      'resetUiTracker',
       'storageTrackerFor',
+      'uiTrackerFor',
     ]);
   });
 });

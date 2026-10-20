@@ -506,7 +506,8 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toEqual([win.target]);
+    expect(thisSeen).toHaveLength(2); // the baseline read + the change watch
+    expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
       entriesOfType(msgs.msgs(), 'events.system').some((e) =>
