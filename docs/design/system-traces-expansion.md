@@ -502,7 +502,7 @@ shared `PageLifecycleTracker`, delete the legacy samplers, then ST1+ traces as p
 **Status (2026-10): shipped.** ST0′ (#55), the browser trackers (#62), `PageLifecycleTracker` (#63) and the node legacy-sampler
 deletion (#65; the browser sampler went with #62) are merged, so the bare `sample()` adapter no longer coexists with the producers on browser or node: the legacy
 browser sampler (which also emitted `battery`/`charging`, the duplicate rows an interim reading of this section implied) is
-deleted and `systemMetricsSampler` survives only as an explicit caller override that REPLACES the sensor traces.
+deleted and `systemMetricsSampler` survives only as an explicit caller override that REPLACES the heap, connection, orientation, `app_state` and `fps` sensor traces; the `battery` producer still runs alongside it (`browser/src/launch.ts:925-933`), so a sampler that also emits `battery`/`charging` would duplicate those rows.
 
 The domain-tracker follow-on (§15) is tracked in §15.5. The node `ProcessStatsTracker` that §14.5 lists for ST0′ was replaced by the node `ProcessTracker` in TR8 part 1 (#87): its files, tests and `@bugsee/node` exports (`ProcessStatsTracker`, `ProcessStats`) are gone, and `packages/trackers/src/node/` is no longer a placeholder. The Electron trackers (ST6 above) shipped as TR9 (#90, #91). The per-signal browser trackers that §14.5 originally listed as remaining (`MemoryTracker`, `OrientationTracker`, `FpsTracker`, `ScreenSizeTracker`, `MainThreadLagTracker`) were folded into the domain trackers by TR2 (#82) and TR5 (#83) and their files are deleted: `packages/browser/src/trackers/` no longer exists on `main`.
 
