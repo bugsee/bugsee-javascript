@@ -1,0 +1,11 @@
+{
+  // The portable root + browser entries must typecheck WITHOUT node types: `types: ["node"]` in tsconfig.json exists
+  // only for src/node, and would otherwise let a node global leak into code that ships to browsers.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["src/node", "src/electron", "node_modules", "dist", "coverage"]
+}

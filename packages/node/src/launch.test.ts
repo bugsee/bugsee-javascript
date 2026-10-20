@@ -58,6 +58,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { processTrackerFor, resetProcessTracker } from '@bugsee/trackers/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hashAppToken } from './data-location';
@@ -176,6 +177,7 @@ const clients: ReturnType<typeof launch>[] = [];
 afterEach(async () => {
   // Stop every launched client so the console interceptor unpatches the global console.
   await Promise.all(clients.splice(0).map((c) => c.stop()));
+  resetProcessTracker(); // the per-process ProcessTracker singleton must not carry one test's seams into the next
   vi.restoreAllMocks();
   // Reset the process Carrier so each test builds fresh interceptor singletons (default global path).
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -1370,6 +1372,55 @@ function seedPriorGeneration(
 }
 
 describe('launch — system trace producers', () => {
+  it('the default producers go through the per-process ProcessTracker registry accessor', async () => {
+    const fs = fakeScheduler();
+    // Deterministic core count: the real os.cpus() can be empty (some containers), which omits the cpu sample. The
+    // launch's rebind merges, so this seam survives it.
+    processTrackerFor({ cpuCount: () => 2 });
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fs.scheduler,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    // the launch's producers are subscribed to THE `process` singleton: its cpu stage is armed and the tick is
+    // driven by the launch's scheduler (no sample exists before the first tick)
+    const tracker = processTrackerFor();
+    expect(tracker.current('cpu')).toBeUndefined();
+    const ticks = fs.calls.filter((c) => c.ms === 1000);
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) t.cb();
+    expect(typeof tracker.current('cpu')?.processPct).toBe('number');
+    // a relaunch shares the SAME tracker (no second instance, no second set of sources)
+    expect(processTrackerFor()).toBe(tracker);
+  });
+
+  it('a launch reports its onError to the shared tracker (latest launch wins)', async () => {
+    const onError = vi.fn();
+    launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: memStore(),
+        clock: fixedClock,
+        scheduler: fakeScheduler().scheduler,
+        systemMetricsSampler: undefined,
+        onError,
+      }),
+    );
+    const spy = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      throw new Error('memoryUsage boom');
+    });
+    try {
+      expect(processTrackerFor().current('memory')).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+
   const producerDeps = (fs: ReturnType<typeof fakeScheduler>) => {
     const calls: string[] = [];
     const perfHooks = {

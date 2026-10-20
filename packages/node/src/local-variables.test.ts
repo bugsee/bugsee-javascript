@@ -1,6 +1,7 @@
 import type { StackFrame } from '@bugsee/core';
 import { REDACTED } from '@bugsee/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { resetProcessTracker } from '@bugsee/trackers/node';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   alignReportSite,
   attachLocals,
@@ -16,6 +17,11 @@ import {
 } from './local-variables';
 
 /** A fake inspector session: records posts, answers `Runtime.getProperties` from a script. */
+// The per-process ProcessTracker singleton merges seams across launches: never carry one test's fakes into the next.
+afterEach(() => {
+  resetProcessTracker();
+});
+
 function fakeSession(properties: Record<string, readonly unknown[]> = {}) {
   const posts: Array<{ method: string; params?: unknown }> = [];
   let paused: ((message: { params: unknown }) => void) | undefined;
