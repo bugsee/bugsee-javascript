@@ -8,7 +8,13 @@ import {
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
+import {
+  createNodeSystemTraceProducers,
+  type NodeRuntime,
+  processTrackerFor,
+  resetProcessTracker,
+  type SystemProbe,
+} from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bunSystemProbe } from './environment';
@@ -96,6 +102,7 @@ beforeEach(() => {
 const clients: Array<{ stop: (t?: number) => Promise<boolean> }> = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
+  resetProcessTracker(); // the per-process ProcessTracker singleton must not carry one test's seams into the next
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T => {
@@ -413,5 +420,30 @@ describe('@bugsee/bun — captureSystemTraces:false attaches no trace sampling',
     const on = launchWith(true);
     expect(on.oneSecond - off.oneSecond).toBe(2);
     expect((await createCaptureExporter(off.store).drain()).get('traces.system')).toBeUndefined();
+  });
+});
+
+describe('@bugsee/bun — the runtime gates reach the shared ProcessTracker', () => {
+  it('the per-process tracker honours Bun gates end to end: no V8 heap, no gc, no available memory', () => {
+    const calls: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb) => {
+        calls.push(cb);
+        return `h${calls.length}`;
+      },
+      clearInterval: () => {},
+    };
+    track(launchCore('tok', base({ scheduler, captureSystemTraces: true })).client);
+    const tracker = processTrackerFor(); // the launch went through the registry accessor: same `process` singleton
+    expect(tracker.current('v8Heap')).toBeUndefined();
+    expect(tracker.current('availableMemory')).toBeUndefined();
+    const seen: string[] = [];
+    const off = tracker.onAny((name) => void seen.push(name));
+    for (const cb of calls) cb();
+    off();
+    expect(seen).toContain('memory');
+    expect(seen).not.toContain('v8Heap');
+    expect(seen).not.toContain('gc');
+    expect(seen).not.toContain('availableMemory');
   });
 });

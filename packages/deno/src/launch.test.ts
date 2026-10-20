@@ -8,7 +8,13 @@ import {
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
+import {
+  createNodeSystemTraceProducers,
+  type NodeRuntime,
+  processTrackerFor,
+  resetProcessTracker,
+  type SystemProbe,
+} from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { denoSystemProbe } from './environment';
@@ -98,6 +104,7 @@ beforeEach(() => {
 const clients: Array<{ stop: (t?: number) => Promise<boolean> }> = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
+  resetProcessTracker(); // the per-process ProcessTracker singleton must not carry one test's seams into the next
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 const track = <T extends { stop: (t?: number) => Promise<boolean> }>(c: T): T => {
@@ -410,5 +417,30 @@ describe('@bugsee/deno — captureSystemTraces:false attaches no trace sampling'
     const on = launchWith(true);
     expect(on.oneSecond - off.oneSecond).toBe(2);
     expect((await createCaptureExporter(off.store).drain()).get('traces.system')).toBeUndefined();
+  });
+});
+
+describe('@bugsee/deno — the runtime gates reach the shared ProcessTracker', () => {
+  it('the per-process tracker honours Deno gates end to end: no lag, no gc, no available memory; V8 heap kept', () => {
+    const calls: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb) => {
+        calls.push(cb);
+        return `h${calls.length}`;
+      },
+      clearInterval: () => {},
+    };
+    track(launchCore('tok', base({ scheduler, captureSystemTraces: true })).client);
+    const tracker = processTrackerFor(); // the launch went through the registry accessor: same `process` singleton
+    expect(tracker.current('availableMemory')).toBeUndefined();
+    expect(tracker.current('v8Heap')?.limit).toBeGreaterThan(0);
+    const seen: string[] = [];
+    const off = tracker.onAny((name) => void seen.push(name));
+    for (const cb of calls) cb();
+    off();
+    expect(seen).toContain('memory');
+    expect(seen).not.toContain('eventLoop');
+    expect(seen).not.toContain('gc');
+    expect(seen).not.toContain('availableMemory');
   });
 });

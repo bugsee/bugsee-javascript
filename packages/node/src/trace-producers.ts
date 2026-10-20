@@ -1,41 +1,36 @@
-import { totalmem } from 'node:os';
-import process from 'node:process';
-import { getHeapStatistics } from 'node:v8';
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
-import { createGcSource, type ObserverCtor } from './trackers/gc-observer';
 import {
-  createGuardedElu,
-  createGuardedEventLoopSource,
-  type PerfHooks,
-  realPerfHooks,
-} from './trackers/guarded-event-loop';
-import {
-  type ProcessStats,
-  type ProcessStatsDeps,
-  ProcessStatsTracker,
-} from './trackers/process-stats-tracker';
-import {
-  createAvailableMemoryReader,
-  createMemoryLimitReader,
-  createV8HeapReader,
-} from './trackers/runtime-readers';
+  type ProcessEvents,
+  type ProcessTracker,
+  type ProcessTrackerEnv,
+  processTrackerFor,
+} from '@bugsee/trackers/node';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers over ONE shared
-// ProcessStatsTracker.
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers, each subscribed to ONE
+// stage of the shared per-process ProcessTracker (`@bugsee/trackers/node`, the abstraction layer over the runtime's
+// process APIs). This file is COMPOSITION only: which stage feeds which trace names, plus the runtime-identity gates
+// the platform packages pass through (`measures*`). The tracker owns every runtime read, its lifetime and its
+// honesty rules (a stage that cannot answer emits nothing, never a zero).
 
-abstract class StatsProducer extends TraceProducerBase {
+type Stage = keyof ProcessEvents;
+
+abstract class StageProducer<S extends Stage> extends TraceProducerBase {
   #off: (() => void) | undefined;
-  constructor(protected readonly tracker: ProcessStatsTracker) {
+  constructor(
+    protected readonly tracker: ProcessTracker,
+    private readonly stage: S,
+  ) {
     super();
   }
-  protected abstract publish(stats: ProcessStats): void;
+  protected abstract publish(payload: ProcessEvents[S]): void;
   protected onStart(): void {
-    this.#off = this.tracker.on('stats', (s) => this.publish(s)); // subscribing activates the tracker
-    this.baseline(this.tracker.current());
+    this.#off = this.tracker.on(this.stage, (p) => this.publish(p)); // subscribing arms the stage
+    this.baseline();
   }
-  /** The value emitted at start. Most families publish the current reading; interval-based ones override. */
-  protected baseline(stats: ProcessStats): void {
-    this.publish(stats);
+  /** The value emitted at start. Most families publish the current reading; windowed ones override (no baseline). */
+  protected baseline(): void {
+    const current = this.tracker.current(this.stage);
+    if (current !== undefined) this.publish(current);
   }
   protected override onStop(): void {
     this.#off?.();
@@ -43,60 +38,77 @@ abstract class StatsProducer extends TraceProducerBase {
   }
 }
 
-class ProcessMemoryProducer extends StatsProducer {
+class ProcessMemoryProducer extends StageProducer<'memory'> {
   readonly name = 'process-memory';
-  protected publish(s: ProcessStats): void {
-    this.emit('process_memory_rss', s.memory.rss);
-    this.emit('process_memory_heap_total', s.memory.heapTotal);
-    this.emit('process_memory_heap_used', s.memory.heapUsed);
-    this.emit('process_memory_external', s.memory.external);
-    this.emit('process_memory_array_buffers', s.memory.arrayBuffers);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'memory');
+  }
+  protected publish(m: ProcessEvents['memory']): void {
+    this.emit('process_memory_rss', m.rss);
+    this.emit('process_memory_heap_total', m.heapTotal);
+    this.emit('process_memory_heap_used', m.heapUsed);
+    this.emit('process_memory_external', m.external);
+    this.emit('process_memory_array_buffers', m.arrayBuffers);
   }
 }
 
-class SystemMemoryProducer extends StatsProducer {
+class SystemMemoryProducer extends StageProducer<'systemMemory'> {
   readonly name = 'system-memory';
-  protected publish(s: ProcessStats): void {
-    this.emit('ram_system_total', s.systemMemory.total);
-    this.emit('ram_system_free', s.systemMemory.free);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'systemMemory');
+  }
+  protected publish(m: ProcessEvents['systemMemory']): void {
+    this.emit('ram_system_total', m.total);
+    this.emit('ram_system_free', m.free);
   }
 }
 
-class CpuProducer extends StatsProducer {
+class CpuProducer extends StageProducer<'cpu'> {
   readonly name = 'cpu';
-  protected publish(s: ProcessStats): void {
-    this.emit('cpu_usage_user', s.cpu.userDelta);
-    this.emit('cpu_usage_system', s.cpu.systemDelta);
-    this.emit('cpu_usage_process', s.cpu.processPct);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'cpu');
+  }
+  protected publish(c: ProcessEvents['cpu']): void {
+    this.emit('cpu_usage_user', c.userDelta);
+    this.emit('cpu_usage_system', c.systemDelta);
+    this.emit('cpu_usage_process', c.processPct);
   }
 }
 
-// Omitted, never zeroed, when the runtime cannot measure it.
-class EventLoopLagProducer extends StatsProducer {
+// Omitted, never zeroed, when the runtime cannot measure it (the tracker emits nothing then). No baseline: a
+// window has not elapsed at start, and a restart while the stage stays armed must not re-emit the last window.
+class EventLoopLagProducer extends StageProducer<'eventLoop'> {
   readonly name = 'event-loop-lag';
-  protected publish(s: ProcessStats): void {
-    if (s.eventLoop === undefined) return;
-    this.emit('event_loop_lag_ms', s.eventLoop.meanMs);
-    this.emit('event_loop_lag_max_ms', s.eventLoop.maxMs);
-    this.emit('event_loop_lag_p99_ms', s.eventLoop.p99Ms);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'eventLoop');
+  }
+  protected override baseline(): void {}
+  protected publish(l: ProcessEvents['eventLoop']): void {
+    this.emit('event_loop_lag_ms', l.meanMs);
+    this.emit('event_loop_lag_max_ms', l.maxMs);
+    this.emit('event_loop_lag_p99_ms', l.p99Ms);
   }
 }
 
-class EventLoopUtilizationProducer extends StatsProducer {
+class EventLoopUtilizationProducer extends StageProducer<'utilization'> {
   readonly name = 'event-loop-utilization';
-  protected publish(s: ProcessStats): void {
-    if (s.utilization === undefined) return;
-    this.emit('event_loop_utilization', s.utilization);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'utilization');
+  }
+  protected override baseline(): void {}
+  protected publish(u: ProcessEvents['utilization']): void {
+    this.emit('event_loop_utilization', u.utilization);
   }
 }
 
 // `ram_js_heap_*` is the CEILING-based view shared with the browser and Android (`total` = the heap limit),
 // so it is NOT an alias of `process_memory_heap_*` (committed heap). Only `used` is the same number.
-class V8HeapProducer extends StatsProducer {
+class V8HeapProducer extends StageProducer<'v8Heap'> {
   readonly name = 'v8-heap';
-  protected publish(s: ProcessStats): void {
-    const h = s.v8Heap;
-    if (h === undefined) return;
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'v8Heap');
+  }
+  protected publish(h: ProcessEvents['v8Heap']): void {
     this.emit('v8_heap_size_limit', h.limit);
     this.emit('v8_heap_available', h.available);
     this.emit('v8_heap_malloced', h.malloced);
@@ -109,108 +121,65 @@ class V8HeapProducer extends StatsProducer {
 
 // Emitted every tick, never held for the provider's refresh: a cap can be lifted at runtime, and a held value
 // would then be re-recorded as a stale limit instead of being omitted.
-class MemoryLimitProducer extends StatsProducer {
+class MemoryLimitProducer extends StageProducer<'memoryLimit'> {
   readonly name = 'process-memory-limit';
-  protected publish(s: ProcessStats): void {
-    if (s.memoryLimit !== undefined) this.emit('process_memory_limit', s.memoryLimit);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'memoryLimit');
+  }
+  protected publish(m: ProcessEvents['memoryLimit']): void {
+    this.emit('process_memory_limit', m.bytes);
   }
 }
 
-class AvailableMemoryProducer extends StatsProducer {
+class AvailableMemoryProducer extends StageProducer<'availableMemory'> {
   readonly name = 'system-memory-available';
-  protected publish(s: ProcessStats): void {
-    if (s.availableMemory !== undefined) this.emit('ram_system_available', s.availableMemory);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'availableMemory');
+  }
+  protected publish(m: ProcessEvents['availableMemory']): void {
+    this.emit('ram_system_available', m.bytes);
   }
 }
 
 // Emitted every tick, never held: a quiet interval is a TRUE zero (the observer is running), and a source that
-// stops answering must be omitted rather than re-recorded from a held value.
-class GcProducer extends StatsProducer {
+// stops answering must be omitted rather than re-recorded from a held value. No baseline: the interval opens at
+// activation, so nothing has been observed yet (a zero would be invented).
+class GcProducer extends StageProducer<'gc'> {
   readonly name = 'gc';
-  // No baseline: the interval opens at activation, so nothing has been observed yet (a zero would be invented),
-  // and a restart while the tracker stays active would re-emit the last interval's cached counts.
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'gc');
+  }
   protected override baseline(): void {}
-  protected publish(s: ProcessStats): void {
-    if (s.gc === undefined) return;
-    this.emit('gc_count', s.gc.count);
-    this.emit('gc_pause_ms', s.gc.pauseMs);
-    this.emit('gc_pause_max_ms', s.gc.maxPauseMs);
+  protected publish(g: ProcessEvents['gc']): void {
+    this.emit('gc_count', g.count);
+    this.emit('gc_pause_ms', g.pauseMs);
+    this.emit('gc_pause_max_ms', g.maxPauseMs);
   }
 }
 
-class UptimeProducer extends StatsProducer {
+class UptimeProducer extends StageProducer<'uptime'> {
   readonly name = 'process-uptime';
-  protected publish(s: ProcessStats): void {
-    this.emit('process_uptime_s', s.uptimeS);
+  constructor(tracker: ProcessTracker) {
+    super(tracker, 'uptime');
+  }
+  protected publish(u: ProcessEvents['uptime']): void {
+    this.emit('process_uptime_s', u.seconds);
   }
 }
 
-export interface NodeTraceProducerDeps extends ProcessStatsDeps {
-  /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
-  perfHooks?: PerfHooks;
-  /**
-   * Does this runtime's `monitorEventLoopDelay` observe a BLOCKED loop? Default `true`. Deno's does not
-   * (answers, never throws, never registers a stall), so `@bugsee/deno` passes `false` and the histogram
-   * is never even constructed.
-   */
-  measuresEventLoopDelay?: boolean;
-  /**
-   * Is `v8.getHeapStatistics()` a real V8 heap with a ceiling? Default `true`. Bun's is JSC-derived (its
-   * `heap_size_limit` is not a ceiling, so `limit - used` means nothing, and it costs ~1000x Node per call —
-   * measured), so `@bugsee/bun` passes `false` and `v8_heap_*` / `ram_js_heap_*` are omitted.
-   */
-  measuresV8Heap?: boolean;
-  /**
-   * Is `process.availableMemory()` comparable to the Node figure? Default `true`. It is not on Bun/Deno:
-   * Deno answered 23 GB against Node's 3.4 GB on one macOS host, and on Linux both ignore the container
-   * cap (11.2 GB under `docker -m 256m` where Node answers 253 MB). `@bugsee/deno` and `@bugsee/bun`
-   * pass `false` and `ram_system_available` is omitted there.
-   */
-  measuresAvailableMemory?: boolean;
-  /**
-   * Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`. It is blind on Bun and
-   * Deno (0 entries after heavy churn and forced GC — measured), where a quiet-looking zero would be a lie, so
-   * `@bugsee/bun` / `@bugsee/deno` pass `false` and no observer is ever constructed.
-   */
-  measuresGc?: boolean;
-  /** Test seam for the GC observer constructor. Default `node:perf_hooks`. */
-  performanceObserver?: ObserverCtor;
+/**
+ * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresAvailableMemory`,
+ * `measuresGc`; see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
+ * event-loop histogram, Bun the V8 heap, both the available-memory and GC readers.
+ */
+export interface NodeTraceProducerDeps extends ProcessTrackerEnv {
+  onError?: (error: unknown) => void;
 }
 
 export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {}): TraceProducer[] {
-  const {
-    perfHooks,
-    measuresEventLoopDelay = true,
-    measuresV8Heap = true,
-    measuresAvailableMemory = true,
-    measuresGc = true,
-    performanceObserver,
-    ...rest
-  } = deps;
-  const perf = perfHooks ?? realPerfHooks;
-  // `??` / conditional spreads (never a bare `...rest` over defaults): an explicit `undefined` must not
-  // clobber a default, and `eventLoop` must be ABSENT (not undefined) when the runtime cannot measure it.
-  const eventLoop =
-    rest.eventLoop ??
-    (measuresEventLoopDelay ? createGuardedEventLoopSource(perf.monitorEventLoopDelay) : undefined);
-  const gc = rest.gc ?? (measuresGc ? createGcSource(performanceObserver) : undefined);
-  const tracker = new ProcessStatsTracker({
-    ...rest,
-    ...(gc !== undefined ? { gc } : {}),
-    ...(eventLoop !== undefined ? { eventLoop } : {}),
-    eventLoopUtilization: rest.eventLoopUtilization ?? createGuardedElu(perf.eventLoopUtilization),
-    // Same rule as `eventLoop`: an injected reader wins, otherwise the default is wired only where the runtime
-    // can give a true value; an unwired reader means the field is ABSENT.
-    ...optionalReader('v8Heap', rest.v8Heap, measuresV8Heap, () =>
-      createV8HeapReader(getHeapStatistics),
-    ),
-    ...optionalReader('memoryLimit', rest.memoryLimit, true, () =>
-      createMemoryLimitReader(process, totalmem),
-    ),
-    ...optionalReader('availableMemory', rest.availableMemory, measuresAvailableMemory, () =>
-      createAvailableMemoryReader(process),
-    ),
-  });
+  const { onError, ...env } = deps;
+  // The per-process singleton: a relaunch (or a second producer set) shares it and hands it THIS launch's seams.
+  const tracker = processTrackerFor(env, onError);
   return [
     new ProcessMemoryProducer(tracker),
     new SystemMemoryProducer(tracker),
@@ -223,15 +192,4 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new GcProducer(tracker),
     new UptimeProducer(tracker),
   ];
-}
-
-/** `{ [key]: reader }` for an injected reader, else the default when `enabled`, else nothing. */
-function optionalReader<K extends string, R>(
-  key: K,
-  injected: R | undefined,
-  enabled: boolean,
-  make: () => R,
-): { [P in K]?: R } {
-  const reader = injected ?? (enabled ? make() : undefined);
-  return (reader !== undefined ? { [key]: reader } : {}) as { [P in K]?: R };
 }

@@ -35,7 +35,8 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/node-utils": "workspace:*",
     "@bugsee/performance": "workspace:*",
-    "@bugsee/protocol": "workspace:*"
+    "@bugsee/protocol": "workspace:*",
+    "@bugsee/trackers": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",

@@ -1,6 +1,6 @@
 // Readers for the node runtime-depth traces (V8 heap, cgroup memory cap, available memory). Each answers
 // `undefined` when this runtime cannot give a TRUE reading, so its trace is omitted rather than invented.
-// The process/os/v8 sources are injected: the defaults are wired in trace-producers.ts.
+// The process/os/v8 sources are injected: the defaults are wired in process-tracker.ts.
 
 /** The V8 heap numbers the traces read, from `v8.getHeapStatistics()`. */
 export interface V8HeapStats {

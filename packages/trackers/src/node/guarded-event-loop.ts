@@ -1,9 +1,15 @@
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
-import type { EventLoopSource } from './process-stats-tracker';
 
 // Guarded, LAZY event-loop sources for node-family runtimes with PARTIAL perf_hooks (Bun, Deno). Nothing is
 // constructed or enabled until start(): a source that is never started costs nothing, and a runtime whose
 // monitorEventLoopDelay throws degrades to "lag omitted" rather than aborting SDK startup.
+
+export interface EventLoopSource {
+  /** Mean/max/p99 lag (ms) since the previous read, or undefined when the runtime cannot measure it. */
+  read(): { meanMs: number; maxMs: number; p99Ms: number } | undefined;
+  start(): void;
+  stop(): void;
+}
 
 /** The slice of an event-loop-delay histogram the lag metrics read. */
 export interface DelayHistogram {

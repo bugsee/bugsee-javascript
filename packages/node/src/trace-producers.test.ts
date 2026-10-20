@@ -6,6 +6,7 @@ function harness(deps: NodeTraceProducerDeps) {
   const spy = { set: 0, cleared: 0 };
   let tick: (() => void) | undefined;
   const producers = createNodeSystemTraceProducers({
+    key: {}, // a private tracker per test: the per-process singleton must not leak state between cases
     ...deps,
     scheduler: {
       setInterval: (cb) => {
@@ -377,7 +378,7 @@ describe('createNodeSystemTraceProducers', () => {
 
   it('real node perf_hooks: the start baseline carries NO lag traces (nothing measured yet)', () => {
     const got = new Map<string, unknown>();
-    const ps = createNodeSystemTraceProducers();
+    const ps = createNodeSystemTraceProducers({ key: {} });
     for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
     for (const p of ps) p.stop();
     expect(got.has('event_loop_lag_ms')).toBe(false);
@@ -391,8 +392,11 @@ describe('createNodeSystemTraceProducers', () => {
     expect(h.producers).toHaveLength(10);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
-    h.producers[0]?.start({ emit: () => {} });
+    h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
     expect(h.spy.set).toBe(1);
+    expect(state.monitor).toBe(0); // per-stage activation: nothing builds the histogram for a memory subscriber
+    h.producers[3]?.start({ emit: () => {} }); // event-loop-lag
+    expect(h.spy.set).toBe(1); // still ONE shared timer
     expect(state.monitor).toBe(1);
     expect(state.enabled).toBe(true);
   });
@@ -435,8 +439,9 @@ describe('createNodeSystemTraceProducers', () => {
     h.startAll();
     const baselineUser = h.got.get('cpu_usage_user');
     h.tick();
-    // activation read 100k; the single first read (baseline) is 200k, tick is 300k => one window of 100k each
-    expect(baselineUser).toBe(100_000);
+    // arming reads 100k (the baseline, seeded as a zero-length window); the single tick reads 200k => one window of
+    // 100k no matter how many producers share the tracker
+    expect(baselineUser).toBe(0);
     expect(h.got.get('cpu_usage_user')).toBe(100_000);
   });
 
@@ -475,7 +480,7 @@ describe('createNodeSystemTraceProducers', () => {
 
   it('works with real node perf_hooks and no injected readers', () => {
     const got = new Map<string, unknown>();
-    const ps = createNodeSystemTraceProducers();
+    const ps = createNodeSystemTraceProducers({ key: {} });
     for (const p of ps) p.start({ emit: (n, v) => void got.set(n, v) });
     for (const p of ps) p.stop();
     expect(typeof got.get('process_memory_rss')).toBe('number');
@@ -485,6 +490,7 @@ describe('createNodeSystemTraceProducers', () => {
     const got = new Map<string, unknown>();
     let tick: (() => void) | undefined;
     const ps = createNodeSystemTraceProducers({
+      key: {},
       scheduler: {
         setInterval: (cb) => {
           tick = cb;

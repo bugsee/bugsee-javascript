@@ -23,6 +23,13 @@ export {
   neverThrow,
   type ReportAttachmentInput,
 } from '@bugsee/core';
+export {
+  type EventLoopSource,
+  type PerfHooks,
+  type ProcessTracker,
+  processTrackerFor,
+  resetProcessTracker,
+} from '@bugsee/trackers/node';
 // The request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two
 // live stores over the same source alias on it. The launch builds and owns one; hand-wirers must
@@ -125,9 +132,3 @@ export {
 } from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
 export { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
-export type { PerfHooks } from './trackers/guarded-event-loop';
-export {
-  type EventLoopSource,
-  type ProcessStats,
-  ProcessStatsTracker,
-} from './trackers/process-stats-tracker';
