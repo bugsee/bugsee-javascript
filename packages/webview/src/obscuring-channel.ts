@@ -67,8 +67,27 @@ export interface ObscuringChannelOptions {
 export function createObscuringChannel(opts: ObscuringChannelOptions): ObscuringChannel {
   const { bridge, seq } = opts;
   const wallNow = opts.wallNow ?? ((): number => Date.now());
-  const now = opts.now ?? ((): number => performance.now());
-  const timeOrigin = opts.timeOrigin ?? performance.timeOrigin;
+  // The ambient `performance` is a host global: reading it can throw (hostile getter) or find nothing, and this
+  // runs inside launch(). Without it the clock degrades to the wall clock and the origin to 0.
+  // `now` and `timeOrigin` are posted as a PAIR (native computes timeOrigin + mono), so they degrade as ONE unit:
+  // without both a usable `now()` and a numeric `timeOrigin`, the wall clock is used with an origin of 0.
+  const ambient = ((): { now: () => number; timeOrigin: number } | undefined => {
+    try {
+      const p = (globalThis as { performance?: { now?: () => number; timeOrigin?: number } })
+        .performance;
+      return p !== undefined && typeof p.now === 'function' && typeof p.timeOrigin === 'number'
+        ? { now: () => (p.now as () => number)(), timeOrigin: p.timeOrigin }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  // The pair is chosen as a UNIT: the injected one only when BOTH halves were injected, else the ambient pair,
+  // else the wall clock with origin 0 (an injected half is never mixed with a different epoch).
+  const { now, timeOrigin } =
+    opts.now !== undefined && opts.timeOrigin !== undefined
+      ? { now: opts.now, timeOrigin: opts.timeOrigin }
+      : (ambient ?? { now: (): number => Date.now(), timeOrigin: 0 });
 
   const post = (areas: readonly SecureArea[]): void => {
     bridge.post(

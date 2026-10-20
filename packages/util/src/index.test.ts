@@ -13,6 +13,7 @@ describe('@bugsee/util public surface', () => {
       'createDeferred',
       'describeValue',
       'reportGuarded',
+      'reportOncePerMessage',
       'isBrowser',
       'isBun',
       'isCloudflareWorker',

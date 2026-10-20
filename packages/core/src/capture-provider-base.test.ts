@@ -1,4 +1,5 @@
 import type { FileType, NetworkEvent } from '@bugsee/protocol';
+import { createMultiKeyEmitter, type MultiKeyEmitter } from '@bugsee/trackers';
 import { describe, expect, it } from 'vitest';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator } from './capture-coordinator';
@@ -6,7 +7,6 @@ import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import { CaptureProviderBase } from './capture-provider-base';
 import type { CaptureProviderInit, CaptureStore, OptionsContainer } from './contracts';
-import { createMultiKeyEmitter, type MultiKeyEmitter } from './emitter';
 import { createMemoryCaptureStore } from './memory-capture-store';
 import { createOperationDispatcher } from './operation-dispatcher';
 import { createOptionsContainer } from './options';

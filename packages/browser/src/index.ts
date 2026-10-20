@@ -16,6 +16,13 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+export {
+  type ApplicationEnv,
+  type ApplicationEvents,
+  type ApplicationState,
+  ApplicationTracker,
+  applicationTrackerFor,
+} from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
@@ -41,6 +48,7 @@ export {
   buildBrowserEnvironment,
   realBrowserProbe,
 } from './environment';
+export { boundMatchMedia, hostGlobal, hostRead } from './host-global';
 export {
   type BlackoutBindable,
   type BrowserInputEnv,
@@ -84,7 +92,13 @@ export {
 } from './report-dialog';
 export { parseStack } from './stack';
 export { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
-export { type BrowserTracesEnv, createBrowserSystemTracesSampler } from './system-metrics';
+export { chargingToWire } from './system-trace-values';
+export {
+  type BrowserTraceEnv,
+  browserTraceEnvFrom,
+  createBrowserSystemTraceProducers,
+  defaultBrowserTraceEnv,
+} from './trace-producers';
 export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,

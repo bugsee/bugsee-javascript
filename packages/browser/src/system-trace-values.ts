@@ -153,3 +153,11 @@ export function connectionTypeToWire(
   }
   return 'unknown';
 }
+
+/** The viewer's `charging` table is keyed by the Android/iOS ints (0 unknown, 1 unplugged, 2 charging, 3 full) and
+ *  `processCharging` takes an int or `{state}`. A boolean never matched (false is dropped by a falsy guard; true looks up
+ *  states["true"]), so the old trace rendered nothing. `source` is omitted: the Battery API cannot say AC/USB/wireless. */
+export function chargingToWire(b: { charging: boolean; level: number }): { state: 1 | 2 | 3 } {
+  if (!b.charging) return { state: 1 };
+  return { state: b.level >= 1 ? 3 : 2 };
+}

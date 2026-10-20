@@ -64,6 +64,7 @@ const DIRECTIONS: Record<string, Direction> = {
   reportPrioritySelectorEnabled: 'default',
   // node
   profiling: 'default', // default OFF
+  captureDiskSpace: 'default', // default OFF: only boolean true enables
   detectHangs: 'default', // default ON, a diagnostic
   captureLocalVariables: 'off',
   captureSourceContext: 'off',
@@ -96,7 +97,6 @@ interface RawEntry {
   check?: [pkg: string, pattern: RegExp];
 }
 const RAW_STRICT: Record<string, RawEntry> = {
-  'browser:persist': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
   'browser:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
   'browser:holdBlackout': {
     safe: 'on',
@@ -107,7 +107,6 @@ const RAW_STRICT: Record<string, RawEntry> = {
     safe: 'on',
     why: 'INTERNAL hold, forwarded to the browser read above',
   },
-  'electron:persist': { safe: 'off', why: 'browser option, read `=== true`' },
   'electron:recover': { safe: 'n/a', why: 'durability behaviour' },
   'node:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
   'node:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
@@ -124,7 +123,6 @@ const RAW_STRICT: Record<string, RawEntry> = {
     check: ['cloudflare', /options\.partitionCaptureByTenant === undefined\s*\?\s*true/],
   },
   'webview:reportTrigger': { safe: 'n/a', why: 'enables native report gestures (a UI trigger)' },
-  'bugsee:persist': { safe: 'off', why: 'browser option, read `=== true`' },
   'bugsee:recover': { safe: 'n/a', why: 'durability behaviour' },
   'bugsee:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
   'bugsee:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
@@ -135,7 +133,6 @@ const RAW_STRICT: Record<string, RawEntry> = {
   'nuxt:exitOnUncaught': { safe: 'n/a', why: 'process policy' },
   'nuxt:recover': { safe: 'n/a', why: 'durability behaviour' },
   'nuxt:otelConsume': { safe: 'off', why: 'read `=== true`: OFF unless boolean true' },
-  'nuxt:persist': { safe: 'off', why: 'browser option, read `=== true`' },
   'nuxt:holdBlackout': { safe: 'on', why: 'INTERNAL hold, forwarded to the browser read' },
   'nuxt:partitionCaptureByTenant': {
     safe: 'on',

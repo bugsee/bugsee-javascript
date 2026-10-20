@@ -106,6 +106,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // Material "bug_report" and "close" glyphs (Apache-2.0).
 const BUG_PATH =
   'M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a6.002 6.002 0 0 0-2.83 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z';
+// A send arrowhead with a slit in its back edge. It is filled AND stroked (see `.send-icon` in the styles) so
+// the corners come out rounded.
+const SEND_PATH = 'M4.3 3.9 21.4 12.4 4.3 20.9 5.8 14 15 12.6 5.8 10.8Z';
 const CLOSE_PATH =
   'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z';
 
@@ -251,7 +254,8 @@ function showDialog(
   const setBusy = (value: boolean): void => {
     busy = value;
     refs.send.disabled = value;
-    refs.send.textContent = value ? strings.sending : strings.send;
+    refs.send.setAttribute('aria-label', value ? strings.sending : strings.send);
+    refs.send.title = value ? strings.sending : strings.send;
     for (const control of Object.values(refs.fields)) {
       control.disabled = value;
     }
@@ -509,9 +513,15 @@ function build(
   hook(close, 'close');
   close.setAttribute('data-action', 'cancel');
   close.append(icon(CLOSE_PATH, 'close-icon'));
-  const send = make('button', { type: 'submit' }, strings.send);
+  const send = make('button', {
+    type: 'submit',
+    'aria-label': strings.send,
+    title: strings.send,
+  });
   hook(send, 'send');
   send.setAttribute('data-action', 'send');
+  const sendIcon = icon(SEND_PATH, 'send-icon');
+  send.append(sendIcon);
   const bar = make('div');
   hook(bar, 'bar');
   const title = make('h2', { id: titleId }, strings.title);
@@ -646,7 +656,9 @@ function build(
   const powered = make('a', { href: BUGSEE_URL, target: '_blank', rel: 'noopener noreferrer' });
   hook(powered, 'powered');
   powered.setAttribute('data-powered', '');
-  powered.append(logo, doc.createTextNode(strings.poweredBy));
+  const poweredText = make('span', {}, strings.poweredBy);
+  hook(poweredText, 'powered-text');
+  powered.append(logo, poweredText);
   const footerRow = make('div');
   hook(footerRow, 'footer-row');
   footerRow.append(version, powered);

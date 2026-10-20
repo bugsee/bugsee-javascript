@@ -1,7 +1,8 @@
 // @bugsee/deno — Deno platform. Deno is node-API-compatible, so this package IS @bugsee/node with
 // two Deno-specific overrides: launch()/launchCore() default the system probe (platform.type 'deno' + Deno
-// version) and the guarded system-metrics sampler (partial perf_hooks). The full node surface is re-exported;
-// the explicit launch/launchCore exports below shadow node's same-named exports.
+// version) and the system trace producers (createNodeSystemTraceProducers over partial perf_hooks, with the
+// event-loop lag opted out). The full node surface is re-exported; the explicit launch/launchCore exports below
+// shadow node's same-named exports.
 
 export * from '@bugsee/node';
 export {

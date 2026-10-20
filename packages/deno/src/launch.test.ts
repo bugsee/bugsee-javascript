@@ -1,31 +1,28 @@
 import process from 'node:process';
 import {
   type Clock,
+  createCaptureExporter,
   createMemoryCaptureStore,
   type HttpRequestOptions,
   type HttpResponse,
   type HttpTransport,
   type Scheduler,
 } from '@bugsee/core';
-import {
-  createGuardedSystemMetricsSampler,
-  type NodeRuntime,
-  type SystemProbe,
-} from '@bugsee/node';
+import { createNodeSystemTraceProducers, type NodeRuntime, type SystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { denoSystemProbe } from './environment';
 import { launch, launchCore } from './launch';
 
 // The event-loop-lag OPT-OUT is pure WIRING from this tier: what the flag DOES (omitting the three lag
 // traces rather than reporting zeros) is pinned behaviourally in
-// `node/src/guarded-system-metrics.test.ts`. What only this tier can decide is that Deno is a runtime
+// `node/src/trace-producers.test.ts` (`measuresEventLoopDelay:false never constructs a histogram`). What only this tier can decide is that Deno is a runtime
 // that must set it, so that is what is pinned here — against the call.
 vi.mock('@bugsee/node', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node')>();
   return {
     ...actual,
-    createGuardedSystemMetricsSampler: vi.fn(actual.createGuardedSystemMetricsSampler),
+    createNodeSystemTraceProducers: vi.fn(actual.createNodeSystemTraceProducers),
   };
 });
 
@@ -92,6 +89,12 @@ const base = (over: Partial<Parameters<typeof launch>[1]> = {}): Parameters<type
   ...over,
 });
 
+// Every test starts from a clean factory spy, so a call recorded by an earlier launch can never satisfy
+// (or break) a later test's assertion on the call count / argument.
+beforeEach(() => {
+  vi.mocked(createNodeSystemTraceProducers).mockClear();
+});
+
 const clients: Array<{ stop: (t?: number) => Promise<boolean> }> = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
@@ -144,6 +147,27 @@ describe('@bugsee/deno launch', () => {
     };
     expect(requestJson.environment.runtime.type).toBe('deno');
     expect(requestJson.environment.runtime.version).toBe(process.versions.node); // node-compat fallback under vitest
+  });
+
+  it('detects the app version and build from the environment, and honours appIdentitySource', () => {
+    vi.stubEnv('BUGSEE_APP_VERSION', '6.4.0');
+    vi.stubEnv('BUGSEE_APP_BUILD', 'b-17');
+    try {
+      const detected = launchCore('tok', base());
+      track(detected.client);
+      expect(detected.internals?.getEnvironment().app).toMatchObject({
+        version: '6.4.0',
+        build: 'b-17',
+      });
+      const sourced = launchCore(
+        'tok',
+        base({ appIdentitySource: () => ({ version: '8.0.0' }), carrier: {} }),
+      );
+      track(sourced.client);
+      expect(sourced.internals?.getEnvironment().app?.version).toBe('8.0.0');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('launch() returns the working public client launchCore() builds', () => {
@@ -275,8 +299,116 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     // which gives itself away with a zero `idle`. A lag of ~0 is exactly what a healthy process reports,
     // which is why fabricating one is worse than reporting nothing.
     track(launchCore('tok', base()).client);
-    expect(createGuardedSystemMetricsSampler).toHaveBeenCalledWith(
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
       expect.objectContaining({ measuresEventLoopDelay: false }),
     );
+  });
+
+  it('opts out of ram_system_available (a different quantity) and gc (blind observer) and keeps the V8 heap (real V8)', () => {
+    track(launchCore('tok', base()).client);
+    const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
+    expect(arg?.measuresAvailableMemory).toBe(false);
+    expect(arg?.measuresGc).toBe(false);
+    expect(arg).not.toHaveProperty('measuresV8Heap'); // the node default (true) applies
+  });
+
+  it('injects the node trace producers (not a legacy sampler) and they feed traces.system', async () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    const store = memStore();
+    track(launchCore('tok', base({ captureStore: store, captureSystemTraces: true })).client);
+    const produced = vi.mocked(createNodeSystemTraceProducers).mock.results[0]?.value as unknown[];
+    expect(Array.isArray(produced)).toBe(true);
+    expect(produced.length).toBeGreaterThan(0);
+    for (const p of produced) {
+      expect(typeof (p as { start: unknown }).start).toBe('function');
+      expect(typeof (p as { stop: unknown }).stop).toBe('function');
+    }
+    const traces = (await createCaptureExporter(store).drain()).get('traces.system') ?? [];
+    const names = traces.map((e) => (e.data as { name: string }).name);
+    expect(names).toContain('process_memory_rss');
+    expect(names).toContain('ram_system_total');
+    expect(names).toContain('cpu_usage_process');
+    // Deno cannot observe a blocked loop, so no lag trace is fabricated.
+    expect(names.some((n) => n.startsWith('event_loop_lag'))).toBe(false);
+  });
+});
+
+describe('@bugsee/deno — the launch scheduler / onError reach the trace tracker', () => {
+  const recordingScheduler = () => {
+    const calls: Array<{ cb: () => void; ms: number }> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb, ms) => {
+        calls.push({ cb, ms });
+        return `h${calls.length}`;
+      },
+      clearInterval: () => {},
+    };
+    return { calls, scheduler };
+  };
+
+  it('forwards the launch scheduler and onError into the producer factory', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    const { scheduler } = recordingScheduler();
+    const onError = vi.fn();
+    track(launchCore('tok', base({ scheduler, onError })).client);
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);
+    const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
+    expect(arg?.scheduler).toBe(scheduler);
+    expect(arg?.onError).toBe(onError);
+  });
+
+  it('sampling runs on the injected scheduler: a fake tick produces a stats emit (no real timer)', async () => {
+    const { calls, scheduler } = recordingScheduler();
+    const store = memStore();
+    track(
+      launchCore('tok', base({ scheduler, captureStore: store, captureSystemTraces: true })).client,
+    );
+    const rss = async () =>
+      ((await createCaptureExporter(store).drain()).get('traces.system') ?? []).filter(
+        (e) => (e.data as { name: string }).name === 'process_memory_rss',
+      ).length;
+    expect(await rss()).toBe(1); // the start baseline
+    for (const c of calls.filter((x) => x.ms === 1000)) c.cb();
+    expect(await rss()).toBe(2);
+  });
+
+  it('a throwing reader during a poll reaches options.onError', () => {
+    const { calls, scheduler } = recordingScheduler();
+    const onError = vi.fn();
+    track(launchCore('tok', base({ scheduler, onError, captureSystemTraces: true })).client);
+    const spy = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      throw new Error('memoryUsage boom');
+    });
+    try {
+      for (const c of calls.filter((x) => x.ms === 1000)) c.cb();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain('memoryUsage boom');
+  });
+});
+
+describe('@bugsee/deno — captureSystemTraces:false attaches no trace sampling', () => {
+  it('no sampling timer, no trace entries; enabling adds exactly the provider tick + the tracker timer', async () => {
+    const launchWith = (captureSystemTraces: boolean) => {
+      const calls: number[] = [];
+      const store = memStore();
+      const scheduler: Scheduler = {
+        setInterval: (_cb, ms) => {
+          calls.push(ms);
+          return `h${calls.length}`;
+        },
+        clearInterval: () => {},
+      };
+      track(
+        launchCore('tok', base({ scheduler, captureStore: store, captureSystemTraces })).client,
+      );
+      return { store, oneSecond: calls.filter((ms) => ms === 1000).length };
+    };
+    const off = launchWith(false);
+    const on = launchWith(true);
+    expect(on.oneSecond - off.oneSecond).toBe(2);
+    expect((await createCaptureExporter(off.store).drain()).get('traces.system')).toBeUndefined();
   });
 });

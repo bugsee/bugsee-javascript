@@ -6,11 +6,14 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
+  type TraceProducer,
   type TraceSample,
 } from '@bugsee/capture';
 import {
+  type AppIdentitySource,
   asInternalClient,
   BOOLEAN_OPTION,
   BUGSEE_SDK_VERSION,
@@ -20,6 +23,7 @@ import {
   type BundleAssemblyContext,
   type BundleStore,
   BundleStoreToken,
+  bundledAppIdentity,
   type CaptureStore,
   ChunkStorageToken,
   type Clock,
@@ -52,6 +56,7 @@ import {
   ReportMarkerStoreToken,
   type ReportSnapshotSource,
   relaunchWith,
+  resolveAppIdentity,
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
@@ -75,7 +80,9 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
+import { createNodeAppIdentitySource } from './app-identity-source';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import { type CapturedDataStore, ensureSecureDataRoot, resolveDataLocation } from './data-location';
 import {
@@ -83,8 +90,10 @@ import {
   createUnhandledRejectionProvider,
   type ProcessEvents,
 } from './detection-providers';
+import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 import {
   buildNodeEnvironment,
+  type HardwareExtras,
   realSystemProbe,
   type SystemProbe,
   SystemProbeToken,
@@ -110,7 +119,9 @@ import {
 } from './local-variables';
 import {
   NODE_PRIVACY_OPTION_DEFINITIONS,
+  NODE_TRACE_OPTION_DEFINITIONS,
   NodePrivacyOption,
+  NodeTraceOption,
   PROFILING_OPTION_DEFINITIONS,
   ProfilingOption,
 } from './options';
@@ -133,7 +144,7 @@ import type { TraceResponseConfig } from './server-instrument';
 import { createSourceContextEnricher, type SourceContextOptions } from './source-context';
 import { sweepAgedInstances } from './sweep-instances';
 import { createNodeSystemEventsSource } from './system-events';
-import { createNodeSystemMetricsSampler } from './system-metrics';
+import { createNodeSystemTraceProducers } from './trace-producers';
 import { buildTracePropagationDecorator } from './trace-propagation';
 
 // @bugsee/node launch() — the Node composition root. It assembles the runtime-agnostic
@@ -167,6 +178,7 @@ const NODE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   ...COMMON_OPTION_DEFINITIONS,
   { friendly: 'maxDataSize', key: BugseeOption.MaxDataSize, default: DEFAULT_MAX_DATA_SIZE_MB },
   ...PROFILING_OPTION_DEFINITIONS,
+  ...NODE_TRACE_OPTION_DEFINITIONS,
   ...NODE_PRIVACY_OPTION_DEFINITIONS,
   // Hang detection (Android BugseeDetectionHang parity). Default ON — the worker heartbeat is ~free
   // (benchmarked); thresholds are Android-canonical (3000 / 5000 / 10000 ms).
@@ -204,10 +216,23 @@ export interface BugseeLaunchOptions {
   appRoot?: string;
   /** app.package_id. */
   appId?: string;
-  /** app.version. */
+  /**
+   * app.version. When omitted it is detected: a build-time constant, then `appIdentitySource`, then the
+   * `BUGSEE_APP_VERSION` environment variable, then the nearest `package.json` (from `appRoot`, else the
+   * working directory). `npm_package_version` is not read: it names the package whose script started the
+   * process, which a child process inherits.
+   */
   appVersion?: string;
-  /** app.build. */
+  /**
+   * app.build. When omitted it is detected the same way; the environment step reads `BUGSEE_APP_BUILD`
+   * and the commit variables CI systems and hosts set (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, ...).
+   */
   appBuild?: string;
+  /**
+   * An extra place to look for the app version and build, consulted after build-time constants and
+   * before the environment and `package.json`. Desktop shells use it to supply their own version.
+   */
+  appIdentitySource?: AppIdentitySource;
   /** hardware.device_id — caller-supplied only; Node never generates or persists one. */
   deviceId?: string;
 
@@ -256,6 +281,10 @@ export interface BugseeLaunchOptions {
   captureSystemTraces?: boolean;
   /** Capture system events (process lifecycle). Default true. */
   captureSystemEvents?: boolean;
+  /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
+  captureDiskSpace?: boolean;
+  /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
+  diskStatfs?: StatFs;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -377,12 +406,33 @@ export interface BugseeLaunchOptions {
   captureStore?: CaptureStore;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
+  /**
+   * Extra `environment.hardware` data a platform extension can supply (today only `gpu`:
+   * `{vendor?, renderer?, gl_version?, gl_extensions?}`; @bugsee/electron fills it from `app.getGPUInfo`).
+   * Called LIVE on every environment assemble, so a value that settles after launch appears on the next
+   * report and is simply absent before. Only the typed `gpu` key is merged (unknown keys are dropped); it
+   * never overrides the built-in hardware fields; `undefined`, an empty/unusable result, or a throw adds
+   * nothing (a throw is reported through `onError`).
+   */
+  hardwareExtras?: () => HardwareExtras | undefined;
   /** CPU profiler override (advanced / tests — avoids the real node:inspector). Default the V8 profiler. */
   cpuProfiler?: CpuProfiler;
   /** Hang watchdog factory (advanced / tests — avoids the real worker_threads). Default the real one. */
   hangWatchdogFactory?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
-  /** System-traces sampler. Default the Node memory/cpu/event-loop sampler. */
+  /** Caller-supplied system-traces sampler; REPLACES the built-in `systemTraceProducers` when set. */
   systemMetricsSampler?: () => readonly TraceSample[];
+  /**
+   * Trace producers (each subscribes to trackers; the provider starts/stops them). Default: the node set
+   * (`createNodeSystemTraceProducers`, wired to this launch's `scheduler`/`onError`). A supplied
+   * `systemMetricsSampler` wins over this.
+   *
+   * PER-LAUNCH ONLY: producers are stateful — a producer's `start()` is a no-op while it is already started —
+   * so never share one array across clients; build a fresh set for each launch (it is RESET on relaunch).
+   * On Bun/Deno a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
+   * default set, including its gates (e.g. Deno's event-loop-lag opt-out), so pass
+   * `createNodeSystemTraceProducers({ measuresEventLoopDelay: false, … })` yourself there.
+   */
+  systemTraceProducers?: readonly TraceProducer[];
   /** Durable bundle store override; wins over dataDir/pending. Default fs-backed when dataDir is set. */
   bundleStore?: BundleStore;
   /** Carrier host for the process-global interceptor singletons; injectable for tests. Default `globalThis`. */
@@ -509,6 +559,12 @@ const safeCwd = (): string | undefined => {
   }
 };
 
+const warnToConsole = (message: string): void => {
+  (globalThis as unknown as { console?: { warn?: (message: string) => void } }).console?.warn?.(
+    message,
+  );
+};
+
 // The public composition root's lifecycle shell: it publishes Launched once a client was built (the Node
 // launch is synchronous, so Launching is never observable here) and records the arguments for relaunch().
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
@@ -543,6 +599,24 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     );
     return { client: alreadyLaunched, internals: undefined };
   }
+
+  // Settled once: the explicit options win, then build-time constants, the caller's source, and finally
+  // what the process environment and package.json say. A missing version is warned about, once.
+  const appIdentity = resolveAppIdentity(
+    {
+      ...(options.appVersion !== undefined ? { version: options.appVersion } : {}),
+      ...(options.appBuild !== undefined ? { build: options.appBuild } : {}),
+    },
+    [
+      bundledAppIdentity,
+      ...(options.appIdentitySource !== undefined ? [options.appIdentitySource] : []),
+      createNodeAppIdentitySource(
+        options.appRoot !== undefined ? { appRoot: options.appRoot } : {},
+      ),
+    ],
+    warnToConsole,
+    'Pass `appVersion` (and `appBuild`) to launch(), set BUGSEE_APP_VERSION (and BUGSEE_APP_BUILD), or give your package.json a version.',
+  );
 
   // Resolve the friendly launch options to canonical com.bugsee.option.* form ONCE: the gate the
   // coordinators query (by each provider's controllingOption identifier), the OptionsContainer
@@ -634,15 +708,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // (dotted) options are wire-translated to colon form inside buildNodeEnvironment.
   const probe = options.systemProbe ?? realSystemProbe;
   services.addService(defineService(SystemProbeToken, () => probe)); // container service
+  const environmentOnError = reportOncePerMessage(options.onError);
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
         sdkVersion,
         options: resolved.canonical,
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
-        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
-        ...(options.appBuild !== undefined ? { appBuild: options.appBuild } : {}),
+        ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
+        ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
         ...(options.deviceId !== undefined ? { deviceId: options.deviceId } : {}),
+        ...(options.hardwareExtras !== undefined ? { hardwareExtras: options.hardwareExtras } : {}),
+        // a hardwareExtras that throws on every report build reaches the host sink once, not once per report
+        ...(options.onError !== undefined ? { onError: environmentOnError } : {}),
       },
       probe,
     );
@@ -861,9 +939,35 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   if (propagationDecorator !== undefined) {
     network.interceptor.addRequestDecorator(propagationDecorator);
   }
+  const baseTraceProducers =
+    options.systemTraceProducers ??
+    createNodeSystemTraceProducers({
+      // the tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    });
+  // Opt-in disk space: the volume the SDK's data dir lives on, so only when there IS one (an in-memory or
+  // degraded launch has none, and never falls back to `/` or the cwd). Appended to caller-supplied producers
+  // too: the option is an explicit request, and Bun/Deno build their own producer list.
+  const traceProducers =
+    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+      ? [
+          ...baseTraceProducers,
+          createDiskSpaceProducer({
+            dataDir: effectiveDataDir,
+            ...(options.diskStatfs !== undefined ? { statfs: options.diskStatfs } : {}),
+            ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          }),
+        ]
+      : baseTraceProducers;
   client.addCaptureProvider(
     createSystemTracesProvider({
-      sample: options.systemMetricsSampler ?? createNodeSystemMetricsSampler(),
+      ...(options.systemMetricsSampler !== undefined
+        ? { sample: options.systemMetricsSampler } // legacy injector wins (tests)
+        : { producers: traceProducers }),
+      refreshMs: deriveRefreshMs(maxRecordingTime * 1000),
+      ...(options.onError !== undefined ? { onError: options.onError } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
@@ -1310,8 +1414,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     transport,
     getEnvironment,
     network,
-    appVersion: options.appVersion,
-    appBuild: options.appBuild,
+    appVersion: appIdentity.version,
+    appBuild: appIdentity.build,
     deviceId: options.deviceId,
     onError: options.onError,
     // The request-context store is the SAME instance registered as the ContextProvider above, so the

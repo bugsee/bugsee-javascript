@@ -6,8 +6,13 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { BlackoutToken, CaptureStoreToken } from '@bugsee/core';
-import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/node';
+import { type AppIdentity, BlackoutToken, CaptureStoreToken } from '@bugsee/core';
+import {
+  type Bugsee,
+  type BugseeLaunchOptions,
+  launchCore,
+  sanitizeHardwareGpu,
+} from '@bugsee/node';
 import {
   type CrashReporterLike,
   getCrashDumpsDirectory,
@@ -15,6 +20,8 @@ import {
 } from './crash-reporter';
 /** The subset of Electron's `app` that the SDK needs. */
 export interface ElectronAppLike {
+  /** The app's version (Electron's `app.getVersion()`): used as the reported app version when set. */
+  getVersion?(): string;
   on(
     event: 'render-process-gone',
     listener: (
@@ -23,9 +30,17 @@ export interface ElectronAppLike {
       details: { reason: string; exitCode?: number },
     ) => void,
   ): unknown;
+  /**
+   * Electron's `app.getGPUInfo` — optional. When present, `getGPUInfo('basic')` is kicked once at launch and
+   * the active device's strings (when Electron supplies them) are reported as `environment.hardware.gpu` on
+   * every report assembled after it settles. A rejection, or an app without it, just omits the field.
+   */
+  getGPUInfo?(type: 'basic' | 'complete'): Promise<unknown>;
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
+import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
+import { createGpuInfoCache, type GpuInfoType } from './gpu-info-cache';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
@@ -61,6 +76,14 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * `ipcMain`, so @bugsee/electron keeps no electron dependency.
    */
   app?: ElectronAppLike;
+  /**
+   * The `app.getGPUInfo` argument used for `environment.hardware.gpu`. Default `'basic'`. `'complete'` is
+   * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
+   * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
+   * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
+   * `'complete'` for the GL strings.
+   */
+  gpuInfoType?: GpuInfoType;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
@@ -71,10 +94,53 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   launch?: NodeLaunch;
 }
 
+const text = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() !== '' ? value : undefined;
+
+/** Merges identity sources field by field: the first source with a usable value for a field wins it. */
+const chainAppIdentity =
+  (first: (() => AppIdentity | undefined) | undefined, second: () => AppIdentity) =>
+  (): AppIdentity => {
+    let primary: AppIdentity | undefined;
+    try {
+      primary = first?.();
+    } catch {
+      primary = undefined;
+    }
+    let fallback: AppIdentity = {};
+    try {
+      fallback = second();
+    } catch {
+      // `app.getVersion()` can throw before the app is ready; the version is simply unknown then.
+    }
+    const version = text(primary?.version) ?? text(fallback.version);
+    const build = text(primary?.build) ?? text(fallback.build);
+    return {
+      ...(version !== undefined ? { version } : {}),
+      ...(build !== undefined ? { build } : {}),
+    };
+  };
+
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
-  const { ipcMain, app, crashReporter, crashReporterExtra, video, launch, ...nodeOptions } =
-    options;
+  const {
+    ipcMain,
+    app,
+    gpuInfoType,
+    crashReporter,
+    crashReporterExtra,
+    video,
+    launch,
+    ...nodeOptions
+  } = options;
+
+  // The Electron app knows its own version (package.json of the packaged app); offer it behind any source
+  // the caller supplied, which is asked first.
+  if (app?.getVersion !== undefined) {
+    nodeOptions.appIdentitySource = chainAppIdentity(nodeOptions.appIdentitySource, () => ({
+      version: app.getVersion?.(),
+    }));
+  }
 
   // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -107,6 +173,34 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     }
   }
 
+  // GPU for environment.hardware.gpu: the cache is read LIVE by the node environment builder on every
+  // assemble (so a GPU that settles after launch lands on the next report); it is only STARTED once this
+  // launch is known to be the first (below). Precedence is FIELD-WISE: the cache's fields, overridden by
+  // whatever non-empty string fields a caller-supplied `hardwareExtras` gives (so a caller that supplies only
+  // `gl_version` keeps the cache's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
+  // throws (reported), leaves the cache's GPU untouched.
+  // `hardwareExtras` is a KEPT relaunch option, so a node/umbrella `relaunch()` in an Electron main keeps THIS
+  // wrapper (closing over this cache): it keeps serving the cached GPU after a relaunch (stop() does not clear
+  // it), but a GPU that had not yet resolved before the relaunch is not re-requested.
+  const gpuCache = createGpuInfoCache({
+    source: app,
+    ...(gpuInfoType !== undefined ? { type: gpuInfoType } : {}),
+    ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+  });
+  const callerExtras = nodeOptions.hardwareExtras;
+  const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);
+  nodeOptions.hardwareExtras = () => {
+    const cached = gpuCache.current();
+    if (callerExtras === undefined) return cached;
+    try {
+      const own = sanitizeHardwareGpu(callerExtras()?.gpu);
+      return own === undefined ? cached : { gpu: { ...cached?.gpu, ...own } };
+    } catch (error) {
+      reportExtrasOnce(error); // a throwing caller extra is polled on every report: tell the host once
+      return cached;
+    }
+  };
+
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
@@ -114,6 +208,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   if (internals === undefined) {
     return client;
   }
+
+  gpuCache.start();
 
   // The main client's blackout: the one state the whole session follows (renderers and pixel video).
   const blackout = client.getService(BlackoutToken);
@@ -211,12 +307,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
+      gpuCache.stop(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture
     } catch (error) {
-      nodeOptions.onError?.(error);
+      reportGuarded(nodeOptions.onError, error);
     }
     return stop(timeout);
   }) as Bugsee['stop'];

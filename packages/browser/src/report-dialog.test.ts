@@ -13,6 +13,7 @@ import {
   type ReportDialogUiOptions,
 } from './report-dialog';
 import { DEFAULT_REPORT_DIALOG_STRINGS } from './report-dialog-strings';
+import { REPORT_DIALOG_CSS } from './report-dialog-styles';
 
 const UI: ReportDialogUiOptions = {
   summaryRequired: false,
@@ -262,6 +263,31 @@ describe('layout', () => {
     }
   });
 
+  it('shows the send action as a paper-plane icon with an accessible name, not text', () => {
+    const { show } = harness();
+    void show();
+    const send = q('[data-action="send"]');
+    expect(send.textContent).toBe('');
+    expect(send.getAttribute('aria-label')).toBe('Send');
+    expect(send.getAttribute('title')).toBe('Send');
+    const icon = send.querySelector('svg.bugsee-reporting-dialog-send-icon');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.querySelector('path')?.getAttribute('d')?.length).toBeGreaterThan(20);
+  });
+
+  it('rounds the send arrowhead by stroking it with round joins', () => {
+    expect(REPORT_DIALOG_CSS).toMatch(
+      /send-icon \{[^}]*stroke: currentColor;[^}]*stroke-linejoin: round;/,
+    );
+  });
+
+  it('uses the brand teal as the accent, with the AA variant on the light page', () => {
+    const css = REPORT_DIALOG_CSS;
+    expect(css).toContain('--bugsee-reporting-dialog-accent: #3A8A99');
+    expect(css.match(/--bugsee-reporting-dialog-accent: #60B4C4/g)).toHaveLength(2); // dark + auto
+    expect(css.toLowerCase()).not.toContain('#ff5858');
+  });
+
   it('shows the SDK version in the footer', () => {
     const { show } = harness();
     void show();
@@ -273,7 +299,7 @@ describe('layout', () => {
     const { show } = harness();
     void show({ strings: { send: 'Absenden', summaryPlaceholder: 'Kurzfassung' } });
 
-    expect(q('[data-action="send"]').textContent).toBe('Absenden');
+    expect(q('[data-action="send"]').getAttribute('aria-label')).toBe('Absenden');
     expect(field('summary').placeholder).toBe('Kurzfassung');
     expect(field('description').placeholder).toBe(
       DEFAULT_REPORT_DIALOG_STRINGS.descriptionPlaceholder,
@@ -479,7 +505,7 @@ describe('sending', () => {
     expect(upload).toHaveBeenCalledTimes(1);
     expect(q<HTMLButtonElement>('[data-action="send"]').disabled).toBe(true);
     expect(field('summary').disabled).toBe(true);
-    expect(q('[data-action="send"]').textContent).toBe('Sending…');
+    expect(q('[data-action="send"]').getAttribute('aria-label')).toBe('Sending…');
 
     finish({ ok: false });
     expect(await pending).toEqual({ ok: false });
@@ -1165,5 +1191,35 @@ describe('lifecycle events', () => {
     const pending = show();
     send();
     await expect(pending).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('toolbar buttons', () => {
+  it('give the close and send actions the same button size', () => {
+    const css = REPORT_DIALOG_CSS;
+    const box = (name: string): string => {
+      const rule = css.match(new RegExp(`\\.bugsee-reporting-dialog-${name} \\{([^}]*)\\}`));
+      return `${rule?.[1]?.match(/width: (\d+px)/)?.[1]}x${rule?.[1]?.match(/height: (\d+px)/)?.[1]}`;
+    };
+    expect(box('send')).toBe('44pxx44px');
+    expect(box('close')).toBe(box('send'));
+  });
+});
+
+describe('version line', () => {
+  it('is small and faint next to the "Powered by" text', () => {
+    const rule =
+      REPORT_DIALOG_CSS.match(/\.bugsee-reporting-dialog-version \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule).toContain('font-size: 9px');
+    expect(rule).toContain('opacity: 0.3');
+  });
+});
+
+describe('page shading', () => {
+  it('is nearly black, so the page behind the dialog is barely visible', () => {
+    const alpha = REPORT_DIALOG_CSS.match(
+      /--bugsee-reporting-dialog-shade: rgba\(0, 0, 0, ([\d.]+)\)/,
+    )?.[1];
+    expect(Number(alpha)).toBeGreaterThanOrEqual(0.9);
   });
 });

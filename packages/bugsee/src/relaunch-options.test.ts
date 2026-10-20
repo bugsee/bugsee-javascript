@@ -108,7 +108,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  * "this is not deployment identity and not an integration seam". Notes on the ones that look otherwise:
  *  - `lifecycleEventsListener` is held on the carrier slot (`setProcessLifecycleEventsListener`), so it
  *    survives a relaunch without being re-passed;
- *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `bridge`, `post`, `launch`, `onSessionId`,
+ *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `gpuInfoType`, `bridge`, `post`, `launch`, `onSessionId`,
  *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (Electron has no
  *    `relaunch()`), and keeping them would pin Electron objects on `globalThis` for nothing;
  *  - `appToken` (the Cloudflare and Nuxt adapters accept it inside their options object) is the token itself,
@@ -121,18 +121,24 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `instanceIdentity` (node) is a per-instance identity: a pinned one must never be shared by two instances,
  *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
- *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list).
+ *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list);
+ *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
+ *    no-op while it is already started, so an instance still running on another client would silently no-op
+ *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
+ *    relaunch therefore builds the runtime's fresh default set.
  */
 const RESET_OPTIONS: readonly string[] = [
   'app',
   'appToken',
   'flushTimeoutMs',
+  'gpuInfoType',
   'injectTraceMeta',
   'instanceIdentity',
   'onSpanProcessor',
   'setupOtelProvider',
   'bridge',
   'captureBreadcrumbs',
+  'captureDiskSpace',
   'captureInteractions',
   'captureLocalVariables',
   'captureLogs',
@@ -153,6 +159,7 @@ const RESET_OPTIONS: readonly string[] = [
   'detectCrashes',
   'detectHangs',
   'detectHttpErrors',
+  'diskStatfs',
   'exitOnUncaught',
   'hangFairMs',
   'hangMediumMs',
@@ -196,6 +203,7 @@ const RESET_OPTIONS: readonly string[] = [
   'reportTrigger',
   'shutdownTimeoutMs',
   'startInBlackout',
+  'systemTraceProducers',
   'traceInteractions',
   'traceNavigations',
   'tracePropagationOrigin',

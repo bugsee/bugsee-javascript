@@ -62,9 +62,16 @@ export {
 } from './system-events-provider';
 export {
   createSystemTracesProvider,
+  deriveRefreshMs,
   type SystemTracesProviderOptions,
   type TraceSample,
 } from './system-traces-provider';
+export {
+  type TraceEmitOptions,
+  type TraceProducer,
+  TraceProducerBase,
+  type TraceSink,
+} from './trace-producer';
 export {
   createTraceparentDecorator,
   type ParsedTraceparent,

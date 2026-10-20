@@ -92,6 +92,16 @@ const sameGeometry = (a: VideoAuxEventDetail, b: VideoAuxEventDetail): boolean =
   a.visibleW === b.visibleW &&
   a.visibleH === b.visibleH;
 
+// A plain getter on the host's window: a cross-origin or torn-down window (or page script shadowing it) throws
+// from the read, and this runs inside launch(). Unreadable = absent.
+function safeRead<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
+
 class BrowserViewportSource
   extends InterceptorBase<{ viewport: VideoAuxEventDetail }>
   implements ViewportSource
@@ -107,7 +117,8 @@ class BrowserViewportSource
   constructor(env: ViewportEnv) {
     super();
     this.#window = env.window;
-    this.#visualViewport = env.visualViewport ?? env.window?.visualViewport ?? undefined;
+    this.#visualViewport =
+      env.visualViewport ?? safeRead(() => env.window?.visualViewport) ?? undefined;
     this.#schedule = env.schedule ?? defaultSchedule;
   }
 
@@ -231,7 +242,7 @@ function defaultSchedule(callback: () => void): () => void {
 /** Build the viewport source over the real browser globals (each overridable / absent → self-skip). */
 export function createBrowserViewportSource(env: ViewportEnv = {}): ViewportSource {
   return new BrowserViewportSource({
-    window: 'window' in env ? env.window : g.window,
+    window: 'window' in env ? env.window : safeRead(() => g.window),
     visualViewport: 'visualViewport' in env ? env.visualViewport : undefined,
     schedule: env.schedule,
   });
