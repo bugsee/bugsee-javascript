@@ -1611,6 +1611,154 @@ describe('launch', () => {
         expect(armed).toBe(0);
       });
 
+      it('records screen_size {width,height,dpr} from the INJECTED window and follows its resize', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        Object.assign(w.win, { devicePixelRatio: 3 });
+        w.emit('resize', {});
+        expect(await rowsOf(store, 'screen_size')).toEqual([
+          { width: 390, height: 844, dpr: 2 },
+          { width: 390, height: 844, dpr: 3 },
+        ]);
+      });
+
+      it('screen_size is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
+        stubSensors(); // the stubbed screen has no width/height
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+      });
+
+      it('records main_thread_lag_ms as timer drift on the INJECTED window clock, visible only, with a fresh baseline after a hide', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let clock = 5_000;
+        Object.defineProperty(w.win, 'performance', {
+          value: { now: () => clock },
+          configurable: true,
+        });
+        const live = new Map<number, () => void>();
+        let nextHandle = 1;
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                if (ms !== 1000) return 'other';
+                const h = nextHandle++;
+                live.set(h, cb);
+                return h;
+              },
+              clearInterval: (h) => void live.delete(h as number),
+            },
+          }),
+        );
+        const runTicks = (): void => {
+          for (const cb of [...live.values()]) cb();
+        };
+        clock += 1000;
+        runTicks(); // on time
+        clock += 1000 + 300; // a 300 ms block spans the next tick
+        runTicks();
+        const before = live.size;
+        d.setVisible(false);
+        const hiddenTimers = live.size;
+        clock += 60_000;
+        d.setVisible(true); // a fresh baseline: the hidden minute is not lag
+        clock += 1000;
+        runTicks();
+        // fps shares the 1 s cadence but emits its own name; only the lag rows are read here
+        expect(await rowsOf(store, 'main_thread_lag_ms')).toEqual([0, 300, 0]);
+        expect(hiddenTimers).toBeLessThan(before); // hiding tore the sampling timer(s) down
+      });
+
+      it('a hidden injected document never reads the clock for lag (no timer is started)', async () => {
+        stubSensors();
+        const d = mkDoc(false);
+        const w = fakeWindow();
+        let reads = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
+          },
+          configurable: true,
+        });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: memStore(),
+          }),
+        );
+        expect(reads).toBe(0);
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch and is reported', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.defineProperty(w.win, 'devicePixelRatio', {
+          get(): never {
+            throw new Error('devicePixelRatio blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        const store = memStore();
+        const client = await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError }),
+        );
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toContain('devicePixelRatio blocked');
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        await client.stop();
+      });
+
+      it('a systemMetricsSampler override builds neither screen_size nor the lag timer', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let reads = 0;
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
+          },
+          configurable: true,
+        });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
+        );
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(reads).toBe(0); // no lag timer was even built
+      });
+
       it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {
         stubSensors();
         const d = mkDoc(true);
