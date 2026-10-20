@@ -139,6 +139,7 @@ const RESET_OPTIONS: readonly string[] = [
   'bridge',
   'captureBreadcrumbs',
   'captureDiskSpace',
+  'captureEnvironmentHints',
   'captureInteractions',
   'captureLocalVariables',
   'captureLogs',

@@ -52,6 +52,7 @@ const DIRECTIONS: Record<string, Direction> = {
   captureNetworkDefaultSanitizer: 'default', // default ON: the redaction stays on
   // browser
   captureInteractions: 'off',
+  captureEnvironmentHints: 'off', // private-mode heuristic, default OFF: an invalid value stays OFF
   captureViewHierarchy: 'off',
   startInBlackout: 'on',
   replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF; masking is fail-closed on its own
