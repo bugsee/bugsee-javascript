@@ -1,6 +1,11 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type EventSubscribable, InterceptorBase } from '@bugsee/core';
-import { ElectronProcessTracker } from '@bugsee/trackers/electron';
+import {
+  ElectronApplicationTracker,
+  ElectronDisplayTracker,
+  ElectronPowerTracker,
+  ElectronProcessTracker,
+} from '@bugsee/trackers/electron';
 import { describe, expect, it, vi } from 'vitest';
 import { createElectronSystemEventsSource } from './system-events';
 
@@ -37,7 +42,7 @@ function setup() {
   const onError = vi.fn();
   const tracker = new ElectronProcessTracker({ app }, onError);
   const inner = new FakeInner();
-  const mux = createElectronSystemEventsSource(inner, tracker, onError);
+  const mux = createElectronSystemEventsSource(inner, { process: tracker }, onError);
   return { app, listeners, tracker, inner, mux, onError };
 }
 
@@ -165,7 +170,7 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
         };
         const tracker = new ElectronProcessTracker({ app }, () => {});
         const inner = new FakeInner();
-        const mux = createElectronSystemEventsSource(inner, tracker, sink);
+        const mux = createElectronSystemEventsSource(inner, { process: tracker }, sink);
         const off = mux.on('event', vi.fn());
         vi.spyOn(inner, 'off').mockImplementation(() => {
           throw new Error('inner off');
@@ -201,5 +206,261 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
     const sub: EventSubscribable<Events> = mux;
     expect(typeof sub.on).toBe('function');
     tracker.reset();
+  });
+});
+
+// ---- domain trackers (power / display / application windows) -------------------------------------------------
+
+type L = (...a: unknown[]) => void;
+class FakeEmitter {
+  table = new Map<string, L[]>();
+  on = vi.fn((e: string, l: L) => {
+    this.table.set(e, [...(this.table.get(e) ?? []), l]);
+  });
+  removeListener = vi.fn((e: string, l: L) => {
+    this.table.set(
+      e,
+      (this.table.get(e) ?? []).filter((x) => x !== l),
+    );
+  });
+  emit(e: string, ...a: unknown[]) {
+    for (const l of [...(this.table.get(e) ?? [])]) l({}, ...a);
+  }
+  total() {
+    return [...this.table.values()].reduce((n, l) => n + l.length, 0);
+  }
+}
+class FakeWebContents extends FakeEmitter {
+  constructor(public id: number) {
+    super();
+  }
+  isDestroyed = () => false;
+}
+class FakeWindow extends FakeEmitter {
+  webContents: FakeWebContents;
+  constructor(public id: number) {
+    super();
+    this.webContents = new FakeWebContents(id + 100);
+    // Electron's BrowserWindow RE-EMITS its webContents' hang pair: recording both would double every hang
+    this.webContents.on('unresponsive', () => this.emit('unresponsive'));
+    this.webContents.on('responsive', () => this.emit('responsive'));
+  }
+  isDestroyed = () => false;
+}
+const display = (id: number) => ({ id, size: { width: 800, height: 600 }, scaleFactor: 2 });
+
+function domains(existing: FakeWindow[] = []) {
+  const powerMonitor = new FakeEmitter();
+  const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [display(1)] });
+  const app = new FakeEmitter();
+  const BrowserWindow = { getAllWindows: () => existing };
+  const onError = vi.fn();
+  const power = new ElectronPowerTracker({ powerMonitor }, onError);
+  const disp = new ElectronDisplayTracker({ screen }, onError);
+  const application = new ElectronApplicationTracker({ app, BrowserWindow }, onError);
+  const inner = new FakeInner();
+  const mux = createElectronSystemEventsSource(
+    inner,
+    { power, display: disp, application },
+    onError,
+  );
+  const seen = vi.fn();
+  return {
+    powerMonitor,
+    screen,
+    app,
+    inner,
+    mux,
+    seen,
+    onError,
+    subscribe: () => mux.on('event', seen),
+    events: () => seen.mock.calls.map((c) => c[0] as SystemEvent),
+    total: () => powerMonitor.total() + screen.total() + app.total(),
+  };
+}
+
+describe('createElectronSystemEventsSource: domain trackers', () => {
+  it('attaches NOTHING at construction, everything on the first subscriber, nothing after the last leaves', () => {
+    const d = domains([new FakeWindow(1)]);
+    expect(d.total()).toBe(0);
+    const off = d.subscribe();
+    expect(d.powerMonitor.total()).toBe(6);
+    expect(d.screen.total()).toBe(3);
+    expect(d.app.total()).toBe(3); // browser-window-created x2 (focus, visibility) + web-contents-created
+    off();
+    expect(d.total()).toBe(0);
+    expect(d.inner.deactivations).toBe(1);
+  });
+
+  it('records the six power events with no params', () => {
+    const d = domains();
+    d.subscribe();
+    for (const e of ['suspend', 'resume', 'lock-screen', 'unlock-screen', 'on-ac', 'on-battery']) {
+      d.powerMonitor.emit(e);
+    }
+    expect(d.events().slice(1)).toEqual([
+      { name: 'power_suspend' },
+      { name: 'power_resume' },
+      { name: 'power_lock' },
+      { name: 'power_unlock' },
+      { name: 'power_ac' },
+      { name: 'power_battery' },
+    ]);
+  });
+
+  it('records display_added / display_removed / display_metrics_changed with the mapped display', () => {
+    const d = domains();
+    d.subscribe();
+    d.screen.emit('display-added', display(2));
+    d.screen.emit('display-removed', display(3));
+    d.screen.emit('display-metrics-changed', display(4), ['bounds']);
+    expect(d.events().slice(1)).toEqual([
+      { name: 'display_added', params: { id: 2, width: 800, height: 600, scaleFactor: 2 } },
+      { name: 'display_removed', params: { id: 3, width: 800, height: 600, scaleFactor: 2 } },
+      {
+        name: 'display_metrics_changed',
+        params: { id: 4, width: 800, height: 600, scaleFactor: 2, changed: ['bounds'] },
+      },
+    ]);
+  });
+
+  it('a window created AFTER the mux attached still records focus; existing windows too; ids included', () => {
+    const early = new FakeWindow(1);
+    const d = domains([early]);
+    d.subscribe();
+    early.emit('focus');
+    const late = new FakeWindow(2);
+    d.app.emit('browser-window-created', late);
+    late.emit('focus');
+    late.emit('blur');
+    late.emit('hide');
+    late.emit('show');
+    expect(d.events().slice(1)).toEqual([
+      { name: 'window_focus', params: { windowId: 1 } },
+      { name: 'window_focus', params: { windowId: 2 } },
+      { name: 'window_blur', params: { windowId: 2 } },
+      { name: 'window_hide', params: { windowId: 2 } },
+      { name: 'window_show', params: { windowId: 2 } },
+    ]);
+  });
+
+  it('webContents.emit("unresponsive") records ONCE although the window re-emits it; win.emit alone records nothing', () => {
+    const win = new FakeWindow(1);
+    const d = domains([win]);
+    d.subscribe();
+    win.emit('unresponsive');
+    win.emit('responsive');
+    expect(d.events()).toHaveLength(1); // only process_started
+    win.webContents.emit('unresponsive');
+    win.webContents.emit('responsive');
+    expect(d.events().slice(1)).toEqual([
+      { name: 'renderer_unresponsive', params: { webContentsId: 101 } },
+      { name: 'renderer_responsive', params: { webContentsId: 101 } },
+    ]);
+  });
+
+  it('a web contents without a window (BrowserView) created later is recorded', () => {
+    const d = domains();
+    d.subscribe();
+    const view = new FakeWebContents(9);
+    d.app.emit('web-contents-created', view);
+    view.emit('unresponsive');
+    expect(d.events().slice(1)).toEqual([
+      { name: 'renderer_unresponsive', params: { webContentsId: 9 } },
+    ]);
+  });
+
+  it('omits the id param when the object has none (never a made-up id)', () => {
+    const d = domains();
+    d.subscribe();
+    const noId = new FakeWindow(1);
+    (noId as { id: unknown }).id = undefined;
+    (noId.webContents as { id: unknown }).id = undefined;
+    d.app.emit('browser-window-created', noId);
+    d.app.emit('web-contents-created', noId.webContents);
+    noId.emit('focus');
+    noId.webContents.emit('unresponsive');
+    expect(d.events().slice(1)).toEqual([
+      { name: 'window_focus' },
+      { name: 'renderer_unresponsive' },
+    ]);
+  });
+
+  it('release removes the listeners from existing and late windows and webContents too', () => {
+    const early = new FakeWindow(1);
+    const d = domains([early]);
+    const off = d.subscribe();
+    const late = new FakeWindow(2);
+    d.app.emit('browser-window-created', late);
+    d.app.emit('web-contents-created', late.webContents);
+    off();
+    expect(early.total()).toBe(0);
+    expect(late.total()).toBe(0);
+    expect(d.app.total()).toBe(0);
+    // only the test fake's own re-emit hook is left on the webContents
+    expect(early.webContents.total()).toBe(2);
+    d.app.emit('browser-window-created', new FakeWindow(3));
+    early.emit('focus');
+    expect(d.events()).toHaveLength(1);
+  });
+
+  it('with no domain trackers (only the process one or none) the mux attaches only the inner source', () => {
+    const inner = new FakeInner();
+    const mux = createElectronSystemEventsSource(inner, {});
+    const seen = vi.fn();
+    mux.on('event', seen)();
+    expect(names(seen)).toEqual(['process_started']);
+    expect(inner.deactivations).toBe(1);
+  });
+});
+
+describe('createElectronSystemEventsSource: a throwing domain subscription', () => {
+  it('is reported, does not abort the other domains, and stop() still releases the inner source and the rest', () => {
+    const powerMonitor = new FakeEmitter();
+    const app = new FakeEmitter();
+    const onError = vi.fn();
+    const power = new ElectronPowerTracker({ powerMonitor }, onError);
+    const application = new ElectronApplicationTracker({ app }, onError);
+    const display = {
+      on: () => {
+        throw new Error('display subscribe');
+      },
+    } as unknown as ElectronDisplayTracker;
+    const inner = new FakeInner();
+    const mux = createElectronSystemEventsSource(inner, { power, display, application }, onError);
+    const seen = vi.fn();
+    let off: () => void = () => {};
+    expect(() => {
+      off = mux.on('event', seen);
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'display subscribe' }));
+    // the domains AFTER the throwing one still work
+    app.emit(
+      'browser-window-created',
+      Object.assign(new FakeEmitter(), { id: 1, isDestroyed: () => false }),
+    );
+    powerMonitor.emit('suspend');
+    expect(names(seen)).toEqual(['process_started', 'power_suspend']);
+    off();
+    expect(inner.deactivations).toBe(1);
+    expect(powerMonitor.total()).toBe(0);
+    expect(app.total()).toBe(0);
+  });
+
+  it('a throwing inner subscription is reported and the Electron domains still attach', () => {
+    const powerMonitor = new FakeEmitter();
+    const onError = vi.fn();
+    const power = new ElectronPowerTracker({ powerMonitor }, onError);
+    const inner = {
+      on: () => {
+        throw new Error('inner');
+      },
+    } as unknown as FakeInner;
+    const mux = createElectronSystemEventsSource(inner, { power }, onError);
+    const seen = vi.fn();
+    expect(() => mux.on('event', seen)).not.toThrow();
+    powerMonitor.emit('on-ac');
+    expect(names(seen)).toEqual(['power_ac']);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'inner' }));
   });
 });

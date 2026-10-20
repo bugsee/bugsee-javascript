@@ -2,6 +2,7 @@ import { InterceptorBase } from '../interceptor-base';
 import type { ProcessTimers } from '../node/process-tracker';
 import { createTrackerRegistry } from '../tracker-registry';
 import { type ElectronGpu, mapGpuInfo } from './gpu-info';
+import { reportTo } from './stage-tracker';
 
 // Electron MAIN-process PROCESS tracker (domain tracker, design §15.2/§15.4 TR9; Android reference:
 // BugseeTrackerProcess). It owns what Electron's `app` can say about the app's processes, as THREE independent
@@ -447,16 +448,6 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
     } catch (error) {
       this.#onError(error);
     }
-  }
-}
-
-/** Calls the reporter; it may throw or return a rejecting Promise (both are absorbed: the tracker is silent toward the host). */
-function reportTo(report: { fn: ((error: unknown) => unknown) | undefined }, error: unknown): void {
-  try {
-    const result = report.fn?.(error);
-    if (result instanceof Promise) result.catch(() => undefined);
-  } catch {
-    /* the reporter itself failed */
   }
 }
 
