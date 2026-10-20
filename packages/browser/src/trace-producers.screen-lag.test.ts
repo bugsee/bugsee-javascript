@@ -1,5 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ApplicationTracker } from '@bugsee/trackers/browser';
+import { ApplicationTracker, ProcessTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   browserTraceEnvFrom,
@@ -7,7 +7,6 @@ import {
   MainThreadLagProducer,
   ScreenSizeProducer,
 } from './trace-producers';
-import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
 import { ScreenSizeTracker } from './trackers/screen-size-tracker';
 
 function mkTarget() {
@@ -90,10 +89,10 @@ describe('MainThreadLagProducer', () => {
     const lifecycle = new ApplicationTracker({ window: win, document: doc });
     let timer: (() => void) | undefined;
     let now = 0;
-    const tracker = new MainThreadLagTracker({
+    const tracker = new ProcessTracker({
       lifecycle,
       document: doc,
-      now: () => now,
+      performance: { now: () => now },
       scheduler: {
         setInterval: (cb) => {
           timer = cb;

@@ -350,3 +350,32 @@ describe('createMultiKeyEmitter factory', () => {
     expect(fn).toHaveBeenCalledWith({ status: 204 });
   });
 });
+
+class ListenerHookProbe extends MultiKeyEmitterBase<{ a: number; b: number }> {
+  calls = 0;
+  counts: Array<[number, number]> = [];
+  protected override onListenersChanged(): void {
+    this.calls += 1;
+    this.counts.push([this.listenerCount('a'), this.listenerCount('b')]);
+  }
+}
+
+describe('MultiKeyEmitterBase — onListenersChanged / listenerCount', () => {
+  it('fires after every mutation with per-key counts (onAny counts for every key)', () => {
+    const p = new ListenerHookProbe();
+    const offA = p.on('a', () => {});
+    expect(p.counts.at(-1)).toEqual([1, 0]);
+    const offAny = p.onAny(() => {});
+    expect(p.counts.at(-1)).toEqual([2, 1]);
+    p.once('b', () => {});
+    expect(p.counts.at(-1)).toEqual([2, 2]);
+    offAny();
+    expect(p.counts.at(-1)).toEqual([1, 1]);
+    offA();
+    p.removeAllListeners('b');
+    expect(p.counts.at(-1)).toEqual([0, 0]);
+    const before = p.calls;
+    p.removeAllListeners();
+    expect(p.calls).toBe(before + 1);
+  });
+});

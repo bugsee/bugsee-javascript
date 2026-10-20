@@ -45,6 +45,8 @@ import {
 import {
   applicationTrackerFor,
   connectivityTrackerFor,
+  processTrackerFor,
+  resetProcessTracker,
   resetStorageTracker,
   storageTrackerFor,
 } from '@bugsee/trackers/browser';
@@ -1428,6 +1430,30 @@ describe('launch', () => {
         });
       } finally {
         resetStorageTracker({ window: w.win });
+      }
+    });
+
+    it('captures the heap through the per-window ProcessTracker singleton (launch uses the registry)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        const rows = new Map(
+          ((await drain(store, 'traces.system')) ?? []).map((e) => {
+            const d = e.data as { name: string; value: unknown };
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('ram_js_heap_used')).toBe(10);
+        // launch used the registry: the singleton for this window already has launch's performance seam, so it can read
+        // the heap (a tracker built with `new` would be a different instance with no seams)
+        expect(processTrackerFor({ window: w.win }).currentHeap()).toEqual({
+          used: 10,
+          limit: 100,
+        });
+      } finally {
+        resetProcessTracker({ window: w.win });
       }
     });
 
