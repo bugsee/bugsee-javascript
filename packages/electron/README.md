@@ -68,6 +68,14 @@ If you pass `app` to `launchMain`, the SDK reports `app.getVersion()` as your ap
 
 Electron does not expose a build number, so set `appBuild` (or `BUGSEE_APP_BUILD`) if you want one; in CI the commit hash is picked up automatically.
 
+## Process telemetry
+
+If you pass `app` to `launchMain`, the main process also reports what Electron can say about the app's processes, next to the usual Node traces (`process_memory_*`, `cpu_*`, `event_loop_*`):
+
+- The `app_metrics` system trace, polled from `app.getAppMetrics()` once a second while system traces are captured: `{ processes: [{ type, pid, cpu_percent, working_set_mb, peak_working_set_mb, private_mb }] }`. `type` is Electron's process type (`Browser`, `Tab`, `GPU`, `Utility`, ...). A field Electron does not supply is left out, never sent as zero, and there is no sample for the first interval (Electron's CPU figure is measured since the previous call).
+- A `child_process_gone` system event (`{ type, reason, exitCode, name }`) when a GPU or utility process dies. It is recorded only while `captureSystemEvents` is on, and the `child-process-gone` listener is removed again by `client.stop()`.
+- `environment.hardware.gpu` from `app.getGPUInfo(gpuInfoType)` (`'basic'` by default), read once.
+
 ## Links
 
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/electron

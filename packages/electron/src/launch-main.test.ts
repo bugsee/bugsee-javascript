@@ -1,11 +1,15 @@
+import type { SystemEvent, TraceProducer, TraceSink } from '@bugsee/capture';
 import {
   BlackoutToken,
   CaptureDataEntryBase,
   CaptureStoreToken,
   createBlackoutState,
+  InterceptorBase,
 } from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
-import { describe, expect, it, vi } from 'vitest';
+import { resetProcessTracker } from '@bugsee/node';
+import { electronProcessTrackerFor } from '@bugsee/trackers/electron';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
 import type { IpcMainEventLike, IpcMainListener } from './main-receiver';
 import { encodePixelVideo } from './pixel-video-controller';
@@ -16,6 +20,17 @@ import {
 } from './preload-bridge';
 import { decodeControl, encodeHello, encodeStreamEntry } from './protocol';
 import type { VideoCaptureSource } from './video-capture';
+
+// Wraps (never replaces) the registry accessor so a launch-level test can prove launchMain builds its tracker THROUGH it
+// (mutating launchMain to `new ElectronProcessTracker(...)` makes the spy go uncalled). Behaviour is untouched.
+vi.mock('@bugsee/trackers/electron', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/trackers/electron')>();
+  return { ...actual, electronProcessTrackerFor: vi.fn(actual.electronProcessTrackerFor) };
+});
+
+afterEach(() => {
+  resetProcessTracker(); // the node tracker is a process singleton: a test's fake scheduler must not leak
+});
 
 function fakeIpcMain() {
   const listeners = new Map<string, IpcMainListener>();
@@ -814,5 +829,244 @@ describe('launchMain — app identity', () => {
 
   it('ignores an app.getVersion() that returns something other than text', () => {
     expect(identityOf({ app: appWith(() => 5 as never) })?.()).toEqual({});
+  });
+});
+
+describe('launchMain — Electron process tracker composition (TR9, part 1)', () => {
+  const optsOf = (f: ReturnType<typeof fakeLaunch>) =>
+    (f.received as { options: BugseeLaunchOptions }).options;
+
+  function fakeScheduler() {
+    const armed = new Map<number, () => void>();
+    let next = 1;
+    return {
+      setInterval: (callback: () => void) => {
+        const id = next++;
+        armed.set(id, callback);
+        return id;
+      },
+      clearInterval: (id: unknown) => {
+        armed.delete(id as number);
+      },
+      tick: () => {
+        for (const cb of [...armed.values()]) cb();
+      },
+    };
+  }
+
+  type GoneL = (event: unknown, details: unknown) => void;
+  function appWith(getAppMetrics?: () => unknown) {
+    // `render-process-gone` is registered on this app by launchMain itself: only the child-process-gone ones are tracked
+    const listeners: GoneL[] = [];
+    return {
+      listeners,
+      app: {
+        on: vi.fn((event: string, l: GoneL) => {
+          if (event === 'child-process-gone') listeners.push(l);
+        }),
+        removeListener: vi.fn((event: string, l: GoneL) => {
+          const i = listeners.indexOf(l);
+          if (event === 'child-process-gone' && i >= 0) listeners.splice(i, 1);
+        }),
+        ...(getAppMetrics !== undefined ? { getAppMetrics } : {}),
+      },
+    };
+  }
+  const metric = {
+    pid: 1,
+    type: 'Browser',
+    cpu: { percentCPUUsage: 2 },
+    memory: { workingSetSize: 1024 },
+  };
+
+  const sinkOf = () => {
+    const emitted: Array<{ name: string; value: unknown }> = [];
+    const sink: TraceSink = { emit: (name, value) => emitted.push({ name, value }) };
+    return { emitted, sink };
+  };
+
+  it('builds the tracker THROUGH the registry accessor, keyed on the injected app, with the launch scheduler/onError', () => {
+    const accessor = vi.mocked(electronProcessTrackerFor);
+    accessor.mockClear();
+    const { app } = appWith();
+    const scheduler = fakeScheduler();
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      scheduler,
+      onError,
+    });
+    expect(accessor).toHaveBeenCalledExactlyOnceWith({ app, scheduler }, onError);
+  });
+
+  it('builds no tracker, no producers and no events wrapper without an app', () => {
+    const accessor = vi.mocked(electronProcessTrackerFor);
+    accessor.mockClear();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch });
+    expect(accessor).not.toHaveBeenCalled();
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+    expect(optsOf(f).wrapSystemEventsSource).toBeUndefined();
+  });
+
+  it('passes node producers PLUS app_metrics, with no producer or trace name twice', () => {
+    const { app } = appWith();
+    const f = fakeLaunch();
+    const scheduler = fakeScheduler();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app, scheduler });
+    const producers = optsOf(f).systemTraceProducers as readonly TraceProducer[];
+    const names = producers.map((p) => p.name);
+    expect(names).toContain('process-memory');
+    expect(names).toContain('event-loop-lag');
+    expect(names).toContain('electron-app-metrics');
+    expect(new Set(names).size).toBe(names.length);
+    // trace names: start every producer and collect what it emits at start (the node set emits baselines)
+    const { emitted, sink } = sinkOf();
+    for (const p of producers) p.start(sink);
+    expect(emitted.map((e) => e.name)).not.toContain('app_metrics'); // no start sample
+    scheduler.tick(); // the node tracker honours the launch scheduler too (cpu is tick-driven, never a start sample)
+    for (const p of producers) p.stop();
+    const traceNames = emitted.map((e) => e.name);
+    expect(traceNames).toContain('process_memory_rss');
+    expect(traceNames).toContain('cpu_usage_process');
+  });
+
+  it('a caller-supplied systemTraceProducers is kept and the Electron producer is ADDED to it', () => {
+    const own: TraceProducer = { name: 'mine', start: () => {}, stop: () => {} };
+    const { app } = appWith();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      systemTraceProducers: [own],
+    });
+    expect((optsOf(f).systemTraceProducers as readonly TraceProducer[]).map((p) => p.name)).toEqual(
+      ['mine', 'electron-app-metrics'],
+    );
+  });
+
+  it('a legacy systemMetricsSampler is left alone: no producer list is built', () => {
+    const { app } = appWith();
+    const f = fakeLaunch();
+    const sampler = () => [];
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      systemMetricsSampler: sampler,
+    });
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+    expect(optsOf(f).systemMetricsSampler).toBe(sampler);
+  });
+
+  it('the app_metrics producer reads the SAME tracker the accessor returned (shared per app)', () => {
+    const accessor = vi.mocked(electronProcessTrackerFor);
+    accessor.mockClear();
+    const getAppMetrics = vi.fn(() => [metric]);
+    const { app } = appWith(getAppMetrics);
+    const scheduler = fakeScheduler();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app, scheduler });
+    const producer = (optsOf(f).systemTraceProducers as readonly TraceProducer[]).find(
+      (p) => p.name === 'electron-app-metrics',
+    ) as TraceProducer;
+    const { emitted, sink } = sinkOf();
+    producer.start(sink);
+    scheduler.tick();
+    // the tracker the accessor returned holds the very sample the producer just published
+    expect(accessor.mock.results[0]?.value.current('appMetrics')).toEqual({
+      processes: [{ type: 'Browser', pid: 1, cpuPct: 2, workingSetBytes: 1024 * 1024 }],
+    });
+    expect(emitted).toEqual([
+      {
+        name: 'app_metrics',
+        value: { processes: [{ type: 'Browser', pid: 1, cpu_percent: 2, working_set_mb: 1 }] },
+      },
+    ]);
+    producer.stop();
+  });
+
+  it('a getAppMetrics that throws drops only app_metrics: the node producers still start and emit', () => {
+    const onError = vi.fn();
+    const { app } = appWith(() => {
+      throw new Error('metrics');
+    });
+    const scheduler = fakeScheduler();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      scheduler,
+      onError,
+    });
+    const producers = optsOf(f).systemTraceProducers as readonly TraceProducer[];
+    const { emitted, sink } = sinkOf();
+    expect(() => {
+      for (const p of producers) p.start(sink);
+    }).not.toThrow();
+    scheduler.tick();
+    for (const p of producers) p.stop();
+    expect(emitted.map((e) => e.name)).toContain('process_memory_rss');
+    expect(emitted.map((e) => e.name)).not.toContain('app_metrics');
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'metrics' }));
+  });
+
+  describe('the events wrapper handed to node', () => {
+    class Inner extends InterceptorBase<{ event: SystemEvent }> {
+      readonly name = 'inner';
+      protected onActivate(): void {
+        this.emit('event', { name: 'process_started' });
+      }
+    }
+
+    it('wraps lazily: nothing is attached until subscribed, and everything is released on unsubscribe', () => {
+      const { app, listeners } = appWith();
+      const f = fakeLaunch();
+      launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app });
+      const wrap = optsOf(f).wrapSystemEventsSource as NonNullable<
+        BugseeLaunchOptions['wrapSystemEventsSource']
+      >;
+      const inner = new Inner();
+      const mux = wrap(inner);
+      expect(app.on).not.toHaveBeenCalledWith('child-process-gone', expect.anything());
+      const seen = vi.fn();
+      const off = mux.on('event', seen);
+      expect(listeners).toHaveLength(1);
+      expect(seen.mock.calls.map((c) => (c[0] as SystemEvent).name)).toEqual(['process_started']);
+      listeners[0]?.({}, { type: 'GPU', reason: 'crashed', exitCode: 1 });
+      expect((seen.mock.calls[1]?.[0] as SystemEvent).name).toBe('child_process_gone');
+      off();
+      expect(listeners).toHaveLength(0);
+    });
+
+    it('composes with a caller wrapper: the caller sees the plain source, ours wraps its result', () => {
+      const { app } = appWith();
+      const f = fakeLaunch();
+      const seenInner: unknown[] = [];
+      const callerResult = new Inner();
+      launchMain('tok', {
+        ipcMain: fakeIpcMain().ipcMain,
+        launch: f.launch,
+        app,
+        wrapSystemEventsSource: (inner) => {
+          seenInner.push(inner);
+          return callerResult;
+        },
+      });
+      const wrap = optsOf(f).wrapSystemEventsSource as NonNullable<
+        BugseeLaunchOptions['wrapSystemEventsSource']
+      >;
+      const plain = new Inner();
+      const mux = wrap(plain);
+      const seen = vi.fn();
+      mux.on('event', seen);
+      expect(seenInner).toEqual([plain]);
+      expect(seen).toHaveBeenCalledWith({ name: 'process_started' }); // came through the caller's source
+    });
   });
 });

@@ -9,6 +9,7 @@ import {
   deriveRefreshMs,
   installNetworkCapture,
   type NetworkCapture,
+  type SystemEventSource,
   type TraceProducer,
   type TraceSample,
 } from '@bugsee/capture';
@@ -80,7 +81,7 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
-import { reportOncePerMessage } from '@bugsee/util';
+import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeAppIdentitySource } from './app-identity-source';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
@@ -285,6 +286,17 @@ export interface BugseeLaunchOptions {
   captureDiskSpace?: boolean;
   /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
   diskStatfs?: StatFs;
+  /**
+   * Platform-extension seam (advanced; `@bugsee/electron` uses it). Called ONCE at launch with the node
+   * `events.system` source; the SOURCE it returns is what the events provider subscribes to, so a platform can mux its
+   * own events (e.g. Electron's `child-process-gone`) into the one `events.system` provider (a second provider with
+   * the same name is rejected). The wrapper MUST attach lazily — in its own `on()`/activation, never when built — and
+   * release on its last unsubscribe: it is only subscribed while `captureSystemEvents` is on, and unsubscribed on
+   * `client.stop()`; subscribing to `inner` at construction would install the node source's signal handlers even with
+   * system events off. It must not re-emit `process_started` (the inner source already does). A throwing factory is
+   * reported through `onError` and the plain node source is used.
+   */
+  wrapSystemEventsSource?: (inner: SystemEventSource) => SystemEventSource;
   /** Detect uncaught exceptions + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report outbound HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -975,7 +987,16 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
-  client.addCaptureProvider(createSystemEventsProvider(createNodeSystemEventsSource(proc)));
+  const nodeEventsSource = createNodeSystemEventsSource(proc);
+  let eventsSource: SystemEventSource = nodeEventsSource;
+  if (options.wrapSystemEventsSource !== undefined) {
+    try {
+      eventsSource = options.wrapSystemEventsSource(nodeEventsSource);
+    } catch (error) {
+      reportGuarded(options.onError, error); // a broken platform extension must not cost the node events
+    }
+  }
+  client.addCaptureProvider(createSystemEventsProvider(eventsSource));
 
   // Detection providers: uncaughtException → crash, unhandledRejection → error, event-loop hang → error
   // (Android BugseeDetectionHang). Each is gated by its controllingOption (the coordinator skips it when

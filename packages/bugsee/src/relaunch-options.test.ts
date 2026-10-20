@@ -125,7 +125,10 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
  *    no-op while it is already started, so an instance still running on another client would silently no-op
  *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
- *    relaunch therefore builds the runtime's fresh default set.
+ *    relaunch therefore builds the runtime's fresh default set;
+ *  - `wrapSystemEventsSource` (node, set by `@bugsee/electron`'s `launchMain`) is a platform composition seam whose
+ *    wrapper is bound to the launch's tracker and reporter, and Electron has no `relaunch()`: like
+ *    `systemTraceProducers` it is not re-applied, so a relaunch builds the plain node events source.
  */
 const RESET_OPTIONS: readonly string[] = [
   'app',
@@ -213,6 +216,7 @@ const RESET_OPTIONS: readonly string[] = [
   'traceResponse',
   'unhandledRejections',
   'video',
+  'wrapSystemEventsSource',
 ];
 
 // Builds a TypeScript program per platform interface: far slower on a shared CI runner than locally.

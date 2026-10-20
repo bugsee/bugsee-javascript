@@ -41,9 +41,11 @@
   },
   "dependencies": {
     "@bugsee/browser": "workspace:*",
+    "@bugsee/capture": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/node": "workspace:*",
-    "@bugsee/protocol": "workspace:*"
+    "@bugsee/protocol": "workspace:*",
+    "@bugsee/trackers": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",

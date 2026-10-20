@@ -558,6 +558,126 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
+  describe('wrapSystemEventsSource (platform extension seam)', () => {
+    type Src = import('@bugsee/capture').SystemEventSource;
+    // A pass-through mux that also emits one extra event of its own; counts how often it is subscribed.
+    const makeMux = (inner: Src, extra?: string) => {
+      const listeners = new Set<(e: { name: string }) => void>();
+      const calls = { on: 0, off: 0, offInner: undefined as (() => void) | undefined };
+      const mux = {
+        on: (name: 'event', l: (e: { name: string }) => void) => {
+          calls.on++;
+          listeners.add(l);
+          calls.offInner = inner.on(name, (e) => l(e));
+          if (extra !== undefined) l({ name: extra });
+          return () => {
+            calls.off++;
+            listeners.delete(l);
+            calls.offInner?.();
+          };
+        },
+      } as unknown as Src;
+      return { mux, calls, listeners };
+    };
+
+    it('lets the platform wrap the node events source; the provider consumes the wrapper', async () => {
+      const store = memStore();
+      let seenInner: Src | undefined;
+      let made: ReturnType<typeof makeMux> | undefined;
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          wrapSystemEventsSource: (inner) => {
+            seenInner = inner;
+            made = makeMux(inner, 'platform_event');
+            return made.mux;
+          },
+        }),
+      );
+      const names = (await drain(store, 'events.system'))?.map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(seenInner).toBeDefined();
+      expect(made?.calls.on).toBe(1);
+      expect(names).toContain('platform_event');
+      expect(names?.filter((n) => n === 'process_started')).toHaveLength(1); // the node source still runs, once
+    });
+
+    it('captureSystemEvents:false: the wrapper is built but NEVER subscribed (no extra node handlers either)', async () => {
+      const counts = (fp: ReturnType<typeof fakeProcess>) =>
+        ['SIGTERM', 'SIGINT', 'warning', 'beforeExit', 'exit'].map((e) => fp.count(e));
+      const plain = fakeProcess();
+      const plainClient = launchTracked(
+        'tok',
+        baseOptions({ process: plain.proc, captureSystemEvents: false }),
+      );
+      const baseline = counts(plain); // read while live: stop() removes the handlers again
+      await plainClient.stop();
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+
+      const fp = fakeProcess();
+      let made: ReturnType<typeof makeMux> | undefined;
+      launchTracked(
+        'tok',
+        baseOptions({
+          process: fp.proc,
+          captureSystemEvents: false,
+          wrapSystemEventsSource: (inner) => {
+            made = makeMux(inner, 'platform_event');
+            return made.mux;
+          },
+        }),
+      );
+      expect(made).toBeDefined();
+      expect(made?.calls.on).toBe(0);
+      // identical to the launch without a wrapper: the node source's handlers were never installed
+      expect(counts(fp)).toEqual(baseline);
+      // and enabling events DOES add them (the baseline above is not vacuous)
+      delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+      const on = fakeProcess();
+      launchTracked('tok2', baseOptions({ process: on.proc, wrapSystemEventsSource: (i) => i }));
+      expect(on.count('warning')).toBe((counts(fp)[2] ?? 0) + 1);
+    });
+
+    it('client.stop() releases the wrapper subscription', async () => {
+      let made: ReturnType<typeof makeMux> | undefined;
+      const client = launchTracked(
+        'tok',
+        baseOptions({
+          wrapSystemEventsSource: (inner) => {
+            made = makeMux(inner);
+            return made.mux;
+          },
+        }),
+      );
+      expect(made?.calls.off).toBe(0);
+      await client.stop();
+      expect(made?.calls.off).toBe(1);
+    });
+
+    it('a throwing wrap factory is reported and the plain node source is used', async () => {
+      const store = memStore();
+      const boom = new Error('wrap');
+      const onError = vi.fn();
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: store,
+          onError,
+          wrapSystemEventsSource: () => {
+            throw boom;
+          },
+        }),
+      );
+      expect(onError).toHaveBeenCalledWith(boom);
+      const names = (await drain(store, 'events.system'))?.map(
+        (e) => (e.data as { name: string }).name,
+      );
+      expect(names).toContain('process_started');
+    });
+  });
+
   it('takes an initial system-traces sample from the injected sampler', async () => {
     const store = memStore();
     launchTracked('tok', baseOptions({ captureStore: store }));
