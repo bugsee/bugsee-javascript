@@ -5,9 +5,19 @@ import * as electronEntry from './index';
 describe('@bugsee/trackers/electron public surface', () => {
   it('exports the electron tracker values', () => {
     expect(Object.keys(electronEntry).sort()).toEqual([
+      'ElectronApplicationTracker',
+      'ElectronDisplayTracker',
+      'ElectronPowerTracker',
       'ElectronProcessTracker',
+      'electronApplicationTrackerFor',
+      'electronDisplayTrackerFor',
+      'electronPowerTrackerFor',
       'electronProcessTrackerFor',
+      'mapDisplay',
       'mapGpuInfo',
+      'resetElectronApplicationTracker',
+      'resetElectronDisplayTracker',
+      'resetElectronPowerTracker',
       'resetElectronProcessTracker',
     ]);
   });

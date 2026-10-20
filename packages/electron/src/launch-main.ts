@@ -14,7 +14,16 @@ import {
   launchCore,
   sanitizeHardwareGpu,
 } from '@bugsee/node';
-import { electronProcessTrackerFor, type GpuInfoType } from '@bugsee/trackers/electron';
+import {
+  type BrowserWindowSource,
+  electronApplicationTrackerFor,
+  electronDisplayTrackerFor,
+  electronPowerTrackerFor,
+  electronProcessTrackerFor,
+  type GpuInfoType,
+  type PowerMonitorSource,
+  type ScreenSource,
+} from '@bugsee/trackers/electron';
 import {
   type CrashReporterLike,
   getCrashDumpsDirectory,
@@ -38,11 +47,22 @@ export interface ElectronAppLike {
    * be released on `client.stop()`).
    */
   on(event: 'child-process-gone', listener: (event: unknown, details: unknown) => void): unknown;
+  /**
+   * `browser-window-created` / `web-contents-created` are watched ONLY while system events are captured, through the
+   * shared ElectronApplicationTracker (window focus/blur/show/hide and renderer hangs); same release rule as above.
+   */
+  on(
+    event: 'browser-window-created' | 'web-contents-created',
+    listener: (event: unknown, created: unknown) => void,
+  ): unknown;
   removeListener?(
-    event: 'child-process-gone',
+    event: 'child-process-gone' | 'browser-window-created' | 'web-contents-created',
     listener: (event: unknown, details: unknown) => void,
   ): unknown;
-  off?(event: 'child-process-gone', listener: (event: unknown, details: unknown) => void): unknown;
+  off?(
+    event: 'child-process-gone' | 'browser-window-created' | 'web-contents-created',
+    listener: (event: unknown, details: unknown) => void,
+  ): unknown;
   /**
    * Electron's `app.getAppMetrics` — optional. When present and system traces are captured, per-process CPU/memory is
    * reported as the `app_metrics` trace (polled by the ElectronProcessTracker; absent fields are omitted, never zero).
@@ -105,6 +125,22 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * different type (a failed re-ask keeps the earlier usable value).
    */
   gpuInfoType?: GpuInfoType;
+  /**
+   * Electron's `powerMonitor` — optional. When present and system events are captured, `power_suspend`/`power_resume`/
+   * `power_lock`/`power_unlock`/`power_ac`/`power_battery` are recorded on `events.system`. Absent: that domain is off.
+   */
+  powerMonitor?: PowerMonitorSource;
+  /**
+   * Electron's `screen` — optional. When present, `display_added`/`display_removed`/`display_metrics_changed` are recorded
+   * on `events.system` (system events on) and the `electron_displays` list is traced (system traces on). Absent: off.
+   * Pass it only after `app` is ready (Electron throws if `screen` is touched earlier).
+   */
+  screen?: ScreenSource;
+  /**
+   * Electron's `BrowserWindow` class — optional. With `app`, windows that exist when system events start are tracked
+   * for `window_*`/`renderer_*` events too (windows created later are always tracked through `app`).
+   */
+  BrowserWindow?: BrowserWindowSource;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
   crashReporter?: CrashReporterLike;
   /** Extra params attached to native crash minidumps (merged under the session correlation). */
@@ -147,6 +183,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const {
     ipcMain,
     app,
+    powerMonitor,
+    screen,
+    BrowserWindow,
     gpuInfoType,
     crashReporter,
     crashReporterExtra,
@@ -215,33 +254,63 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
           nodeOptions.onError,
         )
       : undefined;
+  // The DOMAIN trackers (power / display / application windows) follow the same rule: built THROUGH their registry
+  // accessors, once per injected object, never on a repeat call, and absent when their Electron object was not injected.
+  const power =
+    powerMonitor !== undefined && !repeat
+      ? electronPowerTrackerFor({ powerMonitor }, nodeOptions.onError)
+      : undefined;
+  const display =
+    screen !== undefined && !repeat
+      ? electronDisplayTrackerFor({ screen }, nodeOptions.onError)
+      : undefined;
+  const application =
+    app !== undefined && !repeat
+      ? electronApplicationTrackerFor(
+          { app, ...(BrowserWindow !== undefined ? { BrowserWindow } : {}) },
+          nodeOptions.onError,
+        )
+      : undefined;
+  const hasElectronTrackers = [tracker, power, display, application].some((t) => t !== undefined);
 
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
-  // node set never emits. Not built when the legacy `systemMetricsSampler` replaces the producer list (they would never
-  // start).
-  if (tracker !== undefined && nodeOptions.systemMetricsSampler === undefined) {
+  // node set never emits (`app_metrics`, `electron_displays`). Not built when the legacy `systemMetricsSampler` replaces
+  // the producer list (they would never start).
+  if (
+    (tracker !== undefined || display !== undefined) &&
+    nodeOptions.systemMetricsSampler === undefined
+  ) {
     nodeOptions.systemTraceProducers = [
       ...(nodeOptions.systemTraceProducers ??
         createNodeSystemTraceProducers({
           ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
           ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
         })),
-      ...createElectronSystemTraceProducers(tracker),
+      ...createElectronSystemTraceProducers({
+        ...(tracker !== undefined ? { process: tracker } : {}),
+        ...(display !== undefined ? { display } : {}),
+      }),
     ];
   }
 
   // System events: ONE `events.system` provider exists, so the node events source is wrapped by a LAZY mux that adds
-  // `child_process_gone`. The mux attaches (inner node handlers + the `app` listener) only when the provider subscribes,
-  // i.e. only while `captureSystemEvents` is on, and releases both on `client.stop()`. A caller-supplied wrapper is
-  // applied first (it sees the plain node source), ours wraps its result.
-  if (tracker !== undefined) {
+  // `child_process_gone`, `power_*`, `display_*`, `window_*` and `renderer_(un)responsive`. The mux attaches (inner node
+  // handlers + every Electron listener) only when the provider subscribes, i.e. only while `captureSystemEvents` is on,
+  // and releases all of them on `client.stop()`. A caller-supplied wrapper is applied first (it sees the plain node
+  // source), ours wraps its result.
+  if (hasElectronTrackers) {
     const callerWrap = nodeOptions.wrapSystemEventsSource;
     nodeOptions.wrapSystemEventsSource = (inner) =>
       createElectronSystemEventsSource(
         callerWrap === undefined ? inner : callerWrap(inner),
-        tracker,
+        {
+          ...(tracker !== undefined ? { process: tracker } : {}),
+          ...(power !== undefined ? { power } : {}),
+          ...(display !== undefined ? { display } : {}),
+          ...(application !== undefined ? { application } : {}),
+        },
         nodeOptions.onError,
       );
   }

@@ -8,7 +8,12 @@ import {
 } from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { resetProcessTracker } from '@bugsee/node';
-import { electronProcessTrackerFor } from '@bugsee/trackers/electron';
+import {
+  electronApplicationTrackerFor,
+  electronDisplayTrackerFor,
+  electronPowerTrackerFor,
+  electronProcessTrackerFor,
+} from '@bugsee/trackers/electron';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
 import type { IpcMainEventLike, IpcMainListener } from './main-receiver';
@@ -25,7 +30,13 @@ import type { VideoCaptureSource } from './video-capture';
 // (mutating launchMain to `new ElectronProcessTracker(...)` makes the spy go uncalled). Behaviour is untouched.
 vi.mock('@bugsee/trackers/electron', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/trackers/electron')>();
-  return { ...actual, electronProcessTrackerFor: vi.fn(actual.electronProcessTrackerFor) };
+  return {
+    ...actual,
+    electronProcessTrackerFor: vi.fn(actual.electronProcessTrackerFor),
+    electronPowerTrackerFor: vi.fn(actual.electronPowerTrackerFor),
+    electronDisplayTrackerFor: vi.fn(actual.electronDisplayTrackerFor),
+    electronApplicationTrackerFor: vi.fn(actual.electronApplicationTrackerFor),
+  };
 });
 
 afterEach(() => {
@@ -1076,5 +1087,160 @@ describe('launchMain — Electron process tracker composition (TR9, part 1)', ()
       expect(seenInner).toEqual([plain]);
       expect(seen).toHaveBeenCalledWith({ name: 'process_started' }); // came through the caller's source
     });
+  });
+});
+
+describe('launchMain — Electron domain trackers: power, display, application windows (TR9, part 2)', () => {
+  const optsOf = (f: ReturnType<typeof fakeLaunch>) =>
+    (f.received as { options: BugseeLaunchOptions }).options;
+  type L = (...a: unknown[]) => void;
+  class FakeEmitter {
+    table = new Map<string, L[]>();
+    on = vi.fn((e: string, l: L) => {
+      this.table.set(e, [...(this.table.get(e) ?? []), l]);
+    });
+    removeListener = vi.fn((e: string, l: L) => {
+      this.table.set(
+        e,
+        (this.table.get(e) ?? []).filter((x) => x !== l),
+      );
+    });
+    emit(e: string, ...a: unknown[]) {
+      for (const l of [...(this.table.get(e) ?? [])]) l({}, ...a);
+    }
+    total() {
+      return [...this.table.values()].reduce((n, l) => n + l.length, 0);
+    }
+  }
+  const accessors = () => ({
+    power: vi.mocked(electronPowerTrackerFor),
+    display: vi.mocked(electronDisplayTrackerFor),
+    application: vi.mocked(electronApplicationTrackerFor),
+  });
+  const clear = () => {
+    for (const a of Object.values(accessors())) a.mockClear();
+  };
+  class Inner extends InterceptorBase<{ event: SystemEvent }> {
+    readonly name = 'inner';
+    protected onActivate(): void {}
+  }
+  const wrapOf = (f: ReturnType<typeof fakeLaunch>) =>
+    optsOf(f).wrapSystemEventsSource as NonNullable<BugseeLaunchOptions['wrapSystemEventsSource']>;
+  const producersOf = (f: ReturnType<typeof fakeLaunch>) =>
+    (optsOf(f).systemTraceProducers ?? []).map((p: TraceProducer) => p.name);
+
+  it('builds each tracker THROUGH its registry accessor, keyed on the injected object, with the launch onError', () => {
+    clear();
+    const powerMonitor = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const app = new FakeEmitter();
+    const BrowserWindow = { getAllWindows: () => [] };
+    const onError = vi.fn();
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      powerMonitor,
+      screen,
+      BrowserWindow,
+      onError,
+    });
+    const a = accessors();
+    expect(a.power).toHaveBeenCalledExactlyOnceWith({ powerMonitor }, onError);
+    expect(a.display).toHaveBeenCalledExactlyOnceWith({ screen }, onError);
+    expect(a.application).toHaveBeenCalledExactlyOnceWith({ app, BrowserWindow }, onError);
+  });
+
+  it('the application tracker is built without a BrowserWindow key when none was injected', () => {
+    clear();
+    const app = new FakeEmitter();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app });
+    expect(accessors().application).toHaveBeenCalledExactlyOnceWith({ app }, undefined);
+  });
+
+  it('absent Electron objects mean those domains are simply off: no accessor, no producer, no wrapper', () => {
+    clear();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch });
+    for (const a of Object.values(accessors())) expect(a).not.toHaveBeenCalled();
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+    expect(optsOf(f).wrapSystemEventsSource).toBeUndefined();
+  });
+
+  it('a powerMonitor alone is enough for the events mux (no app needed) and adds no trace producer', () => {
+    const powerMonitor = new FakeEmitter();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, powerMonitor });
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+    const mux = wrapOf(f)(new Inner());
+    expect(powerMonitor.total()).toBe(0); // lazy
+    const seen = vi.fn();
+    mux.on('event', seen);
+    powerMonitor.emit('suspend');
+    expect(seen).toHaveBeenCalledWith({ name: 'power_suspend' });
+  });
+
+  it('a screen adds the electron_displays producer next to the node set, once', () => {
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, screen });
+    const names = producersOf(f);
+    expect(names).toContain('process-memory');
+    expect(names.filter((n: string) => n === 'electron-displays')).toHaveLength(1);
+    expect(names).not.toContain('electron-app-metrics');
+  });
+
+  it('an app adds app_metrics but not displays; a screen without app adds displays but not app_metrics', () => {
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app: new FakeEmitter() });
+    expect(producersOf(f)).toContain('electron-app-metrics');
+    expect(producersOf(f)).not.toContain('electron-displays');
+  });
+
+  it('a legacy systemMetricsSampler with only a screen builds no producer list', () => {
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      screen,
+      systemMetricsSampler: () => [],
+    });
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+  });
+
+  it('the mux handed to node is LAZY: until subscribed no domain listener exists; subscribing attaches all, unsubscribing releases all', () => {
+    const powerMonitor = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const app = new FakeEmitter();
+    const win = Object.assign(new FakeEmitter(), {
+      id: 1,
+      isDestroyed: () => false,
+      webContents: Object.assign(new FakeEmitter(), { id: 11, isDestroyed: () => false }),
+    });
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      powerMonitor,
+      screen,
+      BrowserWindow: { getAllWindows: () => [win] },
+    });
+    const mux = wrapOf(f)(new Inner());
+    const owned = () =>
+      powerMonitor.total() + screen.total() + win.total() + win.webContents.total();
+    // launchMain itself registers render-process-gone on app; the domain listeners are the REST
+    const appBefore = app.total();
+    expect(owned()).toBe(0);
+    const off = mux.on('event', () => {});
+    expect(powerMonitor.total()).toBe(6);
+    expect(screen.total()).toBe(3);
+    expect(win.total()).toBe(6); // focus, blur, show, hide + one `closed` per window stage
+    off();
+    expect(owned()).toBe(0);
+    expect(app.total()).toBe(appBefore);
   });
 });

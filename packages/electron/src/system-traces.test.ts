@@ -1,5 +1,5 @@
 import type { TraceSink } from '@bugsee/capture';
-import { ElectronProcessTracker } from '@bugsee/trackers/electron';
+import { ElectronDisplayTracker, ElectronProcessTracker } from '@bugsee/trackers/electron';
 import { describe, expect, it, vi } from 'vitest';
 import { createElectronSystemTraceProducers } from './system-traces';
 
@@ -36,7 +36,7 @@ function setup(getAppMetrics: () => unknown) {
   const sink: TraceSink = {
     emit: (name, value, _display, options) => emitted.push({ name, value, hold: options?.hold }),
   };
-  const producers = createElectronSystemTraceProducers(tracker);
+  const producers = createElectronSystemTraceProducers({ process: tracker });
   return { tracker, scheduler, onError, emitted, sink, producers };
 }
 
@@ -145,5 +145,143 @@ describe('createElectronSystemTraceProducers', () => {
     expect(emitted).toHaveLength(1);
     producers[0]?.stop();
     tracker.reset();
+  });
+});
+
+// ---- electron_displays ----------------------------------------------------------------------------------------
+
+describe('electron_displays producer', () => {
+  type L = (...a: unknown[]) => void;
+  const display = (over: Record<string, unknown> = {}) => ({
+    id: 1,
+    size: { width: 1440, height: 900 },
+    scaleFactor: 2,
+    rotation: 90,
+    internal: true,
+    displayFrequency: 120,
+    label: 'secret',
+    ...over,
+  });
+  function displays(list: () => unknown) {
+    const table = new Map<string, L[]>();
+    const screen = {
+      getAllDisplays: vi.fn(list),
+      on: vi.fn((e: string, l: L) => {
+        table.set(e, [...(table.get(e) ?? []), l]);
+      }),
+      removeListener: vi.fn((e: string, l: L) => {
+        table.set(
+          e,
+          (table.get(e) ?? []).filter((x) => x !== l),
+        );
+      }),
+    };
+    const onError = vi.fn();
+    const tracker = new ElectronDisplayTracker({ screen }, onError);
+    const emitted: Array<{ name: string; value: unknown; hold: boolean | undefined }> = [];
+    const sink: TraceSink = {
+      emit: (name, value, _d, options) => emitted.push({ name, value, hold: options?.hold }),
+    };
+    const [producer] = createElectronSystemTraceProducers({ display: tracker });
+    return {
+      screen,
+      tracker,
+      emitted,
+      sink,
+      producer: producer as NonNullable<typeof producer>,
+      fire: (e: string) => {
+        for (const l of [...(table.get(e) ?? [])]) l({}, display(), []);
+      },
+      listeners: () => [...table.values()].reduce((n, l) => n + l.length, 0),
+      onError,
+    };
+  }
+
+  it('builds exactly the displays producer for a display tracker, nothing for none', () => {
+    const d = displays(() => [display()]);
+    expect(createElectronSystemTraceProducers({ display: d.tracker }).map((p) => p.name)).toEqual([
+      'electron-displays',
+    ]);
+    expect(createElectronSystemTraceProducers({})).toEqual([]);
+  });
+
+  it('touches nothing until started; then emits the baseline list as a HELD step trace with the documented shape', () => {
+    const d = displays(() => [
+      display(),
+      display({ id: 2, size: { width: 10, height: 20 }, rotation: 7 }),
+    ]);
+    expect(d.screen.on).not.toHaveBeenCalled();
+    d.producer.start(d.sink);
+    expect(d.emitted).toStrictEqual([
+      {
+        name: 'electron_displays',
+        hold: true,
+        value: {
+          displays: [
+            {
+              id: 1,
+              width: 1440,
+              height: 900,
+              scale_factor: 2,
+              rotation: 90,
+              internal: true,
+              refresh_rate_hz: 120,
+            },
+            { id: 2, width: 10, height: 20, scale_factor: 2, internal: true, refresh_rate_hz: 120 },
+          ],
+        },
+      },
+    ]);
+    expect(JSON.stringify(d.emitted)).not.toContain('secret');
+    d.producer.stop();
+  });
+
+  it('re-emits only when the list changed (display added/removed/metrics-changed re-read it)', () => {
+    let list: unknown[] = [display()];
+    const d = displays(() => list);
+    d.producer.start(d.sink);
+    d.fire('display-metrics-changed'); // same list: not re-emitted
+    expect(d.emitted).toHaveLength(1);
+    list = [display(), display({ id: 2 })];
+    d.fire('display-added');
+    expect(d.emitted).toHaveLength(2);
+    list = [display()];
+    d.fire('display-removed');
+    expect(d.emitted).toHaveLength(3);
+    d.producer.stop();
+  });
+
+  it('emits NOTHING (never an empty list) when Electron cannot give a list; a later change still lands', () => {
+    let list: unknown = [];
+    const d = displays(() => list);
+    d.producer.start(d.sink);
+    expect(d.emitted).toEqual([]);
+    list = [display()];
+    d.fire('display-added');
+    expect(d.emitted).toHaveLength(1);
+    d.producer.stop();
+  });
+
+  it('a throwing getAllDisplays at start is reported and the producer still starts', () => {
+    const d = displays(() => {
+      throw new Error('displays');
+    });
+    expect(() => d.producer.start(d.sink)).not.toThrow();
+    expect(d.emitted).toEqual([]);
+    expect(d.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'displays' }));
+    d.producer.stop();
+  });
+
+  it('stop() releases the screen listeners and a restart works', () => {
+    const d = displays(() => [display()]);
+    d.producer.start(d.sink);
+    expect(d.listeners()).toBe(3);
+    d.producer.stop();
+    expect(d.listeners()).toBe(0);
+    d.fire('display-added');
+    expect(d.emitted).toHaveLength(1);
+    d.producer.start(d.sink);
+    expect(d.emitted).toHaveLength(2);
+    d.producer.stop();
   });
 });

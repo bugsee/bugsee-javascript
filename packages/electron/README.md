@@ -76,7 +76,18 @@ If you pass `app` to `launchMain`, the main process also reports what Electron c
 - A `child_process_gone` system event (`{ type, reason, exitCode, name }`) when a GPU or utility process exits, including a normal exit (`reason: 'clean-exit'`), so filter on `reason` if you only want crashes. It is recorded only while `captureSystemEvents` is on, and the `child-process-gone` listener is removed again by `client.stop()`.
 - `environment.hardware.gpu` from `app.getGPUInfo(gpuInfoType)` (`'basic'` by default). A usable result is kept; a failed read, or a different `gpuInfoType` on a later launch, asks again.
 
-A `relaunch()` from `@bugsee/node` or `@bugsee/bugsee` is not Electron-aware: after it `hardware.gpu` is still served, but `app_metrics` and `child_process_gone` stop until `launchMain` runs again.
+A `relaunch()` from `@bugsee/node` or `@bugsee/bugsee` is not Electron-aware: after it `hardware.gpu` is still served, but `app_metrics`, `child_process_gone` and the power, display and window telemetry below stop until `launchMain` runs again.
+
+## Power, display and window telemetry
+
+Pass any of `powerMonitor`, `screen` and `BrowserWindow` (the Electron objects, injected like `app`) to `launchMain`; a domain whose object is absent is simply off. Pass `screen` only after the app is ready.
+
+- `powerMonitor` -> `events.system`: `power_suspend`, `power_resume`, `power_lock`, `power_unlock` (macOS/Windows), `power_ac`, `power_battery`. No params.
+- `screen` -> `events.system`: `display_added` and `display_removed` (`{ id, width, height, scaleFactor, rotation, internal, refreshRate }`, absent keys omitted) and `display_metrics_changed` (the same plus `changed`, Electron's changed metrics). It also feeds the `electron_displays` system trace (`{ displays: [{ id, width, height, scale_factor, rotation, internal, refresh_rate_hz }] }`, written when it changes; absent when Electron gives no usable list). The name is JS-specific: `displays` is reserved until an Android-shaped list is confirmed against the viewer.
+- `app` (plus `BrowserWindow` for windows that already exist) -> `events.system`: `window_focus`, `window_blur`, `window_show`, `window_hide` (`{ windowId }`), and `renderer_unresponsive` / `renderer_responsive` (`{ webContentsId }`). Windows created after `launchMain` are tracked too. The hang pair is listened for on `webContents` only, because `BrowserWindow` re-emits it and each hang would otherwise be recorded twice; a `<webview>` or `BrowserView` is covered when Electron announces it through `web-contents-created`.
+
+All of these events are recorded only while `captureSystemEvents` is on, the listeners are removed again by `client.stop()`, and a throwing Electron getter is reported through `onError` and never fails the launch. Window titles and URLs are never read.
+
 
 ## Links
 
