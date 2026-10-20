@@ -126,8 +126,8 @@ describe('ConnectivityTracker', () => {
     t.on('online', (e) => online.push(e));
     t.on('state', (s) => states.push(s));
     win.fire('offline');
-    expect(online).toEqual([]); // never a fabricated true
-    expect(states).toEqual([{}]); // the event (state subscribed after the baseline); online absent
+    expect(online).toEqual([{ online: false }]); // the event is the evidence; never a fabricated true
+    expect(states).toEqual([{ online: false }]);
   });
 
   it('a throwing navigator.connection getter degrades to online-only and is reported once per read', () => {
@@ -147,6 +147,59 @@ describe('ConnectivityTracker', () => {
     expect(win.count()).toBe(2); // window listeners still attach
     expect(onError).toHaveBeenCalledTimes(2); // activation: listener lookup + baseline read
     off();
+  });
+
+  it('when onLine is unreadable, the offline/online EVENT itself is the evidence', () => {
+    const nav = {};
+    Object.defineProperty(nav, 'onLine', {
+      get() {
+        throw new Error('online boom');
+      },
+    });
+    const win = mkTarget();
+    const t = new ConnectivityTracker({ window: win, navigator: nav });
+    const online: boolean[] = [];
+    const states: unknown[] = [];
+    t.on('online', (e) => online.push(e.online)); // baseline: unreadable -> nothing
+    t.on('state', (s) => states.push(s));
+    win.fire('offline');
+    win.fire('online');
+    expect(online).toEqual([false, true]);
+    expect(states).toEqual([{ online: false }, { online: true }]);
+  });
+
+  it('a readable onLine wins over the event hint', () => {
+    const win = mkTarget();
+    const nav = { onLine: true };
+    const t = new ConnectivityTracker({ window: win, navigator: nav });
+    const online: boolean[] = [];
+    t.on('online', (e) => online.push(e.online));
+    win.fire('offline'); // stale event, the browser says online
+    expect(online).toEqual([true, true]);
+  });
+
+  it('a throwing addEventListener READ (cross-origin proxy) is reported and does not stop the other listeners', () => {
+    const onError = vi.fn();
+    const conn = mkTarget();
+    const win = {};
+    Object.defineProperty(win, 'addEventListener', {
+      get() {
+        throw new Error('SecurityError');
+      },
+    });
+    const t = new ConnectivityTracker(
+      {
+        window: win,
+        navigator: { onLine: true, connection: Object.assign(conn, { type: 'wifi' }) },
+      },
+      onError,
+    );
+    expect(() => t.on('state', () => {})).not.toThrow();
+    expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toEqual([
+      'SecurityError',
+      'SecurityError',
+    ]); // online + offline
+    expect(conn.count()).toBe(1);
   });
 
   it('an absent onLine property is treated as online (old behavior)', () => {
@@ -488,6 +541,29 @@ describe('connectivityTrackerFor', () => {
     a.current();
     expect(second).toHaveBeenCalled();
     expect(first).not.toHaveBeenCalled();
+  });
+
+  it('a throwing env.window getter is reported ONCE per call and reset still finds the tracker when the getter recovers', () => {
+    const onError = vi.fn();
+    const nav = mkNav({ type: 'wifi' });
+    const w = mkTarget();
+    let fail = true;
+    const env = {
+      get window() {
+        if (fail) throw new Error('flaky');
+        return w;
+      },
+      navigator: nav,
+    };
+    const t = connectivityTrackerFor(env, onError);
+    expect(onError).toHaveBeenCalledTimes(1);
+    t.on('state', () => {});
+    expect((nav.connection as ReturnType<typeof mkTarget>).count()).toBe(1);
+    fail = false; // reset now resolves window first, but the tracker was keyed on navigator
+    resetConnectivityTracker(env);
+    expect((nav.connection as ReturnType<typeof mkTarget>).count()).toBe(0);
+    expect(connectivityTrackerFor({ navigator: nav })).not.toBe(t);
+    resetConnectivityTracker({ navigator: nav });
   });
 
   it('a throwing env.window / env.navigator read is reported and never fails', () => {

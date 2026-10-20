@@ -139,8 +139,8 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   // reporter.
   #attach(): void {
     const win = this.#window as Partial<TargetLike> | undefined;
-    this.#listen(win, 'online', () => this.#changed('online'));
-    this.#listen(win, 'offline', () => this.#changed('online'));
+    this.#listen(win, 'online', () => this.#changed('online', true));
+    this.#listen(win, 'offline', () => this.#changed('online', false));
     const nav = this.#navigator;
     const connection =
       nav === undefined
@@ -166,7 +166,13 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   }
 
   #listen(target: Partial<TargetLike> | undefined, type: string, run: () => void): void {
-    if (typeof target?.addEventListener !== 'function') return;
+    if (target === undefined) return;
+    // The READ can throw too (a cross-origin WindowProxy): reported, and the other listeners still attach.
+    const add = hostRead(
+      () => target.addEventListener,
+      (e) => this.#onError(e),
+    );
+    if (typeof add !== 'function') return;
     const listener = (): void => {
       try {
         run();
@@ -177,7 +183,7 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
     // Recorded BEFORE attaching so a failing addEventListener still leaves a removable record.
     this.#attached.push({ target, type, listener });
     try {
-      target.addEventListener(type, listener);
+      add.call(target, type, listener);
     } catch (error) {
       this.#onError(error);
     }
@@ -195,9 +201,14 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
     }
   }
 
-  #changed(kind: 'online' | 'networkInfo'): void {
-    const state = this.#read();
-    if (state === undefined) return;
+  // `hint` is what the event itself says. It is only evidence when `onLine` could not be read (a readable value wins).
+  #changed(kind: 'online' | 'networkInfo', hint?: boolean): void {
+    const read = this.#read();
+    if (read === undefined) return;
+    const state: ConnectivityState =
+      kind === 'online' && read.online === undefined && hint !== undefined
+        ? { ...read, online: hint }
+        : read;
     if (kind === 'online') {
       if (state.online !== undefined) this.emit('online', { online: state.online });
     } else if (state.networkInfo !== undefined) this.emit('networkInfo', state.networkInfo);
@@ -244,12 +255,14 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
 
 const registry = createTrackerRegistry<ConnectivityTracker>();
 
-function keyOf(env: ConnectivityHost, onError?: (error: unknown) => void): object {
-  const win = hostRead(() => env.window, onError);
-  if (typeof win === 'object' && win !== null) return win;
-  const nav = hostRead(() => env.navigator, onError);
-  if (typeof nav === 'object' && nav !== null) return nav;
-  return env;
+// The key is derived from the reads the caller already made (one read of each, so a flaky getter is reported once and
+// the key cannot differ from the host it was built with).
+function keyOf(win: object | undefined, nav: object | undefined, env: object): object {
+  return win ?? nav ?? env;
+}
+
+function asObject(value: unknown): object | undefined {
+  return typeof value === 'object' && value !== null ? value : undefined;
 }
 
 /**
@@ -261,20 +274,30 @@ export function connectivityTrackerFor(
   env: ConnectivityHost,
   onError?: (error: unknown) => void,
 ): ConnectivityTracker {
-  const win = hostRead(() => env.window, onError);
-  const nav = hostRead(() => env.navigator, onError);
+  const win = asObject(hostRead(() => env.window, onError));
+  const nav = asObject(hostRead(() => env.navigator, onError));
   const host: ConnectivityHost = {
-    ...(typeof win === 'object' && win !== null ? { window: win } : {}),
-    ...(typeof nav === 'object' && nav !== null ? { navigator: nav } : {}),
+    ...(win !== undefined ? { window: win } : {}),
+    ...(nav !== undefined ? { navigator: nav } : {}),
   };
   return registry.for(
-    keyOf(env, onError),
+    keyOf(win, nav, env),
     () => new ConnectivityTracker(host, onError),
     (tracker) => tracker.rebind(host, onError),
   );
 }
 
-/** Test/teardown: drop the env's tracker (resetting it, so its listeners are released). */
+/**
+ * Test/teardown: drop the env's tracker (resetting it, so its listeners are released). Best-effort for a hostile env
+ * whose getters answer differently from call to call: the first of window / navigator / env that HAS a tracker wins.
+ */
 export function resetConnectivityTracker(env: ConnectivityHost): void {
-  registry.reset(keyOf(env));
+  const win = asObject(hostRead(() => env.window));
+  const nav = asObject(hostRead(() => env.navigator));
+  for (const key of [win, nav, env]) {
+    if (key !== undefined && registry.peek(key) !== undefined) {
+      registry.reset(key);
+      return;
+    }
+  }
 }
