@@ -1,10 +1,11 @@
-import { resetStorageTracker, type StatFs, storageTrackerFor } from '@bugsee/trackers/node';
+import { resetStorageTracker, type StatFs } from '@bugsee/trackers/node';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDiskSpaceProducer } from './disk-space-producer';
 
 const keys: object[] = [];
 afterEach(() => {
   for (const k of keys.splice(0)) resetStorageTracker(k);
+  resetStorageTracker();
 });
 
 const flush = () => new Promise<void>((r) => setImmediate(r));
@@ -105,33 +106,62 @@ describe('createDiskSpaceProducer (composition over the StorageTracker)', () => 
     expect(() => s.producer.stop()).not.toThrow();
   });
 
-  it('shares the per-process tracker: building a producer hands it the data dir and onError (latest wins)', async () => {
-    const key = {};
-    keys.push(key);
-    const errors: unknown[] = [];
-    createDiskSpaceProducer({
-      key,
-      dataDir: '/first',
+  it('two producers over two dirs: each keeps polling its own dir and reporting to its own onError', async () => {
+    const mk = (dir: string) => {
+      const paths: string[] = [];
+      const errors: unknown[] = [];
+      let tick: (() => void) | undefined;
+      const producer = createDiskSpaceProducer({
+        dataDir: dir,
+        statfs: async (p) => {
+          paths.push(p);
+          throw new Error(`failed ${dir}`);
+        },
+        scheduler: {
+          setInterval: (cb) => {
+            tick = cb;
+            return 1;
+          },
+          clearInterval: () => {},
+        },
+        onError: (e) => errors.push(e),
+      });
+      return { producer, paths, errors, tick: () => tick?.() };
+    };
+    const a = mk('/disk/a');
+    const b = mk('/disk/b'); // built AFTER a started: must not redirect a
+    a.producer.start({ emit() {} });
+    b.producer.start({ emit() {} });
+    await flush();
+    a.tick();
+    b.tick();
+    await flush();
+    expect(a.paths).toEqual(['/disk/a', '/disk/a']);
+    expect(b.paths).toEqual(['/disk/b', '/disk/b']);
+    expect(a.errors.map((e) => (e as Error).message)).toEqual(['failed /disk/a']);
+    expect(b.errors.map((e) => (e as Error).message)).toEqual(['failed /disk/b']);
+    a.producer.stop();
+    b.producer.stop();
+  });
+
+  it('two producers over the SAME dir share one tracker (one poll)', async () => {
+    let calls = 0;
+    const deps = {
+      dataDir: '/disk/same',
       statfs: async () => {
-        throw new Error('boom');
-      },
-      scheduler: { setInterval: () => 1, clearInterval: () => {} },
-      onError: (e) => errors.push(e),
-    });
-    const paths: string[] = [];
-    const second = createDiskSpaceProducer({
-      key,
-      dataDir: '/second',
-      statfs: async (p) => {
-        paths.push(p);
+        calls += 1;
         return { bsize: 1, bavail: 1, blocks: 1 };
       },
-    });
-    second.start({ emit() {} });
+      scheduler: { setInterval: () => 1, clearInterval: () => {} },
+    };
+    const p1 = createDiskSpaceProducer(deps);
+    const p2 = createDiskSpaceProducer(deps);
+    p1.start({ emit() {} });
+    p2.start({ emit() {} });
     await flush();
-    expect(paths).toEqual(['/second']);
-    expect(storageTrackerFor({ key }).current()?.totalBytes).toBe(1);
-    second.stop();
+    expect(calls).toBe(1);
+    p1.stop();
+    p2.stop();
   });
 
   it('reads the real filesystem by default (the data dir volume)', async () => {

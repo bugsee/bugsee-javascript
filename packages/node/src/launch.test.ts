@@ -1674,7 +1674,7 @@ describe('launch — system trace producers', () => {
       expect(fs.calls.some((c) => c.ms === 5000)).toBe(true);
       expect(paths).toEqual([dir]);
       await new Promise((r) => setTimeout(r, 0));
-      expect(storageTrackerFor().current()).toEqual({
+      expect(storageTrackerFor({ dataDir: dir }).current()).toEqual({
         freeBytes: 5 * 1024 * 1024,
         totalBytes: 9 * 1024 * 1024,
       });
@@ -1697,6 +1697,19 @@ describe('launch — system trace producers', () => {
           capturedDataStore: 'memory',
           systemMetricsSampler: undefined,
           captureDiskSpace: true,
+        }),
+      );
+      expect(storageTrackerFor).not.toHaveBeenCalled();
+    });
+
+    it('does not build the disk producer (nor touch the shared tracker) when systemMetricsSampler replaces the producer list', () => {
+      vi.mocked(storageTrackerFor).mockClear();
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: mkdtempSync(join(tmpdir(), 'bugsee-disk-')),
+          captureStore: memStore(),
+          captureDiskSpace: true, // baseOptions carries a systemMetricsSampler
         }),
       );
       expect(storageTrackerFor).not.toHaveBeenCalled();

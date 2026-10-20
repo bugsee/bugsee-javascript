@@ -1,4 +1,5 @@
 import * as fsp from 'node:fs/promises';
+import { resolve } from 'node:path';
 import nodeProcess from 'node:process';
 import { InterceptorBase } from '../interceptor-base';
 import { createTrackerRegistry } from '../tracker-registry';
@@ -18,12 +19,15 @@ import { createTrackerRegistry } from '../tracker-registry';
 // per failure streak (a removed data dir fails on every poll and must not flood `onError`); a success starts a new
 // streak.
 //
-// SINGLETON per key object (see `storageTrackerFor`: the `process` object by default). SEAMS MERGE, NEVER DROP: the
-// tracker outlives launches, so a later launch that omits a seam KEEPS the previous launch's (it can replace one,
-// never shed one); the data dir is such a seam, the LATEST launch's wins. A change to any seam while a listener is
-// attached tears the poll down (the timer is cleared on the scheduler that armed it) and starts it again at once on
-// the merged seams, so a changed path is re-read immediately; an unchanged relaunch restarts nothing. Tests that inject
-// fakes must use a private `key` or call `resetStorageTracker()`.
+// SINGLETON per VOLUME IDENTITY (see `storageTrackerFor`): the key is the resolved data dir, so two launches over
+// the same directory share one tracker and two launches over different directories get DIFFERENT trackers (a running
+// launch can never be redirected to another launch's directory, nor have its failures reported to another launch's
+// `onError`). A launch without a data dir gets the inert `process`-keyed tracker; an explicit `key` overrides (tests).
+// Within one key, SEAMS MERGE, NEVER DROP: a later launch that omits `onError`/`scheduler`/`statfs` KEEPS the previous
+// launch's (it can replace one, never shed one), and the LATEST launch's wins. A change to any seam while a listener
+// is attached tears the poll down (the timer is cleared on the scheduler that armed it) and starts it again at once on
+// the merged seams; an unchanged relaunch restarts nothing. Tests that inject fakes must use a private `key` or call
+// `resetStorageTracker()`.
 //
 // RETENTION rule — what survives the last unsubscribe: ONLY the merged seams. The last reading does not survive
 // (`current()` is undefined with no listener attached): free space is a live number and a retained one would be a lie
@@ -252,7 +256,7 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
 
 const registry = createTrackerRegistry<StorageTracker>();
 
-/** A {@link StorageEnv} plus the object the singleton is keyed on (default: the `process` object). */
+/** A {@link StorageEnv} plus an explicit object to key the singleton on (overrides the data-dir identity; for tests). */
 export interface StorageTrackerEnv extends StorageEnv {
   key?: object;
 }
@@ -263,13 +267,32 @@ function seamsOf(env: StorageTrackerEnv): StorageEnv {
     const value = env[key];
     if (value !== undefined) seams[key] = value;
   }
+  // The same normalised spelling the key uses: `/d` and `/d/` are one volume, so an equivalent relaunch is unchanged.
+  if (env.dataDir !== undefined) seams.dataDir = resolve(env.dataDir);
   return seams as StorageEnv;
 }
 
+// One interned key object per resolved data dir (the registry is a WeakMap over objects). The map holds one small
+// object per distinct directory ever launched with; `resetStorageTracker` drops them.
+const dirKeys = new Map<string, object>();
+
+function keyOf(env: StorageTrackerEnv): object {
+  if (env.key !== undefined) return env.key;
+  if (env.dataDir === undefined) return nodeProcess;
+  const dir = resolve(env.dataDir);
+  let key = dirKeys.get(dir);
+  if (key === undefined) {
+    key = {};
+    dirKeys.set(dir, key);
+  }
+  return key;
+}
+
 /**
- * The singleton StorageTracker for the env's key (the `process` object by default). Every call (a relaunch
- * included) hands the shared tracker the latest launch's `onError` and seams (see {@link StorageTracker.rebind});
- * nothing else of the env is kept.
+ * The singleton StorageTracker for the env's volume identity (the resolved `dataDir`; an explicit `key` overrides;
+ * no data dir means the shared inert `process`-keyed tracker). Every call (a relaunch on the same directory included)
+ * hands the shared tracker the latest launch's `onError` and seams (see {@link StorageTracker.rebind}); nothing else of
+ * the env is kept.
  */
 export function storageTrackerFor(
   env: StorageTrackerEnv = {},
@@ -277,13 +300,30 @@ export function storageTrackerFor(
 ): StorageTracker {
   const seams = seamsOf(env);
   return registry.for(
-    env.key ?? nodeProcess,
+    keyOf(env),
     () => new StorageTracker(seams, onError),
     (tracker) => tracker.rebind(seams, onError),
   );
 }
 
-/** Test/teardown: drop the key's tracker (resetting it, so its timer is released and in-flight reads ignored). */
-export function resetStorageTracker(key: object = nodeProcess): void {
-  registry.reset(key);
+/**
+ * Test/teardown: drop trackers (resetting them, so timers are released and in-flight reads ignored). With an object
+ * key: that key's tracker. With a string: the tracker of that data dir. With nothing: EVERY tracker (all data dirs and
+ * the `process`-keyed one).
+ */
+export function resetStorageTracker(key?: object | string): void {
+  if (typeof key === 'string') {
+    const dir = resolve(key);
+    const interned = dirKeys.get(dir);
+    dirKeys.delete(dir);
+    if (interned !== undefined) registry.reset(interned);
+    return;
+  }
+  if (key !== undefined) {
+    registry.reset(key);
+    return;
+  }
+  for (const interned of dirKeys.values()) registry.reset(interned);
+  dirKeys.clear();
+  registry.reset(nodeProcess);
 }

@@ -948,9 +948,13 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     });
   // Opt-in disk space: the volume the SDK's data dir lives on, so only when there IS one (an in-memory or
   // degraded launch has none, and never falls back to `/` or the cwd). Appended to caller-supplied producers
-  // too: the option is an explicit request, and Bun/Deno build their own producer list.
+  // too: the option is an explicit request, and Bun/Deno build their own producer list. NOT built when the legacy
+  // `systemMetricsSampler` replaces the producer list: it would never be started, and merely building it touches
+  // the shared per-volume tracker.
   const traceProducers =
-    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+    options.systemMetricsSampler === undefined &&
+    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) &&
+    effectiveDataDir !== undefined
       ? [
           ...baseTraceProducers,
           createDiskSpaceProducer({

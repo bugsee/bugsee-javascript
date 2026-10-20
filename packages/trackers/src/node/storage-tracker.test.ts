@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type DiskReading,
   resetStorageTracker,
@@ -145,6 +145,40 @@ describe('StorageTracker (node)', () => {
       expect(r.tracker.current()).toBeUndefined();
       expect(errors).toEqual([]);
     }
+  });
+
+  it('a non-number block count is rejected (never coerced)', async () => {
+    const r = mk(() => ({ bsize: MB, bavail: 5, blocks: true }) as unknown as StatFsResult);
+    r.subscribe();
+    await flush();
+    expect(r.seen).toEqual([]);
+  });
+
+  it('an overflowing reading after a good one clears the retained reading', async () => {
+    let next: Outcome = ok(5, 9);
+    const r = mk(() => next);
+    r.subscribe();
+    await flush();
+    expect(r.tracker.current()).toBeDefined();
+    next = { bsize: 1e308, bavail: 1e308, blocks: 5 };
+    r.fs.tick();
+    await flush();
+    expect(r.tracker.current()).toBeUndefined();
+  });
+
+  it('after the last unsubscribe a changed seam stores only: no read and no live timer', async () => {
+    const r = mk(() => ok(), { dataDir: '/a' });
+    const off = r.subscribe();
+    await flush();
+    off();
+    const reads = r.st.paths.length;
+    r.tracker.rebind({ dataDir: '/b' });
+    await flush();
+    expect(r.st.paths).toHaveLength(reads);
+    expect(r.fs.live()).toBe(0);
+    r.subscribe();
+    await flush();
+    expect(r.st.paths.at(-1)).toBe('/b');
   });
 
   it('a failing statfs is reported and omits only that reading; the next poll recovers', async () => {
@@ -637,56 +671,131 @@ describe('StorageTracker (node)', () => {
   });
 });
 
-describe('storageTrackerFor (per-process singleton)', () => {
-  it('returns the same tracker for the same key and rebinds it with the latest seams', async () => {
+describe('storageTrackerFor (singleton per data dir)', () => {
+  const done: string[] = [];
+  afterEach(() => {
+    resetStorageTracker();
+    done.length = 0;
+  });
+
+  it('two launches over DIFFERENT dirs get different trackers: each keeps polling its own dir and reporting to its own onError', async () => {
+    const fsA = fakeScheduler();
+    const fsB = fakeScheduler();
+    const a = stat(() => new Error('a failed'));
+    const b = stat(() => new Error('b failed'));
+    const errA: unknown[] = [];
+    const errB: unknown[] = [];
+    const ta = storageTrackerFor(
+      { dataDir: '/one', statfs: a.statfs, scheduler: fsA.scheduler },
+      (e) => errA.push(e),
+    );
+    ta.on('disk', () => {});
+    await flush();
+    const tb = storageTrackerFor(
+      { dataDir: '/two', statfs: b.statfs, scheduler: fsB.scheduler },
+      (e) => errB.push(e),
+    );
+    tb.on('disk', () => {});
+    await flush();
+    expect(tb).not.toBe(ta);
+    fsA.tick();
+    fsB.tick();
+    await flush();
+    expect(a.paths).toEqual(['/one', '/one']);
+    expect(b.paths).toEqual(['/two', '/two']);
+    // each streak reported once, to its own launch
+    expect(errA.map((e) => (e as Error).message)).toEqual(['a failed']);
+    expect(errB.map((e) => (e as Error).message)).toEqual(['b failed']);
+    expect(fsA.live()).toBe(1);
+    expect(fsB.live()).toBe(1);
+  });
+
+  it('two launches over the SAME dir share one tracker; the latest seams win and omitted ones are kept', async () => {
+    const fs = fakeScheduler();
+    const a = stat(() => new Error('boom'));
+    const first = vi.fn();
+    const second = vi.fn();
+    const t1 = storageTrackerFor(
+      { dataDir: '/same', statfs: a.statfs, scheduler: fs.scheduler },
+      first,
+    );
+    const t2 = storageTrackerFor({ dataDir: '/same/' }, second); // an equivalent spelling is the same volume identity
+    expect(t2).toBe(t1);
+    t2.on('disk', () => {});
+    await flush();
+    expect(a.paths).toEqual(['/same']);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('an explicit key overrides the data-dir identity; resetStorageTracker(key) drops just it', async () => {
     const key = {};
-    const a = stat(() => ok(1, 2));
-    const b = stat(() => ok(3, 4));
-    const first = storageTrackerFor({
+    const fs = fakeScheduler();
+    const t = storageTrackerFor({
       key,
-      dataDir: '/one',
-      statfs: a.statfs,
-      scheduler: fakeScheduler().scheduler,
+      dataDir: '/x',
+      statfs: stat(() => ok()).statfs,
+      scheduler: fs.scheduler,
     });
-    const seen: DiskReading[] = [];
-    first.on('disk', (r) => void seen.push(r));
-    await flush();
-    const second = storageTrackerFor({ key, dataDir: '/two', statfs: b.statfs });
-    expect(second).toBe(first);
-    await flush();
-    expect(a.paths).toEqual(['/one']);
-    expect(b.paths).toEqual(['/two']);
-    expect(seen.at(-1)?.freeBytes).toBe(3 * MB);
-    resetStorageTracker(key);
-  });
-
-  it('a relaunch without a data dir keeps the earlier one (merge, never drop) and hands over onError', async () => {
-    const key = {};
-    const fs = fakeScheduler();
-    const st = stat(() => new Error('boom'));
-    const onError = vi.fn();
-    storageTrackerFor({ key, dataDir: '/kept', statfs: st.statfs, scheduler: fs.scheduler });
-    const t = storageTrackerFor({ key }, onError);
-    t.on('disk', () => {});
-    await flush();
-    expect(st.paths).toEqual(['/kept']);
-    expect(onError).toHaveBeenCalledTimes(1);
-    resetStorageTracker(key);
-  });
-
-  it('defaults the key to the process object; reset drops it and releases the timer', async () => {
-    const fs = fakeScheduler();
-    const t = storageTrackerFor({ dataDir: process.cwd(), scheduler: fs.scheduler });
-    expect(storageTrackerFor()).toBe(t);
+    expect(storageTrackerFor({ dataDir: '/x' })).not.toBe(t);
+    expect(storageTrackerFor({ key })).toBe(t);
     t.on('disk', () => {});
     expect(fs.live()).toBe(1);
-    resetStorageTracker();
+    resetStorageTracker(key);
     expect(fs.live()).toBe(0);
-    expect(storageTrackerFor()).not.toBe(t);
-    resetStorageTracker();
+    expect(storageTrackerFor({ key })).not.toBe(t);
+    resetStorageTracker(key);
   });
 
-  it('different keys never share state', () => {
+  it('a launch without a data dir gets the shared inert process-keyed tracker', async () => {
+    const fs = fakeScheduler();
+    const st = stat(() => ok());
+    const t = storageTrackerFor({ statfs: st.statfs, scheduler: fs.scheduler });
+    expect(storageTrackerFor()).toBe(t);
+    t.on('disk', () => {});
+    await flush();
+    expect(st.paths).toEqual([]);
+    expect(fs.sets()).toBe(0);
+  });
+
+  it('resetStorageTracker(dir) drops that dir only; resetStorageTracker() drops every dir tracker and the process one', async () => {
+    const fs1 = fakeScheduler();
+    const fs2 = fakeScheduler();
+    const t1 = storageTrackerFor({
+      dataDir: '/r1',
+      statfs: stat(() => ok()).statfs,
+      scheduler: fs1.scheduler,
+    });
+    const t2 = storageTrackerFor({
+      dataDir: '/r2',
+      statfs: stat(() => ok()).statfs,
+      scheduler: fs2.scheduler,
+    });
+    const p = storageTrackerFor();
+    t1.on('disk', () => {});
+    t2.on('disk', () => {});
+    resetStorageTracker('/r1');
+    expect(fs1.live()).toBe(0);
+    expect(fs2.live()).toBe(1);
+    expect(storageTrackerFor({ dataDir: '/r1' })).not.toBe(t1);
+    expect(storageTrackerFor({ dataDir: '/r2' })).toBe(t2);
+    resetStorageTracker('/never-launched'); // no-op
+    const rel = fakeScheduler();
+    const tr = storageTrackerFor({
+      dataDir: 'relative/dir',
+      statfs: stat(() => ok()).statfs,
+      scheduler: rel.scheduler,
+    });
+    tr.on('disk', () => {});
+    resetStorageTracker('relative/dir'); // the same resolved identity as the launch spelling
+    expect(rel.live()).toBe(0);
+    resetStorageTracker();
+    expect(fs2.live()).toBe(0);
+    expect(storageTrackerFor({ dataDir: '/r2' })).not.toBe(t2);
+    expect(storageTrackerFor()).not.toBe(p);
+  });
+
+  it('different explicit keys never share state', () => {
     const k1 = {};
     const k2 = {};
     expect(storageTrackerFor({ key: k1 })).not.toBe(storageTrackerFor({ key: k2 }));
