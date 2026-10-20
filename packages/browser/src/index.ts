@@ -70,6 +70,7 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  CAPTURE_USER_IDLE_OPTION_KEY,
   getStatus,
   type LaunchInternals,
   type LaunchResult,

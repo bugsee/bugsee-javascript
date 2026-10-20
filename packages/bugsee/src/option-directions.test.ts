@@ -52,11 +52,12 @@ const DIRECTIONS: Record<string, Direction> = {
   captureNetworkDefaultSanitizer: 'default', // default ON: the redaction stays on
   // browser
   captureInteractions: 'off',
-  captureEnvironmentHints: 'off', // private-mode heuristic, default OFF: an invalid value stays OFF
+  captureEnvironmentHints: 'off', // private-mode heuristic, default ON: an invalid value turns it OFF (fail closed)
   captureViewHierarchy: 'off',
   startInBlackout: 'on',
   replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF; masking is fail-closed on its own
   persistUserIdentifier: 'default', // default OFF
+  captureUserIdle: 'default', // default OFF (opt-in behavioural trace): only boolean true enables
   reportSummaryRequired: 'default',
   reportDescriptionRequired: 'default',
   reportEmailRequired: 'default',

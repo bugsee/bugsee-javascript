@@ -4,14 +4,19 @@ import { createMemoryCaptureStore, type HttpResponse, type HttpTransport } from 
 import { BugseeOption } from '@bugsee/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserProbe } from './environment';
-import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
+import {
+  type Bugsee,
+  type BugseeLaunchOptions,
+  CAPTURE_USER_IDLE_OPTION_KEY,
+  launch,
+} from './launch';
 
 // Every browser-owned boolean launch option, every kind of invalid value. Read by plain
 // truthiness these used to be wrong in BOTH directions: `persistUserIdentifier: 'false'` persisted PII,
 // `captureInteractions: 0` kept capturing input. The rules, per option:
 //   captureInteractions, captureViewHierarchy (default ON, capture)  -> invalid = OFF (fail-closed) + onError
 //   startInBlackout (default OFF, but ON is the safe side)             -> invalid = ON (fail-on) + onError
-//   persistUserIdentifier, report* UI flags (default OFF)              -> only boolean true turns on
+//   persistUserIdentifier, captureUserIdle, report* UI flags (default OFF) -> only boolean true turns on
 
 const probe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 Chrome/119.0.0.0 Safari/537.36',
@@ -70,6 +75,7 @@ const failClosed: Array<[string, string]> = [
 ];
 const defaultOff: Array<[string, string]> = [
   ['persistUserIdentifier', BugseeOption.PersistUserIdentifier],
+  ['captureUserIdle', CAPTURE_USER_IDLE_OPTION_KEY],
   ['reportSummaryRequired', BugseeOption.ReportingUiSummaryRequired],
   ['reportDescriptionRequired', BugseeOption.ReportingUiDescriptionRequired],
   ['reportEmailRequired', BugseeOption.ReportingUiEmailRequired],

@@ -74,8 +74,9 @@ export const BugseeOption = {
   CaptureStartInBlackout: 'com.bugsee.option.capture.start-in-blackout',
   /**
    * Browser only: observe environment hints that read as sensitive, starting with the PRIVATE-BROWSING heuristic (an
-   * `private_mode_detected` event for a `yes` answer; the answer is never certain). Default false: detecting private
-   * browsing can read as circumventing the user's intent. Language and time-zone changes are NOT gated by this.
+   * `private_mode_detected` event for a `yes` answer; the answer is never certain). Default TRUE (opt-out, owner
+   * decision 2026-10-20): `false` disables it, a non-boolean value is treated as off and reported. The WebView launch
+   * never enables it. Language and time-zone changes are NOT gated by this.
    */
   CaptureEnvironmentHints: 'com.bugsee.option.capture.environment-hints',
   /** Detect uncaught exceptions / unhandled rejections and report them. */

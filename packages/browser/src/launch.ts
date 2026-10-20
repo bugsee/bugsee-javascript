@@ -131,6 +131,11 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
+/**
+ * Canonical identifier of the (browser-local) `captureUserIdle` switch (no cross-SDK identity). Exported so the
+ * WebView launch, which shares the producers, declares the very same option.
+ */
+export const CAPTURE_USER_IDLE_OPTION_KEY = 'com.bugsee.option.browser.capture-user-idle';
 
 /** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
 const indexedDbPresent = (): boolean => {
@@ -242,6 +247,14 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   {
     friendly: 'persistUserIdentifier',
     key: BugseeOption.PersistUserIdentifier,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  // `user_idle_state` is behavioural data (active / idle / screen locked), so it is OPT-IN: only boolean `true`
+  // enables it, anything else stays OFF (and an invalid value is reported).
+  {
+    friendly: 'captureUserIdle',
+    key: CAPTURE_USER_IDLE_OPTION_KEY,
     default: false,
     ...BOOLEAN_OPTION,
   },
@@ -375,6 +388,13 @@ export interface BugseeLaunchOptions {
    * permission states are not read at all.
    */
   captureEnvironmentHints?: boolean;
+  /**
+   * Record the `user_idle_state` system trace (`active` / `idle` / `locked`, from the Idle Detection API). Default
+   * FALSE: it is behavioural data, and a page's own `idle-detection` grant is not consent to upload it. Even when
+   * true the trace exists only if the page's permission is ALREADY `granted`: the SDK never prompts for it.
+   * Only boolean `true` enables it; any other value stays off and is reported. Needs `captureSystemTraces`.
+   */
+  captureUserIdle?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -911,6 +931,7 @@ async function buildLaunch(
           // Every surface comes from the INJECTED window/document, never the host globals.
           ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

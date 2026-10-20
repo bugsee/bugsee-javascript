@@ -45,6 +45,18 @@ export {
   resetPowerTracker,
 } from './power-tracker';
 export {
+  type HeapReading,
+  type HeapState,
+  type ProcessEnv,
+  type ProcessEvents,
+  type ProcessTimers,
+  ProcessTracker,
+  type ProcessTrackerEnv,
+  processTrackerFor,
+  resetProcessTracker,
+  type UserIdleState,
+} from './process-tracker';
+export {
   resetStorageTracker,
   type StorageEnv,
   type StorageEstimate,

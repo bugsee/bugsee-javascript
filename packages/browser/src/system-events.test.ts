@@ -519,6 +519,43 @@ describe('createBrowserSystemEventsSource', () => {
       ]);
     });
 
+    it('an opted-out source (detectPrivateMode: false) never forwards a yes, even if another consumer enabled detection on the shared tracker', async () => {
+      const injected = createMultiKeyEmitter<EnvironmentEvents>();
+      const out = activate({
+        lifecycle: lifecycleStub as never,
+        environment: injected,
+        detectPrivateMode: false,
+      });
+      injected.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      expect(out.events.map((e) => e.name)).toEqual(['process_started']);
+      // and over the REAL window singleton, with a second consumer turning detection on
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      Object.assign(win, {
+        navigator: {
+          language: 'en-US',
+          storage: { estimate: () => Promise.resolve({ quota: 10 }) },
+        },
+      });
+      try {
+        const off = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
+        const other = environmentTrackerFor({ window: win, detectPrivateMode: true });
+        const unsub = other.onAny(() => {});
+        await new Promise((r) => setTimeout(r, 0));
+        expect(other.current().privateMode?.private).toBe('yes'); // the tracker did detect it
+        expect(off.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        unsub();
+        off.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+      out.off();
+    });
+
     it('a language AND time-zone change while the source was stopped are BOTH reported on restart', () => {
       const { env, win } = fakeEnv();
       const { environment: _inert, ...rest } = env;

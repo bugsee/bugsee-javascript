@@ -71,7 +71,7 @@ export interface BrowserSystemEventsEnv {
   lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
   environment?: Pick<EnvironmentTracker, 'onAny'>;
-  /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). Ignored when `environment` is supplied. */
+  /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). A `false` is also enforced at the event sink: `private_mode_detected` is never forwarded, even from a shared tracker another consumer enabled. */
   detectPrivateMode?: boolean;
   /** Drives the time-zone re-read tick; default the global timers. Ignored when `environment` is supplied. */
   scheduler?: EnvironmentTimersLike;
@@ -83,13 +83,16 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
   readonly #ui: Pick<UiTracker, 'on'>;
   readonly #environment: Pick<EnvironmentTracker, 'onAny'>;
+  /** This source's own opt-out, enforced at the sink: the shared tracker may run the probe for another consumer. */
+  readonly #privateMode: boolean;
   #unsubscribe: Array<() => void> = [];
 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
     ui: Pick<UiTracker, 'on'>,
     environment: Pick<EnvironmentTracker, 'onAny'>,
-    onError?: (error: unknown) => void,
+    onError: ((error: unknown) => void) | undefined,
+    detectPrivateMode: boolean,
   ) {
     // A throwing reporter must not escape into the browser's event dispatch or abort activation.
     const report = (error: unknown): void => {
@@ -103,6 +106,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     this.#lifecycle = lifecycle;
     this.#ui = ui;
     this.#environment = environment;
+    this.#privateMode = detectPrivateMode;
   }
 
   protected onActivate(): void {
@@ -154,7 +158,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
           });
         } else if (name === 'privateMode') {
           const { private: answer, method } = payload as EnvironmentEvents['privateMode'];
-          if (answer === 'yes') {
+          if (answer === 'yes' && this.#privateMode) {
             this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
           }
         }
@@ -236,5 +240,11 @@ export function createBrowserSystemEventsSource(
         env.onError,
       );
     })();
-  return new BrowserSystemEventsSource(lifecycle, ui, environment, env.onError);
+  return new BrowserSystemEventsSource(
+    lifecycle,
+    ui,
+    environment,
+    env.onError,
+    env.detectPrivateMode ?? true,
+  );
 }

@@ -387,7 +387,13 @@ describe('browserTraceEnvFrom', () => {
       );
     }).not.toThrow();
     expect(built.map((p) => p.name)).toContain('fps');
-    expect(errors.some((e) => (e as Error).message === 'now blocked')).toBe(true);
+    // the lag stage (owner of the clock report) activates: the unreadable clock is reported, exactly once
+    const lag = built.find((p) => p.name === 'main-thread-lag') as TraceProducer;
+    lag.start({ emit: () => {} });
+    lag.stop();
+    lag.start({ emit: () => {} });
+    lag.stop();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
   });
 
   it('omits what the window lacks (a missing performance.memory is not borrowed from the global)', () => {

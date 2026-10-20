@@ -9,9 +9,14 @@ import {
   type ConnectivityState,
   type ConnectivityTracker,
   connectivityTrackerFor,
+  type HeapReading,
+  type HeapState,
   type OrientationState,
   type PowerTracker,
+  type ProcessEnv,
+  type ProcessTracker,
   powerTrackerFor,
+  processTrackerFor,
   type ScreenSizeState,
   type StorageEstimate,
   type StorageManagerLike,
@@ -19,12 +24,11 @@ import {
   storageTrackerFor,
   type UiEnv,
   type UiTracker,
+  type UserIdleState,
   uiTrackerFor,
 } from '@bugsee/trackers/browser';
 import { boundMatchMedia } from './host-global';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
-import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
-import { type MemoryReading, type MemoryState, MemoryTracker } from './trackers/memory-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -135,17 +139,17 @@ export class StorageProducer extends TraceProducerBase {
  */
 export class MemoryProducer extends TraceProducerBase {
   readonly name = 'memory';
-  readonly #tracker: MemoryTracker;
+  readonly #tracker: ProcessTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: MemoryTracker) {
+  constructor(tracker: ProcessTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('memory', (m) => this.#publish(m));
-    const cur = this.#tracker.current();
+    this.#off = this.#tracker.on('heap', (m) => this.#publish(m));
+    const cur = this.#tracker.currentHeap();
     if (cur !== undefined) this.#publish(cur);
   }
 
@@ -154,7 +158,7 @@ export class MemoryProducer extends TraceProducerBase {
     this.#off = undefined;
   }
 
-  #publish(m: MemoryState): void {
+  #publish(m: HeapState): void {
     this.emit('ram_js_heap_total', m.limit);
     this.emit('ram_js_heap_free', m.limit - m.used);
     this.emit('ram_js_heap_used', m.used);
@@ -352,16 +356,18 @@ export class ScreenSizeProducer extends TraceProducerBase {
  */
 export class MainThreadLagProducer extends TraceProducerBase {
   readonly name = 'main-thread-lag';
-  readonly #tracker: MainThreadLagTracker;
+  readonly #tracker: ProcessTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: MainThreadLagTracker) {
+  constructor(tracker: ProcessTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('lag', (ms) => this.emit('main_thread_lag_ms', ms));
+    this.#off = this.#tracker.on('mainThreadLag', ({ lagMs }) =>
+      this.emit('main_thread_lag_ms', lagMs),
+    );
   }
 
   protected override onStop(): void {
@@ -371,12 +377,74 @@ export class MainThreadLagProducer extends TraceProducerBase {
 }
 
 /**
+ * `main_thread_idle_ms` (JS-specific): how long the browser says the main thread can stay idle, from ONE
+ * `requestIdleCallback` probe per sampling tick (`deadline.timeRemaining()`, capped at 50 ms by the spec). Visible pages
+ * only. A tick in which no idle period was granted produces NO sample (absence, never 0); engines without
+ * `requestIdleCallback` (Safari) never produce it. Polled, so each value is emitted and never held.
+ */
+export class MainThreadIdleProducer extends TraceProducerBase {
+  readonly name = 'main-thread-idle';
+  readonly #tracker: ProcessTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: ProcessTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('idle', ({ idleMs }) => this.emit('main_thread_idle_ms', idleMs));
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+}
+
+/**
+ * `user_idle_state` (JS-specific): the Idle Detection API, a string like `app_state`: `active`, `idle`, or `locked`
+ * (the screen is locked, which wins over `userState` since the user is away either way). Held, de-duplicated step
+ * trace. OPT-IN: the factory builds this producer only for `captureUserIdle: true`. The SDK never prompts: even then
+ * it exists ONLY in a page whose `idle-detection` permission is already `granted` (Chromium); otherwise no trace is
+ * produced at all. Known limit (owner decision pending, see docs/PROGRESS.md TR5): a
+ * held value cannot be retracted, so after the permission is revoked the last published value keeps being re-recorded
+ * until the producer stops; only the SEED is gated (the armed detector must be live, i.e. the permission re-confirmed).
+ */
+export class UserIdleProducer extends TraceProducerBase {
+  readonly name = 'user-idle';
+  readonly #tracker: ProcessTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: ProcessTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('userIdle', (s) => this.#publish(s));
+    // Held trace: only a FRESH retained state may seed it (an old snapshot would be re-recorded for as long as it lives).
+    const cur = this.#tracker.currentUserIdleFresh();
+    if (cur !== undefined) this.#publish(cur);
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+
+  #publish(s: UserIdleState): void {
+    this.emitIfChanged('user_idle_state', s.screenState === 'locked' ? 'locked' : s.userState);
+  }
+}
+
+/**
  * Injected browser surfaces. Each is optional and an absent one is simply not sampled; pass the LIVE
  * objects (`navigator`, `performance`, `screen`, `window`) — never a spread copy, since a real
  * `navigator` keeps `onLine` / `connection` / `deviceMemory` as accessors on its prototype.
  */
 export interface BrowserTraceEnv extends BatteryEnv {
-  performance?: { readonly memory?: MemoryReading; now?(): number };
+  performance?: { readonly memory?: HeapReading; now?(): number };
   navigator?: {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
@@ -385,6 +453,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
     readonly onLine?: boolean;
     /** NetworkInformation (read by the ConnectivityTracker). */
     readonly connection?: object;
+    /** `navigator.permissions` (the ProcessTracker only ever QUERIES `idle-detection`). */
+    readonly permissions?: NonNullable<ProcessEnv['navigator']>['permissions'];
   };
   screen?: UiEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
@@ -401,6 +471,17 @@ export interface BrowserTraceEnv extends BatteryEnv {
    * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
    */
   sensors?: boolean;
+  /** `window.requestIdleCallback` / `cancelIdleCallback` (bound to that window): drive `main_thread_idle_ms`. */
+  requestIdleCallback?: ProcessEnv['requestIdleCallback'];
+  cancelIdleCallback?: ProcessEnv['cancelIdleCallback'];
+  /** `window.IdleDetector` (Chromium, secure context) and `window.AbortController`: drive `user_idle_state`. */
+  IdleDetector?: ProcessEnv['IdleDetector'];
+  AbortController?: ProcessEnv['AbortController'];
+  /**
+   * Build the `user_idle_state` producer. OFF unless exactly `true` (the launch's `captureUserIdle` option). It also
+   * needs the page's `idle-detection` permission to be ALREADY granted; the SDK never prompts for it.
+   */
+  captureUserIdle?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
   /**
@@ -417,6 +498,25 @@ interface WindowSurfaces {
   screen?: BrowserTraceEnv['screen'];
   requestAnimationFrame?: (callback: (timestamp: number) => void) => number;
   cancelAnimationFrame?: (handle: number) => void;
+  requestIdleCallback?: (callback: (deadline: { timeRemaining(): number }) => void) => number;
+  cancelIdleCallback?: (handle: number) => void;
+  IdleDetector?: ProcessEnv['IdleDetector'];
+  AbortController?: ProcessEnv['AbortController'];
+}
+
+// One bound wrapper per (window, function) pair, so wrapping the same window function twice yields the SAME closure.
+const boundCache = new WeakMap<object, WeakMap<object, unknown>>();
+function boundTo<F extends (...args: never[]) => unknown>(win: object, fn: F): F {
+  let perWin = boundCache.get(win);
+  if (perWin === undefined) {
+    perWin = new WeakMap();
+    boundCache.set(win, perWin);
+  }
+  const cached = perWin.get(fn);
+  if (cached !== undefined) return cached as F;
+  const bound = ((...args: never[]) => fn.apply(win, args)) as F;
+  perWin.set(fn, bound);
+  return bound;
 }
 
 /**
@@ -452,6 +552,16 @@ export function browserTraceEnvFrom(
   const getBattery = nav === undefined ? undefined : read(() => nav.getBattery);
   const raf = read(() => win.requestAnimationFrame);
   const caf = read(() => win.cancelAnimationFrame);
+  const ric = read(() => win.requestIdleCallback);
+  const cic = read(() => win.cancelIdleCallback);
+  const idleDetector = read(() => win.IdleDetector);
+  const abortController = read(() => win.AbortController);
+  // Stable identities: the shared trackers restart their armed stages when a seam changes identity, so wrapping the
+  // SAME window function must hand back the SAME closure on every launch (a no-op relaunch stays a no-op).
+  const raf2 = typeof raf === 'function' ? boundTo(win, raf) : undefined;
+  const caf2 = typeof caf === 'function' ? boundTo(win, caf) : undefined;
+  const ric2 = typeof ric === 'function' ? boundTo(win, ric) : undefined;
+  const cic2 = typeof cic === 'function' ? boundTo(win, cic) : undefined;
   const matchMedia = boundMatchMedia(win, onError);
   return {
     ...(matchMedia !== undefined ? { matchMedia } : {}),
@@ -460,8 +570,12 @@ export function browserTraceEnvFrom(
     ...(screen !== undefined ? { screen } : {}),
     window: source as NonNullable<BrowserTraceEnv['window']>,
     ...(document !== undefined ? { document } : {}),
-    ...(typeof raf === 'function' ? { requestAnimationFrame: (cb) => raf.call(win, cb) } : {}),
-    ...(typeof caf === 'function' ? { cancelAnimationFrame: (h) => caf.call(win, h) } : {}),
+    ...(raf2 !== undefined ? { requestAnimationFrame: raf2 } : {}),
+    ...(caf2 !== undefined ? { cancelAnimationFrame: caf2 } : {}),
+    ...(ric2 !== undefined ? { requestIdleCallback: ric2 } : {}),
+    ...(cic2 !== undefined ? { cancelIdleCallback: cic2 } : {}),
+    ...(typeof idleDetector === 'function' ? { IdleDetector: idleDetector } : {}),
+    ...(typeof abortController === 'function' ? { AbortController: abortController } : {}),
     ...(nav !== undefined && typeof getBattery === 'function'
       ? { getBattery: () => getBattery.call(nav) }
       : {}),
@@ -523,12 +637,12 @@ export function createBrowserSystemTraceProducers(
   env: BrowserTraceEnv = defaultBrowserTraceEnv(),
   onError?: (error: unknown) => void,
 ): TraceProducer[] {
-  const perf = env.performance;
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   if (env.sensors === false) return [battery];
-  // Read ONCE: a hostile `performance.now` getter must report one error, not one per consumer.
-  const clock = safePerformanceNow(env, onError);
+  // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
+  // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.
+  const clock = safePerformanceNow(env, undefined);
   // ONE UI/display tracker per window serves orientation, screen_size and fps (and the events source).
   const ui = uiTrackerFor(
     {
@@ -551,16 +665,34 @@ export function createBrowserSystemTraceProducers(
     },
     onError,
   );
+  // ONE domain tracker per window feeds the heap, main-thread lag/idle and user-idle traces. The live `performance`
+  // object is passed (`performance.memory` is a live getter the tracker reads on every poll).
+  const processTracker = processTrackerFor(
+    {
+      ...(env.window !== undefined ? { window: env.window } : {}),
+      ...(env.performance !== undefined ? { performance: env.performance } : {}),
+      ...(env.document !== undefined ? { document: env.document } : {}),
+      ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
+      ...(env.requestIdleCallback !== undefined
+        ? { requestIdleCallback: env.requestIdleCallback }
+        : {}),
+      ...(env.cancelIdleCallback !== undefined
+        ? { cancelIdleCallback: env.cancelIdleCallback }
+        : {}),
+      ...(nav !== undefined ? { navigator: nav } : {}),
+      ...(env.IdleDetector !== undefined ? { IdleDetector: env.IdleDetector } : {}),
+      ...(env.AbortController !== undefined ? { AbortController: env.AbortController } : {}),
+      ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+    },
+    onError,
+  );
   return [
     battery,
-    new MemoryProducer(
-      new MemoryTracker({
-        // Read through `env.performance` on every poll: `performance.memory` is a live getter.
-        memory: () => perf?.memory,
-        ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
-        ...(onError !== undefined ? { onError } : {}),
-      }),
-    ),
+    new MemoryProducer(processTracker),
+    // OPT-IN, strictly `true`: idle/locked state is behavioural data, and a host page's own `idle-detection` grant is
+    // not consent to record and upload it. Even when opted in, the tracker starts a detector only if the permission
+    // is ALREADY granted (the SDK never prompts).
+    ...(env.captureUserIdle === true ? [new UserIdleProducer(processTracker)] : []),
     new AdvertisedMemoryProducer(() => nav?.deviceMemory),
     new StorageProducer(
       storageTrackerFor(
@@ -579,20 +711,8 @@ export function createBrowserSystemTraceProducers(
       ? [
           new AppStateProducer(env.lifecycle),
           new ScreenSizeProducer(ui),
-          new MainThreadLagProducer(
-            new MainThreadLagTracker(
-              {
-                lifecycle: env.lifecycle,
-                ...(env.document !== undefined ? { document: env.document } : {}),
-                // Only a real clock function is wired; anything else omits the trace quietly (no error).
-                ...(typeof clock === 'function'
-                  ? { now: () => (env.performance as { now(): number }).now() }
-                  : {}),
-                ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
-              },
-              onError,
-            ),
-          ),
+          new MainThreadLagProducer(processTracker),
+          new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),
         ]
       : []),
