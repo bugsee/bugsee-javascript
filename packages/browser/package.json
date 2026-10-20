@@ -33,7 +33,8 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",
     "@bugsee/replay": "workspace:*",
-    "@bugsee/replay-canvas": "workspace:*"
+    "@bugsee/replay-canvas": "workspace:*",
+    "@bugsee/trackers": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",

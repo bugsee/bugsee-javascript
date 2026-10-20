@@ -1,12 +1,13 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
-import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
 import {
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
-  BatteryTracker,
-} from './trackers/battery-tracker';
+  type PowerTracker,
+  powerTrackerFor,
+} from '@bugsee/trackers/browser';
+import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
 import {
   type ConnectionEnv,
   type ConnectionState,
@@ -31,10 +32,12 @@ import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 export class BatteryProducer extends TraceProducerBase {
   readonly name = 'battery';
-  readonly #tracker: BatteryTracker;
+  readonly #tracker: PowerTracker;
   #off: (() => void) | undefined;
+  /** Last value sent per time trace (see #publishTime); cleared on stop. */
+  readonly #lastTime = new Map<string, number>();
 
-  constructor(tracker: BatteryTracker) {
+  constructor(tracker: PowerTracker) {
     super();
     this.#tracker = tracker;
   }
@@ -48,11 +51,31 @@ export class BatteryProducer extends TraceProducerBase {
   protected override onStop(): void {
     this.#off?.();
     this.#off = undefined;
+    this.#lastTime.clear();
   }
 
   #publish(s: BatteryState): void {
-    this.emitIfChanged('battery', Math.round(s.level * 100)); // 0-1 -> 0-100 (Android parity)
-    this.emitIfChanged('charging', chargingToWire(s));
+    // 0-1 -> 0-100 (Android parity); an unusable level (omitted by the tracker) emits no `battery` at all.
+    if (s.level !== undefined) this.emitIfChanged('battery', Math.round(s.level * 100));
+    this.emitIfChanged('charging', chargingToWire({ charging: s.charging, level: s.level ?? 0 }));
+    this.#publishTime('battery_charging_time_s', s.chargingTimeS);
+    this.#publishTime('battery_discharging_time_s', s.dischargingTimeS);
+  }
+
+  // The two time traces are deliberately NOT `emitIfChanged`: that sends `hold: true`, and the provider re-records a
+  // held value every refreshMs with no way to retract it. A time that later disappears from the snapshot (Infinity:
+  // charger unplugged, estimate not yet available) would then be re-recorded forever as a stale, fabricated reading.
+  // So they use plain `emit` (never held, never refreshed) with a change-only guard of our own: a disappearance
+  // simply records nothing and forgets the last value, so the same value reappearing is emitted again.
+  #publishTime(name: string, seconds: number | undefined): void {
+    if (seconds === undefined) {
+      this.#lastTime.delete(name);
+      return;
+    }
+    const rounded = Math.round(seconds);
+    if (this.#lastTime.get(name) === rounded) return;
+    this.#lastTime.set(name, rounded);
+    this.emit(name, rounded);
   }
 }
 
@@ -379,9 +402,7 @@ export function createBrowserSystemTraceProducers(
 ): TraceProducer[] {
   const perf = env.performance;
   const nav = env.navigator;
-  const battery = new BatteryProducer(
-    new BatteryTracker(env.getBattery ? { getBattery: env.getBattery } : {}, onError),
-  );
+  const battery = new BatteryProducer(powerTrackerFor(env, onError));
   if (env.sensors === false) return [battery];
   return [
     battery,
