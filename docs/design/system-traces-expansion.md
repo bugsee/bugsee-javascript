@@ -1,7 +1,7 @@
-# System traces expansion — competitor gap + mobile-parity port plan — DESIGNED, FROZEN (not built)
+# System traces expansion — competitor gap + mobile-parity port plan — DESIGNED, FROZEN (partially implemented; see §14.5/§15.5)
 
 **Status:** DESIGNED 2026-10-14; **FROZEN 2026-10-14 after review round 9** (PR #53); **§14 (2026-10-14) adopts the mobile tracker/producer structure and supersedes the lifecycle-seam mechanism in §5/§9/§12.** No further prose rewrites: remaining
-edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. Nothing here is implemented. Built from five read-only research passes
+edge cases are tracked as the pre-implementation checklist in §12 and are resolved test-first in the owning slice. **Partially implemented since: see §14.5 and §15.5 for what shipped and what is still open.** Built from five read-only research passes
 (competitor web, competitor server/cloud/edge, competitor Electron/desktop, Bugsee Android SDK, Bugsee iOS
 SDK). Every runtime-support claim marked **UNMEASURED** must be probed on the real runtime before the slice
 that depends on it starts (see §7) — on Bun/Deno "the call succeeded" is not evidence the thing happened
@@ -47,7 +47,7 @@ specifies them).
 small (§4). Many Android/iOS traces have **no JS API** and are explicitly not ported.
 
 **Wire-shape clashes (must resolve before reuse).**
-1. `charging`: Android `{state, source}` map; iOS 4-state int; JS boolean (shipped in 0.1.0-beta.3). **Decision needed before any change (ST0):** the Battery API has no `source`, and changing a shipped wire shape is breaking. Options: (a) keep the boolean under its current name and stop calling it a bug; (b) emit Android `{state}` with `source` OMITTED (never invented) and `state` mapped via a table written here (`charging`/`full`/`unplugged`, verified against Android `TracePowerStatus` and the viewer); (c) keep the boolean and accept the viewer gap. **Recommendation: (a)/(c) — do not touch the shipped boolean until Q5 shows what the viewer does with it.**
+1. `charging`: Android `{state, source}` map; iOS 4-state int; JS boolean (shipped in 0.1.0-beta.3). **Decision needed before any change (ST0):** the Battery API has no `source`, and changing a shipped wire shape is breaking. Options: (a) keep the boolean under its current name and stop calling it a bug; (b) emit Android `{state}` with `source` OMITTED (never invented) and `state` mapped via a table written here (`charging`/`full`/`unplugged`, verified against Android `TracePowerStatus` and the viewer); (c) keep the boolean and accept the viewer gap. **Recommendation: (a)/(c) — do not touch the shipped boolean until Q5 shows what the viewer does with it.** *(Superseded: §13.4 decides to emit `{state}` and §14.5 records it as shipped.)*
 2. `cpu`: iOS = percent summed over threads (can exceed 100); JS `cpu_usage_process` = per-core-normalized.
 3. `connection` (JS) vs `network` (iOS) vs Android `connection` — JS already follows Android's vocabulary
    (`web-tier-wire-alignment`); keep.
@@ -260,7 +260,7 @@ Compute Pressure, battery events); sampler tick cost with P1 enabled through the
 
 | Slice | Content | Depends on |
 |---|---|---|
-| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` decision (§3.1; default = leave as is) + **sampler `{start,stop,sample}` lifecycle seam** | — |
+| ST0 | Wire-shape decisions Q2/Q3/Q5 + `charging` decision (§3.1; default = leave as is — *superseded by §13.4/§14.5*) + **sampler `{start,stop,sample}` lifecycle seam** *(superseded by §14)* | — |
 | ST1 | Node/Deno: `v8_heap_*`, ceiling-based `ram_js_heap_*`, `process_memory_limit` (Linux probe first), `process_uptime_s`, optional `ram_system_available` (Node ≥20.13, feature-detected) | probes 2, 4 + Linux |
 | ST2 | Node: GC observer (`gc_*`) with per-runtime gate | probe 1 |
 | ST3 | Node: `disk_mem_*` (+ option) | probe 3 |
