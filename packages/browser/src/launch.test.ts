@@ -1460,6 +1460,60 @@ describe('launch', () => {
       }
     });
 
+    describe('user_idle_state is opt-in (captureUserIdle) and needs an already-granted permission', () => {
+      const launchIdle = async (over: Partial<BugseeLaunchOptions>, permission: string) => {
+        stubSensors();
+        const query = vi.fn(() => Promise.resolve({ state: permission }));
+        vi.stubGlobal('navigator', { onLine: true, permissions: { query } });
+        const w = fakeWindow();
+        class FakeDetector {
+          userState = 'idle';
+          screenState = 'unlocked';
+          start = () => Promise.resolve(undefined);
+          addEventListener = () => {};
+          removeEventListener = () => {};
+        }
+        Object.assign(w.win, {
+          IdleDetector: FakeDetector,
+          AbortController: class {
+            signal = {};
+            abort() {}
+          },
+        });
+        try {
+          const store = memStore();
+          await launchTracked('tok', noSampler({ window: w.win, captureStore: store, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          const rows = new Map(
+            ((await drain(store, 'traces.system')) ?? []).map((e) => {
+              const d = e.data as { name: string; value: unknown };
+              return [d.name, d.value];
+            }),
+          );
+          return { rows, query };
+        } finally {
+          resetProcessTracker({ window: w.win });
+        }
+      };
+
+      it('default: no user_idle_state and the permission is never even queried, though it is granted', async () => {
+        const { rows, query } = await launchIdle({}, 'granted');
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+      });
+
+      it('captureUserIdle:true + permission already granted: user_idle_state is captured', async () => {
+        const { rows } = await launchIdle({ captureUserIdle: true }, 'granted');
+        expect(rows.get('user_idle_state')).toBe('idle');
+      });
+
+      it('captureUserIdle:true but permission not granted: no trace (the SDK never prompts)', async () => {
+        const { rows, query } = await launchIdle({ captureUserIdle: true }, 'prompt');
+        expect(query).toHaveBeenCalled();
+        expect(rows.has('user_idle_state')).toBe(false);
+      });
+    });
+
     it('a rejected storage.estimate() reaches options.onError and never fails launch', async () => {
       stubSensors();
       const boom = new Error('estimate refused');

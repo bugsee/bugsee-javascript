@@ -405,8 +405,9 @@ export class MainThreadIdleProducer extends TraceProducerBase {
 /**
  * `user_idle_state` (JS-specific): the Idle Detection API, a string like `app_state`: `active`, `idle`, or `locked`
  * (the screen is locked, which wins over `userState` since the user is away either way). Held, de-duplicated step
- * trace. The SDK never prompts: this exists ONLY in a page whose `idle-detection` permission is already `granted`
- * (Chromium); otherwise no trace is produced at all. Known limit (owner decision pending, see docs/PROGRESS.md TR5): a
+ * trace. OPT-IN: the factory builds this producer only for `captureUserIdle: true`. The SDK never prompts: even then
+ * it exists ONLY in a page whose `idle-detection` permission is already `granted` (Chromium); otherwise no trace is
+ * produced at all. Known limit (owner decision pending, see docs/PROGRESS.md TR5): a
  * held value cannot be retracted, so after the permission is revoked the last published value keeps being re-recorded
  * until the producer stops; only the SEED is gated (the armed detector must be live, i.e. the permission re-confirmed).
  */
@@ -476,6 +477,11 @@ export interface BrowserTraceEnv extends BatteryEnv {
   /** `window.IdleDetector` (Chromium, secure context) and `window.AbortController`: drive `user_idle_state`. */
   IdleDetector?: ProcessEnv['IdleDetector'];
   AbortController?: ProcessEnv['AbortController'];
+  /**
+   * Build the `user_idle_state` producer. OFF unless exactly `true` (the launch's `captureUserIdle` option). It also
+   * needs the page's `idle-detection` permission to be ALREADY granted; the SDK never prompts for it.
+   */
+  captureUserIdle?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
   /**
@@ -683,7 +689,10 @@ export function createBrowserSystemTraceProducers(
   return [
     battery,
     new MemoryProducer(processTracker),
-    new UserIdleProducer(processTracker),
+    // OPT-IN, strictly `true`: idle/locked state is behavioural data, and a host page's own `idle-detection` grant is
+    // not consent to record and upload it. Even when opted in, the tracker starts a detector only if the permission
+    // is ALREADY granted (the SDK never prompts).
+    ...(env.captureUserIdle === true ? [new UserIdleProducer(processTracker)] : []),
     new AdvertisedMemoryProducer(() => nav?.deviceMemory),
     new StorageProducer(
       storageTrackerFor(

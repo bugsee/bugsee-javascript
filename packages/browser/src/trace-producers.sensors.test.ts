@@ -297,7 +297,6 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
     expect(producers.map((p) => p.name)).toEqual([
       'battery',
       'memory',
-      'user-idle',
       'ram-system-advertised',
       'storage',
       'connection',

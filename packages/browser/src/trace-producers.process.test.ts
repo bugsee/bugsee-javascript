@@ -231,14 +231,22 @@ describe('MainThreadIdleProducer (main_thread_idle_ms)', () => {
 });
 
 describe('createBrowserSystemTraceProducers: process traces', () => {
-  it('builds main-thread-idle with a lifecycle (like lag/fps) and user-idle always; none under sensors:false', () => {
+  it('builds main-thread-idle with a lifecycle (like lag/fps); user-idle ONLY on opt-in; none under sensors:false', () => {
     const lifecycle = new ApplicationTracker({ window: mkTarget() });
     const names = (e: Parameters<typeof createBrowserSystemTraceProducers>[0]) =>
       createBrowserSystemTraceProducers(e).map((p) => p.name);
     expect(names({ lifecycle })).toEqual(
-      expect.arrayContaining(['main-thread-lag', 'main-thread-idle', 'user-idle']),
+      expect.arrayContaining(['main-thread-lag', 'main-thread-idle']),
     );
-    expect(names({})).toEqual(expect.arrayContaining(['user-idle']));
+    // user_idle_state is behavioural data: OFF unless the caller opts in with exactly `true` (the SDK never
+    // prompts, and a host page's own idle-detection grant is not consent to record it)
+    expect(names({ lifecycle })).not.toContain('user-idle');
+    expect(names({})).not.toContain('user-idle');
+    expect(names({ captureUserIdle: false })).not.toContain('user-idle');
+    expect(names({ captureUserIdle: 'true' as never })).not.toContain('user-idle');
+    expect(names({ captureUserIdle: true })).toContain('user-idle');
+    expect(names({ lifecycle, captureUserIdle: true })).toContain('user-idle');
+    expect(names({ lifecycle, captureUserIdle: true, sensors: false })).toEqual(['battery']);
     expect(names({})).not.toEqual(expect.arrayContaining(['main-thread-idle']));
     expect(names({ lifecycle, sensors: false })).toEqual(['battery']);
   });
@@ -352,6 +360,7 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
         ...browserTraceEnvFrom(win, undefined),
         window: win,
         lifecycle,
+        captureUserIdle: true,
       });
       const names = ps.map((p) => p.name);
       expect(new Set(names).size).toBe(names.length); // no producer twice (e.g. a second main-thread-lag)
@@ -396,6 +405,7 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
         ...browserTraceEnvFrom(win, undefined),
         window: win,
         lifecycle,
+        captureUserIdle: true,
         navigator: { permissions: { query: () => Promise.resolve({ state: 'granted' }) } },
         IdleDetector: FakeDetector as never,
         AbortController: class {
@@ -423,5 +433,60 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
     } finally {
       resetProcessTracker({ window: win });
     }
+  });
+});
+
+describe('user_idle_state opt-in x permission (end to end through the factory)', () => {
+  const run = async (env: { captureUserIdle?: boolean }, state: string) => {
+    const win = Object.assign(mkTarget(), { performance: { now: () => 1 } });
+    const detector = mkDetector();
+    class FakeDetector {
+      constructor() {
+        // biome-ignore lint/correctness/noConstructorReturn: a test double hands the shared fake detector back from `new`.
+        return detector as unknown as FakeDetector;
+      }
+    }
+    const query = vi.fn(() => Promise.resolve({ state }));
+    try {
+      const ps = createBrowserSystemTraceProducers({
+        ...browserTraceEnvFrom(win, undefined),
+        window: win,
+        ...env,
+        navigator: { permissions: { query } },
+        IdleDetector: FakeDetector as never,
+        AbortController: class {
+          signal = {};
+          abort() {}
+        },
+      });
+      const producer = ps.find((p) => p.name === 'user-idle');
+      const out = producer === undefined ? [] : start(producer);
+      await flush();
+      return { out, query, hasProducer: producer !== undefined };
+    } finally {
+      resetProcessTracker({ window: win });
+    }
+  };
+
+  it('off by default: no producer, no permission query, no trace, even with the permission granted', async () => {
+    const r = await run({}, 'granted');
+    expect(r.hasProducer).toBe(false);
+    expect(r.query).not.toHaveBeenCalled();
+    expect(r.out).toEqual([]);
+  });
+
+  it('opted in and already granted: the trace is produced', async () => {
+    const r = await run({ captureUserIdle: true }, 'granted');
+    expect(r.out.map((x) => x.value)).toEqual(['active']);
+  });
+
+  it.each([
+    'prompt',
+    'denied',
+  ])('opted in but permission %s: no trace (the SDK never prompts)', async (state) => {
+    const r = await run({ captureUserIdle: true }, state);
+    expect(r.hasProducer).toBe(true);
+    expect(r.query).toHaveBeenCalled();
+    expect(r.out).toEqual([]);
   });
 });

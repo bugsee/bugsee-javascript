@@ -1109,6 +1109,81 @@ describe('launch (webview)', () => {
       }
     });
 
+    describe('user_idle_state is opt-in (captureUserIdle) and needs an already-granted permission', () => {
+      const idleRows = async (over: Partial<BugseeWebViewLaunchOptions>, permission: string) => {
+        stubSensors();
+        const query = vi.fn(() => Promise.resolve({ state: permission }));
+        vi.stubGlobal('navigator', { onLine: true, permissions: { query } });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          class FakeDetector {
+            userState = 'idle';
+            screenState = 'unlocked';
+            start = () => Promise.resolve(undefined);
+            addEventListener = () => {};
+            removeEventListener = () => {};
+          }
+          Object.assign(w.win, {
+            IdleDetector: FakeDetector,
+            AbortController: class {
+              signal = {};
+              abort() {}
+            },
+          });
+          track('tok', baseOptions({ global: fake.global, window: w.win, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          const rows = new Map(
+            entriesOfType(fake.msgs(), 'traces.system').map((e) => {
+              const d = (e.p as unknown as { data: { name: string; value: unknown } }).data;
+              return [d.name, d.value];
+            }),
+          );
+          return { rows, query, w };
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      };
+
+      it('default: no user_idle_state and no permission query, though granted', async () => {
+        const { rows, query } = await idleRows({}, 'granted');
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+      });
+
+      it('captureUserIdle:true + already granted: user_idle_state is streamed', async () => {
+        const { rows } = await idleRows({ captureUserIdle: true }, 'granted');
+        expect(rows.get('user_idle_state')).toBe('idle');
+      });
+
+      it('captureUserIdle:true but not granted: no trace (never prompts)', async () => {
+        const { rows, query } = await idleRows({ captureUserIdle: true }, 'prompt');
+        expect(query).toHaveBeenCalled();
+        expect(rows.has('user_idle_state')).toBe(false);
+      });
+
+      it.each([
+        'true',
+        1,
+        0,
+        '',
+        null,
+      ])('captureUserIdle=%j (invalid) stays OFF and reports', async (bad) => {
+        const onError = vi.fn();
+        const { rows, query } = await idleRows(
+          { captureUserIdle: bad as never, onError },
+          'granted',
+        );
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+        expect(
+          onError.mock.calls.filter((c) =>
+            String((c[0] as Error).message).startsWith('captureUserIdle must be a boolean'),
+          ),
+        ).toHaveLength(1);
+      });
+    });
+
     it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
       stubSensors();
       try {
