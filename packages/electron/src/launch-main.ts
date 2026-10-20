@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { type AppIdentity, BlackoutToken, CaptureStoreToken } from '@bugsee/core';
+import { type AppIdentity, BlackoutToken, CaptureStoreToken, getCarrierClient } from '@bugsee/core';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
@@ -100,7 +100,9 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
    * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
    * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
    * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
-   * `'complete'` for the GL strings.
+   * `'complete'` for the GL strings. A usable result is kept for the life of the `app` object; a later launch (after
+   * `client.stop()`) asks again when the earlier read rejected or returned nothing usable, or when it asks for a
+   * different type (a failed re-ask keeps the earlier usable value).
    */
   gpuInfoType?: GpuInfoType;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
@@ -197,9 +199,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   //  - the `app_metrics` trace (a producer subscribed to its `appMetrics` stage);
   //  - the `child_process_gone` system event (the lazy mux subscribes to its `childProcessGone` stage);
   //  - `environment.hardware.gpu` (its once-only `getGPUInfo` read, below).
-  // Without an `app` there is nothing to read, so there is no tracker and none of it is wired.
+  // Without an `app` there is nothing to read, so there is no tracker and none of it is wired. The SAME is true of a
+  // REPEAT call: `launchCore` returns the running client untouched, but building the tracker (or the node producers)
+  // first would rebind the shared trackers' onError/scheduler and tear down the live launch's timer and listener. So a
+  // repeat is detected up front (the carrier already holds a client, exactly `launchCore`'s own test) and touches
+  // nothing.
+  const repeat = getCarrierClient(nodeOptions.carrier) !== undefined;
   const tracker =
-    app !== undefined
+    app !== undefined && !repeat
       ? electronProcessTrackerFor(
           {
             app,
@@ -245,9 +252,12 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // whatever non-empty string fields a caller-supplied `hardwareExtras` gives (so a caller that supplies only
   // `gl_version` keeps the tracker's vendor/renderer). A caller gpu that cleans up to nothing, or a caller that
   // throws (reported), leaves the tracker's GPU untouched.
-  // `hardwareExtras` is a KEPT relaunch option, so a node/umbrella `relaunch()` in an Electron main keeps THIS
-  // wrapper (closing over the tracker): it keeps serving the settled GPU after a relaunch (stop() does not clear
-  // it), but a GPU that had not yet resolved before the relaunch is not re-requested.
+  // RELAUNCH: `@bugsee/node`/the umbrella do export `relaunch()`, and it is not Electron-aware. `hardwareExtras` is a KEPT
+  // relaunch option, so a relaunch keeps THIS wrapper (closing over the tracker) and `hardware.gpu` keeps being served
+  // (stop() does not clear it; a GPU that had not yet resolved is not re-requested). `systemTraceProducers` and
+  // `wrapSystemEventsSource` are RESET options, so a relaunched client has the plain node producers and events source:
+  // `app_metrics` and `child_process_gone` stop until `launchMain` is called again (the carrier client must be cleared
+  // by a stop for that, as for any launch).
   const callerExtras = nodeOptions.hardwareExtras;
   const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);
   nodeOptions.hardwareExtras = () => {
@@ -266,7 +276,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
-  // returns the already-wired client untouched, so all Electron wiring hangs off the first-launch internals.
+  // returns the already-wired client untouched (nothing above bound the shared trackers for it, see `repeat`), so all
+  // Electron wiring hangs off the first-launch internals.
   if (internals === undefined) {
     return client;
   }

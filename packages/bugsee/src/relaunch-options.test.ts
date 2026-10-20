@@ -109,8 +109,8 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *  - `lifecycleEventsListener` is held on the carrier slot (`setProcessLifecycleEventsListener`), so it
  *    survives a relaunch without being re-passed;
  *  - the Electron handles (`app`, `ipcMain`, `crashReporter`, `gpuInfoType`, `bridge`, `post`, `launch`, `onSessionId`,
- *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (Electron has no
- *    `relaunch()`), and keeping them would pin Electron objects on `globalThis` for nothing;
+ *    `nativeCrash`, `video`) belong to compositions that `relaunchWith` never re-runs (it re-runs the node
+ *    launch, not `launchMain`), and keeping them would pin Electron objects on `globalThis` for nothing;
  *  - `appToken` (the Cloudflare and Nuxt adapters accept it inside their options object) is the token itself,
  *    which `setCarrierLastLaunch` stores separately as `lastLaunch.appToken`; it is never part of the kept options;
  *  - `onSpanProcessor` and `setupOtelProvider` (Next.js server) wire the Bugsee span processor into an OTel
@@ -127,8 +127,10 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
  *    relaunch therefore builds the runtime's fresh default set;
  *  - `wrapSystemEventsSource` (node, set by `@bugsee/electron`'s `launchMain`) is a platform composition seam whose
- *    wrapper is bound to the launch's tracker and reporter, and Electron has no `relaunch()`: like
- *    `systemTraceProducers` it is not re-applied, so a relaunch builds the plain node events source.
+ *    wrapper is bound to the launch's tracker and reporter. A node/umbrella `relaunch()` in an Electron main re-runs
+ *    the NODE launch, so like `systemTraceProducers` it is not re-applied: the relaunched client has the plain node
+ *    producers and events source (no `app_metrics`/`child_process_gone`), while the kept `hardwareExtras` keeps
+ *    serving `hardware.gpu`.
  */
 const RESET_OPTIONS: readonly string[] = [
   'app',

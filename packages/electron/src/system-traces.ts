@@ -16,8 +16,14 @@ import type { AppProcessMetric, ElectronProcessTracker } from '@bugsee/trackers/
 //
 // `type` is Electron's process type verbatim (`Browser`, `Tab`, `GPU`, `Utility`, …). Sizes are integer binary MB
 // (`bytesToMegabytes`, like `disk_mem_*`/`storage_estimate`; Electron reports KiB). `cpu_percent` is Electron's
-// `percentCPUUsage` (percent of one core since the previous read). A key is omitted when Electron did not supply it.
+// `percentCPUUsage`: the share of the WHOLE machine (Electron divides by the processor count), 0-100, since the
+// previous read, rounded to at most 2 decimals. A key is omitted when Electron did not supply it, and `cpu_percent` is
+// also omitted for a process's first sighting (Chromium reports 0 on the first CPU call per process; see the tracker).
+// The viewer's support for this trace (Q5) is UNCONFIRMED; flat per-type totals are the alternative shape.
 // Emitted every tick and NOT held: a failing read leaves a gap rather than a frozen line.
+
+/** At most two decimals: Electron's float noise is not information. */
+const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 const mb = (bytes: number | undefined): number | undefined =>
   bytes === undefined ? undefined : bytesToMegabytes(bytes);
@@ -29,7 +35,7 @@ function wireProcess(p: AppProcessMetric): Record<string, unknown> {
   return {
     type: p.type,
     pid: p.pid,
-    ...(p.cpuPct !== undefined ? { cpu_percent: p.cpuPct } : {}),
+    ...(p.cpuPct !== undefined ? { cpu_percent: round2(p.cpuPct) } : {}),
     ...(workingSet !== undefined ? { working_set_mb: workingSet } : {}),
     ...(peak !== undefined ? { peak_working_set_mb: peak } : {}),
     ...(priv !== undefined ? { private_mb: priv } : {}),

@@ -913,7 +913,7 @@ describe('launchMain — Electron process tracker composition (TR9, part 1)', ()
   });
 
   it('passes node producers PLUS app_metrics, with no producer or trace name twice', () => {
-    const { app } = appWith();
+    const { app } = appWith(() => [metric]);
     const f = fakeLaunch();
     const scheduler = fakeScheduler();
     launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app, scheduler });
@@ -923,15 +923,23 @@ describe('launchMain — Electron process tracker composition (TR9, part 1)', ()
     expect(names).toContain('event-loop-lag');
     expect(names).toContain('electron-app-metrics');
     expect(new Set(names).size).toBe(names.length);
-    // trace names: start every producer and collect what it emits at start (the node set emits baselines)
-    const { emitted, sink } = sinkOf();
-    for (const p of producers) p.start(sink);
-    expect(emitted.map((e) => e.name)).not.toContain('app_metrics'); // no start sample
-    scheduler.tick(); // the node tracker honours the launch scheduler too (cpu is tick-driven, never a start sample)
-    for (const p of producers) p.stop();
-    const traceNames = emitted.map((e) => e.name);
-    expect(traceNames).toContain('process_memory_rss');
-    expect(traceNames).toContain('cpu_usage_process');
+    // Which TRACE names does each producer emit? Start them one at a time so the owner of every name is known.
+    const owners = new Map<string, string[]>();
+    for (const p of producers) {
+      const { emitted, sink } = sinkOf();
+      p.start(sink);
+      scheduler.tick(); // every producer's tracker is tick-driven on the launch scheduler
+      scheduler.tick();
+      p.stop();
+      for (const name of new Set(emitted.map((e) => e.name))) {
+        owners.set(name, [...(owners.get(name) ?? []), p.name]);
+      }
+    }
+    expect(owners.get('app_metrics')).toEqual(['electron-app-metrics']); // really emitted (after the first tick)
+    expect(owners.get('process_memory_rss')).toEqual(['process-memory']);
+    expect(owners.get('cpu_usage_process')).toEqual(['cpu']);
+    const twice = [...owners].filter(([, by]) => by.length > 1).map(([name]) => name);
+    expect(twice).toEqual([]);
   });
 
   it('a caller-supplied systemTraceProducers is kept and the Electron producer is ADDED to it', () => {

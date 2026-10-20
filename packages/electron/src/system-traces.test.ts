@@ -93,6 +93,20 @@ describe('createElectronSystemTraceProducers', () => {
     tracker.reset();
   });
 
+  it('rounds cpu_percent to at most 2 decimals (and keeps a true 0)', () => {
+    const { producers, scheduler, emitted, sink, tracker } = setup(() => [
+      metric({ cpu: { percentCPUUsage: 12.3456 } }),
+      metric({ pid: 2, cpu: { percentCPUUsage: 0 } }),
+      metric({ pid: 3, cpu: { percentCPUUsage: 0.004 } }),
+    ]);
+    producers[0]?.start(sink);
+    scheduler.tick();
+    const procs = (emitted[0]?.value as { processes: Array<{ cpu_percent: number }> }).processes;
+    expect(procs.map((p) => p.cpu_percent)).toEqual([12.35, 0, 0]);
+    producers[0]?.stop();
+    tracker.reset();
+  });
+
   it('stop() releases the tracker stage (timer cleared) and a late emit writes nothing', () => {
     const { producers, scheduler, emitted, sink, tracker } = setup(() => [metric()]);
     producers[0]?.start(sink);

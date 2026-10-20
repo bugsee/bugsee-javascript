@@ -142,6 +142,46 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
     tracker.reset();
   });
 
+  it('a throwing inner release AND a throwing reporter still release child-process-gone (and an async reporter is silent)', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      for (const sink of [
+        () => {
+          throw new Error('sink');
+        },
+        async () => {
+          throw new Error('async sink');
+        },
+      ]) {
+        const listeners: Array<(event: unknown, details: unknown) => void> = [];
+        const app = {
+          on: (_e: string, l: (event: unknown, details: unknown) => void) => {
+            listeners.push(l);
+          },
+          removeListener: vi.fn(() => {
+            listeners.length = 0;
+          }),
+        };
+        const tracker = new ElectronProcessTracker({ app }, () => {});
+        const inner = new FakeInner();
+        const mux = createElectronSystemEventsSource(inner, tracker, sink);
+        const off = mux.on('event', vi.fn());
+        vi.spyOn(inner, 'off').mockImplementation(() => {
+          throw new Error('inner off');
+        });
+        expect(() => off()).not.toThrow();
+        expect(app.removeListener).toHaveBeenCalledTimes(1);
+        expect(listeners).toHaveLength(0);
+        tracker.reset();
+      }
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('a throwing subscriber cannot break the other side (isolated + reported)', () => {
     const { mux, listeners, onError, tracker } = setup();
     const ok = vi.fn();

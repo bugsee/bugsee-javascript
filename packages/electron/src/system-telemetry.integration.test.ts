@@ -101,16 +101,18 @@ const metric = {
 
 function launchWith(
   over: {
-    app: ReturnType<typeof fakeApp>['app'];
+    app?: ReturnType<typeof fakeApp>['app'];
     captureSystemEvents?: boolean;
     scheduler?: ReturnType<typeof manualScheduler>;
+    carrier?: object;
+    onError?: (error: unknown) => void;
   },
   fp = fakeProcess(),
 ) {
   const { fn: transport, puts } = recordingTransport();
   const client = launchMain('tok', {
     ipcMain: { on: () => {}, removeListener: () => {} },
-    app: over.app,
+    ...(over.app !== undefined ? { app: over.app } : {}),
     transport,
     captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
     captureNetwork: false,
@@ -118,8 +120,8 @@ function launchWith(
     detectHangs: false,
     process: fp.proc,
     systemProbe: realSystemProbe,
-    onError: vi.fn(),
-    carrier: {},
+    onError: over.onError ?? vi.fn(),
+    carrier: over.carrier ?? {},
     ...(over.captureSystemEvents !== undefined
       ? { captureSystemEvents: over.captureSystemEvents }
       : {}),
@@ -201,9 +203,41 @@ describe('Electron main telemetry -> real node launch -> assembled report', () =
     const { client, fp } = launchWith({ app, captureSystemEvents: false });
     expect(fp.count('warning')).toBe(0);
     expect(fp.count('beforeExit')).toBe(0);
+    // launch itself keeps a SIGTERM hook for flush-on-signal; the node EVENTS source must add none on top of it
+    const bare = launchWith({ captureSystemEvents: false });
+    expect(fp.count('SIGTERM')).toBe(bare.fp.count('SIGTERM'));
+    expect(fp.count('SIGINT')).toBe(bare.fp.count('SIGINT'));
+    await bare.client.stop();
     expect(app.on).not.toHaveBeenCalledWith('child-process-gone', expect.anything());
     expect(gone).toHaveLength(0);
     await client.stop();
+  });
+
+  it("a REPEAT launchMain leaves the running launch's onError/scheduler/listener untouched", async () => {
+    const carrier = {};
+    const firstScheduler = manualScheduler();
+    const firstOnError = vi.fn();
+    let broken = false;
+    const { app, gone } = fakeApp(() => {
+      if (broken) throw new Error('metrics');
+      return [metric];
+    });
+    const first = launchWith({ app, scheduler: firstScheduler, onError: firstOnError, carrier });
+    const armed = firstScheduler.armed;
+    const listeners = gone.length;
+    const secondScheduler = manualScheduler();
+    const secondOnError = vi.fn();
+    const second = launchWith({ app, scheduler: secondScheduler, onError: secondOnError, carrier });
+    expect(second.client).toBe(first.client);
+    // the repeat touched nothing: same timers on the FIRST scheduler, none on the second, same app listener
+    expect(firstScheduler.armed).toBe(armed);
+    expect(secondScheduler.armed).toBe(0);
+    expect(gone).toHaveLength(listeners);
+    broken = true;
+    firstScheduler.tick();
+    expect(firstOnError).toHaveBeenCalledWith(expect.objectContaining({ message: 'metrics' }));
+    expect(secondOnError).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'metrics' }));
+    await first.client.stop();
   });
 
   it('client.stop() releases the node handlers, the child-process-gone listener and the metrics timer', async () => {

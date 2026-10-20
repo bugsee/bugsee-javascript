@@ -1,6 +1,7 @@
 import type { SystemEvent, SystemEventSource } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import type { ElectronProcessTracker } from '@bugsee/trackers/electron';
+import { reportGuarded } from '@bugsee/util';
 
 // Electron-main `events.system` source: a LAZY MUX over the node events source plus the ElectronProcessTracker's
 // `childProcessGone` stage. A second `events.system` provider is rejected (unique provider name), so `launchMain` hands
@@ -15,7 +16,8 @@ import type { ElectronProcessTracker } from '@bugsee/trackers/electron';
 // default signal termination) and keep a `child-process-gone` listener with nowhere to go, surviving `client.stop()`.
 //
 // The mux forwards the inner events untouched and NEVER emits `process_started` itself (the inner source already does).
-// `child_process_gone` params are `{ type, reason, exitCode?, name? }` (Electron's strings verbatim; absent keys omitted).
+// `child_process_gone` params are `{ type, reason, exitCode?, name? }` (Electron's strings verbatim; absent keys omitted;
+// `exitCode` stays camelCase like the other multi-word event params, e.g. the browser's `previousLanguage`).
 
 type Events = { event: SystemEvent };
 
@@ -47,7 +49,7 @@ class ElectronSystemEventsSource extends InterceptorBase<Events> {
       try {
         off?.();
       } catch (error) {
-        this.onError?.(error);
+        reportGuarded(this.onError, error); // a throwing reporter must not skip the other release
       }
     }
   }

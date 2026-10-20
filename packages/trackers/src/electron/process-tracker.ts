@@ -9,7 +9,7 @@ import { type ElectronGpu, mapGpuInfo } from './gpu-info';
 //
 //   appMetrics       app.getAppMetrics() polled on one timer     -> { processes: [{ type, pid, cpuPct?, workingSetBytes?, ... }] }
 //   childProcessGone app.on('child-process-gone')                -> { type, reason, exitCode?, name? }
-//   gpu              app.getGPUInfo(type), ONCE per tracker      -> { vendor?, renderer?, gl_version?, gl_extensions? }
+//   gpu              app.getGPUInfo(type), kept once usable      -> { vendor?, renderer?, gl_version?, gl_extensions? }
 //
 // `render-process-gone` is deliberately NOT here: it is an INCIDENT path (a renderer that died is reported, with its
 // capture and minidump, by `@bugsee/electron`'s renderer-gone handler) and shares no behaviour with these stages.
@@ -18,11 +18,15 @@ import { type ElectronGpu, mapGpuInfo } from './gpu-info';
 // listener; `childProcessGone` attaches its single `app` listener only while it has a listener and removes THAT
 // listener when the last one leaves (a tracker with no subscriber leaves no handler on the host's `app`). `gpu` is
 // not listener-driven: it is a one-shot read requested with {@link ElectronProcessTracker.requestGpuInfo} and its
-// result is served through `current('gpu')` (and the `gpu` stage fires once when it settles).
+// result is served through `current('gpu')` (and the `gpu` stage fires each time a usable result settles).
 //
 // ABSENCE IS NEVER ZERO / NO FABRICATED START SAMPLES. `percentCPUUsage` is "since the previous getAppMetrics call"
-// (UNVERIFIED against a real Electron: the documented behaviour is that the first call has no window and reports 0),
-// so arming makes one PRIMING read whose result is discarded and the first emission is the first tick. A field Electron
+// and Chromium returns 0 on the FIRST CPU-usage call per process (Electron keeps one metrics object per child
+// process), so a CPU figure exists only for a pid the PREVIOUS read already listed: arming makes one PRIMING read
+// whose values are discarded (its pids are remembered), the first emission is the first tick, and a process that
+// appears later (a new renderer, a restarted GPU/utility process: same type, new pid) reports no `cpuPct` on its first
+// tick. Where Electron reports `cpu.cumulativeCPUUsage`, a process without it has no `cpuPct` either (Electron sends 0
+// "for compatibility" when it cannot read CPU). A field Electron
 // did not supply (or supplied as a non-finite/negative number) is omitted from its process entry, a process with no
 // usable metric is dropped, an empty result emits nothing, and a rejected/throwing/hostile GPU read leaves the GPU
 // absent. `appMetrics` is a WINDOWED stage (a live read would consume the CPU window), so `current('appMetrics')`
@@ -30,8 +34,8 @@ import { type ElectronGpu, mapGpuInfo } from './gpu-info';
 //
 // SINGLETON per key object (`electronProcessTrackerFor`: the `app` object by default). SEAMS MERGE, NEVER DROP: a later
 // launch that omits `scheduler`/`onError` keeps the previous launch's (it can replace a seam, never shed one).
-// RETENTION rule — what survives a stage's last unsubscribe: ONLY the merged seams and the once-only GPU result
-// (static hardware description that a late report still needs; it is never re-requested). Everything windowed starts
+// RETENTION rule — what survives a stage's last unsubscribe: ONLY the merged seams and a usable GPU result
+// (static hardware description that a late report still needs; re-requested only for a different type or when nothing usable settled). Everything windowed starts
 // FRESH on the next subscription: the priming read is repeated and the last sample is dropped. `reset()` drops
 // everything including the GPU result. Every timer callback is guarded by the run that armed it, so a timer whose
 // clear failed can never emit; a source that fails to arm is reported and left unarmed (retried on the next listener
@@ -56,7 +60,7 @@ export interface AppProcessMetric {
   /** Electron's process type, verbatim (`Browser`, `Tab`, `GPU`, `Utility`, …). */
   type: string;
   pid: number;
-  /** Percent of one core used since the previous read, as Electron reports it. */
+  /** Share of the WHOLE machine used since the previous read, 0-100, as Electron reports it (it divides by the processor count). */
   cpuPct?: number;
   workingSetBytes?: number;
   peakWorkingSetBytes?: number;
@@ -120,12 +124,30 @@ const kibToBytes = (value: unknown): number | undefined => {
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
 
-/** Maps `app.getAppMetrics()` defensively. Undefined when nothing usable came back. */
-function mapAppMetrics(raw: unknown): { processes: AppProcessMetric[] } | undefined {
-  if (!Array.isArray(raw)) return undefined;
+const hasCumulative = (p: Record<string, unknown>): boolean =>
+  finiteNonNegative(record(p.cpu)?.cumulativeCPUUsage) !== undefined;
+
+interface MappedMetrics {
+  /** Undefined when nothing usable came back. */
+  metrics: { processes: AppProcessMetric[] } | undefined;
+  /** Every pid this read listed (usable or not): the next read's "already seen" set. */
+  pids: Set<number>;
+}
+
+/**
+ * Maps `app.getAppMetrics()` defensively. `cpuPct` is only reported for a pid that `seen` already listed in the
+ * PREVIOUS read: Chromium returns 0 on the first CPU-usage call per process (and Electron keeps one metrics object per
+ * child process), so a process that appeared since (a new renderer, a restarted GPU/utility process) has no true CPU
+ * figure yet. On an Electron that reports `cpu.cumulativeCPUUsage` for some processes, a process lacking it also has no
+ * `cpuPct` (Electron sends 0 "for compatibility" when it cannot read CPU).
+ */
+function mapAppMetrics(raw: unknown, seen: ReadonlySet<number>): MappedMetrics {
+  const pids = new Set<number>();
+  if (!Array.isArray(raw)) return { metrics: undefined, pids };
+  const entries = raw.map(record);
+  const reportsCumulative = entries.some((p) => p !== undefined && hasCumulative(p));
   const processes: AppProcessMetric[] = [];
-  for (const entry of raw) {
-    const p = record(entry);
+  for (const p of entries) {
     if (p === undefined) continue;
     const { type, pid } = p;
     if (
@@ -136,7 +158,11 @@ function mapAppMetrics(raw: unknown): { processes: AppProcessMetric[] } | undefi
     ) {
       continue;
     }
-    const cpuPct = finiteNonNegative(record(p.cpu)?.percentCPUUsage);
+    pids.add(pid);
+    const cpuPct =
+      seen.has(pid) && (!reportsCumulative || hasCumulative(p))
+        ? finiteNonNegative(record(p.cpu)?.percentCPUUsage)
+        : undefined;
     const memory = record(p.memory);
     const workingSetBytes = kibToBytes(memory?.workingSetSize);
     const peakWorkingSetBytes = kibToBytes(memory?.peakWorkingSetSize);
@@ -158,7 +184,7 @@ function mapAppMetrics(raw: unknown): { processes: AppProcessMetric[] } | undefi
       ...(privateBytes !== undefined ? { privateBytes } : {}),
     });
   }
-  return processes.length > 0 ? { processes } : undefined;
+  return { metrics: processes.length > 0 ? { processes } : undefined, pids };
 }
 
 const copyMetrics = (m: { processes: AppProcessMetric[] }): { processes: AppProcessMetric[] } => ({
@@ -189,14 +215,16 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
   /** The metrics run: armed once its priming read succeeded. */
   #metricsArmed = false;
   #last: { processes: AppProcessMetric[] } | undefined;
+  /** The pids the previous read listed (the priming read seeds it). */
+  #seenPids: ReadonlySet<number> = new Set();
   #timer: { handle: unknown; scheduler: ProcessTimers } | null = null;
   /** Bumped whenever the timer is torn down: a callback of an older run never emits. */
   #gen = 0;
   /** The attached `child-process-gone` listener, with the app it is attached to (so removal hits the right one). */
   #gone: { app: ElectronAppSource; listener: GoneListener } | undefined;
-  // GPU: a one-shot. `#gpuGen` invalidates an in-flight read; `#gpuRequested` is the once-only latch.
+  // GPU: `#gpuGen` invalidates an in-flight read; `#gpuType` is the type the kept value was read with.
   #gpuGen = 0;
-  #gpuRequested = false;
+  #gpuType: GpuInfoType | undefined;
   /** True from the request until it settles (or is cancelled). */
   #gpuPending = false;
   #gpu: ElectronGpu | undefined;
@@ -235,16 +263,18 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
   }
 
   /**
-   * Request the one-shot `app.getGPUInfo(type)` read. A no-op while one is in flight or once one has been requested
-   * and not cancelled (once-only: a rejection is also final, never retried). Never throws, never leaves a rejected
-   * Promise unhandled (a Linux host without GPU acceleration rejects, and the session owner's own unhandled-rejection
-   * detection would report it); a failure is reported and the GPU stays absent.
+   * Request the one-shot `app.getGPUInfo(type)` read. A no-op while one is in flight, and while a USABLE value of the
+   * SAME type is already settled (static hardware description: it is kept). It asks again when nothing usable was
+   * settled (the earlier read rejected, threw, or returned nothing mappable) or when a different `type` is requested
+   * (`'complete'` after `'basic'`); a failed re-ask keeps the earlier usable value. Never throws, never leaves a
+   * rejected Promise unhandled (a Linux host without GPU acceleration rejects, and the session owner's own
+   * unhandled-rejection detection would report it); a failure is reported and the GPU stays as it was.
    */
   requestGpuInfo(type: GpuInfoType = 'basic'): void {
-    if (this.#gpuRequested) return;
+    if (this.#gpuPending) return;
+    if (this.#gpuType === type) return; // a usable value of this type is kept
     const app = this.#env.app;
     if (app === undefined || typeof app.getGPUInfo !== 'function') return;
-    this.#gpuRequested = true;
     this.#gpuPending = true;
     const mine = ++this.#gpuGen;
     try {
@@ -256,6 +286,7 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
             const gpu = mapGpuInfo(info);
             if (gpu === undefined) return;
             this.#gpu = gpu;
+            this.#gpuType = type;
             this.emit('gpu', { ...gpu });
           } catch (error) {
             this.#onError(error);
@@ -268,25 +299,23 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
         },
       );
     } catch (error) {
-      this.#gpuPending = false; // a throw is as final as a rejection
+      this.#gpuPending = false;
       this.#onError(error); // getGPUInfo threw synchronously
     }
   }
 
   /**
-   * Abort an IN-FLIGHT GPU read: a late resolve/reject is ignored and a later request starts afresh. A read that
-   * already settled (a value, a rejection, a throw) is final and untouched: the value is kept (reports still draining
-   * on stop need it) and the once-only latch holds.
+   * Abort an IN-FLIGHT GPU read: a late resolve/reject is ignored and a later request starts afresh. A value that
+   * already settled is kept (reports still draining on stop need it).
    */
   cancelGpuInfo(): void {
     if (!this.#gpuPending) return;
     this.#gpuGen++;
     this.#gpuPending = false;
-    this.#gpuRequested = false;
   }
 
   /**
-   * The latest reading of `stage`. `gpu` is the settled once-only result. `appMetrics` is windowed (a live read would
+   * The latest reading of `stage`. `gpu` is the settled result. `appMetrics` is windowed (a live read would
    * consume the CPU window), so it answers the last sample of the current run: undefined until the first tick and while
    * unarmed. Always a copy.
    */
@@ -302,7 +331,7 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
     this.removeAllListeners();
     this.#gpuGen++;
     this.#gpuPending = false;
-    this.#gpuRequested = false;
+    this.#gpuType = undefined;
     this.#gpu = undefined;
   }
 
@@ -328,7 +357,9 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
     const app = this.#env.app;
     if (app === undefined || typeof app.getAppMetrics !== 'function') return;
     try {
-      app.getAppMetrics(); // PRIMING read: CPU is "since the previous call", so this opens the window; discarded
+      // PRIMING read: CPU is "since the previous call", so this opens the window for the processes that exist now; its
+      // values are discarded, only the pids are remembered
+      this.#seenPids = mapAppMetrics(app.getAppMetrics(), new Set()).pids;
     } catch (error) {
       this.#onError(error); // left unarmed: retried on the next listener change / rebind
       return;
@@ -362,9 +393,11 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
   }
 
   #tick(app: ElectronAppSource): void {
-    let metrics: { processes: AppProcessMetric[] } | undefined;
+    let metrics: MappedMetrics['metrics'];
     try {
-      metrics = mapAppMetrics(app.getAppMetrics?.());
+      const mapped = mapAppMetrics(app.getAppMetrics?.(), this.#seenPids);
+      metrics = mapped.metrics;
+      this.#seenPids = mapped.pids;
     } catch (error) {
       this.#onError(error); // this tick only; the stage stays armed
       return;

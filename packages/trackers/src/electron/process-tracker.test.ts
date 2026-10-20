@@ -211,6 +211,145 @@ describe('appMetrics stage', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  describe("cpu is omitted on a process's FIRST sighting (Chromium reports 0 on the first call per process)", () => {
+    it('a process that appears after arming has no cpuPct on its first tick, and has one on the next', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue([proc()]); // priming read: only pid 100 exists
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      raw.getAppMetrics.mockReturnValue([
+        proc(),
+        proc({ pid: 200, type: 'Tab', cpu: { percentCPUUsage: 0 } }),
+      ]);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes).toEqual([
+        expect.objectContaining({ pid: 100, cpuPct: 12.5 }),
+        { type: 'Tab', pid: 200, workingSetBytes: 2048 * 1024, peakWorkingSetBytes: 4096 * 1024 },
+      ]);
+      expect(seen.mock.calls[0]?.[0].processes[1]).not.toHaveProperty('cpuPct');
+      sch.tick();
+      expect(seen.mock.calls[1]?.[0].processes[1]).toHaveProperty('cpuPct', 0);
+    });
+
+    it('a restarted process (same type, NEW pid) is a first sighting again', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue([proc({ pid: 5, type: 'GPU' })]);
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes[0]).toHaveProperty('cpuPct');
+      raw.getAppMetrics.mockReturnValue([proc({ pid: 6, type: 'GPU' })]);
+      sch.tick();
+      expect(seen.mock.calls[1]?.[0].processes[0]).toMatchObject({ pid: 6, type: 'GPU' });
+      expect(seen.mock.calls[1]?.[0].processes[0]).not.toHaveProperty('cpuPct');
+    });
+
+    it('a process that was absent for a tick is a first sighting again when it returns', () => {
+      const { app, raw } = fakeApp();
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      raw.getAppMetrics.mockReturnValue([]);
+      sch.tick();
+      raw.getAppMetrics.mockReturnValue([proc()]);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes[0]).not.toHaveProperty('cpuPct');
+    });
+
+    it('a process only a cpu reading would describe is dropped on its first sighting', () => {
+      const { app, raw } = fakeApp();
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      raw.getAppMetrics.mockReturnValue([{ pid: 9, type: 'Tab', cpu: { percentCPUUsage: 0 } }]);
+      sch.tick();
+      expect(seen).not.toHaveBeenCalled();
+    });
+
+    it('re-arming re-primes: the sightings of the previous run do not carry over', () => {
+      const { app } = fakeApp();
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const off = t.on('appMetrics', vi.fn());
+      sch.tick();
+      off();
+      const seen = vi.fn();
+      t.on('appMetrics', seen); // priming read sees pid 100 again
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes[0]).toHaveProperty('cpuPct');
+    });
+
+    it('a priming read of a malformed list leaves no sightings', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue('nope');
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      raw.getAppMetrics.mockReturnValue([proc()]);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes[0]).not.toHaveProperty('cpuPct');
+    });
+  });
+
+  describe('cumulativeCPUUsage (newer Electron sends cpu 0 "for compatibility" when it cannot read CPU)', () => {
+    const withCum = (pid: number, cumulativeCPUUsage?: unknown) =>
+      proc({
+        pid,
+        cpu: {
+          percentCPUUsage: 7,
+          ...(cumulativeCPUUsage !== undefined ? { cumulativeCPUUsage } : {}),
+        },
+      });
+
+    it('omits cpuPct for a process lacking it when the runtime reports it for others; keeps it where present', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue([withCum(1, 3), withCum(2)]);
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      sch.tick();
+      const [a, b] = seen.mock.calls[0]?.[0].processes ?? [];
+      expect(a).toHaveProperty('cpuPct', 7);
+      expect(b).not.toHaveProperty('cpuPct');
+    });
+
+    it('does not apply the rule on an Electron that reports no cumulativeCPUUsage at all', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue([withCum(1), withCum(2)]);
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes.map((p: { cpuPct?: number }) => p.cpuPct)).toEqual([
+        7, 7,
+      ]);
+    });
+
+    it('a non-numeric cumulativeCPUUsage counts as missing', () => {
+      const { app, raw } = fakeApp();
+      raw.getAppMetrics.mockReturnValue([withCum(1, 3), withCum(2, 'x'), withCum(3, Number.NaN)]);
+      const sch = fakeScheduler();
+      const t = make(app, { scheduler: sch });
+      const seen = vi.fn();
+      t.on('appMetrics', seen);
+      sch.tick();
+      expect(seen.mock.calls[0]?.[0].processes.map((p: { cpuPct?: number }) => p.cpuPct)).toEqual([
+        7,
+        undefined,
+        undefined,
+      ]);
+    });
+  });
+
   it('a throwing getAppMetrics drops only that tick: reported, the stage stays armed and recovers', () => {
     const { app, raw } = fakeApp();
     const sch = fakeScheduler();
@@ -596,7 +735,7 @@ describe('gpu one-shot', () => {
     expect(complete).toHaveBeenCalledExactlyOnceWith('complete');
   });
 
-  it('is ONCE-ONLY: repeat requests are no-ops while pending, after a value, and after a rejection', async () => {
+  it('keeps a USABLE settled value of the same type: repeat requests are no-ops while pending and after a value', async () => {
     const pending = vi.fn(() => new Promise<unknown>(() => {}));
     const a = withGpu(pending);
     a.requestGpuInfo();
@@ -608,14 +747,50 @@ describe('gpu one-shot', () => {
     b.requestGpuInfo();
     await flush();
     b.requestGpuInfo();
+    b.requestGpuInfo('basic');
     expect(ok).toHaveBeenCalledTimes(1);
+  });
 
+  it('re-asks after a REJECTION, and after an UNUSABLE result (nothing worth keeping was settled)', async () => {
     const bad = vi.fn(() => Promise.reject(new Error('x')));
     const c = make({ getGPUInfo: bad }, {}, () => {});
     c.requestGpuInfo();
     await flush();
     c.requestGpuInfo();
-    expect(bad).toHaveBeenCalledTimes(1);
+    expect(bad).toHaveBeenCalledTimes(2);
+
+    const empty = vi.fn(async () => ({ gpuDevice: [{ active: true, vendorId: 1 }] }));
+    const d = withGpu(empty);
+    d.requestGpuInfo();
+    await flush();
+    d.requestGpuInfo();
+    expect(empty).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-asks when the requested type differs from the one read; the old value stays until a new usable one replaces it', async () => {
+    const calls: string[] = [];
+    let answer: unknown = { gpuDevice: [{ active: true, vendorString: 'BASIC' }] };
+    const t = withGpu(async (type) => {
+      calls.push(type);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    });
+    t.requestGpuInfo('basic');
+    await flush();
+    answer = new Error('complete failed');
+    t.requestGpuInfo('complete');
+    await flush();
+    expect(calls).toEqual(['basic', 'complete']);
+    expect(t.current('gpu')).toEqual({ vendor: 'BASIC' }); // a failed re-ask keeps the usable value
+    t.requestGpuInfo('complete'); // the failed 'complete' read is not a settled usable one
+    await flush();
+    expect(calls).toEqual(['basic', 'complete', 'complete']);
+    answer = { gpuDevice: [{ active: true, vendorString: 'COMPLETE' }] };
+    t.requestGpuInfo('complete');
+    await flush();
+    expect(t.current('gpu')).toEqual({ vendor: 'COMPLETE' });
+    t.requestGpuInfo('complete');
+    expect(calls).toEqual(['basic', 'complete', 'complete', 'complete']);
   });
 
   it('returns a copy, so a consumer cannot mutate the result', async () => {
@@ -663,7 +838,7 @@ describe('gpu one-shot', () => {
     }
   });
 
-  it('a synchronous throw is reported, not propagated, and is final', () => {
+  it('a synchronous throw is reported, not propagated, and does not block a later request', () => {
     const boom = new Error('sync');
     const onError = vi.fn();
     const getGPUInfo = vi.fn(() => {
@@ -673,9 +848,9 @@ describe('gpu one-shot', () => {
     expect(() => t.requestGpuInfo()).not.toThrow();
     expect(onError).toHaveBeenCalledExactlyOnceWith(boom);
     expect(t.current('gpu')).toBeUndefined();
-    t.cancelGpuInfo(); // already final: must not re-open the latch
+    t.cancelGpuInfo(); // nothing in flight: a no-op
     t.requestGpuInfo();
-    expect(getGPUInfo).toHaveBeenCalledTimes(1);
+    expect(getGPUInfo).toHaveBeenCalledTimes(2);
   });
 
   it('a hostile result whose mapping throws is reported and omitted', async () => {
@@ -743,7 +918,7 @@ describe('gpu one-shot', () => {
     await flush();
     t.cancelGpuInfo();
     expect(t.current('gpu')).toEqual({ vendor: 'V', renderer: 'R' });
-    t.requestGpuInfo(); // still once-only
+    t.requestGpuInfo(); // same type, usable value kept: not re-asked
     expect(t.current('gpu')).toEqual({ vendor: 'V', renderer: 'R' });
   });
 
