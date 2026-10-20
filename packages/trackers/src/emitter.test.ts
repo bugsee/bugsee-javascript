@@ -379,3 +379,23 @@ describe('MultiKeyEmitterBase — onListenersChanged / listenerCount', () => {
     expect(p.calls).toBe(before + 1);
   });
 });
+
+class OrderProbe extends MultiKeyEmitterBase<{ a: number }> {
+  order: string[] = [];
+  protected override onActiveChange(active: boolean): void {
+    this.order.push(`active:${active}`);
+  }
+  protected override onListenersChanged(): void {
+    this.order.push('changed');
+  }
+}
+
+describe('MultiKeyEmitterBase — onListenersChanged runs AFTER onActiveChange', () => {
+  it('orders the two hooks on activation and on deactivation', () => {
+    const p = new OrderProbe();
+    const off = p.on('a', () => {});
+    expect(p.order).toEqual(['active:true', 'changed']);
+    off();
+    expect(p.order).toEqual(['active:true', 'changed', 'active:false', 'changed']);
+  });
+});

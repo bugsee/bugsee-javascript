@@ -48,3 +48,21 @@ export {
   type StorageTrackerEnv,
   storageTrackerFor,
 } from './storage-tracker';
+export {
+  type ColorSchemeState,
+  type DisplayModeName,
+  type DisplayModeState,
+  type MediaQueryListLike,
+  type OrientationState,
+  type ReducedMotionState,
+  resetUiTracker,
+  type ScreenSizeState,
+  type UiEnv,
+  type UiSchedulerLike,
+  type UiStage,
+  type UiStages,
+  type UiStateStage,
+  UiTracker,
+  uiTrackerFor,
+  type ViewportState,
+} from './ui-tracker';

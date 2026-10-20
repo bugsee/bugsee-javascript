@@ -1,5 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ApplicationTracker, ProcessTracker } from '@bugsee/trackers/browser';
+import { ApplicationTracker, ProcessTracker, UiTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   browserTraceEnvFrom,
@@ -7,7 +7,6 @@ import {
   MainThreadLagProducer,
   ScreenSizeProducer,
 } from './trace-producers';
-import { ScreenSizeTracker } from './trackers/screen-size-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<(e: unknown) => void>>();
@@ -35,7 +34,7 @@ const names = (ps: TraceProducer[]) => ps.map((p) => p.name);
 describe('ScreenSizeProducer', () => {
   const mk = (screen: unknown = { width: 390, height: 844 }) => {
     const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
-    const tracker = new ScreenSizeTracker({ window: win, screen: screen as never });
+    const tracker = new UiTracker({ window: win, screen: screen as never });
     return { win, tracker };
   };
 
@@ -61,9 +60,9 @@ describe('ScreenSizeProducer', () => {
     for (const screen of [undefined, { width: 0, height: 844 }, { width: 390 }]) {
       const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
       const out: Emit[] = [];
-      new ScreenSizeProducer(
-        new ScreenSizeTracker({ window: win, ...(screen ? { screen } : {}) }),
-      ).start(sinkOf(out));
+      new ScreenSizeProducer(new UiTracker({ window: win, ...(screen ? { screen } : {}) })).start(
+        sinkOf(out),
+      );
       expect(out).toEqual([]);
     }
   });

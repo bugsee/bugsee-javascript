@@ -17,8 +17,8 @@ import { hostRead } from './host-read';
 // LATEST request wins (see `rebind`): a defined onError replaces the reporter; while idle the window/document are
 // re-bound, while active the binding is kept and a differing window/document (only a target the request supplies counts) is reported once.
 //
-// `online`/`offline`/`orientationchange` stay here for now so ConnectionTracker/OrientationTracker keep working
-// unchanged; they move to the Connectivity (TR3) and UI/Display (TR2) trackers in those slices.
+// `online`/`offline` stay here for now (the Connectivity tracker owns its own copies); `orientationchange` belongs to
+// the UI/Display tracker and is NOT bound here.
 
 /** The Android app-state vocabulary (the viewer's table also has `started`, which the web never reports). */
 export type ApplicationState = 'foreground' | 'background';
@@ -35,7 +35,6 @@ export interface ApplicationEvents {
   resume: undefined;
   online: undefined;
   offline: undefined;
-  orientationchange: undefined;
 }
 interface TargetLike {
   addEventListener(type: string, listener: (event: unknown) => void): void;
@@ -87,7 +86,7 @@ export class ApplicationTracker extends InterceptorBase<ApplicationEvents> {
           this.emit('pagehide', { persisted: (e as { persisted?: boolean }).persisted === true }),
         ),
       );
-      for (const type of ['online', 'offline', 'orientationchange'] as const) {
+      for (const type of ['online', 'offline'] as const) {
         this.#listen(win, type, () => this.#guard(() => this.emit(type, undefined)));
       }
       this.#listen(doc, 'visibilitychange', () => this.#guard(() => this.#onVisibility()));

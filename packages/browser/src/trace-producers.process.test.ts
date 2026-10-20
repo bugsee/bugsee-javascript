@@ -4,6 +4,8 @@ import {
   ProcessTracker,
   processTrackerFor,
   resetProcessTracker,
+  resetUiTracker,
+  uiTrackerFor,
 } from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -335,6 +337,42 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
       expect(cancel).toHaveBeenCalledWith(11);
     } finally {
       resetProcessTracker({ window: w });
+    }
+  });
+
+  it('the merged factory wires ui traces on the UiTracker and process traces on the ProcessTracker, each producer once', () => {
+    const win = Object.assign(mkTarget(), {
+      performance: { now: () => 1 },
+      screen: { width: 1, height: 2 },
+      devicePixelRatio: 1,
+    });
+    const lifecycle = new ApplicationTracker({ window: win });
+    try {
+      const ps = createBrowserSystemTraceProducers({
+        ...browserTraceEnvFrom(win, undefined),
+        window: win,
+        lifecycle,
+      });
+      const names = ps.map((p) => p.name);
+      expect(new Set(names).size).toBe(names.length); // no producer twice (e.g. a second main-thread-lag)
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'memory',
+          'user-idle',
+          'main-thread-lag',
+          'main-thread-idle',
+          'orientation',
+          'screen-size',
+          'fps',
+        ]),
+      );
+      expect(names.filter((n) => n === 'main-thread-lag')).toHaveLength(1);
+      // both domain trackers are per-window singletons
+      expect(uiTrackerFor({ window: win })).toBe(uiTrackerFor({ window: win }));
+      expect(processTrackerFor({ window: win })).toBe(processTrackerFor({ window: win }));
+    } finally {
+      resetProcessTracker({ window: win });
+      resetUiTracker({ window: win });
     }
   });
 

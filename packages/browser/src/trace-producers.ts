@@ -11,29 +11,24 @@ import {
   connectivityTrackerFor,
   type HeapReading,
   type HeapState,
+  type OrientationState,
   type PowerTracker,
   type ProcessEnv,
   type ProcessTracker,
   powerTrackerFor,
   processTrackerFor,
+  type ScreenSizeState,
   type StorageEstimate,
   type StorageManagerLike,
   type StorageTracker,
   storageTrackerFor,
+  type UiEnv,
+  type UiTracker,
   type UserIdleState,
+  uiTrackerFor,
 } from '@bugsee/trackers/browser';
+import { boundMatchMedia } from './host-global';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
-import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
-import {
-  type OrientationEnv,
-  type OrientationState,
-  OrientationTracker,
-} from './trackers/orientation-tracker';
-import {
-  type ScreenSizeEnv,
-  type ScreenSizeState,
-  ScreenSizeTracker,
-} from './trackers/screen-size-tracker';
 
 // Browser `traces.system` producers (mirrors the mobile tracker/producer split). Each producer subscribes to
 // one shared tracker in start() and turns its state into the Android-vocabulary wire values; the trackers own
@@ -236,17 +231,17 @@ export class ConnectionProducer extends TraceProducerBase {
 
 export class OrientationProducer extends TraceProducerBase {
   readonly name = 'orientation';
-  readonly #tracker: OrientationTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: OrientationTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s));
-    const cur = this.#tracker.current();
+    this.#off = this.#tracker.on('orientation', (s) => this.#publish(s));
+    const cur = this.#tracker.current('orientation');
     if (cur !== undefined) this.#publish(cur);
   }
 
@@ -256,6 +251,8 @@ export class OrientationProducer extends TraceProducerBase {
   }
 
   #publish(s: OrientationState): void {
+    // A bare notification (the engine could not read an orientation) has nothing to report.
+    if (s.type === undefined || s.angle === undefined) return;
     this.emitIfChanged('orientation', orientationToWire(s.type, s.angle));
   }
 }
@@ -295,16 +292,16 @@ export class AppStateProducer extends TraceProducerBase {
 /** `fps` (Android parity): polled, so each window's rate is emitted and never held or refreshed. */
 export class FpsProducer extends TraceProducerBase {
   readonly name = 'fps';
-  readonly #tracker: FpsTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: FpsTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('fps', (fps) => this.emit('fps', fps));
+    this.#off = this.#tracker.on('frameRate', (fps) => this.emit('fps', fps));
   }
 
   protected override onStop(): void {
@@ -315,27 +312,27 @@ export class FpsProducer extends TraceProducerBase {
 
 /**
  * `screen_size` (JS-specific; deliberately NOT Android's `displays`, a display LIST): `{ width, height, dpr }` in
- * CSS px, re-read on `resize` / `orientationchange`. A step curve, so it is held and de-duplicated (a resize that
+ * CSS px, re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker). A step curve, so it is held and de-duplicated (a resize that
  * moved nothing is dropped); the initial value is emitted at start. Omitted entirely when the screen or the pixel
  * ratio cannot be read as finite positive numbers.
  *
  * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
- * `resize`, so the value can go stale until the next one (a `(resolution: Xdppx)` media-query / `screen`
- * change listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
+ * `resize`, so the value can go stale until the next one, unless the engine fires the `screen` `change` event the
+ * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
  */
 export class ScreenSizeProducer extends TraceProducerBase {
   readonly name = 'screen-size';
-  readonly #tracker: ScreenSizeTracker;
+  readonly #tracker: UiTracker;
   #off: (() => void) | undefined;
 
-  constructor(tracker: ScreenSizeTracker) {
+  constructor(tracker: UiTracker) {
     super();
     this.#tracker = tracker;
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s)); // subscribing attaches the listeners
-    const cur = this.#tracker.current();
+    this.#off = this.#tracker.on('screenSize', (s) => this.#publish(s)); // subscribing attaches the listeners
+    const cur = this.#tracker.current('screenSize');
     if (cur !== undefined) this.#publish(cur);
   }
 
@@ -458,14 +455,16 @@ export interface BrowserTraceEnv extends BatteryEnv {
     /** `navigator.permissions` (the ProcessTracker only ever QUERIES `idle-detection`). */
     readonly permissions?: NonNullable<ProcessEnv['navigator']>['permissions'];
   };
-  screen?: OrientationEnv['screen'] & ScreenSizeEnv['screen'];
+  screen?: UiEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange` / `resize`, and the live `devicePixelRatio`. */
-  window?: OrientationEnv['window'] & ScreenSizeEnv['window'];
+  window?: UiEnv['window'];
   /** The document the SDK is bound to: visibility for `app_state` and `fps`. */
-  document?: FpsEnv['document'];
+  document?: UiEnv['document'] & { readonly visibilityState?: string };
   /** `window.requestAnimationFrame` / `cancelAnimationFrame` (bound to that window): drive `fps`. */
-  requestAnimationFrame?: FpsEnv['requestAnimationFrame'];
-  cancelAnimationFrame?: FpsEnv['cancelAnimationFrame'];
+  requestAnimationFrame?: UiEnv['requestAnimationFrame'];
+  cancelAnimationFrame?: UiEnv['cancelAnimationFrame'];
+  /** `window.matchMedia` bound to that window: colour scheme / reduced motion / display mode (UiTracker). */
+  matchMedia?: UiEnv['matchMedia'];
   /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
    * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
@@ -479,7 +478,11 @@ export interface BrowserTraceEnv extends BatteryEnv {
   AbortController?: ProcessEnv['AbortController'];
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
-  /** The shared ApplicationTracker feeding orientation, app_state and fps; when absent orientation listens on `window` and app_state/fps are omitted. */
+  /**
+   * The shared ApplicationTracker feeding `app_state`. Its presence also GATES the `app_state`, `screen_size`, `fps`
+   * and `main_thread_lag_ms` producers (they are omitted without it); `screen_size`, `fps` and `orientation` get their
+   * sources from the per-window UiTracker, not from this.
+   */
   lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
 }
 
@@ -553,7 +556,9 @@ export function browserTraceEnvFrom(
   const caf2 = typeof caf === 'function' ? boundTo(win, caf) : undefined;
   const ric2 = typeof ric === 'function' ? boundTo(win, ric) : undefined;
   const cic2 = typeof cic === 'function' ? boundTo(win, cic) : undefined;
+  const matchMedia = boundMatchMedia(win, onError);
   return {
+    ...(matchMedia !== undefined ? { matchMedia } : {}),
     ...(nav !== undefined ? { navigator: nav } : {}),
     ...(performance !== undefined ? { performance } : {}),
     ...(screen !== undefined ? { screen } : {}),
@@ -629,9 +634,31 @@ export function createBrowserSystemTraceProducers(
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   if (env.sensors === false) return [battery];
-  // Read ONCE and SILENTLY (only to decide whether the FpsTracker gets a clock): the ProcessTracker owns reporting an
-  // unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once in total.
+  // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
+  // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.
   const clock = safePerformanceNow(env, undefined);
+  // ONE UI/display tracker per window serves orientation, screen_size and fps (and the events source).
+  const ui = uiTrackerFor(
+    {
+      ...(env.window !== undefined ? { window: env.window } : {}),
+      ...(env.screen !== undefined ? { screen: env.screen } : {}),
+      ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
+      ...(env.document !== undefined ? { document: env.document } : {}),
+      ...(env.requestAnimationFrame !== undefined
+        ? { requestAnimationFrame: env.requestAnimationFrame }
+        : {}),
+      ...(env.cancelAnimationFrame !== undefined
+        ? { cancelAnimationFrame: env.cancelAnimationFrame }
+        : {}),
+      ...(clock !== undefined
+        ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
+          // rather than answering a made-up 0.
+          { now: () => (env.performance as { now(): number }).now() }
+        : {}),
+      ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+    },
+    onError,
+  );
   // ONE domain tracker per window feeds the heap, main-thread lag/idle and user-idle traces. The live `performance`
   // object is passed (`performance.memory` is a live getter the tracker reads on every poll).
   const processTracker = processTrackerFor(
@@ -670,52 +697,14 @@ export function createBrowserSystemTraceProducers(
       ),
     ),
     new ConnectionProducer(connectivityTrackerFor(env, onError)),
-    new OrientationProducer(
-      new OrientationTracker(
-        {
-          ...(env.lifecycle !== undefined ? { lifecycle: env.lifecycle } : {}),
-          ...(env.window !== undefined ? { window: env.window } : {}),
-          ...(env.screen !== undefined ? { screen: env.screen } : {}),
-        },
-        onError,
-      ),
-    ),
+    new OrientationProducer(ui),
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle),
-          new ScreenSizeProducer(
-            new ScreenSizeTracker(
-              {
-                lifecycle: env.lifecycle,
-                ...(env.window !== undefined ? { window: env.window } : {}),
-                ...(env.screen !== undefined ? { screen: env.screen } : {}),
-              },
-              onError,
-            ),
-          ),
+          new ScreenSizeProducer(ui),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
-          new FpsProducer(
-            new FpsTracker(
-              {
-                lifecycle: env.lifecycle,
-                ...(env.document !== undefined ? { document: env.document } : {}),
-                ...(env.requestAnimationFrame !== undefined
-                  ? { requestAnimationFrame: env.requestAnimationFrame }
-                  : {}),
-                ...(env.cancelAnimationFrame !== undefined
-                  ? { cancelAnimationFrame: env.cancelAnimationFrame }
-                  : {}),
-                ...(clock !== undefined
-                  ? // A clock that becomes unreadable later THROWS (the tracker's tick reports and skips the window)
-                    // rather than answering a made-up 0.
-                    { now: () => (env.performance as { now(): number }).now() }
-                  : {}),
-                ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
-              },
-              onError,
-            ),
-          ),
+          new FpsProducer(ui),
         ]
       : []),
   ];
