@@ -65,9 +65,10 @@ const INVALID: unknown[] = [null, 0, '', 'false', 'true', 1];
 const failClosed: Array<[string, string]> = [
   ['captureInteractions', BugseeOption.CaptureInteractions],
   ['captureViewHierarchy', BugseeOption.CaptureViewHierarchy],
+  // private-mode detection: opt-out (owner decision, 2026-10-20); an invalid value is OFF, never consent
+  ['captureEnvironmentHints', BugseeOption.CaptureEnvironmentHints],
 ];
 const defaultOff: Array<[string, string]> = [
-  ['captureEnvironmentHints', BugseeOption.CaptureEnvironmentHints],
   ['persistUserIdentifier', BugseeOption.PersistUserIdentifier],
   ['reportSummaryRequired', BugseeOption.ReportingUiSummaryRequired],
   ['reportDescriptionRequired', BugseeOption.ReportingUiDescriptionRequired],

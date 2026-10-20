@@ -22,8 +22,8 @@ import { hostGlobal, hostRead } from './host-global';
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
 //   time zone / UTC offset → timezone_changed ({timezone?, utcOffsetMinutes?, previousTimezone?, previousUtcOffsetMinutes?})
 //   private-mode HEURISTIC → private_mode_detected ({method}) ONLY for a `yes` answer (a small storage quota; constrained
-//                            storage can false-positive, so it is a hint, never a certainty), once per answer, and ONLY when the launch opted in
-//                            (`captureEnvironmentHints`); `no`/`unknown` never produce an event (never claim certainty)
+//                            storage can false-positive, so it is a hint, never a certainty), once per answer, ON by default (the
+//                            launch opts out with `captureEnvironmentHints: false`); `no`/`unknown` never produce an event (never claim certainty)
 //   orientation (UiTracker: screen.orientation change + orientationchange) → orientation_changed ({type, angle})
 //   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
@@ -71,7 +71,7 @@ export interface BrowserSystemEventsEnv {
   lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
   environment?: Pick<EnvironmentTracker, 'onAny'>;
-  /** Run the private-mode heuristic (default false; see `captureEnvironmentHints`). Ignored when `environment` is supplied. */
+  /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). Ignored when `environment` is supplied. */
   detectPrivateMode?: boolean;
   /** Drives the time-zone re-read tick; default the global timers. Ignored when `environment` is supplied. */
   scheduler?: EnvironmentTimersLike;
@@ -227,8 +227,11 @@ export function createBrowserSystemEventsSource(
           ...(nav !== undefined ? { navigator: nav } : {}),
           ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
           // Always explicit: an omitted field would be RETAINED by the window's shared tracker (an earlier source
-          // may have turned detection on), and private-mode detection is opt-in.
-          detectPrivateMode: env.detectPrivateMode ?? false,
+          // may have changed it). Private-mode detection is OPT-OUT (owner decision, 2026-10-20): on unless
+          // `detectPrivateMode: false`. Hints and permission states have no consumer here, so they are never read.
+          detectPrivateMode: env.detectPrivateMode ?? true,
+          observeHints: false,
+          queryPermissions: false,
         },
         env.onError,
       );

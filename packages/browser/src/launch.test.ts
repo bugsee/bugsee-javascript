@@ -1522,12 +1522,15 @@ describe('launch', () => {
       }
     });
 
-    it('launch goes through the per-window EnvironmentTracker singleton (language/timezone on, private mode off by default)', async () => {
+    it('launch goes through the per-window EnvironmentTracker singleton (language/timezone and private mode on by default, no hints/permissions)', async () => {
       stubSensors();
-      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 * 1024 * 1024 }));
+      const query = vi.fn(() => Promise.resolve({ state: 'granted' }));
       vi.stubGlobal('navigator', {
         language: 'en-US',
         languages: ['en-US', 'en'],
+        cookieEnabled: true,
+        permissions: { query },
         storage: { estimate },
       });
       const w = fakeWindow();
@@ -1538,41 +1541,40 @@ describe('launch', () => {
         const snapshot = environmentTrackerFor({ window: w.win }).current();
         expect(snapshot.language).toEqual({ language: 'en-US', languages: ['en-US', 'en'] });
         expect(snapshot.timeZone?.utcOffsetMinutes).toBeTypeOf('number');
-        expect(snapshot.privateMode).toBeUndefined(); // opt-in: the heuristic never ran
+        expect(snapshot.privateMode).toEqual({ private: 'yes', method: 'storage-quota' }); // on by default
+        expect(snapshot.hints).toBeUndefined(); // nothing consumes hints / permissions: never read
+        expect(snapshot.permissions).toBeUndefined();
+        expect(query).not.toHaveBeenCalled();
         expect(w.count('languagechange')).toBe(1);
-        const names = ((await drain(store, 'events.system')) ?? []).map(
-          (e) => (e.data as { name: string }).name,
-        );
-        expect(names).not.toContain('private_mode_detected');
-      } finally {
-        resetEnvironmentTracker({ window: w.win });
-      }
-    });
-
-    it('captureEnvironmentHints: true runs the private-mode heuristic and records private_mode_detected for a yes', async () => {
-      stubSensors();
-      vi.stubGlobal('navigator', {
-        language: 'en-US',
-        storage: { estimate: () => Promise.resolve({ usage: 1, quota: 10 * 1024 * 1024 }) },
-      });
-      const w = fakeWindow();
-      try {
-        const store = memStore();
-        await launchTracked(
-          'tok',
-          noSampler({ window: w.win, captureStore: store, captureEnvironmentHints: true }),
-        );
-        await new Promise((r) => setTimeout(r, 0));
-        expect(environmentTrackerFor({ window: w.win }).current().privateMode).toEqual({
-          private: 'yes',
-          method: 'storage-quota',
-        });
         const events = ((await drain(store, 'events.system')) ?? []).map(
           (e) => e.data as { name: string; params?: unknown },
         );
         expect(events.find((e) => e.name === 'private_mode_detected')?.params).toEqual({
           method: 'storage-quota',
         });
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('captureEnvironmentHints: false opts out of the private-mode heuristic (no probe, no event)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
+      vi.stubGlobal('navigator', { language: 'en-US', storage: { estimate } });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, captureEnvironmentHints: false }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        // (the storage trace tracker calls estimate() too, so the proof is the missing answer and event)
+        expect(environmentTrackerFor({ window: w.win }).current().privateMode).toBeUndefined();
+        const names = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        expect(names).not.toContain('private_mode_detected');
       } finally {
         resetEnvironmentTracker({ window: w.win });
       }

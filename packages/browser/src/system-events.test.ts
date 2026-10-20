@@ -3,6 +3,7 @@ import { createMultiKeyEmitter } from '@bugsee/trackers';
 import {
   ApplicationTracker,
   type EnvironmentEvents,
+  environmentTrackerFor,
   resetApplicationTracker,
   resetEnvironmentTracker,
 } from '@bugsee/trackers/browser';
@@ -542,7 +543,7 @@ describe('createBrowserSystemEventsSource', () => {
       }
     });
 
-    it('an omitted detectPrivateMode turns detection OFF even after an earlier source turned it on for the window', async () => {
+    it('an omitted detectPrivateMode means ON (opt-out), and an explicit false turns it OFF even after an earlier source turned it on for the window', async () => {
       const { env, win } = fakeEnv();
       const { environment: _inert, ...rest } = env;
       const estimate = vi.fn(() => Promise.resolve({ quota: 10 }));
@@ -565,11 +566,56 @@ describe('createBrowserSystemEventsSource', () => {
         });
         first.off();
         estimate.mockClear();
-        const off = activate({ ...rest, lifecycle: lifecycleStub as never }); // option omitted
+        const off = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
         await new Promise((r) => setTimeout(r, 0));
         expect(estimate).not.toHaveBeenCalled();
         expect(off.events.map((e) => e.name)).not.toContain('private_mode_detected');
         off.off();
+        resetEnvironmentTracker({ window: win });
+        const dflt = activate({ ...rest, lifecycle: lifecycleStub as never }); // option omitted
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).toHaveBeenCalledTimes(1);
+        expect(dflt.events.at(-1)?.name).toBe('private_mode_detected');
+        dflt.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('never queries permissions nor reads hints: nothing consumes them', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const query = vi.fn(() => Promise.resolve({ state: 'granted' }));
+      Object.assign(win, {
+        navigator: { language: 'en-US', cookieEnabled: true, permissions: { query } },
+      });
+      try {
+        const a = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).not.toHaveBeenCalled();
+        expect(environmentTrackerFor({ window: win }).current().hints).toBeUndefined();
+        expect(environmentTrackerFor({ window: win }).current().permissions).toBeUndefined();
+        a.off();
+        // an earlier user of the window's tracker that asked for them does not leak into this source
+        const tracker = environmentTrackerFor({
+          window: win,
+          observeHints: true,
+          queryPermissions: true,
+        });
+        const off = tracker.onAny(() => {});
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).toHaveBeenCalled();
+        off();
+        query.mockClear();
+        const b = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).not.toHaveBeenCalled();
+        expect(environmentTrackerFor({ window: win }).current().hints).toBeUndefined();
+        b.off();
       } finally {
         resetEnvironmentTracker({ window: win });
       }
@@ -583,7 +629,7 @@ describe('createBrowserSystemEventsSource', () => {
       expect(events).toEqual([{ name: 'process_started' }]);
     });
 
-    it('over the window singleton: a real languagechange and a time-zone tick become events; private mode is opt-in', async () => {
+    it('over the window singleton: a real languagechange and a time-zone tick become events; private mode is opt-out', async () => {
       const { env, win } = fakeEnv();
       const { environment: _inert, ...rest } = env;
       const nav = {
@@ -601,21 +647,21 @@ describe('createBrowserSystemEventsSource', () => {
         clearInterval: () => {},
       };
       try {
-        // default: language/timezone on, private mode off
-        const a = activate({ ...rest, lifecycle: lifecycleStub as never, scheduler });
+        // opted out: language/timezone on, private mode off
+        const a = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          scheduler,
+          detectPrivateMode: false,
+        });
         nav.language = 'de-DE';
         win.emit('languagechange', {});
         expect(a.events.map((e) => e.name)).toEqual(['process_started', 'language_changed']);
         expect(nav.storage.estimate).not.toHaveBeenCalled();
         a.off();
         resetEnvironmentTracker({ window: win });
-        // opted in: a yes answer is an event
-        const b = activate({
-          ...rest,
-          lifecycle: lifecycleStub as never,
-          scheduler,
-          detectPrivateMode: true,
-        });
+        // the default: a yes answer is an event
+        const b = activate({ ...rest, lifecycle: lifecycleStub as never, scheduler });
         await new Promise((r) => setTimeout(r, 0));
         expect(b.events.at(-1)).toEqual({
           name: 'private_mode_detected',

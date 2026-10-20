@@ -100,6 +100,9 @@ function setup(
       intervalMs: 777,
       timeZoneId: () => zone.id,
       utcOffsetMinutes: () => zone.offset,
+      // the tracker reads hints / queries permissions only when asked: most tests are about those stages
+      observeHints: true,
+      queryPermissions: true,
       ...env,
     },
     onError,
@@ -2068,5 +2071,104 @@ describe('EnvironmentTracker: unusable answers and private-mode read streaks', (
     await flush();
     expect(messages()).toEqual(['storage', 'quota', 'storage']); // a new streak
     expect(tracker.current().privateMode).toEqual({ private: 'unknown' });
+  });
+});
+
+describe('EnvironmentTracker: hints and permissions are read only when asked for', () => {
+  const nav = () => ({
+    language: 'en',
+    cookieEnabled: true,
+    doNotTrack: '1',
+    permissions: mkPermissions({ camera: 'granted' }),
+  });
+
+  it('by default neither the hints are read nor a permission is queried, for any subscriber', async () => {
+    const n = nav();
+    const { tracker, seen, listen, win, document } = setup(n, {
+      observeHints: undefined,
+      queryPermissions: undefined,
+    });
+    listen();
+    await flush();
+    expect(n.permissions.query).not.toHaveBeenCalled();
+    expect(tracker.current().hints).toBeUndefined();
+    expect(tracker.current().permissions).toBeUndefined();
+    expect(seen.filter(([k]) => k === 'hints' || k === 'permissions')).toEqual([]);
+    expect(tracker.current().language?.language).toBe('en'); // the other stages still run
+    document.fire('visibilitychange');
+    expect(tracker.current().hints).toBeUndefined();
+    expect(win.count('languagechange')).toBe(1);
+  });
+
+  it('queryPermissions alone queries permissions and does not read hints; observeHints alone the reverse', async () => {
+    const a = nav();
+    const onlyPerms = setup(a, { observeHints: false });
+    onlyPerms.listen();
+    await flush();
+    expect(a.permissions.query).toHaveBeenCalled();
+    expect(onlyPerms.tracker.current().permissions).toEqual({ camera: 'granted' });
+    expect(onlyPerms.tracker.current().hints).toBeUndefined();
+    const b = nav();
+    const onlyHints = setup(b, { queryPermissions: false });
+    onlyHints.listen();
+    await flush();
+    expect(b.permissions.query).not.toHaveBeenCalled();
+    expect(onlyHints.tracker.current().permissions).toBeUndefined();
+    expect(onlyHints.tracker.current().hints?.cookiesEnabled).toBe(true);
+  });
+
+  it('turning them on while running reads/queries at once; off drops the readings and the status listeners', async () => {
+    const n = nav();
+    const { tracker, listen, seen } = setup(n, { observeHints: false, queryPermissions: false });
+    listen();
+    await flush();
+    expect(n.permissions.query).not.toHaveBeenCalled();
+    tracker.rebind({ observeHints: true, queryPermissions: true });
+    await flush();
+    expect(n.permissions.query).toHaveBeenCalled();
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    expect(tracker.current().hints?.doNotTrack).toBe(true);
+    const status = n.permissions.statuses.get('camera');
+    expect(status?.count('change')).toBe(1);
+    tracker.rebind({ observeHints: false, queryPermissions: false });
+    expect(tracker.current().permissions).toBeUndefined();
+    expect(tracker.current().hints).toBeUndefined();
+    expect(status?.count('change')).toBe(0);
+    seen.length = 0;
+    tracker.rebind({ observeHints: true });
+    expect(seen.filter(([k]) => k === 'hints')).toHaveLength(1); // re-read after being off
+  });
+
+  it('each gate re-attaches on its own: queryPermissions off drops the statuses while hints stay, and back', async () => {
+    const n = nav();
+    const { tracker, listen } = setup(n);
+    listen();
+    await flush();
+    const status = n.permissions.statuses.get('camera');
+    expect(status?.count('change')).toBe(1);
+    tracker.rebind({ queryPermissions: false });
+    expect(status?.count('change')).toBe(0);
+    expect(tracker.current().permissions).toBeUndefined();
+    expect(tracker.current().hints?.cookiesEnabled).toBe(true);
+    const calls = n.permissions.query.mock.calls.length;
+    tracker.rebind({ queryPermissions: true });
+    await flush();
+    expect(n.permissions.query.mock.calls.length).toBeGreaterThan(calls);
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    tracker.rebind({ observeHints: false });
+    expect(tracker.current().hints).toBeUndefined();
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    tracker.rebind({ observeHints: true });
+    expect(tracker.current().hints?.cookiesEnabled).toBe(true);
+  });
+
+  it('an idle tracker only applies the change at activation', async () => {
+    const n = nav();
+    const { tracker, listen } = setup(n, { observeHints: false, queryPermissions: false });
+    tracker.rebind({ queryPermissions: true });
+    expect(n.permissions.query).not.toHaveBeenCalled();
+    listen();
+    await flush();
+    expect(n.permissions.query).toHaveBeenCalled();
   });
 });

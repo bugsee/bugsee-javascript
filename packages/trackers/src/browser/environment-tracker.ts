@@ -10,21 +10,25 @@ import { hostRead } from './host-read';
 //   timezone    {timeZone?, utcOffsetMinutes?, previous}  Intl time zone id + UTC offset (minutes, positive east).
 //               No browser event exists, so it is RE-READ on a slow timer (default 60 s; ticks while the page is hidden
 //               are skipped) and on visibility -> visible. CHANGE-ONLY like `language` (a DST shift is an offset change).
-//   hints       {cookiesEnabled?, secureContext?, crossOriginIsolated?, serviceWorkerControlled?, automation?,
+//   hints       (read ONLY when `observeHints` is set: nothing consumes it, so the browser source never sets it)
+//               {cookiesEnabled?, secureContext?, crossOriginIsolated?, serviceWorkerControlled?, automation?,
 //               doNotTrack?, globalPrivacyControl?}   SNAPSHOT: emitted for the first reading of this tracker and on
 //               every change after it; on a restart the reading is compared with the RETAINED one, so an unchanged
 //               reading is not emitted again (read it via `current()`).
 //               `automation` is `navigator.webdriver`; `doNotTrack`/`globalPrivacyControl` are the user's own
 //               preference signals, recorded as booleans (an unspecified/unknown DNT value is omitted).
-//   permissions {camera?: 'granted'|'denied'|'prompt', microphone?, geolocation?, notifications?, 'idle-detection'?}
+//   permissions (queried ONLY when `queryPermissions` is set, same reason: no `permissions.query()` call and no `change`
+//               listener otherwise) {camera?: 'granted'|'denied'|'prompt', microphone?, geolocation?, notifications?,
+//               'idle-detection'?}
 //               SNAPSHOT of the Permissions API states. Queried WITHOUT EVER PROMPTING: only `navigator.permissions
 //               .query()` is called (never requestPermission/getUserMedia/...), only the state STRING is kept (no
 //               stream, position or token is ever touched), and a PermissionStatus `change` event refreshes it. Emitted
 //               for the first snapshot and on every change; on a restart it is compared with the RETAINED one (same as
 //               hints), so an unchanged snapshot is not emitted again (read it via `current()`). A name
 //               the browser does not know (query rejects with TypeError) is simply omitted, not an error.
-//   privateMode {private: 'yes'|'no'|'unknown', method?}   OFF unless `detectPrivateMode` is set (owner decision
-//               pending: detecting private browsing can read as circumventing the user's intent). A HEURISTIC, never a
+//   privateMode {private: 'yes'|'no'|'unknown', method?}   runs when `detectPrivateMode` is set (false at this level;
+//               the browser launch turns it ON by default, owner decision 2026-10-20: opt-out with
+//               `captureEnvironmentHints: false`). A HEURISTIC, never a
 //               certainty: the only method is `storage-quota` (a quota under 120 MiB suggests a private window, one over
 //               1 GiB suggests a normal one, anything between or unreadable is `unknown`; constrained or unusual storage
 //               can therefore FALSE-POSITIVE). It emits when the answer first arrives and whenever it changes (it is
@@ -117,8 +121,18 @@ export interface EnvironmentEnv {
   utcOffsetMinutes?: () => unknown;
   /** Permission names to query (default {@link DEFAULT_PERMISSION_NAMES}). */
   permissionNames?: readonly string[];
-  /** Run the private-mode heuristic. Default false (see the header). */
+  /** Run the private-mode heuristic. Default false at THIS level (the browser launch turns it on, see the header). */
   detectPrivateMode?: boolean;
+  /**
+   * Read the `hints` stage. Default false: nothing in the SDK consumes it, so it is read only for a consumer that asks
+   * (no needless privacy surface).
+   */
+  observeHints?: boolean;
+  /**
+   * Query the Permissions API for the `permissions` stage. Default false, for the same reason as `observeHints`: no
+   * `permissions.query()` call and no `change` listener unless a consumer asks.
+   */
+  queryPermissions?: boolean;
 }
 
 export const DEFAULT_PERMISSION_NAMES: readonly string[] = [
@@ -222,14 +236,20 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
       next.intervalMs !== old.intervalMs;
     const privateTurnedOn = next.detectPrivateMode === true && old.detectPrivateMode !== true;
     const privateTurnedOff = next.detectPrivateMode !== true && old.detectPrivateMode === true;
-    if (moved && this.#running) this.#release(); // OLD seams
+    const hintsChanged = (next.observeHints === true) !== (old.observeHints === true);
+    const permissionsChanged = (next.queryPermissions === true) !== (old.queryPermissions === true);
+    // A change of either gate re-attaches like a moved seam: off must drop the status listeners and in-flight queries.
+    const reattach = moved || hintsChanged || permissionsChanged;
+    if (reattach && this.#running) this.#release(); // OLD seams
     this.#env = next;
+    if (next.observeHints !== true) this.#hints = undefined;
+    if (next.queryPermissions !== true) this.#permissions = undefined;
     if (privateTurnedOff) {
       this.#privateEpoch += 1;
       this.#private = undefined;
     }
     if (!this.#running) return;
-    if (moved) this.#attach();
+    if (reattach) this.#attach();
     else if (privateTurnedOn) this.#detectPrivateMode();
   }
 
@@ -524,6 +544,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #publishHints(): void {
+    if (this.#env.observeHints !== true) return;
     const next = this.#streak('hints', (report) => this.#readHints(report));
     if (next === undefined) return;
     const changed = !same(this.#hints, next);
@@ -534,6 +555,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   // ---- permissions (never prompts) ----
 
   #queryPermissions(): void {
+    if (this.#env.queryPermissions !== true) return;
     const mine = this.#epoch;
     const report = (e: unknown): void => this.#onError(e);
     const permissions = hostRead(
@@ -661,7 +683,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     if (changed) this.emit('permissions', { ...next });
   }
 
-  // ---- private mode (opt-in heuristic) ----
+  // ---- private mode (heuristic; the launch runs it unless opted out) ----
 
   #detectPrivateMode(): void {
     if (this.#env.detectPrivateMode !== true) return;
@@ -761,6 +783,8 @@ function seamsOf(
     ...pick(env, previous, 'utcOffsetMinutes', onError),
     ...pick(env, previous, 'permissionNames', onError),
     ...pick(env, previous, 'detectPrivateMode', onError),
+    ...pick(env, previous, 'observeHints', onError),
+    ...pick(env, previous, 'queryPermissions', onError),
   };
 }
 
