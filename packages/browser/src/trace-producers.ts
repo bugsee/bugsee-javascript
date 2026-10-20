@@ -411,7 +411,7 @@ export class MainThreadIdleProducer extends TraceProducerBase {
  * trace. The SDK never prompts: this exists ONLY in a page whose `idle-detection` permission is already `granted`
  * (Chromium); otherwise no trace is produced at all. Known limit (owner decision pending, see docs/PROGRESS.md TR5): a
  * held value cannot be retracted, so after the permission is revoked the last published value keeps being re-recorded
- * until the producer stops; only the SEED is age-bounded (2 detector thresholds).
+ * until the producer stops; only the SEED is gated (the armed detector must be live, i.e. the permission re-confirmed).
  */
 export class UserIdleProducer extends TraceProducerBase {
   readonly name = 'user-idle';
@@ -495,6 +495,21 @@ interface WindowSurfaces {
   AbortController?: ProcessEnv['AbortController'];
 }
 
+// One bound wrapper per (window, function) pair, so wrapping the same window function twice yields the SAME closure.
+const boundCache = new WeakMap<object, WeakMap<object, unknown>>();
+function boundTo<F extends (...args: never[]) => unknown>(win: object, fn: F): F {
+  let perWin = boundCache.get(win);
+  if (perWin === undefined) {
+    perWin = new WeakMap();
+    boundCache.set(win, perWin);
+  }
+  const cached = perWin.get(fn);
+  if (cached !== undefined) return cached as F;
+  const bound = ((...args: never[]) => fn.apply(win, args)) as F;
+  perWin.set(fn, bound);
+  return bound;
+}
+
 /**
  * A COMPLETE traces env from ONE window (+ its document): every surface comes from that window and an absent
  * one is simply not sampled — nothing falls back to `globalThis`, so an injected window that lacks
@@ -532,16 +547,22 @@ export function browserTraceEnvFrom(
   const cic = read(() => win.cancelIdleCallback);
   const idleDetector = read(() => win.IdleDetector);
   const abortController = read(() => win.AbortController);
+  // Stable identities: the shared trackers restart their armed stages when a seam changes identity, so wrapping the
+  // SAME window function must hand back the SAME closure on every launch (a no-op relaunch stays a no-op).
+  const raf2 = typeof raf === 'function' ? boundTo(win, raf) : undefined;
+  const caf2 = typeof caf === 'function' ? boundTo(win, caf) : undefined;
+  const ric2 = typeof ric === 'function' ? boundTo(win, ric) : undefined;
+  const cic2 = typeof cic === 'function' ? boundTo(win, cic) : undefined;
   return {
     ...(nav !== undefined ? { navigator: nav } : {}),
     ...(performance !== undefined ? { performance } : {}),
     ...(screen !== undefined ? { screen } : {}),
     window: source as NonNullable<BrowserTraceEnv['window']>,
     ...(document !== undefined ? { document } : {}),
-    ...(typeof raf === 'function' ? { requestAnimationFrame: (cb) => raf.call(win, cb) } : {}),
-    ...(typeof caf === 'function' ? { cancelAnimationFrame: (h) => caf.call(win, h) } : {}),
-    ...(typeof ric === 'function' ? { requestIdleCallback: (cb) => ric.call(win, cb) } : {}),
-    ...(typeof cic === 'function' ? { cancelIdleCallback: (h) => cic.call(win, h) } : {}),
+    ...(raf2 !== undefined ? { requestAnimationFrame: raf2 } : {}),
+    ...(caf2 !== undefined ? { cancelAnimationFrame: caf2 } : {}),
+    ...(ric2 !== undefined ? { requestIdleCallback: ric2 } : {}),
+    ...(cic2 !== undefined ? { cancelIdleCallback: cic2 } : {}),
     ...(typeof idleDetector === 'function' ? { IdleDetector: idleDetector } : {}),
     ...(typeof abortController === 'function' ? { AbortController: abortController } : {}),
     ...(nav !== undefined && typeof getBattery === 'function'
@@ -608,8 +629,9 @@ export function createBrowserSystemTraceProducers(
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   if (env.sensors === false) return [battery];
-  // Read ONCE: a hostile `performance.now` getter must report one error, not one per consumer.
-  const clock = safePerformanceNow(env, onError);
+  // Read ONCE and SILENTLY (only to decide whether the FpsTracker gets a clock): the ProcessTracker owns reporting an
+  // unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once in total.
+  const clock = safePerformanceNow(env, undefined);
   // ONE domain tracker per window feeds the heap, main-thread lag/idle and user-idle traces. The live `performance`
   // object is passed (`performance.memory` is a live getter the tracker reads on every poll).
   const processTracker = processTrackerFor(

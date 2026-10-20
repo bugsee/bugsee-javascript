@@ -57,6 +57,7 @@ function userIdleTracker(
   detector: ReturnType<typeof mkDetector>,
   state = 'granted',
   now?: () => number,
+  permission?: { state: string },
 ) {
   class FakeDetector {
     constructor() {
@@ -65,7 +66,9 @@ function userIdleTracker(
     }
   }
   return new ProcessTracker({
-    navigator: { permissions: { query: () => Promise.resolve({ state }) } },
+    navigator: {
+      permissions: { query: () => Promise.resolve({ state: permission?.state ?? state }) },
+    },
     IdleDetector: FakeDetector as never,
     AbortController: class {
       signal = {};
@@ -126,23 +129,36 @@ describe('UserIdleProducer (user_idle_state)', () => {
   });
 });
 
-describe('UserIdleProducer seed age bound', () => {
-  it('seeds from a retained state only while it is younger than 2 detector thresholds', async () => {
-    let at = 0;
+describe('UserIdleProducer seeding', () => {
+  it('does not seed from a retained state while the permission re-query is pending; the live detector then reports it', async () => {
     const detector = mkDetector();
-    const tracker = userIdleTracker(detector, 'granted', () => at);
+    const tracker = userIdleTracker(detector);
     const offOther = tracker.on('userIdle', () => {});
     await flush();
     offOther(); // the state is retained, the detector is released
-    at = 120_000; // exactly 2 x the 60 s minimum: still fresh
-    const fresh = new UserIdleProducer(tracker);
-    expect(start(fresh).map((r) => r.value)).toEqual(['active']);
-    fresh.stop();
-    at = 120_001; // one ms older: a held trace must not be seeded from it
-    const stale = new UserIdleProducer(tracker);
-    const out = start(stale);
+    const p = new UserIdleProducer(tracker);
+    const out = start(p);
+    expect(out).toEqual([]); // the retained 'active' is NOT trusted before the permission is re-confirmed
+    await flush();
+    expect(out.map((r) => r.value)).toEqual(['active']); // the re-confirmed detector reports it
+    p.stop();
+  });
+
+  it('a permission revoked while no stage was armed never seeds the held trace', async () => {
+    const detector = mkDetector();
+    const permission = { state: 'granted' };
+    const tracker = userIdleTracker(detector, 'granted', undefined, permission);
+    const offOther = tracker.on('userIdle', () => {});
+    await flush();
+    offOther();
+    permission.state = 'denied'; // revoked while nobody listens
+    const p = new UserIdleProducer(tracker);
+    const out = start(p);
     expect(out).toEqual([]);
-    stale.stop();
+    await flush();
+    expect(out).toEqual([]); // and the re-query dropped the snapshot: nothing is ever published
+    expect(tracker.currentUserIdle()).toBeUndefined();
+    p.stop();
   });
 });
 
@@ -190,6 +206,34 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
     expect(names({})).toEqual(expect.arrayContaining(['user-idle']));
     expect(names({})).not.toEqual(expect.arrayContaining(['main-thread-idle']));
     expect(names({ lifecycle, sensors: false })).toEqual(['battery']);
+  });
+
+  it('browserTraceEnvFrom hands back the SAME bound closures for the same window (a no-op relaunch stays a no-op), distinct ones per window', () => {
+    const mk = () => ({
+      requestIdleCallback: () => 1,
+      cancelIdleCallback: () => {},
+      requestAnimationFrame: () => 1,
+      cancelAnimationFrame: () => {},
+    });
+    const win = mk();
+    const a = browserTraceEnvFrom(win, undefined);
+    const b = browserTraceEnvFrom(win, undefined);
+    expect(b.requestIdleCallback).toBe(a.requestIdleCallback);
+    expect(b.cancelIdleCallback).toBe(a.cancelIdleCallback);
+    expect(b.requestAnimationFrame).toBe(a.requestAnimationFrame);
+    expect(b.cancelAnimationFrame).toBe(a.cancelAnimationFrame);
+    const other = browserTraceEnvFrom(mk(), undefined);
+    expect(other.requestIdleCallback).not.toBe(a.requestIdleCallback);
+    // the same function on a DIFFERENT window is bound to that window
+    const shared = function (this: unknown) {
+      return this;
+    };
+    const w1 = { requestIdleCallback: shared };
+    const w2 = { requestIdleCallback: shared };
+    const r1 = browserTraceEnvFrom(w1, undefined).requestIdleCallback as unknown as () => unknown;
+    const r2 = browserTraceEnvFrom(w2, undefined).requestIdleCallback as unknown as () => unknown;
+    expect(r1()).toBe(w1);
+    expect(r2()).toBe(w2);
   });
 
   it('browserTraceEnvFrom binds requestIdleCallback/cancelIdleCallback to the window and passes IdleDetector/AbortController', () => {

@@ -1137,9 +1137,12 @@ describe('ProcessTracker — userIdle (Idle Detection, never prompts)', () => {
     const t2 = new ProcessTracker(env2);
     const off2 = t2.on('userIdle', () => {});
     off2();
-    resolve(mkPermission('granted'));
+    const lateStatus = mkPermission('granted');
+    resolve(lateStatus);
     await flush();
     expect(slow.detector.startCalls).toEqual([]);
+    expect(lateStatus.addEventListener).not.toHaveBeenCalled(); // no listener was attached after the stop
+    expect(lateStatus.listenerCount()).toBe(0);
   });
 
   it('retains the last state across a stop; re-activation re-queries the permission', async () => {
@@ -1370,6 +1373,32 @@ describe('ProcessTracker — userIdle (Idle Detection, never prompts)', () => {
     e3.status.set('granted');
     await flush();
     expect(e3.detector.startCalls).toHaveLength(1); // only the original start
+
+    // ... and a stale REVOKE after teardown neither aborts again nor drops the retained state
+    const e4 = userEnv();
+    e4.status.removeEventListener.mockImplementation(() => {
+      throw new Error('remove');
+    });
+    const t4 = new ProcessTracker(e4.env);
+    const off4 = t4.on('userIdle', () => {});
+    await flush();
+    off4();
+    expect(e4.aborts[0]?.abort).toHaveBeenCalledTimes(1);
+    e4.status.set('denied');
+    expect(e4.aborts[0]?.abort).toHaveBeenCalledTimes(1);
+    expect(t4.currentUserIdle()).toEqual({ userState: 'active', screenState: 'unlocked' });
+  });
+
+  it('a detector that reports no userState (undefined) publishes nothing and retains nothing', async () => {
+    const detector = mkDetector();
+    detector.userState = undefined;
+    const { env } = userEnv({ detector });
+    const t = new ProcessTracker(env);
+    const out: unknown[] = [];
+    t.on('userIdle', (u) => out.push(u));
+    await flush();
+    expect(out).toEqual([]);
+    expect(t.currentUserIdle()).toBeUndefined();
   });
 
   it('a detector without addEventListener/removeEventListener is tolerated', async () => {
@@ -1616,6 +1645,93 @@ describe('processTrackerFor / rebind', () => {
     expect(reporter).toHaveBeenCalledTimes(1);
   });
 
+  it('a seam that changes identity (now, userIdleThresholdMs, cancelIdleCallback) restarts an armed stage; an equal one does not', () => {
+    for (const [key, a, b] of [
+      ['now', () => 1, () => 2],
+      ['userIdleThresholdMs', 70_000, 80_000],
+      ['cancelIdleCallback', () => {}, () => {}],
+    ] as const) {
+      const s = mkScheduler();
+      const first = { scheduler: s, performance: { memory: mem(1) }, [key]: a };
+      const t = new ProcessTracker(asEnv(first));
+      t.on('heap', () => {});
+      expect(s.setInterval).toHaveBeenCalledTimes(1);
+      t.rebind(asEnv({ [key]: a })); // identical: nothing restarts
+      expect(s.setInterval, key).toHaveBeenCalledTimes(1);
+      expect(s.clearInterval, key).not.toHaveBeenCalled();
+      t.rebind(asEnv({ [key]: b })); // changed: the armed stage is detached and re-armed
+      expect(s.clearInterval, key).toHaveBeenCalledTimes(1);
+      expect(s.setInterval, key).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('a FAILED clock read is not cached: the stage retries on its next activation and a persistent failure is reported once', () => {
+    const onError = vi.fn();
+    let broken = true;
+    const { s, env } = lagEnv({
+      performance: {
+        get now() {
+          if (broken) throw new Error('now');
+          return () => 50;
+        },
+      },
+    });
+    const tracker = new ProcessTracker(env, onError);
+    const out: number[] = [];
+    const up = tracker.on('uptime', (u) => out.push(u.uptimeMs));
+    expect(s.live()).toBe(0); // inert while the read fails
+    up();
+    tracker.on('uptime', () => {})(); // another activation: still failing, NOT reported again
+    expect(onError).toHaveBeenCalledTimes(1);
+    broken = false; // recovers: the next activation arms
+    const up2 = tracker.on('uptime', (u) => out.push(u.uptimeMs));
+    expect(s.live()).toBe(1);
+    s.tick();
+    expect(out).toEqual([50]);
+    up2();
+    broken = true; // a success is cached for the env: later activations use it without re-reading
+    const up3 = tracker.on('uptime', () => {});
+    expect(s.live()).toBe(1);
+    up3();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('currentUserIdleFresh(): armed and confirmed = fresh at any age; pending re-query or revoked = undefined', async () => {
+    let at = 0;
+    const { env, status } = userEnv({ now: () => at });
+    const t = new ProcessTracker(env);
+    const first = t.on('userIdle', () => {});
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // armed but the permission re-query is pending
+    await flush();
+    const state = { userState: 'active', screenState: 'unlocked' };
+    expect(t.currentUserIdleFresh()).toEqual(state);
+    at = 10 * 60 * 60_000; // hours later, the detector still live: a second subscriber must still get it
+    expect(t.currentUserIdleFresh()).toEqual(state);
+    status.set('denied'); // revoked while armed
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    status.set('granted'); // regranted: the detector is live again
+    await flush();
+    expect(t.currentUserIdleFresh()).toBeDefined();
+    first();
+    at += 10 * 60 * 60_000; // no armed stage any more: the age bound applies
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('a revoke while NO stage is armed is only noticed by the next activation: the plain read is retained until then, the fresh read never seeds', async () => {
+    const { env, status } = userEnv({ now: () => 0 });
+    const t = new ProcessTracker(env);
+    const off = t.on('userIdle', () => {});
+    await flush();
+    off();
+    status.state = 'denied';
+    expect(t.currentUserIdle()).toBeDefined(); // documented: nothing has re-asked yet
+    t.on('userIdle', () => {});
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // armed but unconfirmed
+    await flush();
+    expect(t.currentUserIdle()).toBeUndefined();
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
   it('a late rejection from an OLD detector does not end the NEWER run', async () => {
     const onError = vi.fn();
     const status = mkPermission('granted');
@@ -1753,10 +1869,13 @@ describe('processTrackerFor / rebind', () => {
     lc.on.mockImplementationOnce(() => () => {
       throw new Error('unsubscribe failed');
     });
-    const off = new ProcessTracker(env).on('mainThreadLag', () => {});
+    const onError = vi.fn();
+    const off = new ProcessTracker(env, onError).on('mainThreadLag', () => {});
     expect(s.live()).toBe(1);
     // the stage teardown rethrows into #stop, which reports it; the run itself must be closed regardless
     expect(() => off()).not.toThrow();
     expect(s.live()).toBe(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('unsubscribe failed');
   });
 });

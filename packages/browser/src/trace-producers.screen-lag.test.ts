@@ -279,15 +279,16 @@ describe('performance.now wiring (lag and fps)', () => {
       (e) => errors.push(e),
     );
     const out: Emit[] = [];
-    // Start/stop/restart every producer: the factory's own read (1) plus the tracker's FIRST lag activation (1) are the
-    // only reports; later activations of the same seams must not re-read the hostile getter (errors used to grow 1,2,3).
+    // The factory reads silently; the tracker reports the persistent failure ONCE (not once per activation: errors used
+    // to grow 1,2,3 across start/stop/restart), and nothing is reported before a lag/uptime stage activates.
+    expect(errors).toEqual([]);
     const rounds: number[] = [];
     for (let round = 0; round < 3; round += 1) {
       for (const p of ps) p.start(sinkOf(out));
       for (const p of ps) p.stop();
       rounds.push(errors.length);
     }
-    expect(rounds).toEqual([2, 2, 2]);
+    expect(rounds).toEqual([1, 1, 1]);
     expect(errors.every((e) => (e as Error).message === 'now blocked')).toBe(true);
     expect(out.filter((o) => o.name === 'main_thread_lag_ms')).toEqual([]);
   });

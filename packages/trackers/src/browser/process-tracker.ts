@@ -21,9 +21,12 @@ import { hostRead } from './host-read';
 // number is omitted, never sent as 0.
 //
 // SINGLETON per key object (see `processTrackerFor`). RETENTION rule — what survives a stage's last unsubscribe:
-//   * the last `userIdle` state (`currentUserIdle()`; dropped from the tracker when the permission is found NOT
-//     granted). `currentUserIdleFresh()` additionally hands it out only while younger than 2 detector thresholds (the
-//     seed for a held trace). KNOWN LIMIT (owner decision pending, docs/PROGRESS.md TR5): the tracker emits nothing on
+//   * the last `userIdle` state (`currentUserIdle()`, a plain retained read; dropped from the tracker when the
+//     permission is found NOT granted by a RUNNING stage — a revoke while NO stage is armed is only noticed on the
+//     next activation's async re-query). `currentUserIdleFresh()` (the seed for a held trace) is stricter: while the
+//     stage is armed it answers only once its detector is live (permission re-confirmed this run; no age bound, a
+//     live detector reports changes only), and undefined while that re-query is pending or after a refusal/revoke;
+//     with no armed stage it hands the state out only while younger than 2 detector thresholds. KNOWN LIMIT (owner decision pending, docs/PROGRESS.md TR5): the tracker emits nothing on
 //     revoke, and a HELD trace cannot be retracted, so a consumer that already published the last value keeps
 //     re-recording it until its producer stops; the drop above only stops the tracker serving it to NEW seeds, and
 //   * the heap is read live (`currentHeap()`), uptime/idle/lag keep nothing: a stale idle figure or drift baseline
@@ -180,6 +183,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   readonly #inert = new Set<Stage>();
   /** Retained across deactivation (see the retention rule). */
   #userIdle: UserIdleState | undefined;
+  /** The armed user-idle run (its `detector` is set only while the permission is confirmed and the detector live). */
+  #userIdleRun: { detector?: IdleDetectorLike } | undefined;
   /** When `#userIdle` was read; only meaningful while `#userIdle` is defined (always set together). */
   #userIdleAt: number | undefined;
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
@@ -246,6 +251,11 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
    * that publish the state as a HELD reading: a stale snapshot must not seed one.
    */
   currentUserIdleFresh(): UserIdleState | undefined {
+    // The stage is armed: the state is trustworthy exactly while its detector is live, i.e. once THIS run has
+    // re-confirmed the permission (a run still waiting on the async permission query cannot vouch for a snapshot
+    // that a revoke may have outdated, and a live detector's state does not age: it reports changes only).
+    const run = this.#userIdleRun;
+    if (run !== undefined) return run.detector !== undefined ? this.#userIdle : undefined;
     const at = this.#userIdleAt;
     if (this.#userIdle === undefined || at === undefined) return undefined;
     let age: number;
@@ -392,28 +402,27 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     };
   }
 
-  // The clock read is memoised per env object so a hostile `performance.now` getter is reported ONCE, however many
-  // times a stage (re)starts against the same seams; a rebind that changes a seam builds a new env and reads afresh.
-  readonly #clocks = new WeakMap<ProcessEnv, (() => number) | undefined>();
+  // A SUCCESSFUL clock read is memoised per env object (re-reading a live getter on every stage start buys nothing).
+  // A FAILED read is never cached, so the stage is looked at again on its next activation (the retry rule); a failure
+  // that persists is reported once per env (until a read succeeds), not once per activation.
+  readonly #clocks = new WeakMap<ProcessEnv, () => number>();
+  readonly #clockFailing = new WeakSet<ProcessEnv>();
 
   #clockOf(env: ProcessEnv): (() => number) | undefined {
-    if (this.#clocks.has(env)) return this.#clocks.get(env);
-    const clock = this.#readClock(env);
+    const cached = this.#clocks.get(env);
+    if (cached !== undefined) return cached;
+    const report = (error: unknown): void => {
+      if (!this.#clockFailing.has(env)) {
+        this.#clockFailing.add(env);
+        this.#onError(error);
+      }
+    };
+    const perf = hostRead(() => env.performance, report);
+    const now = perf === undefined ? undefined : hostRead(() => perf.now, report);
+    if (typeof now !== 'function' || perf === undefined) return undefined;
+    const clock = (): number => (perf.now as () => number)();
     this.#clocks.set(env, clock);
     return clock;
-  }
-
-  #readClock(env: ProcessEnv): (() => number) | undefined {
-    const perf = hostRead(
-      () => env.performance,
-      (error) => this.#onError(error),
-    );
-    if (perf === undefined) return undefined;
-    const now = hostRead(
-      () => perf.now,
-      (error) => this.#onError(error),
-    );
-    return typeof now === 'function' ? () => (perf.now as () => number)() : undefined;
   }
 
   // ---- heap -------------------------------------------------------------------------------------------------------
@@ -581,6 +590,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
       onChange?: () => void;
       detachPermission?: () => void;
     } = { alive: true };
+    this.#userIdleRun = run;
 
     const publish = (detector: IdleDetectorLike): void => {
       const userState = hostRead(() => detector.userState, report);
@@ -673,6 +683,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
 
     return () => {
       run.alive = false;
+      if (this.#userIdleRun === run) this.#userIdleRun = undefined;
       end();
       const detach = run.detachPermission;
       run.detachPermission = undefined;
