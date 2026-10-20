@@ -5,11 +5,13 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { bugseeEsbuildPlugin, bugseeRollupPlugin } from '@bugsee/bundler-plugin-core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import { build as esbuild } from 'esbuild';
 import { rollup } from 'rollup';
+import { parseAst } from 'rollup/parseAst';
 import { build as viteBuild } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import webpack from 'webpack';
@@ -134,6 +136,84 @@ describe('app identity is baked into the bundle', () => {
       mappings: string;
     };
     expect(map.mappings.length).toBeGreaterThan(0);
+  });
+
+  // The bake rewrites only real references: a quoted name (here kept alive through an export) stays data,
+  // and the chunk is still valid JavaScript (a lexical rewrite produced `""7.8.9-e2e""`).
+  it('rollup leaves a quoted constant name alone and emits a chunk that parses', async () => {
+    writeFileSync(
+      join(dir, 'rollup-quoted.js'),
+      [
+        "export const key = '__BUGSEE_APP_VERSION__';",
+        '// __BUGSEE_APP_BUILD__ in a comment',
+        "export const v = typeof __BUGSEE_APP_VERSION__ === 'string' ? __BUGSEE_APP_VERSION__ : 'none';",
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-quoted');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-quoted.js'),
+      plugins: [bugseeRollupPlugin(IDENTITY)],
+    });
+    await bundle.write({ dir: outDir, format: 'es', sourcemap: true });
+    await bundle.close();
+    const out = readFileSync(join(outDir, 'rollup-quoted.js'), 'utf8');
+    expect(out).toContain("const key = '__BUGSEE_APP_VERSION__';");
+    expect(out).toContain('typeof "7.8.9-e2e" === \'string\' ? "7.8.9-e2e"');
+    expect(() => parseAst(out)).not.toThrow();
+  });
+
+  // A parameter named like the constant is the app's own variable: baking its reads would silently change what
+  // the function computes (here `helper(3)` must still be 6, not `"3" * 2` of a baked literal in the body).
+  it('rollup does not bake a local binding that shares the constant name', async () => {
+    writeFileSync(
+      join(dir, 'rollup-local-helper.js'),
+      'export function helper(__BUGSEE_APP_BUILD__) { return __BUGSEE_APP_BUILD__ * 2; }\n',
+    );
+    writeFileSync(
+      join(dir, 'rollup-local-entry.js'),
+      [
+        "import { helper } from './rollup-local-helper.js';",
+        'export const doubled = helper(3);',
+        'export const build = typeof __BUGSEE_APP_BUILD__ === "string" ? __BUGSEE_APP_BUILD__ : "none";',
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-local');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-local-entry.js'),
+      plugins: [bugseeRollupPlugin({ ...IDENTITY, appBuild: 'b-local' })],
+    });
+    await bundle.write({ dir: outDir, format: 'es', entryFileNames: '[name].mjs' });
+    await bundle.close();
+    const file = join(outDir, 'rollup-local-entry.mjs');
+    const out = readFileSync(file, 'utf8');
+    expect(out).toMatch(
+      /function helper\(__BUGSEE_APP_BUILD__\) \{ return __BUGSEE_APP_BUILD__ \* 2; \}/,
+    );
+    const mod = (await import(pathToFileURL(file).href)) as { doubled: number; build: string };
+    expect(mod.doubled).toBe(6);
+    expect(mod.build).toBe('b-local');
+  });
+
+  // Rollup's ES output is strict: a function declared in a block is scoped to that block, so the read after
+  // it is the global and must be baked (a sloppy Annex B reading would leave it untouched).
+  it('rollup bakes the global read after a block-scoped function in strict output', async () => {
+    writeFileSync(
+      join(dir, 'rollup-block-fn.js'),
+      [
+        '{ function __BUGSEE_APP_BUILD__() {} __BUGSEE_APP_BUILD__(); }',
+        "export const r = typeof __BUGSEE_APP_BUILD__ === 'string' ? __BUGSEE_APP_BUILD__ : 'none';",
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-block-fn');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-block-fn.js'),
+      plugins: [bugseeRollupPlugin({ ...IDENTITY, appBuild: 'b-block' })],
+    });
+    await bundle.write({ dir: outDir, format: 'es', entryFileNames: '[name].mjs' });
+    await bundle.close();
+    const file = join(outDir, 'rollup-block-fn.mjs');
+    const mod = (await import(pathToFileURL(file).href)) as { r: string };
+    expect(mod.r).toBe('b-block');
   });
 
   it('a disabled plugin leaves the identifiers alone (rollup)', async () => {

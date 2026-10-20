@@ -11,7 +11,7 @@ import {
   fixedIdentityFromDefines,
   UNBAKEABLE_IDENTITY,
 } from './app-identity';
-import { bakeIdentity } from './bake-identity';
+import { bakeIdentity, type ParseChunk } from './bake-identity';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -27,6 +27,10 @@ import { type AssetStore, stampAssets } from './stamp-assets';
 export interface OutputLike {
   dir?: string;
   file?: string;
+  /** Output format (`es`, `cjs`, `iife`, `umd`, …); `es` is always strict. */
+  format?: string;
+  /** Whether Rollup emits `'use strict'` for the non-`es` formats (default true). */
+  strict?: boolean;
 }
 
 /** Resolve the build output directory from a rollup/vite output-options object. */
@@ -218,6 +222,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     }
     return bundlerIdentity;
   };
+  const unbakedOutDirs = new Set<string>();
   const identityByOutDir = new Map<string, ResolvedIdentity>();
   const identityForOutput = (outDir: string): ResolvedIdentity => {
     if (bundlerIdentity !== undefined) {
@@ -311,12 +316,39 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     },
     rollup: {
       // Rollup has no `define`: bake the constants into each rendered chunk (with a source map), from the same
-      // per-output-directory identity the upload uses.
-      renderChunk(code: string, _chunk: unknown, output: OutputLike) {
+      // per-output-directory identity the upload uses. Rollup's own parser finds the real references, so a
+      // string, template or comment that merely spells the name is never rewritten.
+      renderChunk(
+        this: { parse?: ParseChunk; warn?: (message: string) => void } | undefined,
+        code: string,
+        _chunk: unknown,
+        output: OutputLike,
+      ) {
         const outDir = resolveOutputDir(output);
-        return outDir === undefined
-          ? null
-          : bakeIdentity(code, identityForOutput(outDir).identityDefines);
+        if (outDir === undefined) {
+          return null;
+        }
+        const parse = this?.parse;
+        return bakeIdentity(
+          code,
+          identityForOutput(outDir).identityDefines,
+          parse === undefined ? undefined : (chunk) => parse.call(this, chunk),
+          (reason) => {
+            // Said once per output directory: every chunk of a build would otherwise repeat it.
+            if (!unbakedOutDirs.has(outDir)) {
+              unbakedOutDirs.add(outDir);
+              this?.warn?.(
+                `[bugsee] The app version/build were NOT baked into ${outDir}: ${reason}. ` +
+                  'Reads of __BUGSEE_APP_VERSION__ / __BUGSEE_APP_BUILD__ in that output stay unreplaced.',
+              );
+            }
+          },
+          output.format === 'es' || output.strict !== false,
+        );
+      },
+      // A watch rebuild is a new build: warn again if it is again not baked.
+      buildStart() {
+        unbakedOutDirs.clear();
       },
       writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
     },

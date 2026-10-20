@@ -6,6 +6,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseAst } from 'rollup/parseAst';
 import type { UnpluginOptions } from 'unplugin';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CI_COMMIT_ENV_VARS } from './app-identity';
@@ -313,8 +314,12 @@ describe('rollup bakes the identity itself', () => {
     chunk: unknown,
     output: { dir?: string; file?: string },
   ) => { code: string; map: { mappings: string } } | null;
-  const renderChunk = (p: UnpluginOptions): RenderChunk =>
-    (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+  // Rollup calls the hook with its plugin context; `this.parse` is the parser the bake walks the chunk with.
+  const renderChunk = (
+    p: UnpluginOptions,
+    parse: (code: string) => unknown = parseAst,
+  ): RenderChunk =>
+    (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk.bind({ parse });
   const rollupWrite = (p: UnpluginOptions): WriteBundle =>
     (p.rollup as unknown as { writeBundle: WriteBundle }).writeBundle;
   const dist = () => ({ dir: join(web, 'dist') });
@@ -336,6 +341,99 @@ describe('rollup bakes the identity itself', () => {
     expect(renderChunk(plugin)(`f(${VERSION})`, {}, { dir: out })?.code).toBe('f("2.4.1")');
     await rollupWrite(plugin)({ dir: out });
     expect(uploaded().appVersion).toBe('2.4.1');
+  });
+
+  it("bakes through Rollup's own this.parse: a quoted name is data, a reference is replaced", () => {
+    const parse = vi.fn((code: string) => parseAst(code));
+    const code = `const k = "${VERSION}"; f(${VERSION});`;
+    const out = renderChunk(make({}), parse)(code, {}, dist());
+    expect(parse).toHaveBeenCalledWith(code);
+    expect(out?.code).toBe(`const k = "${VERSION}"; f("2.4.1");`);
+    expect(() => parseAst(out?.code ?? '')).not.toThrow();
+  });
+
+  it('warns once per output when a chunk that mentions the constant cannot be parsed, and never throws', () => {
+    const warn = vi.fn();
+    const hook = renderChunk(make({}));
+    const withWarn = (p: UnpluginOptions) =>
+      (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk.bind({
+        parse: parseAst,
+        warn,
+      });
+    const bake = withWarn(make({}));
+    expect(bake(`with (o) { f(${VERSION}); }`, {}, dist())).toBeNull();
+    expect(bake(`const el = <div>{${VERSION}}</div>;`, {}, dist())).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('NOT baked');
+    expect(warn.mock.calls[0]?.[0]).toContain(join(web, 'dist'));
+    expect(warn.mock.calls[0]?.[0]).toMatch(/could not be parsed/);
+    // another output directory warns again; a chunk that never mentions the constant stays quiet
+    expect(bake(`with (o) { f(${VERSION}); }`, {}, { dir: join(web, 'other') })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(bake('with (o) { f(); }', {}, { dir: join(web, 'third') })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(hook(`f(${VERSION})`, {}, dist())?.code).toBe('f("2.4.1")');
+  });
+
+  it('warns when the context has no parser, and tolerates a context with no warn', () => {
+    const warn = vi.fn();
+    const hook = (make({}).rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    expect(hook.call({ warn }, `f(${VERSION})`, {}, dist())).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/no parser/);
+    expect(hook.call(undefined, `f(${VERSION})`, {}, { dir: join(web, 'x') })).toBeNull();
+    expect(
+      hook.call({ parse: parseAst }, `with (o) { ${VERSION} }`, {}, { dir: join(web, 'y') }),
+    ).toBeNull();
+  });
+
+  it("calls this.parse and this.warn as methods of Rollup's plugin context", () => {
+    const seen: unknown[] = [];
+    const ctx = {
+      parse(this: unknown, code: string) {
+        seen.push(this);
+        return parseAst(code);
+      },
+      warn(this: unknown) {
+        seen.push(this);
+      },
+    };
+    const hook = (make({}).rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    hook.call(ctx, `f(${VERSION})`, {}, dist());
+    hook.call(ctx, `with (o) { f(${VERSION}); }`, {}, { dir: join(web, 'ctx') });
+    expect(seen).toEqual([ctx, ctx, ctx]);
+    expect(seen.every((entry) => entry === ctx)).toBe(true);
+  });
+
+  it('bakes a global read past a block-scoped function only when the output is strict', () => {
+    const code = `{ function ${VERSION}() {} } use(${VERSION});`;
+    const bake = (output: object) => renderChunk(make({}))(code, {}, { ...dist(), ...output });
+    expect(bake({ format: 'es' })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'cjs' })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'es', strict: false })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'iife', strict: true })?.code).toContain('use("2.4.1")');
+    expect(bake({ format: 'cjs', strict: false })).toBeNull();
+    expect(bake({ format: 'umd', strict: false })).toBeNull();
+  });
+
+  it('warns again after a new build starts (watch rebuild)', () => {
+    const warn = vi.fn();
+    const plugin = make({});
+    const hook = (plugin.rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    const buildStart = (plugin.rollup as unknown as { buildStart: () => void }).buildStart;
+    const bad = `with (o) { f(${VERSION}); }`;
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    expect(warn).toHaveBeenCalledTimes(1);
+    buildStart();
+    hook.call({ parse: parseAst, warn }, bad, {}, dist());
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('without a parser in the context (not Rollup) nothing is guessed at: the chunk is left as is', () => {
+    const hook = (make({}).rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    expect(hook.call(undefined, `f(${VERSION})`, {}, dist())).toBeNull();
+    expect(hook.call({}, `f(${VERSION})`, {}, dist())).toBeNull();
   });
 
   it('the map is character-precise (hires), so a replacement does not shift every later column', () => {
