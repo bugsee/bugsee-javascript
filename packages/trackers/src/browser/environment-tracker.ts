@@ -251,6 +251,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
 
   /** Test/teardown: forget every reading, release listeners and timer, ignore anything in flight. */
   reset(): void {
+    this.removeAllListeners(); // drops every subscriber: the base deactivates, so a NEW subscriber re-activates us
     this.#running = false;
     this.#release();
     this.#language = undefined;
@@ -304,6 +305,23 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     return this.#streak('visibility', (report) =>
       hostRead(() => this.#env.document?.visibilityState, report),
     );
+  }
+
+  /**
+   * One host read of a multi-field reading: a read that THREW keeps the retained value of that field (a failing field
+   * must not turn into a fake change); one that merely found nothing (undefined) omits it.
+   */
+  #field<T>(
+    report: (error: unknown) => void,
+    read: () => T,
+    retained: T | undefined,
+  ): T | undefined {
+    let failed = false;
+    const value = hostRead(read, (error) => {
+      failed = true;
+      report(error);
+    });
+    return failed ? retained : value;
   }
 
   #listen(target: Partial<TargetLike> | undefined, type: string, run: () => void): void {
@@ -395,11 +413,16 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   #readLanguage(report: (error: unknown) => void): LanguageInfo | undefined {
     const nav = this.#env.navigator as { language?: unknown; languages?: unknown } | undefined;
     if (nav === undefined) return undefined;
-    const language = nonEmpty(hostRead(() => nav.language, report));
-    const languages = hostRead(() => {
-      const raw = nav.languages;
-      return Array.isArray(raw) ? raw.filter((l) => nonEmpty(l) !== undefined) : undefined;
-    }, report) as string[] | undefined;
+    const kept = this.#language;
+    const language = nonEmpty(this.#field(report, () => nav.language, kept?.language));
+    const languages = this.#field<string[] | undefined>(
+      report,
+      () => {
+        const raw = nav.languages;
+        return Array.isArray(raw) ? raw.filter((l) => nonEmpty(l) !== undefined) : undefined;
+      },
+      kept?.languages,
+    );
     const info: LanguageInfo = {
       ...(language !== undefined ? { language } : {}),
       ...(languages !== undefined && languages.length > 0 ? { languages } : {}),
@@ -418,8 +441,15 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #readTimeZone(report: (error: unknown) => void): TimeZoneInfo | undefined {
-    const timeZone = nonEmpty(hostRead(this.#env.timeZoneId ?? defaultTimeZoneId, report));
-    const offset = hostRead(this.#env.utcOffsetMinutes ?? defaultUtcOffset, report);
+    const kept = this.#timeZone;
+    const timeZone = nonEmpty(
+      this.#field(report, this.#env.timeZoneId ?? defaultTimeZoneId, kept?.timeZone),
+    );
+    const offset = this.#field(
+      report,
+      this.#env.utcOffsetMinutes ?? defaultUtcOffset,
+      kept?.utcOffsetMinutes,
+    );
     const utcOffsetMinutes =
       typeof offset === 'number' && Number.isFinite(offset) ? offset + 0 : undefined; // -0 -> 0
     const info: TimeZoneInfo = {
@@ -442,23 +472,42 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   #readHints(report: (error: unknown) => void): EnvironmentHints | undefined {
     const nav = this.#env.navigator as Record<string, unknown> | undefined;
     const win = this.#env.window as Record<string, unknown> | undefined;
-    const fromNav = (key: string): unknown => hostRead(() => nav?.[key], report);
-    const fromWin = (key: string): unknown => hostRead(() => win?.[key], report);
-    const cookiesEnabled = bool(fromNav('cookieEnabled'));
-    const secureContext = bool(fromWin('isSecureContext'));
-    const crossOriginIsolated = bool(fromWin('crossOriginIsolated'));
-    const automation = bool(fromNav('webdriver'));
-    const globalPrivacyControl = bool(fromNav('globalPrivacyControl'));
-    const dnt = fromNav('doNotTrack');
-    const doNotTrack =
-      dnt === '1' || dnt === 'yes' ? true : dnt === '0' || dnt === 'no' ? false : undefined;
+    const kept = this.#hints;
+    // A read that threw keeps the retained value of its hint (see #field).
+    const flag = (
+      source: Record<string, unknown> | undefined,
+      key: string,
+      hint: keyof EnvironmentHints,
+    ): boolean | undefined =>
+      bool(this.#field(report, () => source?.[key], kept?.[hint] as boolean | undefined));
+    const cookiesEnabled = flag(nav, 'cookieEnabled', 'cookiesEnabled');
+    const secureContext = flag(win, 'isSecureContext', 'secureContext');
+    const crossOriginIsolated = flag(win, 'crossOriginIsolated', 'crossOriginIsolated');
+    const automation = flag(nav, 'webdriver', 'automation');
+    const globalPrivacyControl = flag(nav, 'globalPrivacyControl', 'globalPrivacyControl');
+    const doNotTrack = this.#field<boolean | undefined>(
+      report,
+      () => {
+        const dnt = nav?.doNotTrack;
+        return dnt === '1' || dnt === 'yes'
+          ? true
+          : dnt === '0' || dnt === 'no'
+            ? false
+            : undefined;
+      },
+      kept?.doNotTrack,
+    );
     // Only a browser that HAS a service-worker container can say whether the page is controlled.
-    const serviceWorkerControlled = hostRead(() => {
-      const container = nav?.serviceWorker as { controller?: unknown } | undefined;
-      return typeof container === 'object' && container !== null
-        ? container.controller !== null && container.controller !== undefined
-        : undefined;
-    }, report);
+    const serviceWorkerControlled = this.#field<boolean | undefined>(
+      report,
+      () => {
+        const container = nav?.serviceWorker as { controller?: unknown } | undefined;
+        return typeof container === 'object' && container !== null
+          ? container.controller !== null && container.controller !== undefined
+          : undefined;
+      },
+      kept?.serviceWorkerControlled,
+    );
     const hints: EnvironmentHints = {
       ...(cookiesEnabled !== undefined ? { cookiesEnabled } : {}),
       ...(secureContext !== undefined ? { secureContext } : {}),
@@ -523,10 +572,9 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     });
   }
 
-  #readState(status: unknown): PermissionStateName | undefined {
-    const state = hostRead(
-      () => (status as { state?: unknown }).state,
-      (e) => this.#onError(e),
+  #readState(name: string, status: unknown): PermissionStateName | undefined {
+    const state = this.#streak(`permission:${name}`, (report) =>
+      hostRead(() => (status as { state?: unknown }).state, report),
     );
     return state === 'granted' || state === 'denied' || state === 'prompt' ? state : undefined;
   }
@@ -537,7 +585,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
     const listener = (): void => {
       if (this.#epoch !== mine) return;
       try {
-        const state = this.#readState(status);
+        const state = this.#readState(name, status);
         const next: PermissionStates = { ...this.#permissions };
         if (state === undefined)
           delete next[name]; // unreadable now: omit, never keep a stale claim
@@ -563,7 +611,7 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   #publishPermissions(answered: Array<{ name: string; status: unknown }>): void {
     const next: PermissionStates = {};
     for (const { name, status } of answered) {
-      const state = this.#readState(status);
+      const state = this.#readState(name, status);
       if (state !== undefined) next[name] = state;
     }
     // Nothing usable (unsupported / every query failed): keep the retained snapshot, emit nothing.

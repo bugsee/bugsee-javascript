@@ -1546,3 +1546,225 @@ describe('EnvironmentTracker: emitted payloads are copies', () => {
     void document;
   });
 });
+
+describe('EnvironmentTracker: a failing field keeps its retained value (no fake changes)', () => {
+  const evs = (seen: Array<[string, unknown]>, name: string) => seen.filter(([n]) => n === name);
+
+  it('language: one field throwing then recovering emits nothing; a real change afterwards still does', () => {
+    const flag = { langFails: false, languagesFail: false };
+    const state = { language: 'en', languages: ['en', 'de'] };
+    const nav = {
+      get language(): string {
+        if (flag.langFails) throw new Error('language');
+        return state.language;
+      },
+      get languages(): string[] {
+        if (flag.languagesFail) throw new Error('languages');
+        return state.languages;
+      },
+    };
+    const { tracker, scheduler, win, seen, listen } = setup(nav);
+    listen();
+    flag.langFails = true;
+    win.fire('languagechange');
+    expect(tracker.current().language).toEqual({ language: 'en', languages: ['en', 'de'] });
+    flag.langFails = false;
+    flag.languagesFail = true;
+    win.fire('languagechange');
+    expect(tracker.current().language).toEqual({ language: 'en', languages: ['en', 'de'] });
+    flag.languagesFail = false;
+    scheduler.tick();
+    expect(evs(seen, 'language')).toEqual([]);
+    // a failing field next to a REAL change of the other: only the real change shows
+    flag.langFails = true;
+    state.languages = ['de'];
+    win.fire('languagechange');
+    expect(evs(seen, 'language')).toEqual([
+      [
+        'language',
+        {
+          language: 'en',
+          languages: ['de'],
+          previous: { language: 'en', languages: ['en', 'de'] },
+        },
+      ],
+    ]);
+  });
+
+  it('time zone: id or offset throwing once then recovering emits nothing', () => {
+    const fail = { id: false, offset: false };
+    const { tracker, scheduler, seen, listen } = setup(undefined, {
+      timeZoneId: () => {
+        if (fail.id) throw new Error('id');
+        return 'Europe/Kyiv';
+      },
+      utcOffsetMinutes: () => {
+        if (fail.offset) throw new Error('offset');
+        return 120;
+      },
+    });
+    listen();
+    fail.id = true;
+    scheduler.tick();
+    expect(tracker.current().timeZone).toEqual({ timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 });
+    fail.id = false;
+    fail.offset = true;
+    scheduler.tick();
+    expect(tracker.current().timeZone).toEqual({ timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 });
+    fail.offset = false;
+    scheduler.tick();
+    expect(evs(seen, 'timezone')).toEqual([]);
+  });
+
+  it('hints: a throwing hint keeps its retained value (each hint, incl. doNotTrack and serviceWorker)', () => {
+    const fail = { on: false };
+    const guard = <T>(v: T): T => {
+      if (fail.on) throw new Error('hint');
+      return v;
+    };
+    const nav = {
+      language: 'en',
+      get cookieEnabled() {
+        return guard(true);
+      },
+      get webdriver() {
+        return guard(false);
+      },
+      get globalPrivacyControl() {
+        return guard(true);
+      },
+      get doNotTrack() {
+        return guard('1');
+      },
+      get serviceWorker() {
+        return guard({ controller: {} });
+      },
+    };
+    const win = mkTarget();
+    Object.defineProperty(win, 'isSecureContext', { get: () => guard(true) });
+    Object.defineProperty(win, 'crossOriginIsolated', { get: () => guard(false) });
+    wins.push(win);
+    const { tracker, scheduler, seen, listen } = setup(nav, { window: win });
+    listen();
+    const full = tracker.current().hints;
+    expect(full).toEqual({
+      cookiesEnabled: true,
+      secureContext: true,
+      crossOriginIsolated: false,
+      serviceWorkerControlled: true,
+      automation: false,
+      doNotTrack: true,
+      globalPrivacyControl: true,
+    });
+    fail.on = true;
+    scheduler.tick();
+    expect(tracker.current().hints).toEqual(full);
+    fail.on = false;
+    scheduler.tick();
+    expect(evs(seen, 'hints')).toHaveLength(1); // only the first snapshot
+  });
+
+  it('a throwing PermissionStatus.state getter is reported once per streak, not every run', async () => {
+    const flag = { on: true };
+    const status = mkTarget();
+    Object.defineProperty(status, 'state', {
+      get() {
+        if (flag.on) throw new Error('state');
+        return 'granted';
+      },
+    });
+    const { onError, tracker, listen } = setup(
+      { permissions: { query: () => Promise.resolve(status) } },
+      { permissionNames: ['camera'] },
+    );
+    listen();
+    await flush();
+    status.fire('change');
+    status.fire('change');
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['state']);
+    flag.on = false;
+    status.fire('change');
+    expect(tracker.current().permissions).toEqual({ camera: 'granted' });
+    flag.on = true;
+    status.fire('change');
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('EnvironmentTracker: reset with subscribers, defaults and listener pins', () => {
+  it('reset() drops subscribers and a NEW subscriber re-activates the tracker', () => {
+    const { tracker, win, scheduler, document, seen, listen } = setup();
+    listen();
+    expect(scheduler.live.size).toBe(1);
+    tracker.reset();
+    expect(scheduler.live.size).toBe(0);
+    expect(win.count()).toBe(0);
+    expect(document.count()).toBe(0);
+    expect(tracker.current()).toEqual({});
+    seen.length = 0;
+    const off = listen();
+    expect(scheduler.live.size).toBe(1);
+    expect(win.count('languagechange')).toBe(1);
+    expect(document.count('visibilitychange')).toBe(1);
+    expect(tracker.current().language?.language).toBe('en-US');
+    off();
+    expect(scheduler.live.size).toBe(0);
+  });
+
+  it('the default UTC offset is positive EAST of UTC (getTimezoneOffset is positive WEST)', () => {
+    const spy = vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(-120); // UTC+2
+    try {
+      const t = new EnvironmentTracker({});
+      const off = t.on('timezone', () => {});
+      expect(t.current().timeZone?.utcOffsetMinutes).toBe(120);
+      off();
+      spy.mockReturnValue(300); // UTC-5
+      const u = new EnvironmentTracker({});
+      const offU = u.on('timezone', () => {});
+      expect(u.current().timeZone?.utcOffsetMinutes).toBe(-300);
+      offU();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('release still tries to remove a listener whose addEventListener threw', () => {
+    const removed: string[] = [];
+    const win = {
+      addEventListener: () => {
+        throw new Error('add');
+      },
+      removeEventListener: (type: string) => void removed.push(type),
+      isSecureContext: true,
+    };
+    const { tracker, onError } = setup(undefined, { window: win as never });
+    const off = tracker.onAny(() => {});
+    expect(onError.mock.calls.map(([e]) => (e as Error).message)).toEqual(['add']);
+    off();
+    expect(removed).toEqual(['languagechange']);
+  });
+
+  it.each([
+    ['hidden', 'hidden'],
+    ['prerender', 'prerender'],
+    ['unreadable', undefined],
+  ])('visibilitychange to a %s page does not re-read', (_label, state) => {
+    const document = mkTarget();
+    let current: string | undefined = 'visible';
+    Object.defineProperty(document, 'visibilityState', {
+      get() {
+        if (current === undefined) throw new Error('vis');
+        return current;
+      },
+    });
+    const { tracker, navigator, listen } = setup(undefined, { document });
+    listen();
+    navigator.language = 'fr';
+    current = state;
+    document.fire('visibilitychange');
+    expect(tracker.current().language?.language).toBe('en-US');
+    current = 'visible';
+    document.fire('visibilitychange');
+    expect(tracker.current().language?.language).toBe('fr');
+  });
+});
