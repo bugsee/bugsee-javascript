@@ -67,6 +67,7 @@ const failClosed: Array<[string, string]> = [
   ['captureViewHierarchy', BugseeOption.CaptureViewHierarchy],
 ];
 const defaultOff: Array<[string, string]> = [
+  ['captureEnvironmentHints', BugseeOption.CaptureEnvironmentHints],
   ['persistUserIdentifier', BugseeOption.PersistUserIdentifier],
   ['reportSummaryRequired', BugseeOption.ReportingUiSummaryRequired],
   ['reportDescriptionRequired', BugseeOption.ReportingUiDescriptionRequired],

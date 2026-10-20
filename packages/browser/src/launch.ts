@@ -179,6 +179,13 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark".
     ...FAIL_ON_BOOLEAN_OPTION,
   },
+  // Environment hints that read as sensitive (private-browsing detection): OPT-IN, so only boolean `true` enables.
+  {
+    friendly: 'captureEnvironmentHints',
+    key: BugseeOption.CaptureEnvironmentHints,
+    default: false,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
   // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported; it must never throw.
   // Masking is fail-closed regardless.
@@ -358,6 +365,13 @@ export interface BugseeLaunchOptions {
    * the clear applies to reports created afterwards.
    */
   persistUserIdentifier?: boolean;
+  /**
+   * Observe environment hints that read as sensitive. Today: the private-browsing HEURISTIC (a storage-quota probe)
+   * behind a `private_mode_detected` system event, emitted only for a `yes` answer and never as a certainty.
+   * **Opt-in, default false**: detecting private browsing can read as circumventing the user's own intent (owner
+   * decision pending). Language and time-zone changes (`language_changed`, `timezone_changed`) are always observed.
+   */
+  captureEnvironmentHints?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -909,6 +923,11 @@ async function buildLaunch(
       createBrowserSystemEventsSource({
         window: win,
         lifecycle,
+        // The window's environment singleton (EnvironmentTracker): language/timezone events, and the opt-in
+        // private-mode heuristic.
+        ...(domDocument !== undefined ? { document: domDocument } : {}),
+        detectPrivateMode: resolved.options.get(BugseeOption.CaptureEnvironmentHints, false),
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         // from the INJECTED window (bound to it); never the host global
         ...(matchMedia !== undefined ? { matchMedia } : {}),
         ...(options.onError !== undefined ? { onError: options.onError } : {}),

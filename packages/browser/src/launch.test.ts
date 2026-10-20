@@ -45,6 +45,8 @@ import {
 import {
   applicationTrackerFor,
   connectivityTrackerFor,
+  environmentTrackerFor,
+  resetEnvironmentTracker,
   resetStorageTracker,
   storageTrackerFor,
 } from '@bugsee/trackers/browser';
@@ -1428,6 +1430,62 @@ describe('launch', () => {
         });
       } finally {
         resetStorageTracker({ window: w.win });
+      }
+    });
+
+    it('launch goes through the per-window EnvironmentTracker singleton (language/timezone on, private mode off by default)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
+      vi.stubGlobal('navigator', {
+        language: 'en-US',
+        languages: ['en-US', 'en'],
+        storage: { estimate },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const snapshot = environmentTrackerFor({ window: w.win }).current();
+        expect(snapshot.language).toEqual({ language: 'en-US', languages: ['en-US', 'en'] });
+        expect(snapshot.timeZone?.utcOffsetMinutes).toBeTypeOf('number');
+        expect(snapshot.privateMode).toBeUndefined(); // opt-in: the heuristic never ran
+        expect(w.count('languagechange')).toBe(1);
+        const names = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        expect(names).not.toContain('private_mode_detected');
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('captureEnvironmentHints: true runs the private-mode heuristic and records private_mode_detected for a yes', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', {
+        language: 'en-US',
+        storage: { estimate: () => Promise.resolve({ usage: 1, quota: 10 * 1024 * 1024 }) },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, captureEnvironmentHints: true }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        expect(environmentTrackerFor({ window: w.win }).current().privateMode).toEqual({
+          private: 'yes',
+          method: 'storage-quota',
+        });
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: unknown },
+        );
+        expect(events.find((e) => e.name === 'private_mode_detected')?.params).toEqual({
+          method: 'storage-quota',
+        });
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
       }
     });
 

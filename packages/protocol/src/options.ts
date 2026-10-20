@@ -72,6 +72,12 @@ export const BugseeOption = {
    * begin. Default false. Browser only.
    */
   CaptureStartInBlackout: 'com.bugsee.option.capture.start-in-blackout',
+  /**
+   * Browser only: observe environment hints that read as sensitive, starting with the PRIVATE-BROWSING heuristic (an
+   * `private_mode_detected` event for a `yes` answer; the answer is never certain). Default false: detecting private
+   * browsing can read as circumventing the user's intent. Language and time-zone changes are NOT gated by this.
+   */
+  CaptureEnvironmentHints: 'com.bugsee.option.capture.environment-hints',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Report failed HTTP responses (>= 400) and network failures as `error` reports. Default false. */
@@ -140,6 +146,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.system-events': boolean;
   'com.bugsee.option.capture.interactions': boolean;
   'com.bugsee.option.capture.view-hierarchy': boolean;
+  'com.bugsee.option.capture.environment-hints': boolean;
   'com.bugsee.option.capture.start-in-blackout': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.detect.hang': boolean;

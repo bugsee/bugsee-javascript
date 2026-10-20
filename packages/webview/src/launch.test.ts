@@ -1,4 +1,9 @@
-import { applicationTrackerFor, type WindowEvents } from '@bugsee/browser';
+import {
+  applicationTrackerFor,
+  environmentTrackerFor,
+  resetEnvironmentTracker,
+  type WindowEvents,
+} from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -176,6 +181,20 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     const off = shared.on('online', () => {});
     expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
     off();
+  });
+
+  it('shares the browser system-events source: launch goes through the per-window EnvironmentTracker (private mode off)', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    try {
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      expect(tracker.current().language).toEqual({ language: 'pl-PL' });
+      expect(tracker.current().privateMode).toBeUndefined();
+    } finally {
+      resetEnvironmentTracker({ window: win.target as never });
+    }
   });
 
   it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {

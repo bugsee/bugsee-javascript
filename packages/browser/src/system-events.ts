@@ -1,6 +1,12 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
-import { type ApplicationTracker, applicationTrackerFor } from '@bugsee/trackers/browser';
+import {
+  type ApplicationTracker,
+  applicationTrackerFor,
+  type EnvironmentTracker,
+  environmentTrackerFor,
+  hostRead,
+} from '@bugsee/trackers/browser';
 import type { WindowEvents } from './detection-providers';
 import { hostGlobal } from './host-global';
 
@@ -12,6 +18,10 @@ import { hostGlobal } from './host-global';
 //   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
 //   online / offline       → online / offline (connectivity transitions)
 //   orientationchange      → orientation_changed ({type, angle} from screen.orientation)
+//   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
+//   time zone / UTC offset → timezone_changed ({timezone?, utcOffsetMinutes?, previousTimezone?, previousUtcOffsetMinutes?})
+//   private-mode heuristic → private_mode_detected ({method}) ONLY for a `yes` answer, and ONLY when the launch opted in
+//                            (`captureEnvironmentHints`); `no`/`unknown` never produce an event (never claim certainty)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
 /** The document surface the source needs: visibilitychange + the current visibility state. */
@@ -33,6 +43,14 @@ interface MediaQueryLike {
   ): void;
 }
 
+/** The slice of a scheduler the environment tracker's slow tick needs. */
+type EnvironmentTimersLike = NonNullable<Parameters<typeof environmentTrackerFor>[0]['scheduler']>;
+
+/** Drops the keys whose value is undefined (an unknown value is omitted from event params, never sent as null). */
+function defined(params: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined));
+}
+
 /** Injected globals (each defaults to the real global; an absent one is skipped). */
 export interface BrowserSystemEventsEnv {
   window?: WindowEvents;
@@ -45,12 +63,19 @@ export interface BrowserSystemEventsEnv {
   matchMedia?: (query: string) => MediaQueryLike;
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
   lifecycle?: Pick<ApplicationTracker, 'on'>;
+  /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
+  environment?: Pick<EnvironmentTracker, 'on'>;
+  /** Run the private-mode heuristic (default false; see `captureEnvironmentHints`). Ignored when `environment` is supplied. */
+  detectPrivateMode?: boolean;
+  /** Drives the time-zone re-read tick; default the global timers. Ignored when `environment` is supplied. */
+  scheduler?: EnvironmentTimersLike;
   onError?: (error: unknown) => void;
 }
 
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
+  readonly #environment: Pick<EnvironmentTracker, 'on'>;
   readonly #screen: ScreenLike | undefined;
   readonly #matchMedia: ((query: string) => MediaQueryLike) | undefined;
   readonly #onError: (error: unknown) => void;
@@ -58,6 +83,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
+    environment: Pick<EnvironmentTracker, 'on'>,
     screenLike: ScreenLike | undefined,
     matchMedia?: (query: string) => MediaQueryLike,
     onError?: (error: unknown) => void,
@@ -72,6 +98,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     };
     super(report);
     this.#lifecycle = lifecycle;
+    this.#environment = environment;
     this.#screen = screenLike;
     this.#matchMedia = matchMedia;
     this.#onError = report;
@@ -101,6 +128,31 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         });
       }),
     ];
+    const env = this.#environment;
+    this.#unsubscribe.push(
+      env.on('language', ({ language, languages, previous }) =>
+        this.emit('event', {
+          name: 'language_changed',
+          params: defined({ language, languages, previousLanguage: previous.language }),
+        }),
+      ),
+      env.on('timezone', ({ timeZone, utcOffsetMinutes, previous }) =>
+        this.emit('event', {
+          name: 'timezone_changed',
+          params: defined({
+            timezone: timeZone,
+            utcOffsetMinutes,
+            previousTimezone: previous.timeZone,
+            previousUtcOffsetMinutes: previous.utcOffsetMinutes,
+          }),
+        }),
+      ),
+      env.on('privateMode', ({ private: answer, method }) => {
+        if (answer === 'yes') {
+          this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
+        }
+      }),
+    );
     this.#watchDarkMode();
   }
 
@@ -141,14 +193,24 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  // The host globals are read only when no lifecycle tracker was supplied: a supplied one already owns them.
+  // The host globals are read only when a tracker has to be built (a supplied one already owns them), and only
+  // once for both: a blocked global is reported once. Host globals only when NEITHER window nor document was
+  // injected: an injected window never borrows the host's document.
+  let surfaces: { win: WindowEvents | undefined; doc: DocumentLike | undefined } | undefined;
+  const hostSurfaces = (): NonNullable<typeof surfaces> => {
+    if (surfaces === undefined) {
+      const injected = env.window !== undefined || env.document !== undefined;
+      surfaces = {
+        win: injected ? env.window : hostGlobal('window', env.onError),
+        doc: injected ? env.document : hostGlobal('document', env.onError),
+      };
+    }
+    return surfaces;
+  };
   const lifecycle =
     env.lifecycle ??
     ((): ApplicationTracker => {
-      // Host globals only when NEITHER was injected: an injected window never borrows the host's document.
-      const injected = env.window !== undefined || env.document !== undefined;
-      const win = injected ? env.window : hostGlobal('window', env.onError);
-      const doc = injected ? env.document : hostGlobal('document', env.onError);
+      const { win, doc } = hostSurfaces();
       return applicationTrackerFor(
         {
           ...(win !== undefined ? { window: win } : {}),
@@ -157,8 +219,30 @@ export function createBrowserSystemEventsSource(
         env.onError,
       );
     })();
+  const environment =
+    env.environment ??
+    ((): Pick<EnvironmentTracker, 'on'> => {
+      const { win, doc } = hostSurfaces();
+      const nav =
+        win === undefined
+          ? undefined
+          : hostRead(() => (win as { navigator?: object }).navigator, env.onError);
+      return environmentTrackerFor(
+        {
+          ...(win !== undefined ? { window: win } : {}),
+          ...(doc !== undefined ? { document: doc } : {}),
+          ...(nav !== undefined ? { navigator: nav } : {}),
+          ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+          ...(env.detectPrivateMode !== undefined
+            ? { detectPrivateMode: env.detectPrivateMode }
+            : {}),
+        },
+        env.onError,
+      );
+    })();
   return new BrowserSystemEventsSource(
     lifecycle,
+    environment,
     env.screen ?? hostGlobal('screen', env.onError),
     env.matchMedia,
     env.onError,

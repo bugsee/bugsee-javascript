@@ -1,5 +1,11 @@
 import type { SystemEvent } from '@bugsee/capture';
-import { ApplicationTracker, resetApplicationTracker } from '@bugsee/trackers/browser';
+import { createMultiKeyEmitter } from '@bugsee/trackers';
+import {
+  ApplicationTracker,
+  type EnvironmentEvents,
+  resetApplicationTracker,
+  resetEnvironmentTracker,
+} from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
 
@@ -27,6 +33,10 @@ function target() {
   };
 }
 
+// The environment tracker has its own listeners (languagechange, visibilitychange); tests of the LIFECYCLE wiring
+// inject an inert one so they count only the lifecycle's. The environment events are tested separately below.
+const inertEnvironment = { on: () => () => {} };
+
 function fakeEnv() {
   const win = target();
   const doc = target();
@@ -39,7 +49,12 @@ function fakeEnv() {
       return state.visibilityState;
     },
   };
-  const env: BrowserSystemEventsEnv = { window: win, document, screen: { orientation } };
+  const env: BrowserSystemEventsEnv = {
+    window: win,
+    document,
+    screen: { orientation },
+    environment: inertEnvironment as never,
+  };
   return { env, win, doc, state, orientation };
 }
 
@@ -257,10 +272,11 @@ describe('createBrowserSystemEventsSource', () => {
         'screen blocked',
         'window blocked',
       ]);
-      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      // a supplied lifecycle AND environment own the window/document: they are not read (or reported) again
       const none: unknown[] = [];
       createBrowserSystemEventsSource({
         lifecycle: { on: () => () => {} },
+        environment: inertEnvironment as never,
         onError: (e) => none.push(e),
       });
       expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
@@ -298,8 +314,12 @@ describe('createBrowserSystemEventsSource', () => {
     const source = createBrowserSystemEventsSource();
     const off = source.onAny(() => {});
     expect(win.count('pagehide')).toBe(1);
-    expect(doc.count('visibilitychange')).toBe(1);
+    // the lifecycle tracker's listener AND the environment tracker's (time-zone re-read on visible)
+    expect(doc.count('visibilitychange')).toBe(2);
+    expect(win.count('languagechange')).toBe(1);
     off();
+    expect(doc.count('visibilitychange')).toBe(0);
+    expect(win.count('languagechange')).toBe(0);
   });
 
   it('without an injected tracker, two sources over the same document share the registry singleton (one listener set)', () => {
@@ -386,5 +406,109 @@ describe('createBrowserSystemEventsSource', () => {
       { name: 'online' },
     ]);
     second();
+  });
+
+  describe('environment events', () => {
+    const lifecycleStub = { on: () => () => {} };
+
+    it('maps the language / timezone stages to language_changed / timezone_changed, omitting unknown fields', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events } = activate({ lifecycle: lifecycleStub as never, environment });
+      environment.emit('language', {
+        language: 'uk-UA',
+        languages: ['uk-UA', 'en'],
+        previous: { language: 'en-US' },
+      });
+      environment.emit('language', { languages: ['fr'], previous: {} });
+      environment.emit('timezone', {
+        timeZone: 'Asia/Tokyo',
+        utcOffsetMinutes: 540,
+        previous: { timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 },
+      });
+      environment.emit('timezone', { utcOffsetMinutes: 60, previous: {} });
+      expect(events.slice(1)).toEqual([
+        {
+          name: 'language_changed',
+          params: { language: 'uk-UA', languages: ['uk-UA', 'en'], previousLanguage: 'en-US' },
+        },
+        { name: 'language_changed', params: { languages: ['fr'] } },
+        {
+          name: 'timezone_changed',
+          params: {
+            timezone: 'Asia/Tokyo',
+            utcOffsetMinutes: 540,
+            previousTimezone: 'Europe/Kyiv',
+            previousUtcOffsetMinutes: 120,
+          },
+        },
+        { name: 'timezone_changed', params: { utcOffsetMinutes: 60 } },
+      ]);
+    });
+
+    it('private_mode_detected only for a yes answer (never for no / unknown), with the method', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events } = activate({ lifecycle: lifecycleStub as never, environment });
+      environment.emit('privateMode', { private: 'no', method: 'storage-quota' });
+      environment.emit('privateMode', { private: 'unknown' });
+      expect(events.slice(1)).toEqual([]);
+      environment.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      environment.emit('privateMode', { private: 'yes' });
+      expect(events.slice(1)).toEqual([
+        { name: 'private_mode_detected', params: { method: 'storage-quota' } },
+        { name: 'private_mode_detected', params: {} },
+      ]);
+    });
+
+    it('stops listening to the environment tracker on deactivate', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events, off } = activate({ lifecycle: lifecycleStub as never, environment });
+      off();
+      environment.emit('language', { language: 'x', previous: {} });
+      expect(events).toEqual([{ name: 'process_started' }]);
+    });
+
+    it('over the window singleton: a real languagechange and a time-zone tick become events; private mode is opt-in', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const nav = {
+        language: 'en-US',
+        storage: { estimate: vi.fn(() => Promise.resolve({ quota: 10 })) },
+      };
+      Object.assign(win, { navigator: nav });
+      let tick: () => void = () => {};
+      const scheduler = {
+        setInterval: (cb: () => void) => {
+          tick = cb;
+          return 1;
+        },
+        clearInterval: () => {},
+      };
+      try {
+        // default: language/timezone on, private mode off
+        const a = activate({ ...rest, lifecycle: lifecycleStub as never, scheduler });
+        nav.language = 'de-DE';
+        win.emit('languagechange', {});
+        expect(a.events.map((e) => e.name)).toEqual(['process_started', 'language_changed']);
+        expect(nav.storage.estimate).not.toHaveBeenCalled();
+        a.off();
+        resetEnvironmentTracker({ window: win });
+        // opted in: a yes answer is an event
+        const b = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          scheduler,
+          detectPrivateMode: true,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(b.events.at(-1)).toEqual({
+          name: 'private_mode_detected',
+          params: { method: 'storage-quota' },
+        });
+        expect(typeof tick).toBe('function');
+        b.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
   });
 });
