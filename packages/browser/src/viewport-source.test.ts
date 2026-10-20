@@ -184,15 +184,18 @@ describe('createBrowserViewportSource', () => {
 
   it('coalesces a burst of events into a single emit', () => {
     const { win, scheduler, events } = harness();
+    // The tracker only announces a CHANGE, so each step of a drag differs from the one before it.
     win.innerWidth = 800;
-
     win.fire('resize');
+    win.innerWidth = 700;
     win.fire('resize');
+    win.innerWidth = 600;
     win.fire('resize');
     expect(scheduler.scheduled).toBe(1);
 
     scheduler.flush();
     expect(events).toHaveLength(2);
+    expect(events[1]?.frameW).toBe(600); // the LAST geometry of the burst, read at the frame
   });
 
   it('drops a frame identical to the one before it', () => {
