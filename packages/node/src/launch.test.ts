@@ -1383,11 +1383,14 @@ describe('launch — system trace producers', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // the launch's producers are subscribed to THE `process` singleton: its cpu stage is armed (seeded baseline)
-    // and its tick is driven by the launch's scheduler
+    // the launch's producers are subscribed to THE `process` singleton: its cpu stage is armed and the tick is
+    // driven by the launch's scheduler (no sample exists before the first tick)
     const tracker = processTrackerFor();
-    expect(tracker.current('cpu')).toEqual({ userDelta: 0, systemDelta: 0, processPct: 0 });
-    expect(fs.calls.some((c) => c.ms === 1000)).toBe(true);
+    expect(tracker.current('cpu')).toBeUndefined();
+    const ticks = fs.calls.filter((c) => c.ms === 1000);
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) t.cb();
+    expect(typeof tracker.current('cpu')?.processPct).toBe('number');
     // a relaunch shares the SAME tracker (no second instance, no second set of sources)
     expect(processTrackerFor()).toBe(tracker);
   });

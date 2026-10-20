@@ -1,5 +1,5 @@
 import { SchedulerToken } from '@bugsee/core';
-import { type Bugsee, launch, type NodeRuntime } from '@bugsee/node';
+import { type Bugsee, launch, type NodeRuntime, resetProcessTracker } from '@bugsee/node';
 import { wirePerformance } from '@bugsee/performance';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { Elysia } from 'elysia';
@@ -63,6 +63,7 @@ const parseBundle = (zip: Uint8Array): ParsedBundle => {
 const clients: Bugsee[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop()));
+  resetProcessTracker(); // the shared per-process tracker merges seams across launches
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
 

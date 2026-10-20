@@ -130,20 +130,46 @@ describe('ProcessTracker', () => {
       expect(log).toEqual(['loop.start', 'gc.start', 'loop.stop', 'gc.stop']);
     });
 
-    it('restart re-arms and starts every windowed stage FRESH (no retained sample)', () => {
+    it('restart re-arms and starts every windowed stage FRESH: a sample taken by a TICK does not survive', () => {
       const log: string[] = [];
       let n = 0;
-      const { tracker } = mk({
+      const { tracker, fs, advance } = mk({
         eventLoop: source('loop', log, () => ({ meanMs: ++n, maxMs: 0, p99Ms: 0 })),
+        gc: source('gc', log, () => ({ count: 1, pauseMs: 1, maxPauseMs: 1 })),
+        eventLoopUtilization: () => 0.5,
       });
-      const off = tracker.on('eventLoop', () => {});
-      tracker.on('eventLoop', () => {})();
-      expect(tracker.current('eventLoop')).toBeUndefined(); // armed, nothing ticked yet
-      off();
-      expect(tracker.current('eventLoop')).toBeUndefined();
-      tracker.on('eventLoop', () => {});
-      expect(log).toEqual(['loop.start', 'loop.stop', 'loop.start']);
-      expect(tracker.current('eventLoop')).toBeUndefined();
+      const off = [
+        tracker.on('eventLoop', () => {}),
+        tracker.on('gc', () => {}),
+        tracker.on('utilization', () => {}),
+        tracker.on('cpu', () => {}),
+      ];
+      advance({ user: 10, system: 0 }, 1000);
+      fs.tick();
+      for (const stage of ['eventLoop', 'gc', 'utilization', 'cpu'] as const) {
+        expect(tracker.current(stage), stage).toBeDefined();
+      }
+      for (const o of off) o();
+      for (const stage of ['eventLoop', 'gc', 'utilization', 'cpu'] as const) {
+        expect(tracker.current(stage), stage).toBeUndefined(); // unarmed
+        tracker.on(stage, () => {});
+        expect(tracker.current(stage), `${stage} after restart`).toBeUndefined(); // armed again, nothing ticked
+      }
+      expect(log.filter((l) => l.endsWith('.start'))).toHaveLength(4); // loop+gc started twice
+    });
+
+    it("utilization is windowed: each tick answers the reader's CURRENT value, not a retained one", () => {
+      let u: number | undefined = 0.25;
+      const { tracker, fs } = mk({ eventLoopUtilization: () => u });
+      const got: unknown[] = [];
+      tracker.on('utilization', (x) => void got.push(x));
+      fs.tick();
+      u = 0.75;
+      fs.tick();
+      u = undefined;
+      fs.tick();
+      expect(got).toEqual([{ utilization: 0.25 }, { utilization: 0.75 }]);
+      expect(tracker.current('utilization')).toEqual({ utilization: 0.75 });
     });
   });
 
@@ -240,6 +266,34 @@ describe('ProcessTracker', () => {
       expect(log).toEqual(['loop.start', 'loop.stop']);
     });
 
+    it('a listener that tears the run down mid-tick stops the rest of that tick', () => {
+      const { tracker, fs } = mk();
+      const seen: string[] = [];
+      const offs: (() => void)[] = [];
+      offs.push(
+        tracker.on('memory', () => {
+          seen.push('memory');
+          for (const o of offs) o(); // every listener leaves: the timer is cleared mid-tick
+          tracker.on('uptime', () => void seen.push('uptime')); // and a NEW run starts
+        }),
+      );
+      offs.push(tracker.on('systemMemory', () => void seen.push('systemMemory')));
+      fs.tick();
+      expect(seen).toEqual(['memory']); // the old run emitted nothing more
+    });
+
+    it('a listener that REBINDS mid-tick (stages re-armed on the new run) ends the old run’s tick', () => {
+      const { tracker, fs } = mk();
+      const seen: string[] = [];
+      tracker.on('memory', () => {
+        seen.push('memory');
+        tracker.rebind({ intervalMs: 5 }); // changed seam: every stage is torn down and re-armed
+      });
+      tracker.on('systemMemory', () => void seen.push('systemMemory'));
+      fs.callbackAt(0)?.();
+      expect(seen).toEqual(['memory']);
+    });
+
     it('a stale timer callback (an earlier arming) never emits', () => {
       const { tracker, fs } = mk();
       const { got, off } = collect(tracker);
@@ -257,11 +311,11 @@ describe('ProcessTracker', () => {
   });
 
   describe('current()', () => {
-    it('cpu is seeded with a zero-length window when it arms, then follows the ticks; undefined unarmed', () => {
+    it('cpu has NO sample until its first tick (a zero-length window is not a reading); undefined unarmed', () => {
       const { tracker, fs, advance } = mk();
       expect(tracker.current('cpu')).toBeUndefined();
       const off = tracker.on('cpu', () => {});
-      expect(tracker.current('cpu')).toEqual({ userDelta: 0, systemDelta: 0, processPct: 0 });
+      expect(tracker.current('cpu')).toBeUndefined();
       advance({ user: 10, system: 20 }, 1000);
       fs.tick();
       expect(tracker.current('cpu')).toEqual({
@@ -272,7 +326,21 @@ describe('ProcessTracker', () => {
       off();
       expect(tracker.current('cpu')).toBeUndefined();
       tracker.on('cpu', () => {});
-      expect(tracker.current('cpu')).toEqual({ userDelta: 0, systemDelta: 0, processPct: 0 });
+      expect(tracker.current('cpu')).toBeUndefined(); // the previous run's sample did not survive
+    });
+
+    it('an unusable core count omits the cpu sample (never Infinity/NaN) and keeps the window', () => {
+      let cores = 0;
+      const { tracker, fs, advance } = mk({ cpuCount: () => cores });
+      const cpu: unknown[] = [];
+      tracker.on('cpu', (c) => void cpu.push(c));
+      advance({ user: 1000, system: 0 }, 1000);
+      fs.tick();
+      expect(cpu).toEqual([]);
+      cores = 1;
+      advance({ user: 2000, system: 0 }, 2000);
+      fs.tick();
+      expect(cpu).toEqual([{ userDelta: 2000, systemDelta: 0, processPct: 0.1 }]);
     });
 
     it('windowed stages answer the last emitted sample of this run', () => {
@@ -855,6 +923,23 @@ describe('ProcessTracker', () => {
       const after = n;
       await new Promise((r) => setTimeout(r, 30));
       expect(n).toBe(after);
+    });
+
+    it('the sampling timer is unref’d: it can never keep the process alive', () => {
+      const real = globalThis.setInterval;
+      let unrefs = 0;
+      globalThis.setInterval = (() => ({
+        unref: () => {
+          unrefs += 1;
+        },
+      })) as never;
+      try {
+        const off = new ProcessTracker({}).on('memory', () => {});
+        expect(unrefs).toBe(1);
+        off();
+      } finally {
+        globalThis.setInterval = real;
+      }
     });
 
     it('a handle without unref() is tolerated', () => {

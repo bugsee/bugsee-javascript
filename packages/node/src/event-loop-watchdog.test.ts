@@ -1,5 +1,6 @@
 import type { Scheduler } from '@bugsee/core';
-import { describe, expect, it, vi } from 'vitest';
+import { resetProcessTracker } from '@bugsee/trackers/node';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEventLoopWatchdog,
   evaluateHang,
@@ -9,6 +10,11 @@ import {
   type WatchdogMessage,
   type WatchdogWorker,
 } from './event-loop-watchdog';
+
+// The per-process ProcessTracker singleton merges seams across launches: never carry one test's fakes into the next.
+afterEach(() => {
+  resetProcessTracker();
+});
 
 const T: HangThresholds = { fairMs: 3000, mediumMs: 5000, severeMs: 10000 };
 

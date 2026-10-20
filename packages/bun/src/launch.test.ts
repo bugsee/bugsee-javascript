@@ -126,7 +126,7 @@ describe('@bugsee/bun launch', () => {
     const names = traces.map((e) => (e.data as { name: string }).name);
     expect(names).toContain('process_memory_rss');
     expect(names).toContain('ram_system_total');
-    expect(names).toContain('cpu_usage_process');
+    expect(names).not.toContain('cpu_usage_process'); // no CPU start value: it begins with the first sampled window
   });
 
   it('opts out of the V8 heap, available-memory and gc traces (Bun: JSC heap, not comparable availableMemory, blind GC observer)', () => {

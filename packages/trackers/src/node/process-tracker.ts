@@ -46,7 +46,11 @@ import {
 // numbers are not true. The platform GATES (`measures*`) are runtime-identity facts the composition root passes in;
 // the tracker only honours them. An injected source/reader always wins over its gate.
 //
-// SINGLETON per key object (see `processTrackerFor`: the `process` object by default). RETENTION rule — what survives
+// SINGLETON per key object (see `processTrackerFor`: the `process` object by default). SEAMS MERGE, NEVER DROP: the
+// tracker outlives launches, so a later launch that omits `scheduler`/`onError`/a reader KEEPS the previous launch's
+// (it can replace a seam, never shed one). Merely BUILDING a producer set (`createNodeSystemTraceProducers`) rebinds
+// the shared tracker, so a Bun/Deno default set built before `...options` in their launch.ts already hands its seams over.
+// Tests that inject fakes must use a private `key` or call `resetProcessTracker()`. RETENTION rule — what survives
 // a stage's last unsubscribe: ONLY the resolved seams, and the "this runtime refused" memory inside the guarded
 // sources (a refusing histogram/observer is not hammered again until a rebind swaps the seams). Everything windowed
 // starts FRESH on the next subscription: the CPU baseline, the ELU baseline, the last-emitted samples
@@ -252,9 +256,9 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   /**
    * The latest reading of `stage`. Stateless stages are read LIVE (guarded: undefined when the runtime cannot answer
    * or the read threw, which is reported). A WINDOWED stage (cpu, eventLoop, utilization, gc) cannot be re-read
-   * without consuming its window, so it answers the last sample of the current run: `cpu` is seeded with a
-   * zero-length window the moment it arms (so a producer has a baseline), the others are undefined until their first
-   * tick; all are undefined while the stage is not armed.
+   * without consuming its window, so it answers the last sample of the current run: undefined until the first
+   * tick (a baseline would be a made-up reading: a zero-length window has no CPU share to report), and undefined
+   * while the stage is not armed.
    */
   current<S extends Stage>(stage: S): ProcessEvents[S] | undefined {
     if (WINDOWED.has(stage)) {
@@ -304,7 +308,6 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     try {
       const run = this.#makeRun(stage);
       this.#armed.set(stage, run);
-      if (stage === 'cpu') this.#last.set(stage, { userDelta: 0, systemDelta: 0, processPct: 0 });
     } catch (error) {
       this.#onError(error); // left unarmed: retried on the next listener change / rebind
     }
@@ -361,7 +364,9 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   }
 
   #tick(): void {
+    const gen = this.#gen;
     for (const stage of [...this.#armed.keys()]) {
+      if (gen !== this.#gen) return; // a listener tore this run down (or rebound the seams) mid-tick
       const run = this.#armed.get(stage); // a listener may have removed it mid-tick
       if (run === undefined) continue;
       let value: unknown;
@@ -470,6 +475,10 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         // Read BEFORE any baseline moves: a throw here fails this read and must not advance the CPU window.
         const cpu = cpuUsage();
         const wall = nowMs();
+        // `os.cpus()` can be empty (some containers/Android): a share of "no cores" is unknowable, so omit the sample
+        // rather than emit Infinity/NaN. Checked before the baseline moves.
+        const cores = cpuCount();
+        if (!(cores >= 1)) return undefined;
         const userDelta = cpu.user - last.user;
         const systemDelta = cpu.system - last.system;
         const wallMsDelta = wall - lastWallMs;
@@ -477,9 +486,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         lastWallMs = wall;
         // Normalized process CPU %: busy-µs / wall-µs / cores * 100. Guard the zero-window first sample.
         const processPct =
-          wallMsDelta > 0
-            ? ((userDelta + systemDelta) / (wallMsDelta * 1000) / cpuCount()) * 100
-            : 0;
+          wallMsDelta > 0 ? ((userDelta + systemDelta) / (wallMsDelta * 1000) / cores) * 100 : 0;
         return { userDelta, systemDelta, processPct };
       },
       stop: () => {},

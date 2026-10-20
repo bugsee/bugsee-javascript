@@ -68,6 +68,8 @@ class CpuProducer extends StageProducer<'cpu'> {
   constructor(tracker: ProcessTracker) {
     super(tracker, 'cpu');
   }
+  // No baseline: no window has elapsed at start, so any value would be invented (a zero-length window has no CPU share).
+  protected override baseline(): void {}
   protected publish(c: ProcessEvents['cpu']): void {
     this.emit('cpu_usage_user', c.userDelta);
     this.emit('cpu_usage_system', c.systemDelta);

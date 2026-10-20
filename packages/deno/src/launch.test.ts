@@ -335,7 +335,7 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     const names = traces.map((e) => (e.data as { name: string }).name);
     expect(names).toContain('process_memory_rss');
     expect(names).toContain('ram_system_total');
-    expect(names).toContain('cpu_usage_process');
+    expect(names).not.toContain('cpu_usage_process'); // no CPU start value: it begins with the first sampled window
     // Deno cannot observe a blocked loop, so no lag trace is fabricated.
     expect(names.some((n) => n.startsWith('event_loop_lag'))).toBe(false);
   });

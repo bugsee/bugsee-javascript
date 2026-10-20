@@ -1,12 +1,16 @@
+import { processTrackerFor } from '@bugsee/trackers/node';
 import { describe, expect, it } from 'vitest';
 import { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
 
+const harnessKey: object[] = [];
 function harness(deps: NodeTraceProducerDeps) {
+  const key = {};
+  harnessKey.push(key);
   const got = new Map<string, unknown>();
   const spy = { set: 0, cleared: 0 };
   let tick: (() => void) | undefined;
   const producers = createNodeSystemTraceProducers({
-    key: {}, // a private tracker per test: the per-process singleton must not leak state between cases
+    key, // a private tracker per test: the per-process singleton must not leak state between cases
     ...deps,
     scheduler: {
       setInterval: (cb) => {
@@ -312,7 +316,43 @@ describe('createNodeSystemTraceProducers', () => {
     const h = harness(constDeps());
     h.startAll();
     expect(h.got.get('process_memory_rss')).toBe(10);
-    expect(h.got.get('cpu_usage_process')).toBe(0);
+    // no CPU baseline: no window has elapsed, so a start value would be invented
+    expect(h.got.has('cpu_usage_user')).toBe(false);
+    expect(h.got.has('cpu_usage_system')).toBe(false);
+    expect(h.got.has('cpu_usage_process')).toBe(false);
+    h.tick();
+    expect(h.got.has('cpu_usage_process')).toBe(true);
+  });
+
+  it('a restart while the stage stays armed re-emits NO window (cpu, event-loop lag, utilization)', () => {
+    const h = harness(
+      constDeps({
+        eventLoop: { start() {}, stop() {}, read: () => ({ meanMs: 1, maxMs: 2, p99Ms: 3 }) },
+        eventLoopUtilization: () => 0.5,
+      }),
+    );
+    h.startAll();
+    h.tick();
+    expect(h.got.has('event_loop_lag_ms')).toBe(true);
+    // keep every windowed stage armed through another subscriber, then restart the producers
+    const tracker = processTrackerFor({ key: harnessKey.at(-1) as object });
+    const keep = [
+      tracker.on('cpu', () => {}),
+      tracker.on('eventLoop', () => {}),
+      tracker.on('utilization', () => {}),
+    ];
+    h.stopAll();
+    h.got.clear();
+    h.startAll();
+    for (const name of [
+      'cpu_usage_user',
+      'cpu_usage_process',
+      'event_loop_lag_ms',
+      'event_loop_utilization',
+    ]) {
+      expect(h.got.has(name), name).toBe(false);
+    }
+    for (const off of keep) off();
   });
 
   it('omits lag and utilization when no eventLoop / utilization source answers', () => {
@@ -437,11 +477,10 @@ describe('createNodeSystemTraceProducers', () => {
       }),
     );
     h.startAll();
-    const baselineUser = h.got.get('cpu_usage_user');
+    expect(h.got.has('cpu_usage_user')).toBe(false); // no start value
     h.tick();
-    // arming reads 100k (the baseline, seeded as a zero-length window); the single tick reads 200k => one window of
+    // arming reads 100k (the internal baseline); the single tick reads 200k => one window of
     // 100k no matter how many producers share the tracker
-    expect(baselineUser).toBe(0);
     expect(h.got.get('cpu_usage_user')).toBe(100_000);
   });
 
