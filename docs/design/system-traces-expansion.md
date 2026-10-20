@@ -496,6 +496,10 @@ deletion (#65) are merged, so the bare `sample()` adapter no longer coexists wit
 browser sampler (which also emitted `battery`/`charging`, the duplicate rows an interim reading of this section implied) is
 deleted and `systemMetricsSampler` survives only as an explicit caller override that REPLACES the sensor traces.
 
+The domain-tracker follow-on (§15) is tracked in §15.5; ST0′-era per-signal trackers that remain in `packages/browser/src/trackers/`
+(as of `main`: `MemoryTracker`, `FpsTracker`, `OrientationTracker`, `ScreenSizeTracker`, `MainThreadLagTracker`) are the ones §15.5
+still has to fold into domain trackers.
+
 ### 14.6 Verified / not verified
 Verified by reading source: the mobile tracker/producer/provider structure (above), `InterceptorBase`/`MultiKeyEmitterBase`
 semantics, the JS store's window-based eviction with no part hook. Not verified: Android's polled-trace scheduling details,
@@ -596,4 +600,59 @@ today keep their trace names and wire shapes; only their source changes.
   the Electron Process/Display tracker; supersedes #73's `GpuInfoCache` placement).
 - Each tracker's retention rule is stated and tested ("stopping does not lose X"); each producer keeps its existing
   omit-never-zero and guarded-host-read tests.
+
+### 15.5 As-built status (verified against `main` and the open branches, 2026-10-20)
+
+**Merged on `main`** (implementations in `packages/trackers/src/browser/`, producers in `packages/browser/src/trace-producers.ts`):
+
+| Slice | PR | Tracker (`…For(env, onError)` / `reset…`) | Stages | Producer / traces |
+|---|---|---|---|---|
+| TR0 | #77 | `createTrackerRegistry` (`tracker-registry.ts`): per-key `WeakMap`; `for(key, create, rebind?)`, `peek`, `reset` | — | — |
+| TR1 | #79 | `ApplicationTracker` (`applicationTrackerFor`) | `pagehide {persisted}`, `visibility {visible}`, `state {state: foreground\|background}`, `freeze`, `resume`, plus TEMPORARY `online`, `offline`, `orientationchange` | `AppStateProducer` (`app_state`, via `state` + `current()`); events source; trace/event names unchanged |
+| TR3 | #80 | `ConnectivityTracker` | `online {online}`, `networkInfo {type?, effectiveType?, downlink?, downlinkMax?, rtt?, saveData?}`, aggregate `state {online?, networkInfo?}` (baseline of all three on activation) | `ConnectionProducer` → `connection` (unchanged shape; additive `link_downstream_max_kbps`) |
+| TR4 | #78 | `PowerTracker` | one stage `state {level?, charging, chargingTimeS?, dischargingTimeS?}`, fed by `levelchange`/`chargingchange`/`chargingtimechange`/`dischargingtimechange` | `BatteryProducer` → `battery`, `charging`, NEW `battery_charging_time_s`, `battery_discharging_time_s` |
+| TR6 | #81 | `StorageTracker` | one stage `storageEstimate {usageBytes?, quotaBytes?, persisted?}`; polls on activation, visibility→visible (throttled to 1/min), slow timer (default 5 min, skipped while hidden) | `StorageProducer` → NEW `storage_estimate {usage, quota}` in integer MB (floored); NOT the Android `disk_mem_*` group |
+
+Also merged but NOT yet domain trackers (still per-signal, in `packages/browser/src/trackers/`): #75 `screen_size` `{width, height, dpr}`
+(`ScreenSizeTracker`/`ScreenSizeProducer`) and `main_thread_lag_ms` (`MainThreadLagTracker`/`MainThreadLagProducer`); both are only built when a
+shared `lifecycle` tracker is in the env. #73 (Electron GPU): GPU is ENVIRONMENT data, not a trace — `launchMain` passes a `hardwareExtras`
+closure over a `GpuInfoCache` (`packages/electron/src/launch-main.ts`) that fills `environment.hardware.gpu`, so it is not yet placed in an Electron
+Process/Display tracker (TR9).
+
+**In review (NOT merged): TR2 UI/Display, PR #82, branch `feat/ui-tracker`.** `UiTracker` (`uiTrackerFor`, `resetUiTracker`) with stages `orientation {type?, angle?}`,
+`screenSize {width, height, dpr}`, `viewport {width, height}`, `colorScheme {dark}`, `reducedMotion {reduce}`, `displayMode {mode}`, `frameRate` (number). Activation is
+PER STAGE (listeners/timers exist only while a subscriber wants a stage that needs them, via a new `MultiKeyEmitterBase.onListenersChanged` hook plus
+`listenerCount`); the de-duplication baseline is re-read silently when a stage goes from 0 to 1 listener. On that branch the browser package's
+`OrientationTracker` and `ScreenSizeTracker` are deleted, `ApplicationTracker` no longer binds `orientationchange`, and `OrientationProducer`/`ScreenSizeProducer`/`FpsProducer`
+are rewired onto one `UiTracker` per window. Everything in this paragraph is subject to change until merged.
+
+**In progress (WIP branches, unfinished — no mutator loop / CI / review yet):** TR5 Process / `ProcessTracker` (#83, `feat/process-tracker`) and TR7 Environment /
+`EnvironmentTracker` (#84, `feat/environment-tracker`). Nothing in them is documented here as built.
+
+**Conventions every merged tracker follows (the "hardening pattern", each tested):**
+- Every host read goes through `hostRead` (hostile/throwing getters cost only their own field and are reported via `onError`); a field that is unusable
+  (non-finite, negative, wrong type, or a documented "no estimate" such as a zero `rtt`) is OMITTED, never sent as 0 and never fabricated.
+- The reporter is a mutable indirection (`#report.fn`) shared by the emitter and the tracker's own catch paths, and is wrapped so a throwing `onError` cannot escape
+  into a DOM dispatch; every DOM listener and timer callback is guarded.
+- Async reads carry a token (`PowerTracker` generation, `StorageTracker` epoch) so a promise settling after the last unsubscribe/reset is inert.
+- Each tracker states and tests a retention rule: Application retains the last `state`; Power the resolved `BatteryManager` + last snapshot; Storage the last estimate
+  (`current()`; `currentFresh()` only while younger than 2x the poll interval); Connectivity caches nothing (reads `navigator` live). DOM listeners/timers are always released.
+- **Rebind rule** (§15.1 #7, as built): `for(key, create, rebind)` calls `rebind` on every request after the creating one, including a caller whose `create` lost a
+  re-entrant race; a throwing `rebind` never fails the request. Semantics are "latest launch wins" for `onError` (a defined one replaces, undefined keeps) and for
+  defined seams (an undefined seam never clobbers). Application re-binds window/document only while IDLE and reports a mismatch once while ACTIVE; Storage applies
+  new seams from the NEXT activation; Connectivity moves a running tracker's listeners to a changed window/navigator. Keys: Application = document, else window, else a
+  module key; Power/Connectivity/Storage = window, else navigator, else the env object.
+
+**Open owner decisions (carried from the code and `docs/PROGRESS.md`):**
+1. **Held values cannot be retracted.** The provider re-records every held (`emitIfChanged`) value each `refreshMs`. `storage_estimate` is held (the 5 min poll exceeds the default
+   60 s window), so after failed polls the last known estimate keeps being re-recorded; the `battery_*_time_s` traces avoid this by using plain non-held `emit` with a
+   producer-side change-only guard, at the cost that an unchanged time ages out of the rolling window. Options: plain `emit` for storage, or a provider retract/release/end-marker mechanism.
+2. **Private-mode detection default OFF** behind an explicit launch option (`captureEnvironmentHints`), as proposed in §15.3 item 2; this belongs to TR7 and is not decided.
+3. **Electron GPU `'complete'` vs `'basic'`.** `launchMain({gpuInfoType})` defaults to `'basic'`; `'complete'` is expected to carry the `auxAttributes` GL strings but is heavier.
+   Both mappings are UNVERIFIED against a real Electron (on macOS/Linux `'basic'` commonly yields only numeric ids, so `hardware.gpu` is then absent, never guessed).
+
+**Remaining plan:** merge TR2 (#82) and migrate the remaining window-listener consumers onto `UiTracker` (e.g. `packages/browser/src/viewport-source.ts`, which today attaches its own
+`window`/`visualViewport` `resize`/`scroll` listeners); fold `MemoryTracker`/`MainThreadLagTracker` into TR5 and finish TR7; then **remove `ApplicationTracker`'s temporary
+`online`/`offline` stages** (still bound for the events source; Connectivity owns its own copies, so they are bound twice today); TR8 node/Bun/Deno Process (+ GC, event loop) and
+Storage consolidation (`packages/trackers/src/node/` is an empty placeholder today); TR9 Electron trackers (`packages/trackers/src/electron/` is an empty placeholder; GPU cache folds in).
 
