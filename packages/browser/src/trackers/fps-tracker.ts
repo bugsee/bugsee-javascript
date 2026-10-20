@@ -1,5 +1,5 @@
 import { InterceptorBase, type Scheduler } from '@bugsee/core';
-import type { PageLifecycleTracker } from './page-lifecycle-tracker';
+import type { ApplicationTracker } from '@bugsee/trackers/browser';
 
 // Browser frame-rate TRACKER (Android `fps` parity): counts `requestAnimationFrame` callbacks and reports
 // frames/second once per window. It runs ONLY while the page is visible — a hidden tab gets no animation
@@ -12,7 +12,7 @@ import type { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 export interface FpsEnv {
   /** Shared lifecycle tracker for visibility changes. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** Visibility is read here at activation; unknown (absent) counts as not visible. */
   document?: { readonly visibilityState?: string };
   requestAnimationFrame?: (callback: (timestamp: number) => void) => number;

@@ -1,4 +1,4 @@
-import type { WindowEvents } from '@bugsee/browser';
+import { applicationTrackerFor, type WindowEvents } from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -115,6 +115,7 @@ function fakeEventTarget() {
     emit: (type: string, event: unknown) => {
       for (const l of [...(listeners.get(type) ?? [])]) l(event as Event);
     },
+    count: (type: string) => listeners.get(type)?.size ?? 0,
   };
 }
 
@@ -149,6 +150,73 @@ const baseOptions = (
   captureNetwork: false, // don't patch the real fetch/XHR globals in unit tests
   carrier: {}, // a fresh per-WebView carrier so the singleton + interceptors are isolated
   ...over,
+});
+
+describe('launch (webview) goes through the ApplicationTracker registry', () => {
+  const blockedDoc = () => {
+    const doc = fakeEventTarget();
+    const boom = new Error('visibilityState blocked');
+    const state = { armed: false };
+    Object.defineProperty(doc.target, 'visibilityState', {
+      get() {
+        if (state.armed) throw boom;
+        return 'visible';
+      },
+    });
+    return { doc, boom, state, document: doc.target as unknown as Document };
+  };
+
+  it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+    // ApplicationTracker's temporary online stage + the ConnectivityTracker's own listener
+    expect(win.count('online')).toBe(2);
+    const shared = applicationTrackerFor({ window: win.target as never, document });
+    const off = shared.on('online', () => {});
+    expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
+    off();
+  });
+
+  it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {
+    const win = fakeEventTarget();
+    const { doc, boom, state, document } = blockedDoc();
+    const first = vi.fn();
+    const second = vi.fn();
+    const fireBlocked = () => {
+      state.armed = true;
+      try {
+        doc.emit('visibilitychange', {});
+      } catch {
+        /* a real DOM dispatch never propagates a listener's throw */
+      } finally {
+        state.armed = false;
+      }
+    };
+    const run = (onError?: (e: unknown) => void) =>
+      launch(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document,
+          ...(onError !== undefined ? { onError } : {}),
+        }),
+      );
+    run(first).stop();
+    run(second).stop();
+    first.mockClear();
+    second.mockClear();
+    const live = run(second);
+    clients.push(live);
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+    expect(first).not.toHaveBeenCalledWith(boom);
+    live.stop();
+    second.mockClear();
+    clients.push(run()); // no onError: must NOT silence the earlier launch's sink
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+  });
 });
 
 describe('launch (webview)', () => {
@@ -1073,6 +1141,98 @@ describe('launch (webview)', () => {
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+
+    describe('screen_size and main_thread_lag_ms (from the injected window)', () => {
+      const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
+        entriesOfType(fake.msgs(), 'traces.system')
+          .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('streams screen_size {width,height,dpr} and timer-drift lag from the INJECTED window; none from a hidden page', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          let clock = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: { now: () => clock },
+            configurable: true,
+          });
+          Object.assign(w.win, { devicePixelRatio: 3 });
+          const dom = fakeDomDocument();
+          Object.assign(dom.document, { visibilityState: 'visible' });
+          const ticks: Array<() => void> = [];
+          track(
+            'tok',
+            baseOptions({
+              global: fake.global,
+              window: w.win,
+              document: dom.document as unknown as Document,
+              scheduler: {
+                setInterval: (cb, ms) => {
+                  if (ms === 1000) ticks.push(cb as () => void);
+                  return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+                },
+                clearInterval: () => {},
+              },
+            }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
+          clock = 1000 + 25; // the first 1 s tick fires 25 ms late
+          for (const t of ticks) t();
+          expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
+
+          // a hidden page never reads the clock for lag (no timer)
+          let hiddenReads = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: {
+              now: () => {
+                hiddenReads += 1;
+                return 0;
+              },
+            },
+            configurable: true,
+          });
+          const hidden = fakeDomDocument();
+          Object.assign(hidden.document, { visibilityState: 'hidden' });
+          track(
+            'tok2',
+            baseOptions({
+              global: fakeGlobal().global,
+              window: w.win,
+              document: hidden.document as unknown as Document,
+            }),
+          );
+          expect(hiddenReads).toBe(0);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch and is reported', () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const w = fakeWin();
+          Object.defineProperty(w.win, 'devicePixelRatio', {
+            get(): never {
+              throw new Error('devicePixelRatio blocked');
+            },
+            configurable: true,
+          });
+          const onError = vi.fn();
+          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+            'devicePixelRatio blocked',
+          );
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
     });
 
     it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {

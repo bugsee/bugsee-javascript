@@ -1,6 +1,6 @@
+import { ApplicationTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { OrientationTracker } from './orientation-tracker';
-import { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<() => void>>();
@@ -165,7 +165,7 @@ describe('OrientationTracker', () => {
   it('with a shared lifecycle it takes orientationchange from it and releases the subscription on stop', () => {
     const win = mkTarget();
     const orientation = Object.assign(mkTarget(), { type: 'portrait-primary', angle: 0 });
-    const lifecycle = new PageLifecycleTracker({ window: win as never });
+    const lifecycle = new ApplicationTracker({ window: win as never });
     const t = new OrientationTracker({ lifecycle, window: win, screen: { orientation } });
     const seen: unknown[] = [];
     const off = t.on('state', (s) => seen.push(s));

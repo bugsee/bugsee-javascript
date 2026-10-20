@@ -3296,6 +3296,95 @@ describe('launch — application frame paths', () => {
   });
 });
 
+describe('launch — hardwareExtras (environment.hardware.gpu seam)', () => {
+  const sessionHardware = (transport: ReturnType<typeof uploadTransport>) =>
+    (
+      JSON.parse(String((transport.mock.calls[0]?.[1] as HttpRequestOptions).body)) as {
+        environment: EnvironmentEnvelope;
+      }
+    ).environment.hardware as Record<string, unknown>;
+
+  it('a report assembled after the extra settles carries hardware.gpu; one before does not', async () => {
+    let gpu: { vendor: string; renderer: string } | undefined;
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        hardwareExtras: () => (gpu ? { gpu } : undefined),
+      }),
+    );
+    const hardwareOf = (put: Uint8Array) =>
+      (
+        JSON.parse(strFromU8(unzipSync(put)['request.json'] as Uint8Array)) as {
+          environment: EnvironmentEnvelope;
+        }
+      ).environment.hardware as Record<string, unknown>;
+
+    await client.logException(new Error('before'));
+    expect(puts).toHaveLength(1);
+    expect(hardwareOf(puts[0] as Uint8Array)).not.toHaveProperty('gpu');
+
+    gpu = { vendor: 'Apple', renderer: 'M3' };
+    await client.logException(new Error('after'));
+    expect(puts).toHaveLength(2);
+    expect(hardwareOf(puts[1] as Uint8Array).gpu).toEqual({ vendor: 'Apple', renderer: 'M3' });
+  });
+
+  it('the uploaded session environment carries hardware.gpu, and a throwing extra reaches onError without failing the report', async () => {
+    const transport = uploadTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        hardwareExtras: () => ({ gpu: { vendor: 'V', renderer: 'R' } }),
+      }),
+    );
+    await client.logException(new Error('x'));
+    expect(sessionHardware(transport).gpu).toEqual({ vendor: 'V', renderer: 'R' });
+
+    const transport2 = uploadTransport();
+    const errors: unknown[] = [];
+    const boom = new Error('boom');
+    const client2 = launchTracked(
+      'tok',
+      baseOptions({
+        transport: transport2,
+        captureStore: memStore(),
+        carrier: {},
+        onError: (e) => errors.push(e),
+        hardwareExtras: () => {
+          throw boom;
+        },
+      }),
+    );
+    await client2.logException(new Error('y'));
+    expect(sessionHardware(transport2)).not.toHaveProperty('gpu');
+    expect(errors).toContain(boom);
+  });
+
+  it('a hardwareExtras that throws on EVERY report build reaches onError once per distinct error, not once per report', async () => {
+    const errors: unknown[] = [];
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        onError: (e) => errors.push(e),
+        hardwareExtras: () => {
+          throw new Error('always broken');
+        },
+      }),
+    );
+    for (let i = 0; i < 3; i++) await client.logException(new Error(`r${i}`));
+    expect(puts).toHaveLength(3); // every report was still built and uploaded
+    expect(errors.filter((e) => (e as Error).message === 'always broken')).toHaveLength(1);
+  });
+});
+
 describe('app identity detection', () => {
   const launchIdentity = (over: Partial<BugseeLaunchOptions> = {}) => {
     const transport = uploadTransport();
