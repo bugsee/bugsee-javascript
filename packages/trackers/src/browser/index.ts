@@ -9,3 +9,13 @@ export {
   powerTrackerFor,
   resetPowerTracker,
 } from './power-tracker';
+export {
+  resetStorageTracker,
+  type StorageEnv,
+  type StorageEstimate,
+  type StorageManagerLike,
+  type StorageTimers,
+  StorageTracker,
+  type StorageTrackerEnv,
+  storageTrackerFor,
+} from './storage-tracker';

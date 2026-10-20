@@ -1,11 +1,16 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
+import { bytesToMegabytes } from '@bugsee/protocol';
 import {
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
   type PowerTracker,
   powerTrackerFor,
+  type StorageEstimate,
+  type StorageManagerLike,
+  type StorageTracker,
+  storageTrackerFor,
 } from '@bugsee/trackers/browser';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
 import {
@@ -76,6 +81,46 @@ export class BatteryProducer extends TraceProducerBase {
     if (this.#lastTime.get(name) === rounded) return;
     this.#lastTime.set(name, rounded);
     this.emit(name, rounded);
+  }
+}
+
+/**
+ * `navigator.storage.estimate()` → `storage_estimate` `{usage, quota}` in integer MB (floored, `bytesToMegabytes`).
+ * An ORIGIN quota ESTIMATE that browsers fuzz and pad — NOT device free space — so it is a JS-specific trace and
+ * deliberately not the Android `disk_mem_*` group. A key the browser did not give a usable number for is omitted
+ * (never 0); an estimate with neither key emits nothing.
+ *
+ * Held and de-duplicated (`emitIfChanged`): the tracker polls every few minutes, far longer than the default
+ * recording window, so a non-held value would almost never be inside a report. Held is truthful here because the
+ * tracker retains the LAST KNOWN estimate across a failed poll and a replacement always carries its own keys.
+ */
+export class StorageProducer extends TraceProducerBase {
+  readonly name = 'storage';
+  readonly #tracker: StorageTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: StorageTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('storageEstimate', (e) => this.#publish(e));
+    const cur = this.#tracker.current(); // retained from an earlier subscription: a value at once
+    if (cur !== undefined) this.#publish(cur);
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+
+  #publish(e: StorageEstimate): void {
+    if (e.usageBytes === undefined && e.quotaBytes === undefined) return; // `persisted` alone is not a trace
+    this.emitIfChanged('storage_estimate', {
+      ...(e.usageBytes !== undefined ? { usage: bytesToMegabytes(e.usageBytes) } : {}),
+      ...(e.quotaBytes !== undefined ? { quota: bytesToMegabytes(e.quotaBytes) } : {}),
+    });
   }
 }
 
@@ -270,6 +315,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   navigator?: ConnectionEnv['navigator'] & {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
+    /** `navigator.storage` (absent in insecure contexts): origin quota estimate. */
+    readonly storage?: StorageManagerLike;
   };
   screen?: OrientationEnv['screen'];
   /** Source of `online` / `offline` / `orientationchange`. */
@@ -415,6 +462,17 @@ export function createBrowserSystemTraceProducers(
       }),
     ),
     new AdvertisedMemoryProducer(() => nav?.deviceMemory),
+    new StorageProducer(
+      storageTrackerFor(
+        {
+          ...(env.window !== undefined ? { window: env.window } : {}),
+          ...(nav !== undefined ? { navigator: nav } : {}),
+          ...(env.document !== undefined ? { document: env.document } : {}),
+          ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+        },
+        onError,
+      ),
+    ),
     new ConnectionProducer(
       new ConnectionTracker(
         {

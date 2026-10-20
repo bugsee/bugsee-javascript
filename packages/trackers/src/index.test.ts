@@ -20,9 +20,12 @@ describe('@bugsee/trackers public surface', () => {
   it('exports the browser tracker values from ./browser', async () => {
     expect(Object.keys(await import('./browser/index')).sort()).toEqual([
       'PowerTracker',
+      'StorageTracker',
       'hostRead',
       'powerTrackerFor',
       'resetPowerTracker',
+      'resetStorageTracker',
+      'storageTrackerFor',
     ]);
   });
 });
