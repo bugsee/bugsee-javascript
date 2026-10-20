@@ -1,4 +1,4 @@
-import { applicationTrackerFor, type WindowEvents } from '@bugsee/browser';
+import { applicationTrackerFor, environmentTrackerFor, type WindowEvents } from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -176,6 +176,84 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     const off = shared.on('online', () => {});
     expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
     off();
+  });
+
+  it('shares the browser system-events source: launch goes through the per-window EnvironmentTracker (private mode off)', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    try {
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      expect(tracker.current().language).toEqual({ language: 'pl-PL' });
+      expect(tracker.current().privateMode).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('the environment tracker runs over the launch document and scheduler: slow tick re-reads the zone, hidden ticks and visibility changes follow the document', () => {
+    const win = fakeEventTarget();
+    const doc = fakeEventTarget();
+    const vis = { state: 'visible' };
+    Object.defineProperty(doc.target, 'visibilityState', { get: () => vis.state });
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    const ticks: Array<{ cb: () => void; ms: number }> = [];
+    const real = new Date().getTimezoneOffset();
+    const offset = (minutesEast: number) =>
+      vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(-minutesEast);
+    try {
+      track(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return ticks.length;
+            },
+            clearInterval: () => {},
+          },
+        }),
+      );
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      const slow = ticks.filter((t) => t.ms === 60_000);
+      expect(slow).toHaveLength(1); // the launch scheduler reached the tracker
+      expect(doc.count('visibilitychange')).toBeGreaterThan(0); // and its document
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      offset(-real + 90);
+      vis.state = 'hidden';
+      slow[0]?.cb();
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: tick skipped
+      doc.emit('visibilitychange', {}); // still hidden: no re-read
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      vis.state = 'visible';
+      doc.emit('visibilitychange', {});
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 90); // visible: re-read
+    } finally {
+      vi.restoreAllMocks();
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('never turns private-mode detection on, even when an earlier launch on the same window had it on', async () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    const estimate = vi.fn(() => Promise.resolve({ quota: 1 }));
+    const navigator = { language: 'en', storage: { estimate } };
+    Object.assign(win.target, { navigator });
+    try {
+      environmentTrackerFor({ window: win.target as never, navigator, detectPrivateMode: true });
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(estimate).toHaveBeenCalled(); // the storage trace probes it; private mode must not be inferred
+      expect(
+        environmentTrackerFor({ window: win.target as never }).current().privateMode,
+      ).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
   });
 
   it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {

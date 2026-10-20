@@ -184,6 +184,14 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark".
     ...FAIL_ON_BOOLEAN_OPTION,
   },
+  // Environment hints that read as sensitive (private-browsing detection): the browser launch default is true, so
+  // `false` disables. An invalid value is OFF and reported (never read as consent to detect).
+  {
+    friendly: 'captureEnvironmentHints',
+    key: BugseeOption.CaptureEnvironmentHints,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
+  },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
   // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported; it must never throw.
   // Masking is fail-closed regardless.
@@ -371,6 +379,15 @@ export interface BugseeLaunchOptions {
    * the clear applies to reports created afterwards.
    */
   persistUserIdentifier?: boolean;
+  /**
+   * Observe environment hints that read as sensitive. Today: the private-browsing HEURISTIC (a storage-quota probe)
+   * behind a `private_mode_detected` system event, emitted only for a `yes` answer and never as a certainty
+   * (constrained storage can false-positive).
+   * Default in the browser launch: `true` (the protocol layer defines the option key and its boolean type, not a
+   * default); pass `false` to turn it off. A non-boolean value is treated as off and reported. Language and time-zone changes (`language_changed`, `timezone_changed`) are always observed. Hint and
+   * permission states are not read at all.
+   */
+  captureEnvironmentHints?: boolean;
   /**
    * Record the `user_idle_state` system trace (`active` / `idle` / `locked`, from the Idle Detection API). Default
    * FALSE: it is behavioural data, and a page's own `idle-detection` grant is not consent to upload it. Even when
@@ -931,6 +948,11 @@ async function buildLaunch(
       createBrowserSystemEventsSource({
         window: win,
         lifecycle,
+        // The window's environment singleton (EnvironmentTracker): language/timezone events, and the private-mode
+        // heuristic (on by default, `captureEnvironmentHints: false` opts out).
+        ...(domDocument !== undefined ? { document: domDocument } : {}),
+        detectPrivateMode: resolved.options.get(BugseeOption.CaptureEnvironmentHints, true),
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         // from the INJECTED window (bound to it); never the host global
         ...(matchMedia !== undefined ? { matchMedia } : {}),
         ...(options.onError !== undefined ? { onError: options.onError } : {}),

@@ -22,6 +22,10 @@ export {
   type ApplicationState,
   ApplicationTracker,
   applicationTrackerFor,
+  type EnvironmentEnv,
+  type EnvironmentEvents,
+  EnvironmentTracker,
+  environmentTrackerFor,
 } from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {

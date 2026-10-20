@@ -17,6 +17,24 @@ export {
   type NetworkInfo,
   resetConnectivityTracker,
 } from './connectivity-tracker';
+export {
+  DEFAULT_PERMISSION_NAMES,
+  type EnvironmentEnv,
+  type EnvironmentEvents,
+  type EnvironmentHints,
+  type EnvironmentSnapshot,
+  type EnvironmentTimers,
+  EnvironmentTracker,
+  environmentTrackerFor,
+  type LanguageInfo,
+  NORMAL_QUOTA_FROM_BYTES,
+  type PermissionStateName,
+  type PermissionStates,
+  PRIVATE_QUOTA_BELOW_BYTES,
+  type PrivateModeResult,
+  resetEnvironmentTracker,
+  type TimeZoneInfo,
+} from './environment-tracker';
 export { hostRead } from './host-read';
 export {
   type BatteryEnv,

@@ -45,7 +45,9 @@ import {
 import {
   applicationTrackerFor,
   connectivityTrackerFor,
+  environmentTrackerFor,
   processTrackerFor,
+  resetEnvironmentTracker,
   resetProcessTracker,
   resetStorageTracker,
   resetUiTracker,
@@ -1512,6 +1514,150 @@ describe('launch', () => {
         expect(query).toHaveBeenCalled();
         expect(rows.has('user_idle_state')).toBe(false);
       });
+    });
+
+    it('options.scheduler drives the environment tracker slow timer: a time-zone shift becomes a timezone_changed event', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        const slow = ticks.filter((t) => t.ms === 60_000); // the tracker's default cadence
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 120);
+        slow[0]?.cb();
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: { utcOffsetMinutes?: number } },
+        );
+        expect(
+          events
+            .filter((e) => e.name === 'timezone_changed')
+            .map((e) => e.params?.utcOffsetMinutes),
+        ).toEqual([-(real - 120) + 0]);
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('the launch document reaches the environment tracker: its visibility gates the slow tick and a return to visible re-reads', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const d = fakeWindow();
+      const vis = { state: 'visible' };
+      const document = Object.defineProperty({ ...d.win, body: {} }, 'visibilityState', {
+        get: () => vis.state,
+      }) as unknown as Document;
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        const tracker = environmentTrackerFor({ window: w.win });
+        const slow = ticks.filter((t) => t.ms === 60_000);
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 45);
+        vis.state = 'hidden';
+        slow[0]?.cb();
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: nothing re-read
+        vis.state = 'visible';
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-(real - 45) + 0);
+      } finally {
+        vi.restoreAllMocks();
+        environmentTrackerFor({ window: w.win }).reset();
+      }
+    });
+
+    it('launch goes through the per-window EnvironmentTracker singleton (language/timezone and private mode on by default, no hints/permissions)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 * 1024 * 1024 }));
+      const query = vi.fn(() => Promise.resolve({ state: 'granted' }));
+      vi.stubGlobal('navigator', {
+        language: 'en-US',
+        languages: ['en-US', 'en'],
+        cookieEnabled: true,
+        permissions: { query },
+        storage: { estimate },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const snapshot = environmentTrackerFor({ window: w.win }).current();
+        expect(snapshot.language).toEqual({ language: 'en-US', languages: ['en-US', 'en'] });
+        expect(snapshot.timeZone?.utcOffsetMinutes).toBeTypeOf('number');
+        expect(snapshot.privateMode).toEqual({ private: 'yes', method: 'storage-quota' }); // on by default
+        expect(snapshot.hints).toBeUndefined(); // nothing consumes hints / permissions: never read
+        expect(snapshot.permissions).toBeUndefined();
+        expect(query).not.toHaveBeenCalled();
+        expect(w.count('languagechange')).toBe(1);
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: unknown },
+        );
+        expect(events.find((e) => e.name === 'private_mode_detected')?.params).toEqual({
+          method: 'storage-quota',
+        });
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('captureEnvironmentHints: false opts out of the private-mode heuristic (no probe, no event)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
+      vi.stubGlobal('navigator', { language: 'en-US', storage: { estimate } });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, captureEnvironmentHints: false }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        // (the storage trace tracker calls estimate() too, so the proof is the missing answer and event)
+        expect(environmentTrackerFor({ window: w.win }).current().privateMode).toBeUndefined();
+        const names = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        expect(names).not.toContain('private_mode_detected');
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
     });
 
     it('a rejected storage.estimate() reaches options.onError and never fails launch', async () => {
