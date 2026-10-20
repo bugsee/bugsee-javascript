@@ -109,14 +109,9 @@ describe('ConnectivityTracker', () => {
     expect((onError.mock.calls[0]?.[0] as Error).message).toBe('rtt boom');
   });
 
-  it('a throwing navigator.connection / onLine getter degrades and is reported', () => {
+  it('a throwing onLine getter is NOT online: the value is omitted, nothing fabricated, and it is reported', () => {
     const onError = vi.fn();
     const nav = {};
-    Object.defineProperty(nav, 'connection', {
-      get() {
-        throw new Error('conn boom');
-      },
-    });
     Object.defineProperty(nav, 'onLine', {
       get() {
         throw new Error('online boom');
@@ -124,11 +119,38 @@ describe('ConnectivityTracker', () => {
     });
     const win = mkTarget();
     const t = new ConnectivityTracker({ window: win, navigator: nav }, onError);
+    expect(t.current()).toEqual({});
+    expect(onError).toHaveBeenCalledTimes(1);
+    const online: unknown[] = [];
+    const states: unknown[] = [];
+    t.on('online', (e) => online.push(e));
+    t.on('state', (s) => states.push(s));
+    win.fire('offline');
+    expect(online).toEqual([]); // never a fabricated true
+    expect(states).toEqual([{}]); // the event (state subscribed after the baseline); online absent
+  });
+
+  it('a throwing navigator.connection getter degrades to online-only and is reported once per read', () => {
+    const onError = vi.fn();
+    const nav = { onLine: true };
+    Object.defineProperty(nav, 'connection', {
+      get() {
+        throw new Error('conn boom');
+      },
+    });
+    const win = mkTarget();
+    const t = new ConnectivityTracker({ window: win, navigator: nav }, onError);
     expect(t.current()).toEqual({ online: true });
+    expect(onError).toHaveBeenCalledTimes(1);
+    onError.mockClear();
     const off = t.on('state', () => {});
     expect(win.count()).toBe(2); // window listeners still attach
+    expect(onError).toHaveBeenCalledTimes(2); // activation: listener lookup + baseline read
     off();
-    expect(onError.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('an absent onLine property is treated as online (old behavior)', () => {
+    expect(new ConnectivityTracker({ navigator: {} }).current()).toEqual({ online: true });
   });
 
   it('a throwing onError never escapes', () => {
@@ -178,12 +200,16 @@ describe('ConnectivityTracker', () => {
     expect(states).toHaveLength(1);
   });
 
-  it('a connection change event without a navigator reading emits nothing; online event with no connection emits no networkInfo', () => {
+  it('online/offline events with a connection present emit online + state but NOT networkInfo', () => {
     const win = mkWin() as ReturnType<typeof mkTarget>;
-    const t = new ConnectivityTracker({ window: win, navigator: mkNav() });
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav({ type: 'wifi' }) });
     const infos: NetworkInfo[] = [];
+    const online: boolean[] = [];
+    t.on('online', (e) => online.push(e.online)); // activates; the baseline is already gone
     t.on('networkInfo', (i) => infos.push(i));
+    win.fire('offline');
     win.fire('online');
+    expect(online).toEqual([true, true, true]); // baseline + 2 events
     expect(infos).toEqual([]);
   });
 
@@ -232,22 +258,40 @@ describe('ConnectivityTracker', () => {
     expect(seen).toEqual([]);
   });
 
-  it('a window whose addEventListener throws is reported, unwound, and never fails on()', () => {
+  it('a refused addEventListener is reported once; the listeners that did attach stay attached and are released on stop', () => {
     const onError = vi.fn();
     const conn = mkTarget();
+    const online = new Set<() => void>();
     const win = {
-      addEventListener: (type: string) => {
+      addEventListener: (type: string, f: () => void) => {
         if (type === 'offline') throw new Error('add refused');
+        online.add(f);
       },
-      removeEventListener: vi.fn(),
+      removeEventListener: (_type: string, f: () => void) => void online.delete(f),
     };
     const nav = { onLine: true, connection: Object.assign(conn, { type: 'wifi' }) };
     const t = new ConnectivityTracker({ window: win, navigator: nav }, onError);
     const off = t.on('state', () => {});
+    expect(onError).toHaveBeenCalledTimes(1);
     expect((onError.mock.calls[0]?.[0] as Error).message).toBe('add refused');
-    expect(win.removeEventListener).toHaveBeenCalledTimes(2); // online + the refused offline (a no-op) unwound
-    expect(conn.count()).toBe(0);
+    expect(online.size).toBe(1); // not dead: online stays attached
+    expect(conn.count()).toBe(1); // and the connection listener after the refusal still attached
     off();
+    expect(online.size).toBe(0);
+    expect(conn.count()).toBe(0);
+  });
+
+  it('a throwing reporter on a refused addEventListener never escapes on()', () => {
+    const win = {
+      addEventListener: () => {
+        throw new Error('add refused');
+      },
+      removeEventListener: () => {},
+    };
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav() }, () => {
+      throw new Error('reporter');
+    });
+    expect(() => t.on('state', () => {})).not.toThrow();
   });
 
   it('a removeEventListener that throws does not leak the other targets', () => {
@@ -265,16 +309,36 @@ describe('ConnectivityTracker', () => {
     expect(conn.count()).toBe(0);
   });
 
-  it('a throwing subscriber inside an event never escapes into dispatch, and is reported', () => {
+  it('a throwing subscriber AND a throwing onError never escape a DOM dispatch or the activation baseline', () => {
+    const onError = vi.fn(() => {
+      throw new Error('reporter');
+    });
+    const win = mkWin() as ReturnType<typeof mkTarget>;
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav() }, onError);
+    let calls = 0;
+    // The first call is the activation baseline.
+    expect(() =>
+      t.on('online', () => {
+        calls += 1;
+        throw new Error('subscriber');
+      }),
+    ).not.toThrow();
+    expect(() => win.fire('offline')).not.toThrow();
+    expect(calls).toBe(2);
+    expect(onError).toHaveBeenCalledTimes(2); // both subscriber failures reached the (throwing) reporter
+  });
+
+  it('a throwing subscriber is reported through onError during dispatch', () => {
     const onError = vi.fn();
     const win = mkWin() as ReturnType<typeof mkTarget>;
-    const nav = mkNav();
-    const t = new ConnectivityTracker({ window: win, navigator: nav }, onError);
-    let calls = 0;
+    const t = new ConnectivityTracker({ window: win, navigator: mkNav() }, onError);
     t.on('online', () => {
-      if (++calls > 1) throw new Error('subscriber');
+      throw new Error('subscriber');
     });
-    expect(() => win.fire('offline')).not.toThrow();
+    onError.mockClear();
+    win.fire('offline');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0] as unknown as [Error])[0].message).toBe('subscriber');
   });
 
   it('a navigator without usable event targets still works (no connection listener)', () => {
@@ -331,6 +395,20 @@ describe('ConnectivityTracker', () => {
       expect(w2.count()).toBe(2);
       expect((n2.connection as ReturnType<typeof mkTarget>).count()).toBe(1);
       expect(seen.at(-1)).toEqual({ online: false, networkInfo: { type: 'cellular' } });
+    });
+
+    it('a navigator-only rebind moves the connection listener and re-reads', () => {
+      const win = mkTarget();
+      const n1 = mkNav({ type: 'wifi' });
+      const t = new ConnectivityTracker({ window: win, navigator: n1 });
+      const seen: ConnectivityState[] = [];
+      t.on('state', (s) => seen.push(s));
+      const n2 = mkNav({ type: 'cellular' });
+      t.rebind({ navigator: n2 });
+      expect((n1.connection as ReturnType<typeof mkTarget>).count()).toBe(0);
+      expect((n2.connection as ReturnType<typeof mkTarget>).count()).toBe(1);
+      expect(win.count()).toBe(2);
+      expect(seen.at(-1)?.networkInfo).toEqual({ type: 'cellular' });
     });
 
     it('rebinding the same objects while running does not re-attach or re-emit', () => {

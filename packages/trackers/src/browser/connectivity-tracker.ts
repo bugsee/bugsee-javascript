@@ -33,7 +33,8 @@ export interface NetworkInfo {
   saveData?: boolean;
 }
 export interface ConnectivityState {
-  online: boolean;
+  /** Omitted when `navigator.onLine` could not be read (never fabricated as true). */
+  online?: boolean;
   /** Absent where the browser has no NetworkInformation. */
   networkInfo?: NetworkInfo;
 }
@@ -70,7 +71,14 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
 
   constructor(host: ConnectivityHost, onError?: (error: unknown) => void) {
     const report = { fn: onError };
-    super((error) => report.fn?.(error));
+    // Guarded: a throwing reporter must not escape the emitter's subscriber isolation into a DOM dispatch.
+    super((error) => {
+      try {
+        report.fn?.(error);
+      } catch {
+        /* the reporter itself failed */
+      }
+    });
     this.#report = report;
     this.#window = host.window;
     this.#navigator = host.navigator;
@@ -125,48 +133,54 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
     this.#detach(); // listeners go; the host objects are retained
   }
 
-  // Guarded: the subscriber is registered before this runs, so a hostile host must be reported here, not leak
-  // out of `on()`. Whatever attached before a throw is removed again.
+  // Nothing here can throw out of `on()`: every host read is hostRead-guarded, each listener registration is its own
+  // failure domain (a refused one is reported ONCE and the others still attach — they stay attached, like the other
+  // trackers; the next deactivation removes them), and the emitter isolates subscriber failures through a guarded
+  // reporter.
   #attach(): void {
-    try {
-      const win = this.#window as Partial<TargetLike> | undefined;
-      this.#listen(win, 'online', () => this.#changed('online'));
-      this.#listen(win, 'offline', () => this.#changed('online'));
-      const nav = this.#navigator;
-      const connection =
-        nav === undefined
-          ? undefined
-          : hostRead(
-              () => (nav as { connection?: unknown }).connection,
-              (e) => this.#onError(e),
-            );
-      this.#listen(
-        typeof connection === 'object' && connection !== null
-          ? (connection as Partial<TargetLike>)
-          : undefined,
-        'change',
-        () => this.#changed('networkInfo'),
-      );
-      const state = this.#read();
-      if (state !== undefined) {
-        // Baseline: every stage, so a subscriber to any one of them starts from the current truth.
-        this.emit('online', { online: state.online });
-        if (state.networkInfo !== undefined) this.emit('networkInfo', state.networkInfo);
-        this.emit('state', state);
-      }
-    } catch (error) {
-      this.#detach();
-      this.#onError(error);
+    const win = this.#window as Partial<TargetLike> | undefined;
+    this.#listen(win, 'online', () => this.#changed('online'));
+    this.#listen(win, 'offline', () => this.#changed('online'));
+    const nav = this.#navigator;
+    const connection =
+      nav === undefined
+        ? undefined
+        : hostRead(
+            () => (nav as { connection?: unknown }).connection,
+            (e) => this.#onError(e),
+          );
+    this.#listen(
+      typeof connection === 'object' && connection !== null
+        ? (connection as Partial<TargetLike>)
+        : undefined,
+      'change',
+      () => this.#changed('networkInfo'),
+    );
+    const state = this.#read();
+    if (state !== undefined) {
+      // Baseline: every stage that has a value, so a subscriber to any one starts from the current truth.
+      if (state.online !== undefined) this.emit('online', { online: state.online });
+      if (state.networkInfo !== undefined) this.emit('networkInfo', state.networkInfo);
+      this.emit('state', state);
     }
   }
 
-  #listen(target: Partial<TargetLike> | undefined, type: string, listener: () => void): void {
+  #listen(target: Partial<TargetLike> | undefined, type: string, run: () => void): void {
     if (typeof target?.addEventListener !== 'function') return;
-    // `run` cannot throw into the browser's event dispatch: reads are hostRead-guarded and the emitter isolates
-    // (and reports) subscriber failures.
-    // Recorded BEFORE attaching so a failing addEventListener still unwinds exactly what was registered.
+    const listener = (): void => {
+      try {
+        run();
+      } catch (error) /* v8 ignore next 3 -- defense in depth: reads and the emitter are already guarded */ {
+        this.#onError(error);
+      }
+    };
+    // Recorded BEFORE attaching so a failing addEventListener still leaves a removable record.
     this.#attached.push({ target, type, listener });
-    target.addEventListener(type, listener);
+    try {
+      target.addEventListener(type, listener);
+    } catch (error) {
+      this.#onError(error);
+    }
   }
 
   #detach(): void {
@@ -184,8 +198,9 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   #changed(kind: 'online' | 'networkInfo'): void {
     const state = this.#read();
     if (state === undefined) return;
-    if (kind === 'online') this.emit('online', { online: state.online });
-    else if (state.networkInfo !== undefined) this.emit('networkInfo', state.networkInfo);
+    if (kind === 'online') {
+      if (state.online !== undefined) this.emit('online', { online: state.online });
+    } else if (state.networkInfo !== undefined) this.emit('networkInfo', state.networkInfo);
     this.emit('state', state);
   }
 
@@ -194,9 +209,17 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
     const nav = this.#navigator as { onLine?: unknown; connection?: unknown } | undefined;
     if (nav === undefined) return undefined;
     const report = (error: unknown): void => this.#onError(error);
-    const online = hostRead(() => nav.onLine, report) !== false;
+    // A failed read is NOT "online": the value is omitted. A merely absent `onLine` stays treated as online.
+    let failed = false;
+    const onLine = hostRead(
+      () => nav.onLine,
+      (error) => {
+        failed = true;
+        report(error);
+      },
+    );
     const connection = hostRead(() => nav.connection, report);
-    const state: ConnectivityState = { online };
+    const state: ConnectivityState = failed ? {} : { online: onLine !== false };
     if (typeof connection === 'object' && connection !== null) {
       const c = connection as Record<string, unknown>;
       // Each getter is its own failure domain: a hostile one costs only that field.

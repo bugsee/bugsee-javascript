@@ -205,6 +205,20 @@ describe('ConnectionProducer', () => {
     expect(win.count()).toBe(0);
   });
 
+  it('emits no row when navigator.onLine cannot be read (never a fabricated online/unknown)', () => {
+    const nav = { connection: { type: 'wifi' } };
+    Object.defineProperty(nav, 'onLine', {
+      get() {
+        throw new Error('onLine blocked');
+      },
+    });
+    const onError = vi.fn();
+    expect(
+      startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: nav }, onError))]).out,
+    ).toEqual([]);
+    expect(onError).toHaveBeenCalled();
+  });
+
   it('emits nothing with no navigator at all', () => {
     expect(startAll([new ConnectionProducer(new ConnectivityTracker({}))]).out).toEqual([]);
   });

@@ -154,6 +154,7 @@ export class ConnectionProducer extends TraceProducerBase {
   }
 
   #publish({ online, networkInfo: connection }: ConnectivityState): void {
+    if (online === undefined) return; // an unreadable onLine is not evidence of anything: no row
     this.emitIfChanged('connection', {
       type: connectionTypeToWire(connection, online),
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
