@@ -1,7 +1,7 @@
 import type { SystemEvent } from '@bugsee/capture';
+import { ApplicationTracker, resetApplicationTracker } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -302,9 +302,45 @@ describe('createBrowserSystemEventsSource', () => {
     off();
   });
 
+  it('without an injected tracker, two sources over the same document share the registry singleton (one listener set)', () => {
+    const { env, win, doc } = fakeEnv();
+    const a = activate({ ...env, window: win as never });
+    const b = activate({ ...env, window: win as never });
+    expect(doc.count('visibilitychange')).toBe(1);
+    a.off();
+    expect(doc.count('visibilitychange')).toBe(1);
+    b.off();
+    expect(doc.count('visibilitychange')).toBe(0);
+    resetApplicationTracker({ document: env.document as never });
+  });
+
+  it('an injected window without a document never borrows the host document (nor binds its singleton)', () => {
+    const hostWin = target();
+    const hostDoc = target();
+    vi.stubGlobal('window', hostWin);
+    vi.stubGlobal('document', { ...hostDoc, visibilityState: 'visible' });
+    const injected = target();
+    const off = createBrowserSystemEventsSource({ window: injected as never }).onAny(() => {});
+    expect(injected.count('pagehide')).toBe(1);
+    expect(hostDoc.count('visibilitychange')).toBe(0);
+    expect(hostWin.count('pagehide')).toBe(0);
+    off();
+  });
+
+  it('an injected document without a window never borrows the host window', () => {
+    const hostWin = target();
+    vi.stubGlobal('window', hostWin);
+    const doc = target();
+    const off = createBrowserSystemEventsSource({
+      document: { ...doc, visibilityState: 'visible' } as never,
+    }).onAny(() => {});
+    expect(hostWin.count('pagehide')).toBe(0);
+    off();
+  });
+
   it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
     const { env, win, doc } = fakeEnv();
-    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const a = activate({ ...env, lifecycle });
     const b = activate({ ...env, lifecycle });
     // two sources over ONE tracker → one listener per type
@@ -329,14 +365,14 @@ describe('createBrowserSystemEventsSource', () => {
     });
     const { off } = activate({ ...env, onError });
     expect(() => doc.emit('visibilitychange', {})).not.toThrow();
-    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(2); // the activation read + the event read, each reported once
     expect(win.count('pagehide')).toBe(1);
     off();
   });
 
   it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
     const { env, win } = fakeEnv();
-    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const source = createBrowserSystemEventsSource({ ...env, lifecycle });
     const events: SystemEvent[] = [];
     const first = source.onAny((_s, e) => events.push(e));

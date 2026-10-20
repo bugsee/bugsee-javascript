@@ -1,5 +1,5 @@
 import { InterceptorBase } from '@bugsee/core';
-import type { PageLifecycleTracker } from './page-lifecycle-tracker';
+import type { ApplicationTracker } from '@bugsee/trackers/browser';
 
 // Browser connectivity TRACKER (mirrors the mobile tracker/producer split): snapshots `navigator.onLine`
 // plus NetworkInformation whenever the browser says either changed — `online`/`offline` on the window and
@@ -25,7 +25,7 @@ interface TargetLike {
 }
 export interface ConnectionEnv {
   /** Shared lifecycle tracker for `online`/`offline`; when absent they are listened for on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   window?: TargetLike;
   navigator?: {
     /** NetworkInformation; it is an EventTarget where it exists, but the fields are what matter. */

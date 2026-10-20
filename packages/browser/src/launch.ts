@@ -75,6 +75,7 @@ import {
   type UploadResult,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { applicationTrackerFor } from '@bugsee/trackers/browser';
 import { reportGuarded } from '@bugsee/util';
 import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
 import type { WindowEvents } from './detection-providers';
@@ -97,7 +98,6 @@ import {
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -878,7 +878,7 @@ async function buildLaunch(
   client.addCaptureProvider(network.provider);
   // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
   // producers and the events source: the listeners are bound in a single place.
-  const lifecycle = new PageLifecycleTracker(
+  const lifecycle = applicationTrackerFor(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,
   );
