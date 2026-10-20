@@ -242,7 +242,7 @@ export function createBrowserSystemEventsSource(
           ...(nav !== undefined ? { navigator: nav } : {}),
           ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
           // Always explicit: an omitted field would be RETAINED by the window's shared tracker (an earlier source
-          // may have changed it). Private-mode detection is OPT-OUT (owner decision, 2026-10-20): on unless
+          // may have changed it). Private-mode detection is on unless
           // `detectPrivateMode: false`. Hints and permission states have no consumer here, so they are never read.
           detectPrivateMode: env.detectPrivateMode ?? true,
           observeHints: false,

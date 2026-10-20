@@ -184,7 +184,7 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark".
     ...FAIL_ON_BOOLEAN_OPTION,
   },
-  // Environment hints that read as sensitive (private-browsing detection): OPT-OUT (owner decision, 2026-10-20), so
+  // Environment hints that read as sensitive (private-browsing detection): the browser launch default is true, so
   // `false` disables. An invalid value is OFF and reported (never read as consent to detect).
   {
     friendly: 'captureEnvironmentHints',
@@ -383,8 +383,8 @@ export interface BugseeLaunchOptions {
    * Observe environment hints that read as sensitive. Today: the private-browsing HEURISTIC (a storage-quota probe)
    * behind a `private_mode_detected` system event, emitted only for a `yes` answer and never as a certainty
    * (constrained storage can false-positive).
-   * **On by default (opt-out)**: pass `false` to turn it off. An invalid value (not a boolean) is treated as off and
-   * reported. Language and time-zone changes (`language_changed`, `timezone_changed`) are always observed. Hint and
+   * Default in the browser launch: `true` (the protocol layer defines the option key and its boolean type, not a
+   * default); pass `false` to turn it off. A non-boolean value is treated as off and reported. Language and time-zone changes (`language_changed`, `timezone_changed`) are always observed. Hint and
    * permission states are not read at all.
    */
   captureEnvironmentHints?: boolean;
