@@ -1,7 +1,14 @@
 import type { SystemEvent } from '@bugsee/capture';
+import { createMultiKeyEmitter } from '@bugsee/trackers';
+import {
+  ApplicationTracker,
+  type EnvironmentEvents,
+  environmentTrackerFor,
+  resetApplicationTracker,
+  resetEnvironmentTracker,
+} from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type BrowserSystemEventsEnv, createBrowserSystemEventsSource } from './system-events';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,6 +34,10 @@ function target() {
   };
 }
 
+// The environment tracker has its own listeners (languagechange, visibilitychange); tests of the LIFECYCLE wiring
+// inject an inert one so they count only the lifecycle's. The environment events are tested separately below.
+const inertEnvironment = { onAny: () => () => {} };
+
 function fakeEnv() {
   const win = target();
   const doc = target();
@@ -39,7 +50,12 @@ function fakeEnv() {
       return state.visibilityState;
     },
   };
-  const env: BrowserSystemEventsEnv = { window: win, document, screen: { orientation } };
+  const env: BrowserSystemEventsEnv = {
+    window: win,
+    document,
+    screen: { orientation },
+    environment: inertEnvironment as never,
+  };
   return { env, win, doc, state, orientation };
 }
 
@@ -80,13 +96,38 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { events } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(m.queries).toEqual(['(prefers-color-scheme: dark)']);
+    expect(new Set(m.queries)).toEqual(new Set(['(prefers-color-scheme: dark)'])); // baseline read + watch
     m.fire(true);
     m.fire(false);
     expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
       { name: 'dark_mode_changed', params: { dark: true } },
       { name: 'dark_mode_changed', params: { dark: false } },
     ]);
+  });
+
+  it('a throwing onError never escapes into the tracker-fed event dispatch', () => {
+    const { env, win, orientation } = fakeEnv();
+    const m = fakeMedia();
+    const { events } = activate({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: () => {
+        throw new Error('reporter');
+      },
+    });
+    const source = createBrowserSystemEventsSource({
+      ...env,
+      matchMedia: m.matchMedia,
+      onError: () => {
+        throw new Error('reporter');
+      },
+    });
+    source.on('event', () => {
+      throw new Error('consumer');
+    });
+    orientation.angle = 90;
+    expect(() => win.emit('orientationchange', {})).not.toThrow();
+    expect(events.map((e) => e.name)).toContain('orientation_changed');
   });
 
   it('removes the media listener on deactivate', () => {
@@ -116,7 +157,10 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     });
     win.emit('online', {});
     expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
-    expect(errors.map((e) => (e as Error).message)).toEqual(['matchMedia blocked']);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(new Set(errors.map((e) => (e as Error).message))).toEqual(
+      new Set(['matchMedia blocked']),
+    );
   });
 
   it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
@@ -257,13 +301,14 @@ describe('createBrowserSystemEventsSource', () => {
         'screen blocked',
         'window blocked',
       ]);
-      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      // a supplied lifecycle AND environment own the DOCUMENT (not read again); the window is still read for the UI tracker
       const none: unknown[] = [];
       createBrowserSystemEventsSource({
         lifecycle: { on: () => () => {} },
+        environment: inertEnvironment as never,
         onError: (e) => none.push(e),
       });
-      expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
+      expect(none.map((e) => (e as Error).message)).toEqual(['window blocked', 'screen blocked']);
     } finally {
       for (const [key, d] of originals) {
         if (d !== undefined) Object.defineProperty(globalThis, key, d);
@@ -298,13 +343,84 @@ describe('createBrowserSystemEventsSource', () => {
     const source = createBrowserSystemEventsSource();
     const off = source.onAny(() => {});
     expect(win.count('pagehide')).toBe(1);
+    // the lifecycle tracker's listener AND the environment tracker's (time-zone re-read on visible)
+    expect(doc.count('visibilitychange')).toBe(2);
+    expect(win.count('languagechange')).toBe(1);
+    off();
+    expect(doc.count('visibilitychange')).toBe(0);
+    expect(win.count('languagechange')).toBe(0);
+  });
+
+  it('without an injected window the UI tracker gets the host window (and its screen), like the lifecycle tracker', () => {
+    const win = target();
+    const screen = { orientation: { type: 'portrait-primary', angle: 0 } };
+    vi.stubGlobal('window', win);
+    vi.stubGlobal('screen', screen);
+    const source = createBrowserSystemEventsSource();
+    const events: SystemEvent[] = [];
+    const off = source.onAny((_s, e) => events.push(e));
+    expect(win.count('orientationchange')).toBe(1);
+    screen.orientation = { type: 'landscape-primary', angle: 90 };
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({
+      name: 'orientation_changed',
+      params: { type: 'landscape-primary', angle: 90 },
+    });
+    off();
+    expect(win.count('orientationchange')).toBe(0);
+  });
+
+  it('an injected window never borrows the host window or screen', () => {
+    const hostWin = target();
+    vi.stubGlobal('window', hostWin);
+    vi.stubGlobal('screen', { orientation: { type: 'portrait-primary', angle: 0 } });
+    const injected = target();
+    const { events, off } = activate({ window: injected as never });
+    expect(hostWin.count('orientationchange')).toBe(0);
+    injected.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({ name: 'orientation_changed' }); // the host's screen was not used
+    off();
+  });
+
+  it('without an injected tracker, two sources over the same document share the registry singleton (one listener set)', () => {
+    const { env, win, doc } = fakeEnv();
+    const a = activate({ ...env, window: win as never });
+    const b = activate({ ...env, window: win as never });
     expect(doc.count('visibilitychange')).toBe(1);
+    a.off();
+    expect(doc.count('visibilitychange')).toBe(1);
+    b.off();
+    expect(doc.count('visibilitychange')).toBe(0);
+    resetApplicationTracker({ document: env.document as never });
+  });
+
+  it('an injected window without a document never borrows the host document (nor binds its singleton)', () => {
+    const hostWin = target();
+    const hostDoc = target();
+    vi.stubGlobal('window', hostWin);
+    vi.stubGlobal('document', { ...hostDoc, visibilityState: 'visible' });
+    const injected = target();
+    const off = createBrowserSystemEventsSource({ window: injected as never }).onAny(() => {});
+    expect(injected.count('pagehide')).toBe(1);
+    expect(hostDoc.count('visibilitychange')).toBe(0);
+    expect(hostWin.count('pagehide')).toBe(0);
+    off();
+  });
+
+  it('an injected document without a window never borrows the host window', () => {
+    const hostWin = target();
+    vi.stubGlobal('window', hostWin);
+    const doc = target();
+    const off = createBrowserSystemEventsSource({
+      document: { ...doc, visibilityState: 'visible' } as never,
+    }).onAny(() => {});
+    expect(hostWin.count('pagehide')).toBe(0);
     off();
   });
 
   it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
     const { env, win, doc } = fakeEnv();
-    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const a = activate({ ...env, lifecycle });
     const b = activate({ ...env, lifecycle });
     // two sources over ONE tracker → one listener per type
@@ -329,14 +445,14 @@ describe('createBrowserSystemEventsSource', () => {
     });
     const { off } = activate({ ...env, onError });
     expect(() => doc.emit('visibilitychange', {})).not.toThrow();
-    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(2); // the activation read + the event read, each reported once
     expect(win.count('pagehide')).toBe(1);
     off();
   });
 
   it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
     const { env, win } = fakeEnv();
-    const lifecycle = new PageLifecycleTracker({ window: win, document: env.document as never });
+    const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const source = createBrowserSystemEventsSource({ ...env, lifecycle });
     const events: SystemEvent[] = [];
     const first = source.onAny((_s, e) => events.push(e));
@@ -350,5 +466,359 @@ describe('createBrowserSystemEventsSource', () => {
       { name: 'online' },
     ]);
     second();
+  });
+
+  describe('environment events', () => {
+    const lifecycleStub = { on: () => () => {} };
+
+    it('maps the language / timezone stages to language_changed / timezone_changed, omitting unknown fields', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events } = activate({ lifecycle: lifecycleStub as never, environment });
+      environment.emit('language', {
+        language: 'uk-UA',
+        languages: ['uk-UA', 'en'],
+        previous: { language: 'en-US' },
+      });
+      environment.emit('language', { languages: ['fr'], previous: {} });
+      environment.emit('timezone', {
+        timeZone: 'Asia/Tokyo',
+        utcOffsetMinutes: 540,
+        previous: { timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 },
+      });
+      environment.emit('timezone', { utcOffsetMinutes: 60, previous: {} });
+      expect(events.slice(1)).toStrictEqual([
+        {
+          name: 'language_changed',
+          params: { language: 'uk-UA', languages: ['uk-UA', 'en'], previousLanguage: 'en-US' },
+        },
+        { name: 'language_changed', params: { languages: ['fr'] } },
+        {
+          name: 'timezone_changed',
+          params: {
+            timezone: 'Asia/Tokyo',
+            utcOffsetMinutes: 540,
+            previousTimezone: 'Europe/Kyiv',
+            previousUtcOffsetMinutes: 120,
+          },
+        },
+        { name: 'timezone_changed', params: { utcOffsetMinutes: 60 } },
+      ]);
+    });
+
+    it('private_mode_detected only for a yes answer (never for no / unknown), with the method', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events } = activate({ lifecycle: lifecycleStub as never, environment });
+      environment.emit('privateMode', { private: 'no', method: 'storage-quota' });
+      environment.emit('privateMode', { private: 'unknown' });
+      expect(events.slice(1)).toEqual([]);
+      environment.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      environment.emit('privateMode', { private: 'yes' });
+      expect(events.slice(1)).toEqual([
+        { name: 'private_mode_detected', params: { method: 'storage-quota' } },
+        { name: 'private_mode_detected', params: {} },
+      ]);
+    });
+
+    it('an opted-out source (detectPrivateMode: false) never forwards a yes, even if another consumer enabled detection on the shared tracker', async () => {
+      const injected = createMultiKeyEmitter<EnvironmentEvents>();
+      const out = activate({
+        lifecycle: lifecycleStub as never,
+        environment: injected,
+        detectPrivateMode: false,
+      });
+      injected.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      expect(out.events.map((e) => e.name)).toEqual(['process_started']);
+      // and over the REAL window singleton, with a second consumer turning detection on
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      Object.assign(win, {
+        navigator: {
+          language: 'en-US',
+          storage: { estimate: () => Promise.resolve({ quota: 10 }) },
+        },
+      });
+      try {
+        const off = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
+        const other = environmentTrackerFor({ window: win, detectPrivateMode: true });
+        const unsub = other.onAny(() => {});
+        await new Promise((r) => setTimeout(r, 0));
+        expect(other.current().privateMode?.private).toBe('yes'); // the tracker did detect it
+        expect(off.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        unsub();
+        off.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+      out.off();
+    });
+
+    it('a retained yes is re-delivered once to each new session (no re-probe); no / unknown stay silent; an opt-out stays silent', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const estimate = vi.fn(() => Promise.resolve({ quota: 10 }));
+      Object.assign(win, { navigator: { language: 'en-US', storage: { estimate } } });
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(first.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+        first.off();
+        estimate.mockClear();
+        // a later session on the same window (the tracker outlived the first one)
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).not.toHaveBeenCalled(); // not re-probed
+        expect(second.events.filter((e) => e.name === 'private_mode_detected')).toEqual([
+          { name: 'private_mode_detected', params: { method: 'storage-quota' } },
+        ]);
+        second.off();
+        // an opted-out session never gets it from the retained answer
+        const optedOut = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(optedOut.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        optedOut.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('a retained no is not delivered to a later session', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      Object.assign(win, {
+        navigator: {
+          language: 'en-US',
+          storage: { estimate: () => Promise.resolve({ quota: 2 * 1024 * 1024 * 1024 }) },
+        },
+      });
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(environmentTrackerFor({ window: win }).current().privateMode?.private).toBe('no');
+        first.off();
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(second.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        second.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('a retained yes read from the tracker is emitted on subscribe, once even if the activation also emits it; later answers still forward', () => {
+      const injected = createMultiKeyEmitter<EnvironmentEvents>();
+      const withCurrent = Object.assign(injected, {
+        current: () => ({ privateMode: { private: 'yes' as const, method: 'storage-quota' } }),
+      });
+      const out = activate({ lifecycle: lifecycleStub as never, environment: withCurrent });
+      expect(out.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+      injected.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      expect(out.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(2); // a new answer is still forwarded
+      out.off();
+      // the activation itself emits the same yes while subscribing: still one event
+      const loud = createMultiKeyEmitter<EnvironmentEvents>();
+      const onAny = loud.onAny.bind(loud);
+      const sub = Object.assign(loud, {
+        current: () => ({ privateMode: { private: 'yes' as const } }),
+        onAny: ((listener: Parameters<typeof onAny>[0]) => {
+          const off = onAny(listener);
+          loud.emit('privateMode', { private: 'yes' });
+          return off;
+        }) as typeof onAny,
+      });
+      const two = activate({ lifecycle: lifecycleStub as never, environment: sub });
+      expect(two.events.filter((e) => e.name === 'private_mode_detected')).toHaveLength(1);
+      two.off();
+      // an opted-out source never delivers a retained yes
+      const quiet = createMultiKeyEmitter<EnvironmentEvents>();
+      const held = Object.assign(quiet, {
+        current: () => ({ privateMode: { private: 'yes' as const } }),
+      });
+      const optedOut = activate({
+        lifecycle: lifecycleStub as never,
+        environment: held,
+        detectPrivateMode: false,
+      });
+      expect(optedOut.events.map((e) => e.name)).not.toContain('private_mode_detected');
+      optedOut.off();
+    });
+
+    it('a language AND time-zone change while the source was stopped are BOTH reported on restart', () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const nav = { language: 'en-US' };
+      Object.assign(win, { navigator: nav });
+      const real = new Date().getTimezoneOffset();
+      try {
+        const first = activate({ ...rest, lifecycle: lifecycleStub as never });
+        first.off(); // the tracker retains its readings
+        nav.language = 'de-DE';
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 60);
+        const second = activate({ ...rest, lifecycle: lifecycleStub as never });
+        expect(second.events.map((e) => e.name)).toEqual([
+          'process_started',
+          'language_changed',
+          'timezone_changed',
+        ]);
+        second.off();
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('an omitted detectPrivateMode means ON (opt-out), and an explicit false turns it OFF even after an earlier source turned it on for the window', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const estimate = vi.fn(() => Promise.resolve({ quota: 10 }));
+      Object.assign(win, { navigator: { language: 'en-US', storage: { estimate } } });
+      try {
+        const on = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: true,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).toHaveBeenCalledTimes(1);
+        expect(on.events.at(-1)?.name).toBe('private_mode_detected');
+        on.off();
+        resetEnvironmentTracker({ window: win }); // forget the answer; keep nothing but the seam question
+        const first = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: true,
+        });
+        first.off();
+        estimate.mockClear();
+        const off = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          detectPrivateMode: false,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).not.toHaveBeenCalled();
+        expect(off.events.map((e) => e.name)).not.toContain('private_mode_detected');
+        off.off();
+        resetEnvironmentTracker({ window: win });
+        const dflt = activate({ ...rest, lifecycle: lifecycleStub as never }); // option omitted
+        await new Promise((r) => setTimeout(r, 0));
+        expect(estimate).toHaveBeenCalledTimes(1);
+        expect(dflt.events.at(-1)?.name).toBe('private_mode_detected');
+        dflt.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('never queries permissions nor reads hints: nothing consumes them', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const query = vi.fn(() => Promise.resolve({ state: 'granted' }));
+      Object.assign(win, {
+        navigator: { language: 'en-US', cookieEnabled: true, permissions: { query } },
+      });
+      try {
+        const a = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).not.toHaveBeenCalled();
+        expect(environmentTrackerFor({ window: win }).current().hints).toBeUndefined();
+        expect(environmentTrackerFor({ window: win }).current().permissions).toBeUndefined();
+        a.off();
+        // an earlier user of the window's tracker that asked for them does not leak into this source
+        const tracker = environmentTrackerFor({
+          window: win,
+          observeHints: true,
+          queryPermissions: true,
+        });
+        const off = tracker.onAny(() => {});
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).toHaveBeenCalled();
+        off();
+        query.mockClear();
+        const b = activate({ ...rest, lifecycle: lifecycleStub as never });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(query).not.toHaveBeenCalled();
+        expect(environmentTrackerFor({ window: win }).current().hints).toBeUndefined();
+        b.off();
+      } finally {
+        resetEnvironmentTracker({ window: win });
+      }
+    });
+
+    it('stops listening to the environment tracker on deactivate', () => {
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const { events, off } = activate({ lifecycle: lifecycleStub as never, environment });
+      off();
+      environment.emit('language', { language: 'x', previous: {} });
+      expect(events).toEqual([{ name: 'process_started' }]);
+    });
+
+    it('over the window singleton: a real languagechange and a time-zone tick become events; private mode is opt-out', async () => {
+      const { env, win } = fakeEnv();
+      const { environment: _inert, ...rest } = env;
+      const nav = {
+        language: 'en-US',
+        storage: { estimate: vi.fn(() => Promise.resolve({ quota: 10 })) },
+      };
+      Object.assign(win, { navigator: nav });
+      const noTick = () => {};
+      let tick: () => void = noTick;
+      const scheduler = {
+        setInterval: (cb: () => void) => {
+          tick = cb;
+          return 1;
+        },
+        clearInterval: () => {},
+      };
+      try {
+        // opted out: language/timezone on, private mode off
+        const a = activate({
+          ...rest,
+          lifecycle: lifecycleStub as never,
+          scheduler,
+          detectPrivateMode: false,
+        });
+        nav.language = 'de-DE';
+        win.emit('languagechange', {});
+        expect(a.events.map((e) => e.name)).toEqual(['process_started', 'language_changed']);
+        expect(nav.storage.estimate).not.toHaveBeenCalled();
+        a.off();
+        resetEnvironmentTracker({ window: win });
+        // the default: a yes answer is an event
+        const b = activate({ ...rest, lifecycle: lifecycleStub as never, scheduler });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(b.events.at(-1)).toEqual({
+          name: 'private_mode_detected',
+          params: { method: 'storage-quota' },
+        });
+        expect(tick).not.toBe(noTick); // the injected scheduler reached the singleton's slow timer
+        const before = b.events.length;
+        const real = new Date().getTimezoneOffset();
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 60); // zone moved 1 h east
+        tick();
+        expect(b.events.slice(before)).toEqual([
+          {
+            name: 'timezone_changed',
+            params: {
+              timezone: expect.any(String),
+              utcOffsetMinutes: -(real - 60) + 0,
+              previousTimezone: expect.any(String),
+              previousUtcOffsetMinutes: -real + 0,
+            },
+          },
+        ]);
+        b.off();
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: win });
+      }
+    });
   });
 });

@@ -1,4 +1,4 @@
-import type { WindowEvents } from '@bugsee/browser';
+import { applicationTrackerFor, environmentTrackerFor, type WindowEvents } from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -115,6 +115,7 @@ function fakeEventTarget() {
     emit: (type: string, event: unknown) => {
       for (const l of [...(listeners.get(type) ?? [])]) l(event as Event);
     },
+    count: (type: string) => listeners.get(type)?.size ?? 0,
   };
 }
 
@@ -149,6 +150,151 @@ const baseOptions = (
   captureNetwork: false, // don't patch the real fetch/XHR globals in unit tests
   carrier: {}, // a fresh per-WebView carrier so the singleton + interceptors are isolated
   ...over,
+});
+
+describe('launch (webview) goes through the ApplicationTracker registry', () => {
+  const blockedDoc = () => {
+    const doc = fakeEventTarget();
+    const boom = new Error('visibilityState blocked');
+    const state = { armed: false };
+    Object.defineProperty(doc.target, 'visibilityState', {
+      get() {
+        if (state.armed) throw boom;
+        return 'visible';
+      },
+    });
+    return { doc, boom, state, document: doc.target as unknown as Document };
+  };
+
+  it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+    // ApplicationTracker's temporary online stage + the ConnectivityTracker's own listener
+    expect(win.count('online')).toBe(2);
+    const shared = applicationTrackerFor({ window: win.target as never, document });
+    const off = shared.on('online', () => {});
+    expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
+    off();
+  });
+
+  it('shares the browser system-events source: launch goes through the per-window EnvironmentTracker (private mode off)', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    try {
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      expect(tracker.current().language).toEqual({ language: 'pl-PL' });
+      expect(tracker.current().privateMode).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('the environment tracker runs over the launch document and scheduler: slow tick re-reads the zone, hidden ticks and visibility changes follow the document', () => {
+    const win = fakeEventTarget();
+    const doc = fakeEventTarget();
+    const vis = { state: 'visible' };
+    Object.defineProperty(doc.target, 'visibilityState', { get: () => vis.state });
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    const ticks: Array<{ cb: () => void; ms: number }> = [];
+    const real = new Date().getTimezoneOffset();
+    const offset = (minutesEast: number) =>
+      vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(-minutesEast);
+    try {
+      track(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return ticks.length;
+            },
+            clearInterval: () => {},
+          },
+        }),
+      );
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      const slow = ticks.filter((t) => t.ms === 60_000);
+      expect(slow).toHaveLength(1); // the launch scheduler reached the tracker
+      expect(doc.count('visibilitychange')).toBeGreaterThan(0); // and its document
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      offset(-real + 90);
+      vis.state = 'hidden';
+      slow[0]?.cb();
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: tick skipped
+      doc.emit('visibilitychange', {}); // still hidden: no re-read
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      vis.state = 'visible';
+      doc.emit('visibilitychange', {});
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 90); // visible: re-read
+    } finally {
+      vi.restoreAllMocks();
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('never turns private-mode detection on, even when an earlier launch on the same window had it on', async () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    const estimate = vi.fn(() => Promise.resolve({ quota: 1 }));
+    const navigator = { language: 'en', storage: { estimate } };
+    Object.assign(win.target, { navigator });
+    try {
+      environmentTrackerFor({ window: win.target as never, navigator, detectPrivateMode: true });
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(estimate).toHaveBeenCalled(); // the storage trace probes it; private mode must not be inferred
+      expect(
+        environmentTrackerFor({ window: win.target as never }).current().privateMode,
+      ).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {
+    const win = fakeEventTarget();
+    const { doc, boom, state, document } = blockedDoc();
+    const first = vi.fn();
+    const second = vi.fn();
+    const fireBlocked = () => {
+      state.armed = true;
+      try {
+        doc.emit('visibilitychange', {});
+      } catch {
+        /* a real DOM dispatch never propagates a listener's throw */
+      } finally {
+        state.armed = false;
+      }
+    };
+    const run = (onError?: (e: unknown) => void) =>
+      launch(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document,
+          ...(onError !== undefined ? { onError } : {}),
+        }),
+      );
+    run(first).stop();
+    run(second).stop();
+    first.mockClear();
+    second.mockClear();
+    const live = run(second);
+    clients.push(live);
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+    expect(first).not.toHaveBeenCalledWith(boom);
+    live.stop();
+    second.mockClear();
+    clients.push(run()); // no onError: must NOT silence the earlier launch's sink
+    fireBlocked();
+    expect(second).toHaveBeenCalledWith(boom);
+  });
 });
 
 describe('launch (webview)', () => {
@@ -360,7 +506,8 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toEqual([win.target]);
+    expect(thisSeen).toHaveLength(2); // the baseline read + the change watch
+    expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
       entriesOfType(msgs.msgs(), 'events.system').some((e) =>
@@ -1030,13 +1177,89 @@ describe('launch (webview)', () => {
         expect(rows.get('ram_js_heap_used')).toBe(10);
         expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
         expect(rows.get('orientation')).toBe(3);
-        // ONE shared lifecycle tracker: the traces and the events source add 3 listeners between them, not 6.
-        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
+        // ONE shared lifecycle tracker (traces + events source: 3 listeners, not 6) plus the domain ConnectivityTracker's
+        // own online/offline pair (it does not depend on the lifecycle tracker).
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(5);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+
+    describe('user_idle_state is opt-in (captureUserIdle) and needs an already-granted permission', () => {
+      const idleRows = async (over: Partial<BugseeWebViewLaunchOptions>, permission: string) => {
+        stubSensors();
+        const query = vi.fn(() => Promise.resolve({ state: permission }));
+        vi.stubGlobal('navigator', { onLine: true, permissions: { query } });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          class FakeDetector {
+            userState = 'idle';
+            screenState = 'unlocked';
+            start = () => Promise.resolve(undefined);
+            addEventListener = () => {};
+            removeEventListener = () => {};
+          }
+          Object.assign(w.win, {
+            IdleDetector: FakeDetector,
+            AbortController: class {
+              signal = {};
+              abort() {}
+            },
+          });
+          track('tok', baseOptions({ global: fake.global, window: w.win, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          const rows = new Map(
+            entriesOfType(fake.msgs(), 'traces.system').map((e) => {
+              const d = (e.p as unknown as { data: { name: string; value: unknown } }).data;
+              return [d.name, d.value];
+            }),
+          );
+          return { rows, query, w };
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      };
+
+      it('default: no user_idle_state and no permission query, though granted', async () => {
+        const { rows, query } = await idleRows({}, 'granted');
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+      });
+
+      it('captureUserIdle:true + already granted: user_idle_state is streamed', async () => {
+        const { rows } = await idleRows({ captureUserIdle: true }, 'granted');
+        expect(rows.get('user_idle_state')).toBe('idle');
+      });
+
+      it('captureUserIdle:true but not granted: no trace (never prompts)', async () => {
+        const { rows, query } = await idleRows({ captureUserIdle: true }, 'prompt');
+        expect(query).toHaveBeenCalled();
+        expect(rows.has('user_idle_state')).toBe(false);
+      });
+
+      it.each([
+        'true',
+        1,
+        0,
+        '',
+        null,
+      ])('captureUserIdle=%j (invalid) stays OFF and reports', async (bad) => {
+        const onError = vi.fn();
+        const { rows, query } = await idleRows(
+          { captureUserIdle: bad as never, onError },
+          'granted',
+        );
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+        expect(
+          onError.mock.calls.filter((c) =>
+            String((c[0] as Error).message).startsWith('captureUserIdle must be a boolean'),
+          ),
+        ).toHaveLength(1);
+      });
     });
 
     it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
@@ -1072,6 +1295,98 @@ describe('launch (webview)', () => {
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+
+    describe('screen_size and main_thread_lag_ms (from the injected window)', () => {
+      const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
+        entriesOfType(fake.msgs(), 'traces.system')
+          .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+          .filter((d) => d.name === name)
+          .map((d) => d.value);
+
+      it('streams screen_size {width,height,dpr} and timer-drift lag from the INJECTED window; none from a hidden page', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          let clock = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: { now: () => clock },
+            configurable: true,
+          });
+          Object.assign(w.win, { devicePixelRatio: 3 });
+          const dom = fakeDomDocument();
+          Object.assign(dom.document, { visibilityState: 'visible' });
+          const ticks: Array<() => void> = [];
+          track(
+            'tok',
+            baseOptions({
+              global: fake.global,
+              window: w.win,
+              document: dom.document as unknown as Document,
+              scheduler: {
+                setInterval: (cb, ms) => {
+                  if (ms === 1000) ticks.push(cb as () => void);
+                  return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+                },
+                clearInterval: () => {},
+              },
+            }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
+          clock = 1000 + 25; // the first 1 s tick fires 25 ms late
+          for (const t of ticks) t();
+          expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
+
+          // a hidden page never reads the clock for lag (no timer)
+          let hiddenReads = 0;
+          Object.defineProperty(w.win, 'performance', {
+            value: {
+              now: () => {
+                hiddenReads += 1;
+                return 0;
+              },
+            },
+            configurable: true,
+          });
+          const hidden = fakeDomDocument();
+          Object.assign(hidden.document, { visibilityState: 'hidden' });
+          track(
+            'tok2',
+            baseOptions({
+              global: fakeGlobal().global,
+              window: w.win,
+              document: hidden.document as unknown as Document,
+            }),
+          );
+          expect(hiddenReads).toBe(0);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch and is reported', () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const w = fakeWin();
+          Object.defineProperty(w.win, 'devicePixelRatio', {
+            get(): never {
+              throw new Error('devicePixelRatio blocked');
+            },
+            configurable: true,
+          });
+          const onError = vi.fn();
+          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+            'devicePixelRatio blocked',
+          );
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
     });
 
     it('the document comes from the INJECTED window, not the host global (a blocked host document is never even read)', () => {

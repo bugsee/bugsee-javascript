@@ -315,7 +315,10 @@ describe('rollup bakes the identity itself', () => {
     output: { dir?: string; file?: string },
   ) => { code: string; map: { mappings: string } } | null;
   // Rollup calls the hook with its plugin context; `this.parse` is the parser the bake walks the chunk with.
-  const renderChunk = (p: UnpluginOptions, parse: (code: string) => unknown = parseAst): RenderChunk =>
+  const renderChunk = (
+    p: UnpluginOptions,
+    parse: (code: string) => unknown = parseAst,
+  ): RenderChunk =>
     (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk.bind({ parse });
   const rollupWrite = (p: UnpluginOptions): WriteBundle =>
     (p.rollup as unknown as { writeBundle: WriteBundle }).writeBundle;

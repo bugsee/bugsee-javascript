@@ -25,7 +25,7 @@ interface AstNode {
 const isNode = (value: unknown): value is AstNode =>
   typeof value === 'object' && value !== null && typeof (value as AstNode).type === 'string';
 
-/** Node types whose every identifier is a name, never a read (`import { X }`, `export { X }`, `new.target`). */
+/** Node types whose every identifier is a name, never a read (`import { X }`, `export { X }`, `export * as X`). */
 const NAME_ONLY = new Set([
   'ImportSpecifier',
   'ImportDefaultSpecifier',
@@ -33,7 +33,6 @@ const NAME_ONLY = new Set([
   'ImportAttribute',
   'ExportSpecifier',
   'ExportAllDeclaration',
-  'MetaProperty',
 ]);
 
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
@@ -98,14 +97,21 @@ function collectReads(
       // `{ X }` reads X only as an expression; `({ X } = o)` / `const { X } = o` binds it.
       const ident = value as AstNode;
       if (!binding && ident.type === 'Identifier' && names.has(ident.name as string)) {
-        out.push({ start: ident.start, end: ident.end, name: ident.name as string, shorthand: true });
+        out.push({
+          start: ident.start,
+          end: ident.end,
+          name: ident.name as string,
+          shorthand: true,
+        });
         continue;
       }
     }
     // An object/computed member's object, a default value, a computed key: reads again inside a pattern.
     const childBinding =
       isTarget(node, key) ||
-      (binding && !(node.type === 'AssignmentPattern' && key === 'right') && node.type !== 'MemberExpression');
+      (binding &&
+        !(node.type === 'AssignmentPattern' && key === 'right') &&
+        node.type !== 'MemberExpression');
     visit(value, names, childBinding, out);
   }
 }

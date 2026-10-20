@@ -57,6 +57,69 @@ export const realSystemProbe: SystemProbe = {
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
 };
 
+/** The GPU block of `environment.hardware.gpu` (the viewer reads exactly these keys). */
+export interface HardwareGpu {
+  vendor?: string;
+  renderer?: string;
+  gl_version?: string;
+  gl_extensions?: string;
+}
+
+/**
+ * Extra `hardware` data a platform extension knows and Node cannot (e.g. Electron's GPU). Only the typed
+ * `gpu` key is merged; anything else the function returns is dropped.
+ */
+export interface HardwareExtras {
+  gpu?: HardwareGpu;
+}
+
+const GPU_KEYS = ['vendor', 'renderer', 'gl_version', 'gl_extensions'] as const;
+
+// The environment is rebuilt for EVERY report (and persisted with each queued bundle), so a block cannot be
+// unbounded: a GL extension list is a single multi-KB string. Longer values are TRUNCATED (kept, bounded).
+const MAX_GPU_FIELD_CHARS = 256;
+const MAX_GPU_EXTENSIONS_CHARS = 8192;
+
+/**
+ * Defensive copy of a GPU block: only the four known keys, only strings, trimmed, whitespace-only dropped, and
+ * length-bounded (256 chars per field, 8192 for `gl_extensions`; longer values are truncated, not dropped).
+ * Returns undefined when nothing usable remains, so no empty `gpu: {}` is ever reported. Exported so a
+ * platform composition (Electron) merges caller/cache GPU blocks by the same rules.
+ */
+export function sanitizeHardwareGpu(raw: unknown): HardwareGpu | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const source = raw as Record<string, unknown>;
+  const gpu: HardwareGpu = {};
+  for (const key of GPU_KEYS) {
+    const value = source[key];
+    if (typeof value !== 'string') continue;
+    const text = value.trim();
+    if (text === '') continue;
+    const cap = key === 'gl_extensions' ? MAX_GPU_EXTENSIONS_CHARS : MAX_GPU_FIELD_CHARS;
+    gpu[key] = text.length > cap ? text.slice(0, cap) : text;
+  }
+  return Object.keys(gpu).length > 0 ? gpu : undefined;
+}
+
+// Reads the extras LIVE; never throws (a throwing extra is reported and contributes nothing).
+function readHardwareExtras(
+  extras: (() => HardwareExtras | undefined) | undefined,
+  onError: ((error: unknown) => void) | undefined,
+): { gpu: HardwareGpu } | undefined {
+  if (extras === undefined) return undefined;
+  try {
+    const gpu = sanitizeHardwareGpu(extras()?.gpu);
+    return gpu !== undefined ? { gpu } : undefined;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // the error sink itself failed; nothing more to do
+    }
+    return undefined;
+  }
+}
+
 export interface NodeEnvironmentInput {
   /** SDK package version (sdk.version). */
   sdkVersion: string;
@@ -74,6 +137,10 @@ export interface NodeEnvironmentInput {
   debuggable?: boolean;
   /** hardware.device_id — persisted UUID supplied by the caller (null when none). */
   deviceId?: string;
+  /** Live source of extra hardware data (hardware.gpu), read on every build. */
+  hardwareExtras?: () => HardwareExtras | undefined;
+  /** Sink for a throwing `hardwareExtras`. */
+  onError?: (error: unknown) => void;
 }
 
 // os.platform() → the wire's platform.type. Named for the OS as a user knows it, and matching the set
@@ -115,6 +182,8 @@ export function buildNodeEnvironment(
       version: probe.runtimeVersion(),
     },
     hardware: {
+      // Typed extras first so the closed fields below always win.
+      ...readHardwareExtras(input.hardwareExtras, input.onError),
       model: probe.machine(),
       manufacturer: probe.osType(),
       cpu_count: probe.cpuCount(),

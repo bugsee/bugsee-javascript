@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { ConnectivityTracker, ProcessTracker, UiTracker } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdvertisedMemoryProducer,
@@ -7,9 +8,6 @@ import {
   MemoryProducer,
   OrientationProducer,
 } from './trace-producers';
-import { ConnectionTracker } from './trackers/connection-tracker';
-import { MemoryTracker } from './trackers/memory-tracker';
-import { OrientationTracker } from './trackers/orientation-tracker';
 
 type Row = { name: string; value: unknown };
 const startAll = (producers: readonly TraceProducer[]) => {
@@ -66,6 +64,18 @@ const heap = (used: number, limit: number) => ({
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** A ProcessTracker whose `performance.memory` is the live getter `memory()`. */
+function mkProcess(memory: () => unknown, scheduler?: ReturnType<typeof mkScheduler>) {
+  return new ProcessTracker({
+    ...(scheduler !== undefined ? { scheduler } : {}),
+    performance: {
+      get memory() {
+        return memory() as never;
+      },
+    },
+  });
+}
+
 describe('MemoryProducer', () => {
   it('emits the GROUPED ram_js_heap_* series (limit as total, free = limit - used) as a baseline, then every tick', () => {
     // `total` is the heap CEILING (jsHeapSizeLimit) and `free` is total - used — Android's ram_jvm_heap
@@ -73,7 +83,7 @@ describe('MemoryProducer', () => {
     // the heap grew; and no fourth `committed` series, which would break the stacked area.
     const s = mkScheduler();
     let used = 1;
-    const p = new MemoryProducer(new MemoryTracker({ memory: () => heap(used, 3), scheduler: s }));
+    const p = new MemoryProducer(mkProcess(() => heap(used, 3), s));
     const { out, stop } = startAll([p]);
     expect(out).toEqual([
       { name: 'ram_js_heap_total', value: 3 },
@@ -93,7 +103,7 @@ describe('MemoryProducer', () => {
 
   it('emits through the unconditional (polled) path: an unchanged reading is still emitted each tick', () => {
     const s = mkScheduler();
-    const p = new MemoryProducer(new MemoryTracker({ memory: () => heap(1, 3), scheduler: s }));
+    const p = new MemoryProducer(mkProcess(() => heap(1, 3), s));
     const { out } = startAll([p]);
     s.tick();
     expect(out).toHaveLength(6);
@@ -101,17 +111,15 @@ describe('MemoryProducer', () => {
 
   it('emits nothing and starts no timer where the engine has no performance.memory', () => {
     const s = mkScheduler();
-    const { out } = startAll([
-      new MemoryProducer(new MemoryTracker({ memory: () => undefined, scheduler: s })),
-    ]);
+    const { out } = startAll([new MemoryProducer(mkProcess(() => undefined, s))]);
     expect(out).toEqual([]);
     expect(s.live()).toBe(0);
   });
 
   it('never emits the retired browser_memory_* names', () => {
-    const names = startAll([
-      new MemoryProducer(new MemoryTracker({ memory: () => heap(1, 3) })),
-    ]).out.map((r) => r.name);
+    const names = startAll([new MemoryProducer(mkProcess(() => heap(1, 3)))]).out.map(
+      (r) => r.name,
+    );
     expect(names.filter((n) => n.startsWith('browser_memory'))).toEqual([]);
   });
 });
@@ -133,10 +141,17 @@ describe('AdvertisedMemoryProducer', () => {
 describe('ConnectionProducer', () => {
   it('emits a TRANSPORT type the viewer can render, with effectiveType kept as detail', () => {
     // `type` must be a CONNECTION_STATES key; it used to carry effectiveType ('4g'), in no table.
-    const t = new ConnectionTracker({
+    const t = new ConnectivityTracker({
       navigator: {
         onLine: true,
-        connection: { type: 'wifi', effectiveType: '4g', downlink: 10, rtt: 50, saveData: false },
+        connection: {
+          type: 'wifi',
+          effectiveType: '4g',
+          downlink: 10,
+          downlinkMax: 100,
+          rtt: 50,
+          saveData: false,
+        },
       },
     });
     expect(startAll([new ConnectionProducer(t)]).out).toEqual([
@@ -146,6 +161,7 @@ describe('ConnectionProducer', () => {
           type: 'wifi',
           effective_type: '4g',
           link_downstream_kbps: 10_000, // downlink is Mbps; Android reports kbps
+          link_downstream_max_kbps: 100_000,
           rtt: 50,
           save_data: false,
         },
@@ -157,7 +173,7 @@ describe('ConnectionProducer', () => {
     const win = mkTarget();
     const nav = { onLine: true, connection: { type: 'wifi' } };
     const { out } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     nav.onLine = false;
     win.fire('offline');
@@ -166,7 +182,7 @@ describe('ConnectionProducer', () => {
 
   it('still emits (type unknown) with NO NetworkInformation, because onLine alone is worth a row', () => {
     expect(
-      startAll([new ConnectionProducer(new ConnectionTracker({ navigator: { onLine: true } }))])
+      startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: { onLine: true } }))])
         .out,
     ).toEqual([{ name: 'connection', value: { type: 'unknown' } }]);
   });
@@ -175,7 +191,7 @@ describe('ConnectionProducer', () => {
     const win = mkTarget();
     const nav = { onLine: true };
     const { out } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     win.fire('online');
     expect(out).toHaveLength(1);
@@ -184,15 +200,42 @@ describe('ConnectionProducer', () => {
     expect(out).toHaveLength(2);
   });
 
+  it('producers built twice from one window share ONE connectivity tracker (one listener pair)', () => {
+    const win = mkTarget();
+    const nav = { onLine: true };
+    const pick = () =>
+      named(createBrowserSystemTraceProducers({ window: win, navigator: nav }), ['connection']);
+    const a = startAll(pick());
+    const b = startAll(pick());
+    expect(win.count()).toBe(2); // ONE online + offline pair, shared; a per-producer tracker would make it 4
+    a.stop();
+    b.stop();
+    expect(win.count()).toBe(0);
+  });
+
+  it('emits no row when navigator.onLine cannot be read (never a fabricated online/unknown)', () => {
+    const nav = { connection: { type: 'wifi' } };
+    Object.defineProperty(nav, 'onLine', {
+      get() {
+        throw new Error('onLine blocked');
+      },
+    });
+    const onError = vi.fn();
+    expect(
+      startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: nav }, onError))]).out,
+    ).toEqual([]);
+    expect(onError).toHaveBeenCalled();
+  });
+
   it('emits nothing with no navigator at all', () => {
-    expect(startAll([new ConnectionProducer(new ConnectionTracker({}))]).out).toEqual([]);
+    expect(startAll([new ConnectionProducer(new ConnectivityTracker({}))]).out).toEqual([]);
   });
 
   it('stop() releases the tracker listeners and late events write nothing', () => {
     const win = mkTarget();
     const nav = { onLine: true };
     const { out, stop } = startAll([
-      new ConnectionProducer(new ConnectionTracker({ window: win, navigator: nav })),
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
     ]);
     stop();
     expect(win.count()).toBe(0);
@@ -205,9 +248,7 @@ describe('ConnectionProducer', () => {
 describe('OrientationProducer', () => {
   it('emits the Android-enum INT, never the browser {type, angle} object', () => {
     const orientation = Object.assign(mkTarget(), { type: 'landscape-primary', angle: 90 });
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 3 }]); // LandscapeLeft
     orientation.type = 'portrait-primary';
     orientation.angle = 0;
@@ -219,7 +260,7 @@ describe('OrientationProducer', () => {
     const win = mkTarget();
     const orientation = Object.assign(mkTarget(), { type: 'portrait-primary', angle: 0 });
     const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ window: win, screen: { orientation } })),
+      new OrientationProducer(new UiTracker({ window: win, screen: { orientation } })),
     ]);
     orientation.type = 'landscape-secondary';
     orientation.angle = 270;
@@ -228,10 +269,15 @@ describe('OrientationProducer', () => {
     expect(out.map((r) => r.value)).toEqual([1, 4]);
   });
 
+  it('ignores a bare orientation notification (an orientationchange the engine cannot read)', () => {
+    const win = mkTarget();
+    const { out } = startAll([new OrientationProducer(new UiTracker({ window: win, screen: {} }))]);
+    win.fire('orientationchange');
+    expect(out).toEqual([]);
+  });
+
   it('emits nothing where the engine has no screen.orientation', () => {
-    expect(startAll([new OrientationProducer(new OrientationTracker({ screen: {} }))]).out).toEqual(
-      [],
-    );
+    expect(startAll([new OrientationProducer(new UiTracker({ screen: {} }))]).out).toEqual([]);
   });
 });
 
@@ -252,6 +298,7 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
       'battery',
       'memory',
       'ram-system-advertised',
+      'storage',
       'connection',
       'orientation',
     ]);
@@ -383,9 +430,7 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
 
   it('an unrecognised orientation type is Unknown even when the angle alone would say Portrait', () => {
     const orientation = { type: 'sideways', angle: 0 };
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 0 }]);
   });
 

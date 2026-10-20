@@ -42,6 +42,18 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import {
+  applicationTrackerFor,
+  connectivityTrackerFor,
+  environmentTrackerFor,
+  processTrackerFor,
+  resetEnvironmentTracker,
+  resetProcessTracker,
+  resetStorageTracker,
+  resetUiTracker,
+  storageTrackerFor,
+  uiTrackerFor,
+} from '@bugsee/trackers/browser';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -479,8 +491,10 @@ describe('launch', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // traces (connection/orientation) AND the events source are both live, yet each type is bound once
-    expect(w.count('online')).toBe(1);
+    // traces (orientation) AND the events source share ONE lifecycle tracker (a single orientationchange listener);
+    // online/offline are bound twice: once by that lifecycle tracker (events) and once by the domain
+    // ConnectivityTracker, which owns its own connectivity listeners and does not depend on the lifecycle tracker.
+    expect(w.count('online')).toBe(2);
     expect(w.count('orientationchange')).toBe(1);
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
@@ -490,6 +504,80 @@ describe('launch', () => {
     await client.stop();
     expect(w.count('online') + w.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(0);
+  });
+
+  describe('launch goes through the ApplicationTracker registry', () => {
+    const blockedDoc = () => {
+      const doc = fakeWindow();
+      const boom = new Error('visibilityState blocked');
+      const state = { armed: false };
+      Object.defineProperty(doc.win, 'visibilityState', {
+        get() {
+          if (state.armed) throw boom;
+          return 'visible';
+        },
+      });
+      return { doc, boom, state, document: doc.win as unknown as Document };
+    };
+
+    it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners, not a second set', async () => {
+      const w = fakeWindow();
+      const { document } = blockedDoc();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, document, captureStore: memStore() }),
+      );
+      expect(w.count('online')).toBe(1);
+      const shared = applicationTrackerFor({ window: w.win as never, document });
+      const off = shared.on('online', () => {});
+      expect(w.count('online')).toBe(1); // the SAME tracker: one listener serves launch and this subscriber
+      off();
+    });
+
+    it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", async () => {
+      const w = fakeWindow();
+      const { doc, boom, state, document } = blockedDoc();
+      const first = vi.fn();
+      const second = vi.fn();
+      // The tracker's own read fails only while the event is dispatched (launch itself reads the document too).
+      const fireBlocked = () => {
+        state.armed = true;
+        try {
+          doc.emit('visibilitychange', {});
+        } catch {
+          /* a real DOM dispatch never propagates a listener's throw */
+        } finally {
+          state.armed = false;
+        }
+      };
+      const run = async (onError?: (e: unknown) => void) => {
+        const client = await launch(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            ...(onError !== undefined ? { onError } : {}),
+          }),
+        );
+        return client;
+      };
+      await (await run(first)).stop();
+      await (await run(second)).stop();
+      first.mockClear();
+      second.mockClear();
+      const live = await run(second);
+      clients.push(live);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+      expect(first).not.toHaveBeenCalledWith(boom);
+      await live.stop();
+      second.mockClear();
+      const bare = await run(); // no onError: must NOT silence the earlier launch's sink
+      clients.push(bare);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+    });
   });
 
   describe('dark mode, freeze and resume events (from the injected window + document)', () => {
@@ -524,7 +612,8 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toEqual([w.win]); // called as a method of ITS window
+      expect(m.thisSeen).toHaveLength(2); // the baseline read + the change watch
+      expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
         expect.objectContaining({ name: 'dark_mode_changed', params: { dark: true } }),
@@ -1318,6 +1407,274 @@ describe('launch', () => {
       expect(rows.get('orientation')).toBe(1);
     });
 
+    it('captures storage_estimate (integer MB) through the per-window StorageTracker singleton', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', {
+        storage: {
+          estimate: () => Promise.resolve({ usage: 5 * 1024 * 1024 + 7, quota: 2 * 1024 ** 3 }),
+          persisted: () => Promise.resolve(true),
+        },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const rows = new Map(
+          ((await drain(store, 'traces.system')) ?? []).map((e) => {
+            const d = e.data as { name: string; value: unknown };
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('storage_estimate')).toEqual({ usage: 5, quota: 2048 });
+        // launch used the registry: the singleton for this window already holds the estimate
+        expect(storageTrackerFor({ window: w.win }).current()).toEqual({
+          usageBytes: 5 * 1024 * 1024 + 7,
+          quotaBytes: 2 * 1024 ** 3,
+          persisted: true,
+        });
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
+    });
+
+    it('captures the heap through the per-window ProcessTracker singleton (launch uses the registry)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        const rows = new Map(
+          ((await drain(store, 'traces.system')) ?? []).map((e) => {
+            const d = e.data as { name: string; value: unknown };
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('ram_js_heap_used')).toBe(10);
+        // launch used the registry: the singleton for this window already has launch's performance seam, so it can read
+        // the heap (a tracker built with `new` would be a different instance with no seams)
+        expect(processTrackerFor({ window: w.win }).currentHeap()).toEqual({
+          used: 10,
+          limit: 100,
+        });
+      } finally {
+        resetProcessTracker({ window: w.win });
+      }
+    });
+
+    describe('user_idle_state is opt-in (captureUserIdle) and needs an already-granted permission', () => {
+      const launchIdle = async (over: Partial<BugseeLaunchOptions>, permission: string) => {
+        stubSensors();
+        const query = vi.fn(() => Promise.resolve({ state: permission }));
+        vi.stubGlobal('navigator', { onLine: true, permissions: { query } });
+        const w = fakeWindow();
+        class FakeDetector {
+          userState = 'idle';
+          screenState = 'unlocked';
+          start = () => Promise.resolve(undefined);
+          addEventListener = () => {};
+          removeEventListener = () => {};
+        }
+        Object.assign(w.win, {
+          IdleDetector: FakeDetector,
+          AbortController: class {
+            signal = {};
+            abort() {}
+          },
+        });
+        try {
+          const store = memStore();
+          await launchTracked('tok', noSampler({ window: w.win, captureStore: store, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          const rows = new Map(
+            ((await drain(store, 'traces.system')) ?? []).map((e) => {
+              const d = e.data as { name: string; value: unknown };
+              return [d.name, d.value];
+            }),
+          );
+          return { rows, query };
+        } finally {
+          resetProcessTracker({ window: w.win });
+        }
+      };
+
+      it('default: no user_idle_state and the permission is never even queried, though it is granted', async () => {
+        const { rows, query } = await launchIdle({}, 'granted');
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+      });
+
+      it('captureUserIdle:true + permission already granted: user_idle_state is captured', async () => {
+        const { rows } = await launchIdle({ captureUserIdle: true }, 'granted');
+        expect(rows.get('user_idle_state')).toBe('idle');
+      });
+
+      it('captureUserIdle:true but permission not granted: no trace (the SDK never prompts)', async () => {
+        const { rows, query } = await launchIdle({ captureUserIdle: true }, 'prompt');
+        expect(query).toHaveBeenCalled();
+        expect(rows.has('user_idle_state')).toBe(false);
+      });
+    });
+
+    it('options.scheduler drives the environment tracker slow timer: a time-zone shift becomes a timezone_changed event', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        const slow = ticks.filter((t) => t.ms === 60_000); // the tracker's default cadence
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 120);
+        slow[0]?.cb();
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: { utcOffsetMinutes?: number } },
+        );
+        expect(
+          events
+            .filter((e) => e.name === 'timezone_changed')
+            .map((e) => e.params?.utcOffsetMinutes),
+        ).toEqual([-(real - 120) + 0]);
+      } finally {
+        vi.restoreAllMocks();
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('the launch document reaches the environment tracker: its visibility gates the slow tick and a return to visible re-reads', async () => {
+      stubSensors();
+      vi.stubGlobal('navigator', { language: 'en-US' });
+      const w = fakeWindow();
+      const d = fakeWindow();
+      const vis = { state: 'visible' };
+      const document = Object.defineProperty({ ...d.win, body: {} }, 'visibilityState', {
+        get: () => vis.state,
+      }) as unknown as Document;
+      const ticks: Array<{ cb: () => void; ms: number }> = [];
+      try {
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            scheduler: {
+              setInterval: (cb, ms) => {
+                ticks.push({ cb, ms });
+                return `h${ticks.length}`;
+              },
+              clearInterval: () => {},
+            },
+          }),
+        );
+        const tracker = environmentTrackerFor({ window: w.win });
+        const slow = ticks.filter((t) => t.ms === 60_000);
+        expect(slow).toHaveLength(1);
+        const real = new Date().getTimezoneOffset();
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(real - 45);
+        vis.state = 'hidden';
+        slow[0]?.cb();
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: nothing re-read
+        vis.state = 'visible';
+        d.emit('visibilitychange', {});
+        expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-(real - 45) + 0);
+      } finally {
+        vi.restoreAllMocks();
+        environmentTrackerFor({ window: w.win }).reset();
+      }
+    });
+
+    it('launch goes through the per-window EnvironmentTracker singleton (language/timezone and private mode on by default, no hints/permissions)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 * 1024 * 1024 }));
+      const query = vi.fn(() => Promise.resolve({ state: 'granted' }));
+      vi.stubGlobal('navigator', {
+        language: 'en-US',
+        languages: ['en-US', 'en'],
+        cookieEnabled: true,
+        permissions: { query },
+        storage: { estimate },
+      });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const snapshot = environmentTrackerFor({ window: w.win }).current();
+        expect(snapshot.language).toEqual({ language: 'en-US', languages: ['en-US', 'en'] });
+        expect(snapshot.timeZone?.utcOffsetMinutes).toBeTypeOf('number');
+        expect(snapshot.privateMode).toEqual({ private: 'yes', method: 'storage-quota' }); // on by default
+        expect(snapshot.hints).toBeUndefined(); // nothing consumes hints / permissions: never read
+        expect(snapshot.permissions).toBeUndefined();
+        expect(query).not.toHaveBeenCalled();
+        expect(w.count('languagechange')).toBe(1);
+        const events = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => e.data as { name: string; params?: unknown },
+        );
+        expect(events.find((e) => e.name === 'private_mode_detected')?.params).toEqual({
+          method: 'storage-quota',
+        });
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('captureEnvironmentHints: false opts out of the private-mode heuristic (no probe, no event)', async () => {
+      stubSensors();
+      const estimate = vi.fn(() => Promise.resolve({ usage: 1, quota: 10 }));
+      vi.stubGlobal('navigator', { language: 'en-US', storage: { estimate } });
+      const w = fakeWindow();
+      try {
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, captureEnvironmentHints: false }),
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        // (the storage trace tracker calls estimate() too, so the proof is the missing answer and event)
+        expect(environmentTrackerFor({ window: w.win }).current().privateMode).toBeUndefined();
+        const names = ((await drain(store, 'events.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        expect(names).not.toContain('private_mode_detected');
+      } finally {
+        resetEnvironmentTracker({ window: w.win });
+      }
+    });
+
+    it('a rejected storage.estimate() reaches options.onError and never fails launch', async () => {
+      stubSensors();
+      const boom = new Error('estimate refused');
+      vi.stubGlobal('navigator', { storage: { estimate: () => Promise.reject(boom) } });
+      const onError = vi.fn();
+      const w = fakeWindow();
+      try {
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: memStore(), onError }));
+        await new Promise((r) => setTimeout(r, 0));
+        expect(onError).toHaveBeenCalledWith(boom);
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
+    });
+
     it('listens on the INJECTED window for connectivity only while capturing, and releases it on stop', async () => {
       stubSensors();
       const w = fakeWindow();
@@ -1326,13 +1683,67 @@ describe('launch', () => {
         // the system-events source listens on the same window, so isolate the trace trackers
         noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
       );
-      expect(w.count('online')).toBe(1);
-      expect(w.count('offline')).toBe(1);
+      // online/offline: the shared lifecycle tracker (orientation) + the ConnectivityTracker's own listeners
+      expect(w.count('online')).toBe(2);
+      expect(w.count('offline')).toBe(2);
       expect(w.count('orientationchange')).toBe(1);
       await client.stop();
       expect(w.count('online')).toBe(0);
       expect(w.count('offline')).toBe(0);
       expect(w.count('orientationchange')).toBe(0);
+    });
+
+    it('goes through the per-window UiTracker singleton (orientation/screen_size/fps/events share ONE set of listeners)', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: memStore() }),
+      );
+      const before = w.count('orientationchange');
+      expect(before).toBe(1); // traces' orientation + the events source's orientation_changed: one listener
+      // Asking for the window's tracker returns the SAME one: subscribing adds no new window listener.
+      const ui = uiTrackerFor({ window: w.win });
+      const seen: unknown[] = [];
+      const off = ui.on('orientation', (s) => seen.push(s));
+      expect(w.count('orientationchange')).toBe(before);
+      off();
+      await client.stop();
+      expect(w.count('orientationchange')).toBe(0);
+      resetUiTracker({ window: w.win });
+    });
+
+    it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
+      vi.stubGlobal('navigator', {
+        onLine: true,
+        connection: { type: 'wifi', downlink: 10, downlinkMax: 100 },
+      });
+      const w = fakeWindow();
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        noSampler({ window: w.win, captureStore: store, captureSystemEvents: false }),
+      );
+      const before = w.count('online'); // lifecycle tracker + the connectivity tracker
+      // The singleton for this window is the one launch subscribed through: a new `ConnectivityTracker` would add
+      // another pair of window listeners here instead of sharing the first.
+      const off = connectivityTrackerFor({ window: w.win }).on('online', () => {});
+      expect(w.count('online')).toBe(before);
+      off();
+      expect(w.count('online')).toBe(before); // launch's own subscription still holds it
+      const rows = new Map(
+        ((await drain(store, 'traces.system')) ?? []).map((e) => {
+          const d = e.data as { name: string; value: unknown };
+          return [d.name, d.value];
+        }),
+      );
+      expect(rows.get('connection')).toMatchObject({
+        type: 'wifi',
+        link_downstream_kbps: 10_000,
+        link_downstream_max_kbps: 100_000,
+      });
+      await client.stop();
+      expect(w.count('online')).toBe(0);
     });
 
     it('with captureSystemTraces:false no sensor listener is attached and no timer is started', async () => {
@@ -1562,6 +1973,154 @@ describe('launch', () => {
           }),
         );
         expect(armed).toBe(0);
+      });
+
+      it('records screen_size {width,height,dpr} from the INJECTED window and follows its resize', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        Object.assign(w.win, { devicePixelRatio: 3 });
+        w.emit('resize', {});
+        expect(await rowsOf(store, 'screen_size')).toEqual([
+          { width: 390, height: 844, dpr: 2 },
+          { width: 390, height: 844, dpr: 3 },
+        ]);
+      });
+
+      it('screen_size is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
+        stubSensors(); // the stubbed screen has no width/height
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+      });
+
+      it('records main_thread_lag_ms as timer drift on the INJECTED window clock, visible only, with a fresh baseline after a hide', async () => {
+        stubSensors();
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let clock = 5_000;
+        Object.defineProperty(w.win, 'performance', {
+          value: { now: () => clock },
+          configurable: true,
+        });
+        const live = new Map<number, () => void>();
+        let nextHandle = 1;
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+            scheduler: {
+              setInterval: (cb, ms) => {
+                if (ms !== 1000) return 'other';
+                const h = nextHandle++;
+                live.set(h, cb);
+                return h;
+              },
+              clearInterval: (h) => void live.delete(h as number),
+            },
+          }),
+        );
+        const runTicks = (): void => {
+          for (const cb of [...live.values()]) cb();
+        };
+        clock += 1000;
+        runTicks(); // on time
+        clock += 1000 + 300; // a 300 ms block spans the next tick
+        runTicks();
+        const before = live.size;
+        d.setVisible(false);
+        const hiddenTimers = live.size;
+        clock += 60_000;
+        d.setVisible(true); // a fresh baseline: the hidden minute is not lag
+        clock += 1000;
+        runTicks();
+        // fps shares the 1 s cadence but emits its own name; only the lag rows are read here
+        expect(await rowsOf(store, 'main_thread_lag_ms')).toEqual([0, 300, 0]);
+        expect(hiddenTimers).toBeLessThan(before); // hiding tore the sampling timer(s) down
+      });
+
+      it('a hidden injected document never reads the clock for lag (no timer is started)', async () => {
+        stubSensors();
+        const d = mkDoc(false);
+        const w = fakeWindow();
+        let reads = 0;
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
+          },
+          configurable: true,
+        });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: memStore(),
+          }),
+        );
+        expect(reads).toBe(0);
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch and is reported', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.defineProperty(w.win, 'devicePixelRatio', {
+          get(): never {
+            throw new Error('devicePixelRatio blocked');
+          },
+          configurable: true,
+        });
+        const onError = vi.fn();
+        const store = memStore();
+        const client = await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError }),
+        );
+        const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+        expect(messages).toContain('devicePixelRatio blocked');
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        await client.stop();
+      });
+
+      it('a systemMetricsSampler override builds neither screen_size nor the lag timer', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const d = mkDoc(true);
+        const w = fakeWindow();
+        let reads = 0;
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        Object.defineProperty(w.win, 'performance', {
+          value: {
+            now: () => {
+              reads += 1;
+              return 0;
+            },
+          },
+          configurable: true,
+        });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document: d.doc as unknown as Document,
+            captureStore: store,
+          }),
+        );
+        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(reads).toBe(0); // no lag timer was even built
       });
 
       it('a systemMetricsSampler override omits app_state and fps with the other sensor traces', async () => {

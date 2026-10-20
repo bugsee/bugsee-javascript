@@ -16,6 +16,17 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+export {
+  type ApplicationEnv,
+  type ApplicationEvents,
+  type ApplicationState,
+  ApplicationTracker,
+  applicationTrackerFor,
+  type EnvironmentEnv,
+  type EnvironmentEvents,
+  EnvironmentTracker,
+  environmentTrackerFor,
+} from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
@@ -59,6 +70,7 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  CAPTURE_USER_IDLE_OPTION_KEY,
   getStatus,
   type LaunchInternals,
   type LaunchResult,
@@ -92,11 +104,6 @@ export {
   createBrowserSystemTraceProducers,
   defaultBrowserTraceEnv,
 } from './trace-producers';
-export {
-  type PageLifecycleEnv,
-  type PageLifecycleEvents,
-  PageLifecycleTracker,
-} from './trackers/page-lifecycle-tracker';
 export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,

@@ -82,8 +82,20 @@ export class MultiKeyEmitterBase<M> implements MultiKeyEmitter<M> {
     if (before !== this.#hasListeners()) {
       this.onActiveChange(!before);
     }
+    this.onListenersChanged();
     return result;
   }
+
+  /** How many listeners would receive `name` right now (its own plus every onAny listener). */
+  protected listenerCount(name: keyof M): number {
+    return (this.#channels.get(name)?.size ?? 0) + this.#anyListeners.size;
+  }
+
+  /**
+   * Fired after EVERY listener-set mutation (even one that changed nothing), once any {@link onActiveChange} has run.
+   * For owners that bind a resource per stage and need to re-evaluate which stages have listeners; must be idempotent.
+   */
+  protected onListenersChanged(): void {}
 
   #dispatch(run: () => void): void {
     try {

@@ -1,4 +1,10 @@
 import type { TraceProducer } from '@bugsee/capture';
+import {
+  ApplicationTracker,
+  resetUiTracker,
+  UiTracker,
+  uiTrackerFor,
+} from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   AppStateProducer,
@@ -7,8 +13,6 @@ import {
   defaultBrowserTraceEnv,
   FpsProducer,
 } from './trace-producers';
-import { FpsTracker } from './trackers/fps-tracker';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<(e: unknown) => void>>();
@@ -29,7 +33,7 @@ function mkTarget() {
 function mkPage(visible = true) {
   const win = mkTarget();
   const doc = Object.assign(mkTarget(), { visibilityState: visible ? 'visible' : 'hidden' });
-  const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
+  const lifecycle = new ApplicationTracker({ window: win, document: doc });
   return {
     win,
     doc,
@@ -56,7 +60,7 @@ describe('AppStateProducer', () => {
       const page = mkPage();
       page.doc.visibilityState = vis;
       const out: Emit[] = [];
-      new AppStateProducer(page.lifecycle, page.doc).start(sinkOf(out));
+      new AppStateProducer(page.lifecycle).start(sinkOf(out));
       expect(out).toEqual([{ name: 'app_state', value: want, hold: true }]);
     }
   });
@@ -64,7 +68,7 @@ describe('AppStateProducer', () => {
   it('follows visibility changes, held and de-duplicated', () => {
     const page = mkPage();
     const out: Emit[] = [];
-    new AppStateProducer(page.lifecycle, page.doc).start(sinkOf(out));
+    new AppStateProducer(page.lifecycle).start(sinkOf(out));
     page.setVisible(false);
     page.setVisible(false);
     page.setVisible(true);
@@ -72,32 +76,48 @@ describe('AppStateProducer', () => {
     expect(out.every((o) => o.hold === true)).toBe(true);
   });
 
-  it('with no document there is no initial value, but changes still report', () => {
-    const page = mkPage();
+  it('with no readable state there is no initial value, but changes still report', () => {
+    const doc = mkTarget(); // no visibilityState at all
+    const lifecycle = new ApplicationTracker({ window: mkTarget(), document: doc });
     const out: Emit[] = [];
-    new AppStateProducer(page.lifecycle, undefined).start(sinkOf(out));
+    new AppStateProducer(lifecycle).start(sinkOf(out));
     expect(out).toEqual([]);
-    page.setVisible(false);
+    Object.assign(doc, { visibilityState: 'hidden' });
+    doc.fire('visibilitychange');
     expect(out.map((o) => o.value)).toEqual(['background']);
   });
 
-  it('a throwing visibilityState read yields no initial value', () => {
-    const page = mkPage();
-    const doc = {};
+  it('a throwing visibilityState read yields no initial value and never throws', () => {
+    const doc = mkTarget();
     Object.defineProperty(doc, 'visibilityState', {
       get(): never {
         throw new Error('vis');
       },
     });
+    const errors: unknown[] = [];
+    const lifecycle = new ApplicationTracker({ document: doc }, (e) => errors.push(e));
     const out: Emit[] = [];
-    expect(() => new AppStateProducer(page.lifecycle, doc).start(sinkOf(out))).not.toThrow();
+    expect(() => new AppStateProducer(lifecycle).start(sinkOf(out))).not.toThrow();
     expect(out).toEqual([]);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('a producer started after a hidden gap reports the CURRENT state, not a stale one', () => {
+    const page = mkPage();
+    const first = new AppStateProducer(page.lifecycle);
+    const out: Emit[] = [];
+    first.start(sinkOf(out));
+    first.stop();
+    page.doc.visibilityState = 'hidden'; // while nobody listened
+    const out2: Emit[] = [];
+    new AppStateProducer(page.lifecycle).start(sinkOf(out2));
+    expect(out2.map((o) => o.value)).toEqual(['background']);
   });
 
   it('stop() releases the lifecycle subscription', () => {
     const page = mkPage();
     const out: Emit[] = [];
-    const p = new AppStateProducer(page.lifecycle, page.doc);
+    const p = new AppStateProducer(page.lifecycle);
     p.start(sinkOf(out));
     expect(page.doc.count()).toBe(3); // visibilitychange + freeze + resume (the shared lifecycle's document listeners)
     p.stop();
@@ -113,8 +133,7 @@ describe('FpsProducer', () => {
     let timer: (() => void) | undefined;
     let now = 0;
     const cbs: Array<() => void> = [];
-    const tracker = new FpsTracker({
-      lifecycle: page.lifecycle,
+    const tracker = new UiTracker({
       document: page.doc,
       requestAnimationFrame: (cb) => {
         cbs.push(() => cb(0));
@@ -137,7 +156,7 @@ describe('FpsProducer', () => {
     cbs[0]?.();
     timer?.();
     expect(out).toEqual([{ name: 'fps', value: 1, hold: false }]);
-    expect(page.doc.count()).toBe(3); // subscribed: visibilitychange + freeze + resume
+    expect(page.doc.count()).toBe(1); // subscribed: the tracker's own visibilitychange (no page-lifecycle tracker)
     p.stop();
     expect(page.doc.count()).toBe(0); // the tracker was released with the last subscriber
     now = 2000;
@@ -232,6 +251,41 @@ describe('browserTraceEnvFrom', () => {
       'requestAnimationFrame blocked',
       'screen blocked',
     ]);
+  });
+
+  it("matchMedia is the window's own, bound to it; absent or throwing means none", () => {
+    const calls: unknown[] = [];
+    const win = {
+      matchMedia(this: unknown, query: string) {
+        calls.push(this, query);
+        return { matches: true };
+      },
+    };
+    const env = browserTraceEnvFrom(win, undefined);
+    expect(env.matchMedia?.('(x)')).toEqual({ matches: true });
+    expect(calls).toEqual([win, '(x)']);
+    expect(browserTraceEnvFrom({}, undefined).matchMedia).toBeUndefined();
+    const errors: unknown[] = [];
+    const hostile = {};
+    Object.defineProperty(hostile, 'matchMedia', {
+      get(): never {
+        throw new Error('matchMedia blocked');
+      },
+    });
+    expect(
+      browserTraceEnvFrom(hostile, undefined, (e) => errors.push(e)).matchMedia,
+    ).toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it("createBrowserSystemTraceProducers hands the env's matchMedia/screen to the window's UiTracker", () => {
+    const win = { addEventListener() {}, removeEventListener() {} };
+    createBrowserSystemTraceProducers({
+      window: win,
+      matchMedia: () => ({ matches: true }),
+    });
+    expect(uiTrackerFor({ window: win }).current('colorScheme')).toEqual({ dark: true });
+    resetUiTracker({ window: win });
   });
 
   it('one throwing surface does not take the others with it, and onError is optional', () => {
@@ -333,7 +387,13 @@ describe('browserTraceEnvFrom', () => {
       );
     }).not.toThrow();
     expect(built.map((p) => p.name)).toContain('fps');
-    expect(errors.some((e) => (e as Error).message === 'now blocked')).toBe(true);
+    // the lag stage (owner of the clock report) activates: the unreadable clock is reported, exactly once
+    const lag = built.find((p) => p.name === 'main-thread-lag') as TraceProducer;
+    lag.start({ emit: () => {} });
+    lag.stop();
+    lag.start({ emit: () => {} });
+    lag.stop();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
   });
 
   it('omits what the window lacks (a missing performance.memory is not borrowed from the global)', () => {

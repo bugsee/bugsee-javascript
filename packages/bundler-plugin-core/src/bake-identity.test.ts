@@ -1,7 +1,6 @@
 // The Rollup bake must rewrite only real READS of the identity constants. A lexical match also hit string,
 // template and comment text, and `"__BUGSEE_APP_VERSION__"` became `""2.4.1""` — a syntax error in the
 // app's production bundle. Every case parses the emitted code to prove it is still valid JavaScript.
-import { SourceMapConsumer } from 'source-map-js';
 import { parseAst } from 'rollup/parseAst';
 import { describe, expect, it, vi } from 'vitest';
 import { bakeIdentity } from './bake-identity';
@@ -10,6 +9,40 @@ const V = '__BUGSEE_APP_VERSION__';
 const B = '__BUGSEE_APP_BUILD__';
 const defines = { [V]: '"2.4.1"', [B]: '"b7"' };
 const parse = (code: string): unknown => parseAst(code);
+
+/** Decode a v3 `mappings` string into per-line arrays of [generatedColumn, sourceIndex, line, column]. */
+function decodeMappings(mappings: string): number[][][] {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let source = 0;
+  let srcLine = 0;
+  let srcCol = 0;
+  return mappings.split(';').map((line) => {
+    let genCol = 0;
+    return line === ''
+      ? []
+      : line.split(',').map((segment) => {
+          const values: number[] = [];
+          let shift = 0;
+          let acc = 0;
+          for (const ch of segment) {
+            const digit = chars.indexOf(ch);
+            acc += (digit & 31) << shift;
+            if (digit & 32) {
+              shift += 5;
+            } else {
+              values.push(acc & 1 ? -(acc >> 1) : acc >> 1);
+              acc = 0;
+              shift = 0;
+            }
+          }
+          genCol += values[0] as number;
+          source += values[1] as number;
+          srcLine += values[2] as number;
+          srcCol += values[3] as number;
+          return [genCol, source, srcLine, srcCol];
+        });
+  });
+}
 
 /** Bake, and prove the output parses as a module. */
 const bake = (code: string): string | null => {
@@ -58,6 +91,46 @@ describe('bakeIdentity replaces identifier references', () => {
   });
 });
 
+describe('bakeIdentity handles text that merely spells the name', () => {
+  it('rewrites the reference but not a string, template text, comment or regex beside it', () => {
+    const code = [
+      `const a = "${V}", b = '${V}', c = \`${V}\`;`,
+      `// ${V}`,
+      `const re = /${V}/g; /* ${B} */`,
+      `f(${V});`,
+    ].join('\n');
+    expect(bake(code)).toBe(code.replace(`f(${V});`, 'f("2.4.1");'));
+  });
+
+  it('is not fooled by an escaped quote that makes a string look like it ends early', () => {
+    const code = `const s = "say \\"${V}\\" now", t = 'it\\'s ${V}'; f(${V});`;
+    expect(bake(code)).toBe(code.replace(`f(${V});`, 'f("2.4.1");'));
+  });
+
+  it('rewrites a reference in a template expression but not the text around or a string inside it', () => {
+    const code = `t = \`${V} \${"${V}"} \${${V}}\`;`;
+    expect(bake(code)).toBe(`t = \`${V} \${"${V}"} \${"2.4.1"}\`;`);
+  });
+
+  it('handles nested template literals', () => {
+    const code = `t = \`a ${V} \${\`b ${V} \${${V}}\`}\`;`;
+    expect(bake(code)).toBe(`t = \`a ${V} \${\`b ${V} \${"2.4.1"}\`}\`;`);
+  });
+
+  it('replaces a reference after a regex literal containing quotes and a division', () => {
+    const code = `x = /["'\\/]${V}/.test(s) ? a / ${V} : 1;`;
+    expect(bake(code)).toBe(`x = /["'\\/]${V}/.test(s) ? a / "2.4.1" : 1;`);
+  });
+
+  it('replaces export default, a computed object key, a default parameter and a call argument', () => {
+    expect(bake(`export default ${V};`)).toBe(`export default "2.4.1";`);
+    expect(bake(`const o = { [${V}]: 1, k: ${B} };`)).toBe(`const o = { ["2.4.1"]: 1, k: "b7" };`);
+    expect(bake(`const f = (a = ${V}) => a; class C { m(a = ${B}) {} }`)).toBe(
+      `const f = (a = "2.4.1") => a; class C { m(a = "b7") {} }`,
+    );
+  });
+});
+
 describe('bakeIdentity leaves everything that is not a read alone', () => {
   it.each([
     ['a double-quoted string', `const k = "${V}";`],
@@ -72,6 +145,8 @@ describe('bakeIdentity leaves everything that is not a read alone', () => {
     ['an assignment / update target', `${V} = 1; ${B}++; ${V} += 2;`],
     ['a destructuring target', `({ ${V} } = o); [${B}] = a; const { x: ${V} } = o;`],
     ['an import / export name', `import { ${V} } from 'm'; export { ${V} };`],
+    ['a for-in / for-of target', `for (${V} in o) {} for (${B} of a) {}`],
+    ['an export-all namespace name', `export * as ${V} from 'm';`],
     ['a label', `${V}: for (;;) { break ${V}; }`],
     ['a longer identifier or a $-suffixed one', `${V}2; $${V}; ${V}$;`],
   ])('%s', (_, code) => {
@@ -97,11 +172,11 @@ describe('bakeIdentity leaves everything that is not a read alone', () => {
 describe('bakeIdentity keeps the source map exact', () => {
   it('maps a column after the replacement back to its original column', () => {
     const code = `f(${V}); g(1);`;
-    const out = bakeIdentity(code, defines, parse);
-    expect(out?.code).toBe('f("2.4.1"); g(1);');
-    const consumer = new SourceMapConsumer({ ...out!.map, sources: ['chunk.js'] } as never);
-    const gColumn = out!.code.indexOf('g(1)');
-    const original = consumer.originalPositionFor({ line: 1, column: gColumn });
-    expect(original.column).toBe(code.indexOf('g(1)'));
+    const out = bakeIdentity(code, defines, parse) as NonNullable<ReturnType<typeof bakeIdentity>>;
+    expect(out.code).toBe('f("2.4.1"); g(1);');
+    const segments = decodeMappings(out.map.mappings)[0] as number[][];
+    const gColumn = out.code.indexOf('g(1)');
+    const hit = segments.find((segment) => segment[0] === gColumn);
+    expect(hit?.[3]).toBe(code.indexOf('g(1)'));
   });
 });

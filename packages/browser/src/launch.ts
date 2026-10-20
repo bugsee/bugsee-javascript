@@ -75,6 +75,7 @@ import {
   type UploadResult,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { applicationTrackerFor } from '@bugsee/trackers/browser';
 import { reportGuarded } from '@bugsee/util';
 import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
 import type { WindowEvents } from './detection-providers';
@@ -97,7 +98,6 @@ import {
 import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
@@ -131,6 +131,11 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
+/**
+ * Canonical identifier of the (browser-local) `captureUserIdle` switch (no cross-SDK identity). Exported so the
+ * WebView launch, which shares the producers, declares the very same option.
+ */
+export const CAPTURE_USER_IDLE_OPTION_KEY = 'com.bugsee.option.browser.capture-user-idle';
 
 /** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
 const indexedDbPresent = (): boolean => {
@@ -178,6 +183,14 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: false,
     // Safe side is ON: an invalid value (`'true'`, `1`, `null`) means DARK, never "not dark".
     ...FAIL_ON_BOOLEAN_OPTION,
+  },
+  // Environment hints that read as sensitive (private-browsing detection): the browser launch default is true, so
+  // `false` disables. An invalid value is OFF and reported (never read as consent to detect).
+  {
+    friendly: 'captureEnvironmentHints',
+    key: BugseeOption.CaptureEnvironmentHints,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
   },
   // Session replay: on by default, `false` opts out, an object customises it. It COLLECTS data, so an invalid
   // scalar (`0`, `null`, `''`, `'false'`, ...) is OFF and reported; it must never throw.
@@ -234,6 +247,14 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
   {
     friendly: 'persistUserIdentifier',
     key: BugseeOption.PersistUserIdentifier,
+    default: false,
+    ...BOOLEAN_OPTION,
+  },
+  // `user_idle_state` is behavioural data (active / idle / screen locked), so it is OPT-IN: only boolean `true`
+  // enables it, anything else stays OFF (and an invalid value is reported).
+  {
+    friendly: 'captureUserIdle',
+    key: CAPTURE_USER_IDLE_OPTION_KEY,
     default: false,
     ...BOOLEAN_OPTION,
   },
@@ -358,6 +379,22 @@ export interface BugseeLaunchOptions {
    * the clear applies to reports created afterwards.
    */
   persistUserIdentifier?: boolean;
+  /**
+   * Observe environment hints that read as sensitive. Today: the private-browsing HEURISTIC (a storage-quota probe)
+   * behind a `private_mode_detected` system event, emitted only for a `yes` answer and never as a certainty
+   * (constrained storage can false-positive).
+   * Default in the browser launch: `true` (the protocol layer defines the option key and its boolean type, not a
+   * default); pass `false` to turn it off. A non-boolean value is treated as off and reported. Language and time-zone changes (`language_changed`, `timezone_changed`) are always observed. Hint and
+   * permission states are not read at all.
+   */
+  captureEnvironmentHints?: boolean;
+  /**
+   * Record the `user_idle_state` system trace (`active` / `idle` / `locked`, from the Idle Detection API). Default
+   * FALSE: it is behavioural data, and a page's own `idle-detection` grant is not consent to upload it. Even when
+   * true the trace exists only if the page's permission is ALREADY `granted`: the SDK never prompts for it.
+   * Only boolean `true` enables it; any other value stays off and is reported. Needs `captureSystemTraces`.
+   */
+  captureUserIdle?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -876,9 +913,10 @@ async function buildLaunch(
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
-  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
-  // producers and the events source: the listeners are bound in a single place.
-  const lifecycle = new PageLifecycleTracker(
+  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/app_state
+  // producers and the events source: the listeners are bound in a single place. (Orientation, screen size, fps and
+  // dark mode come from the per-window UiTracker, not from here.)
+  const lifecycle = applicationTrackerFor(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,
   );
@@ -893,6 +931,7 @@ async function buildLaunch(
           // Every surface comes from the INJECTED window/document, never the host globals.
           ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
@@ -909,6 +948,11 @@ async function buildLaunch(
       createBrowserSystemEventsSource({
         window: win,
         lifecycle,
+        // The window's environment singleton (EnvironmentTracker): language/timezone events, and the private-mode
+        // heuristic (on by default, `captureEnvironmentHints: false` opts out).
+        ...(domDocument !== undefined ? { document: domDocument } : {}),
+        detectPrivateMode: resolved.options.get(BugseeOption.CaptureEnvironmentHints, true),
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         // from the INJECTED window (bound to it); never the host global
         ...(matchMedia !== undefined ? { matchMedia } : {}),
         ...(options.onError !== undefined ? { onError: options.onError } : {}),
