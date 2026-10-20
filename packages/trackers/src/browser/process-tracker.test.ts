@@ -485,6 +485,41 @@ function lagEnv(extra: Partial<Env> = {}, visible = 'visible') {
 }
 
 describe('ProcessTracker — mainThreadLag (timer drift)', () => {
+  it('a clock that is non-finite at the start gives no baseline: that tick emits nothing (never NaN), then it recovers', () => {
+    const onError = vi.fn();
+    let t = Number.NaN;
+    const { s, env } = lagEnv({ performance: { now: () => t } });
+    const tracker = new ProcessTracker(env, onError);
+    const out: number[] = [];
+    tracker.on('mainThreadLag', (l) => out.push(l.lagMs));
+    t = 2000;
+    s.tick(); // establishes the baseline only
+    expect(out).toEqual([]);
+    t = 3005;
+    s.tick(); // 5 ms late against 2000 + 1000
+    expect(out).toEqual([5]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a hostile performance.now getter is reported ONCE across stop/restart of the same stages', () => {
+    const onError = vi.fn();
+    const { env } = lagEnv({
+      performance: {
+        get now(): never {
+          throw new Error('now');
+        },
+      },
+    });
+    const tracker = new ProcessTracker(env, onError);
+    for (let i = 0; i < 3; i += 1) {
+      const a = tracker.on('mainThreadLag', () => {});
+      const b = tracker.on('uptime', () => {});
+      a();
+      b();
+    }
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('first tick compares against start + interval; later ticks against the previous tick + interval', () => {
     const { s, clock, env } = lagEnv();
     const t = new ProcessTracker(env);
@@ -841,6 +876,18 @@ describe('ProcessTracker — idle (requestIdleCallback probe)', () => {
     off2();
     expect(onError).toHaveBeenCalledTimes(1);
     expect(boom.s.live()).toBe(0);
+  });
+
+  it('tearing down with NO pending probe cancels nothing and reports nothing', () => {
+    const onError = vi.fn();
+    const { s, env } = idleEnv();
+    const cancel = env.cancelIdleCallback as ReturnType<typeof vi.fn>;
+    const off = new ProcessTracker(env, onError).on('idle', () => {});
+    expect(s.live()).toBe(1); // armed, but no tick has queued a probe
+    off();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(s.live()).toBe(0);
   });
 
   it('a throwing requestIdleCallback is reported by the tick and does not wedge later probes', () => {
@@ -1378,19 +1425,35 @@ describe('processTrackerFor / rebind', () => {
     const w = {};
     const first = vi.fn();
     const second = vi.fn();
+    const boom = new Error('heap');
     const s = mkScheduler();
     const t = processTrackerFor(
-      { window: w, scheduler: s, performance: { memory: mem(1) } },
+      {
+        window: w,
+        scheduler: s,
+        performance: {
+          get memory(): never {
+            throw boom;
+          },
+        },
+      },
       first,
     );
     // a relaunch that brings NO scheduler/performance keeps the earlier ones
     expect(processTrackerFor({ window: w }, second)).toBe(t);
     t.on('heap', () => {});
-    expect(s.live()).toBe(1);
-    // onError replaced: a failing heap read now reports to `second`
-    const w3 = {};
+    expect(s.live()).toBe(1); // the kept scheduler armed the stage
+    // onError replaced: the failing heap read (kept performance) reports to `second` only
+    expect(second).toHaveBeenCalledWith(boom);
+    expect(first).not.toHaveBeenCalled();
+    // a reporter that itself throws is isolated: neither the tick nor the tracker call escapes
+    const throwing = vi.fn(() => {
+      throw new Error('reporter');
+    });
+    processTrackerFor({ window: w }, throwing);
+    expect(() => s.tick()).not.toThrow();
+    expect(throwing).toHaveBeenCalled();
     resetProcessTracker({ window: w });
-    resetProcessTracker({ window: w3 });
   });
 
   it('rebind replaces onError and keeps it when undefined', () => {
@@ -1446,6 +1509,33 @@ describe('processTrackerFor / rebind', () => {
     expect(newS.live()).toBe(0);
   });
 
+  it('processTrackerFor forwards intervalMs, userIdleThresholdMs and now to the tracker', async () => {
+    const s = mkScheduler();
+    const { env, detector } = userEnv();
+    const w = {};
+    let at = 0;
+    const t = processTrackerFor({
+      window: w,
+      ...env,
+      scheduler: s,
+      performance: { memory: mem(1) },
+      intervalMs: 250,
+      userIdleThresholdMs: 90_000,
+      now: () => at,
+    });
+    t.on('heap', () => {});
+    const off = t.on('userIdle', () => {});
+    await flush();
+    expect(s.periods()).toEqual([250]);
+    expect(detector.startCalls[0]?.threshold).toBe(90_000);
+    off();
+    at = 180_000; // 2 x 90 s
+    expect(t.currentUserIdleFresh()).toBeDefined();
+    at = 180_001;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    resetProcessTracker({ window: w });
+  });
+
   it('an unchanged relaunch does not restart anything', () => {
     const s = mkScheduler();
     const perf = { memory: mem(1) };
@@ -1486,5 +1576,187 @@ describe('processTrackerFor / rebind', () => {
     expect(s.live()).toBe(0);
     expect(t.currentUserIdle()).toBeUndefined();
     expect(e.aborts[0]?.abort).toHaveBeenCalled();
+  });
+
+  it('reset() reports a teardown that throws (to onError) and still releases the other stages', async () => {
+    const onError = vi.fn();
+    const e = userEnv();
+    const s = mkScheduler();
+    const boom = new Error('clear failed');
+    s.clearInterval.mockImplementationOnce(() => {
+      throw boom;
+    });
+    const t = new ProcessTracker(
+      asEnv({ ...e.env, scheduler: s, performance: { memory: mem(1) } }),
+      onError,
+    );
+    t.on('heap', () => {});
+    t.on('userIdle', () => {});
+    await flush();
+    expect(() => t.reset()).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(e.aborts[0]?.abort).toHaveBeenCalled(); // the stage after the failing one was still torn down
+    expect(t.currentUserIdle()).toBeUndefined();
+  });
+
+  it('a throwing reporter does not escape a failing teardown (reset stays total)', () => {
+    const s = mkScheduler();
+    s.clearInterval.mockImplementation(() => {
+      throw new Error('clear failed');
+    });
+    const reporter = vi.fn(() => {
+      throw new Error('reporter failed');
+    });
+    const t = new ProcessTracker(
+      asEnv({ scheduler: s, performance: { memory: mem(1) } }),
+      reporter,
+    );
+    t.on('heap', () => {});
+    expect(() => t.reset()).not.toThrow();
+    expect(reporter).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late rejection from an OLD detector does not end the NEWER run', async () => {
+    const onError = vi.fn();
+    const status = mkPermission('granted');
+    const detectors: Array<ReturnType<typeof mkDetector>> = [];
+    const rejectOld: Array<(e: unknown) => void> = [];
+    const aborts: Array<{ abort: ReturnType<typeof vi.fn> }> = [];
+    class FreshDetector {
+      constructor() {
+        const d = mkDetector();
+        if (detectors.length === 0) {
+          d.startResult = () =>
+            new Promise((_, reject) => {
+              rejectOld.push(reject);
+            });
+        }
+        detectors.push(d);
+        // biome-ignore lint/correctness/noConstructorReturn: a test double hands a fresh fake detector back from `new`.
+        return d as unknown as FreshDetector;
+      }
+    }
+    class FakeAbort {
+      signal = {};
+      abort = vi.fn();
+      constructor() {
+        aborts.push(this);
+      }
+    }
+    const t = new ProcessTracker(
+      asEnv({
+        navigator: { permissions: { query: () => Promise.resolve(status) } },
+        IdleDetector: FreshDetector,
+        AbortController: FakeAbort,
+      }),
+      onError,
+    );
+    const out: unknown[] = [];
+    t.on('userIdle', (u) => out.push(u));
+    await flush();
+    expect(detectors).toHaveLength(1);
+    status.set('denied'); // run 1's detector is ended while its start() is still pending
+    expect(aborts[0]?.abort).toHaveBeenCalledTimes(1);
+    status.set('granted'); // a NEWER detector starts
+    await flush();
+    expect(detectors).toHaveLength(2);
+    expect(out).toHaveLength(1);
+    const newer = detectors[1] as ReturnType<typeof mkDetector>;
+    rejectOld[0]?.(new Error('AbortError')); // the OLD one settles late
+    await flush();
+    expect(aborts[1]?.abort).not.toHaveBeenCalled(); // the newer run was NOT ended
+    expect(newer.removeEventListener).not.toHaveBeenCalled();
+    newer.userState = 'idle';
+    newer.fire();
+    expect(out).toHaveLength(2); // and it still publishes
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('currentUserIdleFresh() hands the state out only within 2 thresholds and never on an untrustworthy clock', async () => {
+    let at = 1_000_000;
+    const { env } = userEnv({ now: () => at });
+    const t = new ProcessTracker(env);
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // nothing read yet
+    const off = t.on('userIdle', () => {});
+    await flush();
+    off();
+    const state = { userState: 'active', screenState: 'unlocked' };
+    expect(t.currentUserIdle()).toEqual(state);
+    expect(t.currentUserIdleFresh()).toEqual(state); // age 0
+    at += 2 * USER_IDLE_MIN_THRESHOLD_MS;
+    expect(t.currentUserIdleFresh()).toEqual(state); // exactly at the bound
+    at += 1;
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // one ms past it
+    expect(t.currentUserIdle()).toEqual(state); // the plain retained read is unchanged
+    at = 1_000_000 - 1;
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // clock stepped backwards
+    at = Number.NaN;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    t.reset();
+    at = 1_000_000;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('the freshness bound scales with the configured threshold', async () => {
+    let at = 0;
+    const { env } = userEnv({ now: () => at, userIdleThresholdMs: 300_000 });
+    const t = new ProcessTracker(env);
+    const off = t.on('userIdle', () => {});
+    await flush();
+    off();
+    at = 600_000;
+    expect(t.currentUserIdleFresh()).toBeDefined();
+    at = 600_001;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('an unreadable clock is reported and never vouches for freshness (stamp and age)', async () => {
+    const onError = vi.fn();
+    let broken = true;
+    const { env } = userEnv({
+      now: () => {
+        if (broken) throw new Error('clock');
+        return 5;
+      },
+    });
+    const t = new ProcessTracker(env, onError);
+    const off = t.on('userIdle', () => {});
+    await flush();
+    off();
+    expect(onError).toHaveBeenCalledTimes(1); // the stamp failed
+    expect(t.currentUserIdle()).toBeDefined();
+    expect(t.currentUserIdleFresh()).toBeUndefined(); // no timestamp -> never fresh
+    // a stamped state whose age cannot be read
+    broken = false;
+    const off2 = t.on('userIdle', () => {});
+    await flush();
+    off2();
+    expect(t.currentUserIdleFresh()).toBeDefined();
+    broken = true;
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('a revoked permission drops the retained state AND its age', async () => {
+    const { env, status } = userEnv({ now: () => 1 });
+    const t = new ProcessTracker(env);
+    t.on('userIdle', () => {});
+    await flush();
+    expect(t.currentUserIdleFresh()).toBeDefined();
+    status.set('denied');
+    expect(t.currentUserIdle()).toBeUndefined();
+    expect(t.currentUserIdleFresh()).toBeUndefined();
+  });
+
+  it('an unsubscribe that throws still closes the gated run (no timer left armed)', () => {
+    const { s, lc, env } = lagEnv();
+    lc.on.mockImplementationOnce(() => () => {
+      throw new Error('unsubscribe failed');
+    });
+    const off = new ProcessTracker(env).on('mainThreadLag', () => {});
+    expect(s.live()).toBe(1);
+    // the stage teardown rethrows into #stop, which reports it; the run itself must be closed regardless
+    expect(() => off()).not.toThrow();
+    expect(s.live()).toBe(0);
   });
 });

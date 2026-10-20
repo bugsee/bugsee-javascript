@@ -274,10 +274,22 @@ describe('performance.now wiring (lag and fps)', () => {
       },
     });
     const errors: unknown[] = [];
-    createBrowserSystemTraceProducers({ lifecycle, document: doc, performance: perf }, (e) =>
-      errors.push(e),
+    const ps = createBrowserSystemTraceProducers(
+      { lifecycle, document: doc, performance: perf },
+      (e) => errors.push(e),
     );
-    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
+    const out: Emit[] = [];
+    // Start/stop/restart every producer: the factory's own read (1) plus the tracker's FIRST lag activation (1) are the
+    // only reports; later activations of the same seams must not re-read the hostile getter (errors used to grow 1,2,3).
+    const rounds: number[] = [];
+    for (let round = 0; round < 3; round += 1) {
+      for (const p of ps) p.start(sinkOf(out));
+      for (const p of ps) p.stop();
+      rounds.push(errors.length);
+    }
+    expect(rounds).toEqual([2, 2, 2]);
+    expect(errors.every((e) => (e as Error).message === 'now blocked')).toBe(true);
+    expect(out.filter((o) => o.name === 'main_thread_lag_ms')).toEqual([]);
   });
 });
 

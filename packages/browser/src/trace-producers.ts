@@ -409,7 +409,9 @@ export class MainThreadIdleProducer extends TraceProducerBase {
  * `user_idle_state` (JS-specific): the Idle Detection API, a string like `app_state`: `active`, `idle`, or `locked`
  * (the screen is locked, which wins over `userState` since the user is away either way). Held, de-duplicated step
  * trace. The SDK never prompts: this exists ONLY in a page whose `idle-detection` permission is already `granted`
- * (Chromium); otherwise no trace is produced at all.
+ * (Chromium); otherwise no trace is produced at all. Known limit (owner decision pending, see docs/PROGRESS.md TR5): a
+ * held value cannot be retracted, so after the permission is revoked the last published value keeps being re-recorded
+ * until the producer stops; only the SEED is age-bounded (2 detector thresholds).
  */
 export class UserIdleProducer extends TraceProducerBase {
   readonly name = 'user-idle';
@@ -423,7 +425,8 @@ export class UserIdleProducer extends TraceProducerBase {
 
   protected onStart(): void {
     this.#off = this.#tracker.on('userIdle', (s) => this.#publish(s));
-    const cur = this.#tracker.currentUserIdle();
+    // Held trace: only a FRESH retained state may seed it (an old snapshot would be re-recorded for as long as it lives).
+    const cur = this.#tracker.currentUserIdleFresh();
     if (cur !== undefined) this.#publish(cur);
   }
 

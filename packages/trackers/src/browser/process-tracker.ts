@@ -21,8 +21,11 @@ import { hostRead } from './host-read';
 // number is omitted, never sent as 0.
 //
 // SINGLETON per key object (see `processTrackerFor`). RETENTION rule — what survives a stage's last unsubscribe:
-//   * the last `userIdle` state (`currentUserIdle()`; dropped when the permission is found NOT granted — a revoked
-//     permission must not keep serving a snapshot), and
+//   * the last `userIdle` state (`currentUserIdle()`; dropped from the tracker when the permission is found NOT
+//     granted). `currentUserIdleFresh()` additionally hands it out only while younger than 2 detector thresholds (the
+//     seed for a held trace). KNOWN LIMIT (owner decision pending, docs/PROGRESS.md TR5): the tracker emits nothing on
+//     revoke, and a HELD trace cannot be retracted, so a consumer that already published the last value keeps
+//     re-recording it until its producer stops; the drop above only stops the tracker serving it to NEW seeds, and
 //   * the heap is read live (`currentHeap()`), uptime/idle/lag keep nothing: a stale idle figure or drift baseline
 //     would be a lie, so every run starts FRESH.
 // What does NOT survive: timers, the lifecycle subscription, the pending idle probe, the IdleDetector and its abort
@@ -127,9 +130,17 @@ export interface ProcessEnv {
   intervalMs?: number;
   /** Idle Detection threshold in ms; floored at the spec's 60 000 (default 60 000). */
   userIdleThresholdMs?: number;
+  /** Wall-clock ms for the age of the retained user-idle state; default `Date.now`. */
+  now?: () => number;
 }
 
 const DEFAULT_INTERVAL_MS = 1000;
+/**
+ * A retained user-idle state older than this many detector thresholds is not handed out as `currentUserIdleFresh()`
+ * (the detector reports only CHANGES, so an old snapshot may have been overtaken by something we never saw).
+ */
+export const USER_IDLE_FRESH_THRESHOLDS = 2;
+const defaultNow = (): number => Date.now();
 /** The Idle Detection spec's minimum threshold. */
 export const USER_IDLE_MIN_THRESHOLD_MS = 60_000;
 /** requestIdleCallback's spec cap on a granted idle period. */
@@ -153,6 +164,7 @@ const SEAM_KEYS = [
   'scheduler',
   'intervalMs',
   'userIdleThresholdMs',
+  'now',
 ] as const satisfies readonly (keyof ProcessEnv)[];
 
 function usable(value: unknown): value is number {
@@ -168,6 +180,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   readonly #inert = new Set<Stage>();
   /** Retained across deactivation (see the retention rule). */
   #userIdle: UserIdleState | undefined;
+  /** When `#userIdle` was read; only meaningful while `#userIdle` is defined (always set together). */
+  #userIdleAt: number | undefined;
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
   readonly #report: { fn: ((error: unknown) => void) | undefined };
 
@@ -223,6 +237,34 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   /** Last Idle Detection state; retained after the last unsubscribe. Undefined until one is read. */
   currentUserIdle(): UserIdleState | undefined {
     return this.#userIdle;
+  }
+
+  /**
+   * The retained user-idle state, but only while it is younger than {@link USER_IDLE_FRESH_THRESHOLDS} detector
+   * thresholds (the threshold in force: the configured one, floored at the spec minimum). Undefined once older,
+   * unknown, or when the clock cannot vouch for the age (unreadable, non-finite, or stepped backwards). For consumers
+   * that publish the state as a HELD reading: a stale snapshot must not seed one.
+   */
+  currentUserIdleFresh(): UserIdleState | undefined {
+    const at = this.#userIdleAt;
+    if (this.#userIdle === undefined || at === undefined) return undefined;
+    let age: number;
+    try {
+      age = (this.#env.now ?? defaultNow)() - at;
+    } catch (error) {
+      this.#onError(error);
+      return undefined;
+    }
+    const limit = USER_IDLE_FRESH_THRESHOLDS * this.#userIdleThreshold(this.#env);
+    // NaN fails both comparisons, so a non-finite age is stale too
+    return age >= 0 && age <= limit ? this.#userIdle : undefined;
+  }
+
+  #userIdleThreshold(env: ProcessEnv): number {
+    const requested = env.userIdleThresholdMs;
+    return usable(requested)
+      ? Math.max(USER_IDLE_MIN_THRESHOLD_MS, requested)
+      : USER_IDLE_MIN_THRESHOLD_MS;
   }
 
   /** Test/teardown: release every stage and forget the retained state. */
@@ -342,12 +384,26 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     );
     if (visible === 'visible') open();
     return () => {
-      unsubscribe();
-      close();
+      try {
+        unsubscribe();
+      } finally {
+        close(); // a throwing unsubscribe must never leave the run armed
+      }
     };
   }
 
+  // The clock read is memoised per env object so a hostile `performance.now` getter is reported ONCE, however many
+  // times a stage (re)starts against the same seams; a rebind that changes a seam builds a new env and reads afresh.
+  readonly #clocks = new WeakMap<ProcessEnv, (() => number) | undefined>();
+
   #clockOf(env: ProcessEnv): (() => number) | undefined {
+    if (this.#clocks.has(env)) return this.#clocks.get(env);
+    const clock = this.#readClock(env);
+    this.#clocks.set(env, clock);
+    return clock;
+  }
+
+  #readClock(env: ProcessEnv): (() => number) | undefined {
     const perf = hostRead(
       () => env.performance,
       (error) => this.#onError(error),
@@ -415,7 +471,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     if (now === undefined || lifecycle === undefined) return undefined;
     const interval = env.intervalMs ?? DEFAULT_INTERVAL_MS;
     return this.#gated(env, lifecycle, () => {
-      let expectedAt = now() + interval; // a FRESH baseline every run
+      let expectedAt = now() + interval; // a FRESH baseline every run (non-finite = no baseline, see the tick)
       return this.#every(env, () => {
         let at: number;
         try {
@@ -429,8 +485,12 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
           expectedAt += interval;
           return;
         }
-        const lagMs = Math.max(0, at - expectedAt); // fired early (a hair) is on time, not negative lag
+        const baseline = expectedAt;
         expectedAt = at + interval;
+        // No finite baseline (the clock was unreadable at the run's start): this tick only establishes one. A lag
+        // computed from it would be NaN, and an unknown lag is omitted, never sent.
+        if (!Number.isFinite(baseline)) return;
+        const lagMs = Math.max(0, at - baseline); // fired early (a hair) is on time, not negative lag
         this.emit('mainThreadLag', { lagMs });
       });
     });
@@ -488,6 +548,16 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
 
   // ---- userIdle ---------------------------------------------------------------------------------------------------
 
+  /** Now, or undefined when the clock is unreadable (the state is then never "fresh"). */
+  #stamp(env: ProcessEnv): number | undefined {
+    try {
+      return (env.now ?? defaultNow)();
+    } catch (error) {
+      this.#onError(error);
+      return undefined;
+    }
+  }
+
   #startUserIdle(env: ProcessEnv): (() => void) | undefined {
     const report = (error: unknown): void => this.#onError(error);
     const nav = hostRead(() => env.navigator, report);
@@ -502,10 +572,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     ) {
       return undefined;
     }
-    const requested = env.userIdleThresholdMs;
-    const threshold = usable(requested)
-      ? Math.max(USER_IDLE_MIN_THRESHOLD_MS, requested)
-      : USER_IDLE_MIN_THRESHOLD_MS;
+    const threshold = this.#userIdleThreshold(env);
 
     const run: {
       alive: boolean;
@@ -524,6 +591,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         ...(screenState === 'locked' || screenState === 'unlocked' ? { screenState } : {}),
       };
       this.#userIdle = state;
+      this.#userIdleAt = this.#stamp(env);
       this.emit('userIdle', state);
     };
 

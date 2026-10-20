@@ -1,5 +1,10 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ApplicationTracker, ProcessTracker, resetProcessTracker } from '@bugsee/trackers/browser';
+import {
+  ApplicationTracker,
+  ProcessTracker,
+  processTrackerFor,
+  resetProcessTracker,
+} from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import {
   browserTraceEnvFrom,
@@ -48,7 +53,11 @@ function mkDetector() {
   return d;
 }
 
-function userIdleTracker(detector: ReturnType<typeof mkDetector>, state = 'granted') {
+function userIdleTracker(
+  detector: ReturnType<typeof mkDetector>,
+  state = 'granted',
+  now?: () => number,
+) {
   class FakeDetector {
     constructor() {
       // biome-ignore lint/correctness/noConstructorReturn: a test double hands the shared fake detector back from `new`.
@@ -62,6 +71,7 @@ function userIdleTracker(detector: ReturnType<typeof mkDetector>, state = 'grant
       signal = {};
       abort() {}
     },
+    ...(now !== undefined ? { now } : {}),
   });
 }
 
@@ -113,6 +123,26 @@ describe('UserIdleProducer (user_idle_state)', () => {
     detector.fire();
     expect(out).toHaveLength(1);
     offOther();
+  });
+});
+
+describe('UserIdleProducer seed age bound', () => {
+  it('seeds from a retained state only while it is younger than 2 detector thresholds', async () => {
+    let at = 0;
+    const detector = mkDetector();
+    const tracker = userIdleTracker(detector, 'granted', () => at);
+    const offOther = tracker.on('userIdle', () => {});
+    await flush();
+    offOther(); // the state is retained, the detector is released
+    at = 120_000; // exactly 2 x the 60 s minimum: still fresh
+    const fresh = new UserIdleProducer(tracker);
+    expect(start(fresh).map((r) => r.value)).toEqual(['active']);
+    fresh.stop();
+    at = 120_001; // one ms older: a held trace must not be seeded from it
+    const stale = new UserIdleProducer(tracker);
+    const out = start(stale);
+    expect(out).toEqual([]);
+    stale.stop();
   });
 });
 
@@ -269,6 +299,12 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
         'ram_js_heap_free',
         'ram_js_heap_used',
       ]);
+      // ONE tracker serves both producers: the window's registry instance saw the user-idle subscription (it retained
+      // the state) AND carries the heap seam, and a second lookup returns that same object.
+      const shared = processTrackerFor({ window: win });
+      expect(processTrackerFor({ window: win })).toBe(shared);
+      expect(shared.currentUserIdle()).toEqual({ userState: 'active', screenState: 'unlocked' });
+      expect(shared.currentHeap()).toEqual({ used: 1, limit: 3 });
     } finally {
       resetProcessTracker({ window: win });
     }
