@@ -13,6 +13,16 @@ export {
   type ServiceToken,
   serviceToken,
 } from '@bugsee/service';
+export {
+  createMultiKeyEmitter,
+  createTrackerRegistry,
+  type EventListener,
+  type EventSubscribable,
+  InterceptorBase,
+  type MultiKeyEmitter,
+  MultiKeyEmitterBase,
+  type TrackerRegistry,
+} from '@bugsee/trackers';
 export type { AttributeValue } from '@bugsee/types';
 // Diagnostics helpers for packages that read a host option themselves (framework adapters) and must warn about
 // an invalid value without ever breaking launch; they live in @bugsee/util.
@@ -168,13 +178,6 @@ export {
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
-export {
-  createMultiKeyEmitter,
-  type EventListener,
-  type EventSubscribable,
-  type MultiKeyEmitter,
-  MultiKeyEmitterBase,
-} from './emitter';
 export { createEnvironment, type Environment } from './environment';
 export { BugseeError, type BugseeErrorOptions } from './errors';
 export { createEventEmitter, type EventEmitter, type Listener } from './event-emitter';
@@ -195,7 +198,6 @@ export {
   runFilter,
   type SpanFilter,
 } from './filters';
-export { InterceptorBase } from './interceptor-base';
 export {
   type LaunchRecoveryOptions,
   type ReconcileOwnQueue,
