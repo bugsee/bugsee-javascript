@@ -368,6 +368,73 @@ describe('appMetrics stage', () => {
     expect(seen).toHaveBeenCalledTimes(1);
   });
 
+  it('a PERSISTENT getAppMetrics failure is reported once per failure streak, not once per tick', () => {
+    const { app, raw } = fakeApp();
+    const sch = fakeScheduler();
+    const onError = vi.fn();
+    const t = make(app, { scheduler: sch }, onError);
+    const seen = vi.fn();
+    t.on('appMetrics', seen);
+    const boom = new Error('persistent');
+    raw.getAppMetrics.mockImplementation(() => {
+      throw boom;
+    });
+    for (let i = 0; i < 5; i++) sch.tick();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(boom);
+    // a successful read ends the streak: the NEXT failure is reported again, once
+    raw.getAppMetrics.mockReturnValue([proc()]);
+    sch.tick();
+    expect(seen).toHaveBeenCalledTimes(1);
+    const boom2 = new Error('again');
+    raw.getAppMetrics.mockImplementation(() => {
+      throw boom2;
+    });
+    sch.tick();
+    sch.tick();
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenLastCalledWith(boom2);
+  });
+
+  it('a failure streak ends on re-arm, so a new run reports its first failure again', () => {
+    const { app, raw } = fakeApp();
+    const sch = fakeScheduler();
+    const onError = vi.fn();
+    const t = make(app, { scheduler: sch }, onError);
+    const off = t.on('appMetrics', vi.fn());
+    const fail = () =>
+      raw.getAppMetrics.mockImplementation(() => {
+        throw new Error('x');
+      });
+    fail();
+    sch.tick();
+    sch.tick();
+    expect(onError).toHaveBeenCalledTimes(1);
+    off();
+    raw.getAppMetrics.mockReturnValue([proc()]); // priming succeeds
+    t.on('appMetrics', vi.fn());
+    fail();
+    sch.tick();
+    sch.tick();
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('reset() ends a failure streak too', () => {
+    const { app, raw } = fakeApp();
+    const sch = fakeScheduler();
+    const onError = vi.fn();
+    const t = make(app, { scheduler: sch }, onError);
+    t.on('appMetrics', vi.fn());
+    raw.getAppMetrics.mockImplementation(() => {
+      throw new Error('x');
+    });
+    sch.tick();
+    t.reset();
+    raw.getAppMetrics.mockReturnValueOnce([proc()]); // priming of the next run
+    t.on('appMetrics', vi.fn());
+    sch.tick();
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
   it('a throwing PRIMING read is reported and leaves the stage unarmed (no timer), retried on the next listener change', () => {
     const { app, raw } = fakeApp();
     const sch = fakeScheduler();

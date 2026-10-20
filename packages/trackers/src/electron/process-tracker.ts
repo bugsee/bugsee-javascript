@@ -217,6 +217,8 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
   #last: { processes: AppProcessMetric[] } | undefined;
   /** The pids the previous read listed (the priming read seeds it). */
   #seenPids: ReadonlySet<number> = new Set();
+  /** True while the polls keep failing (the failure was already reported). */
+  #metricsFailing = false;
   #timer: { handle: unknown; scheduler: ProcessTimers } | null = null;
   /** Bumped whenever the timer is torn down: a callback of an older run never emits. */
   #gen = 0;
@@ -383,6 +385,7 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
     this.#timer = null;
     this.#metricsArmed = false;
     this.#last = undefined;
+    this.#metricsFailing = false;
     this.#gen += 1;
     if (timer === null) return;
     try {
@@ -399,9 +402,15 @@ export class ElectronProcessTracker extends InterceptorBase<ElectronProcessEvent
       metrics = mapped.metrics;
       this.#seenPids = mapped.pids;
     } catch (error) {
-      this.#onError(error); // this tick only; the stage stays armed
+      // this tick only; the stage stays armed. A PERSISTENT failure is reported once per failure streak (a poll runs
+      // every second): a successful read, a re-arm or a stop ends the streak.
+      if (!this.#metricsFailing) {
+        this.#metricsFailing = true;
+        this.#onError(error);
+      }
       return;
     }
+    this.#metricsFailing = false;
     if (metrics === undefined) return; // absence, never zero
     this.#last = metrics;
     // Emitted payloads are copies: a subscriber cannot mutate the retained sample.
