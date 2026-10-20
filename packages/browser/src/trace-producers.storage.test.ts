@@ -80,13 +80,41 @@ describe('StorageProducer', () => {
     ]);
   });
 
-  it('publishes the retained current() at start when another subscriber already polled', async () => {
+  it('publishes the retained estimate at start when another subscriber already polled', async () => {
     const tracker = trackerOf(storageOf(4 * MB, 8 * MB));
     const offOther = tracker.on('storageEstimate', () => {});
     await flush();
     const out = start(new StorageProducer(tracker));
     expect(out.map((r) => r.value)).toEqual([{ usage: 4, quota: 8 }]);
     offOther();
+  });
+
+  it('does NOT seed from a retained estimate older than 2x the poll interval (a held value would age forever)', async () => {
+    const clock = { t: 0 };
+    const mk = () =>
+      new StorageTracker({
+        navigator: { storage: storageOf(4 * MB, 8 * MB) },
+        scheduler: { setInterval: () => 1, clearInterval: () => {} },
+        intervalMs: 1000,
+        now: () => clock.t,
+      });
+    const fresh = mk();
+    const offFresh = fresh.on('storageEstimate', () => {});
+    await flush();
+    offFresh();
+    clock.t = 2000; // exactly 2x: still fresh
+    expect(start(new StorageProducer(fresh)).map((r) => r.value)).toEqual([{ usage: 4, quota: 8 }]);
+
+    const stale = mk();
+    clock.t = 0;
+    const offStale = stale.on('storageEstimate', () => {});
+    await flush();
+    offStale();
+    clock.t = 2001;
+    const out = start(new StorageProducer(stale));
+    expect(out).toEqual([]); // nothing seeded synchronously ...
+    await flush();
+    expect(out.map((r) => r.value)).toEqual([{ usage: 4, quota: 8 }]); // ... the new poll supplies the value
   });
 
   it('stop releases the subscription (and the tracker timer), and a late estimate writes nothing', async () => {
@@ -129,10 +157,19 @@ describe('createBrowserSystemTraceProducers storage wiring', () => {
     const out = start(p as TraceProducer);
     await flush();
     expect(out.map((r) => r.value)).toEqual([{ usage: 3, quota: 6 }]);
-    // a second build for the same window shares the tracker (and its retained estimate)
-    const again = createBrowserSystemTraceProducers(e).find((x) => x.name === 'storage');
-    const out2 = start(again as TraceProducer);
-    expect(out2.map((r) => r.value)).toEqual([{ usage: 3, quota: 6 }]);
+    // a second build for the same WINDOW shares the tracker (and its retained estimate), whatever navigator it is given
+    const again = createBrowserSystemTraceProducers({
+      ...e,
+      navigator: { storage: storageOf(99 * MB, 99 * MB) },
+    }).find((x) => x.name === 'storage');
+    expect(start(again as TraceProducer).map((r) => r.value)).toEqual([{ usage: 3, quota: 6 }]);
+    // a different window with the SAME navigator is a different tracker: nothing retained to seed from
+    const other = { addEventListener() {}, removeEventListener() {} };
+    const elsewhere = createBrowserSystemTraceProducers({ ...e, window: other }).find(
+      (x) => x.name === 'storage',
+    );
+    expect(start(elsewhere as TraceProducer)).toEqual([]);
+    resetStorageTracker({ window: other });
     resetStorageTracker({ window });
   });
 

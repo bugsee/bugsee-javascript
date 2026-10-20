@@ -91,8 +91,9 @@ export class BatteryProducer extends TraceProducerBase {
  * (never 0); an estimate with neither key emits nothing.
  *
  * Held and de-duplicated (`emitIfChanged`): the tracker polls every few minutes, far longer than the default
- * recording window, so a non-held value would almost never be inside a report. Held is truthful here because the
- * tracker retains the LAST KNOWN estimate across a failed poll and a replacement always carries its own keys.
+ * recording window, so a non-held value would almost never be inside a report. Known limit (owner decision pending,
+ * see docs/PROGRESS.md TR6): a held value cannot be retracted, so after failed polls the last known estimate keeps
+ * being re-recorded. usage below 1 MiB floors to 0 MB (an honest floor, not a measurement of zero).
  */
 export class StorageProducer extends TraceProducerBase {
   readonly name = 'storage';
@@ -106,7 +107,9 @@ export class StorageProducer extends TraceProducerBase {
 
   protected onStart(): void {
     this.#off = this.#tracker.on('storageEstimate', (e) => this.#publish(e));
-    const cur = this.#tracker.current(); // retained from an earlier subscription: a value at once
+    // The retained estimate from an earlier subscription gives a value at once — but only while it is younger than
+    // 2x the poll interval: a held trace is re-recorded for as long as it lives, so an old snapshot must not seed it.
+    const cur = this.#tracker.currentFresh();
     if (cur !== undefined) this.#publish(cur);
   }
 

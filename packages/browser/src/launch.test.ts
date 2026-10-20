@@ -1328,23 +1328,26 @@ describe('launch', () => {
         },
       });
       const w = fakeWindow();
-      const store = memStore();
-      await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
-      await new Promise((r) => setTimeout(r, 0));
-      const rows = new Map(
-        ((await drain(store, 'traces.system')) ?? []).map((e) => {
-          const d = e.data as { name: string; value: unknown };
-          return [d.name, d.value];
-        }),
-      );
-      expect(rows.get('storage_estimate')).toEqual({ usage: 5, quota: 2048 });
-      // launch used the registry: the singleton for this window already holds the estimate
-      expect(storageTrackerFor({ window: w.win }).current()).toEqual({
-        usageBytes: 5 * 1024 * 1024 + 7,
-        quotaBytes: 2 * 1024 ** 3,
-        persisted: true,
-      });
-      resetStorageTracker({ window: w.win });
+      try {
+        const store = memStore();
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        await new Promise((r) => setTimeout(r, 0));
+        const rows = new Map(
+          ((await drain(store, 'traces.system')) ?? []).map((e) => {
+            const d = e.data as { name: string; value: unknown };
+            return [d.name, d.value];
+          }),
+        );
+        expect(rows.get('storage_estimate')).toEqual({ usage: 5, quota: 2048 });
+        // launch used the registry: the singleton for this window already holds the estimate
+        expect(storageTrackerFor({ window: w.win }).current()).toEqual({
+          usageBytes: 5 * 1024 * 1024 + 7,
+          quotaBytes: 2 * 1024 ** 3,
+          persisted: true,
+        });
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
     });
 
     it('a rejected storage.estimate() reaches options.onError and never fails launch', async () => {
@@ -1353,10 +1356,13 @@ describe('launch', () => {
       vi.stubGlobal('navigator', { storage: { estimate: () => Promise.reject(boom) } });
       const onError = vi.fn();
       const w = fakeWindow();
-      await launchTracked('tok', noSampler({ window: w.win, captureStore: memStore(), onError }));
-      await new Promise((r) => setTimeout(r, 0));
-      expect(onError).toHaveBeenCalledWith(boom);
-      resetStorageTracker({ window: w.win });
+      try {
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: memStore(), onError }));
+        await new Promise((r) => setTimeout(r, 0));
+        expect(onError).toHaveBeenCalledWith(boom);
+      } finally {
+        resetStorageTracker({ window: w.win });
+      }
     });
 
     it('listens on the INJECTED window for connectivity only while capturing, and releases it on stop', async () => {

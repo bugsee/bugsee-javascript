@@ -12,6 +12,7 @@ import { hostRead } from './host-read';
 // There is no change event, so it POLLS SPARSELY: on activation, when the document becomes visible again, and on a
 // slow timer (default 5 minutes; ticks while the page is hidden are skipped). Only one stage exists:
 //   `storageEstimate` -> { usageBytes?, quotaBytes?, persisted? }   (a field is OMITTED, never zero, when unusable).
+// Visibility-triggered polls are throttled to one per minute; poll FAILURES are reported once per failure streak.
 //
 // SINGLETON per key object (see `storageTrackerFor`). RETENTION rule — what survives the last unsubscribe:
 //   * the LAST estimate (`current()` keeps answering with it, so a later subscriber gets a value immediately, and a
@@ -50,12 +51,20 @@ export interface StorageEnv {
   scheduler?: StorageTimers;
   /** Slow-poll period in ms (default 5 minutes). */
   intervalMs?: number;
+  /** Wall-clock ms for estimate age and the visibility throttle; default `Date.now`. */
+  now?: () => number;
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
+/** Minimum gap between two polls when the trigger is a visibility change (tab-switching must not hammer estimate()). */
+export const VISIBILITY_MIN_GAP_MS = 60_000;
+/** A retained estimate older than this many poll intervals is not handed out as `currentFresh()`. */
+const FRESH_INTERVALS = 2;
 
 // The global timers, reached through a cast (this package's tsconfig has no DOM/Node lib).
 const globalTimers = globalThis as unknown as StorageTimers;
+const defaultNow = (): number => (globalThis as unknown as { Date: { now(): number } }).Date.now();
+
 const defaultTimers: StorageTimers = {
   setInterval: (cb, ms) => globalTimers.setInterval(cb, ms),
   clearInterval: (h) => globalTimers.clearInterval(h),
@@ -74,9 +83,14 @@ export class StorageTracker extends InterceptorBase<{
   #epoch = 0;
   /** Retained across deactivation (see the retention rule). */
   #estimate: StorageEstimate | undefined;
-  #running = false;
+  #estimateAt: number | undefined;
+  /** Seams from a rebind, applied at the next activation (the attached `#env` is never swapped under a live timer/listener). */
+  #pending: StorageEnv | undefined;
+  /** True while the last settled poll had a failure (failures are reported once per streak). */
+  #failing = false;
+  #lastPollAt: number | undefined;
   /** Present only while the slow timer is armed (the handle itself may be any value, even undefined). */
-  #timer: { handle: unknown } | undefined;
+  #timer: { handle: unknown; scheduler: StorageTimers } | undefined;
   /** Present only while the visibility listener is attached. */
   #visibility: { document: NonNullable<StorageEnv['document']>; listener: () => void } | undefined;
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
@@ -91,17 +105,19 @@ export class StorageTracker extends InterceptorBase<{
 
   /**
    * Hand the latest launch's seams to this shared tracker. A defined `onError` replaces the reporter (undefined keeps
-   * it). While IDLE every defined seam replaces ours (an undefined one never clobbers); while RUNNING the bindings
-   * the tracker is attached to are kept (only `onError` changes) and the new ones apply from the next activation.
+   * it). Every defined seam is kept (an undefined one never clobbers an earlier one) and is applied from the NEXT
+   * activation: a tracker that is attached keeps the navigator/document/scheduler it armed until its last subscriber
+   * leaves.
    */
   rebind(env: StorageEnv, onError?: (error: unknown) => void): void {
     if (onError !== undefined) this.#report.fn = onError;
-    if (this.#running) return;
-    this.#env = {
-      ...pick(env.navigator, this.#env.navigator, 'navigator'),
-      ...pick(env.document, this.#env.document, 'document'),
-      ...pick(env.scheduler, this.#env.scheduler, 'scheduler'),
-      ...pick(env.intervalMs, this.#env.intervalMs, 'intervalMs'),
+    const base = this.#pending ?? this.#env;
+    this.#pending = {
+      ...pick(env.navigator, base.navigator, 'navigator'),
+      ...pick(env.document, base.document, 'document'),
+      ...pick(env.scheduler, base.scheduler, 'scheduler'),
+      ...pick(env.intervalMs, base.intervalMs, 'intervalMs'),
+      ...pick(env.now, base.now, 'now'),
     };
   }
 
@@ -118,25 +134,42 @@ export class StorageTracker extends InterceptorBase<{
     return this.#estimate;
   }
 
+  /**
+   * The retained estimate, but only while it is younger than twice the poll interval; undefined once it is older (or
+   * unknown). For consumers that publish it as a reading (a stale snapshot must not be presented as current).
+   */
+  currentFresh(): StorageEstimate | undefined {
+    const at = this.#estimateAt;
+    if (this.#estimate === undefined || at === undefined) return undefined;
+    const limit = FRESH_INTERVALS * (this.#env.intervalMs ?? DEFAULT_INTERVAL_MS);
+    return this.#clock() - at <= limit ? this.#estimate : undefined;
+  }
+
+  #clock(): number {
+    return (this.#env.now ?? defaultNow)();
+  }
+
   /** Test/teardown: forget the estimate, release timer and listener, and ignore anything in flight. */
   reset(): void {
     this.#epoch += 1;
-    this.#running = false;
     this.#release();
     this.#estimate = undefined;
+    this.#failing = false;
   }
 
   protected onActivate(): void {
+    if (this.#pending !== undefined) {
+      this.#env = this.#pending;
+      this.#pending = undefined;
+    }
     // Nothing to poll (insecure context / no Storage API): stay inert — no timer, no listener. The next activation looks again.
     if (this.#storage() === undefined) return;
-    this.#running = true;
     this.#attachVisibility();
     this.#arm();
     this.#poll();
   }
 
   protected override onDeactivate(): void {
-    this.#running = false;
     this.#epoch += 1; // invalidate any in-flight poll; the estimate is retained
     this.#release();
   }
@@ -152,10 +185,14 @@ export class StorageTracker extends InterceptorBase<{
         hostRead(
           () => document.visibilityState,
           (e) => this.#onError(e),
-        ) === 'visible'
+        ) !== 'visible'
       ) {
-        this.#poll();
+        return;
       }
+      // Throttle: tab-switching must not turn into a stream of estimate() calls.
+      const last = this.#lastPollAt;
+      if (last !== undefined && this.#clock() - last < VISIBILITY_MIN_GAP_MS) return;
+      this.#poll();
     };
     // Recorded BEFORE attaching so a failure still detaches exactly this (removing a never-added one is a no-op).
     this.#visibility = { document, listener };
@@ -168,7 +205,8 @@ export class StorageTracker extends InterceptorBase<{
 
   #arm(): void {
     try {
-      const handle = (this.#env.scheduler ?? defaultTimers).setInterval(() => {
+      const scheduler = this.#env.scheduler ?? defaultTimers;
+      const handle = scheduler.setInterval(() => {
         // Sparse on purpose: a hidden page is not polled (visibility->visible polls on return).
         if (
           hostRead(
@@ -179,7 +217,7 @@ export class StorageTracker extends InterceptorBase<{
           this.#poll();
         }
       }, this.#env.intervalMs ?? DEFAULT_INTERVAL_MS);
-      this.#timer = { handle };
+      this.#timer = { handle, scheduler };
     } catch (error) {
       this.#onError(error);
     }
@@ -191,7 +229,7 @@ export class StorageTracker extends InterceptorBase<{
     this.#timer = undefined;
     if (timer !== undefined) {
       try {
-        (this.#env.scheduler ?? defaultTimers).clearInterval(timer.handle);
+        timer.scheduler.clearInterval(timer.handle);
       } catch (error) {
         this.#onError(error);
       }
@@ -220,6 +258,8 @@ export class StorageTracker extends InterceptorBase<{
     const mine = ++this.#epoch; // supersedes any poll still in flight
     const storage = this.#storage();
     if (storage === undefined) return;
+    this.#lastPollAt = this.#clock();
+    const errors: unknown[] = [];
     const ask = <T>(call: () => Promise<T> | undefined): Promise<T | undefined> => {
       try {
         const pending = call();
@@ -228,18 +268,24 @@ export class StorageTracker extends InterceptorBase<{
           : pending.then(
               (value) => value,
               (error: unknown) => {
-                this.#onError(error);
+                errors.push(error);
                 return undefined;
               },
             );
       } catch (error) {
-        this.#onError(error);
+        errors.push(error);
         return Promise.resolve(undefined);
       }
     };
     void Promise.all([ask(() => storage.estimate?.()), ask(() => storage.persisted?.())]).then(
       ([raw, persisted]) => {
         if (this.#epoch !== mine) return; // stopped, reset or superseded while in flight
+        // One report per failure streak: a persistently failing API must not flood onError once per tick.
+        if (errors.length === 0) this.#failing = false;
+        else if (!this.#failing) {
+          this.#failing = true;
+          for (const error of errors) this.#onError(error);
+        }
         this.#publish(raw, persisted); // every host read inside is guarded; listener fan-out is failure-isolated
       },
     );
@@ -257,6 +303,7 @@ export class StorageTracker extends InterceptorBase<{
     // Nothing usable (both calls failed/unsupported): keep the retained estimate, emit nothing.
     if (Object.keys(estimate).length === 0) return;
     this.#estimate = estimate;
+    this.#estimateAt = this.#clock();
     this.emit('storageEstimate', estimate);
   }
 }
@@ -294,6 +341,7 @@ function seamsOf(env: StorageTrackerEnv): StorageEnv {
     ...(env.document !== undefined ? { document: env.document } : {}),
     ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
     ...(env.intervalMs !== undefined ? { intervalMs: env.intervalMs } : {}),
+    ...(env.now !== undefined ? { now: env.now } : {}),
   };
 }
 

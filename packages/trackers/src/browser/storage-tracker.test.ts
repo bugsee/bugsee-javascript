@@ -6,6 +6,7 @@ import {
   type StorageTimers,
   StorageTracker,
   storageTrackerFor,
+  VISIBILITY_MIN_GAP_MS,
 } from './storage-tracker';
 
 const flush = (): Promise<void> =>
@@ -72,9 +73,13 @@ function setup(storage: StorageManagerLike | 'none' | 'default' = 'default', sta
   const navigator = {
     storage: storage === 'default' ? mkStorage() : storage === 'none' ? undefined : storage,
   };
-  const tracker = new StorageTracker({ navigator, document, scheduler, intervalMs: 1234 }, onError);
+  const clock = { t: 1_000_000 };
+  const tracker = new StorageTracker(
+    { navigator, document, scheduler, intervalMs: 1234, now: () => clock.t },
+    onError,
+  );
   const seen: StorageEstimate[] = [];
-  return { tracker, scheduler, document, onError, navigator, seen };
+  return { tracker, scheduler, document, onError, navigator, seen, clock };
 }
 
 describe('StorageTracker', () => {
@@ -130,7 +135,7 @@ describe('StorageTracker', () => {
 
   it('polls again on each timer tick while visible, and on visibility->visible only', async () => {
     const storage = mkStorage();
-    const { tracker, scheduler, document } = setup(storage);
+    const { tracker, scheduler, document, clock } = setup(storage);
     tracker.on('storageEstimate', () => {});
     await flush();
     scheduler.tick();
@@ -141,9 +146,152 @@ describe('StorageTracker', () => {
     expect(storage.estimate).toHaveBeenCalledTimes(2);
     scheduler.tick(); // hidden page: skipped
     expect(storage.estimate).toHaveBeenCalledTimes(2);
+    clock.t += VISIBILITY_MIN_GAP_MS;
     document.visibilityState = 'visible';
     document.fire();
     expect(storage.estimate).toHaveBeenCalledTimes(3);
+  });
+
+  it('throttles visibility-triggered polls to one per VISIBILITY_MIN_GAP_MS (any poll counts)', async () => {
+    const storage = mkStorage();
+    const { tracker, document, clock, scheduler } = setup(storage);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    document.fire(); // right after the activation poll
+    expect(storage.estimate).toHaveBeenCalledTimes(1);
+    clock.t += VISIBILITY_MIN_GAP_MS - 1;
+    document.fire();
+    expect(storage.estimate).toHaveBeenCalledTimes(1);
+    clock.t += 1; // exactly the gap
+    document.fire();
+    expect(storage.estimate).toHaveBeenCalledTimes(2);
+    document.fire(); // just polled
+    expect(storage.estimate).toHaveBeenCalledTimes(2);
+    scheduler.tick(); // the slow timer is NOT throttled
+    expect(storage.estimate).toHaveBeenCalledTimes(3);
+  });
+
+  describe('failure reporting (once per streak)', () => {
+    it('reports a persistent failure once, not every tick, and again after a success', async () => {
+      const storage = mkStorage(1, 2);
+      const { tracker, scheduler, onError } = setup(storage);
+      const fail = (e: Error) => {
+        storage.estimate.mockImplementation(() => Promise.reject(e));
+      };
+      const e1 = new Error('first');
+      fail(e1);
+      tracker.on('storageEstimate', () => {});
+      await flush();
+      scheduler.tick();
+      await flush();
+      scheduler.tick();
+      await flush();
+      expect(onError.mock.calls.map((c) => c[0])).toEqual([e1]);
+      storage.estimate.mockImplementation(() => Promise.resolve({ usage: 1, quota: 2 }));
+      scheduler.tick();
+      await flush();
+      const e2 = new Error('second streak');
+      fail(e2);
+      scheduler.tick();
+      await flush();
+      scheduler.tick();
+      await flush();
+      expect(onError.mock.calls.map((c) => c[0])).toEqual([e1, e2]);
+    });
+
+    it('a stale failing poll is neither reported nor does it start a streak', async () => {
+      let rejectFirst!: (e: Error) => void;
+      const storage = {
+        estimate: vi
+          .fn()
+          .mockImplementationOnce(() => new Promise((_, rej) => (rejectFirst = rej)))
+          .mockImplementation(() => Promise.resolve({ usage: 1, quota: 2 })),
+        persisted: () => Promise.resolve(true),
+      };
+      const { tracker, scheduler, onError } = setup(storage as unknown as StorageManagerLike);
+      tracker.on('storageEstimate', () => {});
+      scheduler.tick(); // supersedes the first
+      await flush();
+      rejectFirst(new Error('late'));
+      await flush();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('reset ends a streak', async () => {
+      const storage = { ...mkStorage(), estimate: vi.fn(() => Promise.reject(new Error('x'))) };
+      const { tracker, onError } = setup(storage);
+      const off = tracker.on('storageEstimate', () => {});
+      await flush();
+      off();
+      const again = tracker.on('storageEstimate', () => {});
+      await flush();
+      again();
+      expect(onError).toHaveBeenCalledTimes(1); // same streak survives an unsubscribe
+      tracker.reset();
+      tracker.on('storageEstimate', () => {});
+      await flush();
+      expect(onError).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('currentFresh (age of the retained estimate)', () => {
+    it('is undefined before any estimate', () => {
+      expect(setup().tracker.currentFresh()).toBeUndefined();
+    });
+
+    it('answers up to 2x the poll interval, then withholds it (current() still answers)', async () => {
+      const { tracker, clock } = setup(); // intervalMs 1234
+      const off = tracker.on('storageEstimate', () => {});
+      await flush();
+      off();
+      const est = { usageBytes: 1000, quotaBytes: 5000, persisted: true };
+      expect(tracker.currentFresh()).toEqual(est);
+      clock.t += 2 * 1234;
+      expect(tracker.currentFresh()).toEqual(est);
+      clock.t += 1;
+      expect(tracker.currentFresh()).toBeUndefined();
+      expect(tracker.current()).toEqual(est);
+    });
+
+    it('uses the 5 minute default interval', async () => {
+      const clock = { t: 0 };
+      const t = new StorageTracker({
+        navigator: { storage: mkStorage() },
+        scheduler: mkScheduler(),
+        now: () => clock.t,
+      });
+      const off = t.on('storageEstimate', () => {});
+      await flush();
+      off();
+      expect(t.currentFresh()).toBeDefined();
+      clock.t = 600_000;
+      expect(t.currentFresh()).toBeDefined();
+      clock.t = 600_001;
+      expect(t.currentFresh()).toBeUndefined();
+    });
+
+    it('a fresh estimate resets the age; reset forgets it', async () => {
+      const { tracker, clock, scheduler } = setup();
+      tracker.on('storageEstimate', () => {});
+      await flush();
+      clock.t += 10_000;
+      scheduler.tick();
+      await flush();
+      expect(tracker.currentFresh()).toBeDefined();
+      tracker.reset();
+      expect(tracker.currentFresh()).toBeUndefined();
+    });
+
+    it('works with the default Date.now clock', async () => {
+      const t = new StorageTracker({
+        navigator: { storage: mkStorage() },
+        scheduler: mkScheduler(),
+      });
+      const off = t.on('storageEstimate', () => {});
+      await flush();
+      off();
+      expect(t.currentFresh()).toBeDefined();
+    });
   });
 
   it('polls on a timer tick when there is no document at all', () => {
@@ -262,13 +410,15 @@ describe('StorageTracker', () => {
   it('storage that disappears after activation just skips that poll', async () => {
     const navigator: { storage?: StorageManagerLike } = { storage: mkStorage() };
     const scheduler = mkScheduler();
-    const t = new StorageTracker({ navigator, scheduler });
+    const onError = vi.fn();
+    const t = new StorageTracker({ navigator, scheduler }, onError);
     t.on('storageEstimate', () => {});
     await flush();
     delete navigator.storage;
     expect(() => scheduler.tick()).not.toThrow();
     await flush();
     expect(t.current()).toBeDefined();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('a throwing navigator.storage getter is reported (host read) and not sampled', async () => {
@@ -520,9 +670,10 @@ describe('StorageTracker', () => {
       expect(clear).toHaveBeenCalledWith(undefined);
     });
 
-    it('a throwing addEventListener is reported and the tracker still works', async () => {
+    it('a throwing addEventListener is reported and the tracker still polls and keeps its timer', async () => {
       const err = new Error('no listener');
       const onError = vi.fn();
+      const scheduler = mkScheduler();
       const document = {
         ...mkDocument(),
         addEventListener: () => {
@@ -530,16 +681,19 @@ describe('StorageTracker', () => {
         },
       };
       const t = new StorageTracker(
-        {
-          navigator: { storage: mkStorage() },
-          document,
-          scheduler: mkScheduler(),
-        },
+        { navigator: { storage: mkStorage() }, document, scheduler },
         onError,
       );
       const seen: StorageEstimate[] = [];
-      t.on('storageEstimate', (e) => seen.push(e))();
+      const off = t.on('storageEstimate', (e) => seen.push(e));
+      await flush();
       expect(onError).toHaveBeenCalledWith(err);
+      expect(seen).toHaveLength(1);
+      expect(scheduler.live.size).toBe(1);
+      scheduler.tick();
+      await flush();
+      expect(seen).toHaveLength(2);
+      off();
     });
 
     it('a throwing removeEventListener is swallowed', () => {
@@ -666,31 +820,64 @@ describe('StorageTracker', () => {
       expect(s1.live.size).toBe(0);
     });
 
-    it('while running the attached bindings are kept (only onError changes)', async () => {
+    it('while running the attached bindings are kept and the new seams apply on the next activation', async () => {
       const a = mkStorage();
       const b = mkStorage();
-      const doc = mkDocument();
-      const sched = mkScheduler();
-      const t = new StorageTracker({
-        navigator: { storage: a },
-        document: doc,
-        scheduler: sched,
-      });
+      const doc1 = mkDocument();
+      const doc2 = mkDocument();
+      const s1 = mkScheduler();
+      const s2 = mkScheduler();
+      const t = new StorageTracker({ navigator: { storage: a }, document: doc1, scheduler: s1 });
       const off = t.on('storageEstimate', () => {});
       t.rebind(
-        {
-          navigator: { storage: b },
-          document: mkDocument(),
-          scheduler: mkScheduler(),
-        },
+        { navigator: { storage: b }, document: doc2, scheduler: s2, intervalMs: 9 },
         vi.fn(),
       );
-      sched.tick();
+      s1.tick();
       expect(a.estimate).toHaveBeenCalledTimes(2);
       expect(b.estimate).not.toHaveBeenCalled();
+      expect(s2.live.size + doc2.count()).toBe(0);
       off();
-      expect(doc.count()).toBe(0);
-      expect(sched.live.size).toBe(0);
+      expect(doc1.count()).toBe(0);
+      expect(s1.live.size).toBe(0); // released from the scheduler it was armed on
+      t.on('storageEstimate', () => {});
+      expect(b.estimate).toHaveBeenCalledTimes(1);
+      expect(a.estimate).toHaveBeenCalledTimes(2);
+      expect(s2.periods).toEqual([9]);
+      expect(s2.live.size).toBe(1);
+      expect(doc2.count()).toBe(1);
+      expect(s1.live.size + doc1.count()).toBe(0);
+    });
+
+    it('successive rebinds while running accumulate (an undefined seam never clobbers)', () => {
+      const b = mkStorage();
+      const s2 = mkScheduler();
+      const t = new StorageTracker({
+        navigator: { storage: mkStorage() },
+        scheduler: mkScheduler(),
+      });
+      const off = t.on('storageEstimate', () => {});
+      t.rebind({ navigator: { storage: b } });
+      t.rebind({ scheduler: s2 });
+      off();
+      t.on('storageEstimate', () => {});
+      expect(b.estimate).toHaveBeenCalledTimes(1);
+      expect(s2.live.size).toBe(1);
+    });
+
+    it('rebinding the clock takes effect on the next activation', async () => {
+      const clock = { t: 0 };
+      const t = new StorageTracker({
+        navigator: { storage: mkStorage() },
+        scheduler: mkScheduler(),
+      });
+      t.rebind({ now: () => clock.t });
+      const off = t.on('storageEstimate', () => {});
+      await flush();
+      off();
+      expect(t.currentFresh()).toBeDefined();
+      clock.t = 600_001; // 2 x the 5 minute default, on the REBOUND clock
+      expect(t.currentFresh()).toBeUndefined();
     });
   });
 });
@@ -760,6 +947,23 @@ describe('storageTrackerFor / resetStorageTracker', () => {
     resetStorageTracker({ window: w });
     expect(sched.live.size).toBe(0); // reset released the timer
     expect(storageTrackerFor({ window: w })).not.toBe(a);
+    resetStorageTracker({ window: w });
+  });
+
+  it('passes the clock through to the shared tracker', async () => {
+    const w = {};
+    const clock = { t: 0 };
+    const t = storageTrackerFor({
+      window: w,
+      navigator: { storage: mkStorage() },
+      scheduler: mkScheduler(),
+      now: () => clock.t,
+    });
+    const off = t.on('storageEstimate', () => {});
+    await flush();
+    off();
+    clock.t = 600_001;
+    expect(t.currentFresh()).toBeUndefined();
     resetStorageTracker({ window: w });
   });
 
