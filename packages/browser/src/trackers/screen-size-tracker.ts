@@ -1,11 +1,11 @@
 import { InterceptorBase } from '@bugsee/core';
-import type { PageLifecycleTracker } from './page-lifecycle-tracker';
+import type { ApplicationTracker } from '@bugsee/trackers/browser';
 
 // Browser screen-size TRACKER (the producer is `screen_size`; deliberately NOT Android's `displays`, which is a
 // display LIST): reports `{ width, height, dpr }` — CSS px of `screen.width/height` and `devicePixelRatio` — on
 // every `resize` and `orientationchange` of the injected window. `resize` is also what a page-zoom (a dpr
 // change) fires, and the producer's de-duplication drops a resize that moved neither. `orientationchange` comes
-// from the shared PageLifecycleTracker (like the orientation tracker; without one, from the window), but `resize`
+// from the shared ApplicationTracker (like the orientation tracker; without one, from the window), but `resize`
 // is listened for here, on the injected window: nothing else consumes it, and a new lifecycle event would
 // change the listener count of every lifecycle subscriber for one trace. Attached on the first subscriber,
 // removed on the last. Any non-finite-positive value omits the whole reading (never 0).
@@ -25,7 +25,7 @@ interface TargetLike {
 }
 export interface ScreenSizeEnv {
   /** Shared lifecycle tracker for `orientationchange`; when absent it is listened for on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   /** The injected window: `resize`/`orientationchange` source AND the LIVE `devicePixelRatio` (zoom changes it). */
   window?: Partial<TargetLike> & { readonly devicePixelRatio?: unknown };
   screen?: { readonly width?: unknown; readonly height?: unknown };

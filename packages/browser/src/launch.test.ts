@@ -42,6 +42,7 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
+import { applicationTrackerFor } from '@bugsee/trackers/browser';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -490,6 +491,80 @@ describe('launch', () => {
     await client.stop();
     expect(w.count('online') + w.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(0);
+  });
+
+  describe('launch goes through the ApplicationTracker registry', () => {
+    const blockedDoc = () => {
+      const doc = fakeWindow();
+      const boom = new Error('visibilityState blocked');
+      const state = { armed: false };
+      Object.defineProperty(doc.win, 'visibilityState', {
+        get() {
+          if (state.armed) throw boom;
+          return 'visible';
+        },
+      });
+      return { doc, boom, state, document: doc.win as unknown as Document };
+    };
+
+    it('shares ONE tracker per document: a lookup for the launched document sees the launch listeners, not a second set', async () => {
+      const w = fakeWindow();
+      const { document } = blockedDoc();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, document, captureStore: memStore() }),
+      );
+      expect(w.count('online')).toBe(1);
+      const shared = applicationTrackerFor({ window: w.win as never, document });
+      const off = shared.on('online', () => {});
+      expect(w.count('online')).toBe(1); // the SAME tracker: one listener serves launch and this subscriber
+      off();
+    });
+
+    it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", async () => {
+      const w = fakeWindow();
+      const { doc, boom, state, document } = blockedDoc();
+      const first = vi.fn();
+      const second = vi.fn();
+      // The tracker's own read fails only while the event is dispatched (launch itself reads the document too).
+      const fireBlocked = () => {
+        state.armed = true;
+        try {
+          doc.emit('visibilitychange', {});
+        } catch {
+          /* a real DOM dispatch never propagates a listener's throw */
+        } finally {
+          state.armed = false;
+        }
+      };
+      const run = async (onError?: (e: unknown) => void) => {
+        const client = await launch(
+          'tok',
+          baseOptions({
+            window: w.win,
+            document,
+            captureStore: memStore(),
+            ...(onError !== undefined ? { onError } : {}),
+          }),
+        );
+        return client;
+      };
+      await (await run(first)).stop();
+      await (await run(second)).stop();
+      first.mockClear();
+      second.mockClear();
+      const live = await run(second);
+      clients.push(live);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+      expect(first).not.toHaveBeenCalledWith(boom);
+      await live.stop();
+      second.mockClear();
+      const bare = await run(); // no onError: must NOT silence the earlier launch's sink
+      clients.push(bare);
+      fireBlocked();
+      expect(second).toHaveBeenCalledWith(boom);
+    });
   });
 
   describe('dark mode, freeze and resume events (from the injected window + document)', () => {

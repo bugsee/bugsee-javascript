@@ -1,6 +1,7 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
 import {
+  type ApplicationTracker,
   type BatteryEnv,
   type BatteryManagerLike,
   type BatteryState,
@@ -21,7 +22,6 @@ import {
   type OrientationState,
   OrientationTracker,
 } from './trackers/orientation-tracker';
-import type { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import {
   type ScreenSizeEnv,
   type ScreenSizeState,
@@ -213,30 +213,22 @@ export class OrientationProducer extends TraceProducerBase {
  */
 export class AppStateProducer extends TraceProducerBase {
   readonly name = 'app-state';
-  readonly #lifecycle: Pick<PageLifecycleTracker, 'on'>;
-  readonly #document: { readonly visibilityState?: string } | undefined;
+  readonly #application: Pick<ApplicationTracker, 'on' | 'current'>;
   #off: (() => void) | undefined;
 
-  constructor(
-    lifecycle: Pick<PageLifecycleTracker, 'on'>,
-    document: { readonly visibilityState?: string } | undefined,
-  ) {
+  constructor(application: Pick<ApplicationTracker, 'on' | 'current'>) {
     super();
-    this.#lifecycle = lifecycle;
-    this.#document = document;
+    this.#application = application;
   }
 
   protected onStart(): void {
-    this.#off = this.#lifecycle.on('visibility', ({ visible }) =>
-      this.emitIfChanged('app_state', visible ? 'foreground' : 'background'),
+    // Subscribe first (it activates the tracker and refreshes its retained state), then read the initial value.
+    this.#off = this.#application.on('state', ({ state }) =>
+      this.emitIfChanged('app_state', state),
     );
-    try {
-      const state = this.#document?.visibilityState;
-      if (state !== undefined)
-        this.emitIfChanged('app_state', state === 'visible' ? 'foreground' : 'background');
-    } catch {
-      /* an unreadable document yields no initial value; the next visibility change still reports */
-    }
+    // No known state (no/unreadable document) = no initial value; the next change still reports.
+    const initial = this.#application.current();
+    if (initial !== undefined) this.emitIfChanged('app_state', initial);
   }
 
   protected override onStop(): void {
@@ -356,8 +348,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
-  /** Shared page-lifecycle tracker for connection/orientation; when absent each listens on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  /** The shared ApplicationTracker feeding connection/orientation, app_state and fps; when absent connection/orientation listen on `window` and app_state/fps are omitted. */
+  lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
 }
 
 interface WindowSurfaces {
@@ -509,7 +501,7 @@ export function createBrowserSystemTraceProducers(
     ),
     ...(env.lifecycle !== undefined
       ? [
-          new AppStateProducer(env.lifecycle, env.document),
+          new AppStateProducer(env.lifecycle),
           new ScreenSizeProducer(
             new ScreenSizeTracker(
               {

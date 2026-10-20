@@ -1,4 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
+import { ApplicationTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   browserTraceEnvFrom,
@@ -7,7 +8,6 @@ import {
   ScreenSizeProducer,
 } from './trace-producers';
 import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
-import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 import { ScreenSizeTracker } from './trackers/screen-size-tracker';
 
 function mkTarget() {
@@ -87,7 +87,7 @@ describe('MainThreadLagProducer', () => {
   it('emits each tick drift as a POLLED value (hold:false), including a true 0, and releases on stop', () => {
     const win = mkTarget();
     const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
-    const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
+    const lifecycle = new ApplicationTracker({ window: win, document: doc });
     let timer: (() => void) | undefined;
     let now = 0;
     const tracker = new MainThreadLagTracker({
@@ -126,7 +126,7 @@ describe('MainThreadLagProducer', () => {
 describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', () => {
   it('are added with a lifecycle (same gate as app_state/fps) and absent without one', () => {
     const win = mkTarget();
-    const lifecycle = new PageLifecycleTracker({ window: win });
+    const lifecycle = new ApplicationTracker({ window: win });
     expect(names(createBrowserSystemTraceProducers({ lifecycle }))).toEqual(
       expect.arrayContaining(['screen-size', 'main-thread-lag']),
     );
@@ -139,7 +139,7 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
   });
 
   it('sensors:false builds the battery producer only', () => {
-    const lifecycle = new PageLifecycleTracker({ window: mkTarget() });
+    const lifecycle = new ApplicationTracker({ window: mkTarget() });
     expect(names(createBrowserSystemTraceProducers({ lifecycle, sensors: false }))).toEqual([
       'battery',
     ]);
@@ -153,7 +153,7 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
       performance: { now: () => t },
     });
     const doc = { visibilityState: 'visible' };
-    const lifecycle = new PageLifecycleTracker({
+    const lifecycle = new ApplicationTracker({
       window: win,
       document: Object.assign(mkTarget(), doc),
     });
@@ -188,7 +188,7 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
   it('a window without a performance clock starts no timer and reports nothing (no error)', () => {
     const win = Object.assign(mkTarget(), { screen: { width: 1, height: 1 }, devicePixelRatio: 1 });
     const doc = { visibilityState: 'visible' };
-    const lifecycle = new PageLifecycleTracker({
+    const lifecycle = new ApplicationTracker({
       window: win,
       document: Object.assign(mkTarget(), doc),
     });
@@ -233,7 +233,7 @@ describe('performance.now wiring (lag and fps)', () => {
   };
   const mkLifecycle = () => {
     const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
-    return { doc, lifecycle: new PageLifecycleTracker({ window: mkTarget(), document: doc }) };
+    return { doc, lifecycle: new ApplicationTracker({ window: mkTarget(), document: doc }) };
   };
 
   it('the lag and fps clocks are called as performance.now() (this === performance), with no error', () => {
@@ -286,7 +286,7 @@ describe('main_thread_lag_ms clock wiring', () => {
   it('a performance.now that is not a function omits the trace quietly (no timer, no error)', () => {
     const win = mkTarget();
     const doc = Object.assign(mkTarget(), { visibilityState: 'visible' });
-    const lifecycle = new PageLifecycleTracker({ window: win, document: doc });
+    const lifecycle = new ApplicationTracker({ window: win, document: doc });
     let timers = 0;
     const errors: unknown[] = [];
     const lag = createBrowserSystemTraceProducers(

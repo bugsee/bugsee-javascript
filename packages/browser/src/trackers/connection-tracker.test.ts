@@ -1,6 +1,6 @@
+import { ApplicationTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { ConnectionTracker } from './connection-tracker';
-import { PageLifecycleTracker } from './page-lifecycle-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<() => void>>();
@@ -191,7 +191,7 @@ describe('ConnectionTracker', () => {
   it('with a shared lifecycle it takes online/offline from it and attaches NO window listener of its own', () => {
     const win = mkTarget();
     const connection = mkTarget();
-    const lifecycle = new PageLifecycleTracker({ window: win as never });
+    const lifecycle = new ApplicationTracker({ window: win as never });
     const t = new ConnectionTracker({
       lifecycle,
       window: win,

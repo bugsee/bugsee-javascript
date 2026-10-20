@@ -22,7 +22,7 @@ Trackers are the abstraction over system and runtime APIs. The package root is r
 - `@bugsee/trackers/node` (`src/node/`)
 - `@bugsee/trackers/electron` (`src/electron/`)
 
-The `./browser` entry exports the `PowerTracker` (`powerTrackerFor`, `resetPowerTracker`) and `hostRead`; `./node` and `./electron` are reserved in `exports` and currently export nothing. Its API is internal and may change between releases.
+The `./browser` entry exports the `ApplicationTracker` (`applicationTrackerFor`, `resetApplicationTracker`), the `PowerTracker` (`powerTrackerFor`, `resetPowerTracker`) and `hostRead`; `./node` and `./electron` are reserved in `exports` and currently export nothing. Its API is internal and may change between releases.
 
 ## Links
 

@@ -16,6 +16,13 @@ export {
   type LifecycleEventsListener,
   type LifecycleEventType,
 } from '@bugsee/core';
+export {
+  type ApplicationEnv,
+  type ApplicationEvents,
+  type ApplicationState,
+  ApplicationTracker,
+  applicationTrackerFor,
+} from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
   createUnhandledRejectionProvider,
@@ -92,11 +99,6 @@ export {
   createBrowserSystemTraceProducers,
   defaultBrowserTraceEnv,
 } from './trace-producers';
-export {
-  type PageLifecycleEnv,
-  type PageLifecycleEvents,
-  PageLifecycleTracker,
-} from './trackers/page-lifecycle-tracker';
 export {
   createUiBreadcrumbProvider,
   createUiBreadcrumbSource,

@@ -1,5 +1,5 @@
 import { InterceptorBase } from '@bugsee/core';
-import type { PageLifecycleTracker } from './page-lifecycle-tracker';
+import type { ApplicationTracker } from '@bugsee/trackers/browser';
 
 // Browser screen-orientation TRACKER (mirrors the mobile tracker/producer split): reports the current
 // `screen.orientation` {type, angle} on every change. Both `screen.orientation` `change` and the window's
@@ -16,7 +16,7 @@ interface TargetLike {
 }
 export interface OrientationEnv {
   /** Shared lifecycle tracker for `orientationchange`; when absent it is listened for on `window`. */
-  lifecycle?: Pick<PageLifecycleTracker, 'on'>;
+  lifecycle?: Pick<ApplicationTracker, 'on'>;
   window?: TargetLike;
   screen?: {
     orientation?: { type: string; angle: number } & Partial<TargetLike>;
