@@ -1,5 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ApplicationTracker } from '@bugsee/trackers/browser';
+import { ApplicationTracker, ProcessTracker, UiTracker } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   browserTraceEnvFrom,
@@ -7,8 +7,6 @@ import {
   MainThreadLagProducer,
   ScreenSizeProducer,
 } from './trace-producers';
-import { MainThreadLagTracker } from './trackers/main-thread-lag-tracker';
-import { ScreenSizeTracker } from './trackers/screen-size-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<(e: unknown) => void>>();
@@ -36,7 +34,7 @@ const names = (ps: TraceProducer[]) => ps.map((p) => p.name);
 describe('ScreenSizeProducer', () => {
   const mk = (screen: unknown = { width: 390, height: 844 }) => {
     const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
-    const tracker = new ScreenSizeTracker({ window: win, screen: screen as never });
+    const tracker = new UiTracker({ window: win, screen: screen as never });
     return { win, tracker };
   };
 
@@ -62,9 +60,9 @@ describe('ScreenSizeProducer', () => {
     for (const screen of [undefined, { width: 0, height: 844 }, { width: 390 }]) {
       const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
       const out: Emit[] = [];
-      new ScreenSizeProducer(
-        new ScreenSizeTracker({ window: win, ...(screen ? { screen } : {}) }),
-      ).start(sinkOf(out));
+      new ScreenSizeProducer(new UiTracker({ window: win, ...(screen ? { screen } : {}) })).start(
+        sinkOf(out),
+      );
       expect(out).toEqual([]);
     }
   });
@@ -90,10 +88,10 @@ describe('MainThreadLagProducer', () => {
     const lifecycle = new ApplicationTracker({ window: win, document: doc });
     let timer: (() => void) | undefined;
     let now = 0;
-    const tracker = new MainThreadLagTracker({
+    const tracker = new ProcessTracker({
       lifecycle,
       document: doc,
-      now: () => now,
+      performance: { now: () => now },
       scheduler: {
         setInterval: (cb) => {
           timer = cb;
@@ -275,10 +273,23 @@ describe('performance.now wiring (lag and fps)', () => {
       },
     });
     const errors: unknown[] = [];
-    createBrowserSystemTraceProducers({ lifecycle, document: doc, performance: perf }, (e) =>
-      errors.push(e),
+    const ps = createBrowserSystemTraceProducers(
+      { lifecycle, document: doc, performance: perf },
+      (e) => errors.push(e),
     );
-    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
+    const out: Emit[] = [];
+    // The factory reads silently; the tracker reports the persistent failure ONCE (not once per activation: errors used
+    // to grow 1,2,3 across start/stop/restart), and nothing is reported before a lag/uptime stage activates.
+    expect(errors).toEqual([]);
+    const rounds: number[] = [];
+    for (let round = 0; round < 3; round += 1) {
+      for (const p of ps) p.start(sinkOf(out));
+      for (const p of ps) p.stop();
+      rounds.push(errors.length);
+    }
+    expect(rounds).toEqual([1, 1, 1]);
+    expect(errors.every((e) => (e as Error).message === 'now blocked')).toBe(true);
+    expect(out.filter((o) => o.name === 'main_thread_lag_ms')).toEqual([]);
   });
 });
 

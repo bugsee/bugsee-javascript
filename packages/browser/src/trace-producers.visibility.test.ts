@@ -1,5 +1,10 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ApplicationTracker } from '@bugsee/trackers/browser';
+import {
+  ApplicationTracker,
+  resetUiTracker,
+  UiTracker,
+  uiTrackerFor,
+} from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   AppStateProducer,
@@ -8,7 +13,6 @@ import {
   defaultBrowserTraceEnv,
   FpsProducer,
 } from './trace-producers';
-import { FpsTracker } from './trackers/fps-tracker';
 
 function mkTarget() {
   const l = new Map<string, Set<(e: unknown) => void>>();
@@ -129,8 +133,7 @@ describe('FpsProducer', () => {
     let timer: (() => void) | undefined;
     let now = 0;
     const cbs: Array<() => void> = [];
-    const tracker = new FpsTracker({
-      lifecycle: page.lifecycle,
+    const tracker = new UiTracker({
       document: page.doc,
       requestAnimationFrame: (cb) => {
         cbs.push(() => cb(0));
@@ -153,7 +156,7 @@ describe('FpsProducer', () => {
     cbs[0]?.();
     timer?.();
     expect(out).toEqual([{ name: 'fps', value: 1, hold: false }]);
-    expect(page.doc.count()).toBe(3); // subscribed: visibilitychange + freeze + resume
+    expect(page.doc.count()).toBe(1); // subscribed: the tracker's own visibilitychange (no page-lifecycle tracker)
     p.stop();
     expect(page.doc.count()).toBe(0); // the tracker was released with the last subscriber
     now = 2000;
@@ -248,6 +251,41 @@ describe('browserTraceEnvFrom', () => {
       'requestAnimationFrame blocked',
       'screen blocked',
     ]);
+  });
+
+  it("matchMedia is the window's own, bound to it; absent or throwing means none", () => {
+    const calls: unknown[] = [];
+    const win = {
+      matchMedia(this: unknown, query: string) {
+        calls.push(this, query);
+        return { matches: true };
+      },
+    };
+    const env = browserTraceEnvFrom(win, undefined);
+    expect(env.matchMedia?.('(x)')).toEqual({ matches: true });
+    expect(calls).toEqual([win, '(x)']);
+    expect(browserTraceEnvFrom({}, undefined).matchMedia).toBeUndefined();
+    const errors: unknown[] = [];
+    const hostile = {};
+    Object.defineProperty(hostile, 'matchMedia', {
+      get(): never {
+        throw new Error('matchMedia blocked');
+      },
+    });
+    expect(
+      browserTraceEnvFrom(hostile, undefined, (e) => errors.push(e)).matchMedia,
+    ).toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it("createBrowserSystemTraceProducers hands the env's matchMedia/screen to the window's UiTracker", () => {
+    const win = { addEventListener() {}, removeEventListener() {} };
+    createBrowserSystemTraceProducers({
+      window: win,
+      matchMedia: () => ({ matches: true }),
+    });
+    expect(uiTrackerFor({ window: win }).current('colorScheme')).toEqual({ dark: true });
+    resetUiTracker({ window: win });
   });
 
   it('one throwing surface does not take the others with it, and onError is optional', () => {
@@ -349,7 +387,13 @@ describe('browserTraceEnvFrom', () => {
       );
     }).not.toThrow();
     expect(built.map((p) => p.name)).toContain('fps');
-    expect(errors.some((e) => (e as Error).message === 'now blocked')).toBe(true);
+    // the lag stage (owner of the clock report) activates: the unreadable clock is reported, exactly once
+    const lag = built.find((p) => p.name === 'main-thread-lag') as TraceProducer;
+    lag.start({ emit: () => {} });
+    lag.stop();
+    lag.start({ emit: () => {} });
+    lag.stop();
+    expect(errors.map((e) => (e as Error).message)).toEqual(['now blocked']);
   });
 
   it('omits what the window lacks (a missing performance.memory is not borrowed from the global)', () => {

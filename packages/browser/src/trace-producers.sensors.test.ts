@@ -1,5 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { ConnectivityTracker } from '@bugsee/trackers/browser';
+import { ConnectivityTracker, ProcessTracker, UiTracker } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AdvertisedMemoryProducer,
@@ -8,8 +8,6 @@ import {
   MemoryProducer,
   OrientationProducer,
 } from './trace-producers';
-import { MemoryTracker } from './trackers/memory-tracker';
-import { OrientationTracker } from './trackers/orientation-tracker';
 
 type Row = { name: string; value: unknown };
 const startAll = (producers: readonly TraceProducer[]) => {
@@ -66,6 +64,18 @@ const heap = (used: number, limit: number) => ({
 
 afterEach(() => vi.unstubAllGlobals());
 
+/** A ProcessTracker whose `performance.memory` is the live getter `memory()`. */
+function mkProcess(memory: () => unknown, scheduler?: ReturnType<typeof mkScheduler>) {
+  return new ProcessTracker({
+    ...(scheduler !== undefined ? { scheduler } : {}),
+    performance: {
+      get memory() {
+        return memory() as never;
+      },
+    },
+  });
+}
+
 describe('MemoryProducer', () => {
   it('emits the GROUPED ram_js_heap_* series (limit as total, free = limit - used) as a baseline, then every tick', () => {
     // `total` is the heap CEILING (jsHeapSizeLimit) and `free` is total - used — Android's ram_jvm_heap
@@ -73,7 +83,7 @@ describe('MemoryProducer', () => {
     // the heap grew; and no fourth `committed` series, which would break the stacked area.
     const s = mkScheduler();
     let used = 1;
-    const p = new MemoryProducer(new MemoryTracker({ memory: () => heap(used, 3), scheduler: s }));
+    const p = new MemoryProducer(mkProcess(() => heap(used, 3), s));
     const { out, stop } = startAll([p]);
     expect(out).toEqual([
       { name: 'ram_js_heap_total', value: 3 },
@@ -93,7 +103,7 @@ describe('MemoryProducer', () => {
 
   it('emits through the unconditional (polled) path: an unchanged reading is still emitted each tick', () => {
     const s = mkScheduler();
-    const p = new MemoryProducer(new MemoryTracker({ memory: () => heap(1, 3), scheduler: s }));
+    const p = new MemoryProducer(mkProcess(() => heap(1, 3), s));
     const { out } = startAll([p]);
     s.tick();
     expect(out).toHaveLength(6);
@@ -101,17 +111,15 @@ describe('MemoryProducer', () => {
 
   it('emits nothing and starts no timer where the engine has no performance.memory', () => {
     const s = mkScheduler();
-    const { out } = startAll([
-      new MemoryProducer(new MemoryTracker({ memory: () => undefined, scheduler: s })),
-    ]);
+    const { out } = startAll([new MemoryProducer(mkProcess(() => undefined, s))]);
     expect(out).toEqual([]);
     expect(s.live()).toBe(0);
   });
 
   it('never emits the retired browser_memory_* names', () => {
-    const names = startAll([
-      new MemoryProducer(new MemoryTracker({ memory: () => heap(1, 3) })),
-    ]).out.map((r) => r.name);
+    const names = startAll([new MemoryProducer(mkProcess(() => heap(1, 3)))]).out.map(
+      (r) => r.name,
+    );
     expect(names.filter((n) => n.startsWith('browser_memory'))).toEqual([]);
   });
 });
@@ -240,9 +248,7 @@ describe('ConnectionProducer', () => {
 describe('OrientationProducer', () => {
   it('emits the Android-enum INT, never the browser {type, angle} object', () => {
     const orientation = Object.assign(mkTarget(), { type: 'landscape-primary', angle: 90 });
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 3 }]); // LandscapeLeft
     orientation.type = 'portrait-primary';
     orientation.angle = 0;
@@ -254,7 +260,7 @@ describe('OrientationProducer', () => {
     const win = mkTarget();
     const orientation = Object.assign(mkTarget(), { type: 'portrait-primary', angle: 0 });
     const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ window: win, screen: { orientation } })),
+      new OrientationProducer(new UiTracker({ window: win, screen: { orientation } })),
     ]);
     orientation.type = 'landscape-secondary';
     orientation.angle = 270;
@@ -263,10 +269,15 @@ describe('OrientationProducer', () => {
     expect(out.map((r) => r.value)).toEqual([1, 4]);
   });
 
+  it('ignores a bare orientation notification (an orientationchange the engine cannot read)', () => {
+    const win = mkTarget();
+    const { out } = startAll([new OrientationProducer(new UiTracker({ window: win, screen: {} }))]);
+    win.fire('orientationchange');
+    expect(out).toEqual([]);
+  });
+
   it('emits nothing where the engine has no screen.orientation', () => {
-    expect(startAll([new OrientationProducer(new OrientationTracker({ screen: {} }))]).out).toEqual(
-      [],
-    );
+    expect(startAll([new OrientationProducer(new UiTracker({ screen: {} }))]).out).toEqual([]);
   });
 });
 
@@ -419,9 +430,7 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
 
   it('an unrecognised orientation type is Unknown even when the angle alone would say Portrait', () => {
     const orientation = { type: 'sideways', angle: 0 };
-    const { out } = startAll([
-      new OrientationProducer(new OrientationTracker({ screen: { orientation } })),
-    ]);
+    const { out } = startAll([new OrientationProducer(new UiTracker({ screen: { orientation } }))]);
     expect(out).toEqual([{ name: 'orientation', value: 0 }]);
   });
 

@@ -36,13 +36,14 @@ describe('ApplicationTracker', () => {
     expect(win.count() + doc.count()).toBe(0);
   });
 
-  it('attaches pagehide/online/offline/orientationchange on window and visibilitychange on document', () => {
+  it('attaches pagehide/online/offline on window (orientationchange belongs to the UiTracker) and visibilitychange on document', () => {
     const { win, doc } = mkEnv();
     const t = new ApplicationTracker({ window: win, document: doc });
     t.on('online', () => {});
-    for (const type of ['pagehide', 'online', 'offline', 'orientationchange']) {
+    for (const type of ['pagehide', 'online', 'offline']) {
       expect(win.count(type)).toBe(1);
     }
+    expect(win.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(1);
   });
 
@@ -71,7 +72,7 @@ describe('ApplicationTracker', () => {
     }).not.toThrow();
     expect(win.count('freeze')).toBe(0); // checked while SUBSCRIBED
     expect(win.count('resume')).toBe(0);
-    expect(win.count()).toBe(4); // only the window's own pagehide/online/offline/orientationchange
+    expect(win.count()).toBe(3); // only the window's own pagehide/online/offline
     off?.();
   });
 
@@ -98,11 +99,11 @@ describe('ApplicationTracker', () => {
     const offA = t.on('online', () => {});
     const offB = t.on('offline', () => {});
     offA();
-    expect(win.count() + doc.count()).toBe(7);
+    expect(win.count() + doc.count()).toBe(6);
     offB();
     expect(win.count() + doc.count()).toBe(0);
     t.on('online', () => {});
-    expect(win.count() + doc.count()).toBe(7);
+    expect(win.count() + doc.count()).toBe(6);
   });
 
   it('removes each listener exactly once per activation cycle (no stale entries replayed on a later stop)', () => {
@@ -116,7 +117,7 @@ describe('ApplicationTracker', () => {
     const t = new ApplicationTracker({ window: win, document: doc });
     t.on('online', () => {})();
     t.on('online', () => {})();
-    expect(removes).toHaveBeenCalledTimes(8);
+    expect(removes).toHaveBeenCalledTimes(6);
   });
 
   it('emits typed events', () => {
@@ -127,7 +128,6 @@ describe('ApplicationTracker', () => {
     t.on('visibility', (e) => seen.push(['visibility', e]));
     t.on('online', () => seen.push(['online']));
     t.on('offline', () => seen.push(['offline']));
-    t.on('orientationchange', () => seen.push(['orientationchange']));
     win.fire('pagehide', { persisted: true });
     win.fire('pagehide', {});
     doc.visibilityState = 'hidden';
@@ -136,7 +136,6 @@ describe('ApplicationTracker', () => {
     doc.fire('visibilitychange');
     win.fire('online');
     win.fire('offline');
-    win.fire('orientationchange');
     expect(seen).toEqual([
       ['pagehide', { persisted: true }],
       ['pagehide', { persisted: false }],
@@ -144,7 +143,6 @@ describe('ApplicationTracker', () => {
       ['visibility', { visible: true }],
       ['online'],
       ['offline'],
-      ['orientationchange'],
     ]);
   });
 
@@ -605,7 +603,7 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const { win, doc } = mkEnv();
     const a = applicationTrackerFor({ window: win, document: doc });
     a.on('online', () => {});
-    expect(win.count()).toBe(4);
+    expect(win.count()).toBe(3);
     resetApplicationTracker({ window: win, document: doc });
     expect(win.count() + doc.count()).toBe(0);
     expect(applicationTrackerFor({ window: win, document: doc })).not.toBe(a);

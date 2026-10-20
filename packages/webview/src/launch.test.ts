@@ -1,4 +1,4 @@
-import { applicationTrackerFor, type WindowEvents } from '@bugsee/browser';
+import { applicationTrackerFor, environmentTrackerFor, type WindowEvents } from '@bugsee/browser';
 import {
   BUGSEE_SDK_VERSION,
   BugseeStatus,
@@ -176,6 +176,84 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     const off = shared.on('online', () => {});
     expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
     off();
+  });
+
+  it('shares the browser system-events source: launch goes through the per-window EnvironmentTracker (private mode off)', () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    try {
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      expect(tracker.current().language).toEqual({ language: 'pl-PL' });
+      expect(tracker.current().privateMode).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('the environment tracker runs over the launch document and scheduler: slow tick re-reads the zone, hidden ticks and visibility changes follow the document', () => {
+    const win = fakeEventTarget();
+    const doc = fakeEventTarget();
+    const vis = { state: 'visible' };
+    Object.defineProperty(doc.target, 'visibilityState', { get: () => vis.state });
+    Object.assign(win.target, { navigator: { language: 'pl-PL' } });
+    const ticks: Array<{ cb: () => void; ms: number }> = [];
+    const real = new Date().getTimezoneOffset();
+    const offset = (minutesEast: number) =>
+      vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(-minutesEast);
+    try {
+      track(
+        'tok',
+        baseOptions({
+          window: win.target as unknown as WindowEvents,
+          document: doc.target as unknown as Document,
+          scheduler: {
+            setInterval: (cb, ms) => {
+              ticks.push({ cb, ms });
+              return ticks.length;
+            },
+            clearInterval: () => {},
+          },
+        }),
+      );
+      const tracker = environmentTrackerFor({ window: win.target as never });
+      const slow = ticks.filter((t) => t.ms === 60_000);
+      expect(slow).toHaveLength(1); // the launch scheduler reached the tracker
+      expect(doc.count('visibilitychange')).toBeGreaterThan(0); // and its document
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      offset(-real + 90);
+      vis.state = 'hidden';
+      slow[0]?.cb();
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0); // hidden: tick skipped
+      doc.emit('visibilitychange', {}); // still hidden: no re-read
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 0);
+      vis.state = 'visible';
+      doc.emit('visibilitychange', {});
+      expect(tracker.current().timeZone?.utcOffsetMinutes).toBe(-real + 90); // visible: re-read
+    } finally {
+      vi.restoreAllMocks();
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
+  });
+
+  it('never turns private-mode detection on, even when an earlier launch on the same window had it on', async () => {
+    const win = fakeEventTarget();
+    const { document } = blockedDoc();
+    const estimate = vi.fn(() => Promise.resolve({ quota: 1 }));
+    const navigator = { language: 'en', storage: { estimate } };
+    Object.assign(win.target, { navigator });
+    try {
+      environmentTrackerFor({ window: win.target as never, navigator, detectPrivateMode: true });
+      track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(estimate).toHaveBeenCalled(); // the storage trace probes it; private mode must not be inferred
+      expect(
+        environmentTrackerFor({ window: win.target as never }).current().privateMode,
+      ).toBeUndefined();
+    } finally {
+      environmentTrackerFor({ window: win.target as never }).reset();
+    }
   });
 
   it("the latest launch's onError becomes the reporter; a relaunch without one keeps it", () => {
@@ -428,7 +506,8 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toEqual([win.target]);
+    expect(thisSeen).toHaveLength(2); // the baseline read + the change watch
+    expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
       entriesOfType(msgs.msgs(), 'events.system').some((e) =>
@@ -1106,6 +1185,81 @@ describe('launch (webview)', () => {
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+
+    describe('user_idle_state is opt-in (captureUserIdle) and needs an already-granted permission', () => {
+      const idleRows = async (over: Partial<BugseeWebViewLaunchOptions>, permission: string) => {
+        stubSensors();
+        const query = vi.fn(() => Promise.resolve({ state: permission }));
+        vi.stubGlobal('navigator', { onLine: true, permissions: { query } });
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          class FakeDetector {
+            userState = 'idle';
+            screenState = 'unlocked';
+            start = () => Promise.resolve(undefined);
+            addEventListener = () => {};
+            removeEventListener = () => {};
+          }
+          Object.assign(w.win, {
+            IdleDetector: FakeDetector,
+            AbortController: class {
+              signal = {};
+              abort() {}
+            },
+          });
+          track('tok', baseOptions({ global: fake.global, window: w.win, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          const rows = new Map(
+            entriesOfType(fake.msgs(), 'traces.system').map((e) => {
+              const d = (e.p as unknown as { data: { name: string; value: unknown } }).data;
+              return [d.name, d.value];
+            }),
+          );
+          return { rows, query, w };
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      };
+
+      it('default: no user_idle_state and no permission query, though granted', async () => {
+        const { rows, query } = await idleRows({}, 'granted');
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+      });
+
+      it('captureUserIdle:true + already granted: user_idle_state is streamed', async () => {
+        const { rows } = await idleRows({ captureUserIdle: true }, 'granted');
+        expect(rows.get('user_idle_state')).toBe('idle');
+      });
+
+      it('captureUserIdle:true but not granted: no trace (never prompts)', async () => {
+        const { rows, query } = await idleRows({ captureUserIdle: true }, 'prompt');
+        expect(query).toHaveBeenCalled();
+        expect(rows.has('user_idle_state')).toBe(false);
+      });
+
+      it.each([
+        'true',
+        1,
+        0,
+        '',
+        null,
+      ])('captureUserIdle=%j (invalid) stays OFF and reports', async (bad) => {
+        const onError = vi.fn();
+        const { rows, query } = await idleRows(
+          { captureUserIdle: bad as never, onError },
+          'granted',
+        );
+        expect(rows.has('user_idle_state')).toBe(false);
+        expect(query).not.toHaveBeenCalled();
+        expect(
+          onError.mock.calls.filter((c) =>
+            String((c[0] as Error).message).startsWith('captureUserIdle must be a boolean'),
+          ),
+        ).toHaveLength(1);
+      });
     });
 
     it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {

@@ -22,6 +22,10 @@ export {
   type ApplicationState,
   ApplicationTracker,
   applicationTrackerFor,
+  type EnvironmentEnv,
+  type EnvironmentEvents,
+  EnvironmentTracker,
+  environmentTrackerFor,
 } from '@bugsee/trackers/browser';
 export { COMPONENT_ATTRIBUTE, componentNameFromElement } from './component-name';
 export {
@@ -66,6 +70,7 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  CAPTURE_USER_IDLE_OPTION_KEY,
   getStatus,
   type LaunchInternals,
   type LaunchResult,

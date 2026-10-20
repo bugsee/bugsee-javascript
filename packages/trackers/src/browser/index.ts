@@ -17,6 +17,24 @@ export {
   type NetworkInfo,
   resetConnectivityTracker,
 } from './connectivity-tracker';
+export {
+  DEFAULT_PERMISSION_NAMES,
+  type EnvironmentEnv,
+  type EnvironmentEvents,
+  type EnvironmentHints,
+  type EnvironmentSnapshot,
+  type EnvironmentTimers,
+  EnvironmentTracker,
+  environmentTrackerFor,
+  type LanguageInfo,
+  NORMAL_QUOTA_FROM_BYTES,
+  type PermissionStateName,
+  type PermissionStates,
+  PRIVATE_QUOTA_BELOW_BYTES,
+  type PrivateModeResult,
+  resetEnvironmentTracker,
+  type TimeZoneInfo,
+} from './environment-tracker';
 export { hostRead } from './host-read';
 export {
   type BatteryEnv,
@@ -27,6 +45,18 @@ export {
   resetPowerTracker,
 } from './power-tracker';
 export {
+  type HeapReading,
+  type HeapState,
+  type ProcessEnv,
+  type ProcessEvents,
+  type ProcessTimers,
+  ProcessTracker,
+  type ProcessTrackerEnv,
+  processTrackerFor,
+  resetProcessTracker,
+  type UserIdleState,
+} from './process-tracker';
+export {
   resetStorageTracker,
   type StorageEnv,
   type StorageEstimate,
@@ -36,3 +66,21 @@ export {
   type StorageTrackerEnv,
   storageTrackerFor,
 } from './storage-tracker';
+export {
+  type ColorSchemeState,
+  type DisplayModeName,
+  type DisplayModeState,
+  type MediaQueryListLike,
+  type OrientationState,
+  type ReducedMotionState,
+  resetUiTracker,
+  type ScreenSizeState,
+  type UiEnv,
+  type UiSchedulerLike,
+  type UiStage,
+  type UiStages,
+  type UiStateStage,
+  UiTracker,
+  uiTrackerFor,
+  type ViewportState,
+} from './ui-tracker';
