@@ -83,4 +83,5 @@ export {
   UiTracker,
   uiTrackerFor,
   type ViewportState,
+  type VisualViewportState,
 } from './ui-tracker';

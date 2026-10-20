@@ -977,7 +977,11 @@ async function buildLaunch(
   // frame. Carrier-shared and gated by the same option as `input`, because it exists to place `input`.
   const viewportSource = getOrCreateInterceptor(
     'browser-viewport',
-    () => createBrowserViewportSource({ window: win }),
+    () =>
+      createBrowserViewportSource({
+        window: win,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
     carrier,
   );
   client.addCaptureProvider(createVideoAuxProvider(viewportSource));

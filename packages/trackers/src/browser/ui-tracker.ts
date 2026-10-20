@@ -10,6 +10,7 @@ import { hostRead } from './host-read';
 //   viewport       {width,height}    window.innerWidth/innerHeight; window `resize`/`orientationchange`
 //   colorScheme    {dark}            matchMedia (prefers-color-scheme: dark)
 //   reducedMotion  {reduce}          matchMedia (prefers-reduced-motion: reduce)
+//   visualViewport {scale?,offsetLeft?,offsetTop?,width?,height?} the VISUAL viewport (pinch zoom / pan); its `resize`/`scroll`
 //   displayMode    {mode}            matchMedia (display-mode: fullscreen | standalone | minimal-ui), else 'browser'
 //   frameRate      number            requestAnimationFrame callbacks per second, only while the page is visible
 //
@@ -51,6 +52,13 @@ export interface ColorSchemeState {
 export interface ReducedMotionState {
   reduce: boolean;
 }
+export interface VisualViewportState {
+  scale?: number;
+  offsetLeft?: number;
+  offsetTop?: number;
+  width?: number;
+  height?: number;
+}
 export type DisplayModeName = 'fullscreen' | 'standalone' | 'minimal-ui' | 'browser';
 export interface DisplayModeState {
   mode: DisplayModeName;
@@ -61,6 +69,7 @@ export interface UiStages {
   orientation: OrientationState;
   screenSize: ScreenSizeState;
   viewport: ViewportState;
+  visualViewport: VisualViewportState;
   colorScheme: ColorSchemeState;
   reducedMotion: ReducedMotionState;
   displayMode: DisplayModeState;
@@ -106,6 +115,14 @@ export interface UiEnv {
       readonly angle?: unknown;
     };
   };
+  /** `window.visualViewport` (pinch zoom and the visible region); absent in older engines. */
+  visualViewport?: Partial<TargetLike> & {
+    readonly scale?: unknown;
+    readonly offsetLeft?: unknown;
+    readonly offsetTop?: unknown;
+    readonly width?: unknown;
+    readonly height?: unknown;
+  };
   /** `window.matchMedia` BOUND to that window (never the host's). */
   matchMedia?: (query: string) => MediaQueryListLike;
   /** Visibility source and `visibilitychange` target of the frame-rate gate. */
@@ -134,10 +151,12 @@ const defaultNow = (): number => {
 };
 
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const UI_STAGES: readonly UiStage[] = [
   'orientation',
   'screenSize',
   'viewport',
+  'visualViewport',
   'colorScheme',
   'reducedMotion',
   'displayMode',
@@ -157,6 +176,7 @@ const FUNCTION_SEAMS: ReadonlySet<string> = new Set([
 const ENV_KEYS = [
   'window',
   'screen',
+  'visualViewport',
   'matchMedia',
   'document',
   'requestAnimationFrame',
@@ -343,6 +363,22 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         const height = hostRead(() => win.innerHeight, report);
         return positive(width) && positive(height) ? { width, height } : undefined;
       }
+      case 'visualViewport': {
+        const vv = hostRead(() => this.#env.visualViewport, report);
+        if (vv === undefined || vv === null) return undefined;
+        const state: VisualViewportState = {};
+        const scale = hostRead(() => vv.scale, report);
+        const offsetLeft = hostRead(() => vv.offsetLeft, report);
+        const offsetTop = hostRead(() => vv.offsetTop, report);
+        const width = hostRead(() => vv.width, report);
+        const height = hostRead(() => vv.height, report);
+        if (positive(scale)) state.scale = scale;
+        if (finite(offsetLeft)) state.offsetLeft = offsetLeft;
+        if (finite(offsetTop)) state.offsetTop = offsetTop;
+        if (positive(width)) state.width = width;
+        if (positive(height)) state.height = height;
+        return Object.keys(state).length === 0 ? undefined : state;
+      }
       case 'colorScheme': {
         const dark = this.#matches(DARK);
         return dark === undefined ? undefined : { dark };
@@ -476,6 +512,16 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
             'change',
             this.#guarded(() => this.#refresh(['screenSize'])),
           ),
+      },
+      {
+        id: 'visualViewport',
+        kinds: ['visualViewport'],
+        attach: (offs) => {
+          const onChange = this.#guarded(() => this.#refresh(['visualViewport']));
+          const vv = env().visualViewport;
+          this.#listen(offs, vv, 'resize', onChange);
+          this.#listen(offs, vv, 'scroll', onChange);
+        },
       },
       {
         id: 'colorScheme',

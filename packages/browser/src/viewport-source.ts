@@ -1,5 +1,6 @@
 import type { VideoAuxEventDetail } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { type UiEnv, type UiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
 
 // The browser VIEWPORT SOURCE — the producer for the `video.aux` stream (version 2 of
 // bugsee/specs `sdk/reporting/bundle/video-aux.md`). It answers one question over time: what frame were
@@ -20,17 +21,23 @@ import { type Interceptor, InterceptorBase } from '@bugsee/core';
 // and every number in the file would still look plausible. That is precisely the defect version 1 of
 // this stream shipped on mobile (`screenW` was display px), which is why version 2 renamed the field.
 //
-// WHAT IT LISTENS TO, and why that is the complete set:
-//   - `window` `resize` — a window drag, a monitor change, and a PAGE ZOOM (which moves `innerWidth` and
-//     `devicePixelRatio` together). Also covers rotation: `orientationchange` fires BEFORE the new
-//     dimensions are readable in some engines, and a `resize` always follows it.
-//   - `visualViewport` `resize`/`scroll` — pinch zoom and panning a pinched page. This is a different
-//     question from placement (the frame already places the coordinate correctly relative to the page);
-//     it records what the person could actually SEE, which is why `scale`/`offset*`/`visible*` are
-//     separate fields a consumer may ignore entirely.
-// Page scroll is deliberately NOT listened to: `clientX` is relative to the layout viewport, so scrolling
-// does not change the mapping. (`visualViewport` `scroll` fires on an ordinary page scroll in some
-// engines; the dedup below drops those.)
+// WHAT IT LISTENS TO, and why that is the complete set — through the shared per-window `UiTracker`, which
+// owns the DOM listeners (this source binds none of its own); it only subscribes to three stages and treats
+// each notification as a "re-measure" trigger:
+//   - `viewport` / `screenSize` — the tracker's window `resize` (+ `orientationchange`, screen `change`): a
+//     window drag, a monitor change, and a PAGE ZOOM (which moves `innerWidth` and `devicePixelRatio`
+//     together). `screenSize` is subscribed too because it dedupes on `devicePixelRatio`, so a density-only
+//     change that leaves `innerWidth/innerHeight` alone (a window moved to another monitor) still wakes us.
+//     Rotation is covered: `orientationchange` can fire BEFORE the new dimensions are readable, and a
+//     `resize` always follows it.
+//   - `visualViewport` — the tracker's visual-viewport `resize`/`scroll`: pinch zoom and panning a pinched
+//     page. This is a different question from placement (the frame already places the coordinate correctly
+//     relative to the page); it records what the person could actually SEE, which is why `scale`/`offset*`/
+//     `visible*` are separate fields a consumer may ignore entirely.
+// The geometry itself is still read here, directly, so the event bytes are unchanged; the tracker's payloads
+// are only the wake-up. Page scroll is deliberately NOT listened to: `clientX` is relative to the layout
+// viewport, so scrolling does not change the mapping. (`visualViewport` `scroll` fires on an ordinary page
+// scroll in some engines; the dedup below drops those.)
 //
 // WHAT IT EMITS, and when — the spec's producer rules:
 //   - ONE event on activation, UNCONDITIONALLY, before any input can be recorded. Not only on a change:
@@ -68,6 +75,12 @@ interface VisualViewportLike {
 export interface ViewportEnv {
   window?: WindowLike;
   visualViewport?: VisualViewportLike | null;
+  /** The window's `screen`, handed to the shared tracker (default: read from the window, guarded). */
+  screen?: UiEnv['screen'];
+  /** The shared tracker that owns the listeners. Default: `uiTrackerFor` over the window. */
+  ui?: UiTracker;
+  /** Reports a host failure the tracker swallowed. */
+  onError?: (error: unknown) => void;
   /** Coalescing scheduler; returns its own cancel. Default: one animation frame, else a 0 ms timer. */
   schedule?: (callback: () => void) => () => void;
 }
@@ -110,12 +123,15 @@ class BrowserViewportSource
   readonly #window: WindowLike | undefined;
   readonly #visualViewport: VisualViewportLike | undefined;
   readonly #schedule: (callback: () => void) => () => void;
+  readonly #env: ViewportEnv;
+  #offs: Array<() => void> = [];
   #cancelPending: (() => void) | null = null;
   #last: VideoAuxEventDetail | null = null;
   readonly #onChange = () => this.#requestEmit();
 
   constructor(env: ViewportEnv) {
     super();
+    this.#env = env;
     this.#window = env.window;
     this.#visualViewport =
       env.visualViewport ?? safeRead(() => env.window?.visualViewport) ?? undefined;
@@ -191,13 +207,35 @@ class BrowserViewportSource
       // so this reaches the subscriber whose arrival activated us — which is what makes "before any
       // input can be recorded" true rather than merely intended.
       this.#emitIfChanged();
-      this.#window?.addEventListener('resize', this.#onChange);
-      this.#visualViewport?.addEventListener('resize', this.#onChange);
-      this.#visualViewport?.addEventListener('scroll', this.#onChange);
+      if (this.#window === undefined) {
+        return; // nothing to measure, nothing to listen to
+      }
+      const ui = this.#env.ui ?? this.#sharedTracker(this.#window);
+      this.#offs.push(
+        ui.on('viewport', this.#onChange),
+        ui.on('screenSize', this.#onChange),
+        ui.on('visualViewport', this.#onChange),
+      );
     } catch {
       // Observe-only: a hostile getter or a refused listener registration costs us the stream, never
       // the application.
     }
+  }
+
+  /** The per-window tracker (shared with the traces and events sources): it, not this source, binds the DOM. */
+  #sharedTracker(win: WindowLike): UiTracker {
+    const env = this.#env;
+    const screen = env.screen ?? safeRead(() => (win as { screen?: UiEnv['screen'] }).screen);
+    return uiTrackerFor(
+      {
+        window: win as NonNullable<UiEnv['window']>,
+        ...(screen !== undefined ? { screen } : {}),
+        ...(this.#visualViewport !== undefined
+          ? { visualViewport: this.#visualViewport as NonNullable<UiEnv['visualViewport']> }
+          : {}),
+      },
+      env.onError,
+    );
   }
 
   protected override onDeactivate(): void {
@@ -206,12 +244,14 @@ class BrowserViewportSource
     // Cleared so a later activation emits its own unconditional first event: the previous recording's
     // entries have been drained, and the next one must not start with no geometry.
     this.#last = null;
-    try {
-      this.#window?.removeEventListener('resize', this.#onChange);
-      this.#visualViewport?.removeEventListener('resize', this.#onChange);
-      this.#visualViewport?.removeEventListener('scroll', this.#onChange);
-    } catch {
-      // observe-only
+    const offs = this.#offs;
+    this.#offs = [];
+    for (const off of offs) {
+      try {
+        off();
+      } catch {
+        // observe-only
+      }
     }
   }
 }
@@ -245,5 +285,8 @@ export function createBrowserViewportSource(env: ViewportEnv = {}): ViewportSour
     window: 'window' in env ? env.window : safeRead(() => g.window),
     visualViewport: 'visualViewport' in env ? env.visualViewport : undefined,
     schedule: env.schedule,
+    ...(env.screen !== undefined ? { screen: env.screen } : {}),
+    ...(env.ui !== undefined ? { ui: env.ui } : {}),
+    ...(env.onError !== undefined ? { onError: env.onError } : {}),
   });
 }

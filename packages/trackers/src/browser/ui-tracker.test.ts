@@ -196,6 +196,105 @@ describe('UiTracker screenSize and viewport', () => {
   });
 });
 
+describe('UiTracker visualViewport stage', () => {
+  const mkVv = () =>
+    Object.assign(mkTarget(), {
+      scale: 1,
+      offsetLeft: 0,
+      offsetTop: 0,
+      width: 800,
+      height: 600,
+    });
+
+  it('reads the pinch state live, emits on visualViewport resize and scroll, deduped', () => {
+    const w = mkWorld();
+    const vv = mkVv();
+    const t = new UiTracker({ ...w.env, visualViewport: vv });
+    expect(t.current('visualViewport')).toEqual({
+      scale: 1,
+      offsetLeft: 0,
+      offsetTop: 0,
+      width: 800,
+      height: 600,
+    });
+    const got: unknown[] = [];
+    const off = t.on('visualViewport', (s) => got.push(s));
+    expect(vv.count('resize')).toBe(1);
+    expect(vv.count('scroll')).toBe(1);
+    vv.fire('resize'); // nothing moved
+    expect(got).toEqual([]);
+    vv.scale = 2;
+    vv.fire('resize');
+    vv.offsetLeft = 30;
+    vv.fire('scroll');
+    expect(got).toEqual([
+      { scale: 2, offsetLeft: 0, offsetTop: 0, width: 800, height: 600 },
+      { scale: 2, offsetLeft: 30, offsetTop: 0, width: 800, height: 600 },
+    ]);
+    off();
+    expect(vv.total()).toBe(0);
+  });
+
+  it('does not touch the window or compute anything for other stages', () => {
+    const w = mkWorld();
+    const vv = mkVv();
+    const t = new UiTracker({ ...w.env, visualViewport: vv });
+    t.on('visualViewport', () => {});
+    expect(w.win.total()).toBe(0);
+    expect(w.screen.total()).toBe(0);
+  });
+
+  it('omits invalid fields, and is undefined when none is readable or there is no visualViewport', () => {
+    const w = mkWorld();
+    const t = new UiTracker({
+      ...w.env,
+      visualViewport: {
+        scale: Number.NaN,
+        offsetLeft: 5,
+        offsetTop: 'x',
+        width: 0,
+        height: 9,
+      } as never,
+    });
+    expect(t.current('visualViewport')).toEqual({ offsetLeft: 5, height: 9 });
+    const t2 = new UiTracker({ visualViewport: { scale: 'x' } as never });
+    expect(t2.current('visualViewport')).toBeUndefined();
+    // an infinite offset is not a position
+    expect(
+      new UiTracker({ visualViewport: { offsetTop: Infinity } as never }).current('visualViewport'),
+    ).toBeUndefined();
+    expect(new UiTracker({}).current('visualViewport')).toBeUndefined();
+    const got: unknown[] = [];
+    t2.on('visualViewport', (s) => got.push(s));
+    expect(got).toEqual([]);
+  });
+
+  it('a hostile visualViewport getter is reported, never thrown', () => {
+    const errors: unknown[] = [];
+    const t = new UiTracker(
+      {
+        get visualViewport(): never {
+          throw new Error('blocked');
+        },
+      } as unknown as UiEnv,
+      (e) => errors.push(e),
+    );
+    expect(errors).toHaveLength(1);
+    expect(t.current('visualViewport')).toBeUndefined();
+    expect(() => t.on('visualViewport', () => {})).not.toThrow();
+  });
+
+  it('a rebind to another visualViewport moves the listeners', () => {
+    const vv1 = mkVv();
+    const vv2 = mkVv();
+    const t = new UiTracker({ visualViewport: vv1 });
+    t.on('visualViewport', () => {});
+    t.rebind({ visualViewport: vv2 });
+    expect(vv1.total()).toBe(0);
+    expect(vv2.count('resize')).toBe(1);
+  });
+});
+
 describe('UiTracker media-query stages', () => {
   it('colorScheme and reducedMotion: live read, change events, listeners only while subscribed', () => {
     const w = mkWorld();

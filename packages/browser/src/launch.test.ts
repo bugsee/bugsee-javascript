@@ -1713,6 +1713,45 @@ describe('launch', () => {
       resetUiTracker({ window: w.win });
     });
 
+    it('the video.aux viewport source goes through the per-window UiTracker: no listener of its own, and its events are unchanged', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      Object.assign(w.win, { innerWidth: 390, innerHeight: 844, devicePixelRatio: 3 });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        // isolate: nothing but the viewport source touches this window
+        noSampler({
+          window: w.win,
+          captureStore: store,
+          captureSystemTraces: false,
+          captureSystemEvents: false,
+        }),
+      );
+      // ONE resize and ONE orientationchange listener, owned by the shared tracker (no own `resize` binding).
+      expect(w.count('resize')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      // The window's tracker IS the one launch subscribed through: another consumer adds no window listener.
+      const ui = uiTrackerFor({ window: w.win });
+      const off = ui.on('viewport', () => {});
+      expect(w.count('resize')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      off();
+      expect(w.count('resize')).toBe(1); // still held by the viewport source
+      Object.assign(w.win, { innerWidth: 800, innerHeight: 600 });
+      w.emit('resize', {});
+      await new Promise((r) => setTimeout(r, 50)); // the source coalesces onto an animation frame / timer
+      const rows = ((await drain(store, 'video.aux')) ?? []).map((e) => e.data);
+      expect(rows).toMatchObject([
+        { frameW: 390, frameH: 844, density: 3 },
+        { frameW: 800, frameH: 600, density: 3 },
+      ]);
+      await client.stop();
+      expect(w.count('resize')).toBe(0);
+      expect(w.count('orientationchange')).toBe(0);
+      resetUiTracker({ window: w.win });
+    });
+
     it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
       vi.stubGlobal('navigator', {
         onLine: true,
@@ -1760,7 +1799,9 @@ describe('launch', () => {
           scheduler: { setInterval: timers, clearInterval: () => {} },
         }),
       );
-      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      expect(w.count('online') + w.count('offline')).toBe(0);
+      // The video.aux viewport source is the lone window consumer left; its one orientationchange is the UiTracker's.
+      expect(w.count('orientationchange')).toBe(1);
       // the capture-store tick may use the scheduler; the heap poll must not add its own 1 s timer
       const heapTimers = timers.mock.calls.length;
       expect(heapTimers).toBeLessThanOrEqual(1);
@@ -2167,7 +2208,8 @@ describe('launch', () => {
       expect(names.filter((n) => n === 'ram_js_heap_used')).toHaveLength(1);
       expect(names).not.toContain('connection');
       expect(names).not.toContain('orientation');
-      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      expect(w.count('online') + w.count('offline')).toBe(0);
+      expect(w.count('orientationchange')).toBe(1); // the video.aux viewport source, via the UiTracker
     });
 
     it('an offline event is captured as a not_reachable connection row', async () => {

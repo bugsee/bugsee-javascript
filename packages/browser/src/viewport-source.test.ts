@@ -1,4 +1,5 @@
 import type { VideoAuxEventDetail } from '@bugsee/capture';
+import { uiTrackerFor } from '@bugsee/trackers/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { createBrowserViewportSource, type ViewportEnv } from './viewport-source';
 
@@ -363,7 +364,9 @@ describe('createBrowserViewportSource', () => {
 
     const first: VideoAuxEventDetail[] = [];
     const stopFirst = source.on('viewport', (e) => first.push(e));
-    expect(win.listenerCount).toBe(1);
+    // One `resize` — owned by the shared UiTracker, not by this source — plus its `orientationchange`.
+    expect(win.listeners.get('resize')?.size).toBe(1);
+    expect(win.listenerCount).toBe(2);
     stopFirst();
     expect(win.listenerCount).toBe(0);
 
@@ -561,6 +564,147 @@ describe('createBrowserViewportSource', () => {
       expect(events[0]?.visibleW).toBe(400);
     } finally {
       g.window = saved;
+    }
+  });
+});
+
+describe('createBrowserViewportSource: listeners belong to the shared UiTracker', () => {
+  it('binds exactly one window resize, and shares it with every other consumer of the same window', () => {
+    const win = new FakeWindow();
+    const scheduler = new FakeScheduler();
+    const source = createBrowserViewportSource({ window: win, schedule: scheduler.schedule });
+    const other = uiTrackerFor({ window: win as never });
+    const offOther = other.on('viewport', () => {});
+    expect(win.listeners.get('resize')?.size).toBe(1);
+
+    const stop = source.on('viewport', () => {});
+    expect(win.listeners.get('resize')?.size).toBe(1); // the same tracker, the same listener
+    stop();
+    expect(win.listeners.get('resize')?.size).toBe(1); // still held by the other consumer
+    offOther();
+    expect(win.listenerCount).toBe(0);
+  });
+
+  it("the visual viewport listeners are the tracker's too (resize + scroll, once)", () => {
+    const { vv, stop } = harness();
+    expect(vv.listeners.get('resize')?.size).toBe(1);
+    expect(vv.listeners.get('scroll')?.size).toBe(1);
+    stop();
+    expect(vv.listenerCount).toBe(0);
+  });
+
+  it('uses an injected tracker instead of resolving one', () => {
+    const win = new FakeWindow();
+    const scheduler = new FakeScheduler();
+    const subscribed: string[] = [];
+    const ui = {
+      on: (stage: string, cb: () => void) => {
+        subscribed.push(stage);
+        return () => {
+          subscribed.push(`off:${stage}`);
+          void cb;
+        };
+      },
+    };
+    const stop = createBrowserViewportSource({
+      window: win,
+      schedule: scheduler.schedule,
+      ui: ui as never,
+    }).on('viewport', () => {});
+    expect(subscribed).toStrictEqual(['viewport', 'screenSize', 'visualViewport']);
+    expect(win.listenerCount).toBe(0);
+    stop();
+    expect(subscribed.slice(3).sort()).toStrictEqual([
+      'off:screenSize',
+      'off:viewport',
+      'off:visualViewport',
+    ]);
+  });
+
+  it('a density-only change (a window moved to another monitor) still re-measures via screenSize', () => {
+    const win = new FakeWindow();
+    const screen = Object.assign(new FakeWindow(), { width: 1920, height: 1080 });
+    Object.assign(win, { screen });
+    const scheduler = new FakeScheduler();
+    const events: VideoAuxEventDetail[] = [];
+    createBrowserViewportSource({ window: win, schedule: scheduler.schedule }).on('viewport', (e) =>
+      events.push(e),
+    );
+    expect(screen.listeners.get('change')?.size).toBe(1);
+
+    win.devicePixelRatio = 1; // same innerWidth/innerHeight
+    win.fire('resize');
+    scheduler.flush();
+
+    expect(events[1]).toStrictEqual({ frameW: 1280, frameH: 720, density: 1 });
+  });
+
+  it("an explicit screen overrides the window's", () => {
+    const win = new FakeWindow();
+    const screen = Object.assign(new FakeWindow(), { width: 800, height: 600 });
+    createBrowserViewportSource({ window: win, screen: screen as never }).on('viewport', () => {});
+    expect(screen.listeners.get('change')?.size).toBe(1);
+  });
+
+  it('a hostile screen getter costs only the screen, not the stream', () => {
+    const win = new FakeWindow();
+    Object.defineProperty(win, 'screen', {
+      get(): never {
+        throw new Error('screen blocked');
+      },
+    });
+    const seen: unknown[] = [];
+    createBrowserViewportSource({ window: win }).on('viewport', (e) => seen.push(e));
+    expect(seen).toHaveLength(1);
+    expect(win.listeners.get('resize')?.size).toBe(1);
+  });
+
+  it('a refused listener registration is reported through onError, never thrown', () => {
+    const hostile = new FakeWindow();
+    hostile.addEventListener = () => {
+      throw new Error('refused');
+    };
+    const errors: unknown[] = [];
+    expect(() =>
+      createBrowserViewportSource({ window: hostile, onError: (e) => errors.push(e) }).on(
+        'viewport',
+        () => {},
+      ),
+    ).not.toThrow();
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('a throwing unsubscribe never escapes deactivation', () => {
+    const win = new FakeWindow();
+    const ui = {
+      on: () => () => {
+        throw new Error('off failed');
+      },
+    };
+    const stop = createBrowserViewportSource({ window: win, ui: ui as never }).on(
+      'viewport',
+      () => {},
+    );
+    expect(() => stop()).not.toThrow();
+  });
+
+  it('without a window it subscribes to nothing, even through an injected tracker', () => {
+    const on = vi.fn(() => () => {});
+    createBrowserViewportSource({ window: undefined, ui: { on } as never }).on(
+      'viewport',
+      () => {},
+    );
+    expect(on).not.toHaveBeenCalled();
+  });
+
+  it('releases each subscription exactly once per activation cycle (no accumulation)', () => {
+    const offs = vi.fn();
+    const ui = { on: () => offs };
+    const source = createBrowserViewportSource({ window: new FakeWindow(), ui: ui as never });
+    for (let cycle = 1; cycle <= 2; cycle += 1) {
+      const stop = source.on('viewport', () => {});
+      stop();
+      expect(offs).toHaveBeenCalledTimes(3 * cycle);
     }
   });
 });
