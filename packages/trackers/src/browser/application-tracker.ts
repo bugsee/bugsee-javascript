@@ -15,7 +15,7 @@ import { hostRead } from './host-read';
 // SINGLETON PER KEY. `applicationTrackerFor` returns one instance per KEY OBJECT: the document when one is given
 // (it owns visibility/freeze/resume), else the window (pagehide), else a shared module key for an env with neither.
 // LATEST request wins (see `rebind`): a defined onError replaces the reporter; while idle the window/document are
-// re-bound, while active a differing window is kept and reported once.
+// re-bound, while active the binding is kept and a differing window/document (only a target the request supplies counts) is reported once.
 //
 // `online`/`offline`/`orientationchange` stay here for now so ConnectionTracker/OrientationTracker keep working
 // unchanged; they move to the Connectivity (TR3) and UI/Display (TR2) trackers in those slices.
@@ -108,8 +108,10 @@ export class ApplicationTracker extends InterceptorBase<ApplicationEvents> {
 
   /**
    * @internal Called by `applicationTrackerFor` on every request after the creating one: the LATEST launch wins.
-   * A defined `onError` replaces the reporter (undefined keeps the current one: a launch that supplies none must not
-   * silence an earlier launch's sink). While IDLE (no subscribers, so no DOM listeners) the window/document to attach
+   * A defined `onError` replaces the reporter; undefined keeps the current one (a launch that supplies none must not
+   * silence an earlier launch's sink). LIMITATION (accepted): the sink is shared per key and never released on stop, so
+   * a relaunch on the same document that passes no `onError` still reports to the previous launch's callback (and keeps
+   * its closure alive) until a later launch supplies its own. While IDLE (no subscribers, so no DOM listeners) the window/document to attach
    * to are re-bound; while ACTIVE live listeners cannot move, so the binding stays and a mismatch is reported once.
    */
   rebind(env: ApplicationEnv, onError?: (error: unknown) => void): void {
@@ -124,12 +126,17 @@ export class ApplicationTracker extends InterceptorBase<ApplicationEvents> {
       };
       return;
     }
-    if (
-      (env.window !== this.#env.window || env.document !== this.#env.document) &&
-      !this.#mismatchReported
-    ) {
+    // Only a target the new env SUPPLIES can conflict (undefined = keep, as in the idle merge).
+    const differs: string[] = [];
+    if (env.window !== undefined && env.window !== this.#env.window) differs.push('window');
+    if (env.document !== undefined && env.document !== this.#env.document) differs.push('document');
+    if (differs.length > 0 && !this.#mismatchReported) {
       this.#mismatchReported = true;
-      this.#onError(new Error('ApplicationTracker already bound to another window while active'));
+      this.#onError(
+        new Error(
+          `ApplicationTracker already bound to another ${differs.join(' and ')} while active`,
+        ),
+      );
     }
   }
 

@@ -544,6 +544,46 @@ describe('applicationTrackerFor (singleton per key)', () => {
     off();
   });
 
+  it('an ACTIVE rebind with a partial env is no mismatch: only the targets it supplies are compared', () => {
+    const w = mkTarget();
+    const d = mkEnv().doc;
+    const onError = vi.fn();
+    const t = new ApplicationTracker({ window: w, document: d }, onError);
+    t.on('online', () => {});
+    t.rebind({ document: d }); // no window: nothing conflicts
+    t.rebind({ window: w }); // no document: nothing conflicts
+    t.rebind({});
+    t.rebind({ window: w, document: d });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('the active mismatch error names the target that actually differs', () => {
+    const w = mkTarget();
+    const d = mkEnv().doc;
+    const msgs = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.map(([e]) => (e as Error).message);
+    const onWin = vi.fn();
+    const a = new ApplicationTracker({ window: w, document: d }, onWin);
+    a.on('online', () => {});
+    a.rebind({ window: mkTarget() });
+    expect(msgs(onWin)).toEqual([
+      'ApplicationTracker already bound to another window while active',
+    ]);
+    const onDoc = vi.fn();
+    const b = new ApplicationTracker({ window: w, document: d }, onDoc);
+    b.on('online', () => {});
+    b.rebind({ document: mkEnv().doc });
+    expect(msgs(onDoc)).toEqual([
+      'ApplicationTracker already bound to another document while active',
+    ]);
+    const onBoth = vi.fn();
+    const c = new ApplicationTracker({ window: w, document: d }, onBoth);
+    c.on('online', () => {});
+    c.rebind({ window: mkTarget(), document: mkEnv().doc });
+    expect(msgs(onBoth)).toEqual([
+      'ApplicationTracker already bound to another window and document while active',
+    ]);
+  });
+
   it('the mismatch is reported again after an idle gap (a fresh activation)', () => {
     const w1 = mkTarget();
     const w2 = mkTarget();
