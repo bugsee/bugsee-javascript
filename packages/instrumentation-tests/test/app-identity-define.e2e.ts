@@ -10,6 +10,7 @@ import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import { build as esbuild } from 'esbuild';
 import { rollup } from 'rollup';
+import { parseAst } from 'rollup/parseAst';
 import { build as viteBuild } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import webpack from 'webpack';
@@ -134,6 +135,30 @@ describe('app identity is baked into the bundle', () => {
       mappings: string;
     };
     expect(map.mappings.length).toBeGreaterThan(0);
+  });
+
+  // The bake rewrites only real references: a quoted name (here kept alive through an export) stays data,
+  // and the chunk is still valid JavaScript (a lexical rewrite produced `""7.8.9-e2e""`).
+  it('rollup leaves a quoted constant name alone and emits a chunk that parses', async () => {
+    writeFileSync(
+      join(dir, 'rollup-quoted.js'),
+      [
+        "export const key = '__BUGSEE_APP_VERSION__';",
+        '// __BUGSEE_APP_BUILD__ in a comment',
+        "export const v = typeof __BUGSEE_APP_VERSION__ === 'string' ? __BUGSEE_APP_VERSION__ : 'none';",
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-quoted');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-quoted.js'),
+      plugins: [bugseeRollupPlugin(IDENTITY)],
+    });
+    await bundle.write({ dir: outDir, format: 'es', sourcemap: true });
+    await bundle.close();
+    const out = readFileSync(join(outDir, 'rollup-quoted.js'), 'utf8');
+    expect(out).toContain("const key = '__BUGSEE_APP_VERSION__';");
+    expect(out).toContain('typeof "7.8.9-e2e" === \'string\' ? "7.8.9-e2e"');
+    expect(() => parseAst(out)).not.toThrow();
   });
 
   it('a disabled plugin leaves the identifiers alone (rollup)', async () => {

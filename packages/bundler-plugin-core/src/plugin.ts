@@ -11,7 +11,7 @@ import {
   fixedIdentityFromDefines,
   UNBAKEABLE_IDENTITY,
 } from './app-identity';
-import { bakeIdentity } from './bake-identity';
+import { bakeIdentity, type ParseChunk } from './bake-identity';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -311,12 +311,23 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     },
     rollup: {
       // Rollup has no `define`: bake the constants into each rendered chunk (with a source map), from the same
-      // per-output-directory identity the upload uses.
-      renderChunk(code: string, _chunk: unknown, output: OutputLike) {
+      // per-output-directory identity the upload uses. Rollup's own parser finds the real references, so a
+      // string, template or comment that merely spells the name is never rewritten.
+      renderChunk(
+        this: { parse?: ParseChunk } | undefined,
+        code: string,
+        _chunk: unknown,
+        output: OutputLike,
+      ) {
         const outDir = resolveOutputDir(output);
+        const parse = this?.parse;
         return outDir === undefined
           ? null
-          : bakeIdentity(code, identityForOutput(outDir).identityDefines);
+          : bakeIdentity(
+              code,
+              identityForOutput(outDir).identityDefines,
+              parse === undefined ? undefined : (chunk) => parse.call(this, chunk),
+            );
       },
       writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
     },

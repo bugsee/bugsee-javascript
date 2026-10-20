@@ -6,6 +6,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseAst } from 'rollup/parseAst';
 import type { UnpluginOptions } from 'unplugin';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CI_COMMIT_ENV_VARS } from './app-identity';
@@ -313,8 +314,9 @@ describe('rollup bakes the identity itself', () => {
     chunk: unknown,
     output: { dir?: string; file?: string },
   ) => { code: string; map: { mappings: string } } | null;
-  const renderChunk = (p: UnpluginOptions): RenderChunk =>
-    (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+  // Rollup calls the hook with its plugin context; `this.parse` is the parser the bake walks the chunk with.
+  const renderChunk = (p: UnpluginOptions, parse: (code: string) => unknown = parseAst): RenderChunk =>
+    (p.rollup as unknown as { renderChunk: RenderChunk }).renderChunk.bind({ parse });
   const rollupWrite = (p: UnpluginOptions): WriteBundle =>
     (p.rollup as unknown as { writeBundle: WriteBundle }).writeBundle;
   const dist = () => ({ dir: join(web, 'dist') });
@@ -336,6 +338,21 @@ describe('rollup bakes the identity itself', () => {
     expect(renderChunk(plugin)(`f(${VERSION})`, {}, { dir: out })?.code).toBe('f("2.4.1")');
     await rollupWrite(plugin)({ dir: out });
     expect(uploaded().appVersion).toBe('2.4.1');
+  });
+
+  it("bakes through Rollup's own this.parse: a quoted name is data, a reference is replaced", () => {
+    const parse = vi.fn((code: string) => parseAst(code));
+    const code = `const k = "${VERSION}"; f(${VERSION});`;
+    const out = renderChunk(make({}), parse)(code, {}, dist());
+    expect(parse).toHaveBeenCalledWith(code);
+    expect(out?.code).toBe(`const k = "${VERSION}"; f("2.4.1");`);
+    expect(() => parseAst(out?.code ?? '')).not.toThrow();
+  });
+
+  it('without a parser in the context (not Rollup) nothing is guessed at: the chunk is left as is', () => {
+    const hook = (make({}).rollup as unknown as { renderChunk: RenderChunk }).renderChunk;
+    expect(hook.call(undefined, `f(${VERSION})`, {}, dist())).toBeNull();
+    expect(hook.call({}, `f(${VERSION})`, {}, dist())).toBeNull();
   });
 
   it('the map is character-precise (hires), so a replacement does not shift every later column', () => {
