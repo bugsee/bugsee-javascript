@@ -1642,6 +1642,13 @@ describe('launch — RelaunchedAfterCrash needs evidence', () => {
         lifecycleEventsListener: (type) => seen.push(type),
       }),
     );
+    // The dead-sibling recovery reads IndexedDB asynchronously and can lag arbitrarily on a loaded CI runner,
+    // so a fixed sleep raced it (the RelaunchedAfterCrash flake). Wait for the event for a bounded time; the
+    // cases that expect silence simply run out the clock. A short tail lets a (wrong) second emission land.
+    const deadline = Date.now() + 1500;
+    while (!seen.includes(LifecycleEvents.RelaunchedAfterCrash) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     await new Promise((r) => setTimeout(r, 50));
     return seen;
   };
