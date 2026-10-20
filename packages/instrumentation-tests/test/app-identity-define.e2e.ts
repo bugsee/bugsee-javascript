@@ -5,6 +5,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { bugseeEsbuildPlugin, bugseeRollupPlugin } from '@bugsee/bundler-plugin-core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
@@ -159,6 +160,38 @@ describe('app identity is baked into the bundle', () => {
     expect(out).toContain("const key = '__BUGSEE_APP_VERSION__';");
     expect(out).toContain('typeof "7.8.9-e2e" === \'string\' ? "7.8.9-e2e"');
     expect(() => parseAst(out)).not.toThrow();
+  });
+
+  // A parameter named like the constant is the app's own variable: baking its reads would silently change what
+  // the function computes (here `helper(3)` must still be 6, not `"3" * 2` of a baked literal in the body).
+  it('rollup does not bake a local binding that shares the constant name', async () => {
+    writeFileSync(
+      join(dir, 'rollup-local-helper.js'),
+      'export function helper(__BUGSEE_APP_BUILD__) { return __BUGSEE_APP_BUILD__ * 2; }\n',
+    );
+    writeFileSync(
+      join(dir, 'rollup-local-entry.js'),
+      [
+        "import { helper } from './rollup-local-helper.js';",
+        'export const doubled = helper(3);',
+        'export const build = typeof __BUGSEE_APP_BUILD__ === "string" ? __BUGSEE_APP_BUILD__ : "none";',
+      ].join('\n'),
+    );
+    const outDir = join(dir, 'rollup-local');
+    const bundle = await rollup({
+      input: join(dir, 'rollup-local-entry.js'),
+      plugins: [bugseeRollupPlugin({ ...IDENTITY, appBuild: 'b-local' })],
+    });
+    await bundle.write({ dir: outDir, format: 'es', entryFileNames: '[name].mjs' });
+    await bundle.close();
+    const file = join(outDir, 'rollup-local-entry.mjs');
+    const out = readFileSync(file, 'utf8');
+    expect(out).toMatch(
+      /function helper\(__BUGSEE_APP_BUILD__\) \{ return __BUGSEE_APP_BUILD__ \* 2; \}/,
+    );
+    const mod = (await import(pathToFileURL(file).href)) as { doubled: number; build: string };
+    expect(mod.doubled).toBe(6);
+    expect(mod.build).toBe('b-local');
   });
 
   it('a disabled plugin leaves the identifiers alone (rollup)', async () => {

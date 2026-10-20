@@ -218,6 +218,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     }
     return bundlerIdentity;
   };
+  const unbakedOutDirs = new Set<string>();
   const identityByOutDir = new Map<string, ResolvedIdentity>();
   const identityForOutput = (outDir: string): ResolvedIdentity => {
     if (bundlerIdentity !== undefined) {
@@ -314,20 +315,31 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // per-output-directory identity the upload uses. Rollup's own parser finds the real references, so a
       // string, template or comment that merely spells the name is never rewritten.
       renderChunk(
-        this: { parse?: ParseChunk } | undefined,
+        this: { parse?: ParseChunk; warn?: (message: string) => void } | undefined,
         code: string,
         _chunk: unknown,
         output: OutputLike,
       ) {
         const outDir = resolveOutputDir(output);
+        if (outDir === undefined) {
+          return null;
+        }
         const parse = this?.parse;
-        return outDir === undefined
-          ? null
-          : bakeIdentity(
-              code,
-              identityForOutput(outDir).identityDefines,
-              parse === undefined ? undefined : (chunk) => parse.call(this, chunk),
-            );
+        return bakeIdentity(
+          code,
+          identityForOutput(outDir).identityDefines,
+          parse === undefined ? undefined : (chunk) => parse.call(this, chunk),
+          (reason) => {
+            // Said once per output directory: every chunk of a build would otherwise repeat it.
+            if (!unbakedOutDirs.has(outDir)) {
+              unbakedOutDirs.add(outDir);
+              this?.warn?.(
+                `[bugsee] The app version/build were NOT baked into ${outDir}: ${reason}. ` +
+                  'Reads of __BUGSEE_APP_VERSION__ / __BUGSEE_APP_BUILD__ in that output stay unreplaced.',
+              );
+            }
+          },
+        );
       },
       writeBundle: (output: OutputLike) => uploadForOutput(output, {}),
     },

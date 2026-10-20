@@ -131,6 +131,142 @@ describe('bakeIdentity handles text that merely spells the name', () => {
   });
 });
 
+describe('bakeIdentity leaves a LOCAL binding of the same name alone', () => {
+  it.each([
+    ['a function parameter', `function f(${V}) { return ${V}; }`],
+    ['a function-expression parameter', `const f = function (${V}) { return ${V}; };`],
+    ['an arrow parameter', `const f = (${V}) => ${V}; const g = ${V} => ${V};`],
+    ['a defaulted and a rest parameter', `function f(${V} = 1, ...${B}) { return [${V}, ${B}]; }`],
+    ['a destructured parameter', `function f({ a: [${V}], ...${B} }) { return [${V}, ${B}]; }`],
+    ['a hoisted var read before its declaration', `function f() { use(${V}); { var ${V} = 1; } }`],
+    [
+      'a var in a nested statement',
+      `function f() { if (c) { for (var ${V} of a) {} } return ${V}; }`,
+    ],
+    ['a const', `{ const ${V} = 1; use(${V}); }`],
+    ['a let at module level', `let ${V} = 1; use(${V});`],
+    ['a destructured const', `const { ${V} } = o; use(${V});`],
+    ['a renamed destructured const', `const { x: ${V}, y: [${B}] } = o; use(${V}, ${B});`],
+    ['a catch parameter', `try { f(); } catch (${V}) { use(${V}); }`],
+    ['a for-of binding', `for (const ${V} of a) { use(${V}); }`],
+    ['a for-in binding', `for (let ${V} in o) use(${V});`],
+    ['a for-loop let', `for (let ${V} = 0; ${V} < 3; ${V}++) use(${V});`],
+    ['an import', `import { ${V} } from 'm'; use(${V});`],
+    [
+      'an aliased default and namespace import',
+      `import ${V}, * as ${B} from 'm'; use(${V}, ${B});`,
+    ],
+    ['a function declaration', `function ${V}() {} ${V}();`],
+    ['a function declaration used before it is declared', `${V}(); function ${V}() {}`],
+    ['a function declared in a block', `{ function ${V}() {} } ${V}();`],
+    ['a class declaration', `class ${V} {} new ${V}();`],
+    [
+      'a class expression name inside its body',
+      `const C = class ${V} { m() { return new ${V}(); } };`,
+    ],
+    ['a named function expression inside its body', `const f = function ${V}() { return ${V}; };`],
+    [
+      'an exported declaration',
+      `export const ${V} = 1; use(${V}); export function ${B}() {} ${B}();`,
+    ],
+    ['an exported default function', `export default function ${V}() { ${V}(); }`],
+    ['an exported default class', `export default class ${V} { m() { return new ${V}(); } }`],
+    ['a switch-case lexical declaration', `switch (a) { case 1: let ${V} = 1; use(${V}); }`],
+    ['a class static block var', `class C { static { var ${V} = 1; use(${V}); } }`],
+    ['a shorthand property that reads a local', `function f(${V}) { return { ${V} }; }`],
+  ])('%s', (_, code) => {
+    expect(bake(code)).toBeNull();
+  });
+
+  it('still bakes a global read beside a shadowed one in the same chunk', () => {
+    expect(bake(`function f(${V}) { return ${V}; } use(${V}); function g() { return ${V}; }`)).toBe(
+      `function f(${V}) { return ${V}; } use("2.4.1"); function g() { return "2.4.1"; }`,
+    );
+  });
+
+  it('bakes once a nested function leaves the shadowing scope, and honours shadowing at each level', () => {
+    expect(
+      bake(
+        `function a() { use(${V}); { let ${V} = 1; use(${V}); { use(${V}); } } use(${V}); ` +
+          `(function () { var ${V}; use(${V}); })(); use(${V}); }`,
+      ),
+    ).toBe(
+      `function a() { use("2.4.1"); { let ${V} = 1; use(${V}); { use(${V}); } } use("2.4.1"); ` +
+        `(function () { var ${V}; use(${V}); })(); use("2.4.1"); }`,
+    );
+  });
+
+  it('a block let does not shadow outside its block, nor a catch parameter outside its clause', () => {
+    expect(bake(`{ let ${V} = 1; } use(${V}); try {} catch (${V}) {} use(${V});`)).toBe(
+      `{ let ${V} = 1; } use("2.4.1"); try {} catch (${V}) {} use("2.4.1");`,
+    );
+  });
+
+  it('a var inside a nested function does not shadow the enclosing scope', () => {
+    expect(bake(`function f() { function g() { var ${V}; } return ${V}; }`)).toBe(
+      `function f() { function g() { var ${V}; } return "2.4.1"; }`,
+    );
+  });
+
+  it('a var inside a nested function or arrow expression does not shadow the enclosing scope', () => {
+    expect(
+      bake(
+        `function f() { const g = function () { var ${V}; }; const h = () => { var ${B}; }; return [${V}, ${B}]; }`,
+      ),
+    ).toBe(
+      `function f() { const g = function () { var ${V}; }; const h = () => { var ${B}; }; return ["2.4.1", "b7"]; }`,
+    );
+  });
+
+  it('a parameter default and a class heritage still read the global', () => {
+    expect(bake(`function f(a = ${V}) { return a; } class C extends ${B} {}`)).toBe(
+      `function f(a = "2.4.1") { return a; } class C extends "b7" {}`,
+    );
+  });
+
+  it('shadowing one constant leaves the other global', () => {
+    expect(bake(`function f(${V}) { return [${V}, ${B}]; }`)).toBe(
+      `function f(${V}) { return [${V}, "b7"]; }`,
+    );
+  });
+
+  it('a static block var is local to the block, not the class', () => {
+    expect(bake(`class C { static { var ${V}; } m() { return ${V}; } }`)).toBe(
+      `class C { static { var ${V}; } m() { return "2.4.1"; } }`,
+    );
+  });
+});
+
+describe('bakeIdentity says when it could not examine a chunk', () => {
+  it('reports a missing parser and a parse failure, with a reason, once per call', () => {
+    const skipped = vi.fn();
+    expect(bakeIdentity(`f(${V})`, defines, undefined, skipped)).toBeNull();
+    expect(skipped).toHaveBeenCalledTimes(1);
+    expect(skipped.mock.calls[0]?.[0]).toMatch(/no parser/);
+    const failed = vi.fn();
+    expect(bakeIdentity(`f(${V}) +`, defines, parse, failed)).toBeNull();
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(failed.mock.calls[0]?.[0]).toMatch(/could not be parsed \(.+\)/);
+  });
+
+  it('describes a thrown non-Error and tolerates no callback', () => {
+    const skipped = vi.fn();
+    const throwing = (): never => {
+      throw 'boom';
+    };
+    expect(bakeIdentity(`f(${V})`, defines, throwing, skipped)).toBeNull();
+    expect(skipped.mock.calls[0]?.[0]).toContain('(boom)');
+    expect(bakeIdentity(`f(${V})`, defines, throwing)).toBeNull();
+  });
+
+  it('stays quiet when the chunk never mentions a constant or parses and has nothing to bake', () => {
+    const skipped = vi.fn();
+    expect(bakeIdentity('const a = 1 +', defines, undefined, skipped)).toBeNull();
+    expect(bakeIdentity(`const k = "${V}";`, defines, parse, skipped)).toBeNull();
+    expect(skipped).not.toHaveBeenCalled();
+  });
+});
+
 describe('bakeIdentity leaves everything that is not a read alone', () => {
   it.each([
     ['a double-quoted string', `const k = "${V}";`],
@@ -140,6 +276,7 @@ describe('bakeIdentity leaves everything that is not a read alone', () => {
     ['a block comment', `/* typeof ${V} */ x();`],
     ['a member property', `obj.${V}; obj?.${B};`],
     ['an object key and a class member', `({ ${V}: 1 }); class C { ${V} = 1; ${B}() {} }`],
+    ['a class declaration or expression name', `class ${V} {} const C = class ${B} {};`],
     ['a declaration', `var ${V} = 1; function ${B}(${V}) {}`],
     ['a catch parameter', `try { x(); } catch (${V}) {}`],
     ['an assignment / update target', `${V} = 1; ${B}++; ${V} += 2;`],

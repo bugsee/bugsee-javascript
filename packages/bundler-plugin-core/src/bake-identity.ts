@@ -30,12 +30,25 @@ const NAME_ONLY = new Set([
   'ImportSpecifier',
   'ImportDefaultSpecifier',
   'ImportNamespaceSpecifier',
-  'ImportAttribute',
   'ExportSpecifier',
   'ExportAllDeclaration',
 ]);
 
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+interface Read {
+  start: number;
+  end: number;
+  name: string;
+  shorthand: boolean;
+}
+
+interface Walk {
+  names: ReadonlySet<string>;
+  /** Names of the constants bound by each enclosing scope, innermost last; a read bound here is a local. */
+  scopes: Array<Set<string>>;
+  out: Read[];
+}
 
 /**
  * Whether `parent[key]` is a BINDING or assignment target (a declared name, a parameter, the left side of an
@@ -50,7 +63,6 @@ function isTarget(parent: AstNode, key: string): boolean {
     case 'CatchClause':
       return key === 'param';
     case 'AssignmentExpression':
-    case 'AssignmentPattern':
     case 'ForInStatement':
     case 'ForOfStatement':
       return key === 'left';
@@ -61,24 +73,173 @@ function isTarget(parent: AstNode, key: string): boolean {
   }
 }
 
+/** Add to `into` every name in `names` that the binding pattern `pattern` declares (nested, defaulted, rest). */
+function patternNames(pattern: unknown, names: ReadonlySet<string>, into: Set<string>): void {
+  if (!isNode(pattern)) {
+    return;
+  }
+  switch (pattern.type) {
+    case 'Identifier':
+      if (names.has(pattern.name as string)) {
+        into.add(pattern.name as string);
+      }
+      return;
+    case 'ObjectPattern':
+      for (const property of pattern.properties as unknown[]) {
+        patternNames(
+          isNode(property) && property.type === 'Property' ? property.value : property,
+          names,
+          into,
+        );
+      }
+      return;
+    case 'ArrayPattern':
+      for (const element of pattern.elements as unknown[]) {
+        patternNames(element, names, into);
+      }
+      return;
+    case 'AssignmentPattern':
+      patternNames(pattern.left, names, into);
+      return;
+    case 'RestElement':
+      patternNames(pattern.argument, names, into);
+      return;
+    default:
+  }
+}
+
+/** Names declared directly by one statement of a block, module or case list (not hoisted out of nested blocks). */
+function declaredBy(statement: unknown, names: ReadonlySet<string>, into: Set<string>): void {
+  if (!isNode(statement)) {
+    return;
+  }
+  switch (statement.type) {
+    case 'VariableDeclaration':
+      for (const declarator of statement.declarations as AstNode[]) {
+        patternNames(declarator.id, names, into);
+      }
+      return;
+    case 'FunctionDeclaration':
+    case 'ClassDeclaration':
+      patternNames(statement.id, names, into);
+      return;
+    case 'ImportDeclaration':
+      for (const specifier of statement.specifiers as AstNode[]) {
+        patternNames(specifier.local, names, into);
+      }
+      return;
+    case 'ExportNamedDeclaration':
+    case 'ExportDefaultDeclaration':
+      declaredBy(statement.declaration, names, into);
+      return;
+    default:
+  }
+}
+
 /**
- * Collect every Identifier that READS one of `names`, as `[start, end, shorthand]`. `binding` is true inside a
- * declaration or assignment target, where only a default value or a computed key is a read again.
+ * `var` declarations hoist to the enclosing function, and a function declared inside a block is function-scoped
+ * in sloppy code, so both are collected through nested blocks (not into nested functions).
  */
-function collectReads(
-  node: AstNode,
-  names: ReadonlySet<string>,
-  binding: boolean,
-  out: Array<{ start: number; end: number; name: string; shorthand: boolean }>,
-): void {
+function hoisted(node: unknown, names: ReadonlySet<string>, into: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      hoisted(item, names, into);
+    }
+    return;
+  }
+  if (!isNode(node)) {
+    return;
+  }
+  if (node.type === 'FunctionDeclaration') {
+    patternNames(node.id, names, into);
+    return;
+  }
+  if (FUNCTIONS.has(node.type) || node.type === 'ClassBody') {
+    return;
+  }
+  if (node.type === 'VariableDeclaration' && node.kind === 'var') {
+    declaredBy(node, names, into);
+  }
+  for (const value of Object.values(node)) {
+    hoisted(value, names, into);
+  }
+}
+
+/** The constants a node's own scope binds, or `undefined` when the node opens no scope. */
+function scopeOf(node: AstNode, names: ReadonlySet<string>): Set<string> | undefined {
+  const into = new Set<string>();
+  switch (node.type) {
+    case 'Program':
+    case 'BlockStatement':
+    case 'StaticBlock':
+      for (const statement of node.body as unknown[]) {
+        declaredBy(statement, names, into);
+      }
+      if (node.type !== 'BlockStatement') {
+        hoisted(node.body, names, into);
+      }
+      return into;
+    case 'SwitchStatement':
+      for (const switchCase of node.cases as AstNode[]) {
+        for (const statement of switchCase.consequent as unknown[]) {
+          declaredBy(statement, names, into);
+        }
+      }
+      return into;
+    case 'ForStatement':
+      declaredBy(node.init, names, into);
+      return into;
+    case 'ForInStatement':
+    case 'ForOfStatement':
+      declaredBy(node.left, names, into);
+      return into;
+    case 'CatchClause':
+      patternNames(node.param, names, into);
+      return into;
+    case 'ClassExpression':
+      patternNames(node.id, names, into);
+      return into;
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      for (const param of node.params as unknown[]) {
+        patternNames(param, names, into);
+      }
+      if (node.type === 'FunctionExpression') {
+        patternNames(node.id, names, into);
+      }
+      hoisted(node.body, names, into);
+      return into;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Collect every Identifier that READS one of `names` as a GLOBAL, as `[start, end, shorthand]`. `binding` is
+ * true inside a declaration or assignment target, where only a default value or a computed key is a read
+ * again. A read that resolves to a local binding of the same name (a parameter, `var`/`let`/`const`, a
+ * function, class, import or catch parameter in an enclosing scope) is the app's own variable, not ours.
+ */
+function collectReads(node: AstNode, walk: Walk, binding: boolean): void {
   if (NAME_ONLY.has(node.type)) {
     return;
   }
+  const bound = (name: string): boolean => walk.scopes.some((scope) => scope.has(name));
   if (node.type === 'Identifier') {
-    if (!binding && names.has(node.name as string)) {
-      out.push({ start: node.start, end: node.end, name: node.name as string, shorthand: false });
+    if (!binding && walk.names.has(node.name as string) && !bound(node.name as string)) {
+      walk.out.push({
+        start: node.start,
+        end: node.end,
+        name: node.name as string,
+        shorthand: false,
+      });
     }
     return;
+  }
+  const scope = scopeOf(node, walk.names);
+  if (scope !== undefined) {
+    walk.scopes.push(scope);
   }
   for (const [key, value] of Object.entries(node)) {
     // A statement label (`X: for …`, `break X`) is a name; the labelled body is still code.
@@ -87,22 +248,23 @@ function collectReads(
     }
     // A non-computed property name (`o.X`, `{ X: 1 }`, `class { X() {} }`) is a name, not a read.
     if (key === 'key' || key === 'property') {
-      if (node.computed !== true) {
-        continue;
+      if (node.computed === true) {
+        visit(value, walk, false);
       }
-      visit(value, names, false, out);
       continue;
     }
     if (node.type === 'Property' && node.shorthand === true && key === 'value') {
       // `{ X }` reads X only as an expression; `({ X } = o)` / `const { X } = o` binds it.
       const ident = value as AstNode;
-      if (!binding && ident.type === 'Identifier' && names.has(ident.name as string)) {
-        out.push({
-          start: ident.start,
-          end: ident.end,
-          name: ident.name as string,
-          shorthand: true,
-        });
+      if (!binding && ident.type === 'Identifier' && walk.names.has(ident.name as string)) {
+        if (!bound(ident.name as string)) {
+          walk.out.push({
+            start: ident.start,
+            end: ident.end,
+            name: ident.name as string,
+            shorthand: true,
+          });
+        }
         continue;
       }
     }
@@ -112,22 +274,20 @@ function collectReads(
       (binding &&
         !(node.type === 'AssignmentPattern' && key === 'right') &&
         node.type !== 'MemberExpression');
-    visit(value, names, childBinding, out);
+    visit(value, walk, childBinding);
+  }
+  if (scope !== undefined) {
+    walk.scopes.pop();
   }
 }
 
-function visit(
-  value: unknown,
-  names: ReadonlySet<string>,
-  binding: boolean,
-  out: Array<{ start: number; end: number; name: string; shorthand: boolean }>,
-): void {
+function visit(value: unknown, walk: Walk, binding: boolean): void {
   if (Array.isArray(value)) {
     for (const item of value) {
-      visit(item, names, binding, out);
+      visit(item, walk, binding);
     }
   } else if (isNode(value)) {
-    collectReads(value, names, binding, out);
+    collectReads(value, walk, binding);
   }
 }
 
@@ -135,30 +295,39 @@ function visit(
  * Replace each READ of a constant (`__BUGSEE_APP_VERSION__`) with its value expression; a shorthand
  * `{ X }` becomes `{ X: value }`. `null` when there is nothing to replace — including a chunk with no parser
  * or one the parser rejects, which is left exactly as Rollup produced it rather than guessed at — so Rollup
- * keeps the chunk (and its map) untouched.
+ * keeps the chunk (and its map) untouched. `onSkipped` is told why when a chunk that mentions a constant could
+ * not be examined, so the caller can say the identity was not baked instead of failing silently.
  */
 export function bakeIdentity(
   code: string,
   defines: Record<string, string>,
   parse: ParseChunk | undefined,
+  onSkipped?: (reason: string) => void,
 ): BakedChunk | null {
   const names = new Set(Object.keys(defines).filter((name) => code.includes(name)));
-  if (names.size === 0 || parse === undefined) {
+  if (names.size === 0) {
+    return null;
+  }
+  if (parse === undefined) {
+    onSkipped?.('the bundler gave the plugin no parser');
     return null;
   }
   let program: unknown;
   try {
     program = parse(code);
-  } catch {
+  } catch (error) {
+    onSkipped?.(
+      `the chunk could not be parsed (${error instanceof Error ? error.message : String(error)})`,
+    );
     return null;
   }
-  const reads: Array<{ start: number; end: number; name: string; shorthand: boolean }> = [];
-  visit(program, names, false, reads);
-  if (reads.length === 0) {
+  const walk: Walk = { names, scopes: [], out: [] };
+  visit(program, walk, false);
+  if (walk.out.length === 0) {
     return null;
   }
   const out = new MagicString(code);
-  for (const { start, end, name, shorthand } of reads) {
+  for (const { start, end, name, shorthand } of walk.out) {
     out.overwrite(start, end, shorthand ? `${name}: ${defines[name]}` : (defines[name] as string));
   }
   return { code: out.toString(), map: out.generateMap({ hires: true }) };
