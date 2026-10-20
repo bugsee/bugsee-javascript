@@ -520,6 +520,23 @@ describe('ProcessTracker — mainThreadLag (timer drift)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  it('measures drift against the CONFIGURED interval (250 ms), not the default', () => {
+    const { s, clock, env } = lagEnv({ intervalMs: 250 });
+    const t = new ProcessTracker(env);
+    const out: number[] = [];
+    t.on('mainThreadLag', (l) => out.push(l.lagMs));
+    expect(s.periods()).toEqual([250]);
+    clock.set(1250); // on time for 250
+    s.tick();
+    clock.set(1500); // exactly 250 after the previous tick: on time
+    s.tick();
+    clock.set(1760); // 10 ms late against 1500 + 250
+    s.tick();
+    clock.set(2010); // on time against 1760 + 250
+    s.tick();
+    expect(out).toEqual([0, 0, 10, 0]);
+  });
+
   it('first tick compares against start + interval; later ticks against the previous tick + interval', () => {
     const { s, clock, env } = lagEnv();
     const t = new ProcessTracker(env);
@@ -998,10 +1015,16 @@ function userEnv(
       aborts.push(this);
     }
   }
-  const query = vi.fn((_d: { name: string }) => Promise.resolve(status));
+  // Called as a method of `permissions` (it needs its receiver, like the real one): any other `this` rejects.
+  const query = vi.fn(function (this: unknown, _d: { name: string }) {
+    return this === permissions
+      ? Promise.resolve(status)
+      : Promise.reject(new TypeError('Illegal invocation'));
+  });
+  const permissions = { query };
   const { state: _s, detector: _d, ...rest } = opts;
   const env = asEnv({
-    navigator: { permissions: { query } },
+    navigator: { permissions },
     IdleDetector: FakeDetector,
     AbortController: FakeAbort,
     ...rest,

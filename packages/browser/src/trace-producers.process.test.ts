@@ -58,6 +58,7 @@ function userIdleTracker(
   state = 'granted',
   now?: () => number,
   permission?: { state: string },
+  probe?: { statusListeners: Set<() => void>; aborts: number },
 ) {
   class FakeDetector {
     constructor() {
@@ -67,12 +68,22 @@ function userIdleTracker(
   }
   return new ProcessTracker({
     navigator: {
-      permissions: { query: () => Promise.resolve({ state: permission?.state ?? state }) },
+      permissions: {
+        query: () =>
+          Promise.resolve({
+            state: permission?.state ?? state,
+            addEventListener: (_t: string, l: () => void) => void probe?.statusListeners.add(l),
+            removeEventListener: (_t: string, l: () => void) =>
+              void probe?.statusListeners.delete(l),
+          }),
+      },
     },
     IdleDetector: FakeDetector as never,
     AbortController: class {
       signal = {};
-      abort() {}
+      abort() {
+        if (probe !== undefined) probe.aborts += 1;
+      }
     },
     ...(now !== undefined ? { now } : {}),
   });
@@ -126,6 +137,28 @@ describe('UserIdleProducer (user_idle_state)', () => {
     detector.fire();
     expect(out).toHaveLength(1);
     offOther();
+  });
+});
+
+describe('UserIdleProducer stop releases the stage', () => {
+  it('stop() unsubscribes: detector aborted, permission listener removed, no growth over start/stop cycles', async () => {
+    const detector = mkDetector();
+    const probe = { statusListeners: new Set<() => void>(), aborts: 0 };
+    const tracker = userIdleTracker(detector, 'granted', undefined, undefined, probe);
+    const p = new UserIdleProducer(tracker);
+    for (let cycle = 1; cycle <= 3; cycle += 1) {
+      const out = start(p);
+      await flush();
+      expect(probe.statusListeners.size).toBe(1); // armed: exactly one permission listener, never accumulating
+      expect(out.length).toBeGreaterThan(0);
+      p.stop();
+      expect(probe.statusListeners.size).toBe(0);
+      expect(probe.aborts).toBe(cycle); // the detector of THIS cycle was aborted
+      const seen = out.length;
+      detector.userState = cycle % 2 === 0 ? 'active' : 'idle';
+      detector.fire(); // a stopped producer hears nothing
+      expect(out).toHaveLength(seen);
+    }
   });
 });
 
