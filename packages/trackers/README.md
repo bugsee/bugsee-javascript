@@ -22,7 +22,7 @@ Trackers are the abstraction over system and runtime APIs. The package root is r
 - `@bugsee/trackers/node` (`src/node/`)
 - `@bugsee/trackers/electron` (`src/electron/`)
 
-The `./browser` entry exports the `ApplicationTracker` (`applicationTrackerFor`, `resetApplicationTracker`), the `PowerTracker` (`powerTrackerFor`, `resetPowerTracker`), the `ConnectivityTracker` (`connectivityTrackerFor`, `resetConnectivityTracker`) and `hostRead`; `./node` and `./electron` are reserved in `exports` and currently export nothing. Its API is internal and may change between releases.
+The `./browser` entry exports the `ApplicationTracker` (`applicationTrackerFor`, `resetApplicationTracker`), the `PowerTracker` (`powerTrackerFor`, `resetPowerTracker`), the `ConnectivityTracker` (`connectivityTrackerFor`, `resetConnectivityTracker`), the `StorageTracker` (`storageTrackerFor`, `resetStorageTracker`; an approximate origin quota estimate, not device free space: browsers may pad `usage`, and `quota` can roughly reveal the device's disk size, so treat it as potentially identifying) and `hostRead`; `./node` and `./electron` are reserved in `exports` and currently export nothing. Its API is internal and may change between releases.
 
 ## Links
 

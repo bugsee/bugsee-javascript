@@ -1,5 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
+import { bytesToMegabytes } from '@bugsee/protocol';
 import {
   type ApplicationTracker,
   type BatteryEnv,
@@ -10,6 +11,10 @@ import {
   connectivityTrackerFor,
   type PowerTracker,
   powerTrackerFor,
+  type StorageEstimate,
+  type StorageManagerLike,
+  type StorageTracker,
+  storageTrackerFor,
 } from '@bugsee/trackers/browser';
 import { chargingToWire, connectionTypeToWire, orientationToWire } from './system-trace-values';
 import { type FpsEnv, FpsTracker } from './trackers/fps-tracker';
@@ -80,6 +85,49 @@ export class BatteryProducer extends TraceProducerBase {
     if (this.#lastTime.get(name) === rounded) return;
     this.#lastTime.set(name, rounded);
     this.emit(name, rounded);
+  }
+}
+
+/**
+ * `navigator.storage.estimate()` → `storage_estimate` `{usage, quota}` in integer MB (floored, `bytesToMegabytes`).
+ * An ORIGIN quota ESTIMATE that browsers fuzz and pad — NOT device free space — so it is a JS-specific trace and
+ * deliberately not the Android `disk_mem_*` group. A key the browser did not give a usable number for is omitted
+ * (never 0); an estimate with neither key emits nothing.
+ *
+ * Held and de-duplicated (`emitIfChanged`): the tracker polls every few minutes, far longer than the default
+ * recording window, so a non-held value would almost never be inside a report. Known limit (owner decision pending,
+ * see docs/PROGRESS.md TR6): a held value cannot be retracted, so after failed polls the last known estimate keeps
+ * being re-recorded. usage below 1 MiB floors to 0 MB (an honest floor, not a measurement of zero).
+ */
+export class StorageProducer extends TraceProducerBase {
+  readonly name = 'storage';
+  readonly #tracker: StorageTracker;
+  #off: (() => void) | undefined;
+
+  constructor(tracker: StorageTracker) {
+    super();
+    this.#tracker = tracker;
+  }
+
+  protected onStart(): void {
+    this.#off = this.#tracker.on('storageEstimate', (e) => this.#publish(e));
+    // The retained estimate from an earlier subscription gives a value at once — but only while it is younger than
+    // 2x the poll interval: a held trace is re-recorded for as long as it lives, so an old snapshot must not seed it.
+    const cur = this.#tracker.currentFresh();
+    if (cur !== undefined) this.#publish(cur);
+  }
+
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+
+  #publish(e: StorageEstimate): void {
+    if (e.usageBytes === undefined && e.quotaBytes === undefined) return; // `persisted` alone is not a trace
+    this.emitIfChanged('storage_estimate', {
+      ...(e.usageBytes !== undefined ? { usage: bytesToMegabytes(e.usageBytes) } : {}),
+      ...(e.quotaBytes !== undefined ? { quota: bytesToMegabytes(e.quotaBytes) } : {}),
+    });
   }
 }
 
@@ -335,6 +383,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   navigator?: {
     /** `navigator.deviceMemory` in GiB — a coarse bucket, not a measurement. */
     readonly deviceMemory?: number;
+    /** `navigator.storage` (absent in insecure contexts): origin quota estimate. */
+    readonly storage?: StorageManagerLike;
     readonly onLine?: boolean;
     /** NetworkInformation (read by the ConnectivityTracker). */
     readonly connection?: object;
@@ -485,6 +535,17 @@ export function createBrowserSystemTraceProducers(
       }),
     ),
     new AdvertisedMemoryProducer(() => nav?.deviceMemory),
+    new StorageProducer(
+      storageTrackerFor(
+        {
+          ...(env.window !== undefined ? { window: env.window } : {}),
+          ...(nav !== undefined ? { navigator: nav } : {}),
+          ...(env.document !== undefined ? { document: env.document } : {}),
+          ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
+        },
+        onError,
+      ),
+    ),
     new ConnectionProducer(connectivityTrackerFor(env, onError)),
     new OrientationProducer(
       new OrientationTracker(

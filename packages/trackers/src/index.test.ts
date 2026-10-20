@@ -22,6 +22,7 @@ describe('@bugsee/trackers public surface', () => {
       'ApplicationTracker',
       'ConnectivityTracker',
       'PowerTracker',
+      'StorageTracker',
       'applicationTrackerFor',
       'connectivityTrackerFor',
       'hostRead',
@@ -29,6 +30,8 @@ describe('@bugsee/trackers public surface', () => {
       'resetApplicationTracker',
       'resetConnectivityTracker',
       'resetPowerTracker',
+      'resetStorageTracker',
+      'storageTrackerFor',
     ]);
   });
 });

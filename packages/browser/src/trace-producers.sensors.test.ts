@@ -287,6 +287,7 @@ describe('createBrowserSystemTraceProducers (sensors)', () => {
       'battery',
       'memory',
       'ram-system-advertised',
+      'storage',
       'connection',
       'orientation',
     ]);
