@@ -21,7 +21,10 @@ do not, (3) what is cheaply and truthfully obtainable from each JS runtime.
   `traces.system` / `events.system`.
 - Web vitals / long tasks if `@bugsee/performance` already owns them — see Q1.
 
-## 2. Current catalog (as built)
+## 2. Baseline catalog (pre-TR, as of this doc's first draft)
+
+> Historical baseline. The traces and events shipped since (e.g. `app_state`, `fps`, `screen_size`, `main_thread_lag_ms`,
+> `dark_mode_changed`, `language_changed`) and the event-driven emission via domain trackers are listed in §14.5/§15.5.
 
 | Tier | Traces | Events |
 |---|---|---|
@@ -30,7 +33,7 @@ do not, (3) what is cheaply and truthfully obtainable from each JS runtime.
 | Electron | composes the two above; **no Electron-specific telemetry** (only `crashReporter` + `render-process-gone` for incident synthesis) | — |
 
 Sampler: one provider, snapshot at start then every 1000 ms (`capture/src/system-traces-provider.ts`). No
-event-driven emission today. Registered only by node/browser/webview launches (bun/deno reuse node's).
+event-driven emission in this baseline (trackers add it; see §15.5). Registered only by node/browser/webview launches (bun/deno reuse node's).
 
 ## 3. Findings that drive the design
 
