@@ -625,8 +625,9 @@ PER STAGE (listeners/timers exist only while a subscriber wants a stage that nee
 `OrientationTracker`, `ScreenSizeTracker` and `FpsTracker` (with their tests) are deleted, `ApplicationTracker` no longer binds `orientationchange`, and `OrientationProducer`/`ScreenSizeProducer`/`FpsProducer`
 are rewired onto one `UiTracker` per window. Everything in this paragraph is subject to change until merged.
 
-**In progress (WIP branches, unfinished — no mutator loop / CI / review yet):** TR5 Process / `ProcessTracker` (#83, `feat/process-tracker`) and TR7 Environment /
-`EnvironmentTracker` (#84, `feat/environment-tracker`). Nothing in them is documented here as built.
+**In review (NOT merged): TR5 Process / `ProcessTracker` (#83, `feat/process-tracker`) and TR7 Environment / `EnvironmentTracker` (#84, `feat/environment-tracker`).** Both are
+ready PRs that went through the mutator loop and several read-only Opus review rounds; their stage names and shapes are defined in `packages/trackers/src/browser/process-tracker.ts` /
+`environment-tracker.ts` on those branches and are subject to change until merged, so they are not catalogued here yet.
 
 **Conventions the merged trackers follow (the "hardening pattern"; uneven in places, gaps listed):**
 - Host reads go through `hostRead` in most places (hostile getters cost only their own field and are reported via `onError`), and an unusable field is OMITTED rather than sent as 0
