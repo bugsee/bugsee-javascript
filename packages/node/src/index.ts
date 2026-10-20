@@ -29,6 +29,9 @@ export {
   type ProcessTracker,
   processTrackerFor,
   resetProcessTracker,
+  resetStorageTracker,
+  type StorageTracker,
+  storageTrackerFor,
 } from '@bugsee/trackers/node';
 // The request-scoped active-span store for bare-`@bugsee/node` consumers wiring APM by
 // hand. One store per context source: the stash key is process-global (realm convergence), so two

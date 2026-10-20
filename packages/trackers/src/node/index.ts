@@ -34,3 +34,15 @@ export {
   createV8HeapReader,
   type V8HeapStats,
 } from './runtime-readers';
+export {
+  type DiskReading,
+  resetStorageTracker,
+  type StatFs,
+  type StatFsResult,
+  type StorageEnv,
+  type StorageEvents,
+  type StorageTimers,
+  StorageTracker,
+  type StorageTrackerEnv,
+  storageTrackerFor,
+} from './storage-tracker';

@@ -6,6 +6,7 @@ describe('@bugsee/trackers/node public surface', () => {
   it('exports the node tracker values', () => {
     expect(Object.keys(nodeEntry).sort()).toEqual([
       'ProcessTracker',
+      'StorageTracker',
       'createAvailableMemoryReader',
       'createGcSource',
       'createGuardedElu',
@@ -16,6 +17,8 @@ describe('@bugsee/trackers/node public surface', () => {
       'processTrackerFor',
       'realPerfHooks',
       'resetProcessTracker',
+      'resetStorageTracker',
+      'storageTrackerFor',
     ]);
   });
 });

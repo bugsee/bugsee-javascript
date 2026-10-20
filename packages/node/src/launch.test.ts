@@ -58,7 +58,12 @@ import {
   type RequestJson,
   Severity,
 } from '@bugsee/protocol';
-import { processTrackerFor, resetProcessTracker } from '@bugsee/trackers/node';
+import {
+  processTrackerFor,
+  resetProcessTracker,
+  resetStorageTracker,
+  storageTrackerFor,
+} from '@bugsee/trackers/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hashAppToken } from './data-location';
@@ -121,6 +126,13 @@ function fakeProcess(onExit?: (code?: number) => void) {
   };
 }
 
+// Wraps (never replaces) the registry accessor so a launch-level test can prove the opt-in disk producer is built
+// through it. Behaviour is untouched: the spy forwards to the real function.
+vi.mock('@bugsee/trackers/node', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/trackers/node')>();
+  return { ...actual, storageTrackerFor: vi.fn(actual.storageTrackerFor) };
+});
+
 const probe: SystemProbe = {
   platformType: () => 'node',
   runtimeVersion: () => '20.1.2',
@@ -178,6 +190,7 @@ afterEach(async () => {
   // Stop every launched client so the console interceptor unpatches the global console.
   await Promise.all(clients.splice(0).map((c) => c.stop()));
   resetProcessTracker(); // the per-process ProcessTracker singleton must not carry one test's seams into the next
+  resetStorageTracker(); // ...nor the StorageTracker's data dir / statfs seam
   vi.restoreAllMocks();
   // Reset the process Carrier so each test builds fresh interceptor singletons (default global path).
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
@@ -1630,6 +1643,63 @@ describe('launch — system trace producers', () => {
       expect((await waitForDisk(store)).length).toBeGreaterThan(0);
       expect(ownStarted).toBe(true); // the caller's producers are kept, the disk one is added
       await client.stop(50);
+    });
+
+    it("goes through the per-process StorageTracker registry accessor when on (one shared tracker, this launch's data dir)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'bugsee-disk-'));
+      const fs = fakeScheduler();
+      vi.mocked(storageTrackerFor).mockClear();
+      const paths: string[] = [];
+      const onError = () => {};
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: dir,
+          captureStore: memStore(),
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+          scheduler: fs.scheduler,
+          diskStatfs: async (path) => {
+            paths.push(path);
+            return { bsize: 1024 * 1024, bavail: 5, blocks: 9 };
+          },
+          onError,
+        }),
+      );
+      const calls = vi.mocked(storageTrackerFor).mock.calls;
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[0]).toMatchObject({ dataDir: dir, scheduler: fs.scheduler });
+      expect(calls[0]?.[1]).toBe(onError);
+      // the launch's producer is subscribed to THE process singleton: its poll is armed (5 s, the launch's scheduler)
+      expect(fs.calls.some((c) => c.ms === 5000)).toBe(true);
+      expect(paths).toEqual([dir]);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(storageTrackerFor().current()).toEqual({
+        freeBytes: 5 * 1024 * 1024,
+        totalBytes: 9 * 1024 * 1024,
+      });
+    });
+
+    it('creates no StorageTracker when the opt-in is off or there is no data dir', () => {
+      vi.mocked(storageTrackerFor).mockClear();
+      launchTracked(
+        'tok',
+        baseOptions({
+          dataDir: mkdtempSync(join(tmpdir(), 'bugsee-disk-')),
+          captureStore: memStore(),
+          systemMetricsSampler: undefined,
+        }),
+      );
+      launchTracked(
+        'tok',
+        baseOptions({
+          captureStore: memStore(),
+          capturedDataStore: 'memory',
+          systemMetricsSampler: undefined,
+          captureDiskSpace: true,
+        }),
+      );
+      expect(storageTrackerFor).not.toHaveBeenCalled();
     });
 
     it('measures the effective data dir (never / or the cwd), through the statfs seam', async () => {
