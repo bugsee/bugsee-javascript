@@ -12,7 +12,7 @@ import { PageLifecycleTracker } from './trackers/page-lifecycle-tracker';
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
 //   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
 //   online / offline       → online / offline (connectivity transitions)
-//   orientation (UiTracker) → orientation_changed ({type, angle} from screen.orientation)
+//   orientation (UiTracker: screen.orientation change + orientationchange) → orientation_changed ({type, angle})
 //   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
@@ -114,11 +114,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  // The host globals are read only when no lifecycle tracker was supplied: a supplied one already owns them.
+  // ONE read of the window (injected, else the host's) serves the lifecycle tracker and the UI tracker.
+  const win = env.window ?? hostGlobal<WindowEvents>('window', env.onError);
+  // The document is read only when no lifecycle tracker was supplied: a supplied one already owns it.
   const lifecycle =
     env.lifecycle ??
     ((): PageLifecycleTracker => {
-      const win = env.window ?? hostGlobal('window', env.onError);
       const doc = env.document ?? hostGlobal('document', env.onError);
       return new PageLifecycleTracker(
         {
@@ -135,10 +136,11 @@ export function createBrowserSystemEventsSource(
     (env.window !== undefined
       ? hostRead(() => (env.window as { screen?: ScreenLike }).screen, env.onError)
       : hostGlobal('screen', env.onError));
-  // The SAME per-window tracker the traces use (keyed on the window; a relaunch's seams merge into it).
+  // The SAME per-window tracker the traces use (keyed on the window; a relaunch's seams merge into it). Without an
+  // injected window it gets the host's, exactly as the lifecycle tracker does above.
   const ui = uiTrackerFor(
     {
-      ...(env.window !== undefined ? { window: env.window as UiEnvWindow } : {}),
+      ...(win !== undefined ? { window: win as UiEnvWindow } : {}),
       ...(screen !== undefined ? { screen } : {}),
       ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
     },

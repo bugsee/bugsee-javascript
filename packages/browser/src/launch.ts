@@ -876,8 +876,9 @@ async function buildLaunch(
   const maxBodyBytes = resolved.options.get(BugseeOption.CaptureNetworkBodySizeLimit, 20480);
   const network = installNetworkCapture({ carrier, captureBodies, maxBodyBytes });
   client.addCaptureProvider(network.provider);
-  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/orientation
-  // producers and the events source: the listeners are bound in a single place.
+  // ONE lifecycle tracker over the injected window+document, shared by the traces' connection/app_state
+  // producers and the events source: the listeners are bound in a single place. (Orientation, screen size, fps and
+  // dark mode come from the per-window UiTracker, not from here.)
   const lifecycle = new PageLifecycleTracker(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,

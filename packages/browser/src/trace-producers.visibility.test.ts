@@ -1,5 +1,5 @@
 import type { TraceProducer } from '@bugsee/capture';
-import { UiTracker } from '@bugsee/trackers/browser';
+import { resetUiTracker, UiTracker, uiTrackerFor } from '@bugsee/trackers/browser';
 import { describe, expect, it } from 'vitest';
 import {
   AppStateProducer,
@@ -231,6 +231,41 @@ describe('browserTraceEnvFrom', () => {
       'requestAnimationFrame blocked',
       'screen blocked',
     ]);
+  });
+
+  it("matchMedia is the window's own, bound to it; absent or throwing means none", () => {
+    const calls: unknown[] = [];
+    const win = {
+      matchMedia(this: unknown, query: string) {
+        calls.push(this, query);
+        return { matches: true };
+      },
+    };
+    const env = browserTraceEnvFrom(win, undefined);
+    expect(env.matchMedia?.('(x)')).toEqual({ matches: true });
+    expect(calls).toEqual([win, '(x)']);
+    expect(browserTraceEnvFrom({}, undefined).matchMedia).toBeUndefined();
+    const errors: unknown[] = [];
+    const hostile = {};
+    Object.defineProperty(hostile, 'matchMedia', {
+      get(): never {
+        throw new Error('matchMedia blocked');
+      },
+    });
+    expect(
+      browserTraceEnvFrom(hostile, undefined, (e) => errors.push(e)).matchMedia,
+    ).toBeUndefined();
+    expect(errors).toHaveLength(1);
+  });
+
+  it("createBrowserSystemTraceProducers hands the env's matchMedia/screen to the window's UiTracker", () => {
+    const win = { addEventListener() {}, removeEventListener() {} };
+    createBrowserSystemTraceProducers({
+      window: win,
+      matchMedia: () => ({ matches: true }),
+    });
+    expect(uiTrackerFor({ window: win }).current('colorScheme')).toEqual({ dark: true });
+    resetUiTracker({ window: win });
   });
 
   it('one throwing surface does not take the others with it, and onError is optional', () => {

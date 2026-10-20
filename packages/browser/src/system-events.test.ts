@@ -285,13 +285,13 @@ describe('createBrowserSystemEventsSource', () => {
         'screen blocked',
         'window blocked',
       ]);
-      // a supplied lifecycle owns the window/document: they are not read (or reported) again
+      // a supplied lifecycle owns the DOCUMENT (not read again); the window is still read for the UI tracker
       const none: unknown[] = [];
       createBrowserSystemEventsSource({
         lifecycle: { on: () => () => {} },
         onError: (e) => none.push(e),
       });
-      expect(none.map((e) => (e as Error).message)).toEqual(['screen blocked']); // only screen is still read
+      expect(none.map((e) => (e as Error).message)).toEqual(['window blocked', 'screen blocked']);
     } finally {
       for (const [key, d] of originals) {
         if (d !== undefined) Object.defineProperty(globalThis, key, d);
@@ -327,6 +327,37 @@ describe('createBrowserSystemEventsSource', () => {
     const off = source.onAny(() => {});
     expect(win.count('pagehide')).toBe(1);
     expect(doc.count('visibilitychange')).toBe(1);
+    off();
+  });
+
+  it('without an injected window the UI tracker gets the host window (and its screen), like the lifecycle tracker', () => {
+    const win = target();
+    const screen = { orientation: { type: 'portrait-primary', angle: 0 } };
+    vi.stubGlobal('window', win);
+    vi.stubGlobal('screen', screen);
+    const source = createBrowserSystemEventsSource();
+    const events: SystemEvent[] = [];
+    const off = source.onAny((_s, e) => events.push(e));
+    expect(win.count('orientationchange')).toBe(1);
+    screen.orientation = { type: 'landscape-primary', angle: 90 };
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({
+      name: 'orientation_changed',
+      params: { type: 'landscape-primary', angle: 90 },
+    });
+    off();
+    expect(win.count('orientationchange')).toBe(0);
+  });
+
+  it('an injected window never borrows the host window or screen', () => {
+    const hostWin = target();
+    vi.stubGlobal('window', hostWin);
+    vi.stubGlobal('screen', { orientation: { type: 'portrait-primary', angle: 0 } });
+    const injected = target();
+    const { events, off } = activate({ window: injected as never });
+    expect(hostWin.count('orientationchange')).toBe(0);
+    injected.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({ name: 'orientation_changed' }); // the host's screen was not used
     off();
   });
 

@@ -2,7 +2,7 @@ import { MultiKeyEmitterBase } from '../emitter';
 import { createTrackerRegistry } from '../tracker-registry';
 import { hostRead } from './host-read';
 
-// Browser UI / DISPLAY tracker (domain tracker, design §15.1; Android reference: BugseeTrackerUI/Display). ONE class
+// Browser UI / DISPLAY tracker (domain tracker; Android reference: BugseeTrackerUI/Display). ONE class
 // owns every window-side display signal and exposes them as notification kinds ("stages"):
 //
 //   orientation    {type?, angle?}   screen.orientation `change` + window `orientationchange` (engines differ in which fire)
@@ -21,8 +21,9 @@ import { hostRead } from './host-read';
 //
 // RETENTION. Nothing survives the last unsubscribe except (a) the env seams and (b) the per-stage DE-DUPLICATION
 // baseline (the last emitted value, so a repeated reading is not re-announced). The baseline is RE-READ silently
-// every time a stage's source is (re)attached, so a change that happened while nobody listened is never mistaken for
-// "unchanged" later. `current(stage)` always reads live (never a stale value) and is `undefined` when the reading is
+// whenever a stage goes from no listener to one (and when a rebind swaps the sources under running stages), so a
+// change that happened while nobody listened to THAT stage — even if its source stayed attached for a sibling
+// stage — is never mistaken for "unchanged" later. A stage with no listener is not computed at all. `current(stage)` always reads live (never a stale value) and is `undefined` when the reading is
 // unavailable or invalid. Invalid values (non-finite / non-positive sizes, a non-boolean query) are OMITTED, never
 // zeroed. Only the frame-rate window state (frames counted, timer) is dropped on stop: a later window starts fresh.
 //
@@ -133,9 +134,25 @@ const defaultNow = (): number => {
 };
 
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const UI_STAGES: readonly UiStage[] = [
+  'orientation',
+  'screenSize',
+  'viewport',
+  'colorScheme',
+  'reducedMotion',
+  'displayMode',
+  'frameRate',
+];
 const DARK = '(prefers-color-scheme: dark)';
 const REDUCED = '(prefers-reduced-motion: reduce)';
 const DISPLAY_MODES = ['fullscreen', 'standalone', 'minimal-ui'] as const;
+
+const FUNCTION_SEAMS: ReadonlySet<string> = new Set([
+  'matchMedia',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
+  'now',
+]);
 
 const ENV_KEYS = [
   'window',
@@ -164,10 +181,14 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
   readonly #report: (error: unknown) => void;
   /** De-duplication baselines (serialized last emitted value) per stage. */
   readonly #last = new Map<UiStage, string>();
+  /** The stages that had a listener at the last sync (a stage entering it re-baselines). */
+  readonly #wanted = new Set<UiStage>();
   readonly #attached = new Map<string, Array<() => void>>();
   readonly #bindings: readonly Binding[];
   // frame-rate machinery (alive only inside the frameRate binding)
   #timer: unknown = null;
+  /** The scheduler that armed #timer: the interval is cleared on THAT one, whatever the env says later. */
+  #timerScheduler: UiSchedulerLike | undefined;
   #raf: number | undefined;
   #running = false;
   #frames = 0;
@@ -190,7 +211,7 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     this.#report = report;
     // Copied field by field through `hostRead`: an env with a hostile getter costs only that field (reported).
     this.#env = {};
-    this.#merge(env);
+    Object.assign(this.#env, this.#pending(env));
     this.#bindings = this.#makeBindings();
   }
 
@@ -201,22 +222,29 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
    */
   rebind(env: UiEnv, onError?: (error: unknown) => void): void {
     if (onError !== undefined) this.#reporter.fn = onError;
-    if (!this.#merge(env)) return;
-    this.#detachAll();
-    this.#sync();
+    const pending = this.#pending(env);
+    // Only a change of a SOURCE (window/screen/document/scheduler/interval) re-attaches. The function seams
+    // (matchMedia, rAF, cancelAnimationFrame, now) are rebuilt as fresh closures by every launch for the same
+    // window, so they are swapped in place and a running frame-rate window is left alone.
+    const resource = Object.keys(pending).some((key) => !FUNCTION_SEAMS.has(key));
+    // Detach with the OLD seams (the old scheduler clears its own interval) BEFORE the new ones are applied.
+    if (resource) {
+      this.#detachAll();
+      this.#wanted.clear(); // the sources moved: every listened stage re-baselines from the new ones
+    }
+    Object.assign(this.#env, pending);
+    if (resource) this.#sync();
   }
 
-  /** Copy the env's defined fields over ours; true when any of them changed. */
-  #merge(env: UiEnv): boolean {
-    let changed = false;
-    const target = this.#env as Record<string, unknown>;
+  /** The env's defined fields that differ from ours (a hostile getter is reported and skipped). */
+  #pending(env: UiEnv): Record<string, unknown> {
+    const pending: Record<string, unknown> = {};
+    const current = this.#env as Record<string, unknown>;
     for (const key of ENV_KEYS) {
       const next = hostRead(() => (env as Record<string, unknown>)[key], this.#report);
-      if (next === undefined || next === target[key]) continue;
-      target[key] = next;
-      changed = true;
+      if (next !== undefined && next !== current[key]) pending[key] = next;
     }
-    return changed;
+    return pending;
   }
 
   /** The LIVE reading of a stage (guarded, reported); undefined when unavailable or invalid. */
@@ -228,6 +256,7 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
   reset(): void {
     this.#detachAll();
     this.#last.clear();
+    this.#wanted.clear();
   }
 
   protected override onListenersChanged(): void {
@@ -235,6 +264,16 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
   }
 
   #sync(): void {
+    // A stage that just gained its first listener re-reads its baseline silently — even when its source is already
+    // attached for a sibling stage, which may have moved the value while this one was not being computed.
+    for (const stage of UI_STAGES) {
+      const listened = this.listenerCount(stage) > 0;
+      if (!listened) this.#wanted.delete(stage);
+      else if (!this.#wanted.has(stage)) {
+        this.#wanted.add(stage);
+        if (stage !== 'frameRate') this.#remember(stage, this.#read(stage));
+      }
+    }
     for (const binding of this.#bindings) {
       const want = binding.kinds.some((kind) => this.listenerCount(kind) > 0);
       const has = this.#attached.has(binding.id);
@@ -251,14 +290,10 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     } catch (error) {
       this.#report(error);
     }
-    // The baseline is re-read now (silently) so a change made while nobody listened is never read as "unchanged".
-    for (const kind of binding.kinds) {
-      if (kind !== 'frameRate') this.#remember(kind, this.#read(kind));
-    }
   }
 
   #detach(id: string): void {
-    const offs = this.#attached.get(id)!; // callers pass only attached ids
+    const offs = this.#attached.get(id) ?? [];
     this.#attached.delete(id);
     for (const off of offs) {
       try {
@@ -331,11 +366,12 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     return typeof matches === 'boolean' ? matches : undefined;
   }
 
-  /** The first matching mode, 'browser' when none match, undefined when no query could be answered at all. */
+  /** The first matching mode; 'browser' when all queries answered and none matched; undefined when any failed and none matched. */
   #displayMode(matches: ReadonlyArray<boolean | undefined>): DisplayModeState | undefined {
-    if (matches.every((m) => m === undefined)) return undefined;
-    const index = matches.indexOf(true);
-    return { mode: index === -1 ? 'browser' : DISPLAY_MODES[index]! };
+    const hit = DISPLAY_MODES[matches.indexOf(true)]; // undefined when none matched (index -1)
+    if (hit !== undefined) return { mode: hit };
+    // 'browser' is a CLAIM that none of the modes apply: only made when every query answered.
+    return matches.includes(undefined) ? undefined : { mode: 'browser' };
   }
 
   // ---- emission -------------------------------------------------------------------------------------------------
@@ -525,10 +561,15 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
       this.#windowStart = (this.#env.now ?? defaultNow)();
       this.#arm();
       const scheduler = this.#env.scheduler ?? defaultScheduler;
+      const loop = this.#loop;
       this.#timer = scheduler.setInterval(
-        this.#guarded(() => this.#tick()),
+        // A tick from a loop that is no longer current (its clear failed) must never touch the live window.
+        this.#guarded(() => {
+          if (this.#running && loop === this.#loop) this.#tick();
+        }),
         this.#env.intervalMs ?? 1000,
       );
+      this.#timerScheduler = scheduler;
     } catch (error) {
       this.#report(error);
       this.#stopLoop(); // never leave a half-started loop behind
@@ -539,7 +580,7 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     this.#running = false;
     if (this.#timer !== null) {
       try {
-        (this.#env.scheduler ?? defaultScheduler).clearInterval(this.#timer);
+        this.#timerScheduler?.clearInterval(this.#timer);
       } catch {
         /* best-effort */
       }

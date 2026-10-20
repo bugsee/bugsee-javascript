@@ -80,6 +80,13 @@ function mkWorld(init: { visible?: boolean } = {}) {
   };
 }
 
+/** The media query list the tracker asked `matchMedia` for (a missing one is a test failure, not an undefined). */
+function q(w: ReturnType<typeof mkWorld>, query: string) {
+  const list = w.queries.get(query);
+  if (list === undefined) throw new Error(`no query ${query}`);
+  return list;
+}
+
 describe('UiTracker orientation', () => {
   it('reads live, emits on screen.orientation change and orientationchange, deduped', () => {
     const w = mkWorld();
@@ -199,8 +206,8 @@ describe('UiTracker media-query stages', () => {
     const reduce: unknown[] = [];
     const offD = t.on('colorScheme', (s) => dark.push(s));
     const offR = t.on('reducedMotion', (s) => reduce.push(s));
-    const d = w.queries.get('(prefers-color-scheme: dark)')!;
-    const r = w.queries.get('(prefers-reduced-motion: reduce)')!;
+    const d = q(w, '(prefers-color-scheme: dark)');
+    const r = q(w, '(prefers-reduced-motion: reduce)');
     expect(d.count('change')).toBe(1);
     d.fire('change', { matches: true });
     d.fire('change', { matches: true });
@@ -218,18 +225,18 @@ describe('UiTracker media-query stages', () => {
     const w = mkWorld();
     const t = new UiTracker(w.env);
     expect(t.current('displayMode')).toEqual({ mode: 'browser' });
-    w.queries.get('(display-mode: standalone)')!.matches = true;
+    q(w, '(display-mode: standalone)').matches = true;
     expect(t.current('displayMode')).toEqual({ mode: 'standalone' });
     const got: unknown[] = [];
     const off = t.on('displayMode', (s) => got.push(s));
-    w.queries.get('(display-mode: fullscreen)')!.matches = true;
-    w.queries.get('(display-mode: fullscreen)')!.fire('change', {});
-    w.queries.get('(display-mode: fullscreen)')!.fire('change', {});
+    q(w, '(display-mode: fullscreen)').matches = true;
+    q(w, '(display-mode: fullscreen)').fire('change', {});
+    q(w, '(display-mode: fullscreen)').fire('change', {});
     expect(got).toEqual([{ mode: 'fullscreen' }]);
     off();
     expect(
       ['fullscreen', 'standalone', 'minimal-ui'].every(
-        (m) => w.queries.get(`(display-mode: ${m})`)!.count('change') === 0,
+        (m) => q(w, `(display-mode: ${m})`).count('change') === 0,
       ),
     ).toBe(true);
     expect(new UiTracker({}).current('displayMode')).toBeUndefined();
@@ -578,7 +585,7 @@ describe('UiTracker failure isolation', () => {
     const errors: unknown[] = [];
     const t = new UiTracker(w.env, (e) => errors.push(e));
     t.on('colorScheme', () => {});
-    const d = w.queries.get('(prefers-color-scheme: dark)')!;
+    const d = q(w, '(prefers-color-scheme: dark)');
     d.fire('change', null); // event.matches on null throws inside the guarded listener
     expect(errors).toHaveLength(1);
   });
@@ -682,5 +689,215 @@ describe('uiTrackerFor registry + rebind', () => {
     } as unknown as UiEnv;
     expect(uiTrackerFor(env, (e) => errors.push(e))).toBeInstanceOf(UiTracker);
     expect(errors.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('UiTracker review fixes', () => {
+  const mkScheduler = () => {
+    const cbs: Array<() => void> = [];
+    const cleared: number[] = [];
+    return {
+      cbs,
+      cleared,
+      scheduler: {
+        setInterval: (cb: () => void) => cbs.push(cb) - 1,
+        clearInterval: (h: unknown) => void cleared.push(h as number),
+      },
+    };
+  };
+
+  it('a rebind that swaps the scheduler clears the OLD interval on the OLD scheduler and runs one interval', () => {
+    const w = mkWorld();
+    const a = mkScheduler();
+    const b = mkScheduler();
+    const t = uiTrackerFor({ ...w.env, scheduler: a.scheduler });
+    const got: number[] = [];
+    t.on('frameRate', (f) => got.push(f));
+    expect(a.cbs).toHaveLength(1);
+    uiTrackerFor({ window: w.win, scheduler: b.scheduler });
+    expect(a.cleared).toEqual([0]); // cleared with the handle A handed out, on A
+    expect(b.cleared).toEqual([]);
+    expect(b.cbs).toHaveLength(1);
+    w.frame();
+    w.frame();
+    w.advance(1000);
+    a.cbs[0]?.(); // a stale tick from the old interval is ignored (loop guard)
+    expect(got).toEqual([]);
+    b.cbs[0]?.();
+    expect(got).toEqual([2]);
+    resetUiTracker({ window: w.win });
+  });
+
+  it('a stale interval whose clear failed never touches the live window', () => {
+    const w = mkWorld();
+    const cbs: Array<() => void> = [];
+    const t = new UiTracker({
+      ...w.env,
+      scheduler: { setInterval: (cb) => cbs.push(cb), clearInterval: () => {} },
+    });
+    const got: number[] = [];
+    const off = t.on('frameRate', (f) => got.push(f));
+    off();
+    t.on('frameRate', (f) => got.push(f));
+    w.frame();
+    w.advance(1000);
+    cbs[0]?.(); // old loop's tick: ignored
+    expect(got).toEqual([]);
+    cbs[1]?.();
+    expect(got).toEqual([1]);
+  });
+
+  it('a tick from a stopped loop is ignored (running guard)', () => {
+    const w = mkWorld();
+    const cbs: Array<() => void> = [];
+    const t = new UiTracker({
+      ...w.env,
+      scheduler: { setInterval: (cb) => cbs.push(cb), clearInterval: () => {} },
+    });
+    const got: number[] = [];
+    const off = t.on('frameRate', (f) => got.push(f));
+    w.frame();
+    off();
+    w.advance(1000);
+    cbs[0]?.();
+    expect(got).toEqual([]);
+  });
+
+  it('repeated uiTrackerFor calls with FRESH function closures do not reset a running fps window', () => {
+    const w = mkWorld();
+    const fresh = () => ({
+      window: w.win,
+      screen: w.screen,
+      document: w.doc,
+      scheduler: w.env.scheduler,
+      matchMedia: (q: string) => w.env.matchMedia(q),
+      requestAnimationFrame: (cb: (t: number) => void) => w.env.requestAnimationFrame(cb),
+      cancelAnimationFrame: (h: number) => w.env.cancelAnimationFrame(h),
+      now: () => w.env.now(),
+    });
+    const t = uiTrackerFor(fresh());
+    const got: number[] = [];
+    t.on('frameRate', (f) => got.push(f));
+    w.frame();
+    uiTrackerFor(fresh());
+    uiTrackerFor(fresh());
+    expect(w.env.scheduler.setInterval).toHaveBeenCalledTimes(1);
+    expect(w.env.scheduler.clearInterval).not.toHaveBeenCalled();
+    w.frame();
+    w.advance(1000);
+    w.tick();
+    expect(got).toEqual([2]); // the frame counted before the relaunches is kept
+    expect(w.doc.count('visibilitychange')).toBe(1);
+    resetUiTracker({ window: w.win });
+  });
+
+  it('a rebind onto new sources re-baselines from them (no spurious announcement of the swap)', () => {
+    const w = mkWorld();
+    const t = uiTrackerFor({ window: w.win, screen: w.screen });
+    const got: unknown[] = [];
+    t.on('screenSize', (s) => got.push(s));
+    const screen2 = Object.assign(mkTarget(), { width: 4, height: 6 });
+    uiTrackerFor({ window: w.win, screen: screen2 });
+    screen2.fire('change'); // nothing moved on the NEW screen
+    expect(got).toEqual([]);
+    resetUiTracker({ window: w.win });
+  });
+
+  it('a swapped function seam is used from then on (no re-attach)', () => {
+    const w = mkWorld();
+    const t = uiTrackerFor({ window: w.win, screen: w.screen });
+    t.on('colorScheme', () => {});
+    const swapped = vi.fn(() => ({ matches: true }));
+    uiTrackerFor({ window: w.win, matchMedia: swapped });
+    expect(t.current('colorScheme')).toEqual({ dark: true });
+    resetUiTracker({ window: w.win });
+  });
+
+  it('a stage that gains its first listener re-baselines even when its source is attached for a sibling', () => {
+    const w = mkWorld();
+    const t = new UiTracker(w.env);
+    t.on('orientation', () => {}); // the orientation source is attached; screenSize is NOT being computed
+    w.screen.width = 1;
+    w.win.fire('orientationchange');
+    const sizes: unknown[] = [];
+    t.on('screenSize', (s) => sizes.push(s)); // baseline is now width 1
+    w.screen.width = 1000; // back to the value it had before the first listener
+    w.win.fire('orientationchange');
+    expect(sizes).toEqual([{ width: 1000, height: 2000, dpr: 2 }]);
+  });
+
+  it('screenSize/viewport siblings on the shared resize source re-baseline too', () => {
+    const w = mkWorld();
+    const t = new UiTracker(w.env);
+    t.on('screenSize', () => {});
+    w.win.innerWidth = 500;
+    w.win.fire('resize'); // viewport has no listener: not computed
+    const views: unknown[] = [];
+    t.on('viewport', (v) => views.push(v));
+    w.win.innerWidth = 800;
+    w.win.fire('resize');
+    expect(views).toEqual([{ width: 800, height: 600 }]);
+  });
+
+  it('a stage without listeners is not even read on an event of a sibling source', () => {
+    const w = mkWorld();
+    const reads = vi.fn(() => 600);
+    Object.defineProperty(w.win, 'innerHeight', { get: reads });
+    const t = new UiTracker(w.env);
+    t.on('screenSize', () => {});
+    const before = reads.mock.calls.length;
+    w.win.devicePixelRatio = 3;
+    w.win.fire('resize');
+    expect(reads.mock.calls.length).toBe(before);
+  });
+
+  it('displayMode is omitted when a query failed and none of the answered ones matched', () => {
+    const w = mkWorld();
+    let failing = true;
+    const t = new UiTracker({
+      matchMedia: (q) => {
+        if (failing && q.includes('standalone')) throw new Error('q');
+        return w.env.matchMedia(q);
+      },
+    });
+    expect(t.current('displayMode')).toBeUndefined();
+    q(w, '(display-mode: fullscreen)').matches = true;
+    expect(t.current('displayMode')).toEqual({ mode: 'fullscreen' });
+    failing = false;
+    q(w, '(display-mode: fullscreen)').matches = false;
+    expect(t.current('displayMode')).toEqual({ mode: 'browser' });
+  });
+
+  it('only a visible document runs the frame loop (prerender / missing state do not)', () => {
+    for (const state of ['prerender', 'hidden', undefined]) {
+      const w = mkWorld();
+      Object.assign(w.doc, { visibilityState: state });
+      new UiTracker(w.env).on('frameRate', () => {});
+      expect(w.env.scheduler.setInterval).not.toHaveBeenCalled();
+      expect(w.doc.count('visibilitychange')).toBe(1); // still gated on later changes
+    }
+  });
+
+  it('latest onError wins; a relaunch without one keeps it', () => {
+    const w = mkWorld();
+    const first: unknown[] = [];
+    const second: unknown[] = [];
+    const win = mkTarget();
+    Object.defineProperty(win, 'devicePixelRatio', {
+      get(): never {
+        throw new Error('dpr');
+      },
+    });
+    const t = uiTrackerFor({ window: win, screen: w.screen }, (e) => first.push(e));
+    t.current('screenSize');
+    expect(first).toHaveLength(1);
+    uiTrackerFor({ window: win }, (e) => second.push(e));
+    t.current('screenSize');
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    uiTrackerFor({ window: win }); // undefined onError keeps the second
+    t.current('screenSize');
+    expect(second).toHaveLength(2);
+    resetUiTracker({ window: win });
   });
 });
