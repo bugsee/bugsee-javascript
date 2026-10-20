@@ -57,11 +57,11 @@ function defined(params: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined));
 }
 
-/** Injected globals (each defaults to the real global; an absent one is skipped). */
 /** What the source needs from the environment tracker; `current` lets it re-deliver a retained private-mode answer. */
 type EnvironmentSource = Pick<EnvironmentTracker, 'onAny'> &
   Partial<Pick<EnvironmentTracker, 'current'>>;
 
+/** Injected globals (each defaults to the real global; an absent one is skipped). */
 export interface BrowserSystemEventsEnv {
   window?: WindowEvents;
   document?: DocumentLike;
