@@ -62,6 +62,7 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 `orientation`/`connection` precedent).
 
 ### P1 — Node/Bun/Deno runtime depth (`@bugsee/node`)
+
 | Trace | Source | Notes |
 |---|---|---|
 | `gc_pause_ms` (sum/max per interval), `gc_count` (optionally by type tag) | `PerformanceObserver({entryTypes:['gc']})` | Broadest competitor-backed gap. **MEASURED: node only — blind on Bun and Deno (§8). Gate OFF there.** |
@@ -74,6 +75,7 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 | `process_uptime_s` | `process.uptime()` | Trivial; Sentry/Datadog/OTel. |
 
 ### P2 — Browser parity (`@bugsee/browser`)
+
 | Trace / event | Source | Notes |
 |---|---|---|
 | `fps` | `requestAnimationFrame` counter over the 1 s window | Android `fps`; iOS `fps`; Highlight/OpenReplay. **Gate on visibility; never keep a permanent rAF loop in a hidden tab** (battery + keeps page awake). |
@@ -89,6 +91,7 @@ the existing `process_*` / `event_loop_*` style. Units: bytes unless the reused 
 
 ### P3 — Electron main-process telemetry (`@bugsee/electron`)
 There is NO Electron sampler today: `launchMain` (`electron/src/launch-main.ts:110`) forwards `nodeOptions` to `@bugsee/node` `launchCore` with no `systemMetricsSampler`, so Electron main already emits the full node catalog. ST6 must therefore **extend, not replace** — and under §14 that is producers, not a wrapped sampler. `systemTraceProducers` (`node/src/launch.ts`) REPLACES the node defaults when supplied (the bun/deno launches already build their own list), so `launchMain` passes `[...createNodeSystemTraceProducers(...), ...electronProducers]`: the node producers keep `process_memory_*`/`cpu_*`/`event_loop_*` on the process that owns the session, and the Electron producers (`app_metrics`, …) are ADDED, never a second copy of anything the node set emits. There is no `LifecycleSampler` to wrap (it is deleted); each Electron producer is a tracker subscriber whose `onStart`/`onStop` attach and release the Electron listeners, with a per-reader try/catch-omit (`getAppMetrics` too, not only `getGPUInfo`) so one throw cannot drop another producer's values. `electron`/`powerMonitor`/`screen`/`BrowserWindow` are injected into those producers (they are not in `LaunchMainOptions` today and must be added there), never into `@bugsee/node`, where `getAppMetrics` would throw on non-Electron Node. **Events cannot ride the traces producers**: the table below mixes traces (`app_metrics`, `displays`) and events (`child_process_gone`, `power_*`, window focus/blur). A second `events.system` provider is rejected (`capture-coordinator.ts:53-55`, unique `provider.name`), and `launch.ts:870` always builds `createNodeSystemEventsSource(proc)` with no extra-source seam — so ST6 adds a node option (or an Electron-only extra source passed through) that wraps/muxes the node events source. **The mux attaches lazily**: it is an `EventSubscribable`/`InterceptorBase` whose `on()`/`onActivate` attaches BOTH the inner `.on('event')` AND the Electron `app`/`powerMonitor`/`screen`/`BrowserWindow` listeners, and `onDeactivate` removes them. Subscribing to `inner` or Electron in the wrap factory (at `launchMain`) would, with `captureSystemEvents:false`, still activate the node source's SIGTERM/SIGINT/`exit`/`beforeExit`/`warning` handlers (`system-events.ts:75-82`; they suppress default termination until `releaseSignalToDefault`) and keep `child-process-gone`/power listeners with nowhere to go, surviving `client.stop()`. The mux must not emit a second `process_started` (inner already does). Tests: option off → no SIGTERM handler, no `child-process-gone` listener; option on → both; `client.stop()` → released. `ElectronAppLike` is only `on('render-process-gone')` (`launch-main.ts:17-26`); `powerMonitor`/`screen`/`BrowserWindow` are added to `LaunchMainOptions` and destructured out of `...nodeOptions` as `app` already is (`launch-main.ts:76-77`). Tests: node + Electron traces both present (no name emitted twice); `getAppMetrics` throw → node traces still emit; `child_process_gone` lands on `events.system`; the node producers (event-loop histogram included) still start.
+
 | Item | Source |
 |---|---|
 | Per-process CPU+memory (`app_metrics`: type, pid, cpu %, workingSet) | `app.getAppMetrics()` |
@@ -99,11 +102,12 @@ There is NO Electron sampler today: `launchMain` (`electron/src/launch-main.ts:1
 | Window focus/blur/show/hide events; `unresponsive`/`responsive` | `BrowserWindow` for focus/blur/show/hide; **`unresponsive`/`responsive` are listened for on `webContents` ONLY.** Electron documents the pair on BOTH `BrowserWindow` and `webContents` — `BrowserWindow` re-emits the `webContents` event (after ~50 ms when the window is enabled and not destroyed) — so attaching both would record every hang twice. `webContents` is the single source because it also covers renderers with no `BrowserWindow` (a `BrowserView`, a `<webview>`). In the mux `onActivate` attach to `BrowserWindow.getAllWindows()` AND `app.on('browser-window-created')` (apps typically call `launchMain` then `createWindow()` from `whenReady()`, so the list is empty at activation) for the focus/blur/show/hide window events, and to `webContents` via `app.on('web-contents-created')` for the hang pair; remove all in `onDeactivate`. Expand `ElectronAppLike` beyond `render-process-gone`. Tests: a window created AFTER `launchMain` still records focus; `webContents.emit('unresponsive')` records ONCE even when the owning window re-emits it (the window pair is deliberately not listened to), and `win.emit('unresponsive')` alone does not record |
 
 ### P4 — Serverless / edge context
-| Item | Source |
-|---|---|
+
+| Item | Source | Notes |
+|---|---|---|
 | Lambda: remaining time, memory limit, request id, cold-start flag, timeout-warning event | Lambda `context` | Sentry/Datadog. Context fields, not polled traces. |
 | Cloud provider/region from env | `process.env` (`VERCEL`, `AWS_REGION`, `FLY_REGION`, …) | Check whether the environment builder already does this (Q4). |
-| Cloudflare/Vercel CPU/memory | **Platform-side only** — SDK cannot read them; do not fake. |
+| Cloudflare/Vercel CPU/memory | **Platform-side only** — SDK cannot read them; do not fake. | — |
 
 ### Explicitly NOT ported
 `wifi`, `cellular`, `bluetooth`, `nfc`, `screen_brightness`, `game_mode`, `satellite`, `device_idle`,
@@ -376,6 +380,7 @@ change as the viewer entry (the specs README says implementations are checked ag
   cross-platform grouping with Android's names, not for rendering.
 
 ### 13.3 Per-name verdicts for this doc's proposals
+
 | Name / shape | Viewer today | Needed |
 |---|---|---|
 | `ram_js_heap_{total,free,used}` | Defined; viewer comment: same semantics as `ram_jvm_heap`, `total` = heap CEILING | Nothing — confirms the ceiling-based Node/Deno design (Q2) |
@@ -541,6 +546,7 @@ section corrects. Android reference: `library/src/main/java/com/bugsee/library/s
    host-global fallback when a window was injected.
 
 ### 15.2 Browser tracker catalog
+
 | Tracker | Absorbs today's | Notifications (stages) |
 |---|---|---|
 | **Application** | `PageLifecycleTracker`, `app_state` | `visibility`, `pagehide`, `freeze`, `resume`, `state` (foreground/background) |
