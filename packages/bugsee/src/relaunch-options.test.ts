@@ -152,6 +152,7 @@ const RESET_OPTIONS: readonly string[] = [
   'captureSourceContext',
   'captureSystemEvents',
   'captureSystemTraces',
+  'captureUserIdle',
   'captureViewHierarchy',
   'controlNonce',
   'crashReporter',

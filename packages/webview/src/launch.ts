@@ -3,6 +3,7 @@ import {
   bindInputBlackout,
   boundMatchMedia,
   browserTraceEnvFrom,
+  CAPTURE_USER_IDLE_OPTION_KEY,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
   createBrowserSystemTraceProducers,
@@ -29,6 +30,7 @@ import {
 } from '@bugsee/capture';
 import {
   BlackoutToken,
+  BOOLEAN_OPTION,
   type BreadcrumbFilter,
   BUGSEE_SDK_VERSION,
   type BugseeClient,
@@ -99,6 +101,13 @@ const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     key: OBSCURING_OPTION_KEY,
     default: true,
     ...FAIL_ON_BOOLEAN_OPTION,
+  },
+  // `user_idle_state` is behavioural data: OPT-IN, only boolean `true` enables it (same switch as @bugsee/browser).
+  {
+    friendly: 'captureUserIdle',
+    key: CAPTURE_USER_IDLE_OPTION_KEY,
+    default: false,
+    ...BOOLEAN_OPTION,
   },
 ];
 
@@ -191,6 +200,12 @@ export interface BugseeWebViewLaunchOptions {
    * injected, so opting out leaves this SDK contributing no rects at all.
    */
   captureObscuring?: boolean;
+  /**
+   * Record the `user_idle_state` system trace (`active` / `idle` / `locked`, Idle Detection API). Default FALSE:
+   * behavioural data, and a page's own `idle-detection` grant is not consent to upload it. Even when true the trace
+   * exists only if the permission is ALREADY `granted` (the SDK never prompts). Only boolean `true` enables it.
+   */
+  captureUserIdle?: boolean;
 
   /**
    * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug:
@@ -718,6 +733,7 @@ export function launchWithSeams(
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
