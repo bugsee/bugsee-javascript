@@ -1,6 +1,6 @@
 import { InterceptorBase } from '../interceptor-base';
-import { hostRead } from './host-read';
 import { createTrackerRegistry } from '../tracker-registry';
+import { hostRead } from './host-read';
 
 // The browser APPLICATION tracker (design §15; Android `BugseeTrackerApplication`): the domain owner of everything
 // about the page being a running "application" — visible or hidden, frozen, leaving. It is the ONE owner of the

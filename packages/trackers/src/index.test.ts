@@ -11,18 +11,6 @@ describe('@bugsee/trackers public surface', () => {
     ]);
   });
 
-  it('exposes the browser tracker implementations on ./browser', async () => {
-    expect(Object.keys(await import('./browser/index')).sort()).toEqual([
-      'ApplicationTracker',
-      'PowerTracker',
-      'applicationTrackerFor',
-      'hostRead',
-      'powerTrackerFor',
-      'resetApplicationTracker',
-      'resetPowerTracker',
-    ]);
-  });
-
   it('reserves the node and electron entries as empty placeholders', async () => {
     for (const entry of ['./node/index', './electron/index']) {
       expect(Object.keys(await import(entry))).toEqual([]);
@@ -31,9 +19,12 @@ describe('@bugsee/trackers public surface', () => {
 
   it('exports the browser tracker values from ./browser', async () => {
     expect(Object.keys(await import('./browser/index')).sort()).toEqual([
+      'ApplicationTracker',
       'PowerTracker',
+      'applicationTrackerFor',
       'hostRead',
       'powerTrackerFor',
+      'resetApplicationTracker',
       'resetPowerTracker',
     ]);
   });
