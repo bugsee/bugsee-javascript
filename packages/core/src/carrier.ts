@@ -255,6 +255,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   'triggerPipeline',
   'reportSnapshots',
   'fileEncoders',
+  'hardwareExtras',
   'process',
   'window',
   'document',
