@@ -26,8 +26,10 @@ import { hostRead } from './host-read';
 //   privateMode {private: 'yes'|'no'|'unknown', method?}   OFF unless `detectPrivateMode` is set (owner decision
 //               pending: detecting private browsing can read as circumventing the user's intent). A HEURISTIC, never a
 //               certainty: the only method is `storage-quota` (a quota under 120 MiB suggests a private window, one over
-//               1 GiB suggests a normal one, anything between or unreadable is `unknown`). It emits once per detection
-//               (every activation), because it is the basis of the `private_mode_detected` event.
+//               1 GiB suggests a normal one, anything between or unreadable is `unknown`; constrained or unusual storage
+//               can therefore FALSE-POSITIVE). It emits when the answer first arrives and whenever it changes (it is
+//               the basis of the `private_mode_detected` event); a retained yes/no is not probed again on a restart
+//               or a seam move, an inconclusive `unknown` is retried.
 //
 // Every value that is unusable (or that a read found nothing for) is OMITTED, never fabricated; a value whose read
 // THREW keeps its retained value (a transient failure is not a change). Host reads go through `hostRead`
@@ -38,7 +40,7 @@ import { hostRead } from './host-read';
 //   * the LAST language / time zone / hints / permissions / private-mode readings (`current()` keeps answering with
 //     them, and language / time zone / hints / permissions keep comparing against them when the tracker is
 //     restarted: a late subscriber to a restarted tracker gets NO re-emission of an unchanged hints / permissions
-//     snapshot — only `privateMode` re-emits on every activation).
+//     snapshot — a `privateMode` answer is likewise not repeated unless it changed).
 // What does NOT survive: the DOM listeners (languagechange, visibilitychange, PermissionStatus change), the timer, and
 // any async work in flight (permission queries, the private-mode probe) — a stale promise is ignored when it settles.
 // The next subscriber re-reads everything.
@@ -660,6 +662,8 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
 
   #detectPrivateMode(): void {
     if (this.#env.detectPrivateMode !== true) return;
+    // A retained yes/no is not probed again (it does not change within a page); an inconclusive one is retried.
+    if (this.#private?.private === 'yes' || this.#private?.private === 'no') return;
     const mine = ++this.#privateEpoch;
     const report = (e: unknown): void => this.#onError(e);
     const storage = hostRead(
@@ -699,8 +703,9 @@ export class EnvironmentTracker extends InterceptorBase<EnvironmentEvents> {
   }
 
   #settlePrivate(result: PrivateModeResult): void {
+    const changed = !same(this.#private, result);
     this.#private = result;
-    this.emit('privateMode', { ...result });
+    if (changed) this.emit('privateMode', { ...result });
   }
 }
 

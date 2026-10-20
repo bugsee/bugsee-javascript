@@ -774,6 +774,8 @@ describe('EnvironmentTracker: privateMode', () => {
     off = tracker.onAny(() => {});
     await flush();
     off();
+    tracker.rebind({ detectPrivateMode: false }); // forget the definitive answer so it is probed again
+    tracker.rebind({ detectPrivateMode: true });
     fail = true;
     tracker.onAny(() => {});
     await flush();
@@ -845,19 +847,87 @@ describe('EnvironmentTracker: privateMode', () => {
     expect(tracker.current().privateMode).toBeUndefined();
   });
 
-  it('re-detects (and re-emits) on every activation', async () => {
+  it('a restart does not repeat a definitive answer: no second probe and no duplicate event', async () => {
+    const nav = quotaNav(1);
+    const { tracker, seen, listen } = setup(nav, { detectPrivateMode: true });
+    const off = listen();
+    await flush();
+    off();
+    listen();
+    await flush();
+    expect(nav.storage.estimate).toHaveBeenCalledTimes(1);
+    expect(seen.filter(([n]) => n === 'privateMode')).toEqual([
+      ['privateMode', { private: 'yes', method: 'storage-quota' }],
+    ]);
+    expect(tracker.current().privateMode).toEqual({ private: 'yes', method: 'storage-quota' });
+  });
+
+  it('a restart does not repeat a definitive NO either', async () => {
+    const nav = quotaNav(NORMAL_QUOTA_FROM_BYTES);
+    const { seen, listen } = setup(nav, { detectPrivateMode: true });
+    const off = listen();
+    await flush();
+    off();
+    listen();
+    await flush();
+    expect(nav.storage.estimate).toHaveBeenCalledTimes(1);
+    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(1);
+  });
+
+  it('a restart re-probes an inconclusive answer, and emits only if it changed', async () => {
+    let quota = 500 * 1024 * 1024; // between the thresholds: unknown
+    const estimate = vi.fn(() => Promise.resolve({ quota }));
+    const { seen, listen } = setup({ storage: { estimate } }, { detectPrivateMode: true });
+    const off = listen();
+    await flush();
+    off();
+    const off2 = listen();
+    await flush();
+    expect(estimate).toHaveBeenCalledTimes(2);
+    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(1); // same unknown: not repeated
+    off2();
+    quota = 1;
+    listen();
+    await flush();
+    expect(seen.filter(([n]) => n === 'privateMode')).toEqual([
+      ['privateMode', { private: 'unknown', method: 'storage-quota' }],
+      ['privateMode', { private: 'yes', method: 'storage-quota' }],
+    ]);
+  });
+
+  it('a rebind that moves seams while running does not repeat the answer', async () => {
+    const nav = quotaNav(1);
+    const { tracker, seen, listen } = setup(nav, { detectPrivateMode: true });
+    listen();
+    await flush();
+    const win2 = mkTarget();
+    wins.push(win2);
+    tracker.rebind({ window: win2 });
+    await flush();
+    expect(win2.count('languagechange')).toBe(1); // it did re-attach
+    expect(nav.storage.estimate).toHaveBeenCalledTimes(1);
+    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(1);
+  });
+
+  it('turning detection off then on again re-detects and re-emits', async () => {
+    const nav = quotaNav(1);
+    const { tracker, seen, listen } = setup(nav, { detectPrivateMode: true });
+    listen();
+    await flush();
+    tracker.rebind({ detectPrivateMode: false });
+    expect(tracker.current().privateMode).toBeUndefined();
+    tracker.rebind({ detectPrivateMode: true });
+    await flush();
+    expect(nav.storage.estimate).toHaveBeenCalledTimes(2);
+    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(2);
+  });
+
+  it('a superseded in-flight probe does not double-emit when the tracker is re-listened', async () => {
     const { seen, listen } = setup(quotaNav(1), { detectPrivateMode: true });
     listen()();
     listen();
     await flush();
-    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(1); // the first probe was invalidated
-    const again = setup(quotaNav(1), { detectPrivateMode: true });
-    const off = again.listen();
-    await flush();
-    off();
-    again.listen();
-    await flush();
-    expect(again.seen.filter(([n]) => n === 'privateMode')).toHaveLength(2);
+    expect(seen.filter(([n]) => n === 'privateMode')).toHaveLength(1);
   });
 });
 

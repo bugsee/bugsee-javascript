@@ -21,7 +21,8 @@ import { hostGlobal } from './host-global';
 //   orientationchange      → orientation_changed ({type, angle} from screen.orientation)
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
 //   time zone / UTC offset → timezone_changed ({timezone?, utcOffsetMinutes?, previousTimezone?, previousUtcOffsetMinutes?})
-//   private-mode heuristic → private_mode_detected ({method}) ONLY for a `yes` answer, and ONLY when the launch opted in
+//   private-mode HEURISTIC → private_mode_detected ({method}) ONLY for a `yes` answer (a small storage quota; constrained
+//                            storage can false-positive, so it is a hint, never a certainty), once per answer, and ONLY when the launch opted in
 //                            (`captureEnvironmentHints`); `no`/`unknown` never produce an event (never claim certainty)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
