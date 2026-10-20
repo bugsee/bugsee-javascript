@@ -187,8 +187,6 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
   readonly #bindings: readonly Binding[];
   // frame-rate machinery (alive only inside the frameRate binding)
   #timer: unknown = null;
-  /** The scheduler that armed #timer: the interval is cleared on THAT one, whatever the env says later. */
-  #timerScheduler: UiSchedulerLike | undefined;
   #raf: number | undefined;
   #running = false;
   #frames = 0;
@@ -227,10 +225,14 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     // (matchMedia, rAF, cancelAnimationFrame, now) are rebuilt as fresh closures by every launch for the same
     // window, so they are swapped in place and a running frame-rate window is left alone.
     const resource = Object.keys(pending).some((key) => !FUNCTION_SEAMS.has(key));
-    // Detach with the OLD seams (the old scheduler clears its own interval) BEFORE the new ones are applied.
+    // Detach with the OLD seams (the old scheduler clears its own interval) BEFORE the new ones are applied: the
+    // interval is cleared on `#env.scheduler`, so this ORDER is what keeps it on the scheduler that armed it.
     if (resource) {
       this.#detachAll();
-      this.#wanted.clear(); // the sources moved: every listened stage re-baselines from the new ones
+      // The sources moved: every stage that STILL has listeners re-baselines silently from the new sources (a swap
+      // is not announced as a change; a real change made while the old sources were detached is not announced
+      // either, the new subscriber-visible value simply becomes the reference).
+      this.#wanted.clear();
     }
     Object.assign(this.#env, pending);
     if (resource) this.#sync();
@@ -569,7 +571,6 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         }),
         this.#env.intervalMs ?? 1000,
       );
-      this.#timerScheduler = scheduler;
     } catch (error) {
       this.#report(error);
       this.#stopLoop(); // never leave a half-started loop behind
@@ -580,7 +581,7 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     this.#running = false;
     if (this.#timer !== null) {
       try {
-        this.#timerScheduler?.clearInterval(this.#timer);
+        (this.#env.scheduler ?? defaultScheduler).clearInterval(this.#timer);
       } catch {
         /* best-effort */
       }

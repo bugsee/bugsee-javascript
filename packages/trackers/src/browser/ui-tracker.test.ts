@@ -747,7 +747,7 @@ describe('UiTracker review fixes', () => {
     expect(got).toEqual([1]);
   });
 
-  it('a tick from a stopped loop is ignored (running guard)', () => {
+  it('a tick from a loop stopped by a hidden page is ignored even when the clear is a no-op (running guard)', () => {
     const w = mkWorld();
     const cbs: Array<() => void> = [];
     const t = new UiTracker({
@@ -755,11 +755,43 @@ describe('UiTracker review fixes', () => {
       scheduler: { setInterval: (cb) => cbs.push(cb), clearInterval: () => {} },
     });
     const got: number[] = [];
-    const off = t.on('frameRate', (f) => got.push(f));
+    t.on('frameRate', (f) => got.push(f)); // stays subscribed
     w.frame();
-    off();
+    w.doc.visibilityState = 'hidden';
+    w.doc.fire('visibilitychange'); // the loop stops; the interval callback is still callable
     w.advance(1000);
     cbs[0]?.();
+    expect(got).toEqual([]);
+  });
+
+  it('a stage whose re-read yields nothing forgets its baseline', () => {
+    const w = mkWorld();
+    const t = new UiTracker(w.env);
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    off();
+    w.screen.width = Number.NaN; // unreadable while nobody listens
+    t.on('screenSize', (s) => got.push(s)); // baseline re-read: nothing -> forgotten
+    w.screen.width = 1000; // back to the value the OLD baseline held
+    w.win.fire('resize');
+    expect(got).toEqual([{ width: 1000, height: 2000, dpr: 2 }]);
+  });
+
+  it('frameRate with a document that cannot deliver visibilitychange never starts a loop', () => {
+    const w = mkWorld();
+    new UiTracker({ ...w.env, document: { visibilityState: 'visible' } }).on('frameRate', () => {});
+    expect(w.env.requestAnimationFrame).not.toHaveBeenCalled();
+    expect(w.env.scheduler.setInterval).not.toHaveBeenCalled();
+  });
+
+  it('reset() forgets which stages were listened, so a later subscriber re-baselines', () => {
+    const w = mkWorld();
+    const t = new UiTracker(w.env);
+    const got: unknown[] = [];
+    t.on('orientation', (s) => got.push(s)); // stays subscribed across the reset
+    t.reset();
+    t.on('viewport', () => {}); // any listener change re-syncs: orientation re-attaches
+    w.win.fire('orientationchange'); // nothing moved
     expect(got).toEqual([]);
   });
 

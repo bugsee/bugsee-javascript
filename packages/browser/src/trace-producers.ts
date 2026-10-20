@@ -308,13 +308,13 @@ export class FpsProducer extends TraceProducerBase {
 
 /**
  * `screen_size` (JS-specific; deliberately NOT Android's `displays`, a display LIST): `{ width, height, dpr }` in
- * CSS px, re-read on `resize` / `orientationchange`. A step curve, so it is held and de-duplicated (a resize that
+ * CSS px, re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker). A step curve, so it is held and de-duplicated (a resize that
  * moved nothing is dropped); the initial value is emitted at start. Omitted entirely when the screen or the pixel
  * ratio cannot be read as finite positive numbers.
  *
  * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
- * `resize`, so the value can go stale until the next one (a `(resolution: Xdppx)` media-query / `screen`
- * change listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
+ * `resize`, so the value can go stale until the next one, unless the engine fires the `screen` `change` event the
+ * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
  */
 export class ScreenSizeProducer extends TraceProducerBase {
   readonly name = 'screen-size';
@@ -403,7 +403,11 @@ export interface BrowserTraceEnv extends BatteryEnv {
   sensors?: boolean;
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
-  /** The shared ApplicationTracker feeding orientation, app_state and fps; when absent app_state/screen_size/fps are omitted (orientation comes from the UiTracker). */
+  /**
+   * The shared ApplicationTracker feeding `app_state`. Its presence also GATES the `app_state`, `screen_size`, `fps`
+   * and `main_thread_lag_ms` producers (they are omitted without it); `screen_size`, `fps` and `orientation` get their
+   * sources from the per-window UiTracker, not from this.
+   */
   lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
 }
 

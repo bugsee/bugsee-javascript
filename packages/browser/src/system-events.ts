@@ -118,8 +118,8 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 export function createBrowserSystemEventsSource(
   env: BrowserSystemEventsEnv = {},
 ): Interceptor<{ event: SystemEvent }> {
-  // Host globals only when NEITHER window nor document was injected: an injected env never borrows the host's.
-  // ONE read of the window serves the lifecycle tracker and the UI tracker.
+  // Host globals (window, document) only when NEITHER window nor document was injected: an injected env never
+  // borrows the host's window or document. ONE read of the window serves the lifecycle tracker and the UI tracker.
   const injected = env.window !== undefined || env.document !== undefined;
   const win = injected ? env.window : hostGlobal<WindowEvents>('window', env.onError);
   // The document is read only when no lifecycle tracker was supplied: a supplied one already owns it.
@@ -135,8 +135,9 @@ export function createBrowserSystemEventsSource(
         env.onError,
       );
     })();
-  // An injected window brings ITS screen (read guarded); only without a window does the host's global apply, so a
-  // window whose `screen` is blocked never borrows the host's into the shared per-window UI tracker.
+  // An injected WINDOW brings ITS screen (read guarded), so a window whose `screen` is blocked never borrows the
+  // host's into the shared per-window UI tracker. Without an injected window — including an env that injected only a
+  // document, as before — the host's screen global applies.
   const screen =
     env.screen ??
     (env.window !== undefined
