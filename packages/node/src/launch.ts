@@ -279,9 +279,16 @@ export interface BugseeLaunchOptions {
    * `serverTiming` = a `Server-Timing` entry exposing the trace context to browser RUM (PerformanceObserver).
    */
   traceResponse?: TraceResponseConfig;
-  /** Capture periodic system traces (memory/cpu/event-loop lag). Default true. */
+  /**
+   * Capture periodic system traces (memory/cpu/event-loop lag/utilization). Default true. They share ONE 1 s tracker
+   * sampling timer with the `gc` system event, so `false` alone does not make a launch timer-free: also set
+   * `captureSystemEvents: false`.
+   */
   captureSystemTraces?: boolean;
-  /** Capture system events (process lifecycle). Default true. */
+  /**
+   * Capture system events (process lifecycle, and the `gc` event on Node). Default true. The `gc` event owns the GC
+   * observer and arms the shared 1 s tracker sampling timer while events are captured; `false` attaches neither.
+   */
   captureSystemEvents?: boolean;
   /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
   captureDiskSpace?: boolean;

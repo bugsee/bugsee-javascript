@@ -495,6 +495,33 @@ describe('ProcessTracker', () => {
       offGc();
     });
 
+    it.each([
+      ['eventLoop (Deno: measuresEventLoopDelay:false)', 'eventLoop', { measuresEventLoopDelay: false }],
+      ['v8Heap (Bun: measuresV8Heap:false)', 'v8Heap', { measuresV8Heap: false }],
+      ['availableMemory (measuresAvailableMemory:false)', 'availableMemory', { measuresAvailableMemory: false }],
+    ] as const)('%s: a gated stage alone arms no timer', (_label, stage, over) => {
+      const { tracker, fs } = mk(over as ProcessEnv);
+      const off = tracker.on(stage, () => {});
+      expect(fs.sets()).toBe(0);
+      off();
+    });
+
+    it('an injected ELU reader answering an invalid value (NaN, infinite, negative) is omitted, never reported', () => {
+      let u: number | undefined = 50;
+      const { tracker, fs } = mk({ eventLoopUtilization: () => u });
+      const got: unknown[] = [];
+      tracker.on('utilization', (x) => void got.push(x));
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+        u = bad;
+        fs.tick();
+      }
+      u = 0;
+      fs.tick(); // a genuine zero is kept
+      u = 100;
+      fs.tick();
+      expect(got).toEqual([{ utilizationPercent: 0 }, { utilizationPercent: 100 }]);
+    });
+
     it('measuresGc:false constructs no observer; the default wires the injected observer for gc entries', () => {
       const ctor = vi.fn();
       const gated = mk({ performanceObserver: ctor as never, measuresGc: false });

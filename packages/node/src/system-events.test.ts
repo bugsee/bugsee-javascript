@@ -282,6 +282,17 @@ describe('gc system event (C15)', () => {
     ]);
   });
 
+  it('rounds the pause figures to 3 decimals (the observer reports float noise like 21.458208084106445)', () => {
+    const t = fakeTracker();
+    const { events } = activate2(t.tracker);
+    t.fire({ count: 2, pauseMs: 21.458208084106445, maxPauseMs: 10.0004999 });
+    t.fire({ count: 1, pauseMs: 0.0005, maxPauseMs: 0.0004 });
+    expect(events.filter((e) => e.name === 'gc').map((e) => e.params)).toEqual([
+      { count: 2, pauseMs: 21.458, maxPauseMs: 10 },
+      { count: 1, pauseMs: 0.001, maxPauseMs: 0 },
+    ]);
+  });
+
   it('a quiet interval (count 0) writes NOTHING: omit, never zero', () => {
     const t = fakeTracker();
     const { events } = activate2(t.tracker);

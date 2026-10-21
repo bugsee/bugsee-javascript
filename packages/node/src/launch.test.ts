@@ -595,6 +595,48 @@ describe('launch', () => {
       ).toEqual([{ name: 'gc', params: { count: 2, pauseMs: 5, maxPauseMs: 4 } }]);
     });
 
+    it('a failing gc subscription is reported to the launch onError (the shared tracker reports through it)', () => {
+      const fs = fakeScheduler();
+      processTrackerFor({
+        scheduler: fs.scheduler,
+        gc: {
+          start: () => {
+            throw new Error('observer refused');
+          },
+          stop: () => {},
+          read: () => undefined,
+        },
+      });
+      const errors: unknown[] = [];
+      // caller-supplied producers: nothing else hands this launch's reporter to the shared tracker
+      launchTracked(
+        'tok',
+        baseOptions({
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [],
+          onError: (e) => void errors.push(e),
+        }),
+      );
+      expect(errors.map((e) => (e as Error).message)).toContain('observer refused');
+    });
+
+    it('a throwing events listener is reported to the launch onError (the node events source is wired to it)', () => {
+      const errors: unknown[] = [];
+      launchTracked(
+        'tok',
+        baseOptions({
+          onError: (e) => void errors.push(e),
+          wrapSystemEventsSource: (inner) => {
+            inner.on('event', () => {
+              throw new Error('listener boom');
+            });
+            return inner;
+          },
+        }),
+      );
+      expect(errors.map((e) => (e as Error).message)).toContain('listener boom');
+    });
+
     it('captureSystemEvents:false never arms the GC observer', async () => {
       const gc = seedGc();
       const client = launchTracked('tok', baseOptions({ captureSystemEvents: false }));

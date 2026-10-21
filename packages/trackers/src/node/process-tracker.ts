@@ -456,7 +456,12 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         return {
           read: () => {
             const utilizationPercent = elu();
-            return utilizationPercent === undefined ? undefined : { utilizationPercent };
+            // Omit anything that is not a real percentage (NaN, infinite, negative): never reported, never zeroed.
+            return utilizationPercent === undefined ||
+              !Number.isFinite(utilizationPercent) ||
+              utilizationPercent < 0
+              ? undefined
+              : { utilizationPercent };
           },
           stop: () => {},
         };

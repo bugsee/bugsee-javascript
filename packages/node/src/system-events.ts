@@ -39,6 +39,9 @@ export interface NodeSystemEventsOptions {
   onError?: (error: unknown) => void;
 }
 
+// Pause figures are float noise past the microsecond (21.458208084106445): three decimals.
+const ms3 = (ms: number): number => Math.round(ms * 1000) / 1000;
+
 const warningParams = (warning: unknown): Record<string, unknown> =>
   warning instanceof Error
     ? { name: warning.name, message: warning.message }
@@ -103,7 +106,7 @@ class NodeSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
           if (g.count > 0) {
             this.emit('event', {
               name: 'gc',
-              params: { count: g.count, pauseMs: g.pauseMs, maxPauseMs: g.maxPauseMs },
+              params: { count: g.count, pauseMs: ms3(g.pauseMs), maxPauseMs: ms3(g.maxPauseMs) },
             });
           }
         });

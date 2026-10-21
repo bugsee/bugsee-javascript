@@ -444,3 +444,37 @@ describe('@bugsee/deno — the runtime gates reach the shared ProcessTracker', (
     expect(seen).not.toContain('availableMemory');
   });
 });
+
+describe('@bugsee/deno — the gc event is never written and arms nothing (blind observer)', () => {
+  it('captureSystemTraces:false + events on: no gc event after ticks, and no extra sampling timer vs events off', async () => {
+    const launchWith = (captureSystemEvents: boolean) => {
+      const callbacks: Array<() => void> = [];
+      const calls: number[] = [];
+      const store = memStore();
+      const scheduler: Scheduler = {
+        setInterval: (cb, ms) => {
+          callbacks.push(cb);
+          calls.push(ms);
+          return `h${calls.length}`;
+        },
+        clearInterval: () => {},
+      };
+      track(
+        launchCore(
+          'tok',
+          base({ scheduler, captureStore: store, captureSystemTraces: false, captureSystemEvents }),
+        ).client,
+      );
+      for (const cb of callbacks) cb();
+      return { store, oneSecond: calls.filter((ms) => ms === 1000).length };
+    };
+    const off = launchWith(false);
+    const on = launchWith(true);
+    expect(on.oneSecond).toBe(off.oneSecond); // the gated gc stage keeps no tracker timer alive
+    const names = ((await createCaptureExporter(on.store).drain()).get('events.system') ?? []).map(
+      (e) => (e.data as { name: string }).name,
+    );
+    expect(names).toContain('process_started'); // not vacuous: events were captured
+    expect(names).not.toContain('gc');
+  });
+});
