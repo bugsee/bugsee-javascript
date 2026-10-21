@@ -136,8 +136,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       l.on('pagehide', ({ persisted }) =>
         this.emit('event', { name: 'process_exiting', params: { persisted } }),
       ),
-      l.on('visibility', ({ visible }) =>
-        this.emit('event', { name: visible ? 'process_foreground' : 'process_background' }),
+      // The de-duplicated `state` stage, NOT the raw `visibility` one: a visibilitychange that leaves the page where it
+      // already was (a synthetic/duplicate event) is not a foreground/background transition.
+      l.on('state', ({ state }) =>
+        this.emit('event', {
+          name: state === 'foreground' ? 'process_foreground' : 'process_background',
+        }),
       ),
       l.on('freeze', () => this.emit('event', { name: 'freeze' })),
       l.on('resume', () => this.emit('event', { name: 'resume' })),
