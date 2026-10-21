@@ -66,11 +66,11 @@ const positive = (value: unknown): number | undefined => {
   return n !== undefined && n > 0 ? n : undefined;
 };
 
-/** Maps one Electron `Display`; undefined unless it has an id and a positive size. */
 /** At most 2 decimals: Electron reports raw floats (real: `displayFrequency` 59.996700286865234). */
 const round2 = (n: number | undefined): number | undefined =>
   n === undefined ? undefined : positive(Math.round(n * 100) / 100); // a value that rounds to 0 is unusable, like 0
 
+/** Maps one Electron `Display`; undefined unless it has an id and a positive size. */
 export function mapDisplay(raw: unknown): DisplayInfo | undefined {
   const d = record(raw);
   if (d === undefined) return undefined;

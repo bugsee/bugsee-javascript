@@ -554,6 +554,18 @@ describe('stop() releases the destroyed subscriptions', () => {
     expect(ok.listeners).toHaveLength(0);
   });
 
+  it('a sender without `once` is never tracked (nothing would drop the entry), so stop() does not touch it', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const spy = vi.fn();
+    const sender = { id: 1, send: vi.fn(), removeListener: spy } as ControlSenderLike;
+    hello(ipc, sender);
+    expect(control.rendererCount).toBe(1); // still registered and addressed
+    control.stop();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('a second stop() does not release again', () => {
     const ipc = fakeIpcMain();
     const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });

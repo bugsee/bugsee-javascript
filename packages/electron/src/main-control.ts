@@ -122,7 +122,9 @@ export function createElectronMainControl(
         continue;
       }
       // A crashed renderer is alive as an object but has no frame: sending prints a stderr error. It stays
-      // registered (it may reload and then receives control again); the re-handshake refreshes its state.
+      // registered (it may reload and then receives control again). Control sent while it was crashed is NOT replayed: a
+      // rejoining renderer's `hello` reply re-sends only the session id and the blackout flag, so a pause/resume/flush
+      // issued meanwhile is lost for it (the same as before the skip, when the send hit a disposed frame).
       if (isCrashed(sender)) {
         continue;
       }
@@ -162,8 +164,12 @@ export function createElectronMainControl(
           subscribed.delete(sender);
           forget(sender);
         };
-        subscribed.set(sender, onDestroyed);
-        sender.once?.('destroyed', onDestroyed);
+        // Tracked ONLY when it can actually be subscribed (`once` present): otherwise `destroyed` never fires to
+        // drop the entry and the map would pin the sender until stop().
+        if (typeof sender.once === 'function') {
+          subscribed.set(sender, onDestroyed);
+          sender.once('destroyed', onDestroyed);
+        }
       }
     }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
