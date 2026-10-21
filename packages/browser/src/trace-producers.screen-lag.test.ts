@@ -69,6 +69,41 @@ describe('DisplaysProducer', () => {
     expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1708, height: 960, scale: 1.25 }]);
   });
 
+  it('rounds height too (844.8 -> 845, not floored) and records the ratio used', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 1.1 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1000, height: 768 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1100, height: 845, scale: 1.1 }]);
+  });
+
+  it('writes nothing when EITHER side rounds to zero (each side alone)', () => {
+    for (const screen of [
+      { width: 0.4, height: 100 },
+      { width: 100, height: 0.4 },
+    ]) {
+      const win = Object.assign(mkTarget(), { devicePixelRatio: 1 });
+      const out: Emit[] = [];
+      new DisplaysProducer(new UiTracker({ window: win, screen: screen as never })).start(
+        sinkOf(out),
+      );
+      expect(out).toEqual([]);
+    }
+  });
+
+  it('rounds the zoom-polluted ratio to 2 decimals and de-duplicates on the rounded value', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 1.100000023841858 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1000, height: 1000 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1100, height: 1100, scale: 1.1 }]);
+    win.devicePixelRatio = 1.1;
+    win.fire('resize');
+    expect(out).toHaveLength(1);
+  });
+
   it('writes rotation as quarter turns of the orientation angle, omits it without a usable angle, and follows an orientation change', () => {
     const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
     const screen = { width: 390, height: 844, orientation: { type: 'portrait-primary', angle: 0 } };
@@ -183,7 +218,7 @@ describe('createBrowserSystemTraceProducers: displays + main_thread_lag_ms', () 
       expect.arrayContaining(['displays', 'main-thread-lag']),
     );
     expect(names(createBrowserSystemTraceProducers({}))).not.toEqual(
-      expect.arrayContaining(['screen-size']),
+      expect.arrayContaining(['displays']),
     );
     expect(names(createBrowserSystemTraceProducers({}))).not.toEqual(
       expect.arrayContaining(['main-thread-lag']),

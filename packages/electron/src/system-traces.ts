@@ -96,7 +96,7 @@ function wireDisplay(d: DisplayInfo): Record<string, unknown> {
 }
 
 class DisplaysProducer extends TraceProducerBase {
-  readonly name = 'electron-displays';
+  readonly name = 'displays';
   #off: (() => void) | undefined;
   constructor(private readonly tracker: ElectronDisplayTracker) {
     super();

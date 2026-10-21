@@ -321,10 +321,10 @@ export class FpsProducer extends TraceProducerBase {
 
 /**
  * `displays` (the MOBILE name and list shape, spec bundle/traces.md `displays`; it replaces the retired JS-specific
- * `displays`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, rotation? }]` where `width`/`height` are
+ * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, rotation? }]` where `width`/`height` are
  * DEVICE pixels, `round(screen.width * devicePixelRatio)` / `round(screen.height * devicePixelRatio)`, `scale` is the
- * `devicePixelRatio` used, and `rotation` is the Screen Orientation `angle` / 90 (quarter turns, counter-clockwise, as
- * Android's `Surface.ROTATION_*`), omitted when the engine gives no angle or one that is not a multiple of 90. The browser
+ * `devicePixelRatio` used, and `rotation` is the Screen Orientation `angle` / 90 (quarter turns; the trace field means Android's
+ * `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device), omitted when the engine gives no angle or one that is not a multiple of 90. The browser
  * cannot tell the display `type`, `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the
  * page is on, as iOS does (a page cannot observe power).
  *
@@ -372,6 +372,8 @@ export class DisplaysProducer extends TraceProducerBase {
     const width = Math.round(s.width * s.dpr);
     const height = Math.round(s.height * s.dpr);
     if (!(width > 0) || !(height > 0)) return;
+    // at most 2 decimals (zoom gives 1.100000023841858), like the Electron producer; the held value is the rounded one
+    const scale = Math.round(s.dpr * 100) / 100 || s.dpr;
     const angle = this.#tracker.current('orientation')?.angle;
     const turns =
       angle !== undefined && angle % 90 === 0 ? (((angle / 90) % 4) + 4) % 4 : undefined;
@@ -381,7 +383,7 @@ export class DisplaysProducer extends TraceProducerBase {
         state: 'on',
         width,
         height,
-        scale: s.dpr,
+        scale,
         ...(turns !== undefined ? { rotation: turns } : {}),
       },
     ]);

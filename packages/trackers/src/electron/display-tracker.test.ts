@@ -307,6 +307,46 @@ describe('ElectronDisplayTracker', () => {
         [9, 2],
       ]);
     });
+    it('a throwing getPrimaryDisplay is reported ONCE and the list is still produced, without state', () => {
+      const onError = vi.fn();
+      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
+        getPrimaryDisplay: vi.fn(() => {
+          throw new Error('primary');
+        }),
+      });
+      const list = track(s, onError).current('displays')?.displays;
+      expect(list?.map((d) => [d.nativeId, d.id, d.state])).toEqual([
+        [7, 0, undefined],
+        [5, 1, undefined],
+      ]);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+    it('numbering restarts at 0 (primary first) for a new session: forgotten when the last subscriber leaves', () => {
+      let primary = 1;
+      const s = fakeScreen(() => [display({ id: 1 }), display({ id: 2 })], {
+        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
+      });
+      const t = track(s);
+      const off = t.on('displays', () => undefined);
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [2, 1],
+      ]);
+      const other = t.on('displayAdded', () => undefined);
+      off();
+      // still subscribed through another stage: same session, numbering kept
+      primary = 2;
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [2, 1],
+      ]);
+      other();
+      t.on('displays', () => undefined);
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 1],
+        [2, 0],
+      ]);
+    });
     it('events carry the same session id as the list, seeding the numbering on a first event', () => {
       const s = fakeScreen(() => [display({ id: 9 }), display({ id: 4 })], {
         getPrimaryDisplay: vi.fn(() => display({ id: 4 })),

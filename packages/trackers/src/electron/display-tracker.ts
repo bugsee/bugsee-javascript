@@ -13,7 +13,8 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // `current('displays')` is a LIVE `screen.getAllDisplays()` read. {@link DisplayInfo} is the MOBILE `displays` entry in
 // camelCase (spec bundle/traces.md `displays`): `id` is a small per-session index (the display set at the first read is
 // numbered from 0 with `screen.getPrimaryDisplay()` FIRST, later displays take the next unused number, a number is NEVER
-// reused within the tracker's life even after a display is removed), `nativeId` is Electron's own id (can exceed int32),
+// reused within a SESSION even after a display is removed; the numbering is forgotten when the LAST subscriber leaves
+// (a session stop / relaunch), so the next session numbers again from 0 with the then-current primary first), `nativeId` is Electron's own id (can exceed int32),
 // `width`/`height` are DEVICE pixels in the CURRENT orientation (`size` x `scaleFactor`, rounded), `naturalWidth`/
 // `naturalHeight` the rotation-0 device pixels (swapped for quarter turns 1 and 3; omitted when the rotation is unknown),
 // `scale` = `scaleFactor`, `maxFps` = `displayFrequency` rounded, `rotation` in QUARTER TURNS 0-3 (Electron's 0/90/180/270
@@ -76,7 +77,12 @@ export interface ElectronDisplayEnv {
 
 type DisplayStage = keyof ElectronDisplayEvents;
 
-/** Electron's `rotation` degrees (counter-clockwise) -> quarter turns, as Android's `Surface.ROTATION_*`. */
+/**
+ * Electron's `rotation` degrees -> quarter turns. Electron's typings document `Display.rotation` as clockwise degrees
+ * (0/90/180/270). The trace field means Android's `Surface.ROTATION_*` (0-3). Whether Electron's clockwise degrees map to
+ * Android's quarter turns by plain division by 90 on a real rotated display is UNVERIFIED (docs/PROGRESS.md); the numbers
+ * here are the plain division and are not adjusted.
+ */
 const ROTATION_TURNS = new Map<number, 0 | 1 | 2 | 3>([
   [0, 0],
   [90, 1],
@@ -142,7 +148,7 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     'displays',
   ];
   readonly #screen: ScreenSource | undefined;
-  /** Electron's display id -> the session index. Only ever grows: a number is never reused. */
+  /** Electron's display id -> the session index. Grows within a session (a number is never reused); cleared with the last subscriber. */
   readonly #ids = new Map<number, number>();
 
   constructor(env: ElectronDisplayEnv = {}, onError?: (error: unknown) => unknown) {
@@ -165,16 +171,29 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     return id;
   }
 
-  /** The Electron id of the primary display (guarded by the caller: Electron's `screen` throws before app ready). */
+  /** A new session starts numbering from 0 again: forget the numbers once nothing listens any more. */
+  protected override onListenersChanged(): void {
+    super.onListenersChanged();
+    if (this.stages.every((stage) => this.listenerCount(stage) === 0)) this.#ids.clear();
+  }
+
+  /**
+   * The Electron id of the primary display, GUARDED on its own: a throwing/hostile `getPrimaryDisplay` is reported once
+   * and answers undefined, so the list is still produced (just without `state`, and not primary-first).
+   */
   #primaryNativeId(screen: ScreenSource): number | undefined {
-    if (typeof screen.getPrimaryDisplay !== 'function') return undefined;
-    return mapDisplay(screen.getPrimaryDisplay())?.nativeId;
+    try {
+      if (typeof screen.getPrimaryDisplay !== 'function') return undefined;
+      return mapDisplay(screen.getPrimaryDisplay())?.nativeId;
+    } catch (error) {
+      this.report(error);
+      return undefined;
+    }
   }
 
   /** The first read numbers the primary display 0 (the order of `getAllDisplays()` is not documented), then the rest. */
-  #seed(screen: ScreenSource, all: readonly MappedDisplay[]): void {
+  #seed(primary: number | undefined, all: readonly MappedDisplay[]): void {
     if (this.#ids.size > 0) return;
-    const primary = this.#primaryNativeId(screen);
     if (primary !== undefined) this.#indexOf(primary);
     for (const d of all) this.#indexOf(d.nativeId);
   }
@@ -190,8 +209,8 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
       if (!Array.isArray(raw)) return undefined;
       const mapped = raw.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined);
       if (mapped.length === 0) return undefined;
-      this.#seed(screen, mapped);
       const primary = this.#primaryNativeId(screen);
+      this.#seed(primary, mapped);
       const displays = mapped.map(
         (d): DisplayInfo => ({
           id: this.#indexOf(d.nativeId),
@@ -215,7 +234,7 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
       if (this.#ids.size === 0 && typeof screen.getAllDisplays === 'function') {
         const all = screen.getAllDisplays();
         this.#seed(
-          screen,
+          this.#primaryNativeId(screen),
           Array.isArray(all)
             ? all.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined)
             : [],
@@ -224,6 +243,8 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     } catch (error) {
       this.report(error);
     }
+    // Without `getAllDisplays` nothing seeds the numbering, so an event's display takes the next unused number (0 when it
+    // is the first thing seen) even when it is not the primary.
     return { id: this.#indexOf(display.nativeId), ...display };
   }
 

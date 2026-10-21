@@ -19,6 +19,7 @@ export {
   type ElectronDisplayEvents,
   ElectronDisplayTracker,
   electronDisplayTrackerFor,
+  type MappedDisplay,
   mapDisplay,
   resetElectronDisplayTracker,
   type ScreenSource,
