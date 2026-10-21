@@ -519,7 +519,7 @@ describe('launch (webview)', () => {
     expect(JSON.stringify(hits[0]?.p)).toContain('"mode":"standalone"');
   });
 
-  it('streams dark_mode_changed from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
+  it('streams DarkModeChanged from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
     const listeners = new Set<(e: { matches: boolean }) => void>();
     const thisSeen: unknown[] = [];
     const win = fakeEventTarget();
@@ -545,7 +545,7 @@ describe('launch (webview)', () => {
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
       entriesOfType(msgs.msgs(), 'events.system').some((e) =>
-        JSON.stringify(e.p).includes('dark_mode_changed'),
+        JSON.stringify(e.p).includes('DarkModeChanged'),
       );
     expect(has(fake)).toBe(true);
 

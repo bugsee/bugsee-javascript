@@ -101,6 +101,15 @@ describe('MemoryProducer', () => {
     expect(s.live()).toBe(0);
   });
 
+  it('clamps ram_js_heap_free at 0 when used exceeds the limit (never a negative free)', () => {
+    const { out } = startAll([new MemoryProducer(mkProcess(() => heap(5, 3), mkScheduler()))]);
+    expect(out).toEqual([
+      { name: 'ram_js_heap_total', value: 3 },
+      { name: 'ram_js_heap_free', value: 0 },
+      { name: 'ram_js_heap_used', value: 5 },
+    ]);
+  });
+
   it('emits through the unconditional (polled) path: an unchanged reading is still emitted each tick', () => {
     const s = mkScheduler();
     const p = new MemoryProducer(mkProcess(() => heap(1, 3), s));
@@ -323,6 +332,17 @@ describe('OrientationProducer', () => {
     const { out } = startAll([new OrientationProducer(new UiTracker({ window: win, screen: {} }))]);
     win.fire('orientationchange');
     expect(out).toEqual([]);
+  });
+
+  it('writes nothing unless the engine supplies BOTH type and angle (never an angle-only or type-only guess)', () => {
+    for (const partial of [{ angle: 90 }, { type: 'landscape-primary' }, {}]) {
+      const orientation = Object.assign(mkTarget(), partial);
+      const { out } = startAll([
+        new OrientationProducer(new UiTracker({ screen: { orientation } })),
+      ]);
+      orientation.fire('change');
+      expect(out).toEqual([]);
+    }
   });
 
   it('emits nothing where the engine has no screen.orientation', () => {

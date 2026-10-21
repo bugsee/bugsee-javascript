@@ -13,13 +13,14 @@ import {
 } from '@bugsee/trackers/browser';
 import type { WindowEvents } from './detection-providers';
 import { hostGlobal, hostRead } from './host-global';
+import { orientationToWire } from './system-trace-values';
 
 // Browser system-event SOURCE for @bugsee/capture's systemEventsProvider (the node lifecycle-source
 // analog). A listenable InterceptorBase: on activate it emits a 'process_started' marker and subscribes
 // to the browser lifecycle/context signals, mapping each to an events.system entry; on deactivate it
 // removes the listeners. Captured (Android events.system parity, web-native):
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
-//   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState; only when the
+//   visibilitychange       → UIApplicationDidBecomeActiveNotification / UIApplicationDidEnterBackgroundNotification (Android names; app fg/bg, from document.visibilityState; only when the
 //                            de-duplicated ApplicationTracker `state` changes, so a duplicate/synthetic event emits nothing)
 //   online / offline       → online / offline (one event per DOM event; the ConnectivityTracker `transition` stage, its kind the
 //                            event's own type — never a navigator.onLine read; attaching is not an event)
@@ -28,8 +29,8 @@ import { hostGlobal, hostRead } from './host-global';
 //   private-mode HEURISTIC → private_mode_detected ({method}) ONLY for a `yes` answer (a small storage quota; constrained
 //                            storage can false-positive, so it is a hint, never a certainty), once per answer, ON by default (the
 //                            launch opts out with `captureEnvironmentHints: false`); `no`/`unknown` never produce an event (never claim certainty)
-//   orientation (UiTracker: screen.orientation change + orientationchange) → orientation_changed ({type, angle})
-//   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
+//   orientation (UiTracker: screen.orientation change + orientationchange) → OrientationChanged ({current, prev?, type, angle}; `current`/`prev` are the Android `orientation` ints)
+//   colorScheme (UiTracker) → DarkModeChanged ({dark} from prefers-color-scheme)
 //   displayMode (UiTracker) → display_mode_changed ({mode: fullscreen|standalone|minimal-ui|browser, previousMode?} from display-mode)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
@@ -73,7 +74,7 @@ export interface BrowserSystemEventsEnv {
   screen?: ScreenLike;
   /**
    * `window.matchMedia` of the window the SDK is bound to (pass it bound; never defaulted to the host global).
-   * Absent = no `dark_mode_changed`.
+   * Absent = no `DarkModeChanged`.
    */
   matchMedia?: (query: string) => MediaQueryLike;
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
@@ -133,6 +134,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
   protected onActivate(): void {
     const l = this.#lifecycle;
     this.emit('event', { name: 'process_started' });
+    // The orientation this source last knew (the `prev` of the next OrientationChanged): read at subscription, then tracked.
+    const known = this.#ui.current('orientation');
+    let previousOrientation =
+      known?.type !== undefined && known.angle !== undefined
+        ? orientationToWire(known.type, known.angle)
+        : undefined;
     this.#unsubscribe = [
       l.on('pagehide', ({ persisted }) =>
         this.emit('event', { name: 'process_exiting', params: { persisted } }),
@@ -141,21 +148,36 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       // already was (a synthetic/duplicate event) is not a foreground/background transition.
       l.on('state', ({ state }) =>
         this.emit('event', {
-          name: state === 'foreground' ? 'process_foreground' : 'process_background',
+          name:
+            state === 'foreground'
+              ? 'UIApplicationDidBecomeActiveNotification'
+              : 'UIApplicationDidEnterBackgroundNotification',
         }),
       ),
       l.on('freeze', () => this.emit('event', { name: 'freeze' })),
       l.on('resume', () => this.emit('event', { name: 'resume' })),
       // The UiTracker de-duplicates the double delivery (screen.orientation change + window orientationchange); an
       // engine without a readable orientation still announces the bare event.
-      this.#ui.on('orientation', ({ type, angle }) =>
+      this.#ui.on('orientation', ({ type, angle }) => {
+        // `current` is the Android `orientation` trace value; without both type and angle there is nothing honest to
+        // report, so the bare event is announced with no params (and the previous value is left untouched).
+        if (type === undefined || angle === undefined) {
+          this.emit('event', { name: 'OrientationChanged' });
+          return;
+        }
+        const current = orientationToWire(type, angle);
+        const before = previousOrientation;
+        previousOrientation = current;
+        // Android/iOS announce only a REAL change: the tracker de-duplicates on the raw {type, angle}, but after a bare
+        // (unreadable) event the same orientation can arrive again, and a 180-degree flip stays distinct (own ints).
+        if (current === before) return;
         this.emit('event', {
-          name: 'orientation_changed',
-          ...(type !== undefined && angle !== undefined ? { params: { type, angle } } : {}),
-        }),
-      ),
+          name: 'OrientationChanged',
+          params: { current, ...(before !== undefined ? { prev: before } : {}), type, angle },
+        });
+      }),
       this.#ui.on('colorScheme', ({ dark }) =>
-        this.emit('event', { name: 'dark_mode_changed', params: { dark } }),
+        this.emit('event', { name: 'DarkModeChanged', params: { dark } }),
       ),
     ];
     this.#subscribeDisplayMode();

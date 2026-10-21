@@ -74,7 +74,7 @@ class CpuProducer extends StageProducer<'cpu'> {
   protected publish(c: ProcessEvents['cpu']): void {
     this.emit('cpu_usage_user', c.userDelta);
     this.emit('cpu_usage_system', c.systemDelta);
-    this.emit('cpu_usage_process', c.processPct);
+    if (c.processPct !== undefined) this.emit('cpu_usage_process', c.processPct); // omitted on a zero wall window
   }
 }
 
@@ -87,9 +87,10 @@ class EventLoopLagProducer extends StageProducer<'eventLoop'> {
   }
   protected override baseline(): void {}
   protected publish(l: ProcessEvents['eventLoop']): void {
-    this.emit('event_loop_lag_ms', l.meanMs);
-    this.emit('event_loop_lag_max_ms', l.maxMs);
-    this.emit('event_loop_lag_p99_ms', l.p99Ms);
+    // A field the histogram could not report is absent: omit that trace, never write a zero.
+    if (l.meanMs !== undefined) this.emit('event_loop_lag_ms', l.meanMs);
+    if (l.maxMs !== undefined) this.emit('event_loop_lag_max_ms', l.maxMs);
+    if (l.p99Ms !== undefined) this.emit('event_loop_lag_p99_ms', l.p99Ms);
   }
 }
 

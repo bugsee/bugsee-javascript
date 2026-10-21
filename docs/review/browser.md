@@ -1,5 +1,7 @@
 # Adversarial review — @bugsee/browser
 
+> Note: this review is a dated snapshot. Four system-event names it mentions were renamed in C2 (`process_foreground`/`process_background` are now `UIApplicationDidBecomeActiveNotification`/`UIApplicationDidEnterBackgroundNotification`, `orientation_changed` is `OrientationChanged`, `dark_mode_changed` is `DarkModeChanged`).
+
 **Reviewed:** 2026-07-26 · **Scope:** `packages/browser` (impl 1884 LOC across 13 files, tests 3162 LOC across 12 files; 208 tests, all green; `tsc --noEmit` clean)
 **Method:** full source read of the package + the seams it calls into (`@bugsee/replay`, `@bugsee/browser-utils`, `@bugsee/core`), plus **empirical probes** — three temporary jsdom test files that booted the real `launchCore` and were deleted afterwards (`git status --short packages/` verified EMPTY) — and a **20-mutation battery** (`cp` backup → patch → `vitest run` → restore from backup).
 

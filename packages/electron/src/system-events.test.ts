@@ -435,6 +435,81 @@ describe('createElectronSystemEventsSource: domain trackers', () => {
   });
 });
 
+describe('conformance: every emitted event param key is camelCase', () => {
+  // Keys are DERIVED from the events the real mux emits for every Electron signal (never a hand-copied list). Event params
+  // are camelCase with no exception; trace-value keys are the snake_case ones.
+  const CAMEL = /^[a-z][a-zA-Z0-9]*$/;
+
+  it('child_process_gone, display_*, window_* and renderer_* events carry only camelCase keys', () => {
+    const win = new FakeWindow(1);
+    const powerMonitor = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [display(1)] });
+    const app = new FakeEmitter();
+    const onError = vi.fn();
+    const mux = createElectronSystemEventsSource(
+      new FakeInner(),
+      {
+        process: new ElectronProcessTracker({ app }, onError),
+        power: new ElectronPowerTracker({ powerMonitor }, onError),
+        display: new ElectronDisplayTracker({ screen }, onError),
+        application: new ElectronApplicationTracker(
+          { app, BrowserWindow: { getAllWindows: () => [win] } },
+          onError,
+        ),
+      },
+      onError,
+    );
+    const seen = vi.fn();
+    mux.on('event', seen);
+    app.emit('child-process-gone', {
+      type: 'Utility',
+      reason: 'crashed',
+      exitCode: 1,
+      name: 'Network Service',
+      serviceName: 'network.mojom.NetworkService',
+    });
+    for (const e of ['suspend', 'resume', 'lock-screen', 'unlock-screen', 'on-ac', 'on-battery']) {
+      powerMonitor.emit(e);
+    }
+    screen.emit('display-added', {
+      ...display(2),
+      displayFrequency: 60,
+      rotation: 90,
+      internal: true,
+    });
+    screen.emit('display-removed', display(3));
+    screen.emit('display-metrics-changed', display(4), ['bounds', 'scaleFactor']);
+    for (const e of ['focus', 'blur', 'hide', 'show']) win.emit(e);
+    win.webContents.emit('unresponsive');
+    win.webContents.emit('responsive');
+
+    const events = seen.mock.calls.map((c) => c[0] as SystemEvent);
+    const keys = new Set(events.flatMap((e) => Object.keys(e.params ?? {})));
+    expect(events.map((e) => e.name)).toEqual(
+      expect.arrayContaining(['child_process_gone', 'display_metrics_changed', 'window_focus']),
+    );
+    // the EXACT key surface (a dropped key must fail, not just a renamed one)
+    expect([...keys].sort()).toEqual([
+      'changed',
+      'exitCode',
+      'height',
+      'id',
+      'internal',
+      'name',
+      'reason',
+      'refreshRate',
+      'rotation',
+      'scaleFactor',
+      'serviceName',
+      'type',
+      'webContentsId',
+      'width',
+      'windowId',
+    ]);
+    expect([...keys].filter((k) => !CAMEL.test(k))).toEqual([]);
+  });
+});
+
 describe('createElectronSystemEventsSource: a throwing domain subscription', () => {
   it('is reported, does not abort the other domains, and stop() still releases the inner source and the rest', () => {
     const powerMonitor = new FakeEmitter();
