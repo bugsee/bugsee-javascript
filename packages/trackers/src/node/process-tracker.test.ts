@@ -201,7 +201,7 @@ describe('ProcessTracker', () => {
       ]);
     });
 
-    it('a zero wall window yields processPct 0 (no divide by zero)', () => {
+    it('a zero wall window OMITS processPct (no divide by zero, never a fabricated 0%) but keeps the real deltas', () => {
       const { tracker, fs, advance } = mk();
       const { got } = collect(tracker);
       advance({ user: 500, system: 500 }, 0);
@@ -209,7 +209,17 @@ describe('ProcessTracker', () => {
       expect(got.find(([n]) => n === 'cpu')?.[1]).toEqual({
         userDelta: 500,
         systemDelta: 500,
-        processPct: 0,
+      });
+    });
+
+    it('a BACKWARDS wall window also omits processPct (not only a zero one)', () => {
+      const { tracker, fs, advance } = mk();
+      const { got } = collect(tracker);
+      advance({ user: 500, system: 500 }, -100);
+      fs.tick();
+      expect(got.find(([n]) => n === 'cpu')?.[1]).toStrictEqual({
+        userDelta: 500,
+        systemDelta: 500,
       });
     });
 

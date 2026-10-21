@@ -303,7 +303,7 @@ describe('createNodeSystemTraceProducers', () => {
   });
 
   it('emits a baseline on start, before any tick', () => {
-    const h = harness(constDeps());
+    const h = harness(constDeps(steppingCpu()));
     h.startAll();
     expect(h.got.get('process_memory_rss')).toBe(10);
     // no CPU baseline: no window has elapsed, so a start value would be invented
@@ -343,6 +343,39 @@ describe('createNodeSystemTraceProducers', () => {
       expect(h.got.has(name), name).toBe(false);
     }
     for (const off of keep) off();
+  });
+
+  it('a zero wall window omits cpu_usage_process (never 0) but still writes the real user/system deltas', () => {
+    let calls = 0;
+    const h = harness(
+      constDeps({
+        cpuUsage: () => {
+          calls += 1;
+          return { user: calls * 100, system: calls * 50 };
+        },
+        monotonicNowMs: () => 5, // the clock never advances: a zero-length window
+      }),
+    );
+    h.startAll();
+    h.tick();
+    expect(h.got.has('cpu_usage_process')).toBe(false);
+    expect(h.got.get('cpu_usage_user')).toBe(100);
+    expect(h.got.get('cpu_usage_system')).toBe(50);
+  });
+
+  it.each([
+    ['meanMs', { maxMs: 2, p99Ms: 3 }, ['event_loop_lag_max_ms', 'event_loop_lag_p99_ms']],
+    ['maxMs', { meanMs: 1, p99Ms: 3 }, ['event_loop_lag_ms', 'event_loop_lag_p99_ms']],
+    ['p99Ms', { meanMs: 1, maxMs: 2 }, ['event_loop_lag_ms', 'event_loop_lag_max_ms']],
+    ['every field', {}, []],
+  ])('with %s absent, only the measurable lag traces are written (never a 0)', (_n, reading, written) => {
+    const h = harness(
+      constDeps({ eventLoop: { read: () => reading, start: () => {}, stop: () => {} } }),
+    );
+    h.startAll();
+    h.tick();
+    const lag = ['event_loop_lag_ms', 'event_loop_lag_max_ms', 'event_loop_lag_p99_ms'];
+    expect(lag.filter((n) => h.got.has(n)).sort()).toEqual([...written].sort());
   });
 
   it('omits lag and utilization when no eventLoop / utilization source answers', () => {
