@@ -1413,3 +1413,43 @@ describe('launchMain — render-process-gone listener lifecycle', () => {
     expect(listeners).toHaveLength(1);
   });
 });
+
+describe('launchMain — a gone renderer is forgotten by the control channel', () => {
+  it('stops addressing the webContents after render-process-gone, and re-addresses it after a re-hello', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: { id?: number }, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const r = fakeSender(5);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    gone?.({}, { id: 5 }, { reason: 'killed' });
+    void client.flush();
+    expect(r.sent).toEqual([]);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello()); // the reloaded frame
+    r.sent.length = 0;
+    void client.flush();
+    expect(r.sent).toHaveLength(1);
+  });
+
+  it('a gone event without a contents id forgets nothing', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: unknown, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const r = fakeSender(5);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    gone?.({}, undefined, { reason: 'killed' });
+    void client.flush();
+    expect(r.sent).toHaveLength(1);
+  });
+});

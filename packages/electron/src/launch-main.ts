@@ -451,6 +451,11 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       contents: { id?: number },
       details: { reason: string; exitCode?: number },
     ): void => {
+      // The process is dead but its webContents object is not destroyed: stop addressing it (a reload's new
+      // frame says hello again and rejoins). Without this the main process kept sending into a disposed frame.
+      if (contents?.id !== undefined) {
+        control.rendererGone(contents.id);
+      }
       void goneHandler.handle(contents?.id ?? -1, details);
     };
     app.on('render-process-gone', onGone);

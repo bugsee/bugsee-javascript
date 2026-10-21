@@ -18,6 +18,12 @@ export interface ControlSenderLike {
    */
   once?(event: string, listener: () => void): void;
   isDestroyed?(): boolean;
+  /**
+   * True after the renderer process died (OOM, native crash) while the webContents object is still alive:
+   * `isDestroyed()` stays false, but `send` prints 'Render frame was disposed' to stderr. Optional; absent or
+   * throwing is read as "not crashed".
+   */
+  isCrashed?(): boolean;
 }
 /** An Electron `ipcMain` event carrying the originating renderer's sender. */
 export interface IpcMainControlEventLike {
@@ -57,6 +63,12 @@ export interface ElectronMainControl {
   blackoutStart(): void;
   /** Tell every renderer the owner's blackout ended. */
   blackoutEnd(): void;
+  /**
+   * A renderer process died (`render-process-gone`): forget the webContents with this id. If it reloads, its new
+   * frame's `hello` re-registers it and re-sends the session reply, so a crashed-then-reloaded window rejoins.
+   * Unknown ids are ignored.
+   */
+  rendererGone(id: number): void;
   /** The number of currently-registered renderers (window count). */
   readonly rendererCount: number;
 }
@@ -69,6 +81,18 @@ export function createElectronMainControl(
   const controlChannel = options.controlChannel ?? BUGSEE_CONTROL_CHANNEL;
   // Registered renderers, deduped by sender identity (a reload reuses the same webContents object).
   const renderers = new Set<ControlSenderLike>();
+
+  // webContents that already carry our `destroyed` subscription: a forget-then-rejoin (crash + reload) must not
+  // stack a second listener on the same object.
+  const subscribed = new WeakSet<ControlSenderLike>();
+
+  const isCrashed = (sender: ControlSenderLike): boolean => {
+    try {
+      return sender.isCrashed?.() === true;
+    } catch {
+      return false;
+    }
+  };
 
   const sendTo = (sender: ControlSenderLike, raw: string): void => {
     try {
@@ -92,6 +116,11 @@ export function createElectronMainControl(
       // one would keep the corpse forever, and broadcasting is where we would notice anyway.
       if (sender.isDestroyed?.() === true) {
         forget(sender);
+        continue;
+      }
+      // A crashed renderer is alive as an object but has no frame: sending prints a stderr error. It stays
+      // registered (it may reload and then receives control again); the re-handshake refreshes its state.
+      if (isCrashed(sender)) {
         continue;
       }
       sendTo(sender, raw);
@@ -125,7 +154,10 @@ export function createElectronMainControl(
     // same webContents.
     if (!renderers.has(sender)) {
       renderers.add(sender);
-      sender.once?.('destroyed', () => forget(sender));
+      if (!subscribed.has(sender)) {
+        subscribed.add(sender);
+        sender.once?.('destroyed', () => forget(sender));
+      }
     }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(
@@ -161,6 +193,13 @@ export function createElectronMainControl(
     },
     blackoutEnd(): void {
       broadcast('blackout-end');
+    },
+    rendererGone(id: number): void {
+      for (const sender of [...renderers]) {
+        if (sender.id === id) {
+          forget(sender);
+        }
+      }
     },
     get rendererCount(): number {
       return renderers.size;

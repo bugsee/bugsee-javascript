@@ -367,3 +367,96 @@ describe('the renderer registry shrinks', () => {
     expect(a.destroyedSubscriptions()).toBe(1);
   });
 });
+
+// A killed renderer is NOT destroyed: `isDestroyed()` stays false while its frame is gone, and Electron prints
+// 'Error sending from webContents: Render frame was disposed' for every `send` (real Electron 44.9.3 smoke).
+describe('crashed renderers are not addressed', () => {
+  function crashable(id: number) {
+    let crashed = false;
+    let destroyedListeners = 0;
+    const sent: string[] = [];
+    return {
+      sent,
+      setCrashed: (v: boolean) => (crashed = v),
+      subscriptions: () => destroyedListeners,
+      sender: {
+        id,
+        send: vi.fn((_c: string, raw: string) => {
+          sent.push(raw);
+        }),
+        once: () => {
+          destroyedListeners++;
+        },
+        isDestroyed: () => false,
+        isCrashed: () => crashed,
+      } as ControlSenderLike,
+    };
+  }
+  const hello = (ipc: ReturnType<typeof fakeIpcMain>, s: ControlSenderLike) =>
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: s }, encodeHello());
+
+  it('never sends to a sender whose isCrashed() is true, but still reaches the others', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const dead = crashable(1);
+    const live = crashable(2);
+    hello(ipc, dead.sender);
+    hello(ipc, live.sender);
+    dead.sent.length = 0;
+    live.sent.length = 0;
+    dead.setCrashed(true);
+    control.pause();
+    expect(dead.sender.send).toHaveBeenCalledTimes(1); // only the hello reply
+    expect(dead.sent).toEqual([]);
+    expect(live.sent).toHaveLength(1);
+  });
+
+  it('a throwing isCrashed() is treated as not crashed (send is still attempted)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(1);
+    (a.sender as { isCrashed: () => boolean }).isCrashed = () => {
+      throw new Error('boom');
+    };
+    hello(ipc, a.sender);
+    a.sent.length = 0;
+    control.flush();
+    expect(a.sent).toHaveLength(1);
+  });
+
+  it('rendererGone(id) forgets the sender; a reload re-handshakes and rejoins without stacking destroyed listeners', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(7);
+    hello(ipc, a.sender);
+    expect(control.rendererCount).toBe(1);
+    a.setCrashed(true);
+    control.rendererGone(99); // unknown id: no-op
+    expect(control.rendererCount).toBe(1);
+    control.rendererGone(7);
+    expect(control.rendererCount).toBe(0);
+    // the webContents reloads: a new frame says hello again while isCrashed() is false
+    a.setCrashed(false);
+    a.sent.length = 0;
+    hello(ipc, a.sender);
+    expect(control.rendererCount).toBe(1);
+    expect(a.sent).toHaveLength(1); // the session reply
+    expect(a.sent[0]).toContain('session');
+    expect(a.subscriptions()).toBe(1); // not 2
+    control.pause();
+    expect(a.sent).toHaveLength(2);
+  });
+
+  it('the hello reply is sent even if isCrashed() is stale-true (the hello proves the frame is alive)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(1);
+    a.setCrashed(true);
+    hello(ipc, a.sender);
+    expect(a.sent).toHaveLength(1);
+  });
+});
