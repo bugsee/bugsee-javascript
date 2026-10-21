@@ -496,9 +496,17 @@ describe('ProcessTracker', () => {
     });
 
     it.each([
-      ['eventLoop (Deno: measuresEventLoopDelay:false)', 'eventLoop', { measuresEventLoopDelay: false }],
+      [
+        'eventLoop (Deno: measuresEventLoopDelay:false)',
+        'eventLoop',
+        { measuresEventLoopDelay: false },
+      ],
       ['v8Heap (Bun: measuresV8Heap:false)', 'v8Heap', { measuresV8Heap: false }],
-      ['availableMemory (measuresAvailableMemory:false)', 'availableMemory', { measuresAvailableMemory: false }],
+      [
+        'availableMemory (measuresAvailableMemory:false)',
+        'availableMemory',
+        { measuresAvailableMemory: false },
+      ],
     ] as const)('%s: a gated stage alone arms no timer', (_label, stage, over) => {
       const { tracker, fs } = mk(over as ProcessEnv);
       const off = tracker.on(stage, () => {});
