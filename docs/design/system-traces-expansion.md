@@ -608,7 +608,7 @@ today keep their trace names and wire shapes; only their source changes.
 - Each tracker's retention rule is stated and tested ("stopping does not lose X"); each producer keeps its existing
   omit-never-zero and guarded-host-read tests.
 
-### 15.5 As-built status (verified against `main` at `7b92fa64`, 2026-10-21)
+### 15.5 As-built status (verified against `main` at `ae65d762`, 2026-10-21)
 
 All domain-tracker slices TR0–TR9 are **merged on `main`**. Browser TR0–TR7 (implementations in `packages/trackers/src/browser/`, producers in `packages/browser/src/trace-producers.ts`, events source in `packages/browser/src/system-events.ts`, wiring in `packages/browser/src/launch.ts` and `packages/webview/src/launch.ts`):
 
@@ -680,7 +680,7 @@ Electron GPU (#73) was first placed outside the trackers (a `GpuInfoCache` in `l
 2. **`main_thread_lag_ms` false spikes on suspend/pause (verified still unhandled).** The lag stage is torn down on hidden and takes a fresh baseline on each visible start, but there is no cap and no
    `resume`/`pageshow` reset: `lagMs = max(0, now - expectedAt)` is emitted for every tick. If the page stays `visible` across a system sleep or a debugger pause and `performance.now` advances, the first tick
    after it can record minutes or hours of "lag". Proposed follow-up: omit a tick whose elapsed time exceeds a documented multiple of the interval, reset the baseline on `resume`/`pageshow`, and test with a fake clock that jumps an hour.
-3. **Electron GPU `'complete'` vs `'basic'` (unverified).** `launchMain({gpuInfoType})` defaults to `'basic'`; `'complete'` is expected to carry the `auxAttributes` GL strings but is heavier.
+3. **Electron GPU `'complete'` vs `'basic'`.** `launchMain({gpuInfoType})` still defaults to `'basic'` (`packages/electron/src/launch-main.ts:146`). The smoke run (below) measured that `'basic'` yields no vendor/renderer on macOS (`hardware.gpu` absent, never guessed) while `'complete'` yields vendor, renderer, `glVersion` and a ~3 KB `glExtensions` (under the 8192 cap, `packages/node/src/environment.ts:81`). Recommendation: default to `'complete'`. Owner decision, not yet taken.
    Both mappings are UNVERIFIED against a real Electron (on macOS/Linux `'basic'` commonly yields only numeric ids, so `hardware.gpu` is then absent, never guessed).
 4. **`captureEnvironmentHints` name.** As built it gates only private-mode detection (now an owner-decided opt-out, see below); `language_changed`/`timezone_changed` are not gated and `hints`/`permissions` are not read by the launch at all. Its name now overstates its scope.
    Undecided: rename it, or widen it to gate the `hints`/`permissions` stages if a consumer for them is added (those stages are already off by default via the `observeHints`/`queryPermissions` tracker flags).
@@ -688,14 +688,29 @@ Electron GPU (#73) was first placed outside the trackers (a `GpuInfoCache` in `l
    Still undecided: whether DNT/GPC, automation and permission states (`hints`/`permissions`, currently unread) belong in the §1 privacy non-goals before any consumer reads them.
 6. **`user_idle_state` opt-in pending confirmation.** `captureUserIdle` defaults to `false` (implementer's decision, 2026-10-21); the owner has not yet confirmed it.
 7. **Electron held value and unverified shapes.** `electron_displays` is held like `storage_estimate` (decision 1): a failed `getAllDisplays()` refresh leaves the last list re-recorded. The Electron facts listed under "Not verified without a real Electron" below are read from Electron's documentation and typings only.
+8. **Private-mode heuristic is blind in current Chrome incognito (smoke run).** The only method is `storage-quota` with `PRIVATE_QUOTA_BELOW_BYTES` = 120 MiB (`environment-tracker.ts:147`); incognito now reports a quota of about 10 GiB, so `private_mode_detected` never fires there. Owner decision: add a second signal, or report `unknown` honestly.
+9. **Renderer-origin duplicates in Electron (smoke run).** Every renderer streams its own `process_started` and same-named traces (`ram_js_heap_used` zigzags between processes; `app_state`, `screen_size`, `battery`, `connection` repeat per window), and `environment.runtime` lacks the Electron and Chrome versions. Needs a decision on which process owns which trace.
+10. **`main_thread_lag_ms` is timer drift** (a 1.6 s block read 616 ms in the smoke run): a documented limit of the method, not a defect (see decision 2 for the separate suspend spike).
+11. **Held traces at the slow tick show duplicates (smoke run):** a viewer-side dedupe check is needed (relates to decision 1).
+12. **A renderer that rejoins after a crash does not receive the paused state** (smoke run, Electron control channel). Open.
 
-**Not verified without a real Electron (all slice-level tests use injected fakes):** the `app.getAppMetrics()` shape, units (the code assumes KiB for sizes) and the first-call-0 CPU behaviour that the priming read relies on; the `child-process-gone` details payload; the `app.getGPUInfo` output (decision 3); which `powerMonitor` events fire on which OS; the `Display` object shape and the argument order of `display-metrics-changed`; and that a `BrowserWindow` re-emits `unresponsive`/`responsive` from its `webContents` (the reason the pair is listened on `webContents` only). Nothing in TR9 has been run inside a real Electron process.
+#### Real-Electron + browser/server smoke run (2026-10-21)
+
+Run on Electron 44.9.3, macOS arm64, plus a real browser and a node server; findings below are from that run and were fixed in #95 and #96 where noted. (The Electron and browser measurements themselves cannot be re-derived from the repo; the fixes and the code that encodes them were checked on `main` at `ae65d762`.)
+
+- **VERIFIED on Electron:** `app.getAppMetrics()` memory is in KiB; the first call per process reports `percentCPUUsage` 0 with `cumulativeCPUUsage` present (so the priming read is correct); the cpu figure is a whole-machine share; `child-process-gone` details are `{type, reason, exitCode, serviceName?, name?}`; a renderer hang is recorded once when listened on `webContents`; the `getAllDisplays()` shape; `getGPUInfo('basic')` gives no vendor/renderer on macOS (`hardware.gpu` absent) while `'complete'` gives vendor, renderer, `glVersion` and a ~3 KB `glExtensions` under the 8192 cap.
+- **NOT verified (screen was locked or the signal cannot be produced on demand):** OS-delivered window focus/blur/show/hide; a real `display-metrics-changed`; real power events; the native `crashReporter`; real Chrome `display-mode`, `freeze`/`resume`; battery charging/discharging times; `downlinkMax`.
+- **Defects found and FIXED:** #95 (Electron): a `render-process-gone` listener leak, sends to crashed renderers, display refresh-rate rounding (`display-tracker.ts` `round2`), a listener leak on destroyed objects, and `serviceName` missing from the child-process-gone mapping (`process-tracker.ts:202-211`). #96: `connection` with the browser offline now omits the link fields while keeping `save_data` and dropping `effective_type` (`packages/browser/src/trace-producers.ts:214-232`), a duplicate foreground event, and sample drift with an `await launch` in the samples.
+- **Still OPEN:** decisions 3 and 8-12 above (Electron GPU default, private-mode blindness, renderer-origin duplicates, lag as timer drift, held-trace duplicates, crashed-renderer rejoin).
+- **Staging validation state:** the smoke reports are in the staging apps SNODE and SBROWSER (labels `tracker-smoke/...`), awaiting the owner's validation in the viewer (Q5). Nothing here has been confirmed by the viewer yet.
+
+**Still not verified:** the items under "NOT verified" above, and the viewer-side rendering of every new trace.
 
 **Remaining plan:**
 
 - **Cleanup DONE (#93, merged):** the `video.aux` viewport source reads the `UiTracker` (`packages/browser/src/viewport-source.ts` via `uiTrackerFor`, new `visualViewport` stage defaulting to `window.visualViewport`, `ui-tracker.ts:404-409`); `ApplicationTracker`'s `online`/`offline` stages are removed (`application-tracker.ts` has none) and the events source uses the `ConnectivityTracker` `transition` stage (`connectivity-tracker.ts:52,174-181`, `system-events.ts:218-225`); `display_mode_changed` is derived from `UiTracker.displayMode` (`system-events.ts:197-210`). No producer reads `reducedMotion` or the Process `uptime` stage yet.
 - Node/Bun/Deno and Electron follow-ups only where the code shows gaps (none are recorded yet beyond the open decisions above).
-- The first real-Electron smoke run, to settle the "not verified" list above.
+- The first real-Electron smoke run is DONE (above); repeat it on an unlocked screen for the focus/blur/show/hide, display-metrics, power and `crashReporter` cases, and on Windows/Linux.
 - Viewer confirmation (Q5) of the `app_metrics`, `electron_displays`, `storage_estimate` and `user_idle_state` shapes.
-- Close the browser hardening gaps and the open decisions above (held-value retraction, `main_thread_lag_ms` suspend spikes, Electron GPU `'complete'` vs `'basic'`, the `captureEnvironmentHints` name and privacy scope, `captureUserIdle` confirmation).
+- Close the browser hardening gaps and the open decisions above (Electron GPU default, private-mode second signal, renderer-origin duplicates, held-value retraction, `main_thread_lag_ms` suspend spikes, Electron GPU `'complete'` vs `'basic'`, the `captureEnvironmentHints` name and privacy scope, `captureUserIdle` confirmation).
 - Mark this design PR (#53) ready and merge it (its ready/draft state is managed outside this doc).
