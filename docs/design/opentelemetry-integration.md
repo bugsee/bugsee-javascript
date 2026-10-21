@@ -202,6 +202,16 @@ OTel); the OTel 3 suite is meant to run on the 22/24 legs of the 18-24 matrix on
 `register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
 package in `dev-packages/otel3-compat`.
 
+**Browser builds and deep imports.** OTel 3 ships an `exports` map on every package, so
+`@opentelemetry/<pkg>/build/...` deep imports and `@opentelemetry/<pkg>/package.json` reads no longer resolve,
+and the `browser` field was replaced by `#platform` subpath imports. A bundler that pulls OTel 3 into a
+browser build therefore needs `imports` support (webpack >= 5.54; current Vite, Rollup, esbuild and Rspack
+have it). That constraint falls on the customer's own OTel usage: `@bugsee/opentelemetry` imports no OTel code
+(structural types only), and a repo-wide guard (`dev-packages/packaging-guard/src/otel-no-deep-imports.test.ts`)
+fails the unit gate on any `@opentelemetry/*` deep import, `package.json` read or `node_modules/@opentelemetry`
+path in tracked source, config or sample files (audited 2026-10-21: none, including the browser, webworker,
+edge and bundler-plugin packages).
+
 **Complex attributes (OTEP 4485, `@opentelemetry/api` 1.10 `AnyValue`).** Since 1.10 `Attributes` values are
 `AnyValue`: string/number/boolean, byte array (`Uint8Array`), array of any value, map of any value, null.
 Verified against `sdk-trace@3.0.0`: the SDK keeps nested maps, mixed arrays, `Uint8Array` and `null` on
