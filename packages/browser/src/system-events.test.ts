@@ -2,9 +2,11 @@ import type { SystemEvent } from '@bugsee/capture';
 import { createMultiKeyEmitter } from '@bugsee/trackers';
 import {
   ApplicationTracker,
+  connectivityTrackerFor,
   type EnvironmentEvents,
   environmentTrackerFor,
   resetApplicationTracker,
+  resetConnectivityTracker,
   resetEnvironmentTracker,
 } from '@bugsee/trackers/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +45,12 @@ function fakeEnv() {
   const doc = target();
   const state = { visibilityState: 'visible' as DocumentVisibilityState };
   const orientation = { type: 'portrait-primary' as OrientationType, angle: 0 };
+  // `connect(false)` goes offline and announces it, as a browser does (the online/offline EVENTS do not read onLine).
+  const nav = { onLine: true };
+  const connect = (online: boolean) => {
+    nav.onLine = online;
+    win.emit(online ? 'online' : 'offline', {});
+  };
   const document = {
     addEventListener: doc.addEventListener,
     removeEventListener: doc.removeEventListener,
@@ -51,12 +59,12 @@ function fakeEnv() {
     },
   };
   const env: BrowserSystemEventsEnv = {
-    window: win,
+    window: Object.assign(win, { navigator: nav }),
     document,
     screen: { orientation },
     environment: inertEnvironment as never,
   };
-  return { env, win, doc, state, orientation };
+  return { env, win, doc, state, orientation, nav, connect };
 }
 
 function activate(env: BrowserSystemEventsEnv) {
@@ -91,12 +99,176 @@ function fakeMedia(initial = false) {
   };
 }
 
+// One media list PER query, so display-mode (three queries) can be driven the way a browser answers it.
+function fakeQueries(matching: Record<string, boolean> = {}) {
+  const lists = new Map<
+    string,
+    { matches: boolean; listeners: Set<(e: { matches: boolean }) => void> }
+  >();
+  const list = (q: string) => {
+    let l = lists.get(q);
+    if (l === undefined) {
+      l = { matches: matching[q] ?? false, listeners: new Set() };
+      lists.set(q, l);
+    }
+    return l;
+  };
+  return {
+    matchMedia: (q: string) => {
+      const l = list(q);
+      return {
+        get matches() {
+          return l.matches;
+        },
+        addEventListener: (_t: string, fn: (e: { matches: boolean }) => void) =>
+          void l.listeners.add(fn),
+        removeEventListener: (_t: string, fn: (e: { matches: boolean }) => void) =>
+          void l.listeners.delete(fn),
+      };
+    },
+    /** The page enters `mode` ('browser' = none of the three): flip the queries and notify the changed ones. */
+    enter: (mode: 'fullscreen' | 'standalone' | 'minimal-ui' | 'browser') => {
+      const changed: Array<ReturnType<typeof list>> = [];
+      for (const m of ['fullscreen', 'standalone', 'minimal-ui']) {
+        const l = list(`(display-mode: ${m})`);
+        const next = m === mode;
+        if (l.matches === next) continue;
+        l.matches = next;
+        changed.push(l);
+      }
+      // the browser settles ALL the queries before any listener runs
+      for (const l of changed) for (const fn of [...l.listeners]) fn({ matches: l.matches });
+    },
+    listenerCount: () => [...lists.values()].reduce((n, l) => n + l.listeners.size, 0),
+  };
+}
+
+describe('createBrowserSystemEventsSource: display_mode_changed', () => {
+  it('never announces a mode equal to the one it already knows (a re-baselined tracker re-announcing), then still follows real changes', () => {
+    const { env } = fakeEnv();
+    let announce: ((state: { mode: string }) => void) | undefined;
+    const ui = {
+      current: () => ({ mode: 'standalone' }),
+      on: (stage: string, cb: (state: never) => void) => {
+        if (stage === 'displayMode') announce = cb as never;
+        return () => {};
+      },
+    };
+    const { events } = activate({ ...env, ui: ui as never });
+    announce?.({ mode: 'standalone' });
+    expect(events).toEqual([{ name: 'process_started' }]);
+    announce?.({ mode: 'browser' });
+    announce?.({ mode: 'browser' });
+    expect(events.slice(1)).toEqual([
+      { name: 'display_mode_changed', params: { mode: 'browser', previousMode: 'standalone' } },
+    ]);
+  });
+
+  it('records display_mode_changed with the new mode and the previous one', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries();
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    q.enter('standalone');
+    q.enter('fullscreen');
+    q.enter('browser');
+    expect(events.filter((e) => e.name === 'display_mode_changed')).toEqual([
+      { name: 'display_mode_changed', params: { mode: 'standalone', previousMode: 'browser' } },
+      { name: 'display_mode_changed', params: { mode: 'fullscreen', previousMode: 'standalone' } },
+      { name: 'display_mode_changed', params: { mode: 'browser', previousMode: 'fullscreen' } },
+    ]);
+  });
+
+  it('starts from the mode the page is already in (the baseline is state, not an event)', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries({ '(display-mode: standalone)': true });
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    expect(events).toEqual([{ name: 'process_started' }]);
+    q.enter('minimal-ui');
+    expect(events.at(-1)).toEqual({
+      name: 'display_mode_changed',
+      params: { mode: 'minimal-ui', previousMode: 'standalone' },
+    });
+  });
+
+  it('is not announced twice for the same mode (several queries flip for one transition)', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries({ '(display-mode: standalone)': true });
+    const { events } = activate({ ...env, matchMedia: q.matchMedia });
+    q.enter('fullscreen'); // standalone goes false AND fullscreen goes true: two query changes, one transition
+    expect(events.filter((e) => e.name === 'display_mode_changed')).toHaveLength(1);
+  });
+
+  it('omits previousMode when the mode before could not be read', () => {
+    const { env } = fakeEnv();
+    const lists: Array<(e: { matches: boolean }) => void> = [];
+    let readable = false;
+    const matchMedia = (q: string) => ({
+      get matches(): boolean {
+        // standalone is the only answer once readable; before that the query is unreadable (not a boolean)
+        return (readable ? q.includes('standalone') : undefined) as never;
+      },
+      addEventListener: (_t: string, fn: (e: { matches: boolean }) => void) => void lists.push(fn),
+      removeEventListener: () => {},
+    });
+    const { events } = activate({ ...env, matchMedia });
+    readable = true;
+    for (const fn of lists) fn({ matches: true });
+    expect(events.at(-1)).toStrictEqual({
+      name: 'display_mode_changed',
+      params: { mode: 'standalone' },
+    });
+  });
+
+  it('subscribes lazily, goes through the per-window UiTracker, and releases on deactivate', () => {
+    const { env } = fakeEnv();
+    const q = fakeQueries();
+    const source = createBrowserSystemEventsSource({ ...env, matchMedia: q.matchMedia });
+    expect(q.listenerCount()).toBe(0); // built, not subscribed
+    const off = source.onAny(() => {});
+    expect(q.listenerCount()).toBe(4); // display-mode: fullscreen + standalone + minimal-ui, and prefers-color-scheme
+    off();
+    expect(q.listenerCount()).toBe(0);
+  });
+
+  it('emits nothing without matchMedia', () => {
+    const { env } = fakeEnv();
+    const { events } = activate(env);
+    expect(events.map((e) => e.name)).not.toContain('display_mode_changed');
+  });
+
+  it('a hostile matchMedia (throws / non-boolean / null list) is reported and emits nothing', () => {
+    for (const matchMedia of [
+      () => {
+        throw new Error('blocked');
+      },
+      () => null,
+      () => ({ matches: 'yes' }),
+    ]) {
+      const { env } = fakeEnv();
+      const errors: unknown[] = [];
+      const { events } = activate({
+        ...env,
+        matchMedia: matchMedia as never,
+        onError: (e) => errors.push(e),
+      });
+      expect(events.map((e) => e.name)).toEqual(['process_started']);
+    }
+  });
+});
+
 describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => {
   it('records dark_mode_changed with the new state from the injected matchMedia', () => {
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { events } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(new Set(m.queries)).toEqual(new Set(['(prefers-color-scheme: dark)'])); // baseline read + watch
+    expect(new Set(m.queries)).toEqual(
+      new Set([
+        '(prefers-color-scheme: dark)',
+        '(display-mode: fullscreen)',
+        '(display-mode: standalone)',
+        '(display-mode: minimal-ui)',
+      ]),
+    ); // baseline reads + watches, for dark mode and display mode
     m.fire(true);
     m.fire(false);
     expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
@@ -134,7 +306,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { off } = activate({ ...env, matchMedia: m.matchMedia });
-    expect(m.count()).toBe(1);
+    expect(m.count()).toBe(2); // the dark-mode listener and the display-mode one (one function over its three queries)
     off();
     expect(m.count()).toBe(0);
   });
@@ -146,7 +318,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
   });
 
   it('a matchMedia that throws is reported and does not abort the other signals', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const errors: unknown[] = [];
     const { events } = activate({
       ...env,
@@ -155,8 +327,8 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
       },
       onError: (e) => errors.push(e),
     });
-    win.emit('online', {});
-    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    connect(false);
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'offline']);
     expect(errors.length).toBeGreaterThan(0);
     expect(new Set(errors.map((e) => (e as Error).message))).toEqual(
       new Set(['matchMedia blocked']),
@@ -164,15 +336,15 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
   });
 
   it('a media list without addEventListener is a plain absence: skipped silently, other signals unaffected', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const errors: unknown[] = [];
     const { events } = activate({
       ...env,
       matchMedia: (() => ({ matches: false })) as never,
       onError: (e) => errors.push(e),
     });
-    win.emit('online', {});
-    expect(events.map((e) => e.name)).toEqual(['process_started', 'online']);
+    connect(false);
+    expect(events.map((e) => e.name)).toEqual(['process_started', 'offline']);
     expect(errors).toEqual([]);
   });
 
@@ -213,7 +385,7 @@ describe('createBrowserSystemEventsSource', () => {
     const { events } = activate(env);
     expect(events).toEqual([{ name: 'process_started' }]);
     expect(win.count('pagehide')).toBe(1);
-    expect(win.count('online')).toBe(1);
+    expect(win.count('online')).toBe(1); // the ConnectivityTracker's
     expect(win.count('offline')).toBe(1);
     expect(win.count('orientationchange')).toBe(1);
     expect(doc.count('visibilitychange')).toBe(1);
@@ -244,11 +416,91 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('emits online / offline on connectivity transitions', () => {
-    const { env, win } = fakeEnv();
+    const { env, connect } = fakeEnv();
     const { events } = activate(env);
+    connect(false);
+    connect(true);
+    expect(events.slice(1)).toEqual([{ name: 'offline' }, { name: 'online' }]);
+  });
+
+  it('the activation baseline is state, not a transition: nothing is emitted for it', () => {
+    const { env, nav } = fakeEnv();
+    nav.onLine = false; // already offline when capture starts
+    const { events } = activate(env);
+    expect(events).toEqual([{ name: 'process_started' }]);
+  });
+
+  it('one event per DOM event, the kind taken from the event type: a flap that reads onLine true on both is not lost', () => {
+    const { env, win } = fakeEnv(); // navigator.onLine stays true throughout
+    const { events } = activate(env);
+    win.emit('offline', {});
     win.emit('online', {});
     win.emit('offline', {});
-    expect(events.slice(1)).toEqual([{ name: 'online' }, { name: 'offline' }]);
+    win.emit('offline', {}); // a repeat / synthetic dispatch is still an event
+    expect(events.slice(1).map((e) => e.name)).toEqual(['offline', 'online', 'offline', 'offline']);
+  });
+
+  it('an absent navigator.onLine (or no navigator) does not drop online/offline events', () => {
+    const { env, win } = fakeEnv();
+    Object.assign(win, { navigator: {} });
+    const { events } = activate(env);
+    win.emit('offline', {});
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+  });
+
+  it('goes through the per-window ConnectivityTracker: ONE online/offline listener shared with other consumers', () => {
+    const { env, win, nav } = fakeEnv();
+    const other = connectivityTrackerFor({ window: win, navigator: nav });
+    const offOther = other.on('online', () => {});
+    expect(win.count('online')).toBe(1);
+    const { off, events } = activate(env);
+    expect(win.count('online')).toBe(1);
+    expect(win.count('offline')).toBe(1);
+    // joining an already-running tracker announces nothing
+    expect(events).toEqual([{ name: 'process_started' }]);
+    win.emit('online', {});
+    expect(events.at(-1)).toEqual({ name: 'online' });
+    off();
+    expect(win.count('online')).toBe(1); // still held by the other consumer
+    offOther();
+    expect(win.count('online')).toBe(0);
+    resetConnectivityTracker({ window: win });
+  });
+
+  it('an injected connectivity tracker replaces the window singleton', () => {
+    const { env, win } = fakeEnv();
+    const on = vi.fn(() => () => {});
+    const { events } = activate({
+      ...env,
+      connectivity: { on } as never,
+    });
+    expect(on).toHaveBeenCalledWith('transition', expect.any(Function));
+    expect(win.count('online')).toBe(0);
+    expect(events).toEqual([{ name: 'process_started' }]);
+  });
+
+  it("a navigator injected explicitly is the one read (not the window's)", () => {
+    const { env, win } = fakeEnv();
+    const nav = { onLine: true };
+    const { events } = activate({ ...env, navigator: nav });
+    nav.onLine = false;
+    win.emit('offline', {});
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+    resetConnectivityTracker({ window: win });
+  });
+
+  it('a window whose navigator getter throws still announces online/offline (the event type is the evidence) and never throws', () => {
+    const { env, win } = fakeEnv();
+    Object.defineProperty(win, 'navigator', {
+      get(): never {
+        throw new Error('navigator blocked');
+      },
+    });
+    const errors: unknown[] = [];
+    const { events } = activate({ ...env, onError: (e) => errors.push(e) });
+    expect(() => win.emit('offline', {})).not.toThrow();
+    expect(events.slice(1)).toEqual([{ name: 'offline' }]);
+    expect(errors.length).toBeGreaterThan(0); // the unreadable navigator is reported once
   });
 
   it('emits orientation_changed with the current screen orientation type + angle', () => {
@@ -419,20 +671,22 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('subscribes to an injected shared lifecycle tracker instead of attaching its own listeners', () => {
-    const { env, win, doc } = fakeEnv();
+    const { env, win, doc, connect } = fakeEnv();
     const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const a = activate({ ...env, lifecycle });
     const b = activate({ ...env, lifecycle });
     // two sources over ONE tracker → one listener per type
-    expect(win.count('online')).toBe(1);
+    expect(win.count('pagehide')).toBe(1);
+    expect(win.count('online')).toBe(1); // ConnectivityTracker, shared per window
     expect(doc.count('visibilitychange')).toBe(1);
-    win.emit('offline', {});
+    connect(false);
     expect(a.events.at(-1)).toEqual({ name: 'offline' });
     expect(b.events.at(-1)).toEqual({ name: 'offline' });
     a.off();
     expect(win.count('offline')).toBe(1); // still held by the other source
     b.off();
     expect(win.count('offline')).toBe(0);
+    expect(win.count('pagehide')).toBe(0);
   });
 
   it('reports a lifecycle failure to the injected onError, not into event dispatch', () => {
@@ -451,7 +705,7 @@ describe('createBrowserSystemEventsSource', () => {
   });
 
   it('over a shared tracker, re-subscribing after a full release re-emits process_started and resubscribes', () => {
-    const { env, win } = fakeEnv();
+    const { env, win, connect } = fakeEnv();
     const lifecycle = new ApplicationTracker({ window: win, document: env.document as never });
     const source = createBrowserSystemEventsSource({ ...env, lifecycle });
     const events: SystemEvent[] = [];
@@ -459,11 +713,11 @@ describe('createBrowserSystemEventsSource', () => {
     first();
     expect(win.count('online')).toBe(0);
     const second = source.onAny((_s, e) => events.push(e));
-    win.emit('online', {});
+    connect(false);
     expect(events).toEqual([
       { name: 'process_started' },
       { name: 'process_started' },
-      { name: 'online' },
+      { name: 'offline' },
     ]);
     second();
   });

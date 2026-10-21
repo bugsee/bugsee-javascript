@@ -17,8 +17,8 @@ import { hostRead } from './host-read';
 // LATEST request wins (see `rebind`): a defined onError replaces the reporter; while idle the window/document are
 // re-bound, while active the binding is kept and a differing window/document (only a target the request supplies counts) is reported once.
 //
-// `online`/`offline` stay here for now (the Connectivity tracker owns its own copies); `orientationchange` belongs to
-// the UI/Display tracker and is NOT bound here.
+// `online`/`offline` belong to the ConnectivityTracker and `orientationchange` to the UI/Display tracker: neither is
+// bound (or announced) here.
 
 /** The Android app-state vocabulary (the viewer's table also has `started`, which the web never reports). */
 export type ApplicationState = 'foreground' | 'background';
@@ -33,8 +33,6 @@ export interface ApplicationEvents {
   /** Page Lifecycle `freeze` / `resume`: fired on the DOCUMENT and they do not bubble, so never listened for on window. */
   freeze: undefined;
   resume: undefined;
-  online: undefined;
-  offline: undefined;
 }
 interface TargetLike {
   addEventListener(type: string, listener: (event: unknown) => void): void;
@@ -86,9 +84,6 @@ export class ApplicationTracker extends InterceptorBase<ApplicationEvents> {
           this.emit('pagehide', { persisted: (e as { persisted?: boolean }).persisted === true }),
         ),
       );
-      for (const type of ['online', 'offline'] as const) {
-        this.#listen(win, type, () => this.#guard(() => this.emit(type, undefined)));
-      }
       this.#listen(doc, 'visibilitychange', () => this.#guard(() => this.#onVisibility()));
       // After visibilitychange: a document that refuses only the newer Page Lifecycle types must not cost
       // foreground/background (and app_state / fps) for an optional signal.

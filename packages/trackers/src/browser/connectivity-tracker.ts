@@ -11,8 +11,15 @@ import { hostRead } from './host-read';
 //   * `online`      {online}        — `online`/`offline` window events.
 //   * `networkInfo` {type?, …}      — `navigator.connection` `change`; a field is OMITTED when absent or not a usable
 //                                     value (zero downlink/downlinkMax/rtt are "no estimate", never data).
-//   * `state`       {online, networkInfo?} — the aggregate; emitted alongside either of the above. Activation emits a
-//                     baseline of all three.
+//   * `state`       {online, networkInfo?} — the aggregate; emitted alongside either of the above. The first listener of
+//                     any of these three (and activation, if one is already there) gets a baseline of all three.
+//   * `transition`  {online}        — one per DOM `online`/`offline` EVENT, its kind taken from the EVENT TYPE, never from
+//                     `navigator.onLine` (so an offline/online flap that reads true on both is not lost, an absent
+//                     `onLine` does not drop an event, and a synthetic dispatch counts). No baseline: attaching, a late
+//                     join or a rebind announces nothing. Works without a navigator, and without reading one.
+//
+// The window `online`/`offline` pair is shared by every stage; `navigator.connection` `change` and the navigator reads
+// are attached/made only while a state-like stage (`online`/`networkInfo`/`state`) has a listener.
 //
 // SINGLETON per window (see `connectivityTrackerFor`). RETENTION rule: stopping loses nothing a later subscriber
 // needs. The state is not cached at all: it lives in `navigator`, which the tracker keeps (retains) across the last
@@ -42,6 +49,7 @@ export interface ConnectivityEvents {
   online: { online: boolean };
   networkInfo: NetworkInfo;
   state: ConnectivityState;
+  transition: { online: boolean };
 }
 
 interface TargetLike {
@@ -59,12 +67,22 @@ function positive(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+interface Attached {
+  target: Partial<TargetLike>;
+  type: string;
+  listener: () => void;
+}
+
 export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   readonly name = 'browser-connectivity';
   #window: object | undefined;
   #navigator: object | undefined;
   #running = false;
-  #attached: Array<{ target: Partial<TargetLike>; type: string; listener: () => void }> = [];
+  #attached: Attached[] = [];
+  /** The `navigator.connection` listener, attached only while a state-like stage is listened to. */
+  #connection: Attached[] = [];
+  /** The connection source was resolved for the current wanted-state (even when it had nothing to listen on). */
+  #connectionAttempted = false;
 
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
   readonly #report: { fn: ((error: unknown) => void) | undefined };
@@ -100,6 +118,20 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
       this.#detach();
       this.#attach();
     }
+  }
+
+  protected override onListenersChanged(): void {
+    if (this.#running) this.#syncConnection();
+  }
+
+  /** A state-like stage is listened to: the navigator is read and `navigator.connection` is watched. */
+  #wantsState(): boolean {
+    return (
+      this.listenerCount('online') +
+        this.listenerCount('networkInfo') +
+        this.listenerCount('state') >
+      0
+    );
   }
 
   #onError(error: unknown): void {
@@ -139,8 +171,27 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   // reporter.
   #attach(): void {
     const win = this.#window as Partial<TargetLike> | undefined;
-    this.#listen(win, 'online', () => this.#changed('online', true));
-    this.#listen(win, 'offline', () => this.#changed('online', false));
+    // The kind comes from the event TYPE; the transition is announced before (and independently of) any navigator read.
+    this.#listen(win, 'online', () => this.#onWindowEvent(true));
+    this.#listen(win, 'offline', () => this.#onWindowEvent(false));
+    this.#syncConnection();
+  }
+
+  #onWindowEvent(online: boolean): void {
+    this.emit('transition', { online });
+    if (this.#wantsState()) this.#changed('online', online);
+  }
+
+  /** Make `navigator.connection` `change` (and the baseline) match whether a state-like stage is listened to. */
+  #syncConnection(): void {
+    const wanted = this.#wantsState();
+    if (wanted === this.#connectionAttempted) return;
+    if (!wanted) {
+      this.#connectionAttempted = false;
+      this.#detachList(this.#connection.splice(0));
+      return;
+    }
+    this.#connectionAttempted = true;
     const nav = this.#navigator;
     const connection =
       nav === undefined
@@ -155,6 +206,7 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
         : undefined,
       'change',
       () => this.#changed('networkInfo'),
+      this.#connection,
     );
     const state = this.#read();
     if (state !== undefined) {
@@ -165,7 +217,12 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
     }
   }
 
-  #listen(target: Partial<TargetLike> | undefined, type: string, run: () => void): void {
+  #listen(
+    target: Partial<TargetLike> | undefined,
+    type: string,
+    run: () => void,
+    into: Attached[] = this.#attached,
+  ): void {
     if (target === undefined) return;
     // The READ can throw too (a cross-origin WindowProxy): reported, and the other listeners still attach.
     const add = hostRead(
@@ -181,7 +238,7 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
       }
     };
     // Recorded BEFORE attaching so a failing addEventListener still leaves a removable record.
-    this.#attached.push({ target, type, listener });
+    into.push({ target, type, listener });
     try {
       add.call(target, type, listener);
     } catch (error) {
@@ -190,8 +247,12 @@ export class ConnectivityTracker extends InterceptorBase<ConnectivityEvents> {
   }
 
   #detach(): void {
-    const attached = this.#attached;
-    this.#attached = [];
+    this.#connectionAttempted = false;
+    this.#detachList(this.#attached.splice(0));
+    this.#detachList(this.#connection.splice(0));
+  }
+
+  #detachList(attached: Attached[]): void {
     for (const { target, type, listener } of attached) {
       try {
         target.removeEventListener?.(type, listener);

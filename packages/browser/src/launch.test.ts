@@ -491,10 +491,11 @@ describe('launch', () => {
         systemMetricsSampler: undefined,
       }),
     );
-    // traces (orientation) AND the events source share ONE lifecycle tracker (a single orientationchange listener);
-    // online/offline are bound twice: once by that lifecycle tracker (events) and once by the domain
-    // ConnectivityTracker, which owns its own connectivity listeners and does not depend on the lifecycle tracker.
-    expect(w.count('online')).toBe(2);
+    // traces (orientation) AND the events source share ONE UiTracker (a single orientationchange listener);
+    // online/offline are bound ONCE, by the domain ConnectivityTracker that both the connection trace and the
+    // online/offline events subscribe to (the ApplicationTracker no longer binds them).
+    expect(w.count('online')).toBe(1);
+    expect(w.count('offline')).toBe(1);
     expect(w.count('orientationchange')).toBe(1);
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
@@ -527,10 +528,11 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, document, captureStore: memStore() }),
       );
-      expect(w.count('online')).toBe(1);
+      const before = w.count('pagehide');
+      expect(before).toBeGreaterThan(0);
       const shared = applicationTrackerFor({ window: w.win as never, document });
-      const off = shared.on('online', () => {});
-      expect(w.count('online')).toBe(1); // the SAME tracker: one listener serves launch and this subscriber
+      const off = shared.on('pagehide', () => {});
+      expect(w.count('pagehide')).toBe(before); // the SAME tracker: one listener serves launch and this subscriber
       off();
     });
 
@@ -603,6 +605,40 @@ describe('launch', () => {
         (e) => e.data as { name: string; params?: unknown },
       );
 
+    it('records display_mode_changed from the injected window matchMedia, with the previous mode', async () => {
+      const w = fakeWindow();
+      const listeners = new Set<(e: { matches: boolean }) => void>();
+      let standalone = false;
+      Object.assign(w.win, {
+        matchMedia(q: string) {
+          return {
+            get matches() {
+              return standalone && q === '(display-mode: standalone)';
+            },
+            addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void listeners.add(f),
+            removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+              void listeners.delete(f),
+          };
+        },
+      });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: w.win, captureStore: store }),
+      );
+      standalone = true;
+      for (const f of [...listeners]) f({ matches: true });
+      expect((await names(store)).filter((e) => e.name === 'display_mode_changed')).toEqual([
+        expect.objectContaining({
+          name: 'display_mode_changed',
+          params: { mode: 'standalone', previousMode: 'browser' },
+        }),
+      ]);
+      await client.stop();
+      expect(listeners.size).toBe(0);
+    });
+
     it('records dark_mode_changed from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
       const w = fakeWindow();
       const m = mkMedia();
@@ -612,7 +648,7 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toHaveLength(2); // the baseline read + the change watch
+      expect(m.thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
@@ -1683,9 +1719,9 @@ describe('launch', () => {
         // the system-events source listens on the same window, so isolate the trace trackers
         noSampler({ window: w.win, captureStore: memStore(), captureSystemEvents: false }),
       );
-      // online/offline: the shared lifecycle tracker (orientation) + the ConnectivityTracker's own listeners
-      expect(w.count('online')).toBe(2);
-      expect(w.count('offline')).toBe(2);
+      // online/offline: bound ONCE, by the ConnectivityTracker (the lifecycle tracker no longer binds them)
+      expect(w.count('online')).toBe(1);
+      expect(w.count('offline')).toBe(1);
       expect(w.count('orientationchange')).toBe(1);
       await client.stop();
       expect(w.count('online')).toBe(0);
@@ -1713,6 +1749,85 @@ describe('launch', () => {
       resetUiTracker({ window: w.win });
     });
 
+    it('the video.aux viewport source goes through the per-window UiTracker: no listener of its own, and its events are unchanged', async () => {
+      stubSensors();
+      const w = fakeWindow();
+      Object.assign(w.win, { innerWidth: 390, innerHeight: 844, devicePixelRatio: 3 });
+      const store = memStore();
+      const client = await launchTracked(
+        'tok',
+        // isolate: nothing but the viewport source touches this window
+        noSampler({
+          window: w.win,
+          captureStore: store,
+          captureSystemTraces: false,
+          captureSystemEvents: false,
+        }),
+      );
+      // ONE resize and ONE orientationchange listener, owned by the shared tracker (no own `resize` binding).
+      expect(w.count('resize')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      // The window's tracker IS the one launch subscribed through: another consumer adds no window listener.
+      const ui = uiTrackerFor({ window: w.win });
+      const off = ui.on('viewport', () => {});
+      expect(w.count('resize')).toBe(1);
+      expect(w.count('orientationchange')).toBe(1);
+      off();
+      expect(w.count('resize')).toBe(1); // still held by the viewport source
+      Object.assign(w.win, { innerWidth: 800, innerHeight: 600 });
+      w.emit('resize', {});
+      await new Promise((r) => setTimeout(r, 50)); // the source coalesces onto an animation frame / timer
+      const rows = ((await drain(store, 'video.aux')) ?? []).map((e) => e.data);
+      expect(rows).toMatchObject([
+        { frameW: 390, frameH: 844, density: 3 },
+        { frameW: 800, frameH: 600, density: 3 },
+      ]);
+      await client.stop();
+      expect(w.count('resize')).toBe(0);
+      expect(w.count('orientationchange')).toBe(0);
+      resetUiTracker({ window: w.win });
+    });
+
+    it("after a relaunch the shared UiTracker reports to the LATEST launch (the carrier-shared viewport source must not pin the first launch's onError)", async () => {
+      const armed = { on: false };
+      vi.stubGlobal('screen', {
+        get width(): number {
+          if (armed.on) throw new Error('screen.width blocked');
+          return 390;
+        },
+        height: 844,
+      });
+      stubSensors();
+      vi.stubGlobal('screen', {
+        get width(): number {
+          if (armed.on) throw new Error('screen.width blocked');
+          return 390;
+        },
+        height: 844,
+      });
+      const w = fakeWindow();
+      Object.assign(w.win, { innerWidth: 390, innerHeight: 844, devicePixelRatio: 2 });
+      const carrier = {};
+      const errA = vi.fn();
+      const errB = vi.fn();
+      const common = {
+        window: w.win,
+        carrier,
+        captureStore: memStore(),
+        captureSystemTraces: false,
+        captureSystemEvents: false,
+      };
+      const a = await launchTracked('tok', noSampler({ ...common, onError: errA }));
+      await a.stop();
+      await launchTracked('tok', noSampler({ ...common, captureStore: memStore(), onError: errB }));
+      armed.on = true;
+      w.emit('resize', {});
+      expect(errB).toHaveBeenCalled();
+      expect(errA).not.toHaveBeenCalled();
+      armed.on = false;
+      resetUiTracker({ window: w.win });
+    });
+
     it('launch goes through the per-window ConnectivityTracker singleton: a second consumer shares its listeners, and downlinkMax reaches the trace', async () => {
       vi.stubGlobal('navigator', {
         onLine: true,
@@ -1724,7 +1839,7 @@ describe('launch', () => {
         'tok',
         noSampler({ window: w.win, captureStore: store, captureSystemEvents: false }),
       );
-      const before = w.count('online'); // lifecycle tracker + the connectivity tracker
+      const before = w.count('online'); // the connectivity tracker's alone
       // The singleton for this window is the one launch subscribed through: a new `ConnectivityTracker` would add
       // another pair of window listeners here instead of sharing the first.
       const off = connectivityTrackerFor({ window: w.win }).on('online', () => {});
@@ -1760,7 +1875,9 @@ describe('launch', () => {
           scheduler: { setInterval: timers, clearInterval: () => {} },
         }),
       );
-      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      expect(w.count('online') + w.count('offline')).toBe(0);
+      // The video.aux viewport source is the lone window consumer left; its one orientationchange is the UiTracker's.
+      expect(w.count('orientationchange')).toBe(1);
       // the capture-store tick may use the scheduler; the heap poll must not add its own 1 s timer
       const heapTimers = timers.mock.calls.length;
       expect(heapTimers).toBeLessThanOrEqual(1);
@@ -2167,7 +2284,8 @@ describe('launch', () => {
       expect(names.filter((n) => n === 'ram_js_heap_used')).toHaveLength(1);
       expect(names).not.toContain('connection');
       expect(names).not.toContain('orientation');
-      expect(w.count('online') + w.count('offline') + w.count('orientationchange')).toBe(0);
+      expect(w.count('online') + w.count('offline')).toBe(0);
+      expect(w.count('orientationchange')).toBe(1); // the video.aux viewport source, via the UiTracker
     });
 
     it('an offline event is captured as a not_reachable connection row', async () => {

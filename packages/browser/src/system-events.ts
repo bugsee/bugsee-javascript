@@ -3,6 +3,8 @@ import { type Interceptor, InterceptorBase } from '@bugsee/core';
 import {
   type ApplicationTracker,
   applicationTrackerFor,
+  type ConnectivityTracker,
+  connectivityTrackerFor,
   type EnvironmentEvents,
   type EnvironmentTracker,
   environmentTrackerFor,
@@ -18,7 +20,8 @@ import { hostGlobal, hostRead } from './host-global';
 // removes the listeners. Captured (Android events.system parity, web-native):
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
 //   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
-//   online / offline       → online / offline (connectivity transitions)
+//   online / offline       → online / offline (one event per DOM event; the ConnectivityTracker `transition` stage, its kind the
+//                            event's own type — never a navigator.onLine read; attaching is not an event)
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
 //   time zone / UTC offset → timezone_changed ({timezone?, utcOffsetMinutes?, previousTimezone?, previousUtcOffsetMinutes?})
 //   private-mode HEURISTIC → private_mode_detected ({method}) ONLY for a `yes` answer (a small storage quota; constrained
@@ -26,6 +29,7 @@ import { hostGlobal, hostRead } from './host-global';
 //                            launch opts out with `captureEnvironmentHints: false`); `no`/`unknown` never produce an event (never claim certainty)
 //   orientation (UiTracker: screen.orientation change + orientationchange) → orientation_changed ({type, angle})
 //   colorScheme (UiTracker) → dark_mode_changed ({dark} from prefers-color-scheme)
+//   displayMode (UiTracker) → display_mode_changed ({mode: fullscreen|standalone|minimal-ui|browser, previousMode?} from display-mode)
 // Each signal degrades gracefully where its global is absent (e.g. no document/screen in a worker).
 
 /** The document surface the source needs: visibilitychange + the current visibility state. */
@@ -73,6 +77,15 @@ export interface BrowserSystemEventsEnv {
   matchMedia?: (query: string) => MediaQueryLike;
   /** The shared lifecycle tracker; when absent one is created over `window` + `document`. */
   lifecycle?: Pick<ApplicationTracker, 'on'>;
+  /**
+   * The shared connectivity tracker (owner of `online`/`offline`); when absent the window's singleton is used.
+   * Never created without a window.
+   */
+  connectivity?: Pick<ConnectivityTracker, 'on'>;
+  /** The window's `navigator` for the connectivity tracker; default read (guarded) from the injected window. */
+  navigator?: object;
+  /** The shared UI tracker; when absent the window's singleton is used. */
+  ui?: Pick<UiTracker, 'on' | 'current'>;
   /** The shared environment tracker; when absent the window's singleton is used (created over `window`/`document`). */
   environment?: EnvironmentSource;
   /** Run the private-mode heuristic (default TRUE, opt-out; see `captureEnvironmentHints`). A `false` is also enforced at the event sink: `private_mode_detected` is never forwarded, even from a shared tracker another consumer enabled. */
@@ -85,7 +98,8 @@ export interface BrowserSystemEventsEnv {
 class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   readonly name = 'browser-system-events';
   readonly #lifecycle: Pick<ApplicationTracker, 'on'>;
-  readonly #ui: Pick<UiTracker, 'on'>;
+  readonly #ui: Pick<UiTracker, 'on' | 'current'>;
+  readonly #connectivity: Pick<ConnectivityTracker, 'on'> | undefined;
   readonly #environment: EnvironmentSource;
   /** This source's own opt-out, enforced at the sink: the shared tracker may run the probe for another consumer. */
   readonly #privateMode: boolean;
@@ -93,7 +107,8 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 
   constructor(
     lifecycle: Pick<ApplicationTracker, 'on'>,
-    ui: Pick<UiTracker, 'on'>,
+    ui: Pick<UiTracker, 'on' | 'current'>,
+    connectivity: Pick<ConnectivityTracker, 'on'> | undefined,
     environment: EnvironmentSource,
     onError: ((error: unknown) => void) | undefined,
     detectPrivateMode: boolean,
@@ -109,6 +124,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     super(report);
     this.#lifecycle = lifecycle;
     this.#ui = ui;
+    this.#connectivity = connectivity;
     this.#environment = environment;
     this.#privateMode = detectPrivateMode;
   }
@@ -125,8 +141,6 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       ),
       l.on('freeze', () => this.emit('event', { name: 'freeze' })),
       l.on('resume', () => this.emit('event', { name: 'resume' })),
-      l.on('online', () => this.emit('event', { name: 'online' })),
-      l.on('offline', () => this.emit('event', { name: 'offline' })),
       // The UiTracker de-duplicates the double delivery (screen.orientation change + window orientationchange); an
       // engine without a readable orientation still announces the bare event.
       this.#ui.on('orientation', ({ type, angle }) =>
@@ -139,6 +153,8 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         this.emit('event', { name: 'dark_mode_changed', params: { dark } }),
       ),
     ];
+    this.#subscribeDisplayMode();
+    this.#subscribeConnectivity();
     // ONE subscription for every environment stage: the first subscriber activates the tracker, whose activation read
     // may emit (a change made while we were stopped) straight away, so a stage subscribed later would miss it.
     // private_mode_detected is a PER-SESSION event but the tracker outlives sessions and never re-probes a retained
@@ -175,6 +191,41 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     );
     const retained = this.#privateMode ? this.#environment.current?.().privateMode : undefined;
     if (retained?.private === 'yes' && !privateDelivered) deliverPrivate(retained.method);
+  }
+
+  /**
+   * display_mode_changed from the UiTracker's `displayMode` stage. The tracker de-duplicates and announces only a change
+   * (its baseline is silent), so `previousMode` is the mode this source last knew: read at subscription, then tracked.
+   * Omitted when the mode before could not be read (never guessed).
+   */
+  #subscribeDisplayMode(): void {
+    let previous: string | undefined;
+    this.#unsubscribe.push(
+      this.#ui.on('displayMode', ({ mode }) => {
+        const before = previous;
+        if (mode === before) return; // not a change (a re-baselined tracker re-announcing what we already know)
+        previous = mode;
+        this.emit('event', {
+          name: 'display_mode_changed',
+          params: { mode, ...(before !== undefined ? { previousMode: before } : {}) },
+        });
+      }),
+    );
+    previous = this.#ui.current('displayMode')?.mode;
+  }
+
+  /**
+   * online / offline: one event per DOM event, from the ConnectivityTracker's `transition` stage (the kind is the event's
+   * own type, never a `navigator.onLine` read; nothing is announced for attaching).
+   */
+  #subscribeConnectivity(): void {
+    const connectivity = this.#connectivity;
+    if (connectivity === undefined) return;
+    this.#unsubscribe.push(
+      connectivity.on('transition', ({ online }) =>
+        this.emit('event', { name: online ? 'online' : 'offline' }),
+      ),
+    );
   }
 
   protected override onDeactivate(): void {
@@ -219,22 +270,35 @@ export function createBrowserSystemEventsSource(
       : hostGlobal('screen', env.onError));
   // The SAME per-window tracker the traces use (keyed on the window; a relaunch's seams merge into it). Without an
   // injected window it gets the host's, exactly as the lifecycle tracker does above.
-  const ui = uiTrackerFor(
-    {
-      ...(win !== undefined ? { window: win as UiEnvWindow } : {}),
-      ...(screen !== undefined ? { screen } : {}),
-      ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
-    },
-    env.onError,
-  );
+  const ui =
+    env.ui ??
+    uiTrackerFor(
+      {
+        ...(win !== undefined ? { window: win as UiEnvWindow } : {}),
+        ...(screen !== undefined ? { screen } : {}),
+        ...(env.matchMedia !== undefined ? { matchMedia: env.matchMedia } : {}),
+      },
+      env.onError,
+    );
+  // The connectivity tracker owns `online`/`offline` (and `navigator.onLine`); there is nothing to listen to without a
+  // window. The navigator comes from the injected window, exactly like the environment tracker's.
+  const nav =
+    env.navigator ??
+    (win === undefined
+      ? undefined
+      : hostRead(() => (win as { navigator?: object }).navigator, env.onError));
+  const connectivity =
+    env.connectivity ??
+    (win === undefined
+      ? undefined
+      : connectivityTrackerFor(
+          { window: win, ...(nav !== undefined ? { navigator: nav } : {}) },
+          env.onError,
+        ));
   const environment =
     env.environment ??
     ((): EnvironmentSource => {
       const doc = hostDoc();
-      const nav =
-        win === undefined
-          ? undefined
-          : hostRead(() => (win as { navigator?: object }).navigator, env.onError);
       return environmentTrackerFor(
         {
           ...(win !== undefined ? { window: win } : {}),
@@ -254,6 +318,7 @@ export function createBrowserSystemEventsSource(
   return new BrowserSystemEventsSource(
     lifecycle,
     ui,
+    connectivity,
     environment,
     env.onError,
     env.detectPrivateMode ?? true,

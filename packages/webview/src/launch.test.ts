@@ -170,11 +170,13 @@ describe('launch (webview) goes through the ApplicationTracker registry', () => 
     const win = fakeEventTarget();
     const { document } = blockedDoc();
     track('tok', baseOptions({ window: win.target as unknown as WindowEvents, document }));
-    // ApplicationTracker's temporary online stage + the ConnectivityTracker's own listener
-    expect(win.count('online')).toBe(2);
+    // online/offline are the ConnectivityTracker's alone: the ApplicationTracker no longer binds them
+    expect(win.count('online')).toBe(1);
+    const before = win.count('pagehide');
+    expect(before).toBeGreaterThan(0);
     const shared = applicationTrackerFor({ window: win.target as never, document });
-    const off = shared.on('online', () => {});
-    expect(win.count('online')).toBe(2); // the SAME tracker: no second listener set
+    const off = shared.on('pagehide', () => {});
+    expect(win.count('pagehide')).toBe(before); // the SAME tracker: no second listener set
     off();
   });
 
@@ -485,6 +487,38 @@ describe('launch (webview)', () => {
     expect(log?.s).toBeGreaterThanOrEqual(0); // carries a monotonic seq
   });
 
+  it('streams display_mode_changed from the injected window matchMedia, through the shared browser events source', () => {
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    let standalone = false;
+    const win = fakeEventTarget();
+    Object.assign(win.target, {
+      matchMedia(q: string) {
+        return {
+          get matches() {
+            return standalone && q === '(display-mode: standalone)';
+          },
+          addEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.add(f),
+          removeEventListener: (_t: string, f: (e: { matches: boolean }) => void) =>
+            void listeners.delete(f),
+        };
+      },
+    });
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
+    );
+    standalone = true;
+    for (const f of [...listeners]) f({ matches: true });
+    const hits = entriesOfType(fake.msgs(), 'events.system').filter((e) =>
+      JSON.stringify(e.p).includes('display_mode_changed'),
+    );
+    expect(hits).toHaveLength(1);
+    expect(JSON.stringify(hits[0]?.p)).toContain('"previousMode":"browser"');
+    expect(JSON.stringify(hits[0]?.p)).toContain('"mode":"standalone"');
+  });
+
   it('streams dark_mode_changed from the injected window matchMedia (bound to it); none without matchMedia; a throwing matchMedia never fails launch', () => {
     const listeners = new Set<(e: { matches: boolean }) => void>();
     const thisSeen: unknown[] = [];
@@ -506,7 +540,7 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toHaveLength(2); // the baseline read + the change watch
+    expect(thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
     expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
@@ -1177,9 +1211,9 @@ describe('launch (webview)', () => {
         expect(rows.get('ram_js_heap_used')).toBe(10);
         expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
         expect(rows.get('orientation')).toBe(3);
-        // ONE shared lifecycle tracker (traces + events source: 3 listeners, not 6) plus the domain ConnectivityTracker's
-        // own online/offline pair (it does not depend on the lifecycle tracker).
-        expect(w.count('online', 'offline', 'orientationchange')).toBe(5);
+        // ONE ConnectivityTracker (online + offline) and ONE UiTracker (orientationchange) serve traces AND events:
+        // three listeners, none duplicated.
+        expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
         await client.stop();
         expect(w.count('online', 'offline', 'orientationchange')).toBe(0);
       } finally {

@@ -36,13 +36,13 @@ describe('ApplicationTracker', () => {
     expect(win.count() + doc.count()).toBe(0);
   });
 
-  it('attaches pagehide/online/offline on window (orientationchange belongs to the UiTracker) and visibilitychange on document', () => {
+  it('attaches pagehide on window and visibilitychange on document; online/offline (ConnectivityTracker) and orientationchange (UiTracker) belong to other trackers', () => {
     const { win, doc } = mkEnv();
     const t = new ApplicationTracker({ window: win, document: doc });
-    t.on('online', () => {});
-    for (const type of ['pagehide', 'online', 'offline']) {
-      expect(win.count(type)).toBe(1);
-    }
+    t.on('pagehide', () => {});
+    expect(win.count('pagehide')).toBe(1);
+    expect(win.count()).toBe(1); // nothing else on the window: no online, offline or orientationchange
+    expect(win.count('online') + win.count('offline')).toBe(0);
     expect(win.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(1);
   });
@@ -72,7 +72,7 @@ describe('ApplicationTracker', () => {
     }).not.toThrow();
     expect(win.count('freeze')).toBe(0); // checked while SUBSCRIBED
     expect(win.count('resume')).toBe(0);
-    expect(win.count()).toBe(3); // only the window's own pagehide/online/offline
+    expect(win.count()).toBe(1); // only the window's own pagehide
     off?.();
   });
 
@@ -96,14 +96,14 @@ describe('ApplicationTracker', () => {
   it('releases everything on the last unsubscribe and re-attaches on the next subscriber', () => {
     const { win, doc } = mkEnv();
     const t = new ApplicationTracker({ window: win, document: doc });
-    const offA = t.on('online', () => {});
-    const offB = t.on('offline', () => {});
+    const offA = t.on('pagehide', () => {});
+    const offB = t.on('visibility', () => {});
     offA();
-    expect(win.count() + doc.count()).toBe(6);
+    expect(win.count() + doc.count()).toBe(4); // pagehide + visibilitychange + freeze + resume
     offB();
     expect(win.count() + doc.count()).toBe(0);
-    t.on('online', () => {});
-    expect(win.count() + doc.count()).toBe(6);
+    t.on('pagehide', () => {});
+    expect(win.count() + doc.count()).toBe(4);
   });
 
   it('removes each listener exactly once per activation cycle (no stale entries replayed on a later stop)', () => {
@@ -115,9 +115,9 @@ describe('ApplicationTracker', () => {
       realRemove(t, f);
     };
     const t = new ApplicationTracker({ window: win, document: doc });
-    t.on('online', () => {})();
-    t.on('online', () => {})();
-    expect(removes).toHaveBeenCalledTimes(6);
+    t.on('pagehide', () => {})();
+    t.on('pagehide', () => {})();
+    expect(removes).toHaveBeenCalledTimes(2); // pagehide, once per cycle (the document's are removed on the document)
   });
 
   it('emits typed events', () => {
@@ -126,34 +126,30 @@ describe('ApplicationTracker', () => {
     const seen: unknown[] = [];
     t.on('pagehide', (e) => seen.push(['pagehide', e]));
     t.on('visibility', (e) => seen.push(['visibility', e]));
-    t.on('online', () => seen.push(['online']));
-    t.on('offline', () => seen.push(['offline']));
     win.fire('pagehide', { persisted: true });
     win.fire('pagehide', {});
     doc.visibilityState = 'hidden';
     doc.fire('visibilitychange');
     doc.visibilityState = 'visible';
     doc.fire('visibilitychange');
-    win.fire('online');
+    win.fire('online'); // not ours any more: the ConnectivityTracker owns it
     win.fire('offline');
     expect(seen).toEqual([
       ['pagehide', { persisted: true }],
       ['pagehide', { persisted: false }],
       ['visibility', { visible: false }],
       ['visibility', { visible: true }],
-      ['online'],
-      ['offline'],
     ]);
   });
 
   it('works with no document and with no window', () => {
     const { win, doc } = mkEnv();
     const onlyWin = new ApplicationTracker({ window: win });
-    onlyWin.on('online', () => {})();
+    onlyWin.on('pagehide', () => {})();
     const onlyDoc = new ApplicationTracker({ document: doc });
     onlyDoc.on('visibility', () => {});
     expect(doc.count('visibilitychange')).toBe(1);
-    expect(() => new ApplicationTracker({}).on('online', () => {})()).not.toThrow();
+    expect(() => new ApplicationTracker({}).on('pagehide', () => {})()).not.toThrow();
   });
 
   it('a missing visibilityState emits NO visibility (it would fabricate a hide)', () => {
@@ -189,7 +185,7 @@ describe('ApplicationTracker', () => {
       throw new Error('detached');
     };
     const t = new ApplicationTracker({ window: win, document: doc }, onError);
-    const off = t.on('online', () => {});
+    const off = t.on('pagehide', () => {});
     expect(onError).toHaveBeenCalledTimes(1);
     off();
     expect(win.count()).toBe(0);
@@ -202,7 +198,7 @@ describe('ApplicationTracker', () => {
       throw new Error('detached');
     };
     const t = new ApplicationTracker({ window: win, document: doc });
-    const off = t.on('online', () => {});
+    const off = t.on('pagehide', () => {});
     expect(() => off()).not.toThrow();
     expect(win.count()).toBe(0);
   });
@@ -212,7 +208,7 @@ describe('ApplicationTracker', () => {
       window: {} as never,
       document: { visibilityState: 'visible' } as never,
     });
-    expect(() => t.on('online', () => {})()).not.toThrow();
+    expect(() => t.on('pagehide', () => {})()).not.toThrow();
   });
 
   it('a throwing consumer is reported and the other consumers still receive the event', () => {
@@ -220,11 +216,11 @@ describe('ApplicationTracker', () => {
     const onError = vi.fn();
     const t = new ApplicationTracker({ window: win, document: doc }, onError);
     const seen: string[] = [];
-    t.on('online', () => {
+    t.on('pagehide', () => {
       throw new Error('consumer');
     });
-    t.on('online', () => seen.push('second'));
-    expect(() => win.fire('online')).not.toThrow();
+    t.on('pagehide', () => seen.push('second'));
+    expect(() => win.fire('pagehide', {})).not.toThrow();
     expect(onError).toHaveBeenCalledTimes(1);
     expect(seen).toEqual(['second']);
   });
@@ -241,12 +237,12 @@ describe('ApplicationTracker', () => {
       },
     });
     const t = new ApplicationTracker({ window: win, document: doc }, onError);
-    t.on('online', () => {
+    t.on('pagehide', () => {
       throw new Error('consumer');
     });
     t.on('visibility', () => {});
     expect(() => doc.fire('visibilitychange')).not.toThrow();
-    expect(() => win.fire('online')).not.toThrow();
+    expect(() => win.fire('pagehide', {})).not.toThrow();
     expect(onError).toHaveBeenCalledTimes(3); // activation read, event read, throwing consumer
 
     const bad = mkTarget();
@@ -254,7 +250,7 @@ describe('ApplicationTracker', () => {
       throw new Error('detached');
     };
     const t2 = new ApplicationTracker({ window: bad }, onError);
-    expect(() => t2.on('online', () => {})).not.toThrow();
+    expect(() => t2.on('pagehide', () => {})).not.toThrow();
   });
 });
 
@@ -400,12 +396,12 @@ describe('ApplicationTracker: aggregated state', () => {
     const t = new ApplicationTracker({ window: win, document: doc });
     const seen = states(t);
     const online = vi.fn();
-    t.on('online', online);
+    t.on('pagehide', online);
     t.reset();
     expect(win.count() + doc.count()).toBe(0);
     doc.visibilityState = 'hidden';
     doc.fire('visibilitychange');
-    win.fire('online');
+    win.fire('pagehide', {});
     expect(seen).toEqual([]);
     expect(online).not.toHaveBeenCalled();
     // subscribing again re-attaches and works
@@ -457,21 +453,21 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const a = vi.fn();
     const b = vi.fn();
     const t = applicationTrackerFor({ window: win, document: doc }, a);
-    const off = t.on('online', () => {
+    const off = t.on('pagehide', () => {
       throw new Error('x');
     });
-    win.fire('online');
+    win.fire('pagehide', {});
     expect(a).toHaveBeenCalledTimes(1);
     off();
     expect(applicationTrackerFor({ window: win, document: doc }, b)).toBe(t);
-    t.on('online', () => {
+    t.on('pagehide', () => {
       throw new Error('y');
     });
-    win.fire('online');
+    win.fire('pagehide', {});
     expect(b).toHaveBeenCalledTimes(1);
     expect(a).toHaveBeenCalledTimes(1);
     applicationTrackerFor({ window: win, document: doc }); // no onError: keeps b
-    win.fire('online');
+    win.fire('pagehide', {});
     expect(b).toHaveBeenCalledTimes(2);
     resetApplicationTracker({ document: doc });
   });
@@ -481,13 +477,13 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const w2 = mkTarget();
     const doc = mkEnv().doc;
     const t = applicationTrackerFor({ window: w1, document: doc });
-    t.on('online', () => {})();
+    t.on('pagehide', () => {})();
     expect(applicationTrackerFor({ window: w2, document: doc })).toBe(t);
     const seen: string[] = [];
-    t.on('online', () => seen.push('online'));
+    t.on('pagehide', () => seen.push('online'));
     expect(w1.count()).toBe(0);
-    expect(w2.count('online')).toBe(1);
-    w2.fire('online');
+    expect(w2.count('pagehide')).toBe(1);
+    w2.fire('pagehide', {});
     expect(seen).toEqual(['online']);
     resetApplicationTracker({ document: doc });
   });
@@ -497,12 +493,12 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const w2 = mkTarget();
     const doc = mkEnv().doc;
     const t = applicationTrackerFor({ window: w1, document: doc });
-    t.on('online', () => {});
+    t.on('pagehide', () => {});
     const onError = vi.fn();
     applicationTrackerFor({ window: w2, document: doc }, onError);
     applicationTrackerFor({ window: w2, document: doc }, onError);
     expect(w2.count()).toBe(0);
-    expect(w1.count('online')).toBe(1);
+    expect(w1.count('pagehide')).toBe(1);
     expect(onError).toHaveBeenCalledTimes(1);
     expect(String((onError.mock.calls[0]?.[0] as Error).message)).toContain('already bound');
     applicationTrackerFor({ window: w1, document: doc }, onError); // the same binding is not a mismatch
@@ -515,7 +511,7 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const d1 = mkEnv().doc;
     const onError = vi.fn();
     const t = new ApplicationTracker({ window: w, document: d1 }, onError);
-    t.on('online', () => {});
+    t.on('pagehide', () => {});
     t.rebind({ window: w, document: mkEnv().doc });
     expect(onError).toHaveBeenCalledTimes(1);
     t.rebind({ window: w, document: d1 });
@@ -529,14 +525,14 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const d2 = mkEnv().doc;
     const t = new ApplicationTracker({ window: w1, document: d1 });
     t.rebind({ window: w2 }); // no document supplied: d1 stays
-    let off = t.on('online', () => {});
-    expect(w2.count('online')).toBe(1);
-    expect(w1.count('online')).toBe(0);
+    let off = t.on('pagehide', () => {});
+    expect(w2.count('pagehide')).toBe(1);
+    expect(w1.count('pagehide')).toBe(0);
     expect(d1.count('visibilitychange')).toBe(1);
     off();
     t.rebind({ document: d2 }); // no window supplied: w2 stays
-    off = t.on('online', () => {});
-    expect(w2.count('online')).toBe(1);
+    off = t.on('pagehide', () => {});
+    expect(w2.count('pagehide')).toBe(1);
     expect(d2.count('visibilitychange')).toBe(1);
     expect(d1.count('visibilitychange')).toBe(0);
     off();
@@ -547,7 +543,7 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const d = mkEnv().doc;
     const onError = vi.fn();
     const t = new ApplicationTracker({ window: w, document: d }, onError);
-    t.on('online', () => {});
+    t.on('pagehide', () => {});
     t.rebind({ document: d }); // no window: nothing conflicts
     t.rebind({ window: w }); // no document: nothing conflicts
     t.rebind({});
@@ -561,21 +557,21 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const msgs = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.map(([e]) => (e as Error).message);
     const onWin = vi.fn();
     const a = new ApplicationTracker({ window: w, document: d }, onWin);
-    a.on('online', () => {});
+    a.on('pagehide', () => {});
     a.rebind({ window: mkTarget() });
     expect(msgs(onWin)).toEqual([
       'ApplicationTracker already bound to another window while active',
     ]);
     const onDoc = vi.fn();
     const b = new ApplicationTracker({ window: w, document: d }, onDoc);
-    b.on('online', () => {});
+    b.on('pagehide', () => {});
     b.rebind({ document: mkEnv().doc });
     expect(msgs(onDoc)).toEqual([
       'ApplicationTracker already bound to another document while active',
     ]);
     const onBoth = vi.fn();
     const c = new ApplicationTracker({ window: w, document: d }, onBoth);
-    c.on('online', () => {});
+    c.on('pagehide', () => {});
     c.rebind({ window: mkTarget(), document: mkEnv().doc });
     expect(msgs(onBoth)).toEqual([
       'ApplicationTracker already bound to another window and document while active',
@@ -588,12 +584,12 @@ describe('applicationTrackerFor (singleton per key)', () => {
     const doc = mkEnv().doc;
     const onError = vi.fn();
     const t = applicationTrackerFor({ window: w1, document: doc }, onError);
-    let off = t.on('online', () => {});
+    let off = t.on('pagehide', () => {});
     applicationTrackerFor({ window: w2, document: doc });
     expect(onError).toHaveBeenCalledTimes(1);
     off();
     applicationTrackerFor({ window: w1, document: doc }); // idle: rebinds w1
-    off = t.on('online', () => {});
+    off = t.on('pagehide', () => {});
     applicationTrackerFor({ window: w2, document: doc });
     expect(onError).toHaveBeenCalledTimes(2);
     resetApplicationTracker({ document: doc });
@@ -602,8 +598,8 @@ describe('applicationTrackerFor (singleton per key)', () => {
   it('resetApplicationTracker detaches the old instance and the next request builds a fresh one', () => {
     const { win, doc } = mkEnv();
     const a = applicationTrackerFor({ window: win, document: doc });
-    a.on('online', () => {});
-    expect(win.count()).toBe(3);
+    a.on('pagehide', () => {});
+    expect(win.count()).toBe(1);
     resetApplicationTracker({ window: win, document: doc });
     expect(win.count() + doc.count()).toBe(0);
     expect(applicationTrackerFor({ window: win, document: doc })).not.toBe(a);

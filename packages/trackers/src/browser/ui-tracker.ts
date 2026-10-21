@@ -10,6 +10,7 @@ import { hostRead } from './host-read';
 //   viewport       {width,height}    window.innerWidth/innerHeight; window `resize`/`orientationchange`
 //   colorScheme    {dark}            matchMedia (prefers-color-scheme: dark)
 //   reducedMotion  {reduce}          matchMedia (prefers-reduced-motion: reduce)
+//   visualViewport {scale?,offsetLeft?,offsetTop?,width?,height?} the VISUAL viewport (pinch zoom / pan); its `resize`/`scroll`
 //   displayMode    {mode}            matchMedia (display-mode: fullscreen | standalone | minimal-ui), else 'browser'
 //   frameRate      number            requestAnimationFrame callbacks per second, only while the page is visible
 //
@@ -51,6 +52,13 @@ export interface ColorSchemeState {
 export interface ReducedMotionState {
   reduce: boolean;
 }
+export interface VisualViewportState {
+  scale?: number;
+  offsetLeft?: number;
+  offsetTop?: number;
+  width?: number;
+  height?: number;
+}
 export type DisplayModeName = 'fullscreen' | 'standalone' | 'minimal-ui' | 'browser';
 export interface DisplayModeState {
   mode: DisplayModeName;
@@ -61,6 +69,7 @@ export interface UiStages {
   orientation: OrientationState;
   screenSize: ScreenSizeState;
   viewport: ViewportState;
+  visualViewport: VisualViewportState;
   colorScheme: ColorSchemeState;
   reducedMotion: ReducedMotionState;
   displayMode: DisplayModeState;
@@ -97,6 +106,8 @@ export interface UiEnv {
     readonly devicePixelRatio?: unknown;
     readonly innerWidth?: unknown;
     readonly innerHeight?: unknown;
+    /** Where `visualViewport` defaults from when the env supplies none. */
+    readonly visualViewport?: UiEnv['visualViewport'] | null;
   };
   screen?: Partial<TargetLike> & {
     readonly width?: unknown;
@@ -105,6 +116,18 @@ export interface UiEnv {
       readonly type?: unknown;
       readonly angle?: unknown;
     };
+  };
+  /**
+   * `window.visualViewport` (pinch zoom and the visible region); absent in older engines. Defaults to the window's own
+   * (read guarded, live), so a consumer need not pass it — and passing it from one consumer only would look like a
+   * source change to the others' running stages.
+   */
+  visualViewport?: Partial<TargetLike> & {
+    readonly scale?: unknown;
+    readonly offsetLeft?: unknown;
+    readonly offsetTop?: unknown;
+    readonly width?: unknown;
+    readonly height?: unknown;
   };
   /** `window.matchMedia` BOUND to that window (never the host's). */
   matchMedia?: (query: string) => MediaQueryListLike;
@@ -134,10 +157,12 @@ const defaultNow = (): number => {
 };
 
 const positive = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const UI_STAGES: readonly UiStage[] = [
   'orientation',
   'screenSize',
   'viewport',
+  'visualViewport',
   'colorScheme',
   'reducedMotion',
   'displayMode',
@@ -157,6 +182,7 @@ const FUNCTION_SEAMS: ReadonlySet<string> = new Set([
 const ENV_KEYS = [
   'window',
   'screen',
+  'visualViewport',
   'matchMedia',
   'document',
   'requestAnimationFrame',
@@ -343,6 +369,22 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         const height = hostRead(() => win.innerHeight, report);
         return positive(width) && positive(height) ? { width, height } : undefined;
       }
+      case 'visualViewport': {
+        const vv = this.#visualViewport();
+        if (vv === undefined) return undefined;
+        const state: VisualViewportState = {};
+        const scale = hostRead(() => vv.scale, report);
+        const offsetLeft = hostRead(() => vv.offsetLeft, report);
+        const offsetTop = hostRead(() => vv.offsetTop, report);
+        const width = hostRead(() => vv.width, report);
+        const height = hostRead(() => vv.height, report);
+        if (positive(scale)) state.scale = scale;
+        if (finite(offsetLeft)) state.offsetLeft = offsetLeft;
+        if (finite(offsetTop)) state.offsetTop = offsetTop;
+        if (positive(width)) state.width = width;
+        if (positive(height)) state.height = height;
+        return Object.keys(state).length === 0 ? undefined : state;
+      }
       case 'colorScheme': {
         const dark = this.#matches(DARK);
         return dark === undefined ? undefined : { dark };
@@ -356,6 +398,14 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
           DISPLAY_MODES.map((mode) => this.#matches(`(display-mode: ${mode})`)),
         );
     }
+  }
+
+  /** The injected visual viewport, else the window's own; guarded and reported; undefined when there is none. */
+  #visualViewport(): UiEnv['visualViewport'] | undefined {
+    const injected = hostRead(() => this.#env.visualViewport, this.#report);
+    if (injected !== undefined && injected !== null) return injected;
+    const fromWindow = hostRead(() => this.#env.window?.visualViewport, this.#report);
+    return fromWindow ?? undefined;
   }
 
   #matches(query: string): boolean | undefined {
@@ -476,6 +526,16 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
             'change',
             this.#guarded(() => this.#refresh(['screenSize'])),
           ),
+      },
+      {
+        id: 'visualViewport',
+        kinds: ['visualViewport'],
+        attach: (offs) => {
+          const onChange = this.#guarded(() => this.#refresh(['visualViewport']));
+          const vv = this.#visualViewport();
+          this.#listen(offs, vv, 'resize', onChange);
+          this.#listen(offs, vv, 'scroll', onChange);
+        },
       },
       {
         id: 'colorScheme',
