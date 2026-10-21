@@ -715,12 +715,15 @@ async function buildLaunch(
     warnToConsole,
     BROWSER_APP_VERSION_HINT,
   );
+  // app.uptime_s is a SNAPSHOT at session start (launch), not re-read per report.
+  const sessionUptimeSeconds = probe.uptimeSeconds?.();
   const getEnvironment = () =>
     buildBrowserEnvironment(
       {
         sdkVersion,
         deviceId,
         options: resolved.canonical,
+        ...(sessionUptimeSeconds !== undefined ? { uptimeSeconds: sessionUptimeSeconds } : {}),
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
         ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),

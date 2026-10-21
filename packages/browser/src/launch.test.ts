@@ -4127,3 +4127,32 @@ describe('app identity resolution', () => {
     expect(out.app).toMatchObject({ version: '0.0.0' });
   });
 });
+
+describe('launch — environment.app.uptime_s (snapshot at session start)', () => {
+  it('stamps the probe value ONCE at launch; later environment builds do not drift', async () => {
+    let seconds = 0.4;
+    const spy = vi.fn(() => seconds);
+    const { client, internals } = await launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        systemProbe: { ...probe, uptimeSeconds: spy },
+      }),
+    );
+    clients.push(client);
+    seconds = 900;
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(0);
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the key when the probe has no clock', async () => {
+    const { client, internals } = await launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore() }),
+    );
+    clients.push(client);
+    expect('uptime_s' in (internals?.getEnvironment().app ?? {})).toBe(false);
+  });
+});

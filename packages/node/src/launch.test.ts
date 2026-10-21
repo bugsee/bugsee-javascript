@@ -3754,3 +3754,39 @@ describe('app identity detection', () => {
     expect(text).toContain('package.json');
   });
 });
+
+describe('launch — environment.app.uptime_s (snapshot at session start)', () => {
+  it('stamps the probe uptime ONCE at launch; later environment builds do not drift', () => {
+    let uptime = 12.8;
+    const spy = vi.fn(() => uptime);
+    const { client, internals } = launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        systemProbe: { ...probe, uptimeSeconds: spy },
+      }),
+    );
+    clients.push(client);
+    uptime = 500;
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(12);
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(12);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the key when the probe cannot answer, and a relaunch re-stamps', () => {
+    const none = launchCore('tok', baseOptions({ carrier: {}, captureStore: memStore() }));
+    clients.push(none.client);
+    expect('uptime_s' in (none.internals?.getEnvironment().app ?? {})).toBe(false);
+    const again = launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        systemProbe: { ...probe, uptimeSeconds: () => 99 },
+      }),
+    );
+    clients.push(again.client);
+    expect(again.internals?.getEnvironment().app?.uptime_s).toBe(99);
+  });
+});

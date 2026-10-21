@@ -316,3 +316,32 @@ describe('realBrowserProbe', () => {
     expect((env.hardware as { screen_width: number }).screen_width).toBe(1024);
   });
 });
+
+describe('buildBrowserEnvironment — app.uptime_s (document lifetime at session start)', () => {
+  it('writes the floored whole-second snapshot it is given', () => {
+    const env = buildBrowserEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 3.99 }, fullProbe);
+    expect(env.app?.uptime_s).toBe(3);
+  });
+
+  it('keeps a real 0 (launch at page load) and omits an absent or unusable value', () => {
+    expect(
+      buildBrowserEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 0.2 }, fullProbe).app?.uptime_s,
+    ).toBe(0);
+    expect(
+      buildBrowserEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 0 }, fullProbe).app?.uptime_s,
+    ).toBe(0);
+    for (const uptimeSeconds of [undefined, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      const env = buildBrowserEnvironment({ sdkVersion: '1.0.0', uptimeSeconds }, fullProbe);
+      expect('uptime_s' in (env.app ?? {})).toBe(false);
+    }
+  });
+
+  it('the real probe reports performance.now() / 1000 (seconds since timeOrigin)', () => {
+    vi.stubGlobal('performance', { now: () => 12_500 });
+    try {
+      expect(realBrowserProbe.uptimeSeconds?.()).toBe(12.5);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

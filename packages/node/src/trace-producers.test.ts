@@ -44,7 +44,6 @@ const constDeps = (over: NodeTraceProducerDeps = {}): NodeTraceProducerDeps => (
   cpuUsage: () => ({ user: 100_000, system: 200_000 }),
   cpuCount: () => 2,
   monotonicNowMs: () => 1000,
-  uptime: () => 42.7,
   v8Heap: () => ({ limit: 1000, used: 300, available: 700, malloced: 11, peakMalloced: 12 }),
   memoryLimit: () => 500,
   availableMemory: () => 250,
@@ -130,7 +129,6 @@ describe('createNodeSystemTraceProducers', () => {
       ['process_memory_heap_used', 30],
       ['process_memory_limit', 500],
       ['process_memory_rss', 10],
-      ['process_uptime_s', 42],
       ['ram_js_heap_free', 700],
       ['ram_js_heap_total', 1000],
       ['ram_js_heap_used', 300],
@@ -199,7 +197,7 @@ describe('createNodeSystemTraceProducers', () => {
       const h = run({ memoryLimit: () => undefined, availableMemory: () => undefined });
       expect(h.got.has('process_memory_limit')).toBe(false);
       expect(h.got.has('ram_system_available')).toBe(false);
-      expect(h.got.get('process_uptime_s')).toBe(42);
+      expect(h.got.has('process_uptime_s')).toBe(false); // retired: now environment.app.uptime_s
     });
 
     it('measuresV8Heap:false wires NO heap reader (Bun): nothing constructed, nothing emitted', () => {
@@ -429,7 +427,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(10);
+    expect(h.producers).toHaveLength(9);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
@@ -562,7 +560,6 @@ describe('createNodeSystemTraceProducers', () => {
       'process_memory_heap_total',
       'process_memory_heap_used',
       'process_memory_rss',
-      'process_uptime_s',
       'ram_js_heap_free',
       'ram_js_heap_total',
       'ram_js_heap_used',

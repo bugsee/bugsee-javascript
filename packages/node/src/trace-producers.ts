@@ -159,16 +159,6 @@ class GcProducer extends StageProducer<'gc'> {
   }
 }
 
-class UptimeProducer extends StageProducer<'uptime'> {
-  readonly name = 'process-uptime';
-  constructor(tracker: ProcessTracker) {
-    super(tracker, 'uptime');
-  }
-  protected publish(u: ProcessEvents['uptime']): void {
-    this.emit('process_uptime_s', u.seconds);
-  }
-}
-
 /**
  * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresAvailableMemory`,
  * `measuresGc`; see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
@@ -192,6 +182,5 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new MemoryLimitProducer(tracker),
     new AvailableMemoryProducer(tracker),
     new GcProducer(tracker),
-    new UptimeProducer(tracker),
   ];
 }

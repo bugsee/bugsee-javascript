@@ -721,11 +721,14 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   const probe = options.systemProbe ?? realSystemProbe;
   services.addService(defineService(SystemProbeToken, () => probe)); // container service
   const environmentOnError = reportOncePerMessage(options.onError);
+  // app.uptime_s is a SNAPSHOT at session start (launch), not re-read per report; a relaunch re-stamps it.
+  const sessionUptimeSeconds = probe.uptimeSeconds?.();
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
         sdkVersion,
         options: resolved.canonical,
+        ...(sessionUptimeSeconds !== undefined ? { uptimeSeconds: sessionUptimeSeconds } : {}),
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
         ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),

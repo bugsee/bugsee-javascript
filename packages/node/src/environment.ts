@@ -36,6 +36,11 @@ export interface SystemProbe {
   /** Offset from UTC in minutes, positive east (e.g. UTC+2 → 120). */
   utcOffsetMinutes(): number;
   locale(): string;
+  /**
+   * Seconds since this process started (`process.uptime()`, fractional). OPTIONAL and called optionally: a
+   * probe that cannot answer simply leaves `app.uptime_s` out (never a fabricated 0).
+   */
+  uptimeSeconds?(): number | undefined;
 }
 
 // Service token for the Node SystemProbe — Node-specific (other platforms supply different probes), so
@@ -55,6 +60,7 @@ export const realSystemProbe: SystemProbe = {
   freeMemory: () => os.freemem(),
   utcOffsetMinutes: () => -new Date().getTimezoneOffset(),
   locale: () => new Intl.DateTimeFormat().resolvedOptions().locale,
+  uptimeSeconds: () => process.uptime(),
 };
 
 /** The GPU block of `environment.hardware.gpu` (the viewer reads exactly these keys). */
@@ -137,6 +143,11 @@ export interface NodeEnvironmentInput {
   debuggable?: boolean;
   /** hardware.device_id — persisted UUID supplied by the caller (null when none). */
   deviceId?: string;
+  /**
+   * Process uptime in seconds at the moment the capture session STARTED (a snapshot the caller takes once,
+   * not a live read). Written as `app.uptime_s`, floored; omitted when absent or not a finite number >= 0.
+   */
+  uptimeSeconds?: number;
   /** Live source of extra hardware data (hardware.gpu), read on every build. */
   hardwareExtras?: () => HardwareExtras | undefined;
   /** Sink for a throwing `hardwareExtras`. */
@@ -150,6 +161,13 @@ export function osPlatformToWire(osPlatform: string): string {
   if (osPlatform === 'darwin') return 'macos';
   if (osPlatform === 'win32') return 'windows';
   return osPlatform;
+}
+
+// `app.uptime_s`: whole seconds, absent (never 0) when the platform could not say.
+function uptimeField(seconds: number | undefined): { uptime_s?: number } {
+  return seconds !== undefined && Number.isFinite(seconds) && seconds >= 0
+    ? { uptime_s: Math.floor(seconds) }
+    : {};
 }
 
 export function buildNodeEnvironment(
@@ -195,6 +213,7 @@ export function buildNodeEnvironment(
       version: input.appVersion ?? '0.0.0',
       build: input.appBuild ?? '0',
       debuggable: input.debuggable ?? false,
+      ...uptimeField(input.uptimeSeconds),
     },
     sdk: {
       version: input.sdkVersion,

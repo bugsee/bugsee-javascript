@@ -39,6 +39,11 @@ export interface BrowserProbe {
   deviceMemoryBytes(): number | undefined;
   /** navigator.hardwareConcurrency; undefined on browsers that don't expose it. */
   cpuCount(): number | undefined;
+  /**
+   * Seconds since the document's time origin (`performance.now() / 1000`, fractional). OPTIONAL and called
+   * optionally: a probe without a clock leaves `app.uptime_s` out.
+   */
+  uptimeSeconds?(): number | undefined;
 }
 
 // Service token for the browser probe — registered by `launch` so the resolved probe is resolvable.
@@ -59,6 +64,7 @@ export const realBrowserProbe: BrowserProbe = {
     return gb === undefined ? undefined : gb * 1024 ** 3;
   },
   cpuCount: () => (navigator as { hardwareConcurrency?: number }).hardwareConcurrency,
+  uptimeSeconds: () => performance.now() / 1000,
 };
 
 export interface BrowserEnvironmentInput {
@@ -78,6 +84,11 @@ export interface BrowserEnvironmentInput {
   debuggable?: boolean;
   /** hardware.device_id — persisted UUID supplied by the caller (null when none). */
   deviceId?: string;
+  /**
+   * Seconds since the document's time origin at the moment the capture session STARTED (a snapshot taken
+   * once by the caller). Written as `app.uptime_s`, floored; omitted when absent or not a finite number >= 0.
+   */
+  uptimeSeconds?: number;
 }
 
 export function buildBrowserEnvironment(
@@ -124,6 +135,11 @@ export function buildBrowserEnvironment(
       version: input.appVersion ?? '0.0.0',
       build: input.appBuild ?? '0',
       debuggable: input.debuggable ?? false,
+      ...(input.uptimeSeconds !== undefined &&
+      Number.isFinite(input.uptimeSeconds) &&
+      input.uptimeSeconds >= 0
+        ? { uptime_s: Math.floor(input.uptimeSeconds) }
+        : {}),
     },
     sdk: {
       version: input.sdkVersion,
