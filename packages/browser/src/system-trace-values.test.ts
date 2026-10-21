@@ -29,12 +29,10 @@ describe('orientationToWire', () => {
     //   landscape-primary    | angle 90         | angle 0           | LandscapeLeft (3)
     //   portrait-secondary   | angle 180        | angle 270         | PortraitUpsideDown (2)
     //   landscape-secondary  | angle 270        | angle 180         | LandscapeRight (4)
-    expect(orientationToWire('portrait-primary', 0)).toBe(ANDROID_ORIENTATION.Portrait);
-    expect(orientationToWire('portrait-secondary', 180)).toBe(
-      ANDROID_ORIENTATION.PortraitUpsideDown,
-    );
-    expect(orientationToWire('landscape-primary', 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
-    expect(orientationToWire('landscape-secondary', 270)).toBe(ANDROID_ORIENTATION.LandscapeRight);
+    expect(orientationToWire('portrait-primary')).toBe(ANDROID_ORIENTATION.Portrait);
+    expect(orientationToWire('portrait-secondary')).toBe(ANDROID_ORIENTATION.PortraitUpsideDown);
+    expect(orientationToWire('landscape-primary')).toBe(ANDROID_ORIENTATION.LandscapeLeft);
+    expect(orientationToWire('landscape-secondary')).toBe(ANDROID_ORIENTATION.LandscapeRight);
   });
 
   it('emits the same 0-4 vocabulary both mobile SDKs put on the wire', () => {
@@ -52,11 +50,11 @@ describe('orientationToWire', () => {
     // values. This mapping is derived from Android's `fromAngle`, which is the only path traceable
     // end-to-end in our own code from a display rotation (the web's `angle`) to a trace value.
     const landscape = [
-      orientationToWire('landscape-primary', 90),
-      orientationToWire('landscape-secondary', 270),
+      orientationToWire('landscape-primary'),
+      orientationToWire('landscape-secondary'),
     ];
     expect(landscape.sort()).toEqual([3, 4]);
-    expect(orientationToWire('landscape-primary', 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
+    expect(orientationToWire('landscape-primary')).toBe(ANDROID_ORIENTATION.LandscapeLeft);
   });
 
   it('is an INT, never the {type, angle} object the Screen Orientation API hands out', () => {
@@ -68,14 +66,14 @@ describe('orientationToWire', () => {
       'landscape-primary',
       'landscape-secondary',
     ]) {
-      expect(typeof orientationToWire(type, 0)).toBe('number');
+      expect(typeof orientationToWire(type)).toBe('number');
     }
   });
 
   it('lands inside the 0-4 range the viewer has states for, for every input', () => {
     const inputs = ['portrait-primary', 'landscape-primary', '', 'nonsense', 'PORTRAIT-PRIMARY'];
     for (const type of inputs) {
-      const value = orientationToWire(type, 0);
+      const value = orientationToWire(type);
       expect(Number.isInteger(value)).toBe(true);
       expect(value).toBeGreaterThanOrEqual(0);
       expect(value).toBeLessThanOrEqual(4);
@@ -83,26 +81,8 @@ describe('orientationToWire', () => {
   });
 
   it('reports Unknown (0) for a type it does not recognise, rather than guessing portrait', () => {
-    expect(orientationToWire('nonsense', 0)).toBe(ANDROID_ORIENTATION.Unknown);
-    expect(orientationToWire('', 90)).toBe(ANDROID_ORIENTATION.Unknown);
-  });
-
-  it('falls back to the ANGLE when the type is missing but the angle is not', () => {
-    // Older WebKit exposes `window.orientation` (an angle) and no `screen.orientation.type`. An angle
-    // alone still identifies the position, so it is worth more than Unknown.
-    // Same table as fromAngle's portrait-natural column, which is the only case this path serves.
-    expect(orientationToWire(undefined, 0)).toBe(ANDROID_ORIENTATION.Portrait);
-    expect(orientationToWire(undefined, 90)).toBe(ANDROID_ORIENTATION.LandscapeLeft);
-    expect(orientationToWire(undefined, 180)).toBe(ANDROID_ORIENTATION.PortraitUpsideDown);
-    expect(orientationToWire(undefined, 270)).toBe(ANDROID_ORIENTATION.LandscapeRight);
-    expect(orientationToWire(undefined, 45)).toBe(ANDROID_ORIENTATION.Unknown);
-    expect(orientationToWire(undefined, undefined)).toBe(ANDROID_ORIENTATION.Unknown);
-  });
-
-  it('prefers the TYPE over the angle when the two disagree', () => {
-    // `type` is the spec'd, device-natural-aware field; the angle is relative to the device's natural
-    // orientation, which is landscape on many tablets. Where both exist, type is authoritative.
-    expect(orientationToWire('portrait-primary', 90)).toBe(ANDROID_ORIENTATION.Portrait);
+    expect(orientationToWire('nonsense')).toBe(ANDROID_ORIENTATION.Unknown);
+    expect(orientationToWire('')).toBe(ANDROID_ORIENTATION.Unknown);
   });
 });
 

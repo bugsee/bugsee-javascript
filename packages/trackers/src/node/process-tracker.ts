@@ -24,8 +24,8 @@ import {
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
 //   systemMemory    os.totalmem()/freemem()                        -> { total, free }
-//   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct }
-//   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs, maxMs, p99Ms }
+//   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct? }
+//   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs?, maxMs?, p99Ms? }
 //   utilization     performance.eventLoopUtilization() (guarded)   -> { utilization }
 //   gc              PerformanceObserver('gc') interval             -> { count, pauseMs, maxPauseMs }
 //   v8Heap          v8.getHeapStatistics()                         -> { limit, used, available, malloced, peakMalloced }
@@ -73,9 +73,9 @@ export interface ProcessMemory {
 export interface ProcessEvents {
   memory: ProcessMemory;
   systemMemory: { total: number; free: number };
-  /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window. */
-  cpu: { userDelta: number; systemDelta: number; processPct: number };
-  eventLoop: { meanMs: number; maxMs: number; p99Ms: number };
+  /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window (`processPct` is omitted when the window has no positive length). */
+  cpu: { userDelta: number; systemDelta: number; processPct?: number };
+  eventLoop: { meanMs?: number; maxMs?: number; p99Ms?: number };
   /** Event-loop utilization over the previous tick, 0..1. */
   utilization: { utilization: number };
   /** GC activity since the previous tick (a quiet interval is a TRUE zero: the observer is running). */
@@ -484,9 +484,11 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         const wallMsDelta = wall - lastWallMs;
         last = cpu;
         lastWallMs = wall;
-        // Normalized process CPU %: busy-µs / wall-µs / cores * 100. Guard the zero-window first sample.
-        const processPct =
-          wallMsDelta > 0 ? ((userDelta + systemDelta) / (wallMsDelta * 1000) / cores) * 100 : 0;
+        // The CPU deltas are real regardless of the window. The SHARE is not: a zero-length (or backwards) wall window
+        // has no defined percentage, so `processPct` is omitted (never written as 0%).
+        // Normalized process CPU %: busy-µs / wall-µs / cores * 100.
+        if (!(wallMsDelta > 0)) return { userDelta, systemDelta };
+        const processPct = ((userDelta + systemDelta) / (wallMsDelta * 1000) / cores) * 100;
         return { userDelta, systemDelta, processPct };
       },
       stop: () => {},

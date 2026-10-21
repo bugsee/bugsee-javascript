@@ -28,24 +28,6 @@ export const ANDROID_ORIENTATION = {
 } as const;
 
 /**
- * Angle → Android orientation, following `Orientation.fromAngle` for a PORTRAIT-natural device — the
- * only kind that reaches this fallback, since it exists for legacy engines exposing only
- * `window.orientation`, i.e. old phones.
- *
- * ⚠️ `fromAngle` is the right source, not the one-arg `Orientation.fromDisplayRotation(int)` overload
- * sitting beside it in the same file. Those two DISAGREE (the one-arg maps ROTATION_90 to
- * LandscapeRight, fromAngle maps angle 90 to LandscapeLeft), and only `fromAngle` is on Android's
- * production path: BugseeTrackerUI.getScreenOrientation calls the THREE-arg fromDisplayRotation, which
- * delegates to fromAngle. Reading the wrong overload is how this table shipped inverted once already.
- */
-const BY_ANGLE: Record<number, number> = {
-  0: ANDROID_ORIENTATION.Portrait,
-  90: ANDROID_ORIENTATION.LandscapeLeft,
-  180: ANDROID_ORIENTATION.PortraitUpsideDown,
-  270: ANDROID_ORIENTATION.LandscapeRight,
-};
-
-/**
  * Screen Orientation API type → Android orientation.
  *
  * This is EXACT rather than approximate, and pleasingly so: the web's four `type` values line up with
@@ -81,26 +63,13 @@ const BY_TYPE: Record<string, number> = {
 /**
  * The `orientation` trace value: an Android-enum int, never the browser's `{type, angle}` object.
  *
- * `type` wins where present — it is the spec'd field and it accounts for the device's natural
- * orientation, which is landscape on many tablets and would make a raw angle mean the opposite thing.
- * The angle is the fallback for engines that expose only `window.orientation`. Unrecognised → Unknown,
- * because a wrong orientation is worse than a missing one.
+ * Derived from the Screen Orientation `type` only. It accounts for the device's natural orientation (landscape on
+ * many tablets), which a raw angle does not. There is deliberately NO angle-only fallback: the producer writes the
+ * entry only when the engine supplies BOTH `type` and `angle` (spec: both, or nothing), so such a branch was dead code.
+ * A type the mapper does not know maps to Unknown, because a wrong orientation is worse than a missing one.
  */
-export function orientationToWire(type: string | undefined, angle: number | undefined): number {
-  // A type we were given but do not recognise does NOT fall through to the angle. The two cases are
-  // different: an ABSENT type means the engine has no Screen Orientation API (legacy WebKit exposing
-  // only `window.orientation`), where the angle is the intended source and the devices in question are
-  // portrait-natural phones. A type that is present but unrecognised means the API answered something
-  // this mapper has not been taught, and reinterpreting its angle would be guessing — the angle is
-  // relative to the device's NATURAL orientation, which is landscape on many tablets, so angle 0 there
-  // is landscape and would be reported as Portrait.
-  if (type !== undefined) {
-    return BY_TYPE[type] ?? ANDROID_ORIENTATION.Unknown;
-  }
-  if (angle !== undefined) {
-    return BY_ANGLE[angle] ?? ANDROID_ORIENTATION.Unknown;
-  }
-  return ANDROID_ORIENTATION.Unknown;
+export function orientationToWire(type: string): number {
+  return BY_TYPE[type] ?? ANDROID_ORIENTATION.Unknown;
 }
 
 /** The subset of NetworkInformation this mapper reads. */
