@@ -147,6 +147,31 @@ afterEach(() => {
   resetProcessTracker();
 });
 
+describe('render-process-gone listener (real launch)', () => {
+  it('is released on client.stop() and does not stack across a relaunch', async () => {
+    const renderGone: Array<(...a: unknown[]) => void> = [];
+    const { app } = fakeApp();
+    const base = app.on;
+    const baseRemove = app.removeListener;
+    app.on = vi.fn((event: string, l: GoneL) => {
+      if (event === 'render-process-gone') renderGone.push(l);
+      else base(event, l);
+    });
+    app.removeListener = vi.fn((event: string, l: GoneL) => {
+      if (event === 'render-process-gone') renderGone.splice(renderGone.indexOf(l), 1);
+      else baseRemove(event, l);
+    });
+    const first = launchWith({ app, carrier: {} }).client;
+    expect(renderGone).toHaveLength(1);
+    await first.stop();
+    expect(renderGone).toHaveLength(0);
+    const second = launchWith({ app, carrier: {} }).client;
+    expect(renderGone).toHaveLength(1);
+    await second.stop();
+    expect(renderGone).toHaveLength(0);
+  });
+});
+
 describe('Electron main telemetry -> real node launch -> assembled report', () => {
   it('app_metrics rides traces.system NEXT TO the node traces, once, with the documented shape', async () => {
     const scheduler = manualScheduler();

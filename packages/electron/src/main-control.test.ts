@@ -367,3 +367,241 @@ describe('the renderer registry shrinks', () => {
     expect(a.destroyedSubscriptions()).toBe(1);
   });
 });
+
+// A killed renderer is NOT destroyed: `isDestroyed()` stays false while its frame is gone, and Electron prints
+// 'Error sending from webContents: Render frame was disposed' for every `send` (real Electron 44.9.3 smoke).
+describe('crashed renderers are not addressed', () => {
+  function crashable(id: number) {
+    let crashed = false;
+    let destroyedListeners = 0;
+    const sent: string[] = [];
+    return {
+      sent,
+      setCrashed: (v: boolean) => (crashed = v),
+      subscriptions: () => destroyedListeners,
+      sender: {
+        id,
+        send: vi.fn((_c: string, raw: string) => {
+          sent.push(raw);
+        }),
+        once: () => {
+          destroyedListeners++;
+        },
+        isDestroyed: () => false,
+        isCrashed: () => crashed,
+      } as ControlSenderLike,
+    };
+  }
+  const hello = (ipc: ReturnType<typeof fakeIpcMain>, s: ControlSenderLike) =>
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: s }, encodeHello());
+
+  it('never sends to a sender whose isCrashed() is true, but still reaches the others', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const dead = crashable(1);
+    const live = crashable(2);
+    hello(ipc, dead.sender);
+    hello(ipc, live.sender);
+    dead.sent.length = 0;
+    live.sent.length = 0;
+    dead.setCrashed(true);
+    control.pause();
+    expect(dead.sender.send).toHaveBeenCalledTimes(1); // only the hello reply
+    expect(dead.sent).toEqual([]);
+    expect(live.sent).toHaveLength(1);
+  });
+
+  it('a throwing isCrashed() is treated as not crashed (send is still attempted)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(1);
+    (a.sender as { isCrashed: () => boolean }).isCrashed = () => {
+      throw new Error('boom');
+    };
+    hello(ipc, a.sender);
+    a.sent.length = 0;
+    control.flush();
+    expect(a.sent).toHaveLength(1);
+  });
+
+  it('rendererGone(id) forgets the sender; a reload re-handshakes and rejoins without stacking destroyed listeners', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(7);
+    hello(ipc, a.sender);
+    expect(control.rendererCount).toBe(1);
+    a.setCrashed(true);
+    control.rendererGone(99); // unknown id: no-op
+    expect(control.rendererCount).toBe(1);
+    control.rendererGone(7);
+    expect(control.rendererCount).toBe(0);
+    // the webContents reloads: a new frame says hello again while isCrashed() is false
+    a.setCrashed(false);
+    a.sent.length = 0;
+    hello(ipc, a.sender);
+    expect(control.rendererCount).toBe(1);
+    expect(a.sent).toHaveLength(1); // the session reply
+    expect(a.sent[0]).toContain('session');
+    expect(a.subscriptions()).toBe(1); // not 2
+    control.pause();
+    expect(a.sent).toHaveLength(2);
+  });
+
+  it.each([
+    [1],
+    ['yes'],
+    [{}],
+  ])('a truthy non-boolean isCrashed() (%j) is NOT read as crashed', (v) => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(1);
+    (a.sender as { isCrashed: () => unknown }).isCrashed = () => v;
+    hello(ipc, a.sender);
+    a.sent.length = 0;
+    control.pause();
+    expect(a.sent).toHaveLength(1);
+  });
+
+  it('rendererGone forgets EVERY sender sharing the id (does not stop at the first)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    hello(ipc, crashable(3).sender);
+    hello(ipc, crashable(3).sender);
+    hello(ipc, crashable(4).sender);
+    control.rendererGone(3);
+    expect(control.rendererCount).toBe(1);
+  });
+
+  it('the hello reply is sent even if isCrashed() is stale-true (the hello proves the frame is alive)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = crashable(1);
+    a.setCrashed(true);
+    hello(ipc, a.sender);
+    expect(a.sent).toHaveLength(1);
+  });
+});
+
+// The one-shot `destroyed` subscription must not outlive the control: each cycle used to leave one per window.
+describe('stop() releases the destroyed subscriptions', () => {
+  function emitterSender(id: number, mode: 'removeListener' | 'off' | 'none' = 'removeListener') {
+    const listeners: Array<() => void> = [];
+    const sender: Record<string, unknown> = {
+      id,
+      send: vi.fn(),
+      once: (_e: string, l: () => void) => listeners.push(l),
+    };
+    const remove = (_e: string, l: () => void) => {
+      const i = listeners.indexOf(l);
+      if (i >= 0) listeners.splice(i, 1);
+    };
+    if (mode !== 'none') sender[mode] = remove;
+    return { sender: sender as ControlSenderLike, listeners };
+  }
+  const hello = (ipc: ReturnType<typeof fakeIpcMain>, s: ControlSenderLike) =>
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: s }, encodeHello());
+
+  it.each([
+    'removeListener',
+    'off',
+  ] as const)('removes the listener from every sender via %s', (mode) => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = emitterSender(1, mode);
+    const b = emitterSender(2, mode);
+    hello(ipc, a.sender);
+    hello(ipc, b.sender);
+    expect(a.listeners).toHaveLength(1);
+    control.stop();
+    expect(a.listeners).toHaveLength(0);
+    expect(b.listeners).toHaveLength(0);
+  });
+
+  it('prefers removeListener over off', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = emitterSender(1);
+    const off = vi.fn();
+    (a.sender as { off?: unknown }).off = off;
+    hello(ipc, a.sender);
+    control.stop();
+    expect(off).not.toHaveBeenCalled();
+    expect(a.listeners).toHaveLength(0);
+  });
+
+  it('a sender without a remover, or whose remover throws, never breaks stop() or the others', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const none = emitterSender(1, 'none');
+    const hostile = emitterSender(2);
+    (hostile.sender as { removeListener: () => void }).removeListener = () => {
+      throw new Error('gone');
+    };
+    const ok = emitterSender(3);
+    hello(ipc, none.sender);
+    hello(ipc, hostile.sender);
+    hello(ipc, ok.sender);
+    expect(() => control.stop()).not.toThrow();
+    expect(ok.listeners).toHaveLength(0);
+  });
+
+  it('a sender without `once` is never tracked (nothing would drop the entry), so stop() does not touch it', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const spy = vi.fn();
+    const sender = { id: 1, send: vi.fn(), removeListener: spy } as ControlSenderLike;
+    hello(ipc, sender);
+    expect(control.rendererCount).toBe(1); // still registered and addressed
+    control.stop();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a second stop() does not release again', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = emitterSender(1);
+    const spy = vi.fn();
+    (a.sender as { removeListener: unknown }).removeListener = spy;
+    hello(ipc, a.sender);
+    control.stop();
+    control.stop();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a destroyed sender is no longer tracked, so stop() does not touch it again', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = emitterSender(1);
+    const spy = vi.fn();
+    (a.sender as { removeListener: unknown }).removeListener = spy;
+    hello(ipc, a.sender);
+    a.listeners[0]?.(); // destroyed fires
+    control.stop();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a crash + reload rejoin keeps exactly one subscription, released by stop()', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's' });
+    control.start();
+    const a = emitterSender(1);
+    hello(ipc, a.sender);
+    control.rendererGone(1);
+    hello(ipc, a.sender);
+    expect(a.listeners).toHaveLength(1);
+    control.stop();
+    expect(a.listeners).toHaveLength(0);
+  });
+});

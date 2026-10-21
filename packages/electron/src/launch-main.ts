@@ -61,9 +61,26 @@ export interface ElectronAppLike {
     event: 'browser-window-created' | 'web-contents-created',
     listener: (event: unknown, created: unknown) => void,
   ): unknown;
+  /** Releases the `render-process-gone` handler on `client.stop()`. Optional: when absent the handler cannot be released (guarded, never throws). */
+  removeListener?(
+    event: 'render-process-gone',
+    listener: (
+      event: unknown,
+      contents: { id?: number },
+      details: { reason: string; exitCode?: number },
+    ) => void,
+  ): unknown;
   removeListener?(
     event: 'child-process-gone' | 'browser-window-created' | 'web-contents-created',
     listener: (event: unknown, details: unknown) => void,
+  ): unknown;
+  off?(
+    event: 'render-process-gone',
+    listener: (
+      event: unknown,
+      contents: { id?: number },
+      details: { reason: string; exitCode?: number },
+    ) => void,
   ): unknown;
   off?(
     event: 'child-process-gone' | 'browser-window-created' | 'web-contents-created',
@@ -124,9 +141,10 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   /**
    * The `app.getGPUInfo` argument used for `environment.hardware.gpu`. Default `'basic'`. `'complete'` is
    * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
-   * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
-   * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
-   * `'complete'` for the GL strings. A usable result is kept for the life of the `app` object; a later launch (after
+   * VERIFIED on Electron 44.9.3 (macOS arm64): `'basic'` yields no vendor/renderer strings, so `hardware.gpu` is
+   * absent (never guessed); `'complete'` yields `vendorString`/`deviceString`/`glVersion` and a ~3 KB
+   * `glExtensions` string (under the 8192 cap). Pass `'complete'` for the GL strings (the default stays `'basic'`;
+   * that choice is an open owner decision, docs/PROGRESS.md). A usable result is kept for the life of the `app` object; a later launch (after
    * `client.stop()`) asks again when the earlier read rejected or returned nothing usable, or when it asks for a
    * different type (a failed re-ask keeps the earlier usable value).
    */
@@ -409,6 +427,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
   receiver.start();
 
+  let releaseGone: (() => void) | undefined;
   // A renderer killed before it could forward anything (OOM, native crash). Claims the Crashpad
   // minidump so the LIVE incident carries it; falls back to capture + reason when none arrives.
   if (app !== undefined) {
@@ -428,9 +447,28 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       submit: (incident: RendererGoneIncident) => incidents.submitGone(incident),
       ...(options.onError !== undefined ? { onError: options.onError } : {}),
     });
-    app.on('render-process-gone', (_event, contents, details) => {
+    const onGone = (
+      _event: unknown,
+      contents: { id?: number },
+      details: { reason: string; exitCode?: number },
+    ): void => {
+      // The process is dead but its webContents object is not destroyed: stop addressing it (a reload's new
+      // frame says hello again and rejoins). Without this the main process kept sending into a disposed frame.
+      if (contents?.id !== undefined) {
+        control.rendererGone(contents.id);
+      }
       void goneHandler.handle(contents?.id ?? -1, details);
-    });
+    };
+    app.on('render-process-gone', onGone);
+    // Released in the wrapped stop (idempotent). Verified on real Electron 44.9.3: without this the app's
+    // listener count stayed raised after `client.stop()` and stacked on every relaunch.
+    releaseGone = (): void => {
+      releaseGone = undefined;
+      const remover = (app.removeListener ?? app.off) as
+        | ((event: 'render-process-gone', listener: typeof onGone) => unknown)
+        | undefined;
+      remover?.call(app, 'render-process-gone', onGone);
+    };
   }
 
   // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
@@ -469,6 +507,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const stop = client.stop.bind(client);
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
+    try {
+      // The render-process-gone listener must not outlive the client. Its own guard: a hostile `app` whose remover
+      // throws must not skip the rest of the cleanup below.
+      releaseGone?.();
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
     try {
       tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();

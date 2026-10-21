@@ -17,7 +17,16 @@ export interface ControlSenderLike {
    * a sender is still registered and still broadcast to, just never pruned early.
    */
   once?(event: string, listener: () => void): void;
+  /** Releases the `destroyed` subscription on `stop()` (optional; `off` is the fallback). Absent: the one-shot listener stays until the webContents dies. */
+  removeListener?(event: string, listener: () => void): unknown;
+  off?(event: string, listener: () => void): unknown;
   isDestroyed?(): boolean;
+  /**
+   * True after the renderer process died (OOM, native crash) while the webContents object is still alive:
+   * `isDestroyed()` stays false, but `send` prints 'Render frame was disposed' to stderr. Optional; absent or
+   * throwing is read as "not crashed".
+   */
+  isCrashed?(): boolean;
 }
 /** An Electron `ipcMain` event carrying the originating renderer's sender. */
 export interface IpcMainControlEventLike {
@@ -57,6 +66,12 @@ export interface ElectronMainControl {
   blackoutStart(): void;
   /** Tell every renderer the owner's blackout ended. */
   blackoutEnd(): void;
+  /**
+   * A renderer process died (`render-process-gone`): forget the webContents with this id. If it reloads, its new
+   * frame's `hello` re-registers it and re-sends the session reply, so a crashed-then-reloaded window rejoins.
+   * Unknown ids are ignored.
+   */
+  rendererGone(id: number): void;
   /** The number of currently-registered renderers (window count). */
   readonly rendererCount: number;
 }
@@ -69,6 +84,18 @@ export function createElectronMainControl(
   const controlChannel = options.controlChannel ?? BUGSEE_CONTROL_CHANNEL;
   // Registered renderers, deduped by sender identity (a reload reuses the same webContents object).
   const renderers = new Set<ControlSenderLike>();
+
+  // The `destroyed` subscription we hold per webContents: a forget-then-rejoin (crash + reload) must not stack a
+  // second listener on the same object, and `stop()` releases every one so a stopped control leaves nothing on it.
+  const subscribed = new Map<ControlSenderLike, () => void>();
+
+  const isCrashed = (sender: ControlSenderLike): boolean => {
+    try {
+      return sender.isCrashed?.() === true;
+    } catch {
+      return false;
+    }
+  };
 
   const sendTo = (sender: ControlSenderLike, raw: string): void => {
     try {
@@ -92,6 +119,13 @@ export function createElectronMainControl(
       // one would keep the corpse forever, and broadcasting is where we would notice anyway.
       if (sender.isDestroyed?.() === true) {
         forget(sender);
+        continue;
+      }
+      // A crashed renderer is alive as an object but has no frame: sending prints a stderr error. It stays
+      // registered (it may reload and then receives control again). Control sent while it was crashed is NOT replayed: a
+      // rejoining renderer's `hello` reply re-sends only the session id and the blackout flag, so a pause/resume/flush
+      // issued meanwhile is lost for it (the same as before the skip, when the send hit a disposed frame).
+      if (isCrashed(sender)) {
         continue;
       }
       sendTo(sender, raw);
@@ -125,7 +159,18 @@ export function createElectronMainControl(
     // same webContents.
     if (!renderers.has(sender)) {
       renderers.add(sender);
-      sender.once?.('destroyed', () => forget(sender));
+      if (!subscribed.has(sender)) {
+        const onDestroyed = (): void => {
+          subscribed.delete(sender);
+          forget(sender);
+        };
+        // Tracked ONLY when it can actually be subscribed (`once` present): otherwise `destroyed` never fires to
+        // drop the entry and the map would pin the sender until stop().
+        if (typeof sender.once === 'function') {
+          subscribed.set(sender, onDestroyed);
+          sender.once('destroyed', onDestroyed);
+        }
+      }
     }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(
@@ -146,6 +191,14 @@ export function createElectronMainControl(
     stop(): void {
       broadcast('stop');
       options.ipcMain.removeListener(helloChannel, onHello);
+      for (const [sender, onDestroyed] of subscribed) {
+        try {
+          (sender.removeListener ?? sender.off)?.call(sender, 'destroyed', onDestroyed);
+        } catch {
+          // a webContents that is already gone may throw on removal: nothing left to release
+        }
+      }
+      subscribed.clear();
     },
     pause(): void {
       broadcast('pause');
@@ -161,6 +214,13 @@ export function createElectronMainControl(
     },
     blackoutEnd(): void {
       broadcast('blackout-end');
+    },
+    rendererGone(id: number): void {
+      for (const sender of [...renderers]) {
+        if (sender.id === id) {
+          forget(sender);
+        }
+      }
     },
     get rendererCount(): number {
       return renderers.size;

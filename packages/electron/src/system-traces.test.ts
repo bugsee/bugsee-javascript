@@ -236,6 +236,24 @@ describe('electron_displays producer', () => {
     d.producer.stop();
   });
 
+  it('rounds the real-Electron float refresh rate and scale factor to at most 2 decimals', () => {
+    // Real Electron 44.9.3 (macOS, LG 4K): displayFrequency is 59.996700286865234.
+    const d = displays(() => [
+      display({ displayFrequency: 59.996700286865234, scaleFactor: 1.2000000476837158 }),
+      display({ id: 2, displayFrequency: 59.994, scaleFactor: 1.5 }),
+      display({ id: 3, displayFrequency: 60, scaleFactor: 2 }),
+    ]);
+    d.producer.start(d.sink);
+    const list = (d.emitted[0] as { value: { displays: Array<Record<string, unknown>> } }).value
+      .displays;
+    expect(list.map((x) => [x.refresh_rate_hz, x.scale_factor])).toEqual([
+      [60, 1.2],
+      [59.99, 1.5],
+      [60, 2],
+    ]);
+    d.producer.stop();
+  });
+
   it('re-emits only when the list changed (display added/removed/metrics-changed re-read it)', () => {
     let list: unknown[] = [display()];
     const d = displays(() => list);

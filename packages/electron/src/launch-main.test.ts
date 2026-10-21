@@ -1330,3 +1330,180 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(app.total()).toBe(appBefore);
   });
 });
+
+describe('launchMain — render-process-gone listener lifecycle', () => {
+  type Gone = (e: unknown, c: { id?: number }, d: { reason: string }) => void;
+  function countingApp(mode: 'removeListener' | 'off' | 'none') {
+    const listeners: Gone[] = [];
+    const app: Record<string, unknown> = {
+      on: (event: string, l: Gone) => {
+        if (event === 'render-process-gone') listeners.push(l);
+      },
+    };
+    const remove = (event: string, l: Gone) => {
+      const i = listeners.indexOf(l);
+      if (event === 'render-process-gone' && i >= 0) listeners.splice(i, 1);
+    };
+    if (mode !== 'none') app[mode] = remove;
+    return { app: app as never, listeners };
+  }
+
+  it.each(['removeListener', 'off'] as const)('releases the handler on stop via %s', (mode) => {
+    const { launch } = fakeLaunch();
+    const { app, listeners } = countingApp(mode);
+    const client = launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch, app });
+    expect(listeners).toHaveLength(1);
+    void client.stop();
+    expect(listeners).toHaveLength(0);
+  });
+
+  it('stop twice removes once and does not throw', () => {
+    const { launch } = fakeLaunch();
+    const remove = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: vi.fn(), removeListener: remove } as never,
+    });
+    void client.stop();
+    void client.stop();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('render-process-gone', expect.any(Function));
+  });
+
+  it('prefers removeListener over off when both exist (one removal only)', () => {
+    const { launch } = fakeLaunch();
+    const removeListener = vi.fn();
+    const off = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: vi.fn(), removeListener, off } as never,
+    });
+    void client.stop();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    expect(off).not.toHaveBeenCalled();
+  });
+
+  it('a missing remover does not throw and stop still runs', () => {
+    const f = fakeLaunch();
+    const { app, listeners } = countingApp('none');
+    const onError = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      onError,
+    });
+    expect(() => client.stop()).not.toThrow();
+    expect(f.stop).toHaveBeenCalledTimes(1); // the real shutdown ran
+    expect(listeners).toHaveLength(1); // nothing could remove it, and nothing pretended to
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'removeListener',
+    'off',
+  ] as const)('a throwing %s is reported and every other cleanup step still runs on the FIRST stop', (mode) => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const onError = vi.fn();
+    const boom = new Error('remover boom');
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      onError,
+      app: {
+        on: vi.fn(),
+        [mode]: () => {
+          throw boom;
+        },
+      } as never,
+    });
+    const r = fakeSender(1);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    void client.stop();
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // control.stop() ran
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // receiver.stop() ran
+    expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toContain('stop'); // renderers told to stop
+    expect(f.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('relaunch after stop leaves exactly one listener; a repeat launch adds none', () => {
+    const { app, listeners } = countingApp('removeListener');
+    const a = fakeLaunch();
+    const c1 = launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: a.launch, app });
+    void c1.stop();
+    const b = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: b.launch, app });
+    expect(listeners).toHaveLength(1);
+    const rep = fakeLaunch({ internals: false });
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: rep.launch, app });
+    expect(listeners).toHaveLength(1);
+  });
+});
+
+describe('launchMain — a gone renderer is forgotten by the control channel', () => {
+  it('stops addressing the webContents after render-process-gone, and re-addresses it after a re-hello', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: { id?: number }, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const r = fakeSender(5);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    gone?.({}, { id: 5 }, { reason: 'killed' });
+    void client.flush();
+    expect(r.sent).toEqual([]);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello()); // the reloaded frame
+    r.sent.length = 0;
+    void client.flush();
+    expect(r.sent).toHaveLength(1);
+  });
+
+  it('an id-less gone event forgets nothing even with other senders registered; a shared id forgets every match', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: unknown, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const noId = { ...fakeSender(1), id: undefined as number | undefined };
+    const a = fakeSender(5);
+    const b = fakeSender(5);
+    for (const s of [noId, a, b]) ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: s }, encodeHello());
+    for (const s of [noId, a, b]) s.sent.length = 0;
+    gone?.({}, {}, { reason: 'killed' }); // contents without an id
+    void client.flush();
+    expect([noId.sent.length, a.sent.length, b.sent.length]).toEqual([1, 1, 1]);
+    for (const s of [noId, a, b]) s.sent.length = 0;
+    gone?.({}, { id: 5 }, { reason: 'killed' });
+    void client.flush();
+    expect([noId.sent.length, a.sent.length, b.sent.length]).toEqual([1, 0, 0]);
+  });
+
+  it('a gone event without a contents id forgets nothing', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: unknown, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const r = fakeSender(5);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    gone?.({}, undefined, { reason: 'killed' });
+    void client.flush();
+    expect(r.sent).toHaveLength(1);
+  });
+});

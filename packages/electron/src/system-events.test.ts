@@ -89,13 +89,21 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
     mux.on('event', seen);
     listeners[0]?.({}, { type: 'GPU', reason: 'crashed', exitCode: 139, name: 'GPU Process' });
     listeners[0]?.({}, { type: 'Utility', reason: 'oom' });
-    expect(seen.mock.calls.slice(1).map((c) => c[0])).toEqual([
+    listeners[0]?.(
+      {},
+      { type: 'Utility', reason: 'killed', serviceName: 'network.mojom.NetworkService' },
+    );
+    expect(seen.mock.calls.slice(1, 3).map((c) => c[0])).toEqual([
       {
         name: 'child_process_gone',
         params: { type: 'GPU', reason: 'crashed', exitCode: 139, name: 'GPU Process' },
       },
       { name: 'child_process_gone', params: { type: 'Utility', reason: 'oom' } },
     ]);
+    expect(seen.mock.calls[3]?.[0]).toEqual({
+      name: 'child_process_gone',
+      params: { type: 'Utility', reason: 'killed', serviceName: 'network.mojom.NetworkService' },
+    });
     expect(Object.keys((seen.mock.calls[2]?.[0] as SystemEvent).params ?? {})).toEqual([
       'type',
       'reason',
@@ -322,6 +330,19 @@ describe('createElectronSystemEventsSource: domain trackers', () => {
         params: { id: 4, width: 800, height: 600, scaleFactor: 2, changed: ['bounds'] },
       },
     ]);
+  });
+
+  it('display events carry the rounded refreshRate (real Electron: 59.996700286865234)', () => {
+    const d = domains();
+    d.subscribe();
+    d.screen.emit('display-added', {
+      ...display(2),
+      displayFrequency: 59.996700286865234,
+    });
+    expect(d.events()[1]).toEqual({
+      name: 'display_added',
+      params: { id: 2, width: 800, height: 600, scaleFactor: 2, refreshRate: 60 },
+    });
   });
 
   it('a window created AFTER the mux attached still records focus; existing windows too; ids included', () => {

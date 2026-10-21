@@ -83,10 +83,10 @@ function wireDisplay(d: DisplayInfo): Record<string, unknown> {
     id: d.id,
     width: d.width,
     height: d.height,
-    ...(d.scaleFactor !== undefined ? { scale_factor: d.scaleFactor } : {}),
+    ...(d.scaleFactor !== undefined ? { scale_factor: round2(d.scaleFactor) } : {}),
     ...(d.rotation !== undefined ? { rotation: d.rotation } : {}),
     ...(d.internal !== undefined ? { internal: d.internal } : {}),
-    ...(d.refreshRate !== undefined ? { refresh_rate_hz: d.refreshRate } : {}),
+    ...(d.refreshRate !== undefined ? { refresh_rate_hz: round2(d.refreshRate) } : {}),
   };
 }
 

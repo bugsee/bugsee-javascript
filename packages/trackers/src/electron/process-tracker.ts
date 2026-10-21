@@ -9,7 +9,7 @@ import { reportTo } from './stage-tracker';
 // stages. `electron` is never imported: the app object is INJECTED as a structural {@link ElectronAppSource}.
 //
 //   appMetrics       app.getAppMetrics() polled on one timer     -> { processes: [{ type, pid, cpuPct?, workingSetBytes?, ... }] }
-//   childProcessGone app.on('child-process-gone')                -> { type, reason, exitCode?, name? }
+//   childProcessGone app.on('child-process-gone')                -> { type, reason, exitCode?, name?, serviceName? } (verified on Electron 44.9.3)
 //   gpu              app.getGPUInfo(type), kept once usable      -> { vendor?, renderer?, gl_version?, gl_extensions? }
 //
 // `render-process-gone` is deliberately NOT here: it is an INCIDENT path (a renderer that died is reported, with its
@@ -26,7 +26,8 @@ import { reportTo } from './stage-tracker';
 // process), so a CPU figure exists only for a pid the PREVIOUS read already listed: arming makes one PRIMING read
 // whose values are discarded (its pids are remembered), the first emission is the first tick, and a process that
 // appears later (a new renderer, a restarted GPU/utility process: same type, new pid) reports no `cpuPct` on its first
-// tick. Where Electron reports `cpu.cumulativeCPUUsage`, a process without it has no `cpuPct` either (Electron sends 0
+// tick (verified on Electron 44.9.3: first call per process gives 0 with `cumulativeCPUUsage` present; the value is a share of
+// the WHOLE machine). Where Electron reports `cpu.cumulativeCPUUsage`, a process without it has no `cpuPct` either (Electron sends 0
 // "for compatibility" when it cannot read CPU). A field Electron
 // did not supply (or supplied as a non-finite/negative number) is omitted from its process entry, a process with no
 // usable metric is dropped, an empty result emits nothing, and a rejected/throwing/hostile GPU read leaves the GPU
@@ -56,7 +57,7 @@ export interface ElectronAppSource {
   off?(event: 'child-process-gone', listener: (event: unknown, details: unknown) => void): unknown;
 }
 
-/** One process of `app.getAppMetrics()`. Sizes are BYTES (Electron reports kilobytes); every metric is omitted when unknown. */
+/** One process of `app.getAppMetrics()`. Sizes are BYTES (Electron reports KiB: verified on Electron 44.9.3); every metric is omitted when unknown. */
 export interface AppProcessMetric {
   /** Electron's process type, verbatim (`Browser`, `Tab`, `GPU`, `Utility`, …). */
   type: string;
@@ -77,6 +78,8 @@ export interface ChildProcessGone {
   exitCode?: number;
   /** The utility's service name (`Network Service`, …) when Electron supplies it. */
   name?: string;
+  /** The Mojo service interface of a utility process (e.g. `network.mojom.NetworkService`), when Electron supplies it. Useful for triage. */
+  serviceName?: string;
 }
 
 export interface ElectronProcessEvents {
@@ -196,7 +199,7 @@ const copyMetrics = (m: { processes: AppProcessMetric[] }): { processes: AppProc
 function mapChildGone(details: unknown): ChildProcessGone | undefined {
   const d = record(details);
   if (d === undefined) return undefined;
-  const { type, reason, exitCode, name } = d;
+  const { type, reason, exitCode, name, serviceName } = d;
   if (typeof type !== 'string' || type === '' || typeof reason !== 'string' || reason === '') {
     return undefined;
   }
@@ -205,6 +208,9 @@ function mapChildGone(details: unknown): ChildProcessGone | undefined {
     reason,
     ...(typeof exitCode === 'number' && Number.isFinite(exitCode) ? { exitCode } : {}),
     ...(typeof name === 'string' && name.trim() !== '' ? { name: name.trim() } : {}),
+    ...(typeof serviceName === 'string' && serviceName.trim() !== ''
+      ? { serviceName: serviceName.trim() }
+      : {}),
   };
 }
 

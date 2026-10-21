@@ -2,7 +2,7 @@
 // field names `environment.hardware.gpu` carries; `@bugsee/node` types that as `HardwareGpu`, which this block is
 // structurally assignable to; this package does not depend on it).
 //
-// The shapes of `app.getGPUInfo` are UNVERIFIED against a real Electron (see mapGpuInfo).
+// The shapes of `app.getGPUInfo` were checked against a real Electron 44.9.3 (macOS arm64; see mapGpuInfo).
 
 /** The mapped GPU description. Every field is optional and only present when Electron supplied a usable string. */
 export interface ElectronGpu {
@@ -16,10 +16,10 @@ const nonEmpty = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 
 /**
- * Maps Electron's GPU info to the `hardware.gpu` block, defensively. The shapes are UNVERIFIED against a real
- * Electron: `'basic'` is documented as `{ gpuDevice: [{ vendorId, deviceId, active, vendorString?,
- * deviceString?, … }], auxAttributes? }` and often carries only the numeric ids; `'complete'` is heavier and
- * is expected to carry `auxAttributes.glVendor/glRenderer/glVersion/glExtensions`.
+ * Maps Electron's GPU info to the `hardware.gpu` block, defensively. Verified on Electron 44.9.3
+ * (macOS arm64): `'basic'` is `{ gpuDevice: [{ vendorId, deviceId, active, … }], auxAttributes? }` and carries NO
+ * vendor/renderer strings there (so nothing is mapped and `hardware.gpu` is absent); `'complete'` carries
+ * `vendorString`/`deviceString`/`glVersion` and a ~3 KB `glExtensions` string (under the 8192 cap).
  *
  * The ACTIVE device is used (or the only device when exactly one is listed — never a guess among several):
  * `vendorString` -> `vendor`, `deviceString` -> `renderer`. `auxAttributes` (when present) fills what the

@@ -66,6 +66,20 @@ describe('mapDisplay', () => {
       refreshRate: 60,
     });
   });
+  it('rounds the real-Electron float refresh rate and scale factor to 2 decimals; a value rounding to 0 is dropped', () => {
+    expect(
+      mapDisplay(
+        display({ displayFrequency: 59.996700286865234, scaleFactor: 1.2000000476837158 }),
+      ),
+    ).toMatchObject({ refreshRate: 60, scaleFactor: 1.2 });
+    expect(mapDisplay(display({ displayFrequency: 59.994, scaleFactor: 1.5 }))).toMatchObject({
+      refreshRate: 59.99,
+      scaleFactor: 1.5,
+    });
+    const tiny = mapDisplay(display({ displayFrequency: 0.001, scaleFactor: 0.004 }));
+    expect(tiny).not.toHaveProperty('refreshRate');
+    expect(tiny).not.toHaveProperty('scaleFactor');
+  });
   it('falls back to bounds for the size and omits absent/unusable optional fields', () => {
     expect(
       mapDisplay({
