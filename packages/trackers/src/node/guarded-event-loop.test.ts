@@ -113,14 +113,14 @@ describe('createGuardedEventLoopSource', () => {
     expect(state.resets).toBe(before + 1);
   });
 
-  it('treats a non-finite reading of a SAMPLED histogram as zero lag', () => {
+  it('OMITS a non-finite field of a SAMPLED histogram (never a fabricated zero lag)', () => {
     const { monitor } = fakePerfHooks({ mean: 5e6, max: Number.NaN, p99: Number.NaN, count: 1 });
     const src = createGuardedEventLoopSource(monitor);
     src.start();
-    expect(src.read()).toEqual({ meanMs: 5, maxMs: 0, p99Ms: 0 });
+    expect(src.read()).toEqual({ meanMs: 5 });
   });
 
-  it('treats an infinite reading as zero lag too (not only NaN)', () => {
+  it('omits an infinite field too (not only NaN)', () => {
     const { monitor } = fakePerfHooks({
       mean: Number.POSITIVE_INFINITY,
       max: 4e6,
@@ -129,7 +129,19 @@ describe('createGuardedEventLoopSource', () => {
     });
     const src = createGuardedEventLoopSource(monitor);
     src.start();
-    expect(src.read()).toEqual({ meanMs: 0, maxMs: 4, p99Ms: 0 });
+    expect(src.read()).toEqual({ maxMs: 4 });
+  });
+
+  it('a sampled histogram whose every field is non-finite reads as undefined (nothing to report)', () => {
+    const { monitor } = fakePerfHooks({
+      mean: Number.NaN,
+      max: Number.POSITIVE_INFINITY,
+      p99: Number.NaN,
+      count: 1,
+    });
+    const src = createGuardedEventLoopSource(monitor);
+    src.start();
+    expect(src.read()).toBeUndefined();
   });
 
   it('NO FABRICATED BASELINE: read() is undefined until the histogram has a sample (count 0), and does not reset it', () => {
