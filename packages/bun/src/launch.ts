@@ -28,7 +28,7 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // `process.availableMemory()` is never used.
       readsProcMeminfo: true,
       // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
-      // zero would be a lie, so no observer is constructed and the gc traces are omitted.
+      // zero would be a lie, so no observer is constructed and the `gc` system event is never emitted.
       measuresGc: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
