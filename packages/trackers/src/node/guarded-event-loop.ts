@@ -5,8 +5,11 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 // monitorEventLoopDelay throws degrades to "lag omitted" rather than aborting SDK startup.
 
 export interface EventLoopSource {
-  /** Mean/max/p99 lag (ms) since the previous read, or undefined when the runtime cannot measure it. */
-  read(): { meanMs: number; maxMs: number; p99Ms: number } | undefined;
+  /**
+   * Mean/max/p99 lag (ms) since the previous read, or undefined when the runtime cannot measure it. A field the
+   * histogram reports as non-finite is OMITTED from the result (never zeroed); when none is usable the read is undefined.
+   */
+  read(): { meanMs?: number; maxMs?: number; p99Ms?: number } | undefined;
   start(): void;
   stop(): void;
 }
@@ -56,8 +59,8 @@ export const realPerfHooks: PerfHooks = {
 export const eluUnavailable = (delta: { idle?: number; active?: number }): boolean =>
   delta.idle === 0 && delta.active === 0;
 
-/** ns → ms; 0 when a sampled histogram still reports a non-finite field. */
-const lagMs = (ns: number): number => (Number.isFinite(ns) ? ns / 1e6 : 0);
+/** ns → ms; undefined (omit, never zero) when a sampled histogram still reports a non-finite field. */
+const lagMs = (ns: number): number | undefined => (Number.isFinite(ns) ? ns / 1e6 : undefined);
 
 /**
  * Has the histogram taken no sample yet? Right after enable()+reset() its mean is NaN and max/p99 are ~0 —
@@ -98,13 +101,16 @@ export function createGuardedEventLoopSource(monitor: () => DelayHistogram): Eve
       if (histogram === undefined) return undefined; // not started: omit, never zero
       try {
         if (isEmpty(histogram)) return undefined; // nothing measured yet: omit, never a fake zero
-        const out = {
-          meanMs: lagMs(histogram.mean),
-          maxMs: lagMs(histogram.max),
-          p99Ms: lagMs(histogram.percentile(99)),
-        };
+        const meanMs = lagMs(histogram.mean);
+        const maxMs = lagMs(histogram.max);
+        const p99Ms = lagMs(histogram.percentile(99));
         histogram.reset();
-        return out;
+        if (meanMs === undefined && maxMs === undefined && p99Ms === undefined) return undefined;
+        return {
+          ...(meanMs !== undefined ? { meanMs } : {}),
+          ...(maxMs !== undefined ? { maxMs } : {}),
+          ...(p99Ms !== undefined ? { p99Ms } : {}),
+        };
       } catch {
         return undefined;
       }
