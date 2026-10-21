@@ -148,6 +148,9 @@ async function launchRendererOnce(
   const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
+    // Main writes the `displays` trace (the full list); a renderer must not write a second one into the same session.
+    // After the caller's options: it is not the caller's to switch back on.
+    hostOwnedTraces: ['displays'],
     // AFTER the caller's options, deliberately — see above.
     triggerPipeline,
     // Born dark, released by the handshake. Main owns the blackout: until this renderer has heard the

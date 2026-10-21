@@ -465,6 +465,12 @@ export interface BugseeLaunchOptions {
   window?: WindowEvents;
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
+  /**
+   * Host composition seam (set by `@bugsee/electron`'s renderer launch): system trace names the HOST of this page
+   * already writes, which this launch must not write too (one writer per name per session). Only `'displays'` is honoured
+   * today. A standalone browser leaves it unset.
+   */
+  hostOwnedTraces?: readonly string[];
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -929,6 +935,22 @@ async function buildLaunch(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,
   );
+  // A public option: anything but an array of strings is IGNORED (the producers stay on) and reported, never a failed launch.
+  const rawHostOwned: unknown = options.hostOwnedTraces;
+  const hostOwnedTraces = Array.isArray(rawHostOwned)
+    ? rawHostOwned.filter((n): n is string => typeof n === 'string')
+    : undefined;
+  if (
+    rawHostOwned !== undefined &&
+    (hostOwnedTraces === undefined || hostOwnedTraces.length !== (rawHostOwned as unknown[]).length)
+  ) {
+    reportGuarded(
+      options.onError,
+      new Error(
+        'Bugsee: hostOwnedTraces must be an array of trace-name strings; anything else is ignored',
+      ),
+    );
+  }
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
@@ -940,6 +962,7 @@ async function buildLaunch(
           // Every surface comes from the INJECTED window/document, never the host globals.
           ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          ...(hostOwnedTraces !== undefined ? { hostOwnedTraces } : {}),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

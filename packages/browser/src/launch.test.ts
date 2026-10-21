@@ -1753,7 +1753,7 @@ describe('launch', () => {
       expect(w.count('orientationchange')).toBe(0);
     });
 
-    it('goes through the per-window UiTracker singleton (orientation/screen_size/fps/events share ONE set of listeners)', async () => {
+    it('goes through the per-window UiTracker singleton (orientation/displays/fps/events share ONE set of listeners)', async () => {
       stubSensors();
       const w = fakeWindow();
       const client = await launchTracked(
@@ -2116,7 +2116,7 @@ describe('launch', () => {
         expect(armed).toBe(0);
       });
 
-      it('records screen_size {width,height,dpr} from the INJECTED window and follows its resize', async () => {
+      it('records the displays list from the INJECTED window (device pixels, scale) and follows its resize', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 390, height: 844 });
         const w = fakeWindow();
@@ -2125,19 +2125,93 @@ describe('launch', () => {
         await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
         Object.assign(w.win, { devicePixelRatio: 3 });
         w.emit('resize', {});
-        expect(await rowsOf(store, 'screen_size')).toEqual([
-          { width: 390, height: 844, dpr: 2 },
-          { width: 390, height: 844, dpr: 3 },
+        expect(await rowsOf(store, 'displays')).toEqual([
+          [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+          [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
         ]);
       });
 
-      it('screen_size is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
+      it('hostOwnedTraces: [displays] (an Electron renderer) writes no displays trace even with a readable screen', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, hostOwnedTraces: ['displays'] }),
+        );
+        expect(await rowsOf(store, 'displays')).toEqual([]);
+      });
+
+      it('a non-string element in hostOwnedTraces is dropped and reported; the valid names still apply', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            onError,
+            hostOwnedTraces: [123, 'displays'] as never,
+          }),
+        );
+        expect(await rowsOf(store, 'displays')).toEqual([]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
+      });
+
+      it('a clean hostOwnedTraces reports nothing', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: memStore(),
+            onError,
+            hostOwnedTraces: ['displays'],
+          }),
+        );
+        expect(onError).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['a string', 'displays'],
+        ['a number', 7],
+        ['an object', { includes: 1 }],
+      ])('a non-array hostOwnedTraces (%s) is ignored and reported (displays stays on), never a failed launch', async (_n, bad) => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError, hostOwnedTraces: bad as never }),
+        );
+        expect(await rowsOf(store, 'displays')).toEqual([
+          [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+        ]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
+      });
+
+      it('displays is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
         stubSensors(); // the stubbed screen has no width/height
         const w = fakeWindow();
         Object.assign(w.win, { devicePixelRatio: 2 });
         const store = memStore();
         await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
-        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(await rowsOf(store, 'displays')).toEqual([]);
       });
 
       it('records main_thread_lag_ms as timer drift on the INJECTED window clock, visible only, with a fresh baseline after a hide', async () => {
@@ -2231,11 +2305,11 @@ describe('launch', () => {
         );
         const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
         expect(messages).toContain('devicePixelRatio blocked');
-        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(await rowsOf(store, 'displays')).toEqual([]);
         await client.stop();
       });
 
-      it('a systemMetricsSampler override builds neither screen_size nor the lag timer', async () => {
+      it('a systemMetricsSampler override builds neither displays nor the lag timer', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 390, height: 844 });
         const d = mkDoc(true);
@@ -2260,7 +2334,7 @@ describe('launch', () => {
             captureStore: store,
           }),
         );
-        expect(await rowsOf(store, 'screen_size')).toEqual([]);
+        expect(await rowsOf(store, 'displays')).toEqual([]);
         expect(reads).toBe(0); // no lag timer was even built
       });
 

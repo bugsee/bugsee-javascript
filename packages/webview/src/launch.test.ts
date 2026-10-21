@@ -1331,14 +1331,14 @@ describe('launch (webview)', () => {
       }
     });
 
-    describe('screen_size and main_thread_lag_ms (from the injected window)', () => {
+    describe('displays (host-owned: never written) and main_thread_lag_ms (from the injected window)', () => {
       const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
         entriesOfType(fake.msgs(), 'traces.system')
           .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
           .filter((d) => d.name === name)
           .map((d) => d.value);
 
-      it('streams screen_size {width,height,dpr} and timer-drift lag from the INJECTED window; none from a hidden page', async () => {
+      it('does NOT write the host-owned displays trace, and streams timer-drift lag from the INJECTED window; none from a hidden page', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
@@ -1369,7 +1369,7 @@ describe('launch (webview)', () => {
             }),
           );
           await new Promise((r) => setTimeout(r, 0));
-          expect(rowsOf(fake, 'screen_size')).toEqual([{ width: 360, height: 640, dpr: 3 }]);
+          expect(rowsOf(fake, 'displays')).toEqual([]); // the native host owns it
           clock = 1000 + 25; // the first 1 s tick fires 25 ms late
           for (const t of ticks) t();
           expect(rowsOf(fake, 'main_thread_lag_ms')).toEqual([25]);
@@ -1401,7 +1401,7 @@ describe('launch (webview)', () => {
         }
       });
 
-      it('a hostile devicePixelRatio getter never fails launch and is reported', () => {
+      it('a hostile devicePixelRatio getter never fails launch (the host-owned displays trace is not built, so it is never read)', () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
@@ -1414,7 +1414,7 @@ describe('launch (webview)', () => {
           });
           const onError = vi.fn();
           expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
-          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
             'devicePixelRatio blocked',
           );
         } finally {

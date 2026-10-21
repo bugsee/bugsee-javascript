@@ -272,8 +272,15 @@ describe('createGuardedElu', () => {
         ? { utilization: 0, idle: 5, active: 5 }
         : { utilization: delta, idle: 5, active: 5 };
 
-  it('returns the utilization delta when the runtime answers honestly', () => {
-    expect(createGuardedElu(fakeElu(0.42))()).toBe(0.42);
+  it('returns the utilization delta as a PERCENT (0-100), not the 0..1 fraction perf_hooks reports', () => {
+    expect(createGuardedElu(fakeElu(0.42))()).toBe(42);
+    expect(createGuardedElu(fakeElu(1))()).toBe(100);
+  });
+
+  it('rounds to ONE decimal', () => {
+    expect(createGuardedElu(fakeElu(0.123456))()).toBe(12.3);
+    expect(createGuardedElu(fakeElu(0.6666))()).toBe(66.7);
+    expect(createGuardedElu(fakeElu(0.0004))()).toBe(0);
   });
 
   it('is undefined on the Bun/Deno shape (idle and active both 0)', () => {

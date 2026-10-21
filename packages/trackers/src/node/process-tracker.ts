@@ -33,7 +33,7 @@ import {
 //   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader)
 //   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct? }
 //   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs?, maxMs?, p99Ms? }
-//   utilization     performance.eventLoopUtilization() (guarded)   -> { utilization }
+//   utilization     performance.eventLoopUtilization() (guarded)   -> { utilizationPercent }
 //   gc              PerformanceObserver('gc') interval             -> { count, pauseMs, maxPauseMs }
 //   v8Heap          v8.getHeapStatistics()                         -> { limit, used, available, malloced, peakMalloced }
 //   memoryLimit     process.constrainedMemory() (a real cap only)  -> { bytes }
@@ -82,8 +82,8 @@ export interface ProcessEvents {
   /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window (`processPct` is omitted when the window has no positive length). */
   cpu: { userDelta: number; systemDelta: number; processPct?: number };
   eventLoop: { meanMs?: number; maxMs?: number; p99Ms?: number };
-  /** Event-loop utilization over the previous tick, 0..1. */
-  utilization: { utilization: number };
+  /** Event-loop utilization over the previous tick, PERCENT 0-100 (one decimal) of the window the loop was not idle. */
+  utilization: { utilizationPercent: number };
   /** GC activity since the previous tick (a quiet interval is a TRUE zero: the observer is running). */
   gc: GcInterval;
   v8Heap: V8HeapStats;
@@ -121,7 +121,7 @@ export interface ProcessEnv {
   eventLoop?: EventLoopSource;
   /** Overrides the GC observer source (and its gate). */
   gc?: GcSource;
-  /** ELU delta 0..1 per call, or undefined when unavailable. Overrides the guarded ELU reader. */
+  /** Injected ELU reader, PERCENT 0-100 (the guarded default converts perf_hooks' fraction). */
   eventLoopUtilization?: () => number | undefined;
   /** Each reader answers undefined when the runtime cannot give a true value. Override their defaults and gates. */
   v8Heap?: () => V8HeapStats | undefined;
@@ -348,7 +348,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   }
 
   #syncTimer(): void {
-    if (this.#armed.size === 0) {
+    // A stage the runtime can never answer (gated off: NOOP_RUN) must not keep a timer alive for nothing.
+    if (![...this.#armed.values()].some((run) => run !== NOOP_RUN)) {
       this.#clearTimer();
       return;
     }
@@ -481,8 +482,13 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         const elu = env.eventLoopUtilization ?? createGuardedElu(perf.eventLoopUtilization);
         return {
           read: () => {
-            const utilization = elu();
-            return utilization === undefined ? undefined : { utilization };
+            const utilizationPercent = elu();
+            // Omit anything that is not a real percentage (NaN, infinite, negative): never reported, never zeroed.
+            return utilizationPercent === undefined ||
+              !Number.isFinite(utilizationPercent) ||
+              utilizationPercent < 0
+              ? undefined
+              : { utilizationPercent };
           },
           stop: () => {},
         };

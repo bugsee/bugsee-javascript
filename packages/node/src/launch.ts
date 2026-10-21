@@ -81,6 +81,7 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { processTrackerFor } from '@bugsee/trackers/node';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeAppIdentitySource } from './app-identity-source';
@@ -279,9 +280,16 @@ export interface BugseeLaunchOptions {
    * `serverTiming` = a `Server-Timing` entry exposing the trace context to browser RUM (PerformanceObserver).
    */
   traceResponse?: TraceResponseConfig;
-  /** Capture periodic system traces (memory/cpu/event-loop lag). Default true. */
+  /**
+   * Capture periodic system traces (memory/cpu/event-loop lag/utilization). Default true. They share ONE 1 s tracker
+   * sampling timer with the `gc` system event, so `false` alone does not make a launch timer-free: also set
+   * `captureSystemEvents: false`.
+   */
   captureSystemTraces?: boolean;
-  /** Capture system events (process lifecycle). Default true. */
+  /**
+   * Capture system events (process lifecycle, and the `gc` event on Node). Default true. The `gc` event owns the GC
+   * observer and arms the shared 1 s tracker sampling timer while events are captured; `false` attaches neither.
+   */
   captureSystemEvents?: boolean;
   /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
   captureDiskSpace?: boolean;
@@ -996,7 +1004,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
-  const nodeEventsSource = createNodeSystemEventsSource(proc);
+  // The `gc` event rides the SAME per-process tracker as the traces (it owns the one GC observer and arms it only
+  // while a `gc` listener exists). Merely resolving it is free; the source subscribes only once events are captured.
+  // Bun/Deno's `measuresGc:false` (set when their producer set was built) lives in that shared tracker.
+  const nodeEventsSource = createNodeSystemEventsSource(proc, {
+    // No seams handed over here: the producer set (built above, or by Bun/Deno) already bound this launch's, and a
+    // second bind would clobber a producer set's own timer seam.
+    processTracker: processTrackerFor({}, options.onError),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
   let eventsSource: SystemEventSource = nodeEventsSource;
   if (options.wrapSystemEventsSource !== undefined) {
     try {

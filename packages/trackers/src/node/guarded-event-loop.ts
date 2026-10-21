@@ -118,9 +118,11 @@ export function createGuardedEventLoopSource(monitor: () => DelayHistogram): Eve
   };
 }
 
-// A utilization reader (delta 0..1). `undefined` — NOT zero — whenever the runtime cannot give a real
+// A utilization reader returning PERCENT 0-100 of the window the loop was not idle, one decimal (perf_hooks reports a
+// 0..1 fraction; the wire unit is percent, like `cpu_usage_process`). `undefined` — NOT zero — whenever the runtime cannot give a real
 // reading: it threw, or it answered the Bun/Deno way (idle and active both zero for ever).
 export function createGuardedElu(elu: PerfHooks['eventLoopUtilization']): () => number | undefined {
+  const toPercent = (fraction: number): number => Math.round(fraction * 1000) / 10;
   let prev: Elu;
   try {
     prev = elu();
@@ -132,7 +134,7 @@ export function createGuardedElu(elu: PerfHooks['eventLoopUtilization']): () => 
       const current = elu();
       const delta = elu(current, prev);
       prev = current;
-      return eluUnavailable(delta) ? undefined : delta.utilization;
+      return eluUnavailable(delta) ? undefined : toPercent(delta.utilization);
     } catch {
       return undefined;
     }

@@ -371,7 +371,7 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
           'main-thread-lag',
           'main-thread-idle',
           'orientation',
-          'screen-size',
+          'displays',
           'fps',
         ]),
       );

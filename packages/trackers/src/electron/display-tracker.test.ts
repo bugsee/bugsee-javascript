@@ -24,6 +24,7 @@ function fakeScreen(list: () => unknown = () => [display()], over: Record<string
   const table = new Map<string, L[]>();
   const screen = {
     getAllDisplays: vi.fn(list),
+    getPrimaryDisplay: vi.fn(() => (list() as unknown[])[0]),
     on: vi.fn((e: string, l: L) => {
       table.set(e, [...(table.get(e) ?? []), l]);
     }),
@@ -55,32 +56,67 @@ const track = (s: ReturnType<typeof fakeScreen>, onError?: (e: unknown) => unkno
 };
 
 describe('mapDisplay', () => {
-  it('keeps id, size, scale, rotation, internal and refresh rate; drops label/bounds/workArea', () => {
+  it('maps to the mobile layout: device pixels (size x scaleFactor), natural size, scale, maxFps, quarter turns, type', () => {
     expect(mapDisplay(display({ workArea: { x: 0 } }))).toEqual({
-      id: 1,
-      width: 1440,
-      height: 900,
-      scaleFactor: 2,
+      nativeId: 1,
+      width: 2880,
+      height: 1800,
+      naturalWidth: 2880,
+      naturalHeight: 1800,
+      scale: 2,
+      maxFps: 60,
       rotation: 0,
-      internal: true,
-      refreshRate: 60,
+      type: 'internal',
     });
+    expect(mapDisplay(display({ internal: false }))?.type).toBe('external');
   });
-  it('rounds the real-Electron float refresh rate and scale factor to 2 decimals; a value rounding to 0 is dropped', () => {
+  it('rounds device pixels from a fractional scale factor and the refresh rate to an integer; a value rounding to 0 is dropped', () => {
     expect(
       mapDisplay(
-        display({ displayFrequency: 59.996700286865234, scaleFactor: 1.2000000476837158 }),
+        display({
+          size: { width: 1440, height: 900 },
+          displayFrequency: 59.996700286865234,
+          scaleFactor: 1.2000000476837158,
+        }),
       ),
-    ).toMatchObject({ refreshRate: 60, scaleFactor: 1.2 });
-    expect(mapDisplay(display({ displayFrequency: 59.994, scaleFactor: 1.5 }))).toMatchObject({
-      refreshRate: 59.99,
-      scaleFactor: 1.5,
+    ).toMatchObject({ width: 1728, height: 1080, maxFps: 60, scale: 1.2 });
+    expect(mapDisplay(display({ displayFrequency: 59.4, scaleFactor: 1.5 }))).toMatchObject({
+      maxFps: 59,
+      width: 2160,
+      height: 1350,
+      scale: 1.5,
     });
     const tiny = mapDisplay(display({ displayFrequency: 0.001, scaleFactor: 0.004 }));
-    expect(tiny).not.toHaveProperty('refreshRate');
-    expect(tiny).not.toHaveProperty('scaleFactor');
+    expect(tiny).not.toHaveProperty('maxFps');
+    expect(tiny).not.toHaveProperty('scale');
+    expect(tiny).toMatchObject({ width: 6, height: 4 }); // the unreadable scale does not zero the size
   });
-  it('falls back to bounds for the size and omits absent/unusable optional fields', () => {
+  it('swaps the natural size for quarter turns 1 and 3 only, and omits it (and rotation) when the rotation is unknown', () => {
+    const r1 = mapDisplay(display({ rotation: 90, size: { width: 900, height: 1440 } }));
+    expect(r1).toMatchObject({
+      width: 1800,
+      height: 2880,
+      naturalWidth: 2880,
+      naturalHeight: 1800,
+      rotation: 1,
+    });
+    expect(
+      mapDisplay(display({ rotation: 270, size: { width: 900, height: 1440 } })),
+    ).toMatchObject({
+      naturalWidth: 2880,
+      naturalHeight: 1800,
+      rotation: 3,
+    });
+    expect(mapDisplay(display({ rotation: 180 }))).toMatchObject({
+      naturalWidth: 2880,
+      naturalHeight: 1800,
+      rotation: 2,
+    });
+    const unknown = mapDisplay(display({ rotation: 45 }));
+    expect(unknown).not.toHaveProperty('rotation');
+    expect(unknown).not.toHaveProperty('naturalWidth');
+  });
+  it('falls back to bounds for the size (scale 1 without a factor) and omits absent/unusable optional fields', () => {
     expect(
       mapDisplay({
         id: 3,
@@ -90,22 +126,24 @@ describe('mapDisplay', () => {
         internal: 'yes',
         displayFrequency: Number.NaN,
       }),
-    ).toEqual({ id: 3, width: 800, height: 600 });
+    ).toEqual({ nativeId: 3, width: 800, height: 600 });
   });
-  it('accepts every rotation Electron defines', () => {
-    for (const r of [0, 90, 180, 270])
-      expect(mapDisplay(display({ rotation: r }))?.rotation).toBe(r);
+  it('keeps an id beyond int32 as the native id', () => {
+    expect(mapDisplay(display({ id: 2779098405 }))?.nativeId).toBe(2779098405);
   });
   it('drops id -1 (invalid / not yet known) but keeps -10 (the virtual unified display)', () => {
     expect(mapDisplay(display({ id: -1 }))).toBeUndefined();
-    expect(mapDisplay(display({ id: -10 }))?.id).toBe(-10);
-    expect(mapDisplay(display({ id: 0 }))?.id).toBe(0);
+    expect(mapDisplay(display({ id: -10 }))?.nativeId).toBe(-10);
+    expect(mapDisplay(display({ id: 0 }))?.nativeId).toBe(0);
   });
   it('is undefined without a finite id or a positive size, and for non-objects', () => {
     expect(mapDisplay(display({ id: undefined }))).toBeUndefined();
     expect(mapDisplay(display({ id: Number.NaN }))).toBeUndefined();
     expect(mapDisplay(display({ size: { width: 0, height: 5 } }))).toBeUndefined();
     expect(mapDisplay(display({ size: { width: 5, height: -1 } }))).toBeUndefined();
+    expect(
+      mapDisplay(display({ size: { width: 0.2, height: 5 }, scaleFactor: 1 })),
+    ).toBeUndefined(); // rounds to 0 px
     expect(mapDisplay({ id: 1 })).toBeUndefined();
     expect(mapDisplay(null)).toBeUndefined();
     expect(mapDisplay('x')).toBeUndefined();
@@ -127,7 +165,7 @@ describe('ElectronDisplayTracker', () => {
     expect(s.total()).toBe(1);
     s.fire('display-added', display({ id: 2, label: 'secret' }));
     expect(seen).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ id: 2, width: 1440, height: 900 }),
+      expect.objectContaining({ nativeId: 2, width: 2880, height: 1800 }),
     );
     expect(seen.mock.calls[0]?.[0]).not.toHaveProperty('label');
     off();
@@ -141,7 +179,7 @@ describe('ElectronDisplayTracker', () => {
     t.on('displayRemoved', seen);
     expect(s.count('display-removed')).toBe(1);
     s.fire('display-removed', display({ id: 9 }));
-    expect(seen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 9 }));
+    expect(seen).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ nativeId: 9 }));
   });
 
   it('displayMetricsChanged: carries the display and the changed metrics (strings only)', () => {
@@ -152,7 +190,7 @@ describe('ElectronDisplayTracker', () => {
     s.fire('display-metrics-changed', display({ id: 4 }), ['bounds', 7, 'scaleFactor']);
     s.fire('display-metrics-changed', display({ id: 4 }), 'not-an-array');
     expect(seen.mock.calls.map((c) => c[0].changed)).toEqual([['bounds', 'scaleFactor'], []]);
-    expect(seen.mock.calls[0]?.[0].display.id).toBe(4);
+    expect(seen.mock.calls[0]?.[0].display.nativeId).toBe(4);
   });
 
   it('an unmappable display argument is ignored, not emitted', () => {
@@ -174,7 +212,9 @@ describe('ElectronDisplayTracker', () => {
     expect(s.total()).toBe(3);
     list = [display(), display({ id: 2 })];
     s.fire('display-added', display({ id: 2 }));
-    expect(seen.mock.calls[0]?.[0].displays.map((d: { id: number }) => d.id)).toEqual([1, 2]);
+    expect(seen.mock.calls[0]?.[0].displays.map((d: { nativeId: number }) => d.nativeId)).toEqual([
+      1, 2,
+    ]);
     list = [display()];
     s.fire('display-removed', display({ id: 2 }));
     s.fire('display-metrics-changed', display(), ['bounds']);
@@ -207,13 +247,154 @@ describe('ElectronDisplayTracker', () => {
     expect(s.count('display-added')).toBe(1);
   });
 
+  describe('session ids and state', () => {
+    it('numbers the PRIMARY display 0 even when getAllDisplays lists it later, then the rest in order', () => {
+      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 }), display({ id: 6 })], {
+        getPrimaryDisplay: vi.fn(() => display({ id: 5 })),
+      });
+      const list = track(s).current('displays')?.displays;
+      expect(list?.map((d) => [d.nativeId, d.id])).toEqual([
+        [7, 1],
+        [5, 0],
+        [6, 2],
+      ]);
+    });
+    it('marks state:on on the primary display only', () => {
+      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
+        getPrimaryDisplay: vi.fn(() => display({ id: 5 })),
+      });
+      const list = track(s).current('displays')?.displays;
+      expect(list?.map((d) => d.state)).toEqual([undefined, 'on']);
+    });
+    it('without getPrimaryDisplay: numbering follows getAllDisplays and no state is written', () => {
+      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
+        getPrimaryDisplay: undefined,
+      });
+      const list = track(s).current('displays')?.displays;
+      expect(list?.map((d) => [d.id, d.state])).toEqual([
+        [0, undefined],
+        [1, undefined],
+      ]);
+    });
+    it('never reuses a number: a removed display keeps its id, a later one takes the next unused', () => {
+      let list: unknown[] = [display({ id: 1 }), display({ id: 2 })];
+      const s = fakeScreen(() => list);
+      const t = track(s);
+      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0, 1]);
+      list = [display({ id: 1 })];
+      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0]);
+      list = [display({ id: 1 }), display({ id: 3 })];
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [3, 2],
+      ]);
+      list = [display({ id: 1 }), display({ id: 2 }), display({ id: 3 })];
+      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0, 1, 2]);
+    });
+    it('only the FIRST read puts the primary first: displays appearing later are numbered in list order even if one became primary', () => {
+      let list: unknown[] = [display({ id: 1 })];
+      let primary = 1;
+      const s = fakeScreen(() => list, {
+        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
+      });
+      const t = track(s);
+      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0]);
+      list = [display({ id: 1 }), display({ id: 8 }), display({ id: 9 })];
+      primary = 9;
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [8, 1],
+        [9, 2],
+      ]);
+    });
+    it('a throwing getPrimaryDisplay is reported ONCE and the list is still produced, without state', () => {
+      const onError = vi.fn();
+      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
+        getPrimaryDisplay: vi.fn(() => {
+          throw new Error('primary');
+        }),
+      });
+      const list = track(s, onError).current('displays')?.displays;
+      expect(list?.map((d) => [d.nativeId, d.id, d.state])).toEqual([
+        [7, 0, undefined],
+        [5, 1, undefined],
+      ]);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+    it('numbering restarts at 0 (primary first) for a new session: forgotten when the last subscriber leaves', () => {
+      let primary = 1;
+      const s = fakeScreen(() => [display({ id: 1 }), display({ id: 2 })], {
+        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
+      });
+      const t = track(s);
+      const off = t.on('displays', () => undefined);
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [2, 1],
+      ]);
+      const other = t.on('displayAdded', () => undefined);
+      off();
+      // still subscribed through another stage: same session, numbering kept
+      primary = 2;
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [2, 1],
+      ]);
+      other();
+      t.on('displays', () => undefined);
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 1],
+        [2, 0],
+      ]);
+    });
+    it('events carry the same session id as the list, seeding the numbering on a first event', () => {
+      const s = fakeScreen(() => [display({ id: 9 }), display({ id: 4 })], {
+        getPrimaryDisplay: vi.fn(() => display({ id: 4 })),
+      });
+      const t = track(s);
+      const seen = vi.fn();
+      t.on('displayAdded', seen);
+      s.fire('display-added', display({ id: 9 }));
+      expect(seen.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 1 });
+      expect(seen.mock.calls[0]?.[0]).not.toHaveProperty('state');
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [9, 1],
+        [4, 0],
+      ]);
+    });
+    it('a throwing getAllDisplays at the first event is reported and the display still gets the next number', () => {
+      const onError = vi.fn();
+      const s = fakeScreen(() => {
+        throw new Error('seed');
+      });
+      const t = track(s, onError);
+      const seen = vi.fn();
+      t.on('displayAdded', seen);
+      s.fire('display-added', display({ id: 9 }));
+      expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'seed' }));
+      expect(seen.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 0 });
+    });
+    it('a first event on a screen without getAllDisplays, or whose list is not an array, still numbers the display', () => {
+      const a = fakeScreen(undefined, { getAllDisplays: undefined });
+      const seenA = vi.fn();
+      track(a).on('displayAdded', seenA);
+      a.fire('display-added', display({ id: 9 }));
+      expect(seenA.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 0 });
+      const b = fakeScreen(() => 'nope');
+      const seenB = vi.fn();
+      track(b).on('displayAdded', seenB);
+      b.fire('display-added', display({ id: 9 }));
+      expect(seenB.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 0 });
+    });
+  });
+
   describe("current('displays')", () => {
     it('is the live mapped list, dropping unusable entries', () => {
       const s = fakeScreen(() => [display(), { id: 2 }, display({ id: 3 })]);
       expect(
         track(s)
           .current('displays')
-          ?.displays.map((d) => d.id),
+          ?.displays.map((d) => d.nativeId),
       ).toEqual([1, 3]);
     });
     it('is undefined for an empty list, a non-array, no getAllDisplays, or an unknown stage', () => {

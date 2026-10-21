@@ -558,6 +558,101 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
+  describe('gc system event (C15)', () => {
+    // Seeds the per-process ProcessTracker singleton (the one launch resolves) with a fake GC source + timer.
+    const seedGc = () => {
+      const fs = fakeScheduler();
+      const calls: string[] = [];
+      let interval = { count: 2, pauseMs: 5, maxPauseMs: 4 };
+      processTrackerFor({
+        scheduler: fs.scheduler,
+        gc: {
+          start: () => void calls.push('start'),
+          stop: () => void calls.push('stop'),
+          read: () => interval,
+        },
+      });
+      return {
+        calls,
+        tick: () => fs.calls.at(-1)?.cb(),
+        set: (i: typeof interval) => (interval = i),
+      };
+    };
+
+    it('a default launch records `gc` in events.system from the shared tracker (quiet intervals write nothing)', async () => {
+      const store = memStore();
+      const gc = seedGc();
+      launchTracked('tok', baseOptions({ captureStore: store }));
+      expect(gc.calls).toEqual(['start']);
+      gc.tick();
+      gc.set({ count: 0, pauseMs: 0, maxPauseMs: 0 });
+      gc.tick();
+      const events = (await drain(store, 'events.system'))?.map(
+        (e) => e.data as { name: string; params?: unknown },
+      );
+      expect(
+        events?.filter((e) => e.name === 'gc').map(({ name, params }) => ({ name, params })),
+      ).toEqual([{ name: 'gc', params: { count: 2, pauseMs: 5, maxPauseMs: 4 } }]);
+    });
+
+    it('a failing gc subscription is reported to the launch onError (the shared tracker reports through it)', () => {
+      const fs = fakeScheduler();
+      processTrackerFor({
+        scheduler: fs.scheduler,
+        gc: {
+          start: () => {
+            throw new Error('observer refused');
+          },
+          stop: () => {},
+          read: () => undefined,
+        },
+      });
+      const errors: unknown[] = [];
+      // caller-supplied producers: nothing else hands this launch's reporter to the shared tracker
+      launchTracked(
+        'tok',
+        baseOptions({
+          systemMetricsSampler: undefined,
+          systemTraceProducers: [],
+          onError: (e) => void errors.push(e),
+        }),
+      );
+      expect(errors.map((e) => (e as Error).message)).toContain('observer refused');
+    });
+
+    it('a throwing events listener is reported to the launch onError (the node events source is wired to it)', () => {
+      const errors: unknown[] = [];
+      launchTracked(
+        'tok',
+        baseOptions({
+          onError: (e) => void errors.push(e),
+          wrapSystemEventsSource: (inner) => {
+            inner.on('event', () => {
+              throw new Error('listener boom');
+            });
+            return inner;
+          },
+        }),
+      );
+      expect(errors.map((e) => (e as Error).message)).toContain('listener boom');
+    });
+
+    it('captureSystemEvents:false never arms the GC observer', async () => {
+      const gc = seedGc();
+      const client = launchTracked('tok', baseOptions({ captureSystemEvents: false }));
+      expect(gc.calls).toEqual([]);
+      await client.stop();
+      expect(gc.calls).toEqual([]);
+    });
+
+    it('client.stop() releases the GC observer', async () => {
+      const gc = seedGc();
+      const client = launchTracked('tok', baseOptions());
+      await client.stop();
+      expect(gc.calls).toEqual(['start', 'stop']);
+    });
+  });
+
   describe('wrapSystemEventsSource (platform extension seam)', () => {
     type Src = import('@bugsee/capture').SystemEventSource;
     // A pass-through mux that also emits one extra event of its own; counts how often it is subscribed.
@@ -1590,6 +1685,7 @@ describe('launch — system trace producers', () => {
         clock: fixedClock,
         scheduler: fs.scheduler,
         captureSystemTraces: false,
+        captureSystemEvents: false, // the `gc` event shares the tracker's timer: off, so nothing at all is armed
         systemMetricsSampler: undefined,
         systemTraceProducers: createNodeSystemTraceProducers({ ...deps, ...over }),
       }),
