@@ -266,7 +266,7 @@ export class OrientationProducer extends TraceProducerBase {
  * `document.visibilityState` → `app_state`, in Android's vocabulary (`foreground` / `background`; the viewer's
  * table is `started` / `foreground` / `background`), never the raw `visible` / `hidden` / `prerender`. A step
  * curve, so it is held and de-duplicated; the initial value is read from the document (absent = no initial
- * value, only changes). `process_foreground` / `process_background` events stay in the events source.
+ * value, only changes). `UIApplicationDidBecomeActiveNotification` / `UIApplicationDidEnterBackgroundNotification` events stay in the events source.
  */
 export class AppStateProducer extends TraceProducerBase {
   readonly name = 'app-state';
