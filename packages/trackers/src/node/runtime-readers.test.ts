@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createAvailableMemoryReader,
   createMemoryLimitReader,
+  createProcMeminfoReader,
+  createSystemFreeReader,
   createV8HeapReader,
+  parseMemAvailable,
 } from './runtime-readers';
 
 const GiB = 1024 ** 3;
@@ -90,16 +92,97 @@ describe('createMemoryLimitReader', () => {
   });
 });
 
-describe('createAvailableMemoryReader', () => {
-  it('reports process.availableMemory()', () => {
-    expect(createAvailableMemoryReader({ availableMemory: () => 123 })()).toBe(123);
-    expect(createAvailableMemoryReader({ availableMemory: () => 0 })()).toBe(0);
+describe('parseMemAvailable', () => {
+  const text =
+    'MemTotal:       16384000 kB\nMemFree:          100000 kB\nMemAvailable:    8192000 kB\nBuffers: 1 kB\n';
+  it('returns MemAvailable in BYTES (kB is KiB), not MemFree', () => {
+    expect(parseMemAvailable(text)).toBe(8192000 * 1024);
+  });
+  it('is undefined when the field is absent, malformed or has no kB unit', () => {
+    expect(parseMemAvailable('MemFree: 5 kB\n')).toBeUndefined();
+    expect(parseMemAvailable('MemAvailable: lots kB\n')).toBeUndefined();
+    expect(parseMemAvailable('MemAvailable: 5 MB\n')).toBeUndefined();
+    expect(parseMemAvailable('')).toBeUndefined();
+  });
+  it('does not match a field that merely ends in MemAvailable', () => {
+    expect(parseMemAvailable('XMemAvailable: 5 kB\n')).toBeUndefined();
+  });
+  it('is undefined for a value too large to be finite', () => {
+    expect(parseMemAvailable(`MemAvailable: ${'9'.repeat(400)} kB\n`)).toBeUndefined();
+  });
+});
+
+describe('createProcMeminfoReader', () => {
+  it('reads /proc/meminfo on linux only', () => {
+    const files: string[] = [];
+    const read = (f: string) => (files.push(f), 'TEXT');
+    expect(createProcMeminfoReader('linux', read)()).toBe('TEXT');
+    expect(files).toEqual(['/proc/meminfo']);
+    for (const p of ['darwin', 'win32']) {
+      expect(createProcMeminfoReader(p, read)()).toBeUndefined();
+    }
+    expect(files).toHaveLength(1); // no read attempted off linux
+  });
+  it('is undefined when the read throws', () => {
+    expect(
+      createProcMeminfoReader('linux', () => {
+        throw new Error('EACCES');
+      })(),
+    ).toBeUndefined();
+  });
+});
+
+describe('createSystemFreeReader', () => {
+  const meminfo = 'MemAvailable: 10 kB\n'; // 10240 bytes
+  const make = (over: Partial<Parameters<typeof createSystemFreeReader>[0]> = {}) =>
+    createSystemFreeReader({
+      preferMeminfo: false,
+      meminfo: () => meminfo,
+      freemem: () => 111,
+      total: () => 1_000_000,
+      ...over,
+    });
+  const boom = () => {
+    throw new Error('boom');
+  };
+
+  it('Node: os.freemem() alone, /proc/meminfo is never read', () => {
+    let reads = 0;
+    expect(make({ meminfo: () => (reads++, meminfo) })()).toBe(111);
+    expect(reads).toBe(0);
   });
 
-  it('is undefined (feature-detected) where it does not exist, and for non-finite or negative answers', () => {
-    expect(createAvailableMemoryReader({})()).toBeUndefined();
-    for (const v of [Number.NaN, Number.POSITIVE_INFINITY, -1, '1', undefined]) {
-      expect(createAvailableMemoryReader({ availableMemory: () => v as number })()).toBeUndefined();
+  it('preferMeminfo (Bun/Deno): MemAvailable first, then os.freemem()', () => {
+    expect(make({ preferMeminfo: true })()).toBe(10240);
+    expect(make({ preferMeminfo: true, meminfo: () => undefined })()).toBe(111);
+    expect(make({ preferMeminfo: true, meminfo: () => 'nothing here' })()).toBe(111);
+    expect(make({ preferMeminfo: true, meminfo: boom })()).toBe(111);
+  });
+
+  it('skips a source that answers an implausible value (NaN, Infinity, negative, > total)', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1_000_001]) {
+      expect(make({ freemem: () => bad })()).toBeUndefined();
+      expect(
+        make({ preferMeminfo: true, freemem: () => bad, meminfo: () => undefined })(),
+      ).toBeUndefined();
     }
+    expect(make({ preferMeminfo: true, meminfo: () => 'MemAvailable: 999999999 kB\n' })()).toBe(
+      111,
+    );
+    expect(make({ freemem: boom })()).toBeUndefined();
+  });
+
+  it('accepts zero and a value equal to total, rejects total + 1 (boundaries)', () => {
+    expect(make({ freemem: () => 0 })()).toBe(0);
+    expect(make({ freemem: () => 1_000_000 })()).toBe(1_000_000);
+    expect(make({ freemem: () => 1_000_001 })()).toBeUndefined();
+  });
+
+  it('re-reads total on every call (it may change)', () => {
+    let total = 1000;
+    const read = make({ total: () => total });
+    expect(read()).toBe(111);
+    total = 10;
+    expect(read()).toBeUndefined();
   });
 });

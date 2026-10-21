@@ -28,8 +28,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // its own tell (a zero `idle`), so it needs no flag.
     systemTraceProducers: createNodeSystemTraceProducers({
       measuresEventLoopDelay: false,
-      // Deno's `process.availableMemory()` is not the Node quantity: 23 GB vs 3.4 GB on one macOS host, and on
-      // Linux it ignores the container cap (11.2 GB under `docker -m 256m` vs Node's 253 MB).
+      // Deno's `process.availableMemory()` is not comparable (0 on Windows, includes inactive pages on macOS), so it
+      // is never used; `ram_system_free` reads /proc/meminfo MemAvailable first on Linux, then os.freemem().
       measuresAvailableMemory: false,
       // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
       measuresGc: false,

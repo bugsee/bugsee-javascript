@@ -1,4 +1,4 @@
-// Readers for the node runtime-depth traces (V8 heap, cgroup memory cap, available memory). Each answers
+// Readers for the node runtime-depth traces (V8 heap, cgroup memory cap, system free memory). Each answers
 // `undefined` when this runtime cannot give a TRUE reading, so its trace is omitted rather than invented.
 // The process/os/v8 sources are injected: the defaults are wired in process-tracker.ts.
 
@@ -64,13 +64,81 @@ export function createMemoryLimitReader(
   };
 }
 
-/** `process.availableMemory()` (Node ≥20.13, feature-detected). */
-export function createAvailableMemoryReader(proc: {
-  availableMemory?: () => number;
-}): () => number | undefined {
+/**
+ * `MemAvailable` of a `/proc/meminfo` text, in BYTES (the file reports kB, i.e. KiB). This is the kernel's own
+ * estimate of memory available to start new work without swapping (free + reclaimable cache), which is the
+ * quantity Android's `ram_system_free` carries. Undefined when the field is absent or not a number.
+ */
+export function parseMemAvailable(text: string): number | undefined {
+  const match = /^MemAvailable:\s+(\d+)\s+kB\s*$/m.exec(text);
+  if (match === null) return undefined;
+  const kib = Number(match[1]);
+  return Number.isFinite(kib) ? kib * 1024 : undefined;
+}
+
+/** The raw `/proc/meminfo` text, on Linux only (every other platform has no such file: undefined, no read attempted). */
+export function createProcMeminfoReader(
+  platform: string,
+  readFile: (file: string) => string,
+): () => string | undefined {
   return () => {
-    if (typeof proc.availableMemory !== 'function') return undefined;
-    const value: unknown = proc.availableMemory();
-    return isCount(value) && value >= 0 ? value : undefined;
+    if (platform !== 'linux') return undefined;
+    try {
+      return readFile('/proc/meminfo');
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+export interface SystemFreeSources {
+  /**
+   * Prefer `/proc/meminfo` MemAvailable over `os.freemem()`? Only for runtimes whose `os.freemem()` is not known to
+   * be MemAvailable-equivalent (Bun < 1.3.13 on Linux).
+   */
+  preferMeminfo: boolean;
+  /** Raw `/proc/meminfo` text (Linux), or undefined. */
+  meminfo: () => string | undefined;
+  /** `os.freemem()`, the primary source on Node: see {@link createSystemFreeReader}. */
+  freemem: () => number;
+  total: () => number;
+}
+
+/**
+ * `ram_system_free`: memory available to new work, as Android reports it (not merely "free" pages).
+ *
+ * Node: `os.freemem()`. It already is that quantity where the OS can say it: libuv reads `MemAvailable` on Linux
+ * since 1.43 (Node >= 16.14) and uses `ullAvailPhys` (standby cache included) on Windows. `process.availableMemory()`
+ * is deliberately NOT used: it equals `os.freemem()` without a cgroup limit (measured identical on macOS), and
+ * inside a cgroup it counts page cache as used, so it reads LOWER than what is truly available.
+ * Known limit: on macOS `os.freemem()` counts only free pages, so it undercounts reclaimable memory.
+ *
+ * Bun/Deno (`preferMeminfo`): `MemAvailable` from `/proc/meminfo` first (Linux), then `os.freemem()`. Their
+ * `process.availableMemory()` is not comparable (Deno: 0 on Windows, includes inactive pages on macOS), so it is
+ * never consulted.
+ *
+ * A source that throws or answers an implausible value (non-finite, negative, > total) is skipped; when none
+ * answers, undefined, so the trace is omitted rather than invented.
+ */
+export function createSystemFreeReader(src: SystemFreeSources): () => number | undefined {
+  const meminfo = (): number | undefined => {
+    const text = src.meminfo();
+    return text === undefined ? undefined : parseMemAvailable(text);
+  };
+  const sources: (() => number | undefined)[] = src.preferMeminfo
+    ? [meminfo, src.freemem]
+    : [src.freemem];
+  return () => {
+    const total = src.total();
+    for (const source of sources) {
+      let value: unknown;
+      try {
+        value = source();
+      } catch {
+        continue;
+      }
+      if (isCount(value) && value >= 0 && value <= total) return value;
+    }
+    return undefined;
   };
 }

@@ -6,7 +6,7 @@ import {
   processTrackerFor,
 } from '@bugsee/trackers/node';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers, each subscribed to ONE
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers, each subscribed to ONE
 // stage of the shared per-process ProcessTracker (`@bugsee/trackers/node`, the abstraction layer over the runtime's
 // process APIs). This file is COMPOSITION only: which stage feeds which trace names, plus the runtime-identity gates
 // the platform packages pass through (`measures*`). The tracker owns every runtime read, its lifetime and its
@@ -59,7 +59,8 @@ class SystemMemoryProducer extends StageProducer<'systemMemory'> {
   }
   protected publish(m: ProcessEvents['systemMemory']): void {
     this.emit('ram_system_total', m.total);
-    this.emit('ram_system_free', m.free);
+    // memory available to new work (Android parity), absent when no source answers
+    if (m.free !== undefined) this.emit('ram_system_free', m.free);
   }
 }
 
@@ -133,16 +134,6 @@ class MemoryLimitProducer extends StageProducer<'memoryLimit'> {
   }
 }
 
-class AvailableMemoryProducer extends StageProducer<'availableMemory'> {
-  readonly name = 'system-memory-available';
-  constructor(tracker: ProcessTracker) {
-    super(tracker, 'availableMemory');
-  }
-  protected publish(m: ProcessEvents['availableMemory']): void {
-    this.emit('ram_system_available', m.bytes);
-  }
-}
-
 // Emitted every tick, never held: a quiet interval is a TRUE zero (the observer is running), and a source that
 // stops answering must be omitted rather than re-recorded from a held value. No baseline: the interval opens at
 // activation, so nothing has been observed yet (a zero would be invented).
@@ -172,7 +163,7 @@ class UptimeProducer extends StageProducer<'uptime'> {
 /**
  * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresAvailableMemory`,
  * `measuresGc`; see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
- * event-loop histogram, Bun the V8 heap, both the available-memory and GC readers.
+ * event-loop histogram, Bun the V8 heap, both the os.freemem()-is-available assumption and the GC reader.
  */
 export interface NodeTraceProducerDeps extends ProcessTrackerEnv {
   onError?: (error: unknown) => void;
@@ -190,7 +181,6 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new EventLoopUtilizationProducer(tracker),
     new V8HeapProducer(tracker),
     new MemoryLimitProducer(tracker),
-    new AvailableMemoryProducer(tracker),
     new GcProducer(tracker),
     new UptimeProducer(tracker),
   ];

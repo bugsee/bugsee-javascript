@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import nodeProcess from 'node:process';
@@ -13,24 +14,24 @@ import {
   realPerfHooks,
 } from './guarded-event-loop';
 import {
-  createAvailableMemoryReader,
   createMemoryLimitReader,
+  createProcMeminfoReader,
+  createSystemFreeReader,
   createV8HeapReader,
   type V8HeapStats,
 } from './runtime-readers';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
-// owns everything the runtime can say about its own process, as TEN independent stages:
+// owns everything the runtime can say about its own process, as NINE independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
-//   systemMemory    os.totalmem()/freemem()                        -> { total, free }
+//   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader)
 //   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct }
 //   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs, maxMs, p99Ms }
 //   utilization     performance.eventLoopUtilization() (guarded)   -> { utilization }
 //   gc              PerformanceObserver('gc') interval             -> { count, pauseMs, maxPauseMs }
 //   v8Heap          v8.getHeapStatistics()                         -> { limit, used, available, malloced, peakMalloced }
 //   memoryLimit     process.constrainedMemory() (a real cap only)  -> { bytes }
-//   availableMemory process.availableMemory()                      -> { bytes }
 //   uptime          process.uptime(), whole seconds                -> { seconds }
 //
 // PER-STAGE ACTIVATION. Nothing runs at construction. ONE shared sampling timer exists only while some stage has a
@@ -72,7 +73,8 @@ export interface ProcessMemory {
 }
 export interface ProcessEvents {
   memory: ProcessMemory;
-  systemMemory: { total: number; free: number };
+  /** `free` is memory available to new work (Android parity); absent when no source answers. */
+  systemMemory: { total: number; free?: number };
   /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window. */
   cpu: { userDelta: number; systemDelta: number; processPct: number };
   eventLoop: { meanMs: number; maxMs: number; p99Ms: number };
@@ -82,7 +84,6 @@ export interface ProcessEvents {
   gc: GcInterval;
   v8Heap: V8HeapStats;
   memoryLimit: { bytes: number };
-  availableMemory: { bytes: number };
   /** Whole seconds since process start. */
   uptime: { seconds: number };
 }
@@ -96,7 +97,6 @@ const STAGES: readonly Stage[] = [
   'utilization',
   'v8Heap',
   'memoryLimit',
-  'availableMemory',
   'uptime',
   'gc',
 ];
@@ -112,7 +112,8 @@ export interface ProcessTimers {
 export interface ProcessEnv {
   memoryUsage?: () => ProcessMemory;
   cpuUsage?: () => { user: number; system: number };
-  systemMemory?: () => { total: number; free: number };
+  /** Overrides the whole system-memory read (and every free-memory source below). */
+  systemMemory?: () => { total: number; free?: number };
   cpuCount?: () => number;
   monotonicNowMs?: () => number;
   /** Seconds since process start (fractions floored). Default `process.uptime()`. */
@@ -126,7 +127,10 @@ export interface ProcessEnv {
   /** Each reader answers undefined when the runtime cannot give a true value. Override their defaults and gates. */
   v8Heap?: () => V8HeapStats | undefined;
   memoryLimit?: () => number | undefined;
-  availableMemory?: () => number | undefined;
+  /** Raw `/proc/meminfo` text (Linux), consulted first only when `measuresAvailableMemory` is false. Default reads the file on Linux only. */
+  meminfo?: () => string | undefined;
+  /** `os.freemem()` bytes, the primary source of system free memory (see `createSystemFreeReader`). */
+  freeMemory?: () => number;
   /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
   /** Test seam for the GC observer constructor. Default `node:perf_hooks`. */
@@ -141,7 +145,11 @@ export interface ProcessEnv {
    * and ~1000x Node's cost per call), so `@bugsee/bun` passes `false`.
    */
   measuresV8Heap?: boolean;
-  /** Is `process.availableMemory()` comparable to the Node figure? Default `true`; not on Bun/Deno. */
+  /**
+   * Is `os.freemem()` known to be memory AVAILABLE to new work (libuv MemAvailable / ullAvailPhys)? Default `true`
+   * (Node). Bun and Deno pass `false`: they read `/proc/meminfo` MemAvailable first on Linux, then `os.freemem()`.
+   * `process.availableMemory()` is never used (not comparable on Bun/Deno; lower than truth in a cgroup on Node).
+   */
   measuresAvailableMemory?: boolean;
   /** Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`; blind on Bun/Deno. */
   measuresGc?: boolean;
@@ -174,7 +182,8 @@ const SEAM_KEYS = [
   'eventLoopUtilization',
   'v8Heap',
   'memoryLimit',
-  'availableMemory',
+  'meminfo',
+  'freeMemory',
   'perfHooks',
   'performanceObserver',
   'measuresEventLoopDelay',
@@ -197,7 +206,7 @@ interface Resolved {
   gc: GcSource | undefined;
   v8Heap: (() => V8HeapStats | undefined) | undefined;
   memoryLimit: () => number | undefined;
-  availableMemory: (() => number | undefined) | undefined;
+  systemFree: () => number | undefined;
 }
 
 const NOOP_RUN: StageRun = { read: () => undefined, stop: () => {} };
@@ -401,11 +410,12 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         env.v8Heap ??
         (env.measuresV8Heap !== false ? createV8HeapReader(getHeapStatistics) : undefined),
       memoryLimit: env.memoryLimit ?? createMemoryLimitReader(nodeProcess, totalmem),
-      availableMemory:
-        env.availableMemory ??
-        (env.measuresAvailableMemory !== false
-          ? createAvailableMemoryReader(nodeProcess)
-          : undefined),
+      systemFree: createSystemFreeReader({
+        preferMeminfo: env.measuresAvailableMemory === false,
+        meminfo: env.meminfo ?? createProcMeminfoReader(nodeProcess.platform, readProcFile),
+        freemem: env.freeMemory ?? freemem,
+        total: totalmem,
+      }),
     };
     this.#resolved = resolved;
     return resolved;
@@ -421,7 +431,13 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         return { read, stop: () => {} };
       }
       case 'systemMemory': {
-        const read = env.systemMemory ?? (() => ({ total: totalmem(), free: freemem() }));
+        const read =
+          env.systemMemory ??
+          (() => {
+            const total = totalmem();
+            const free = res.systemFree();
+            return free === undefined ? { total } : { total, free };
+          });
         return { read, stop: () => {} };
       }
       case 'uptime': {
@@ -432,8 +448,6 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         return optionalRun(res.v8Heap);
       case 'memoryLimit':
         return optionalRun(res.memoryLimit, (bytes) => ({ bytes }));
-      case 'availableMemory':
-        return optionalRun(res.availableMemory, (bytes) => ({ bytes }));
       case 'cpu':
         return this.#cpuRun();
       case 'eventLoop': {
@@ -508,6 +522,9 @@ function optionalRun<T>(
     stop: () => {},
   };
 }
+
+/* v8 ignore next -- only invoked on Linux (createProcMeminfoReader gates on platform); the gating and parsing are unit-tested with injected readers */
+const readProcFile = (file: string): string => readFileSync(file, 'utf8');
 
 const registry = createTrackerRegistry<ProcessTracker>();
 

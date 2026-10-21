@@ -21,9 +21,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     systemProbe: bunSystemProbe,
     systemTraceProducers: createNodeSystemTraceProducers({
       // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call),
-      // and on Linux `availableMemory` ignores the container cap (measured under `docker -m 256m`: 11.2 GB vs
-      // Node's 253 MB), so those traces are omitted here.
+      // so the V8 heap traces are omitted here.
       measuresV8Heap: false,
+      // Bun < 1.3.13's `os.freemem()` is not MemAvailable on Linux, so `ram_system_free` reads /proc/meminfo
+      // MemAvailable first there, then os.freemem(). `process.availableMemory()` is never used.
       measuresAvailableMemory: false,
       // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
       // zero would be a lie, so no observer is constructed and the gc traces are omitted.
