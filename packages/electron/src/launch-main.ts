@@ -141,9 +141,10 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   /**
    * The `app.getGPUInfo` argument used for `environment.hardware.gpu`. Default `'basic'`. `'complete'` is
    * expected to carry `auxAttributes.glRenderer`/`glVendor`/`glVersion` (more useful names) but is heavier.
-   * UNVERIFIED against a real Electron: on macOS/Linux `'basic'` commonly yields only numeric vendor/device
-   * ids, in which case `hardware.gpu` is absent (never guessed) until confirmed on a real Electron; pass
-   * `'complete'` for the GL strings. A usable result is kept for the life of the `app` object; a later launch (after
+   * VERIFIED on Electron 44.9.3 (macOS arm64): `'basic'` yields no vendor/renderer strings, so `hardware.gpu` is
+   * absent (never guessed); `'complete'` yields `vendorString`/`deviceString`/`glVersion` and a ~3 KB
+   * `glExtensions` string (under the 8192 cap). Pass `'complete'` for the GL strings (the default stays `'basic'`;
+   * that choice is an open owner decision, docs/PROGRESS.md). A usable result is kept for the life of the `app` object; a later launch (after
    * `client.stop()`) asks again when the earlier read rejected or returned nothing usable, or when it asks for a
    * different type (a failed re-ask keeps the earlier usable value).
    */
