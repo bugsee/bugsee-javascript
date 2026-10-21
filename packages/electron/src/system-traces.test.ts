@@ -201,7 +201,7 @@ describe('displays producer', () => {
   it('builds exactly the displays producer for a display tracker, nothing for none', () => {
     const d = displays(() => [display()]);
     expect(createElectronSystemTraceProducers({ display: d.tracker }).map((p) => p.name)).toEqual([
-      'electron-displays',
+      'displays',
     ]);
     expect(createElectronSystemTraceProducers({})).toEqual([]);
   });
