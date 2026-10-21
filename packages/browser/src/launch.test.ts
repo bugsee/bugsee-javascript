@@ -477,7 +477,7 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
-  it('a page hidden at launch does not report process_background for a duplicate hidden visibilitychange', async () => {
+  it('a page hidden at launch does not report UIApplicationDidEnterBackgroundNotification for a duplicate hidden visibilitychange', async () => {
     const store = memStore();
     const w = fakeWindow();
     const doc = fakeWindow();
@@ -495,7 +495,7 @@ describe('launch', () => {
     const names = ((await drain(store, 'events.system')) ?? []).map(
       (e) => (e.data as { name: string }).name,
     );
-    expect(names).not.toContain('process_background');
+    expect(names).not.toContain('UIApplicationDidEnterBackgroundNotification');
     expect(names).toContain('process_started');
   });
 
@@ -525,7 +525,7 @@ describe('launch', () => {
     const names = ((await drain(store, 'events.system')) ?? []).map(
       (e) => (e.data as { name: string }).name,
     );
-    expect(names).toContain('process_background');
+    expect(names).toContain('UIApplicationDidEnterBackgroundNotification');
     await client.stop();
     expect(w.count('online') + w.count('orientationchange')).toBe(0);
     expect(doc.count('visibilitychange')).toBe(0);
@@ -663,7 +663,7 @@ describe('launch', () => {
       expect(listeners.size).toBe(0);
     });
 
-    it('records dark_mode_changed from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
+    it('records DarkModeChanged from the injected window matchMedia (bound to it), and removes the listener on stop', async () => {
       const w = fakeWindow();
       const m = mkMedia();
       Object.assign(w.win, { matchMedia: m.matchMedia });
@@ -675,8 +675,8 @@ describe('launch', () => {
       expect(m.thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
-      expect((await names(store)).filter((e) => e.name === 'dark_mode_changed')).toEqual([
-        expect.objectContaining({ name: 'dark_mode_changed', params: { dark: true } }),
+      expect((await names(store)).filter((e) => e.name === 'DarkModeChanged')).toEqual([
+        expect.objectContaining({ name: 'DarkModeChanged', params: { dark: true } }),
       ]);
       await client.stop();
       expect(m.l.size).toBe(0);
@@ -703,7 +703,7 @@ describe('launch', () => {
         expect(hostCalls).toEqual([]); // the host's matchMedia is never consulted
         expect(onError).not.toHaveBeenCalled(); // absence is not a failure
         expect(doc.count('pointerdown')).toBeGreaterThan(0); // input capture started (document-bound)
-        expect((await names(store)).map((e) => e.name)).not.toContain('dark_mode_changed');
+        expect((await names(store)).map((e) => e.name)).not.toContain('DarkModeChanged');
         await client.stop();
       } finally {
         vi.unstubAllGlobals();
@@ -1761,7 +1761,7 @@ describe('launch', () => {
         noSampler({ window: w.win, captureStore: memStore() }),
       );
       const before = w.count('orientationchange');
-      expect(before).toBe(1); // traces' orientation + the events source's orientation_changed: one listener
+      expect(before).toBe(1); // traces' orientation + the events source's OrientationChanged: one listener
       // Asking for the window's tracker returns the SAME one: subscribing adds no new window listener.
       const ui = uiTrackerFor({ window: w.win });
       const seen: unknown[] = [];

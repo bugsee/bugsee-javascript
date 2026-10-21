@@ -139,6 +139,12 @@ function fakeQueries(matching: Record<string, boolean> = {}) {
       // the browser settles ALL the queries before any listener runs
       for (const l of changed) for (const fn of [...l.listeners]) fn({ matches: l.matches });
     },
+    /** One query flips (e.g. `(prefers-color-scheme: dark)`) and its listeners are told. */
+    set: (q: string, matches: boolean) => {
+      const l = list(q);
+      l.matches = matches;
+      for (const fn of [...l.listeners]) fn({ matches });
+    },
     listenerCount: () => [...lists.values()].reduce((n, l) => n + l.listeners.size, 0),
   };
 }
@@ -257,7 +263,7 @@ describe('createBrowserSystemEventsSource: display_mode_changed', () => {
 });
 
 describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => {
-  it('records dark_mode_changed with the new state from the injected matchMedia', () => {
+  it('records DarkModeChanged with the new state from the injected matchMedia', () => {
     const { env } = fakeEnv();
     const m = fakeMedia();
     const { events } = activate({ ...env, matchMedia: m.matchMedia });
@@ -271,9 +277,9 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     ); // baseline reads + watches, for dark mode and display mode
     m.fire(true);
     m.fire(false);
-    expect(events.filter((e) => e.name === 'dark_mode_changed')).toEqual([
-      { name: 'dark_mode_changed', params: { dark: true } },
-      { name: 'dark_mode_changed', params: { dark: false } },
+    expect(events.filter((e) => e.name === 'DarkModeChanged')).toEqual([
+      { name: 'DarkModeChanged', params: { dark: true } },
+      { name: 'DarkModeChanged', params: { dark: false } },
     ]);
   });
 
@@ -299,7 +305,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     });
     orientation.angle = 90;
     expect(() => win.emit('orientationchange', {})).not.toThrow();
-    expect(events.map((e) => e.name)).toContain('orientation_changed');
+    expect(events.map((e) => e.name)).toContain('OrientationChanged');
   });
 
   it('removes the media listener on deactivate', () => {
@@ -402,7 +408,7 @@ describe('createBrowserSystemEventsSource', () => {
     ]);
   });
 
-  it('maps visibilitychange to process_background / process_foreground from visibilityState', () => {
+  it('maps visibilitychange to UIApplicationDidEnterBackgroundNotification / UIApplicationDidBecomeActiveNotification from visibilityState', () => {
     const { env, doc, state } = fakeEnv();
     const { events } = activate(env);
     state.visibilityState = 'hidden';
@@ -410,8 +416,8 @@ describe('createBrowserSystemEventsSource', () => {
     state.visibilityState = 'visible';
     doc.emit('visibilitychange', {});
     expect(events.slice(1)).toEqual([
-      { name: 'process_background' },
-      { name: 'process_foreground' },
+      { name: 'UIApplicationDidEnterBackgroundNotification' },
+      { name: 'UIApplicationDidBecomeActiveNotification' },
     ]);
   });
 
@@ -428,8 +434,8 @@ describe('createBrowserSystemEventsSource', () => {
     doc.emit('visibilitychange', {});
     doc.emit('visibilitychange', {});
     expect(events.slice(1)).toEqual([
-      { name: 'process_background' },
-      { name: 'process_foreground' },
+      { name: 'UIApplicationDidEnterBackgroundNotification' },
+      { name: 'UIApplicationDidBecomeActiveNotification' },
     ]);
   });
 
@@ -442,7 +448,7 @@ describe('createBrowserSystemEventsSource', () => {
     expect(events).toEqual([{ name: 'process_started' }]);
     state.visibilityState = 'visible';
     doc.emit('visibilitychange', {});
-    expect(events.slice(1)).toEqual([{ name: 'process_foreground' }]);
+    expect(events.slice(1)).toEqual([{ name: 'UIApplicationDidBecomeActiveNotification' }]);
   });
 
   it('emits online / offline on connectivity transitions', () => {
@@ -533,15 +539,61 @@ describe('createBrowserSystemEventsSource', () => {
     expect(errors.length).toBeGreaterThan(0); // the unreadable navigator is reported once
   });
 
-  it('emits orientation_changed with the current screen orientation type + angle', () => {
+  it('emits OrientationChanged with the current screen orientation type + angle', () => {
     const { env, win, orientation } = fakeEnv();
     const { events } = activate(env);
     orientation.type = 'landscape-primary';
     orientation.angle = 90;
     win.emit('orientationchange', {});
     expect(events.slice(1)).toEqual([
-      { name: 'orientation_changed', params: { type: 'landscape-primary', angle: 90 } },
+      {
+        name: 'OrientationChanged',
+        params: { current: 3, prev: 1, type: 'landscape-primary', angle: 90 },
+      },
     ]);
+    // `prev` is the value this source last announced, tracked across changes.
+    orientation.type = 'portrait-primary';
+    orientation.angle = 0;
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({
+      name: 'OrientationChanged',
+      params: { current: 1, prev: 3, type: 'portrait-primary', angle: 0 },
+    });
+  });
+
+  it('OrientationChanged omits prev when the orientation before was unreadable, and keeps it across a bare event', () => {
+    const { env, win } = fakeEnv();
+    const screen: { orientation?: { type: OrientationType; angle: number } } = {};
+    const { events } = activate({ ...env, screen });
+    screen.orientation = { type: 'landscape-secondary', angle: 270 };
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({
+      name: 'OrientationChanged',
+      params: { current: 4, type: 'landscape-secondary', angle: 270 },
+    });
+    delete screen.orientation;
+    win.emit('orientationchange', {}); // a bare event: no params, and the known orientation stays 4
+    expect(events.at(-1)).toEqual({ name: 'OrientationChanged' });
+    screen.orientation = { type: 'portrait-primary', angle: 0 };
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({
+      name: 'OrientationChanged',
+      params: { current: 1, prev: 4, type: 'portrait-primary', angle: 0 },
+    });
+  });
+
+  it('OrientationChanged is bare when only one of type / angle is readable (never a half-built current)', () => {
+    const { env, win } = fakeEnv();
+    const screen = {
+      orientation: { type: 'portrait-primary', angle: 0 } as Record<string, unknown>,
+    };
+    const { events } = activate({ ...env, screen: screen as never });
+    screen.orientation = { type: 'landscape-primary', angle: Number.NaN }; // type only
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({ name: 'OrientationChanged' });
+    screen.orientation = { type: 5, angle: 90 }; // angle only
+    win.emit('orientationchange', {});
+    expect(events.at(-1)).toEqual({ name: 'OrientationChanged' });
   });
 
   it('removes every listener on deactivate (last subscriber gone)', () => {
@@ -603,8 +655,8 @@ describe('createBrowserSystemEventsSource', () => {
     const { win } = fakeEnv();
     const { events, off } = activate({ window: win, document: undefined, screen: undefined });
     expect(events).toEqual([{ name: 'process_started' }]); // still starts
-    win.emit('orientationchange', {}); // no screen → orientation_changed carries no params
-    expect(events.slice(1)).toEqual([{ name: 'orientation_changed' }]);
+    win.emit('orientationchange', {}); // no screen → OrientationChanged carries no params
+    expect(events.slice(1)).toEqual([{ name: 'OrientationChanged' }]);
     off();
   });
 
@@ -645,8 +697,8 @@ describe('createBrowserSystemEventsSource', () => {
     screen.orientation = { type: 'landscape-primary', angle: 90 };
     win.emit('orientationchange', {});
     expect(events.at(-1)).toEqual({
-      name: 'orientation_changed',
-      params: { type: 'landscape-primary', angle: 90 },
+      name: 'OrientationChanged',
+      params: { current: 3, prev: 1, type: 'landscape-primary', angle: 90 },
     });
     off();
     expect(win.count('orientationchange')).toBe(0);
@@ -660,7 +712,7 @@ describe('createBrowserSystemEventsSource', () => {
     const { events, off } = activate({ window: injected as never });
     expect(hostWin.count('orientationchange')).toBe(0);
     injected.emit('orientationchange', {});
-    expect(events.at(-1)).toEqual({ name: 'orientation_changed' }); // the host's screen was not used
+    expect(events.at(-1)).toEqual({ name: 'OrientationChanged' }); // the host's screen was not used
     off();
   });
 
@@ -750,6 +802,41 @@ describe('createBrowserSystemEventsSource', () => {
       { name: 'offline' },
     ]);
     second();
+  });
+
+  describe('conformance: every emitted event param key is camelCase', () => {
+    it('derives the keys from the events the real source emits for every browser signal', () => {
+      const { env, win, orientation, state, doc } = fakeEnv();
+      const environment = createMultiKeyEmitter<EnvironmentEvents>();
+      const m = fakeQueries();
+      const { events } = activate({
+        ...env,
+        environment: environment as never,
+        matchMedia: m.matchMedia,
+      });
+      win.emit('pagehide', { persisted: true });
+      state.visibilityState = 'hidden';
+      doc.emit('visibilitychange', {});
+      orientation.type = 'landscape-primary';
+      orientation.angle = 90;
+      win.emit('orientationchange', {});
+      m.set('(prefers-color-scheme: dark)', true);
+      m.enter('standalone');
+      environment.emit('language', {
+        language: 'uk',
+        languages: ['uk'],
+        previous: { language: 'en' },
+      });
+      environment.emit('timezone', {
+        timeZone: 'Asia/Tokyo',
+        utcOffsetMinutes: 540,
+        previous: { timeZone: 'Europe/Kyiv', utcOffsetMinutes: 120 },
+      });
+      environment.emit('privateMode', { private: 'yes', method: 'storage-quota' });
+      const keys = new Set(events.flatMap((e) => Object.keys(e.params ?? {})));
+      expect(keys.size).toBeGreaterThanOrEqual(12); // not vacuous
+      expect([...keys].filter((k) => !/^[a-z][a-zA-Z0-9]*$/.test(k))).toEqual([]);
+    });
   });
 
   describe('environment events', () => {

@@ -149,7 +149,7 @@ export class ApplicationTracker extends InterceptorBase<ApplicationEvents> {
   #onVisibility(): void {
     const state = this.#readState();
     // An unreadable document says nothing about visibility OR state: emit neither (never fabricate a
-    // background, which would become process_background and pause fps).
+    // background, which would become UIApplicationDidEnterBackgroundNotification and pause fps).
     if (state === undefined) return;
     this.emit('visibility', { visible: state === 'foreground' });
     if (state === this.#state) return;

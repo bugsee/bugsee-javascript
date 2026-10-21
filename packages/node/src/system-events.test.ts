@@ -119,6 +119,21 @@ describe('signal disposition survives a SECOND Bugsee listener', () => {
   });
 });
 
+describe('conformance: every emitted event param key is camelCase', () => {
+  it('derives the keys from the events the real source emits and finds no non-camelCase one', () => {
+    const { proc, fire } = realisticProc();
+    const { events } = activate(proc);
+    fire('exit', 1);
+    fire('beforeExit', 2);
+    fire('warning', new TypeError('deprecated'));
+    fire('warning', 'plain');
+    fire('SIGTERM');
+    const keys = new Set(events.flatMap((e) => Object.keys(e.params ?? {})));
+    expect([...keys].sort()).toEqual(['code', 'message', 'name', 'signal']); // not vacuous
+    expect([...keys].filter((k) => !/^[a-z][a-zA-Z0-9]*$/.test(k))).toEqual([]);
+  });
+});
+
 describe('createNodeSystemEventsSource', () => {
   it('emits process_started and registers exit/beforeExit/warning/signal listeners on activate', () => {
     const proc = fakeProc();
