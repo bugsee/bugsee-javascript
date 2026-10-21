@@ -30,9 +30,7 @@ describe('orientationToWire', () => {
     //   portrait-secondary   | angle 180        | angle 270         | PortraitUpsideDown (2)
     //   landscape-secondary  | angle 270        | angle 180         | LandscapeRight (4)
     expect(orientationToWire('portrait-primary')).toBe(ANDROID_ORIENTATION.Portrait);
-    expect(orientationToWire('portrait-secondary')).toBe(
-      ANDROID_ORIENTATION.PortraitUpsideDown,
-    );
+    expect(orientationToWire('portrait-secondary')).toBe(ANDROID_ORIENTATION.PortraitUpsideDown);
     expect(orientationToWire('landscape-primary')).toBe(ANDROID_ORIENTATION.LandscapeLeft);
     expect(orientationToWire('landscape-secondary')).toBe(ANDROID_ORIENTATION.LandscapeRight);
   });
