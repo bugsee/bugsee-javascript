@@ -6,10 +6,12 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
+import { CaptureStateProducer } from '@bugsee/capture';
 import {
   type AppIdentity,
   BlackoutToken,
   CaptureStoreToken,
+  createDiskPressure,
   getCarrierClient,
   resolveFailClosedBoolean,
 } from '@bugsee/core';
@@ -311,13 +313,32 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       : undefined;
   const hasElectronTrackers = [tracker, power, display, application].some((t) => t !== undefined);
 
+  // The `capture` trace (C7): main writes it, and only while it HAS visual capture (opt-in pixel video: a renderer's
+  // rrweb replay is the renderer's own and streams up, but the trace names the session's state, which main owns).
+  // `active`/`blackout` are written once the controller is really running (below); the disk states follow the SAME
+  // DiskPressure the node launch feeds from `statfs` of the data dir under `captureDiskSpace`. Not on a repeat call
+  // (it would never be started); under the legacy sampler (which replaces the producer list) it is simply never added.
+  const diskPressure =
+    nodeOptions.captureDiskSpace === true && !repeat
+      ? createDiskPressure({
+          ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
+        })
+      : undefined;
+  if (diskPressure !== undefined) {
+    nodeOptions.diskPressure = diskPressure;
+  }
+  const captureState = video !== undefined && !repeat ? new CaptureStateProducer() : undefined;
+  if (captureState !== undefined && diskPressure !== undefined) {
+    captureState.bindPressure(diskPressure);
+  }
+
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
   // node set never emits (`app_metrics`, `displays`). Not built when the legacy `systemMetricsSampler` replaces
   // the producer list (they would never start).
   if (
-    (tracker !== undefined || display !== undefined) &&
+    (tracker !== undefined || display !== undefined || captureState !== undefined) &&
     nodeOptions.systemMetricsSampler === undefined
   ) {
     nodeOptions.systemTraceProducers = [
@@ -330,6 +351,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ...(tracker !== undefined ? { process: tracker } : {}),
         ...(display !== undefined ? { display } : {}),
       }),
+      ...(captureState !== undefined ? [captureState] : []),
     ];
   }
 
@@ -404,7 +426,11 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
       ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
     });
-    void videoController.start();
+    const controller = videoController;
+    captureState?.bindBlackout(blackout);
+    void controller.start().then(() => {
+      captureState?.setVisualCapture(controller.isActive());
+    });
   }
 
   // Merge every renderer's streamed capture into the main process's own store (resolved from the client's DI).
@@ -520,6 +546,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture
+      captureState?.setVisualCapture(false);
     } catch (error) {
       reportGuarded(nodeOptions.onError, error);
     }

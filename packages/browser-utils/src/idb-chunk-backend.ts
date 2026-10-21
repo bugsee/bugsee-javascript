@@ -5,6 +5,7 @@ import {
   type ChunkCaptureStoreOptions,
   createChunkCaptureStore,
   createSystemClock,
+  type DiskPressure,
   type FrozenPart,
   type PartMeta,
   type PartRef,
@@ -465,6 +466,12 @@ export interface IdbChunkCaptureStoreOptions extends ChunkCaptureStoreOptions {
   cleanOtherGenerations?: boolean;
   /** Failure sink for the async write queue. Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * Disk pressure (C7): below the low threshold replay/log/network stop being written to IndexedDB, below the
+   * out-of-space one nothing is; the in-memory window is kept either way (see `@bugsee/core`'s
+   * `withDiskPressure`).
+   */
+  diskPressure?: DiskPressure;
 }
 
 /** The durable IndexedDB CaptureStore: the chunk store over {@link createIdbChunkBackend}. */
@@ -483,5 +490,6 @@ export function createIdbChunkCaptureStore(
     maxRecordingTimeMs: options?.maxRecordingTimeMs,
     maxDataSizeBytes: options?.maxDataSizeBytes,
     clock,
+    ...(options?.diskPressure !== undefined ? { diskPressure: options.diskPressure } : {}),
   });
 }

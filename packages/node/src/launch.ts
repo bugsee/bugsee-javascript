@@ -34,12 +34,15 @@ import {
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDiskPressure,
   createDurableUploadPipeline,
   createFileCaptureStore,
   createMemoryCaptureStore,
   createServiceContainer,
   createSystemClock,
   createUploadPipeline,
+  type DiskPressureState,
+  DiskPressureToken,
   defineService,
   getCarrierClient,
   getCarrierStatus,
@@ -92,6 +95,7 @@ import {
   createUnhandledRejectionProvider,
   type ProcessEvents,
 } from './detection-providers';
+import { startDiskPressureFeed } from './disk-pressure-feed';
 import { createDiskSpaceProducer, type StatFs } from './disk-space-producer';
 import {
   buildNodeEnvironment,
@@ -295,6 +299,12 @@ export interface BugseeLaunchOptions {
   captureDiskSpace?: boolean;
   /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
   diskStatfs?: StatFs;
+  /**
+   * Platform-extension seam (advanced; `@bugsee/electron` main uses it): the disk-pressure state this launch feeds and
+   * its file capture store obeys, so the platform can follow it too (the `capture` trace). Used only when
+   * `captureDiskSpace` is on and there is a data directory; otherwise ignored. Default: one created by the launch.
+   */
+  diskPressure?: DiskPressureState;
   /**
    * Platform-extension seam (advanced; `@bugsee/electron` uses it). Called ONCE at launch with the node
    * `events.system` source; the SOURCE it returns is what the events provider subscribes to, so a platform can mux its
@@ -776,6 +786,28 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   //   'worker' (opt-in insurance): the off-thread RING writer — the host thread encodes each frame
   //     IN PLACE into a shared SAB ring (zero-copy) + a worker_threads worker drains it to disk, so the host
   //     NEVER blocks on a write() even under a pathologically slow disk; drop-oldest sheds load.
+  // Disk pressure (C7, opt-in `captureDiskSpace`, needs a data dir): the volume's free space, read by the shared
+  // StorageTracker every 5 s, drives (a) the file capture store, which stops persisting replay/log/network below
+  // 50 MB free and everything below 10 MB while keeping the in-memory window, and (b) any platform `capture` trace.
+  // A write the medium refuses for lack of room (ENOSPC / EDQUOT) moves it to `none` at once: every error sink a
+  // writer reports to goes through `noteWriteError` first. No data dir = no volume we persist to = nothing to protect.
+  const diskPressure: DiskPressureState | undefined =
+    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+      ? (options.diskPressure ??
+        createDiskPressure({
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        }))
+      : undefined;
+  if (diskPressure !== undefined) {
+    services.addService(defineService(DiskPressureToken, () => diskPressure));
+  }
+  const writerOnError: ((error: unknown) => void) | undefined =
+    diskPressure === undefined
+      ? options.onError
+      : (error) => {
+          diskPressure.noteWriteError(error);
+          reportGuarded(options.onError, error);
+        };
   const chunkStorage =
     options.captureStore === undefined && instanceLayout !== undefined && diskCapture
       ? options.captureWriter === 'worker'
@@ -783,10 +815,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
             generation: captureGeneration,
             fileTypes: CAPTURE_FILE_TYPES,
             workerFactory: createWorkerThreadRingWorker,
-            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
           })
         : createBatchedFsChunkStorage(instanceLayout.captureDir, {
-            ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
           })
       : undefined;
   if (chunkStorage !== undefined) {
@@ -809,8 +841,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
           ...storeOptions,
           generation: captureGeneration,
           cleanOtherGenerations: !recoverEnabled,
+          ...(diskPressure !== undefined ? { diskPressure } : {}),
         })
       : createMemoryCaptureStore(storeOptions));
+  // The feed starts with the launch and is released by stop(): the tracker polls only while someone listens.
+  const stopDiskFeed =
+    diskPressure !== undefined && effectiveDataDir !== undefined
+      ? startDiskPressureFeed(diskPressure, {
+          dataDir: effectiveDataDir,
+          ...(options.diskStatfs !== undefined ? { statfs: options.diskStatfs } : {}),
+          ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
 
   // CPU profiling (opt-in): a rolling V8 profiler whose current segment is pulled into the incident
   // bundle as profile.json at report time. The controller is built AFTER createClient (it needs the
@@ -907,7 +950,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+    ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
   });
 
   if (profilingEnabled) {
@@ -1435,6 +1478,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
         signalFlushHandlers.clear();
       }
       profilingController?.stop(); // clear the rolling timer + stop the profiler
+      stopDiskFeed?.(); // release the shared StorageTracker's poll
       heartbeat?.stop(); // stop touching .live (this instance is shutting down cleanly)
       if (captureFlushTimer !== undefined) {
         client.getService(SchedulerToken).clearInterval(captureFlushTimer);

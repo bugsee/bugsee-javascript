@@ -79,6 +79,14 @@ export const BugseeOption = {
    * (`false` opts out, a non-boolean value is treated as off and reported), the WebView launch never enables it. Language and time-zone changes are NOT gated by this.
    */
   CaptureEnvironmentHints: 'com.bugsee.option.capture.environment-hints',
+  /**
+   * Observe free disk space (iOS `monitorDiskSpace`, the same opt-in meaning): the `capture` trace's `low_disk_space` /
+   * `no_disk_space` states, the Node-family `disk_mem_free` / `disk_mem_total` traces, and the capture store's
+   * stop-persisting protection below 50 MB / 10 MB free. Opt-in, default false; only boolean `true` enables it. The
+   * Node launches measure the data directory's volume (`statfs`), the browser measures `navigator.storage.estimate()`
+   * headroom.
+   */
+  CaptureDiskSpace: 'com.bugsee.option.capture.disk-space',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Report failed HTTP responses (>= 400) and network failures as `error` reports. Default false. */
@@ -149,6 +157,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.view-hierarchy': boolean;
   'com.bugsee.option.capture.environment-hints': boolean;
   'com.bugsee.option.capture.start-in-blackout': boolean;
+  'com.bugsee.option.capture.disk-space': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.detect.hang': boolean;
   'com.bugsee.option.detect.hang.level.fair': number;

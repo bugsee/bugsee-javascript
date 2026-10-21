@@ -1106,3 +1106,124 @@ describe('storageTrackerFor / resetStorageTracker', () => {
     resetStorageTracker({ window: w });
   });
 });
+
+describe('StorageTracker — adaptive cadence (disk pressure)', () => {
+  const MB = 1_000_000;
+  function adaptive(usage: number, quota: number, extra: Record<string, unknown> = {}) {
+    const scheduler = mkScheduler();
+    const storage = mkStorage(usage, quota);
+    const onError = vi.fn();
+    const tracker = new StorageTracker(
+      {
+        navigator: { storage },
+        scheduler,
+        intervalMs: 300_000,
+        fastIntervalMs: 30_000,
+        fastBelowBytes: 500 * MB,
+        ...extra,
+      },
+      onError,
+    );
+    return { tracker, scheduler, storage, onError };
+  }
+
+  it('keeps the slow period while headroom is at or above the threshold', async () => {
+    const { tracker, scheduler } = adaptive(0, 500 * MB);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(scheduler.periods).toEqual([300_000]);
+  });
+
+  it('moves to the fast period once headroom (quota - usage) drops under the threshold', async () => {
+    const { tracker, scheduler } = adaptive(100 * MB, 500 * MB);
+    tracker.on('storageEstimate', () => {});
+    expect(scheduler.periods).toEqual([300_000]); // no reading yet
+    await flush();
+    expect(scheduler.periods).toEqual([300_000, 30_000]);
+    expect(scheduler.live.size).toBe(1); // the slow timer was released, not leaked
+  });
+
+  it('returns to the slow period when headroom recovers', async () => {
+    const { tracker, scheduler, storage } = adaptive(100 * MB, 500 * MB);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    storage.estimate.mockImplementation(() => Promise.resolve({ usage: 0, quota: 900 * MB }));
+    scheduler.tick();
+    await flush();
+    expect(scheduler.periods).toEqual([300_000, 30_000, 300_000]);
+    expect(scheduler.live.size).toBe(1);
+  });
+
+  it('does not re-arm when the period is unchanged', async () => {
+    const { tracker, scheduler } = adaptive(450 * MB, 500 * MB);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    scheduler.tick();
+    await flush();
+    expect(scheduler.periods).toEqual([300_000, 30_000]);
+  });
+
+  it('never goes slower than the slow period', async () => {
+    const { tracker, scheduler } = adaptive(450 * MB, 500 * MB, { intervalMs: 10_000 });
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(scheduler.periods).toEqual([10_000]);
+  });
+
+  it('does nothing adaptive without both seams, or without usable usage and quota', async () => {
+    for (const extra of [{ fastIntervalMs: undefined }, { fastBelowBytes: undefined }] as const) {
+      const { tracker, scheduler } = adaptive(100 * MB, 500 * MB, extra);
+      tracker.on('storageEstimate', () => {});
+      await flush();
+      expect(scheduler.periods).toEqual([300_000]);
+    }
+    const { tracker, scheduler } = adaptive(Number.NaN, 500 * MB);
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(scheduler.periods).toEqual([300_000]);
+    const noQuota = adaptive(100 * MB, Number.NaN);
+    noQuota.tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(noQuota.scheduler.periods).toEqual([300_000]);
+  });
+
+  it('reports a scheduler that fails to release the old timer and still re-arms', async () => {
+    const { tracker, scheduler, onError } = adaptive(100 * MB, 500 * MB);
+    const boom = new Error('clear failed');
+    scheduler.clearInterval = () => {
+      throw boom;
+    };
+    tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(scheduler.periods).toEqual([300_000, 30_000]);
+  });
+
+  it('rebind carries the fast seams to the next activation, and keeps earlier ones', async () => {
+    const scheduler = mkScheduler();
+    const storage = mkStorage(100 * MB, 500 * MB);
+    const tracker = new StorageTracker({ navigator: { storage }, scheduler, intervalMs: 300_000 });
+    tracker.rebind({ fastIntervalMs: 30_000, fastBelowBytes: 500 * MB });
+    tracker.rebind({});
+    const off = tracker.on('storageEstimate', () => {});
+    await flush();
+    expect(scheduler.periods).toEqual([300_000, 30_000]);
+    off();
+  });
+
+  it('storageTrackerFor passes the fast seams through', async () => {
+    const w = {};
+    const sched = mkScheduler();
+    storageTrackerFor({
+      window: w,
+      navigator: { storage: mkStorage(100 * MB, 500 * MB) },
+      scheduler: sched,
+      intervalMs: 300_000,
+      fastIntervalMs: 30_000,
+      fastBelowBytes: 500 * MB,
+    }).on('storageEstimate', () => {});
+    await flush();
+    expect(sched.periods).toEqual([300_000, 30_000]);
+    resetStorageTracker({ window: w });
+  });
+});

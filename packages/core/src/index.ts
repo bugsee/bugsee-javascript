@@ -166,6 +166,19 @@ export {
 } from './detection-coordinator';
 export { DetectionProviderBase } from './detection-provider-base';
 export {
+  createDiskPressure,
+  DISK_LOW_BYTES,
+  DISK_NONE_BYTES,
+  DISK_RECOVERY_MARGIN_BYTES,
+  type DiskPressure,
+  type DiskPressureLevel,
+  type DiskPressureOptions,
+  type DiskPressureState,
+  DiskPressureToken,
+  isOutOfSpaceError,
+} from './disk-pressure';
+export { withDiskPressure } from './disk-pressure-backend';
+export {
   type BundleStore,
   BundleStoreToken,
   createDurableUploadPipeline,

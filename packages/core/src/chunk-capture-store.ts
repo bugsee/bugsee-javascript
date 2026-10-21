@@ -1,6 +1,8 @@
 import type { ChunkBackend, FrozenPart, PartRef } from './chunk-backend';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
+import type { DiskPressure } from './disk-pressure';
+import { withDiskPressure } from './disk-pressure-backend';
 
 // The chunk-based CaptureStore (Android `CapturePartManager` analog): an Android-style PartManager that
 // keeps only a part metadata INDEX in memory and writes every record through to a ChunkBackend. Captured
@@ -19,6 +21,12 @@ export interface ChunkCaptureStoreOptions {
   maxDataSizeBytes?: number;
   /** Time source for the initial part / clear. Default system clock. */
   clock?: Clock;
+  /**
+   * Disk pressure (C7). Under it the DURABLE backend stops receiving replay/log/network (low) or anything (none)
+   * while the in-memory window is kept (see `disk-pressure-backend.ts`). Absent: every record is persisted as
+   * before. Pointless over a backend that is already in memory.
+   */
+  diskPressure?: DiskPressure;
 }
 
 // The in-memory index entry per live part (NO record data — that lives in the backend).
@@ -31,9 +39,13 @@ interface IndexedPart {
 }
 
 export function createChunkCaptureStore(
-  backend: ChunkBackend,
+  durableBackend: ChunkBackend,
   options?: ChunkCaptureStoreOptions,
 ): CaptureStore {
+  const backend =
+    options?.diskPressure !== undefined
+      ? withDiskPressure(durableBackend, options.diskPressure)
+      : durableBackend;
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
   const maxDataSizeBytes = options?.maxDataSizeBytes;
   const clock = options?.clock ?? createSystemClock();

@@ -2,6 +2,7 @@ import { type ChunkCaptureStoreOptions, createChunkCaptureStore } from './chunk-
 import type { ChunkStorage } from './chunk-storage';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureStore } from './contracts';
+import type { DiskPressure } from './disk-pressure';
 import { createFileChunkBackend } from './file-chunk-backend';
 
 // The durable file-backed CaptureStore: a thin wrapper that drives the chunk-based store
@@ -23,6 +24,8 @@ export interface FileCaptureStoreOptions {
   generation?: number;
   /** On construction, delete OTHER generations' leftover chunks (prior launches). Default true. */
   cleanOtherGenerations?: boolean;
+  /** Disk pressure gate over the file backend (see ChunkCaptureStoreOptions.diskPressure). */
+  diskPressure?: DiskPressure;
 }
 
 export function createFileCaptureStore(
@@ -39,6 +42,7 @@ export function createFileCaptureStore(
     maxRecordingTimeMs: options?.maxRecordingTimeMs,
     maxDataSizeBytes: options?.maxDataSizeBytes,
     clock,
+    ...(options?.diskPressure !== undefined ? { diskPressure: options.diskPressure } : {}),
   };
   return createChunkCaptureStore(backend, storeOptions);
 }

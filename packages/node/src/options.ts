@@ -4,6 +4,7 @@ import {
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   type OptionDefinition,
 } from '@bugsee/core';
+import { BugseeOption } from '@bugsee/protocol';
 
 // @bugsee/node owns its platform-specific diagnostic options. These have NO Android counterpart and no
 // cross-SDK identity, so — per the @bugsee/protocol convention (and as @bugsee/performance does) — they are
@@ -36,15 +37,13 @@ export const PROFILING_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
 ];
 
 export const NodeTraceOption = {
-  /** Report `disk_mem_free` / `disk_mem_total` for the volume the data dir lives on. Opt-in (iOS parity). */
-  CaptureDiskSpace: 'com.bugsee.option.node.capture-disk-space',
+  /**
+   * Observe the free space of the volume the data dir lives on: `disk_mem_free` / `disk_mem_total`, and the capture store's
+   * stop-persisting protection below 50 MB / 10 MB free. Opt-in (iOS parity). This is the COMMON key every runtime
+   * shares (it was the node-only `com.bugsee.option.node.capture-disk-space` until C7).
+   */
+  CaptureDiskSpace: BugseeOption.CaptureDiskSpace,
 } as const;
-
-declare module '@bugsee/protocol' {
-  interface BugseeOptionTypes {
-    'com.bugsee.option.node.capture-disk-space': boolean;
-  }
-}
 
 /** Disk space is opt-in: only boolean `true` enables it. */
 export const NODE_TRACE_OPTION_DEFINITIONS: readonly OptionDefinition[] = [

@@ -1,5 +1,11 @@
 import 'fake-indexeddb/auto';
-import type { CaptureSnapshot, Clock, PartRef, StoredEntry } from '@bugsee/core';
+import {
+  type CaptureSnapshot,
+  type Clock,
+  createDiskPressure,
+  type PartRef,
+  type StoredEntry,
+} from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
@@ -745,5 +751,78 @@ describe('write-queue back-pressure', () => {
     }
     await b.flush?.();
     expect(await store.readPrefix(dataPrefixFor(6, 0))).toHaveLength(200);
+  });
+});
+
+describe('createIdbChunkCaptureStore — disk pressure (C7)', () => {
+  const MB = 1_000_000;
+  const mk = (store: AsyncKeyedStore) => {
+    const pressure = createDiskPressure();
+    return {
+      pressure,
+      store: createIdbChunkCaptureStore(store, {
+        clock: clockAt(10_000),
+        generation: 42,
+        diskPressure: pressure,
+      }),
+    };
+  };
+  const dataKeys = async (store: AsyncKeyedStore): Promise<string[]> =>
+    (await store.readPrefix('d/')).map(([key]) => key);
+
+  it('stops writing replay/log/network below low, still writes traces, and keeps the window', async () => {
+    const backing = keyed();
+    const { pressure, store } = mk(backing);
+    store.add(rec('before', 'log', 10_000));
+    pressure.observe(30 * MB);
+    store.add(rec('dropped-log', 'log', 10_001));
+    store.add(rec('dropped-replay', 'replay', 10_002));
+    store.add(rec('kept-trace', 'traces.system', 10_003));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(2); // 'before' + the trace
+    const all = await store.snapshot().drainAll();
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['before', 'dropped-log']);
+    expect(all.get('replay')?.map((r) => r.serialized)).toEqual(['dropped-replay']);
+    expect(all.get('traces.system')?.map((r) => r.serialized)).toEqual(['kept-trace']);
+  });
+
+  it('persists nothing below none, then resumes on recovery', async () => {
+    const backing = keyed();
+    const { pressure, store } = mk(backing);
+    pressure.observe(5 * MB);
+    store.add(rec('a', 'traces.system', 10_000));
+    store.tick(11_000);
+    store.add(rec('b', 'log', 11_000));
+    await store.flush?.();
+    expect(await dataKeys(backing)).toEqual([]);
+    pressure.observe(100 * MB);
+    store.add(rec('c', 'log', 11_500));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(1);
+    expect((await store.snapshot().drainAll()).get('log')?.map((r) => r.serialized)).toEqual([
+      'b',
+      'c',
+    ]);
+  });
+
+  it('a snapshot taken under low stays frozen when a durable record is appended to the same open part', async () => {
+    const { pressure, store } = mk(keyed());
+    store.add(rec('d1', 'traces.system', 10_000));
+    pressure.observe(30 * MB);
+    store.add(rec('s1', 'log', 10_001));
+    const snap = store.snapshot();
+    store.add(rec('d2', 'traces.system', 10_002));
+    const all = await snap.drainAll();
+    snap.release();
+    expect(all.get('traces.system')?.map((r) => r.serialized)).toEqual(['d1']);
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['s1']);
+  });
+
+  it('is unchanged when no pressure is supplied', async () => {
+    const backing = keyed();
+    const store = createIdbChunkCaptureStore(backing, { clock: clockAt(10_000), generation: 42 });
+    store.add(rec('x', 'log', 10_000));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(1);
   });
 });
