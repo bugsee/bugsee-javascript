@@ -65,6 +65,8 @@ export class BatteryProducer extends TraceProducerBase {
   #publish(s: BatteryState): void {
     // 0-1 -> 0-100 (Android parity). An unusable level (omitted by the tracker) means an unreadable battery: NO
     // `battery` and NO `charging` entry (never a state derived from a substituted level, never `state: 0`).
+    // Known edge: both are held, and the provider has no retract path, so a level that goes readable -> unreadable
+    // mid-session leaves the last values being re-recorded (same as `battery` before). Unreachable in practice.
     if (s.level !== undefined) {
       this.emitIfChanged('battery', Math.round(s.level * 100));
       this.emitIfChanged('charging', chargingToWire({ charging: s.charging, level: s.level }));

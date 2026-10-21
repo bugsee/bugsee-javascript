@@ -189,6 +189,22 @@ describe('BatteryProducer', () => {
     expect(out).toEqual([]);
   });
 
+  it('readable then unreadable level: nothing new is emitted (known edge: the held battery/charging cannot be retracted)', async () => {
+    const m = mkManager(0.8, true);
+    const { out } = run(
+      createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
+    );
+    await flush();
+    expect(out).toEqual([
+      { name: 'battery', value: 80 },
+      { name: 'charging', value: { state: 2 } },
+    ]);
+    m.level = Number.NaN;
+    m.fire('levelchange');
+    // No fabricated update and no zero; the provider keeps re-recording the last held values (no retract path yet).
+    expect(out).toHaveLength(2);
+  });
+
   it('an unsupported browser (no getBattery) emits nothing and reports no error', async () => {
     const onError = vi.fn();
     const { out } = run(createBrowserSystemTraceProducers({}, onError));
