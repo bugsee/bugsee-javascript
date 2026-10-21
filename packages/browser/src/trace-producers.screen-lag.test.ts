@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   browserTraceEnvFrom,
   createBrowserSystemTraceProducers,
+  DisplaysProducer,
   MainThreadLagProducer,
-  ScreenSizeProducer,
 } from './trace-producers';
 
 function mkTarget() {
@@ -31,19 +31,23 @@ const sinkOf = (out: Emit[]) => ({
 });
 const names = (ps: TraceProducer[]) => ps.map((p) => p.name);
 
-describe('ScreenSizeProducer', () => {
+describe('DisplaysProducer', () => {
   const mk = (screen: unknown = { width: 390, height: 844 }) => {
     const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
     const tracker = new UiTracker({ window: win, screen: screen as never });
     return { win, tracker };
   };
 
-  it('emits {width,height,dpr} at start as a HELD step trace, then follows resize, de-duplicated', () => {
+  it('emits the one-entry mobile list at start (device pixels, scale, state on) as a HELD step trace, then follows resize, de-duplicated', () => {
     const { win, tracker } = mk();
     const out: Emit[] = [];
-    new ScreenSizeProducer(tracker).start(sinkOf(out));
+    new DisplaysProducer(tracker).start(sinkOf(out));
     expect(out).toEqual([
-      { name: 'screen_size', value: { width: 390, height: 844, dpr: 2 }, hold: true },
+      {
+        name: 'displays',
+        value: [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+        hold: true,
+      },
     ]);
     win.fire('resize'); // nothing moved
     expect(out).toHaveLength(1);
@@ -51,16 +55,101 @@ describe('ScreenSizeProducer', () => {
     win.fire('resize');
     win.fire('orientationchange');
     expect(out.map((o) => o.value)).toEqual([
-      { width: 390, height: 844, dpr: 2 },
-      { width: 390, height: 844, dpr: 3 },
+      [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+      [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
     ]);
+  });
+
+  it('rounds the device pixels from a fractional ratio and records the ratio used in scale', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 1.25 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1366, height: 768 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1708, height: 960, scale: 1.25 }]);
+  });
+
+  it('rounds height too (844.8 -> 845, not floored) and records the ratio used', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 1.1 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1000, height: 768 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1100, height: 845, scale: 1.1 }]);
+  });
+
+  it('writes nothing when EITHER side rounds to zero (each side alone)', () => {
+    for (const screen of [
+      { width: 0.4, height: 100 },
+      { width: 100, height: 0.4 },
+    ]) {
+      const win = Object.assign(mkTarget(), { devicePixelRatio: 1 });
+      const out: Emit[] = [];
+      new DisplaysProducer(new UiTracker({ window: win, screen: screen as never })).start(
+        sinkOf(out),
+      );
+      expect(out).toEqual([]);
+    }
+  });
+
+  it('rounds the zoom-polluted ratio to 2 decimals and de-duplicates on the rounded value', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 1.100000023841858 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1000, height: 1000 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([{ id: 0, state: 'on', width: 1100, height: 1100, scale: 1.1 }]);
+    win.devicePixelRatio = 1.1;
+    win.fire('resize');
+    expect(out).toHaveLength(1);
+  });
+
+  it('writes rotation as quarter turns of the orientation angle, omits it without a usable angle, and follows an orientation change', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
+    const screen = { width: 390, height: 844, orientation: { type: 'portrait-primary', angle: 0 } };
+    const out: Emit[] = [];
+    const tracker = new UiTracker({ window: win, screen: screen as never });
+    new DisplaysProducer(tracker).start(sinkOf(out));
+    const rot = () => (out.at(-1)?.value as Array<{ rotation?: number }>)[0]?.rotation;
+    expect(rot()).toBe(0);
+    for (const [angle, turns] of [
+      [90, 1],
+      [180, 2],
+      [270, 3],
+      [-90, 3],
+      [360, 0],
+    ] as const) {
+      screen.orientation.angle = angle;
+      win.fire('orientationchange');
+      expect(rot()).toBe(turns);
+    }
+    screen.orientation.angle = 45; // not a quarter turn: omitted, not rounded
+    win.fire('orientationchange');
+    expect(out.at(-1)?.value).toEqual([{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }]);
+    const noAngle: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({
+        window: Object.assign(mkTarget(), { devicePixelRatio: 2 }),
+        screen: { width: 390, height: 844 } as never,
+      }),
+    ).start(sinkOf(noAngle));
+    expect(noAngle[0]?.value).toEqual([{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }]);
+  });
+
+  it('a size that rounds to 0 device pixels is omitted (never 0)', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 0.001 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 100, height: 100 } as never }),
+    ).start(sinkOf(out));
+    expect(out).toEqual([]);
   });
 
   it('is omitted entirely when the screen is absent or unreadable (never 0)', () => {
     for (const screen of [undefined, { width: 0, height: 844 }, { width: 390 }]) {
       const win = Object.assign(mkTarget(), { devicePixelRatio: 2 });
       const out: Emit[] = [];
-      new ScreenSizeProducer(new UiTracker({ window: win, ...(screen ? { screen } : {}) })).start(
+      new DisplaysProducer(new UiTracker({ window: win, ...(screen ? { screen } : {}) })).start(
         sinkOf(out),
       );
       expect(out).toEqual([]);
@@ -70,7 +159,7 @@ describe('ScreenSizeProducer', () => {
   it('stop() releases the window listeners and later events write nothing', () => {
     const { win, tracker } = mk();
     const out: Emit[] = [];
-    const p = new ScreenSizeProducer(tracker);
+    const p = new DisplaysProducer(tracker);
     p.start(sinkOf(out));
     expect(win.count()).toBeGreaterThan(0);
     p.stop();
@@ -121,15 +210,15 @@ describe('MainThreadLagProducer', () => {
   });
 });
 
-describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', () => {
+describe('createBrowserSystemTraceProducers: displays + main_thread_lag_ms', () => {
   it('are added with a lifecycle (same gate as app_state/fps) and absent without one', () => {
     const win = mkTarget();
     const lifecycle = new ApplicationTracker({ window: win });
     expect(names(createBrowserSystemTraceProducers({ lifecycle }))).toEqual(
-      expect.arrayContaining(['screen-size', 'main-thread-lag']),
+      expect.arrayContaining(['displays', 'main-thread-lag']),
     );
     expect(names(createBrowserSystemTraceProducers({}))).not.toEqual(
-      expect.arrayContaining(['screen-size']),
+      expect.arrayContaining(['displays']),
     );
     expect(names(createBrowserSystemTraceProducers({}))).not.toEqual(
       expect.arrayContaining(['main-thread-lag']),
@@ -173,14 +262,42 @@ describe('createBrowserSystemTraceProducers: screen_size + main_thread_lag_ms', 
     );
     const out: Emit[] = [];
     for (const p of ps)
-      if (p.name === 'screen-size' || p.name === 'main-thread-lag') p.start(sinkOf(out));
+      if (p.name === 'displays' || p.name === 'main-thread-lag') p.start(sinkOf(out));
     expect(out).toEqual([
-      { name: 'screen_size', value: { width: 100, height: 200, dpr: 2 }, hold: true },
+      {
+        name: 'displays',
+        value: [{ id: 0, state: 'on', width: 200, height: 400, scale: 2 }],
+        hold: true,
+      },
     ]);
     t += 1000 + 33;
     timer?.();
     expect(out[1]).toEqual({ name: 'main_thread_lag_ms', value: 33, hold: false });
     expect(errors).toEqual([]);
+  });
+
+  it('a non-array hostOwnedTraces never throws and never suppresses (a string is not a substring match)', () => {
+    const lifecycle = new ApplicationTracker({ window: mkTarget() });
+    for (const bad of ['displays', 'displays-x', 7, { includes: () => true }]) {
+      expect(
+        names(createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: bad as never })),
+      ).toContain('displays');
+    }
+  });
+
+  it('hostOwnedTraces: [displays] drops ONLY the displays producer (the host writes it)', () => {
+    const win = mkTarget();
+    const lifecycle = new ApplicationTracker({ window: win });
+    const all = names(createBrowserSystemTraceProducers({ lifecycle }));
+    const owned = names(
+      createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: ['displays'] }),
+    );
+    expect(all).toContain('displays');
+    expect(owned).toEqual(all.filter((n) => n !== 'displays'));
+    // an unrelated host-owned name does not drop it
+    expect(
+      names(createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: ['capture'] })),
+    ).toEqual(all);
   });
 
   it('a window without a performance clock starts no timer and reports nothing (no error)', () => {

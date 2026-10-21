@@ -17,7 +17,6 @@ import {
   type ProcessTracker,
   powerTrackerFor,
   processTrackerFor,
-  type ScreenSizeState,
   type StorageEstimate,
   type StorageManagerLike,
   type StorageTracker,
@@ -321,19 +320,32 @@ export class FpsProducer extends TraceProducerBase {
 }
 
 /**
- * `screen_size` (JS-specific; deliberately NOT Android's `displays`, a display LIST): `{ width, height, dpr }` in
- * CSS px, re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker). A step curve, so it is held and de-duplicated (a resize that
- * moved nothing is dropped); the initial value is emitted at start. Omitted entirely when the screen or the pixel
- * ratio cannot be read as finite positive numbers.
+ * `displays` (the MOBILE name and list shape, spec bundle/traces.md `displays`; it replaces the retired JS-specific
+ * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, rotation? }]` where `width`/`height` are
+ * DEVICE pixels, `round(screen.width * devicePixelRatio)` / `round(screen.height * devicePixelRatio)`, `scale` is the
+ * `devicePixelRatio` used, and `rotation` is the Screen Orientation `angle` / 90 (quarter turns; the trace field means Android's
+ * `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device), omitted when the engine gives no angle or one that is not a multiple of 90. The browser
+ * cannot tell the display `type`, `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the
+ * page is on, as iOS does (a page cannot observe power).
+ *
+ * KNOWN LIMITATION, approximate under page zoom on Chromium: Blink reports `screen.width/height` in device-independent
+ * pixels that IGNORE page zoom, while `devicePixelRatio` INCLUDES it, so the product drifts when the user zooms (Blink
+ * source; not measured in a live browser). No web API exposes a zoom-independent device ratio, so `scale` records the
+ * ratio actually used for the product. iOS Safari is reported not to swap `screen.width/height` on rotation (unverified):
+ * there the entry is portrait-only like native iOS.
+ *
+ * Re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker `screenSize` + `orientation` stages). A step
+ * curve, so it is held and de-duplicated (a resize that moved nothing is dropped); the initial value is emitted at start.
+ * Omitted entirely when the screen or the pixel ratio cannot be read as finite positive numbers.
  *
  * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
  * `resize`, so the value can go stale until the next one, unless the engine fires the `screen` `change` event the
- * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up); and iOS Safari's `screen.width/height` do not swap on rotation.
+ * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up).
  */
-export class ScreenSizeProducer extends TraceProducerBase {
-  readonly name = 'screen-size';
+export class DisplaysProducer extends TraceProducerBase {
+  readonly name = 'displays';
   readonly #tracker: UiTracker;
-  #off: (() => void) | undefined;
+  #offs: Array<() => void> = [];
 
   constructor(tracker: UiTracker) {
     super();
@@ -341,18 +353,40 @@ export class ScreenSizeProducer extends TraceProducerBase {
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('screenSize', (s) => this.#publish(s)); // subscribing attaches the listeners
-    const cur = this.#tracker.current('screenSize');
-    if (cur !== undefined) this.#publish(cur);
+    // subscribing attaches the listeners; both stages re-publish the whole entry (the angle and the size can change apart)
+    this.#offs = [
+      this.#tracker.on('screenSize', () => this.#publish()),
+      this.#tracker.on('orientation', () => this.#publish()),
+    ];
+    this.#publish();
   }
 
   protected override onStop(): void {
-    this.#off?.();
-    this.#off = undefined;
+    for (const off of this.#offs) off();
+    this.#offs = [];
   }
 
-  #publish(s: ScreenSizeState): void {
-    this.emitIfChanged('screen_size', { width: s.width, height: s.height, dpr: s.dpr });
+  #publish(): void {
+    const s = this.#tracker.current('screenSize');
+    if (s === undefined) return;
+    const width = Math.round(s.width * s.dpr);
+    const height = Math.round(s.height * s.dpr);
+    if (!(width > 0) || !(height > 0)) return;
+    // at most 2 decimals (zoom gives 1.100000023841858), like the Electron producer; the held value is the rounded one
+    const scale = Math.round(s.dpr * 100) / 100 || s.dpr;
+    const angle = this.#tracker.current('orientation')?.angle;
+    const turns =
+      angle !== undefined && angle % 90 === 0 ? (((angle / 90) % 4) + 4) % 4 : undefined;
+    this.emitIfChanged('displays', [
+      {
+        id: 0,
+        state: 'on',
+        width,
+        height,
+        scale,
+        ...(turns !== undefined ? { rotation: turns } : {}),
+      },
+    ]);
   }
 }
 
@@ -477,8 +511,14 @@ export interface BrowserTraceEnv extends BatteryEnv {
   /** `window.matchMedia` bound to that window: colour scheme / reduced motion / display mode (UiTracker). */
   matchMedia?: UiEnv['matchMedia'];
   /**
+   * Trace names the HOST of this page already writes, which this producer list must therefore NOT write (one writer per
+   * name per session; spec platforms/javascript.md host-owned table). Only `displays` is honoured today: an Electron
+   * renderer (main writes the full list) and a native WebView (the host writes it) pass `['displays']`.
+   */
+  hostOwnedTraces?: readonly string[];
+  /**
    * `false` builds the battery producer ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
-   * connection, orientation, `app_state`, `fps`, `screen_size` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
+   * connection, orientation, `app_state`, `fps`, `displays` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
    */
   sensors?: boolean;
   /** `window.requestIdleCallback` / `cancelIdleCallback` (bound to that window): drive `main_thread_idle_ms`. */
@@ -495,8 +535,8 @@ export interface BrowserTraceEnv extends BatteryEnv {
   /** Drives the heap poll; default the global timers. */
   scheduler?: Scheduler;
   /**
-   * The shared ApplicationTracker feeding `app_state`. Its presence also GATES the `app_state`, `screen_size`, `fps`
-   * and `main_thread_lag_ms` producers (they are omitted without it); `screen_size`, `fps` and `orientation` get their
+   * The shared ApplicationTracker feeding `app_state`. Its presence also GATES the `app_state`, `displays`, `fps`
+   * and `main_thread_lag_ms` producers (they are omitted without it); `displays`, `fps` and `orientation` get their
    * sources from the per-window UiTracker, not from this.
    */
   lifecycle?: Pick<ApplicationTracker, 'on' | 'current'>;
@@ -653,7 +693,7 @@ export function createBrowserSystemTraceProducers(
   // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
   // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.
   const clock = safePerformanceNow(env, undefined);
-  // ONE UI/display tracker per window serves orientation, screen_size and fps (and the events source).
+  // ONE UI/display tracker per window serves orientation, displays and fps (and the events source).
   const ui = uiTrackerFor(
     {
       ...(env.window !== undefined ? { window: env.window } : {}),
@@ -720,7 +760,9 @@ export function createBrowserSystemTraceProducers(
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle),
-          new ScreenSizeProducer(ui),
+          ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes('displays')
+            ? []
+            : [new DisplaysProducer(ui)]),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),

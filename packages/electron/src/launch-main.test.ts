@@ -1182,13 +1182,13 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(seen).toHaveBeenCalledWith({ name: 'power_suspend' });
   });
 
-  it('a screen adds the electron_displays producer next to the node set, once', () => {
+  it('a screen adds the displays producer next to the node set, once', () => {
     const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
     const f = fakeLaunch();
     launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, screen });
     const names = producersOf(f);
     expect(names).toContain('process-memory');
-    expect(names.filter((n: string) => n === 'electron-displays')).toHaveLength(1);
+    expect(names.filter((n: string) => n === 'displays')).toHaveLength(1);
     expect(names).not.toContain('electron-app-metrics');
   });
 
@@ -1196,7 +1196,7 @@ describe('launchMain — Electron domain trackers: power, display, application w
     const f = fakeLaunch();
     launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, app: new FakeEmitter() });
     expect(producersOf(f)).toContain('electron-app-metrics');
-    expect(producersOf(f)).not.toContain('electron-displays');
+    expect(producersOf(f)).not.toContain('displays');
   });
 
   it('a legacy systemMetricsSampler with only a screen builds no producer list', () => {

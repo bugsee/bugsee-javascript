@@ -27,17 +27,18 @@ import type {
 // The viewer's support for this trace (Q5) is UNCONFIRMED; flat per-type totals are the alternative shape.
 // Emitted every tick and NOT held: a failing read leaves a gap rather than a frozen line.
 //
-// `electron_displays` (JS-SPECIFIC name, deliberately NOT Android's `displays`: that name is reserved until an
-// Android-shaped display list is specified and confirmed against the viewer, Q5; nothing in the JS protocol defines it):
+// `displays` (the MOBILE name and list shape, spec bundle/traces.md `displays`; it replaces the retired JS-specific
+// `electron_displays`): a bare ARRAY, one entry per display,
 //
-//   electron_displays = { displays: [{ id, width, height, scale_factor?, rotation?, internal?, refresh_rate_hz? }] }
+//   [{ id, native_id, state?, type?, width, height, natural_width?, natural_height?, scale?, max_fps?, rotation? }]
 //
-// `width`/`height` are Electron's device-independent pixels (`Display.size`), `rotation` is 0/90/180/270, `refresh_rate_hz`
-// is `displayFrequency`; a key is omitted when Electron did not supply it, a display with no id/size (or id -1) is dropped, and
-// the trace is never `{displays: []}`. It is a HELD step trace (`emitIfChanged`): the list when the producer starts, then
-// the fresh list after every display added/removed/metrics-changed. HELD-VALUE CAVEAT: it is absent only BEFORE its first
-// emit. A later refresh that cannot read a usable list emits nothing and cannot retract, so the previous list stays held and
-// is re-recorded every refreshMs (same open owner decision as storage_estimate / user_idle_state, docs/PROGRESS.md).
+// `id` is the stable per-session index (primary first, never reused), `native_id` Electron's own id, `width`/`height` DEVICE
+// pixels in the current orientation, `rotation` quarter turns, `state:'on'` on the primary display only (see the tracker).
+// A key is omitted when Electron did not supply it, a display with no id/size (or id -1) is dropped, and the trace is never
+// `[]`. It is a HELD step trace (`emitIfChanged`): the list when the producer starts, then the fresh list after every display
+// added/removed/metrics-changed. HELD-VALUE CAVEAT: it is absent only BEFORE its first emit. A later refresh that cannot read
+// a usable list emits nothing and cannot retract, so the previous list stays held and is re-recorded every refreshMs (same open
+// owner decision as storage_estimate / user_idle_state, docs/PROGRESS.md).
 
 /** At most two decimals: Electron's float noise is not information. */
 const round2 = (value: number): number => Math.round(value * 100) / 100;
@@ -81,17 +82,21 @@ class AppMetricsProducer extends TraceProducerBase {
 function wireDisplay(d: DisplayInfo): Record<string, unknown> {
   return {
     id: d.id,
+    native_id: d.nativeId,
+    ...(d.state !== undefined ? { state: d.state } : {}),
+    ...(d.type !== undefined ? { type: d.type } : {}),
     width: d.width,
     height: d.height,
-    ...(d.scaleFactor !== undefined ? { scale_factor: round2(d.scaleFactor) } : {}),
+    ...(d.naturalWidth !== undefined ? { natural_width: d.naturalWidth } : {}),
+    ...(d.naturalHeight !== undefined ? { natural_height: d.naturalHeight } : {}),
+    ...(d.scale !== undefined ? { scale: d.scale } : {}),
+    ...(d.maxFps !== undefined ? { max_fps: d.maxFps } : {}),
     ...(d.rotation !== undefined ? { rotation: d.rotation } : {}),
-    ...(d.internal !== undefined ? { internal: d.internal } : {}),
-    ...(d.refreshRate !== undefined ? { refresh_rate_hz: round2(d.refreshRate) } : {}),
   };
 }
 
 class DisplaysProducer extends TraceProducerBase {
-  readonly name = 'electron-displays';
+  readonly name = 'displays';
   #off: (() => void) | undefined;
   constructor(private readonly tracker: ElectronDisplayTracker) {
     super();
@@ -107,7 +112,7 @@ class DisplaysProducer extends TraceProducerBase {
     this.#off = undefined;
   }
   #publish(list: { displays: DisplayInfo[] }): void {
-    this.emitIfChanged('electron_displays', { displays: list.displays.map(wireDisplay) });
+    this.emitIfChanged('displays', list.displays.map(wireDisplay));
   }
 }
 

@@ -323,26 +323,47 @@ describe('createElectronSystemEventsSource: domain trackers', () => {
     d.screen.emit('display-removed', display(3));
     d.screen.emit('display-metrics-changed', display(4), ['bounds']);
     expect(d.events().slice(1)).toEqual([
-      { name: 'display_added', params: { id: 2, width: 800, height: 600, scaleFactor: 2 } },
-      { name: 'display_removed', params: { id: 3, width: 800, height: 600, scaleFactor: 2 } },
+      // ids are the SESSION indexes (display 1 is seeded as 0 by the baseline read), device pixels, camelCase
+      {
+        name: 'display_added',
+        params: { id: 1, nativeId: 2, width: 1600, height: 1200, scale: 2 },
+      },
+      {
+        name: 'display_removed',
+        params: { id: 2, nativeId: 3, width: 1600, height: 1200, scale: 2 },
+      },
       {
         name: 'display_metrics_changed',
-        params: { id: 4, width: 800, height: 600, scaleFactor: 2, changed: ['bounds'] },
+        params: { id: 3, nativeId: 4, width: 1600, height: 1200, scale: 2, changed: ['bounds'] },
       },
     ]);
   });
 
-  it('display events carry the rounded refreshRate (real Electron: 59.996700286865234)', () => {
+  it('display events carry the full mobile key set in camelCase: maxFps rounded, rotation in quarter turns, type, natural size (real Electron: 59.996700286865234)', () => {
     const d = domains();
     d.subscribe();
     d.screen.emit('display-added', {
       ...display(2),
       displayFrequency: 59.996700286865234,
+      rotation: 90,
+      internal: false,
     });
     expect(d.events()[1]).toEqual({
       name: 'display_added',
-      params: { id: 2, width: 800, height: 600, scaleFactor: 2, refreshRate: 60 },
+      params: {
+        id: 1,
+        nativeId: 2,
+        width: 1600,
+        height: 1200,
+        naturalWidth: 1200,
+        naturalHeight: 1600,
+        scale: 2,
+        maxFps: 60,
+        rotation: 1,
+        type: 'external',
+      },
     });
+    expect(Object.keys((d.events()[1] as { params: object }).params)).not.toContain('state');
   });
 
   it('a window created AFTER the mux attached still records focus; existing windows too; ids included', () => {
@@ -494,12 +515,14 @@ describe('conformance: every emitted event param key is camelCase', () => {
       'exitCode',
       'height',
       'id',
-      'internal',
+      'maxFps',
       'name',
+      'nativeId',
+      'naturalHeight',
+      'naturalWidth',
       'reason',
-      'refreshRate',
       'rotation',
-      'scaleFactor',
+      'scale',
       'serviceName',
       'type',
       'webContentsId',
