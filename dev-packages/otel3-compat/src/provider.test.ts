@@ -146,6 +146,37 @@ describe.skipIf(!otel3Supported)(
       });
     });
 
+    it('keeps complex AnyValue attributes the 3.x SDK retains: nested map, mixed array, bytes become strings', async () => {
+      const { provider, tracer, transactions, errors, seen } = await boot();
+      const span = tracer.startSpan('complex');
+      span.setAttributes({
+        map: { a: { b: [1, 'x', true, null] } },
+        mixed: [1, 'a', true],
+        bytes: new Uint8Array([102, 111, 111]),
+        tags: ['a', 'b'],
+        scalar: 1,
+      });
+      // The SDK itself drops values with no AnyValue form (bigint/Date/function/symbol/cycle): never seen by us.
+      span.setAttribute('big', 10n as never);
+      span.end();
+      await provider.shutdown();
+
+      expect(Object.keys(seen[0]?.attributes ?? {})).toEqual(
+        expect.arrayContaining(['map', 'mixed', 'bytes', 'tags', 'scalar']),
+      );
+      expect(errors).toEqual([]);
+      expect(transactions[0]?.attributes).toMatchObject({
+        map: '{"a":{"b":[1,"x",true,null]}}',
+        mixed: '[1,"a",true]',
+        bytes: 'Zm9v',
+        tags: ['a', 'b'],
+        scalar: 1,
+      });
+      // The whole transaction stays JSON-serializable and exportable.
+      expect(() => JSON.stringify(transactions)).not.toThrow();
+      expect(() => JSON.stringify(toOtlpExportRequest(transactions))).not.toThrow();
+    });
+
     it('maps span status: OK, ERROR with a message, and UNSET', async () => {
       const { provider, tracer, transactions } = await boot();
 

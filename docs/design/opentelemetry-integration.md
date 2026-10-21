@@ -202,6 +202,37 @@ OTel); the OTel 3 suite is meant to run on the 22/24 legs of the 18-24 matrix on
 `register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
 package in `dev-packages/otel3-compat`.
 
+**Complex attributes (OTEP 4485, `@opentelemetry/api` 1.10 `AnyValue`).** Since 1.10 `Attributes` values are
+`AnyValue`: string/number/boolean, byte array (`Uint8Array`), array of any value, map of any value, null.
+Verified against `sdk-trace@3.0.0`: the SDK keeps nested maps, mixed arrays, `Uint8Array` and `null` on
+`ReadableSpan.attributes`, and itself drops bigint, `Date`, functions, symbols and cyclic values. An older or
+third-party SDK can still hand us anything, so the mapping is total. Implementation:
+`packages/opentelemetry/src/attribute-value.ts`.
+
+| input | consume (`readableSpanToConsumed`) | produce (`toAnyValue` -> OTLP) |
+| --- | --- | --- |
+| string / boolean / number | unchanged | `stringValue` / `boolValue` / `intValue` or `doubleValue` |
+| homogeneous array of scalars (<= 1024) | unchanged (same array) | JSON `stringValue` (unchanged behaviour) |
+| nested map, mixed/nested array, longer scalar array | one JSON string | JSON `stringValue` |
+| byte array | base64 string | `bytesValue` (base64, per the proto3 JSON mapping) |
+| bigint | number if exact, else decimal string | `intValue` (decimal string) |
+| null, undefined, function, symbol | attribute dropped | attribute dropped |
+
+Why a JSON string and not a nested value, flattened keys, or a drop: Bugsee's attribute model is flat and its
+redaction (`setSpanFilter`, the span sanitizer's `db.statement` scrub) reads values as strings, so a nested
+`{ text: 'SELECT ...' }` would pass a string-keyed scrub; a string keeps it inside every existing redaction
+path. Flattening to dotted keys explodes key counts and has no stable form for arrays. Dropping silently loses
+exactly the attributes OTEP 4485 exists to carry. Native OTLP `arrayValue`/`kvlistValue` on produce is
+possible (the wire supports it) but would change the existing exported shape of array attributes; deferred.
+
+The serializer never throws and is bounded: depth 8 (deeper containers become `"[MaxDepth]"`), 1024 visited
+nodes (the rest becomes `"[Truncated]"`), 8192 characters of text (cut with `...[truncated]`), cycles become
+`"[Circular]"` (a shared acyclic reference is not a cycle), non-finite numbers become the OTLP spellings
+(`"NaN"`, `"Infinity"`, `"-Infinity"`), `toJSON` and other user code is never called, and a throwing
+getter/Proxy yields `"[Unreadable]"` for that value (one unreadable attribute never costs its siblings or the
+span). Covered by example tests, fast-check properties (`attribute-value.fuzz.test.ts`) and a real
+`sdk-trace@3` test.
+
 ---
 
 ## Cross-SDK coordination addendum (2026-06-21, from the Android OTel workstream)

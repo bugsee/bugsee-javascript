@@ -6,6 +6,15 @@
 // PLANNED: the interception-transformer propagation.
 
 export {
+  MAX_ATTRIBUTE_ARRAY_LENGTH,
+  MAX_ATTRIBUTE_DEPTH,
+  MAX_ATTRIBUTE_JSON_LENGTH,
+  MAX_ATTRIBUTE_NODES,
+  normalizeAttributes,
+  normalizeAttributeValue,
+  stringifyAnyValue,
+} from './attribute-value';
+export {
   type ConsumedSpan,
   consumedRootToTransaction,
   consumedSpanToSpanWire,

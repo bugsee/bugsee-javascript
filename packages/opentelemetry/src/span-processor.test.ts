@@ -58,6 +58,71 @@ describe('readableSpanToConsumed', () => {
     expect(consumed.attributes).toEqual({ s: 'x', n: 3, ok: true, tags: ['a', 'b'] });
   });
 
+  describe('complex attribute values (OTel API 1.10 AnyValue)', () => {
+    it('turns a nested map, a mixed array and a byte array into strings and keeps scalars as they are', () => {
+      const consumed = readableSpanToConsumed(
+        readable({
+          attributes: {
+            s: 'x',
+            n: 3,
+            tags: ['a', 'b'],
+            map: { a: { b: [1, 'x'] } },
+            mixed: [1, 'a', true],
+            bytes: new Uint8Array([102, 111, 111]),
+          },
+        }),
+      );
+      expect(consumed.attributes).toEqual({
+        s: 'x',
+        n: 3,
+        tags: ['a', 'b'],
+        map: '{"a":{"b":[1,"x"]}}',
+        mixed: '[1,"a",true]',
+        bytes: 'Zm9v',
+      });
+    });
+
+    it('drops the OTel empty value (null) and unrepresentable values', () => {
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { keep: 1, nul: null, und: undefined, fn: () => 1 } }),
+      );
+      expect(consumed.attributes).toEqual({ keep: 1 });
+    });
+
+    it('never throws on exotic values: a cycle, a bigint inside an object, a hostile getter', () => {
+      const cyc: Record<string, unknown> = { a: 1 };
+      cyc.self = cyc;
+      const attributes = {
+        cyc,
+        big: { n: 10n },
+        get hostile(): never {
+          throw new Error('getter');
+        },
+        after: 'still here',
+      };
+      const consumed = readableSpanToConsumed(readable({ attributes }));
+      expect(consumed.attributes).toEqual({
+        cyc: '{"a":1,"self":"[Circular]"}',
+        big: '{"n":"10"}',
+        after: 'still here',
+      });
+    });
+
+    it('bounds a huge nested value so one attribute cannot bloat the transaction', () => {
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { huge: { s: 'x'.repeat(1e6) } } }),
+      );
+      expect((consumed.attributes?.huge as string).length).toBeLessThanOrEqual(8192);
+    });
+
+    it('feeds a real transaction: the consumed attribute reaches the assembled transaction as a string', () => {
+      const txns: TransactionWire[] = [];
+      const processor = createBugseeSpanProcessor({ onTransaction: (t) => txns.push(t) });
+      processor.onEnd(readable({ attributes: { 'db.statement': { text: 'SELECT 1' } } }));
+      expect(txns[0]?.attributes?.['db.statement']).toBe('{"text":"SELECT 1"}');
+    });
+  });
+
   it('prefers the OTel 2.x parentSpanContext over the 1.x parentSpanId', () => {
     const consumed = readableSpanToConsumed(
       readable({

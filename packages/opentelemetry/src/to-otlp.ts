@@ -1,4 +1,5 @@
 import type { SpanStatus, TransactionWire } from '@bugsee/performance';
+import { bytesToBase64, isByteArray, stringifyAnyValue } from './attribute-value';
 import {
   OTLP_SPAN_FLAG_SAMPLED,
   type OtlpAnyValue,
@@ -62,7 +63,9 @@ export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
       // with a genuinely large integer should pass a `bigint`, which is exact.
       return Number.isSafeInteger(value) ? { intValue: String(value) } : toDoubleValue(value);
     default: {
-      const json = JSON.stringify(value); // objects/arrays → string; functions/symbols → undefined (dropped)
+      if (isByteArray(value)) return { bytesValue: bytesToBase64(value) };
+      // objects/arrays → bounded JSON string that cannot throw (cycles, bigint, depth); functions/symbols → dropped
+      const json = stringifyAnyValue(value);
       return json !== undefined ? { stringValue: json } : undefined;
     }
   }

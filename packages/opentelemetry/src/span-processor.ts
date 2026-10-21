@@ -1,5 +1,6 @@
 import { neverThrow } from '@bugsee/core';
 import type { TransactionWire } from '@bugsee/performance';
+import { normalizeAttributes } from './attribute-value';
 import type { ConsumedSpan } from './from-otlp';
 import { createTraceAssembler } from './trace-assembler';
 
@@ -36,6 +37,7 @@ export interface ReadableSpanLike {
   startTime: HrTime;
   endTime: HrTime;
   status: { code: number; message?: string };
+  /** OTel `Attributes`. Since API 1.10 a value is an `AnyValue` (maps, mixed arrays, bytes): see `normalizeAttributes`. */
   attributes?: Record<string, unknown>;
 }
 
@@ -61,7 +63,7 @@ export function readableSpanToConsumed(span: ReadableSpanLike): ConsumedSpan {
       code: span.status.code,
       ...(span.status.message !== undefined ? { message: span.status.message } : {}),
     },
-    ...(span.attributes !== undefined ? { attributes: span.attributes } : {}),
+    ...(span.attributes !== undefined ? { attributes: normalizeAttributes(span.attributes) } : {}),
   };
 }
 

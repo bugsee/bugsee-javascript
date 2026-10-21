@@ -12,6 +12,15 @@ import {
   transactionToOtlpSpans,
 } from './to-otlp';
 
+/** Node's `Buffer` (a Uint8Array subclass) without pulling @types/node into this portable package. */
+const nodeBuffer = (
+  globalThis as unknown as {
+    Buffer: {
+      from(input: string | Uint8Array): Uint8Array & { toString(encoding: string): string };
+    };
+  }
+).Buffer;
+
 describe('toUnixNanoString', () => {
   it('converts wall-clock ms to a decimal ns string WITHOUT precision loss (BigInt, not Number*1e6)', () => {
     // 1709990000123 * 1e6 = 1.709990000123e18 — beyond 2^53, so Number would lose the low digits.
@@ -44,6 +53,23 @@ describe('toAnyValue', () => {
   it('JSON-stringifies an object/array into stringValue', () => {
     expect(toAnyValue({ a: 1 })).toEqual({ stringValue: '{"a":1}' });
     expect(toAnyValue([1, 2])).toEqual({ stringValue: '[1,2]' });
+  });
+  it('maps a byte array to bytesValue as base64 (the OTLP/JSON bytes encoding)', () => {
+    expect(toAnyValue(new Uint8Array([102, 111, 111]))).toEqual({ bytesValue: 'Zm9v' });
+    expect(toAnyValue(nodeBuffer.from('hi'))).toEqual({ bytesValue: 'aGk=' });
+    expect(toAnyValue(new Uint8Array(0))).toEqual({ bytesValue: '' });
+  });
+  it('never throws on exotic objects: a cycle, a nested bigint and a nested byte array are encoded safely', () => {
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    expect(toAnyValue(cyc)).toEqual({ stringValue: '{"a":1,"self":"[Circular]"}' });
+    expect(toAnyValue({ n: 10n })).toEqual({ stringValue: '{"n":"10"}' });
+    expect(toAnyValue({ b: new Uint8Array([1, 2]) })).toEqual({ stringValue: '{"b":"AQI="}' });
+  });
+  it('caps an oversized object at the attribute JSON length', () => {
+    const out = toAnyValue({ big: 'x'.repeat(100_000) }) as { stringValue: string };
+    expect(out.stringValue.length).toBeLessThanOrEqual(8192);
+    expect(out.stringValue.endsWith('...[truncated]')).toBe(true);
   });
   it('returns undefined for undefined/null (the key is dropped)', () => {
     expect(toAnyValue(undefined)).toBeUndefined();
