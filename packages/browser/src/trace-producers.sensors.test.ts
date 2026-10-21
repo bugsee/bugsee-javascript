@@ -223,9 +223,7 @@ describe('ConnectionProducer', () => {
         saveData: false,
       },
     };
-    const { out } = startAll([
-      new ConnectionProducer(new ConnectivityTracker({ navigator: nav })),
-    ]);
+    const { out } = startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: nav }))]);
     expect(out).toEqual([
       { name: 'connection', value: { type: 'not_reachable', save_data: false } },
     ]);
