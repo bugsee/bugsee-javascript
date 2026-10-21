@@ -466,7 +466,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(9);
+    expect(h.producers).toHaveLength(8);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
