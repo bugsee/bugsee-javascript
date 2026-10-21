@@ -312,10 +312,10 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     );
   });
 
-  it('reads MemAvailable first for ram_system_free (a different quantity) and gc (blind observer) and keeps the V8 heap (real V8)', () => {
+  it('never reads /proc/meminfo for ram_system_free (a scoped --allow-read would prompt), opts out of gc (blind observer) and keeps the V8 heap (real V8)', () => {
     track(launchCore('tok', base()).client);
     const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
-    expect(arg?.measuresAvailableMemory).toBe(false);
+    expect(arg).not.toHaveProperty('readsProcMeminfo'); // only Bun reads /proc/meminfo
     expect(arg?.measuresGc).toBe(false);
     expect(arg).not.toHaveProperty('measuresV8Heap'); // the node default (true) applies
   });

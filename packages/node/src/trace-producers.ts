@@ -161,9 +161,9 @@ class UptimeProducer extends StageProducer<'uptime'> {
 }
 
 /**
- * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresAvailableMemory`,
+ * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`,
  * `measuresGc`; see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
- * event-loop histogram, Bun the V8 heap, both the os.freemem()-is-available assumption and the GC reader.
+ * event-loop histogram, Bun the V8 heap, both the GC reader (Bun also sets `readsProcMeminfo`).
  */
 export interface NodeTraceProducerDeps extends ProcessTrackerEnv {
   onError?: (error: unknown) => void;

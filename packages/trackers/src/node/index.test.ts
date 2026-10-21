@@ -7,6 +7,8 @@ describe('@bugsee/trackers/node public surface', () => {
     expect(Object.keys(nodeEntry).sort()).toEqual([
       'ProcessTracker',
       'StorageTracker',
+      'createDenoMemoryReader',
+      'createElectronMemoryReader',
       'createGcSource',
       'createGuardedElu',
       'createGuardedEventLoopSource',
@@ -15,6 +17,7 @@ describe('@bugsee/trackers/node public surface', () => {
       'createSystemFreeReader',
       'createV8HeapReader',
       'eluUnavailable',
+      'firstAnswer',
       'parseMemAvailable',
       'processTrackerFor',
       'realPerfHooks',

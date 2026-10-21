@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createDenoMemoryReader,
+  createElectronMemoryReader,
   createMemoryLimitReader,
   createProcMeminfoReader,
   createSystemFreeReader,
   createV8HeapReader,
+  firstAnswer,
   parseMemAvailable,
 } from './runtime-readers';
 
@@ -133,11 +136,10 @@ describe('createProcMeminfoReader', () => {
 });
 
 describe('createSystemFreeReader', () => {
-  const meminfo = 'MemAvailable: 10 kB\n'; // 10240 bytes
+  const meminfo = () => 'MemAvailable: 10 kB\n'; // 10240 bytes
   const make = (over: Partial<Parameters<typeof createSystemFreeReader>[0]> = {}) =>
     createSystemFreeReader({
-      preferMeminfo: false,
-      meminfo: () => meminfo,
+      platform: 'linux',
       freemem: () => 111,
       total: () => 1_000_000,
       ...over,
@@ -146,29 +148,32 @@ describe('createSystemFreeReader', () => {
     throw new Error('boom');
   };
 
-  it('Node: os.freemem() alone, /proc/meminfo is never read', () => {
-    let reads = 0;
-    expect(make({ meminfo: () => (reads++, meminfo) })()).toBe(111);
-    expect(reads).toBe(0);
+  it('default: os.freemem() alone', () => {
+    expect(make()()).toBe(111);
+    expect(make({ platform: 'win32' })()).toBe(111);
   });
 
-  it('preferMeminfo (Bun/Deno): MemAvailable first, then os.freemem()', () => {
-    expect(make({ preferMeminfo: true })()).toBe(10240);
-    expect(make({ preferMeminfo: true, meminfo: () => undefined })()).toBe(111);
-    expect(make({ preferMeminfo: true, meminfo: () => 'nothing here' })()).toBe(111);
-    expect(make({ preferMeminfo: true, meminfo: boom })()).toBe(111);
+  it('order: native, then meminfo (when supplied), then os.freemem()', () => {
+    expect(make({ native: () => 5, meminfo })()).toBe(5);
+    expect(make({ native: () => undefined, meminfo })()).toBe(10240);
+    expect(make({ meminfo })()).toBe(10240);
+    expect(make({ meminfo: () => undefined })()).toBe(111);
+    expect(make({ meminfo: () => 'nothing here' })()).toBe(111);
+    expect(make({ meminfo: boom, native: boom })()).toBe(111);
+  });
+
+  it('macOS: os.freemem() is never a source (free pages only), native and meminfo still are', () => {
+    expect(make({ platform: 'darwin' })()).toBeUndefined();
+    expect(make({ platform: 'darwin', native: () => 7 })()).toBe(7);
+    expect(make({ platform: 'darwin', meminfo })()).toBe(10240);
   });
 
   it('skips a source that answers an implausible value (NaN, Infinity, negative, > total)', () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1_000_001]) {
       expect(make({ freemem: () => bad })()).toBeUndefined();
-      expect(
-        make({ preferMeminfo: true, freemem: () => bad, meminfo: () => undefined })(),
-      ).toBeUndefined();
+      expect(make({ native: () => bad, freemem: () => 111 })()).toBe(111);
     }
-    expect(make({ preferMeminfo: true, meminfo: () => 'MemAvailable: 999999999 kB\n' })()).toBe(
-      111,
-    );
+    expect(make({ meminfo: () => 'MemAvailable: 999999999 kB\n' })()).toBe(111);
     expect(make({ freemem: boom })()).toBeUndefined();
   });
 
@@ -184,5 +189,65 @@ describe('createSystemFreeReader', () => {
     expect(read()).toBe(111);
     total = 10;
     expect(read()).toBeUndefined();
+  });
+});
+
+describe('createElectronMemoryReader (KiB -> bytes)', () => {
+  const read = (platform: string, info: object | undefined) =>
+    createElectronMemoryReader(
+      info === undefined ? {} : { getSystemMemoryInfo: () => info },
+      platform,
+    )();
+
+  it('macOS: free + fileBacked + purgeable', () => {
+    expect(read('darwin', { free: 1, fileBacked: 10, purgeable: 100, available: 9999 })).toBe(
+      111 * 1024,
+    );
+    expect(read('darwin', { free: 1, fileBacked: 10 })).toBeUndefined();
+    expect(read('darwin', { free: 1, fileBacked: 'x', purgeable: 3 })).toBeUndefined();
+  });
+
+  it('Linux: available (not free). Windows: free', () => {
+    expect(read('linux', { free: 1, available: 7 })).toBe(7 * 1024);
+    expect(read('linux', { free: 1 })).toBeUndefined();
+    expect(read('win32', { free: 5, available: 9 })).toBe(5 * 1024);
+    expect(read('win32', { available: 9 })).toBeUndefined();
+  });
+
+  it('is undefined on another platform, without the API, or for non-finite/negative values', () => {
+    expect(read('freebsd', { free: 1, available: 1 })).toBeUndefined();
+    expect(read('linux', undefined)).toBeUndefined();
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(read('linux', { available: bad })).toBeUndefined();
+    }
+  });
+});
+
+describe('createDenoMemoryReader (bytes)', () => {
+  const deno = { systemMemoryInfo: () => ({ available: 4096 }) };
+  it('reports available on macOS only', () => {
+    expect(createDenoMemoryReader(deno, 'darwin')()).toBe(4096);
+    expect(createDenoMemoryReader(deno, 'linux')()).toBeUndefined();
+    expect(createDenoMemoryReader(deno, 'win32')()).toBeUndefined();
+  });
+  it('is undefined without Deno/the API or for implausible values', () => {
+    expect(createDenoMemoryReader(undefined, 'darwin')()).toBeUndefined();
+    expect(createDenoMemoryReader({}, 'darwin')()).toBeUndefined();
+    for (const bad of [Number.NaN, -1, '5']) {
+      expect(
+        createDenoMemoryReader({ systemMemoryInfo: () => ({ available: bad }) }, 'darwin')(),
+      ).toBeUndefined();
+    }
+  });
+});
+
+describe('firstAnswer', () => {
+  it('returns the first defined answer, skipping undefined and throwing readers', () => {
+    const boom = () => {
+      throw new Error('x');
+    };
+    expect(firstAnswer([() => undefined, boom, () => 0, () => 5])()).toBe(0);
+    expect(firstAnswer([boom, () => undefined])()).toBeUndefined();
+    expect(firstAnswer([])()).toBeUndefined();
   });
 });

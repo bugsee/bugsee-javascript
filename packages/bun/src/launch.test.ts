@@ -129,12 +129,12 @@ describe('@bugsee/bun launch', () => {
     expect(names).not.toContain('cpu_usage_process'); // no CPU start value: it begins with the first sampled window
   });
 
-  it('opts out of the V8 heap and gc traces and reads MemAvailable first for ram_system_free (Bun: JSC heap, not comparable availableMemory, blind GC observer)', () => {
+  it('opts out of the V8 heap and gc traces (Bun: JSC heap, blind GC observer) and reads /proc/meminfo MemAvailable for ram_system_free', () => {
     track(launchCore('tok', base()).client);
     expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
       expect.objectContaining({
         measuresV8Heap: false,
-        measuresAvailableMemory: false,
+        readsProcMeminfo: true,
         measuresGc: false,
       }),
     );

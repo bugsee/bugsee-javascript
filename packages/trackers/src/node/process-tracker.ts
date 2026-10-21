@@ -14,10 +14,15 @@ import {
   realPerfHooks,
 } from './guarded-event-loop';
 import {
+  createDenoMemoryReader,
+  createElectronMemoryReader,
   createMemoryLimitReader,
   createProcMeminfoReader,
   createSystemFreeReader,
   createV8HeapReader,
+  type DenoMemoryInfoLike,
+  type ElectronMemoryInfoLike,
+  firstAnswer,
   type V8HeapStats,
 } from './runtime-readers';
 
@@ -127,10 +132,18 @@ export interface ProcessEnv {
   /** Each reader answers undefined when the runtime cannot give a true value. Override their defaults and gates. */
   v8Heap?: () => V8HeapStats | undefined;
   memoryLimit?: () => number | undefined;
-  /** Raw `/proc/meminfo` text (Linux), consulted first only when `measuresAvailableMemory` is false. Default reads the file on Linux only. */
+  /** Raw `/proc/meminfo` text (Linux), consulted only when `readsProcMeminfo` is true. Default reads the file on Linux only. */
   meminfo?: () => string | undefined;
-  /** `os.freemem()` bytes, the primary source of system free memory (see `createSystemFreeReader`). */
+  /** `os.freemem()` bytes (not a source on macOS; see `createSystemFreeReader`). */
   freeMemory?: () => number;
+  /**
+   * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:
+   * Electron's `process.getSystemMemoryInfo()` when the `process` object has it, else `Deno.systemMemoryInfo()`
+   * on macOS (feature-detected; absent on plain Node/Bun).
+   */
+  nativeAvailableMemory?: () => number | undefined;
+  /** `process.platform` for the free-memory source choice. Default the real one. */
+  platform?: string;
   /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
   /** Test seam for the GC observer constructor. Default `node:perf_hooks`. */
@@ -146,11 +159,11 @@ export interface ProcessEnv {
    */
   measuresV8Heap?: boolean;
   /**
-   * Is `os.freemem()` known to be memory AVAILABLE to new work (libuv MemAvailable / ullAvailPhys)? Default `true`
-   * (Node). Bun and Deno pass `false`: they read `/proc/meminfo` MemAvailable first on Linux, then `os.freemem()`.
-   * `process.availableMemory()` is never used (not comparable on Bun/Deno; lower than truth in a cgroup on Node).
+   * Read `/proc/meminfo` MemAvailable before `os.freemem()` on Linux? Default `false`. Only `@bugsee/bun` sets it
+   * (Bun < 1.3.13's `os.freemem()` is not MemAvailable). Deno must NOT: its `os.freemem()` already is, and the extra
+   * read triggers an interactive permission prompt under a scoped `--allow-read`.
    */
-  measuresAvailableMemory?: boolean;
+  readsProcMeminfo?: boolean;
   /** Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`; blind on Bun/Deno. */
   measuresGc?: boolean;
   /** Drives the shared sampling timer; default the global timers, unref'd so the tracker never holds a process alive. */
@@ -184,11 +197,13 @@ const SEAM_KEYS = [
   'memoryLimit',
   'meminfo',
   'freeMemory',
+  'nativeAvailableMemory',
+  'platform',
   'perfHooks',
   'performanceObserver',
   'measuresEventLoopDelay',
   'measuresV8Heap',
-  'measuresAvailableMemory',
+  'readsProcMeminfo',
   'measuresGc',
   'scheduler',
   'intervalMs',
@@ -398,6 +413,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     const perf = env.perfHooks ?? realPerfHooks;
     // `??` / explicit gates (never a spread over defaults): an injected source wins; otherwise the default is wired
     // only where the runtime can give a true value, and an unwired source means the stage is ABSENT.
+    const platform = env.platform ?? nodeProcess.platform;
     const resolved: Resolved = {
       eventLoop:
         env.eventLoop ??
@@ -411,8 +427,16 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         (env.measuresV8Heap !== false ? createV8HeapReader(getHeapStatistics) : undefined),
       memoryLimit: env.memoryLimit ?? createMemoryLimitReader(nodeProcess, totalmem),
       systemFree: createSystemFreeReader({
-        preferMeminfo: env.measuresAvailableMemory === false,
-        meminfo: env.meminfo ?? createProcMeminfoReader(nodeProcess.platform, readProcFile),
+        platform,
+        native:
+          env.nativeAvailableMemory ??
+          firstAnswer([
+            createElectronMemoryReader(nodeProcess as ElectronMemoryInfoLike, platform),
+            createDenoMemoryReader((globalThis as { Deno?: DenoMemoryInfoLike }).Deno, platform),
+          ]),
+        ...(env.readsProcMeminfo === true
+          ? { meminfo: env.meminfo ?? createProcMeminfoReader(platform, readProcFile) }
+          : {}),
         freemem: env.freeMemory ?? freemem,
         total: totalmem,
       }),
