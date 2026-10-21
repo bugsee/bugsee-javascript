@@ -27,7 +27,7 @@ import {
 } from './runtime-readers';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
-// owns everything the runtime can say about its own process, as NINE independent stages:
+// owns everything the runtime can say about its own process, as EIGHT independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
 //   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader)
@@ -37,7 +37,6 @@ import {
 //   gc              PerformanceObserver('gc') interval             -> { count, pauseMs, maxPauseMs }
 //   v8Heap          v8.getHeapStatistics()                         -> { limit, used, available, malloced, peakMalloced }
 //   memoryLimit     process.constrainedMemory() (a real cap only)  -> { bytes }
-//   uptime          process.uptime(), whole seconds                -> { seconds }
 //
 // PER-STAGE ACTIVATION. Nothing runs at construction. ONE shared sampling timer exists only while some stage has a
 // listener (`listenerCount`, re-evaluated after every listener mutation via `onListenersChanged`; an `onAny` listener
@@ -89,8 +88,6 @@ export interface ProcessEvents {
   gc: GcInterval;
   v8Heap: V8HeapStats;
   memoryLimit: { bytes: number };
-  /** Whole seconds since process start. */
-  uptime: { seconds: number };
 }
 type Stage = keyof ProcessEvents;
 // Read order of a tick. GC is last: its read drains the interval, so nothing after it may fail the tick.
@@ -102,7 +99,6 @@ const STAGES: readonly Stage[] = [
   'utilization',
   'v8Heap',
   'memoryLimit',
-  'uptime',
   'gc',
 ];
 /** Stages whose reading is a window since the previous read: they cannot be re-read on demand. */
@@ -121,8 +117,6 @@ export interface ProcessEnv {
   systemMemory?: () => { total: number; free?: number };
   cpuCount?: () => number;
   monotonicNowMs?: () => number;
-  /** Seconds since process start (fractions floored). Default `process.uptime()`. */
-  uptime?: () => number;
   /** Overrides the guarded histogram source (and its gate). */
   eventLoop?: EventLoopSource;
   /** Overrides the GC observer source (and its gate). */
@@ -189,7 +183,6 @@ const SEAM_KEYS = [
   'systemMemory',
   'cpuCount',
   'monotonicNowMs',
-  'uptime',
   'eventLoop',
   'gc',
   'eventLoopUtilization',
@@ -464,10 +457,6 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
             return free === undefined ? { total } : { total, free };
           });
         return { read, stop: () => {} };
-      }
-      case 'uptime': {
-        const uptime = env.uptime ?? (() => nodeProcess.uptime());
-        return { read: () => ({ seconds: Math.floor(uptime()) }), stop: () => {} };
       }
       case 'v8Heap':
         return optionalRun(res.v8Heap);

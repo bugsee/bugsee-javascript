@@ -61,7 +61,6 @@ function mk(over: ProcessEnv = {}, onError?: (e: unknown) => void) {
       cpuUsage: () => cpu,
       cpuCount: () => 2,
       monotonicNowMs: () => wall,
-      uptime: () => 12.9,
       // gated off by default so a test only sees the stages it wires
       measuresEventLoopDelay: false,
       measuresGc: false,
@@ -195,7 +194,6 @@ describe('ProcessTracker', () => {
         ['utilization', { utilizationPercent: 50 }],
         ['v8Heap', { limit: 10, used: 4, available: 6, malloced: 1, peakMalloced: 2 }],
         ['memoryLimit', { bytes: 500 }],
-        ['uptime', { seconds: 12 }],
         ['gc', { count: 3, pauseMs: 12.5, maxPauseMs: 8 }],
       ]);
     });
@@ -244,7 +242,7 @@ describe('ProcessTracker', () => {
       });
       const { got } = collect(tracker);
       fs.tick();
-      expect(got.map(([n]) => n)).toEqual(['memory', 'systemMemory', 'cpu', 'uptime']);
+      expect(got.map(([n]) => n)).toEqual(['memory', 'systemMemory', 'cpu']);
     });
 
     it('emitted payloads are copies: a subscriber cannot corrupt the retained cpu sample', () => {
@@ -282,7 +280,7 @@ describe('ProcessTracker', () => {
         tracker.on('memory', () => {
           seen.push('memory');
           for (const o of offs) o(); // every listener leaves: the timer is cleared mid-tick
-          tracker.on('uptime', () => void seen.push('uptime')); // and a NEW run starts
+          tracker.on('cpu', () => void seen.push('cpu')); // and a NEW run starts
         }),
       );
       offs.push(tracker.on('systemMemory', () => void seen.push('systemMemory')));
@@ -367,14 +365,14 @@ describe('ProcessTracker', () => {
     });
 
     it('stateless stages read LIVE, armed or not, and hand out copies', () => {
-      const { tracker } = mk({ uptime: () => 7.9 });
-      expect(tracker.current('uptime')).toEqual({ seconds: 7 });
+      const { tracker } = mk({ systemMemory: () => ({ total: 9, free: 7 }) });
+      expect(tracker.current('systemMemory')).toEqual({ total: 9, free: 7 });
       expect(tracker.current('memory')).toEqual(mem);
       const m = tracker.current('memory');
       if (m) m.rss = 99;
       expect(tracker.current('memory')?.rss).toBe(1);
-      tracker.on('uptime', () => {});
-      expect(tracker.current('uptime')).toEqual({ seconds: 7 });
+      tracker.on('systemMemory', () => {});
+      expect(tracker.current('systemMemory')).toEqual({ total: 9, free: 7 });
     });
 
     it('is undefined for a stage with no reader or no answer', () => {
@@ -400,11 +398,10 @@ describe('ProcessTracker', () => {
   });
 
   describe('honest defaults and runtime gates', () => {
-    it('without injected sources the real node readers answer (uptime, memory, system memory, heap, limit)', () => {
+    it('without injected sources the real node readers answer (memory, system memory, heap, limit)', () => {
       const tracker = new ProcessTracker({ scheduler: fakeScheduler().scheduler });
       expect(tracker.current('memory')?.rss).toBeGreaterThan(0);
       expect(tracker.current('systemMemory')?.total).toBeGreaterThan(0);
-      expect(Number.isInteger(tracker.current('uptime')?.seconds)).toBe(true);
       expect(tracker.current('v8Heap')?.limit).toBeGreaterThan(0);
       // a real cap only: undefined on an unconstrained host, a positive number inside a cgroup
       const cap = tracker.current('memoryLimit');
@@ -717,10 +714,10 @@ describe('ProcessTracker', () => {
   describe('failures', () => {
     it('a throwing stage read is reported and drops ONLY that stage for the tick', () => {
       const errors: unknown[] = [];
-      const boom = new Error('uptime');
+      const boom = new Error('systemMemory');
       const { tracker, fs } = mk(
         {
-          uptime: () => {
+          systemMemory: () => {
             throw boom;
           },
         },
@@ -729,7 +726,7 @@ describe('ProcessTracker', () => {
       const { got } = collect(tracker);
       fs.tick();
       expect(errors).toEqual([boom]);
-      expect(got.map(([n]) => n)).toEqual(['memory', 'systemMemory', 'cpu']);
+      expect(got.map(([n]) => n)).toEqual(['memory', 'cpu']);
       fs.tick(); // the timer survives
       expect(errors).toEqual([boom, boom]);
     });
@@ -896,7 +893,7 @@ describe('ProcessTracker', () => {
 
     it('errors are optional everywhere: no reporter, nothing throws', () => {
       const { tracker, fs } = mk({
-        uptime: () => {
+        systemMemory: () => {
           throw new Error('x');
         },
         eventLoop: {
@@ -908,19 +905,19 @@ describe('ProcessTracker', () => {
         },
       });
       expect(() => {
-        tracker.on('uptime', () => {});
+        tracker.on('systemMemory', () => {});
         tracker.on('eventLoop', () => {});
         fs.tick();
-        tracker.current('uptime');
+        tracker.current('systemMemory');
       }).not.toThrow();
     });
   });
 
   describe('rebind', () => {
     it('merges: defined seams replace, undefined never clobber an earlier one', () => {
-      const { tracker, fs } = mk({ uptime: () => 5 });
-      tracker.rebind({ uptime: undefined, memoryUsage: () => ({ ...mem, rss: 77 }) });
-      expect(tracker.current('uptime')).toEqual({ seconds: 5 });
+      const { tracker, fs } = mk({ systemMemory: () => ({ total: 5, free: 1 }) });
+      tracker.rebind({ systemMemory: undefined, memoryUsage: () => ({ ...mem, rss: 77 }) });
+      expect(tracker.current('systemMemory')).toEqual({ total: 5, free: 1 });
       expect(tracker.current('memory')?.rss).toBe(77);
       expect(fs.sets()).toBe(0);
     });
@@ -1048,7 +1045,7 @@ describe('ProcessTracker', () => {
     it('delivers real ticks, is unref’d, and is silent after the last unsubscribe', async () => {
       const tracker = new ProcessTracker({ intervalMs: 5 });
       let n = 0;
-      const off = tracker.on('uptime', () => {
+      const off = tracker.on('memory', () => {
         n += 1;
       });
       await new Promise((r) => setTimeout(r, 60));
@@ -1129,8 +1126,12 @@ describe('processTrackerFor (per-process singleton)', () => {
     const first = fakeScheduler();
     const second = fakeScheduler();
     const errors: unknown[] = [];
-    const tracker = processTrackerFor({ key, scheduler: first.scheduler, uptime: () => 3 });
-    tracker.on('uptime', () => {});
+    const tracker = processTrackerFor({
+      key,
+      scheduler: first.scheduler,
+      systemMemory: () => ({ total: 3, free: 3 }),
+    });
+    tracker.on('memory', () => {});
     expect(first.sets()).toBe(1);
     const again = processTrackerFor(
       {
@@ -1145,7 +1146,7 @@ describe('processTrackerFor (per-process singleton)', () => {
     expect(again).toBe(tracker);
     expect(first.live()).toBe(0);
     expect(second.sets()).toBe(1); // re-armed on the latest launch's scheduler
-    expect(tracker.current('uptime')).toEqual({ seconds: 3 }); // earlier seam kept
+    expect(tracker.current('systemMemory')).toEqual({ total: 3, free: 3 }); // earlier seam kept
     tracker.current('memory');
     expect(errors).toHaveLength(1);
     resetProcessTracker(key);

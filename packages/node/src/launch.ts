@@ -99,6 +99,7 @@ import {
   realSystemProbe,
   type SystemProbe,
   SystemProbeToken,
+  withoutUptime,
 } from './environment';
 import type { EventLoopWatchdog, EventLoopWatchdogDeps } from './event-loop-watchdog';
 import { createHangDetectionProvider } from './hang-detection-provider';
@@ -729,11 +730,19 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   const probe = options.systemProbe ?? realSystemProbe;
   services.addService(defineService(SystemProbeToken, () => probe)); // container service
   const environmentOnError = reportOncePerMessage(options.onError);
+  // app.uptime_s is a SNAPSHOT at session start (launch), not re-read per report; a relaunch re-stamps it.
+  let sessionUptimeSeconds: number | undefined;
+  try {
+    sessionUptimeSeconds = probe.uptimeSeconds?.();
+  } catch (error) {
+    reportGuarded(options.onError, error); // a throwing custom probe omits the field, never breaks launch
+  }
   const getEnvironment = () =>
     buildNodeEnvironment(
       {
         sdkVersion,
         options: resolved.canonical,
+        ...(sessionUptimeSeconds !== undefined ? { uptimeSeconds: sessionUptimeSeconds } : {}),
         ...(options.appId !== undefined ? { appId: options.appId } : {}),
         ...(appIdentity.version !== undefined ? { appVersion: appIdentity.version } : {}),
         ...(appIdentity.build !== undefined ? { appBuild: appIdentity.build } : {}),
@@ -1117,7 +1126,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
             dataDir: effectiveDataDir,
             ownInstanceId: instanceLayout.instanceId,
             uploadPipeline,
-            context: () => ({ appToken, environment: getEnvironment(), clock }),
+            // a recovered incident belongs to a PRIOR process: this launch's uptime would be wrong for it, so it is omitted
+            context: () => ({ appToken, environment: withoutUptime(getEnvironment()), clock }),
             ...(options.nativeCrash !== undefined
               ? { nativeCrashSource: options.nativeCrash.source }
               : {}),

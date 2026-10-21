@@ -122,4 +122,19 @@ describe('Electron GPU -> real node launch -> assembled report', () => {
       process.off('unhandledRejection', unhandled);
     }
   });
+
+  it('carries app.uptime_s (whole seconds, from the node environment builder) in an Electron main session', async () => {
+    const { client, puts } = launchWith({ on: () => {} });
+    await client.logException(new Error('x'));
+    const env = JSON.parse(
+      strFromU8(bundleOf(puts[0] as Uint8Array)['request.json'] as Uint8Array),
+    ) as {
+      environment: { app: { uptime_s?: unknown } };
+    };
+    const up = env.environment.app.uptime_s;
+    expect(typeof up).toBe('number');
+    expect(Number.isInteger(up)).toBe(true);
+    expect(up as number).toBeGreaterThanOrEqual(0);
+    await client.stop();
+  });
 });

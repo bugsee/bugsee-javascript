@@ -6,7 +6,7 @@ import {
   processTrackerFor,
 } from '@bugsee/trackers/node';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): eight producers, each subscribed to ONE
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): seven producers, each subscribed to ONE
 // stage of the shared per-process ProcessTracker (`@bugsee/trackers/node`, the abstraction layer over the runtime's
 // process APIs). This file is COMPOSITION only: which stage feeds which trace names, plus the runtime-identity gates
 // the platform packages pass through (`measures*`). GC is deliberately NOT here: it is the `gc` system event (`system-events.ts`), not a trace. The tracker owns every runtime read, its lifetime and its
@@ -135,16 +135,6 @@ class MemoryLimitProducer extends StageProducer<'memoryLimit'> {
   }
 }
 
-class UptimeProducer extends StageProducer<'uptime'> {
-  readonly name = 'process-uptime';
-  constructor(tracker: ProcessTracker) {
-    super(tracker, 'uptime');
-  }
-  protected publish(u: ProcessEvents['uptime']): void {
-    this.emit('process_uptime_s', u.seconds);
-  }
-}
-
 /**
  * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`,
  * `measuresGc` (gates the `gc` EVENT source, not a trace); see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
@@ -166,6 +156,5 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new EventLoopUtilizationProducer(tracker),
     new V8HeapProducer(tracker),
     new MemoryLimitProducer(tracker),
-    new UptimeProducer(tracker),
   ];
 }

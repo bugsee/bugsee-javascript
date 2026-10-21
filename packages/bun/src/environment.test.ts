@@ -34,3 +34,13 @@ describe('bunSystemProbe — defaults + reuse', () => {
     expect(typeof bunSystemProbe.locale()).toBe('string');
   });
 });
+
+describe('bunSystemProbe — uptime', () => {
+  it("inherits node's real process.uptime() reader (app.uptime_s would silently vanish otherwise)", () => {
+    expect(typeof bunSystemProbe.uptimeSeconds).toBe('function');
+    const up = bunSystemProbe.uptimeSeconds?.();
+    expect(typeof up).toBe('number');
+    expect(up as number).toBeGreaterThan(0);
+    expect(up as number).toBeLessThan(process.uptime() + 1);
+  });
+});
