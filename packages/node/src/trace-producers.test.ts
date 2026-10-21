@@ -1,5 +1,5 @@
 import { processTrackerFor } from '@bugsee/trackers/node';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
 
 const harnessKey: object[] = [];
@@ -103,14 +103,7 @@ describe('createNodeSystemTraceProducers', () => {
   };
 
   it('emits the full node catalog with exact values (non-zero CPU window)', () => {
-    const gc = {
-      start: () => {},
-      stop: () => {},
-      read: () => ({ count: 3, pauseMs: 12.5, maxPauseMs: 8 }),
-    };
-    const h = harness(
-      constDeps({ ...steppingCpu(), eventLoop, gc, eventLoopUtilization: () => 0.5 }),
-    );
+    const h = harness(constDeps({ ...steppingCpu(), eventLoop, eventLoopUtilization: () => 50 }));
     h.startAll();
     h.tick();
     expect([...h.got.entries()].sort(([x], [y]) => x.localeCompare(y))).toEqual([
@@ -120,10 +113,7 @@ describe('createNodeSystemTraceProducers', () => {
       ['event_loop_lag_max_ms', 2],
       ['event_loop_lag_ms', 1],
       ['event_loop_lag_p99_ms', 3],
-      ['event_loop_utilization', 0.5],
-      ['gc_count', 3],
-      ['gc_pause_max_ms', 8],
-      ['gc_pause_ms', 12.5],
+      ['event_loop_utilization', 50],
       ['process_memory_array_buffers', 50],
       ['process_memory_external', 40],
       ['process_memory_heap_total', 20],
@@ -146,7 +136,7 @@ describe('createNodeSystemTraceProducers', () => {
 
   describe('runtime-depth traces', () => {
     const run = (over: NodeTraceProducerDeps) => {
-      const h = harness(constDeps({ eventLoop, eventLoopUtilization: () => 0.5, ...over }));
+      const h = harness(constDeps({ eventLoop, eventLoopUtilization: () => 50, ...over }));
       h.startAll();
       return h;
     };
@@ -328,7 +318,7 @@ describe('createNodeSystemTraceProducers', () => {
     const h = harness(
       constDeps({
         eventLoop: { start() {}, stop() {}, read: () => ({ meanMs: 1, maxMs: 2, p99Ms: 3 }) },
-        eventLoopUtilization: () => 0.5,
+        eventLoopUtilization: () => 50,
       }),
     );
     h.startAll();
@@ -383,7 +373,7 @@ describe('createNodeSystemTraceProducers', () => {
     h.stopAll();
     expect(state.monitor).toBe(0);
     expect(h.got.has('event_loop_lag_ms')).toBe(false);
-    expect(h.got.get('event_loop_utilization')).toBe(0.3);
+    expect(h.got.get('event_loop_utilization')).toBe(30);
   });
 
   it('default perfHooks path reports lag from a real-shaped histogram, lazily', () => {
@@ -429,7 +419,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(10);
+    expect(h.producers).toHaveLength(9);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
@@ -496,11 +486,11 @@ describe('createNodeSystemTraceProducers', () => {
 
   it('a caller-supplied explicit reader wins over the guarded default', () => {
     const { perfHooks } = fakePerfHooks();
-    const h = harness({ ...constDeps(), perfHooks, eventLoop, eventLoopUtilization: () => 0.9 });
+    const h = harness({ ...constDeps(), perfHooks, eventLoop, eventLoopUtilization: () => 90 });
     h.startAll();
     h.tick();
     expect(h.got.get('event_loop_lag_ms')).toBe(1);
-    expect(h.got.get('event_loop_utilization')).toBe(0.9);
+    expect(h.got.get('event_loop_utilization')).toBe(90);
   });
 
   it('an explicit undefined reader does not clobber the guarded default', () => {
@@ -513,7 +503,7 @@ describe('createNodeSystemTraceProducers', () => {
     });
     h.startAll();
     h.tick();
-    expect(h.got.get('event_loop_utilization')).toBe(0.3);
+    expect(h.got.get('event_loop_utilization')).toBe(30);
     expect(h.got.get('event_loop_lag_ms')).toBe(2);
   });
 
@@ -554,9 +544,6 @@ describe('createNodeSystemTraceProducers', () => {
       'event_loop_lag_ms',
       'event_loop_lag_p99_ms',
       'event_loop_utilization',
-      'gc_count',
-      'gc_pause_max_ms',
-      'gc_pause_ms',
       'process_memory_array_buffers',
       'process_memory_external',
       'process_memory_heap_total',
@@ -581,88 +568,8 @@ describe('createNodeSystemTraceProducers', () => {
   });
 });
 
-describe('gc traces', () => {
-  const interval = { count: 3, pauseMs: 12.5, maxPauseMs: 8 };
-  const fakeGc = (read: () => typeof interval | undefined = () => interval) => {
-    const calls: string[] = [];
-    return {
-      calls,
-      gc: {
-        start: () => void calls.push('start'),
-        stop: () => void calls.push('stop'),
-        read,
-      },
-    };
-  };
-  const GC = ['gc_count', 'gc_pause_ms', 'gc_pause_max_ms'];
-
-  it('emits the per-interval count, summed pause and max pause from the injected source', () => {
-    const { gc } = fakeGc();
-    const h = harness(constDeps({ eventLoop, gc }));
-    h.startAll();
-    h.tick();
-    expect(h.got.get('gc_count')).toBe(3);
-    expect(h.got.get('gc_pause_ms')).toBe(12.5);
-    expect(h.got.get('gc_pause_max_ms')).toBe(8);
-  });
-
-  it('the start baseline carries NO gc traces: no interval has been observed yet, so a zero would be invented', () => {
-    const { gc } = fakeGc();
-    const h = harness(constDeps({ eventLoop, gc }));
-    h.startAll();
-    for (const name of GC) expect(h.got.has(name)).toBe(false);
-    expect(h.got.has('process_memory_rss')).toBe(true); // the other families still baseline
-  });
-
-  it('a producer restarting while the tracker stays active does not re-emit the last interval', () => {
-    const { gc } = fakeGc();
-    const h = harness(constDeps({ eventLoop, gc }));
-    h.startAll();
-    h.tick();
-    const gcProducer = h.producers.find((p) => p.name === 'gc');
-    const calls: string[] = [];
-    gcProducer?.stop();
-    gcProducer?.start({ emit: (n) => void calls.push(n) });
-    expect(calls).toEqual([]);
-  });
-
-  it('a quiet interval is a true zero, re-emitted every tick (never held)', () => {
-    let cur: typeof interval | undefined = { count: 0, pauseMs: 0, maxPauseMs: 0 };
-    const { gc } = fakeGc(() => cur);
-    const calls: Array<[string, unknown, { hold?: boolean } | undefined]> = [];
-    const h = harness(constDeps({ eventLoop, gc }));
-    for (const p of h.producers) p.start({ emit: (n, v, _d, o) => void calls.push([n, v, o]) });
-    h.tick();
-    h.tick();
-    const per = (name: string) => calls.filter(([n]) => n === name);
-    for (const name of GC) {
-      expect(per(name)).toHaveLength(2); // one per tick, the baseline has none
-      expect(per(name).every(([, v, o]) => v === 0 && o?.hold === false)).toBe(true);
-    }
-    cur = undefined; // source went away: omitted, nothing carried forward
-    h.tick();
-    expect(per('gc_count')).toHaveLength(2);
-  });
-
-  it('omits every gc trace when the source cannot answer', () => {
-    const { gc } = fakeGc(() => undefined);
-    const h = harness(constDeps({ eventLoop, gc }));
-    h.startAll();
-    h.tick();
-    for (const name of GC) expect(h.got.has(name)).toBe(false);
-    expect(h.got.has('process_memory_rss')).toBe(true);
-  });
-
-  it('starts the source with the first producer and stops it with the last', () => {
-    const { gc, calls } = fakeGc();
-    const h = harness(constDeps({ eventLoop, gc }));
-    h.startAll();
-    expect(calls).toEqual(['start']);
-    h.stopAll();
-    expect(calls).toEqual(['start', 'stop']);
-  });
-
-  it('measuresGc:false wires NO gc source (Bun/Deno): no observer is ever constructed, nothing emitted', () => {
+describe('gc is NOT a trace (C15: it is the `gc` system event)', () => {
+  it('no gc_* trace is produced, and the trace producers never construct a GC observer or start a gc source', () => {
     let constructed = 0;
     class Counting {
       constructor() {
@@ -671,68 +578,19 @@ describe('gc traces', () => {
       observe() {}
       disconnect() {}
     }
-    const h = harness({
-      ...constDeps({ eventLoop }),
-      measuresGc: false,
-      performanceObserver: Counting as never,
-    });
+    const gc = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      read: vi.fn(() => ({ count: 3, pauseMs: 1, maxPauseMs: 1 })),
+    };
+    const h = harness({ ...constDeps({ eventLoop, gc }), performanceObserver: Counting as never });
     h.startAll();
+    h.tick();
+    h.stopAll();
+    expect([...h.got.keys()].filter((k) => k.startsWith('gc_'))).toEqual([]);
+    expect(h.producers.map((p) => p.name)).not.toContain('gc');
     expect(constructed).toBe(0);
-    for (const name of GC) expect(h.got.has(name)).toBe(false);
-  });
-
-  it('measuresGc default wires the injected PerformanceObserver for the gc entry type and disconnects on stop', () => {
-    const seen: unknown[] = [];
-    let disconnects = 0;
-    class Counting {
-      observe(o: unknown) {
-        seen.push(o);
-      }
-      disconnect() {
-        disconnects += 1;
-      }
-    }
-    const h = harness({ ...constDeps({ eventLoop }), performanceObserver: Counting as never });
-    h.startAll();
-    expect(seen).toEqual([{ entryTypes: ['gc'] }]);
-    h.tick();
-    expect(h.got.get('gc_count')).toBe(0); // observed, quiet interval
-    h.stopAll();
-    expect(disconnects).toBe(1);
-  });
-
-  it('an injected source wins over measuresGc:false', () => {
-    const { gc } = fakeGc();
-    const h = harness({ ...constDeps({ eventLoop, gc }), measuresGc: false });
-    h.startAll();
-    h.tick();
-    expect(h.got.get('gc_count')).toBe(3);
-  });
-
-  it('an explicit undefined source does not clobber the real default (measuresGc true)', () => {
-    const h = harness({ ...constDeps({ eventLoop }), gc: undefined });
-    h.startAll();
-    h.tick();
-    expect(h.got.has('gc_count')).toBe(true); // the real observer is wired (a quiet interval is a true zero)
-    h.stopAll();
-  });
-
-  it('a real node GC is observed end to end', async () => {
-    const h = harness(constDeps({ eventLoop }));
-    h.startAll();
-    // churn until the engine collects (a scavenge needs no --expose-gc)
-    let junk: unknown[] = [];
-    let total = 0;
-    let pause = 0;
-    for (let round = 0; round < 200 && total === 0; round++) {
-      for (let i = 0; i < 50_000; i++) junk = [{ i, junk: i % 1000 === 0 ? [] : junk }];
-      await new Promise((r) => setTimeout(r, 5));
-      h.tick();
-      total += Number(h.got.get('gc_count'));
-      pause += Number(h.got.get('gc_pause_ms'));
-    }
-    h.stopAll();
-    expect(total).toBeGreaterThan(0);
-    expect(pause).toBeGreaterThan(0);
+    expect(gc.start).not.toHaveBeenCalled();
+    expect(gc.read).not.toHaveBeenCalled();
   });
 });

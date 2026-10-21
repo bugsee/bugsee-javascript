@@ -136,7 +136,7 @@ describe('ProcessTracker', () => {
       const { tracker, fs, advance } = mk({
         eventLoop: source('loop', log, () => ({ meanMs: ++n, maxMs: 0, p99Ms: 0 })),
         gc: source('gc', log, () => ({ count: 1, pauseMs: 1, maxPauseMs: 1 })),
-        eventLoopUtilization: () => 0.5,
+        eventLoopUtilization: () => 50,
       });
       const off = [
         tracker.on('eventLoop', () => {}),
@@ -159,17 +159,17 @@ describe('ProcessTracker', () => {
     });
 
     it("utilization is windowed: each tick answers the reader's CURRENT value, not a retained one", () => {
-      let u: number | undefined = 0.25;
+      let u: number | undefined = 25;
       const { tracker, fs } = mk({ eventLoopUtilization: () => u });
       const got: unknown[] = [];
       tracker.on('utilization', (x) => void got.push(x));
       fs.tick();
-      u = 0.75;
+      u = 75;
       fs.tick();
       u = undefined;
       fs.tick();
-      expect(got).toEqual([{ utilization: 0.25 }, { utilization: 0.75 }]);
-      expect(tracker.current('utilization')).toEqual({ utilization: 0.75 });
+      expect(got).toEqual([{ utilizationPercent: 25 }, { utilizationPercent: 75 }]);
+      expect(tracker.current('utilization')).toEqual({ utilizationPercent: 75 });
     });
   });
 
@@ -178,7 +178,7 @@ describe('ProcessTracker', () => {
       const { tracker, fs, advance } = mk({
         eventLoop: source('loop', [], () => ({ meanMs: 1, maxMs: 2, p99Ms: 3 })),
         gc: source('gc', [], () => ({ count: 3, pauseMs: 12.5, maxPauseMs: 8 })),
-        eventLoopUtilization: () => 0.5,
+        eventLoopUtilization: () => 50,
         v8Heap: () => ({ limit: 10, used: 4, available: 6, malloced: 1, peakMalloced: 2 }),
         memoryLimit: () => 500,
         availableMemory: () => 250,
@@ -192,7 +192,7 @@ describe('ProcessTracker', () => {
         // (100 000 + 50 000) µs busy / (1 000 ms * 1 000) µs wall / 2 cores * 100 = 7.5 %
         ['cpu', { userDelta: 100_000, systemDelta: 50_000, processPct: 7.5 }],
         ['eventLoop', { meanMs: 1, maxMs: 2, p99Ms: 3 }],
-        ['utilization', { utilization: 0.5 }],
+        ['utilization', { utilizationPercent: 50 }],
         ['v8Heap', { limit: 10, used: 4, available: 6, malloced: 1, peakMalloced: 2 }],
         ['memoryLimit', { bytes: 500 }],
         ['availableMemory', { bytes: 250 }],
@@ -347,14 +347,14 @@ describe('ProcessTracker', () => {
       let reads = 0;
       const { tracker, fs } = mk({
         gc: source('gc', [], () => ({ count: ++reads, pauseMs: 0, maxPauseMs: 0 })),
-        eventLoopUtilization: () => 0.25,
+        eventLoopUtilization: () => 25,
       });
       tracker.on('gc', () => {});
       tracker.on('utilization', () => {});
       expect(tracker.current('gc')).toBeUndefined();
       fs.tick();
       expect(tracker.current('gc')).toEqual({ count: 1, pauseMs: 0, maxPauseMs: 0 });
-      expect(tracker.current('utilization')).toEqual({ utilization: 0.25 });
+      expect(tracker.current('utilization')).toEqual({ utilizationPercent: 25 });
       expect(reads).toBe(1); // reading the sample did not consume another window
     });
 
@@ -474,6 +474,17 @@ describe('ProcessTracker', () => {
       expect(state.enabled).toBe(false);
     });
 
+    it('a stage the runtime cannot answer (gated off) arms NO sampling timer; a real stage alongside it arms exactly one', () => {
+      const { tracker, fs } = mk({ measuresGc: false });
+      const offGc = tracker.on('gc', () => {});
+      expect(fs.sets()).toBe(0); // nothing could ever be read: no timer for it
+      const offMem = tracker.on('memory', () => {});
+      expect(fs.sets()).toBe(1);
+      offMem();
+      expect(fs.live()).toBe(0); // only the unanswerable stage is left: the timer is released
+      offGc();
+    });
+
     it('measuresGc:false constructs no observer; the default wires the injected observer for gc entries', () => {
       const ctor = vi.fn();
       const gated = mk({ performanceObserver: ctor as never, measuresGc: false });
@@ -576,7 +587,7 @@ describe('ProcessTracker', () => {
       const got: unknown[] = [];
       tracker.on('utilization', (u) => void got.push(u));
       fs.tick();
-      expect(got).toEqual([{ utilization: 0.25 }]);
+      expect(got).toEqual([{ utilizationPercent: 25 }]);
     });
   });
 

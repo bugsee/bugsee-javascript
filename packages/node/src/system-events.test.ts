@@ -1,5 +1,6 @@
 import process from 'node:process';
 import type { SystemEvent } from '@bugsee/capture';
+import { ProcessTracker } from '@bugsee/trackers/node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProcessEvents } from './detection-providers';
 import { releaseSignalToDefault } from './process-policy';
@@ -235,3 +236,186 @@ describe('createNodeSystemEventsSource', () => {
     }
   });
 });
+
+describe('gc system event (C15)', () => {
+  type GcListener = (g: { count: number; pauseMs: number; maxPauseMs: number }) => void;
+  // A tracker double: records stage subscriptions so lazy attach/release is observable.
+  function fakeTracker() {
+    const listeners: GcListener[] = [];
+    const subscribed: string[] = [];
+    const tracker = {
+      on: (stage: string, listener: GcListener) => {
+        subscribed.push(stage);
+        listeners.push(listener);
+        return () => {
+          listeners.splice(listeners.indexOf(listener), 1);
+        };
+      },
+    };
+    return {
+      tracker: tracker as never,
+      listeners,
+      subscribed,
+      fire: (g: Parameters<GcListener>[0]) => {
+        for (const l of [...listeners]) l(g);
+      },
+    };
+  }
+
+  it('attaches NOTHING to the tracker until the first subscriber, and releases on the last unsubscribe', () => {
+    const t = fakeTracker();
+    const source = createNodeSystemEventsSource(fakeProc().proc, { processTracker: t.tracker });
+    expect(t.subscribed).toEqual([]); // constructed: still nothing attached
+    const off = source.onAny(() => {});
+    expect(t.subscribed).toEqual(['gc']);
+    expect(t.listeners).toHaveLength(1);
+    off();
+    expect(t.listeners).toHaveLength(0);
+  });
+
+  it('emits `gc` with camelCase {count, pauseMs, maxPauseMs} for an interval that had GC activity', () => {
+    const t = fakeTracker();
+    const { events } = activate2(t.tracker);
+    t.fire({ count: 3, pauseMs: 12.5, maxPauseMs: 8 });
+    expect(events.filter((e) => e.name === 'gc')).toEqual([
+      { name: 'gc', params: { count: 3, pauseMs: 12.5, maxPauseMs: 8 } },
+    ]);
+  });
+
+  it('a quiet interval (count 0) writes NOTHING: omit, never zero', () => {
+    const t = fakeTracker();
+    const { events } = activate2(t.tracker);
+    t.fire({ count: 0, pauseMs: 0, maxPauseMs: 0 });
+    expect(events.filter((e) => e.name === 'gc')).toEqual([]);
+  });
+
+  it('a subscription that throws is contained: the process events still work and onError hears it', () => {
+    const errors: unknown[] = [];
+    const proc = fakeProc();
+    const source = createNodeSystemEventsSource(proc.proc, {
+      processTracker: {
+        on: () => {
+          throw new Error('tracker down');
+        },
+      } as never,
+      onError: (e) => void errors.push(e),
+    });
+    const events: SystemEvent[] = [];
+    const off = source.onAny((_s, e) => events.push(e));
+    expect(events).toEqual([{ name: 'process_started' }]);
+    expect(proc.has('exit')).toBe(true);
+    expect(errors).toHaveLength(1);
+    off();
+    expect(proc.has('exit')).toBe(false);
+  });
+
+  it('a gc release that throws is reported and the process listeners are still removed', () => {
+    const errors: unknown[] = [];
+    const proc = fakeProc();
+    const source = createNodeSystemEventsSource(proc.proc, {
+      processTracker: {
+        on: () => () => {
+          throw new Error('release failed');
+        },
+      } as never,
+      onError: (e) => void errors.push(e),
+    });
+    const off = source.onAny(() => {});
+    off();
+    expect(errors).toHaveLength(1);
+    expect(proc.has('exit')).toBe(false);
+    expect(proc.has('SIGTERM')).toBe(false);
+  });
+
+  it('a throwing event listener is reported through onError (the emitter is wired to it)', () => {
+    const t = fakeTracker();
+    const errors: unknown[] = [];
+    const source = createNodeSystemEventsSource(fakeProc().proc, {
+      processTracker: t.tracker,
+      onError: (e) => void errors.push(e),
+    });
+    const off = source.onAny((_s, e) => {
+      if (e.name === 'gc') throw new Error('listener boom');
+    });
+    t.fire({ count: 1, pauseMs: 1, maxPauseMs: 1 });
+    expect(errors).toHaveLength(1);
+    off();
+  });
+
+  it('no tracker option: no gc subscription at all (captureSystemEvents:false never even builds one)', () => {
+    const { events } = activate(fakeProc().proc);
+    expect(events.map((e) => e.name)).toEqual(['process_started']);
+  });
+
+  it('end to end through a REAL ProcessTracker: one event per tick, observer armed only while subscribed', () => {
+    let interval = { count: 2, pauseMs: 5, maxPauseMs: 4 };
+    const calls: string[] = [];
+    let tick: (() => void) | undefined;
+    const tracker = new ProcessTracker({
+      gc: {
+        start: () => void calls.push('start'),
+        stop: () => void calls.push('stop'),
+        read: () => interval,
+      },
+      scheduler: {
+        setInterval: (cb: () => void) => {
+          tick = cb;
+          return {};
+        },
+        clearInterval: () => {
+          tick = undefined;
+        },
+      },
+    });
+    const source = createNodeSystemEventsSource(fakeProc().proc, { processTracker: tracker });
+    expect(calls).toEqual([]);
+    const events: SystemEvent[] = [];
+    const off = source.onAny((_s, e) => events.push(e));
+    expect(calls).toEqual(['start']);
+    tick?.();
+    interval = { count: 0, pauseMs: 0, maxPauseMs: 0 };
+    tick?.();
+    expect(events.filter((e) => e.name === 'gc')).toEqual([
+      { name: 'gc', params: { count: 2, pauseMs: 5, maxPauseMs: 4 } },
+    ]);
+    off();
+    expect(calls).toEqual(['start', 'stop']);
+    expect(tick).toBeUndefined();
+  });
+
+  it('measuresGc:false on the tracker (Bun/Deno): the observer is never constructed and no gc event is ever emitted', () => {
+    let constructed = 0;
+    class Counting {
+      constructor() {
+        constructed += 1;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    let tick: (() => void) | undefined;
+    const tracker = new ProcessTracker({
+      measuresGc: false,
+      performanceObserver: Counting as never,
+      scheduler: {
+        setInterval: (cb: () => void) => {
+          tick = cb;
+          return {};
+        },
+        clearInterval: () => {},
+      },
+    });
+    const source = createNodeSystemEventsSource(fakeProc().proc, { processTracker: tracker });
+    const events: SystemEvent[] = [];
+    source.onAny((_s, e) => events.push(e))();
+    expect(constructed).toBe(0);
+    tick?.();
+    expect(events.filter((e) => e.name === 'gc')).toEqual([]);
+  });
+});
+
+function activate2(processTracker: never) {
+  const source = createNodeSystemEventsSource(fakeProc().proc, { processTracker });
+  const events: SystemEvent[] = [];
+  const off = source.onAny((_s, e) => events.push(e));
+  return { events, off };
+}

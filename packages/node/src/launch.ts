@@ -81,6 +81,7 @@ import {
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
 import { BugseeOption, DEFAULT_FILENAMES, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { processTrackerFor } from '@bugsee/trackers/node';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeAppIdentitySource } from './app-identity-source';
@@ -987,7 +988,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     }),
   );
-  const nodeEventsSource = createNodeSystemEventsSource(proc);
+  // The `gc` event rides the SAME per-process tracker as the traces (it owns the one GC observer and arms it only
+  // while a `gc` listener exists). Merely resolving it is free; the source subscribes only once events are captured.
+  // Bun/Deno's `measuresGc:false` (set when their producer set was built) lives in that shared tracker.
+  const nodeEventsSource = createNodeSystemEventsSource(proc, {
+    // No seams handed over here: the producer set (built above, or by Bun/Deno) already bound this launch's, and a
+    // second bind would clobber a producer set's own timer seam.
+    processTracker: processTrackerFor({}, options.onError),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+  });
   let eventsSource: SystemEventSource = nodeEventsSource;
   if (options.wrapSystemEventsSource !== undefined) {
     try {

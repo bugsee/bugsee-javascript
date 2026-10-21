@@ -1,5 +1,6 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type EventSubscribable, InterceptorBase } from '@bugsee/core';
+import { createNodeSystemEventsSource } from '@bugsee/node';
 import {
   ElectronApplicationTracker,
   ElectronDisplayTracker,
@@ -558,5 +559,33 @@ describe('createElectronSystemEventsSource: a throwing domain subscription', () 
     powerMonitor.emit('on-ac');
     expect(names(seen)).toEqual(['power_ac']);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'inner' }));
+  });
+});
+
+describe('the node `gc` event through the mux (C15)', () => {
+  it('passes through exactly once, untouched; the mux adds no second GC subscription; release is complete', () => {
+    const gcListeners: Array<(g: { count: number; pauseMs: number; maxPauseMs: number }) => void> =
+      [];
+    const processTracker = {
+      on: (_stage: 'gc', l: (typeof gcListeners)[number]) => {
+        gcListeners.push(l);
+        return () => void gcListeners.splice(gcListeners.indexOf(l), 1);
+      },
+    };
+    const proc = { on: () => undefined, off: () => undefined, listeners: () => [] };
+    const inner = createNodeSystemEventsSource(proc as never, {
+      processTracker: processTracker as never,
+    });
+    const mux = createElectronSystemEventsSource(inner, {});
+    expect(gcListeners).toHaveLength(0); // lazy
+    const seen = vi.fn();
+    const off = mux.on('event', seen);
+    expect(gcListeners).toHaveLength(1); // ONE gc subscription: the node source's, none added by the mux
+    for (const l of gcListeners) l({ count: 2, pauseMs: 7.5, maxPauseMs: 5 });
+    expect(seen.mock.calls.filter((c) => (c[0] as SystemEvent).name === 'gc')).toEqual([
+      [{ name: 'gc', params: { count: 2, pauseMs: 7.5, maxPauseMs: 5 } }],
+    ]);
+    off();
+    expect(gcListeners).toHaveLength(0);
   });
 });

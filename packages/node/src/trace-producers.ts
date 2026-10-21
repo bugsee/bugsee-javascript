@@ -6,10 +6,10 @@ import {
   processTrackerFor,
 } from '@bugsee/trackers/node';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers, each subscribed to ONE
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers, each subscribed to ONE
 // stage of the shared per-process ProcessTracker (`@bugsee/trackers/node`, the abstraction layer over the runtime's
 // process APIs). This file is COMPOSITION only: which stage feeds which trace names, plus the runtime-identity gates
-// the platform packages pass through (`measures*`). The tracker owns every runtime read, its lifetime and its
+// the platform packages pass through (`measures*`). GC is deliberately NOT here: it is the `gc` system event (`system-events.ts`), not a trace. The tracker owns every runtime read, its lifetime and its
 // honesty rules (a stage that cannot answer emits nothing, never a zero).
 
 type Stage = keyof ProcessEvents;
@@ -99,7 +99,7 @@ class EventLoopUtilizationProducer extends StageProducer<'utilization'> {
   }
   protected override baseline(): void {}
   protected publish(u: ProcessEvents['utilization']): void {
-    this.emit('event_loop_utilization', u.utilization);
+    this.emit('event_loop_utilization', u.utilizationPercent); // percent 0-100, one decimal
   }
 }
 
@@ -143,22 +143,6 @@ class AvailableMemoryProducer extends StageProducer<'availableMemory'> {
   }
 }
 
-// Emitted every tick, never held: a quiet interval is a TRUE zero (the observer is running), and a source that
-// stops answering must be omitted rather than re-recorded from a held value. No baseline: the interval opens at
-// activation, so nothing has been observed yet (a zero would be invented).
-class GcProducer extends StageProducer<'gc'> {
-  readonly name = 'gc';
-  constructor(tracker: ProcessTracker) {
-    super(tracker, 'gc');
-  }
-  protected override baseline(): void {}
-  protected publish(g: ProcessEvents['gc']): void {
-    this.emit('gc_count', g.count);
-    this.emit('gc_pause_ms', g.pauseMs);
-    this.emit('gc_pause_max_ms', g.maxPauseMs);
-  }
-}
-
 class UptimeProducer extends StageProducer<'uptime'> {
   readonly name = 'process-uptime';
   constructor(tracker: ProcessTracker) {
@@ -171,7 +155,7 @@ class UptimeProducer extends StageProducer<'uptime'> {
 
 /**
  * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresAvailableMemory`,
- * `measuresGc`; see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
+ * `measuresGc` (gates the `gc` EVENT source, not a trace); see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
  * event-loop histogram, Bun the V8 heap, both the available-memory and GC readers.
  */
 export interface NodeTraceProducerDeps extends ProcessTrackerEnv {
@@ -191,7 +175,6 @@ export function createNodeSystemTraceProducers(deps: NodeTraceProducerDeps = {})
     new V8HeapProducer(tracker),
     new MemoryLimitProducer(tracker),
     new AvailableMemoryProducer(tracker),
-    new GcProducer(tracker),
     new UptimeProducer(tracker),
   ];
 }
