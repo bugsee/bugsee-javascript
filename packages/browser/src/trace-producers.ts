@@ -760,7 +760,9 @@ export function createBrowserSystemTraceProducers(
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle),
-          ...(env.hostOwnedTraces?.includes('displays') === true ? [] : [new DisplaysProducer(ui)]),
+          ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes('displays')
+            ? []
+            : [new DisplaysProducer(ui)]),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),

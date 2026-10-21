@@ -926,6 +926,15 @@ async function buildLaunch(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,
   );
+  // A public option: anything but an array of strings is IGNORED (the producers stay on) and reported, never a failed launch.
+  const rawHostOwned: unknown = options.hostOwnedTraces;
+  const hostOwnedTraces = Array.isArray(rawHostOwned) ? (rawHostOwned as string[]) : undefined;
+  if (rawHostOwned !== undefined && !Array.isArray(rawHostOwned)) {
+    reportGuarded(
+      options.onError,
+      new Error('Bugsee: hostOwnedTraces must be an array of trace names; it is ignored'),
+    );
+  }
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
@@ -937,9 +946,7 @@ async function buildLaunch(
           // Every surface comes from the INJECTED window/document, never the host globals.
           ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          ...(options.hostOwnedTraces !== undefined
-            ? { hostOwnedTraces: options.hostOwnedTraces }
-            : {}),
+          ...(hostOwnedTraces !== undefined ? { hostOwnedTraces } : {}),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

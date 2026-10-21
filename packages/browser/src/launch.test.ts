@@ -2144,6 +2144,28 @@ describe('launch', () => {
         expect(await rowsOf(store, 'displays')).toEqual([]);
       });
 
+      it.each([
+        ['a string', 'displays'],
+        ['a number', 7],
+        ['an object', { includes: 1 }],
+      ])('a non-array hostOwnedTraces (%s) is ignored and reported (displays stays on), never a failed launch', async (_n, bad) => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError, hostOwnedTraces: bad as never }),
+        );
+        expect(await rowsOf(store, 'displays')).toEqual([
+          [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+        ]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
+      });
+
       it('displays is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
         stubSensors(); // the stubbed screen has no width/height
         const w = fakeWindow();

@@ -276,6 +276,15 @@ describe('createBrowserSystemTraceProducers: displays + main_thread_lag_ms', () 
     expect(errors).toEqual([]);
   });
 
+  it('a non-array hostOwnedTraces never throws and never suppresses (a string is not a substring match)', () => {
+    const lifecycle = new ApplicationTracker({ window: mkTarget() });
+    for (const bad of ['displays', 'displays-x', 7, { includes: () => true }]) {
+      expect(
+        names(createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: bad as never })),
+      ).toContain('displays');
+    }
+  });
+
   it('hostOwnedTraces: [displays] drops ONLY the displays producer (the host writes it)', () => {
     const win = mkTarget();
     const lifecycle = new ApplicationTracker({ window: win });
