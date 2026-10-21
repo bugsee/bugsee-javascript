@@ -2144,6 +2144,45 @@ describe('launch', () => {
         expect(await rowsOf(store, 'displays')).toEqual([]);
       });
 
+      it('a non-string element in hostOwnedTraces is dropped and reported; the valid names still apply', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            onError,
+            hostOwnedTraces: [123, 'displays'] as never,
+          }),
+        );
+        expect(await rowsOf(store, 'displays')).toEqual([]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
+      });
+
+      it('a clean hostOwnedTraces reports nothing', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const onError = vi.fn();
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: memStore(),
+            onError,
+            hostOwnedTraces: ['displays'],
+          }),
+        );
+        expect(onError).not.toHaveBeenCalled();
+      });
+
       it.each([
         ['a string', 'displays'],
         ['a number', 7],

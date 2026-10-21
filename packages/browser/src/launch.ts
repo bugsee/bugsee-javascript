@@ -928,11 +928,18 @@ async function buildLaunch(
   );
   // A public option: anything but an array of strings is IGNORED (the producers stay on) and reported, never a failed launch.
   const rawHostOwned: unknown = options.hostOwnedTraces;
-  const hostOwnedTraces = Array.isArray(rawHostOwned) ? (rawHostOwned as string[]) : undefined;
-  if (rawHostOwned !== undefined && !Array.isArray(rawHostOwned)) {
+  const hostOwnedTraces = Array.isArray(rawHostOwned)
+    ? rawHostOwned.filter((n): n is string => typeof n === 'string')
+    : undefined;
+  if (
+    rawHostOwned !== undefined &&
+    (hostOwnedTraces === undefined || hostOwnedTraces.length !== (rawHostOwned as unknown[]).length)
+  ) {
     reportGuarded(
       options.onError,
-      new Error('Bugsee: hostOwnedTraces must be an array of trace names; it is ignored'),
+      new Error(
+        'Bugsee: hostOwnedTraces must be an array of trace-name strings; anything else is ignored',
+      ),
     );
   }
   client.addCaptureProvider(
