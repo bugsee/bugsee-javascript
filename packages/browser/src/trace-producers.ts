@@ -259,9 +259,9 @@ export class OrientationProducer extends TraceProducerBase {
   }
 
   #publish(s: OrientationState): void {
-    // A bare notification (the engine could not read an orientation) has nothing to report.
+    // Both `type` and `angle`, or nothing: a bare or partial notification has nothing to report (spec).
     if (s.type === undefined || s.angle === undefined) return;
-    this.emitIfChanged('orientation', orientationToWire(s.type, s.angle));
+    this.emitIfChanged('orientation', orientationToWire(s.type));
   }
 }
 

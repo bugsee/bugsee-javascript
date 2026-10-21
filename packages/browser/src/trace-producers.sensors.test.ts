@@ -325,6 +325,17 @@ describe('OrientationProducer', () => {
     expect(out).toEqual([]);
   });
 
+  it('writes nothing unless the engine supplies BOTH type and angle (never an angle-only or type-only guess)', () => {
+    for (const partial of [{ angle: 90 }, { type: 'landscape-primary' }, {}]) {
+      const orientation = Object.assign(mkTarget(), partial);
+      const { out } = startAll([
+        new OrientationProducer(new UiTracker({ screen: { orientation } })),
+      ]);
+      orientation.fire('change');
+      expect(out).toEqual([]);
+    }
+  });
+
   it('emits nothing where the engine has no screen.orientation', () => {
     expect(startAll([new OrientationProducer(new UiTracker({ screen: {} }))]).out).toEqual([]);
   });
