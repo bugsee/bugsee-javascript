@@ -6,7 +6,7 @@ import {
   processTrackerFor,
 } from '@bugsee/trackers/node';
 
-// Node `traces.system` producers (mirrors the mobile tracker/producer split): ten producers, each subscribed to ONE
+// Node `traces.system` producers (mirrors the mobile tracker/producer split): nine producers, each subscribed to ONE
 // stage of the shared per-process ProcessTracker (`@bugsee/trackers/node`, the abstraction layer over the runtime's
 // process APIs). This file is COMPOSITION only: which stage feeds which trace names, plus the runtime-identity gates
 // the platform packages pass through (`measures*`). The tracker owns every runtime read, its lifetime and its

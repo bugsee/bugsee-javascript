@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type BrowserProbe, buildBrowserEnvironment, realBrowserProbe } from './environment';
+import {
+  type BrowserProbe,
+  buildBrowserEnvironment,
+  realBrowserProbe,
+  withoutUptime,
+} from './environment';
 
 // A probe with every reader populated (the Chromium-rich case).
 const CHROME_MAC_UA =
@@ -343,5 +348,27 @@ describe('buildBrowserEnvironment — app.uptime_s (document lifetime at session
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('withoutUptime', () => {
+  it('drops app.uptime_s and keeps every other field, without mutating the input', () => {
+    const env = buildBrowserEnvironment(
+      { sdkVersion: '1.0.0', appVersion: '2.0.0', uptimeSeconds: 5 },
+      fullProbe,
+    );
+    expect(env.app?.uptime_s).toBe(5);
+    const stripped = withoutUptime(env);
+    expect('uptime_s' in (stripped.app ?? {})).toBe(false);
+    expect(stripped.app?.version).toBe('2.0.0');
+    expect(stripped.sdk).toEqual(env.sdk);
+    expect(env.app?.uptime_s).toBe(5);
+  });
+
+  it('returns an envelope that has no uptime (or no app) unchanged', () => {
+    const noUptime = buildBrowserEnvironment({ sdkVersion: '1.0.0' }, fullProbe);
+    expect(withoutUptime(noUptime)).toBe(noUptime);
+    const noApp = { ...noUptime, app: undefined };
+    expect(withoutUptime(noApp)).toBe(noApp);
   });
 });

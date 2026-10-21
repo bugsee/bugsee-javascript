@@ -170,6 +170,16 @@ function uptimeField(seconds: number | undefined): { uptime_s?: number } {
     : {};
 }
 
+/**
+ * The environment WITHOUT `app.uptime_s`, for rebuilding a PRIOR process's incident at recovery: the live
+ * session's uptime is the new process's, so it would be wrong for the old incident. Omitted rather than wrong.
+ */
+export function withoutUptime(env: EnvironmentEnvelope): EnvironmentEnvelope {
+  if (env.app === undefined || !('uptime_s' in env.app)) return env;
+  const { uptime_s: _dropped, ...app } = env.app;
+  return { ...env, app };
+}
+
 export function buildNodeEnvironment(
   input: NodeEnvironmentInput,
   probe: SystemProbe = realSystemProbe,

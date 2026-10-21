@@ -7,6 +7,7 @@ import {
   realSystemProbe,
   type SystemProbe,
   sanitizeHardwareGpu,
+  withoutUptime,
 } from './environment';
 
 const fakeProbe: SystemProbe = {
@@ -389,5 +390,27 @@ describe('buildNodeEnvironment — app.uptime_s (process uptime at session start
   it('the real probe reads process.uptime() in seconds', () => {
     const value = realSystemProbe.uptimeSeconds?.() as number;
     expect(Math.abs(value - process.uptime())).toBeLessThan(5);
+  });
+});
+
+describe('withoutUptime', () => {
+  it('drops app.uptime_s and keeps every other field, without mutating the input', () => {
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0', appVersion: '2.0.0', uptimeSeconds: 5 },
+      fakeProbe,
+    );
+    expect(env.app?.uptime_s).toBe(5);
+    const stripped = withoutUptime(env);
+    expect('uptime_s' in (stripped.app ?? {})).toBe(false);
+    expect(stripped.app?.version).toBe('2.0.0');
+    expect(stripped.sdk).toEqual(env.sdk);
+    expect(env.app?.uptime_s).toBe(5);
+  });
+
+  it('returns an envelope that has no uptime (or no app) unchanged', () => {
+    const noUptime = buildNodeEnvironment({ sdkVersion: '1.0.0' }, fakeProbe);
+    expect(withoutUptime(noUptime)).toBe(noUptime);
+    const noApp = { ...noUptime, app: undefined };
+    expect(withoutUptime(noApp)).toBe(noApp);
   });
 });

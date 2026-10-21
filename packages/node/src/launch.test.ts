@@ -69,7 +69,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hashAppToken } from './data-location';
 import { type SystemProbe, SystemProbeToken } from './environment';
 import type { HangLevel } from './event-loop-watchdog';
-import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime } from './launch';
+import { type BugseeLaunchOptions, launch, launchCore, type NodeRuntime, relaunch } from './launch';
 import { createNodeRequestContextStore, RequestContextStoreToken } from './request-context-store';
 import { createNodeSystemTraceProducers } from './trace-producers';
 
@@ -1977,6 +1977,35 @@ describe('launch — capture recovery', () => {
     expect(onError).not.toHaveBeenCalled(); // recovery completed cleanly
   });
 
+  it('a recovered incident carries NO app.uptime_s (it is the new process’s), while a live report does', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-uptime-'));
+    seedPriorGeneration(dir, 500, { m: 'pre-crash' }, true);
+    const { fn: transport, puts } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        carrier: {},
+        systemProbe: { ...probe, uptimeSeconds: () => 77 },
+      }),
+    );
+    clients.push(client);
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    const envOf = (put: Uint8Array) =>
+      (
+        JSON.parse(strFromU8(unzipSync(put)['request.json'] as Uint8Array)) as {
+          environment: { app: Record<string, unknown> };
+        }
+      ).environment.app;
+    expect(envOf(puts[0] as Uint8Array)).not.toHaveProperty('uptime_s');
+    await client.logException(new Error('live'));
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(2));
+    expect(envOf(puts[puts.length - 1] as Uint8Array).uptime_s).toBe(77);
+  });
+
   it('writes a recovery marker for a live incident, tagged with this launch’s generation', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bugsee-recover-write-'));
     const client = launchTracked('tok', baseOptions({ clock: fixedClock, dataDir: dir }));
@@ -3774,19 +3803,59 @@ describe('launch — environment.app.uptime_s (snapshot at session start)', () =
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('omits the key when the probe cannot answer, and a relaunch re-stamps', () => {
+  it('omits the key when the probe cannot answer', () => {
     const none = launchCore('tok', baseOptions({ carrier: {}, captureStore: memStore() }));
     clients.push(none.client);
     expect('uptime_s' in (none.internals?.getEnvironment().app ?? {})).toBe(false);
-    const again = launchCore(
+  });
+
+  it('a relaunch() re-stamps the uptime from the probe (the new session reports the new value)', async () => {
+    const carrier = {};
+    const { fn: transport, puts } = recordingTransport();
+    let uptime = 10;
+    const opts = () =>
+      baseOptions({
+        carrier,
+        transport,
+        captureStore: memStore(),
+        systemProbe: { ...probe, uptimeSeconds: () => uptime },
+      });
+    const uptimeOf = (put: Uint8Array) =>
+      (
+        JSON.parse(strFromU8(unzipSync(put)['request.json'] as Uint8Array)) as {
+          environment: { app: { uptime_s?: number } };
+        }
+      ).environment.app.uptime_s;
+    const first = launch('tok', opts());
+    clients.push(first);
+    await first.logException(new Error('a'));
+    expect(uptimeOf(puts[0] as Uint8Array)).toBe(10);
+    uptime = 99;
+    const next = await relaunch(opts());
+    clients.push(next);
+    await next.logException(new Error('b'));
+    expect(uptimeOf(puts[puts.length - 1] as Uint8Array)).toBe(99);
+  });
+
+  it('a probe whose uptimeSeconds throws omits the field and reports once to onError; launch survives', () => {
+    const onError = vi.fn();
+    const boom = new Error('probe broke');
+    const { client, internals } = launchCore(
       'tok',
       baseOptions({
         carrier: {},
         captureStore: memStore(),
-        systemProbe: { ...probe, uptimeSeconds: () => 99 },
+        onError,
+        systemProbe: {
+          ...probe,
+          uptimeSeconds: () => {
+            throw boom;
+          },
+        },
       }),
     );
-    clients.push(again.client);
-    expect(again.internals?.getEnvironment().app?.uptime_s).toBe(99);
+    clients.push(client);
+    expect('uptime_s' in (internals?.getEnvironment().app ?? {})).toBe(false);
+    expect(onError).toHaveBeenCalledWith(boom);
   });
 });

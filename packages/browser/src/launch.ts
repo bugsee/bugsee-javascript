@@ -86,6 +86,7 @@ import {
   BrowserProbeToken,
   buildBrowserEnvironment,
   realBrowserProbe,
+  withoutUptime,
 } from './environment';
 import { boundMatchMedia, hostRead } from './host-global';
 import { bindInputBlackout, createBrowserInputSource } from './input-source';
@@ -716,7 +717,12 @@ async function buildLaunch(
     BROWSER_APP_VERSION_HINT,
   );
   // app.uptime_s is a SNAPSHOT at session start (launch), not re-read per report.
-  const sessionUptimeSeconds = probe.uptimeSeconds?.();
+  let sessionUptimeSeconds: number | undefined;
+  try {
+    sessionUptimeSeconds = probe.uptimeSeconds?.();
+  } catch (error) {
+    reportGuarded(options.onError, error); // a throwing custom probe omits the field, never breaks launch
+  }
   const getEnvironment = () =>
     buildBrowserEnvironment(
       {
@@ -1137,7 +1143,12 @@ async function buildLaunch(
                   backend,
                   currentGeneration: -1,
                   markers,
-                  context: () => ({ appToken, environment: getEnvironment(), clock }),
+                  // a recovered incident belongs to a PRIOR page/process: this launch's uptime would be wrong for it
+                  context: () => ({
+                    appToken,
+                    environment: withoutUptime(getEnvironment()),
+                    clock,
+                  }),
                   uploadPipeline: baseUploadPipeline,
                   skipReportIds,
                   ...(options.onError !== undefined ? { onError: options.onError } : {}),

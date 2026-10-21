@@ -20,7 +20,7 @@ import {
 } from './runtime-readers';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
-// owns everything the runtime can say about its own process, as TEN independent stages:
+// owns everything the runtime can say about its own process, as NINE independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
 //   systemMemory    os.totalmem()/freemem()                        -> { total, free }
