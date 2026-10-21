@@ -481,7 +481,7 @@ describe('launch', () => {
     const store = memStore();
     const w = fakeWindow();
     const doc = fakeWindow();
-    const docWin = { ...doc.win, visibilityState: 'hidden' };
+    const docWin = { ...doc.win, visibilityState: 'visible' };
     const client = await launchTracked(
       'tok',
       baseOptions({
@@ -497,6 +497,8 @@ describe('launch', () => {
     expect(w.count('online')).toBe(1);
     expect(w.count('offline')).toBe(1);
     expect(w.count('orientationchange')).toBe(1);
+    // The page starts visible, so only a REAL change to hidden is a background transition.
+    docWin.visibilityState = 'hidden';
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
       (e) => (e.data as { name: string }).name,
