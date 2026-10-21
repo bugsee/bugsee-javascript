@@ -3,6 +3,7 @@ import { bytesToMegabytes } from '@bugsee/protocol';
 import type {
   AppProcessMetric,
   DisplayInfo,
+  ElectronApplicationTracker,
   ElectronDisplayTracker,
   ElectronProcessTracker,
 } from '@bugsee/trackers/electron';
@@ -32,8 +33,12 @@ import type {
 //
 //   [{ id, native_id, state?, type?, width, height, natural_width?, natural_height?, scale?, max_fps?, rotation? }]
 //
-// `id` is the stable per-session index (primary first, never reused), `native_id` Electron's own id, `width`/`height` DEVICE
-// pixels in the current orientation, `rotation` quarter turns, `state:'on'` on the primary display only (see the tracker).
+// `id` `0` is the display showing the KEY window (focused window, else most recently focused, else first created; the primary
+// display when there is none), the others follow in ascending order of Electron's id; `native_id` is Electron's own id,
+// `width`/`height` DEVICE pixels in the current orientation, `rotation` quarter turns, `state:'on'` on id 0 only (see the
+// tracker). `displayId` is never written. The numbering moves with the key window, so the list is ALSO re-read when a window
+// gains/loses focus or finishes moving (the application tracker's `windowFocus` / `windowMoved` stages, armed only while
+// this producer runs); a re-read that changes nothing is dropped by `emitIfChanged`. Windows on other displays are not recorded.
 // A key is omitted when Electron did not supply it, a display with no id/size (or id -1) is dropped, and the trace is never
 // `[]`. It is a HELD step trace (`emitIfChanged`): the list when the producer starts, then the fresh list after every display
 // added/removed/metrics-changed. HELD-VALUE CAVEAT: it is absent only BEFORE its first emit. A later refresh that cannot read
@@ -98,18 +103,35 @@ function wireDisplay(d: DisplayInfo): Record<string, unknown> {
 class DisplaysProducer extends TraceProducerBase {
   readonly name = 'displays';
   #off: (() => void) | undefined;
-  constructor(private readonly tracker: ElectronDisplayTracker) {
+  #offKey: Array<() => void> = [];
+  constructor(
+    private readonly tracker: ElectronDisplayTracker,
+    private readonly application?: ElectronApplicationTracker,
+  ) {
     super();
   }
   protected onStart(): void {
     // subscribe FIRST (arming the tracker's listeners), then the baseline read: no change can fall between the two
     this.#off = this.tracker.on('displays', (list) => this.#publish(list));
+    // the key window can change display without any screen event: re-read when focus or position changes
+    if (this.application !== undefined) {
+      const reread = (): void => {
+        const list = this.tracker.current('displays');
+        if (list !== undefined) this.#publish(list);
+      };
+      this.#offKey = [
+        this.application.on('windowFocus', reread),
+        this.application.on('windowMoved', reread),
+      ];
+    }
     const list = this.tracker.current('displays');
     if (list !== undefined) this.#publish(list);
   }
   protected override onStop(): void {
     this.#off?.();
     this.#off = undefined;
+    for (const off of this.#offKey) off();
+    this.#offKey = [];
   }
   #publish(list: { displays: DisplayInfo[] }): void {
     this.emitIfChanged('displays', list.displays.map(wireDisplay));
@@ -120,6 +142,8 @@ class DisplaysProducer extends TraceProducerBase {
 export interface ElectronTraceTrackers {
   process?: ElectronProcessTracker;
   display?: ElectronDisplayTracker;
+  /** Resolves the key window; without it the `displays` list follows the primary display (and no focus changes). */
+  application?: ElectronApplicationTracker;
 }
 
 /** The Electron producers, each subscribed to ONE stage of a shared tracker. */
@@ -128,6 +152,8 @@ export function createElectronSystemTraceProducers(
 ): TraceProducer[] {
   return [
     ...(trackers.process !== undefined ? [new AppMetricsProducer(trackers.process)] : []),
-    ...(trackers.display !== undefined ? [new DisplaysProducer(trackers.display)] : []),
+    ...(trackers.display !== undefined
+      ? [new DisplaysProducer(trackers.display, trackers.application)]
+      : []),
   ];
 }

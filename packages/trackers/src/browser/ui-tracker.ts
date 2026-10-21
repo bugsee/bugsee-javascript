@@ -41,6 +41,14 @@ export interface ScreenSizeState {
   width: number;
   height: number;
   dpr: number;
+  /**
+   * The PAGE zoom (`1` = 100%), `outerWidth / innerWidth` rounded to 2 decimals. Omitted when not derivable: a missing,
+   * zero or non-finite width, a ratio outside 0.25-5, or a touch-first device (`(pointer: coarse)`: pinch zoom is not
+   * page zoom). Over-reads when docked DevTools / a side panel narrows `innerWidth` (undetectable from the page).
+   */
+  zoom?: number;
+  /** `devicePixelRatio / zoom` rounded to 2 decimals: the zoom-independent device scale. Present exactly when `zoom` is. */
+  deviceScale?: number;
 }
 export interface ViewportState {
   width: number;
@@ -106,6 +114,7 @@ export interface UiEnv {
     readonly devicePixelRatio?: unknown;
     readonly innerWidth?: unknown;
     readonly innerHeight?: unknown;
+    readonly outerWidth?: unknown;
     /** Where `visualViewport` defaults from when the env supplies none. */
     readonly visualViewport?: UiEnv['visualViewport'] | null;
   };
@@ -168,6 +177,9 @@ const UI_STAGES: readonly UiStage[] = [
   'displayMode',
   'frameRate',
 ];
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 5;
+const COARSE_POINTER = '(pointer: coarse)';
 const DARK = '(prefers-color-scheme: dark)';
 const REDUCED = '(prefers-reduced-motion: reduce)';
 const DISPLAY_MODES = ['fullscreen', 'standalone', 'minimal-ui'] as const;
@@ -358,9 +370,8 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
         const width = hostRead(() => screen.width, report);
         const height = hostRead(() => screen.height, report);
         const dpr = hostRead(() => this.#env.window?.devicePixelRatio, report);
-        return positive(width) && positive(height) && positive(dpr)
-          ? { width, height, dpr }
-          : undefined;
+        if (!(positive(width) && positive(height) && positive(dpr))) return undefined;
+        return { width, height, dpr, ...this.#zoomOf(dpr) };
       }
       case 'viewport': {
         const win = hostRead(() => this.#env.window, report);
@@ -406,6 +417,21 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     if (injected !== undefined && injected !== null) return injected;
     const fromWindow = hostRead(() => this.#env.window?.visualViewport, this.#report);
     return fromWindow ?? undefined;
+  }
+
+  /** The page zoom and the device scale it implies (see {@link ScreenSizeState.zoom}); `{}` when not derivable. */
+  #zoomOf(dpr: number): { zoom?: number; deviceScale?: number } {
+    const report = this.#report;
+    const outer = hostRead(() => this.#env.window?.outerWidth, report);
+    const inner = hostRead(() => this.#env.window?.innerWidth, report);
+    if (!(positive(outer) && positive(inner))) return {};
+    const ratio = outer / inner;
+    if (!(ratio >= MIN_ZOOM && ratio <= MAX_ZOOM)) return {};
+    // pinch zoom (`visualViewport.scale`) is not page zoom: a touch-first device does not derive one
+    if (this.#matches(COARSE_POINTER) === true) return {};
+    const zoom = Math.round(ratio * 100) / 100;
+    const deviceScale = Math.round((dpr / ratio) * 100) / 100;
+    return zoom > 0 && deviceScale > 0 ? { zoom, deviceScale } : {};
   }
 
   #matches(query: string): boolean | undefined {
@@ -526,6 +552,38 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
             'change',
             this.#guarded(() => this.#refresh(['screenSize'])),
           ),
+      },
+      {
+        // A change of the pixel ratio (page zoom, another monitor) fires no `resize` on every engine, but it does flip
+        // the `(resolution: Ndppx)` query for the CURRENT ratio; re-arm it on the new ratio after every change.
+        id: 'dpr',
+        kinds: ['screenSize'],
+        attach: (offs) => {
+          let live = true;
+          let release: Array<() => void> = [];
+          const disarm = (): void => {
+            for (const off of release) off();
+            release = [];
+          };
+          offs.push(() => {
+            live = false;
+            disarm();
+          });
+          const arm = (): void => {
+            disarm();
+            const dpr = hostRead(() => env().window?.devicePixelRatio, this.#report);
+            if (!live || !positive(dpr)) return;
+            this.#watchQuery(
+              release,
+              `(resolution: ${dpr}dppx)`,
+              this.#guarded(() => {
+                this.#refresh(['screenSize']);
+                arm();
+              }),
+            );
+          };
+          arm();
+        },
       },
       {
         id: 'visualViewport',

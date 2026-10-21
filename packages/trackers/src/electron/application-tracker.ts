@@ -2,11 +2,12 @@ import { createTrackerRegistry } from '../tracker-registry';
 import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-tracker';
 
 // Electron MAIN-process APPLICATION tracker (domain tracker, design §15.2/§15.4 TR9; Android reference:
-// BugseeTrackerApplication). It owns the app's WINDOWS and renderers as THREE stages, each armed only while it has a
+// BugseeTrackerApplication). It owns the app's WINDOWS and renderers as FOUR stages, each armed only while it has a
 // subscriber and released when the last leaves:
 //
 //   windowFocus            BrowserWindow 'focus' / 'blur'              -> { focused: boolean, windowId? }
 //   windowVisibility       BrowserWindow 'show' / 'hide'               -> { visible: boolean, windowId? }
+//   windowMoved            BrowserWindow 'moved'                       -> { windowId? }   (macOS/Windows end-of-drag)
 //   rendererResponsiveness webContents 'unresponsive' / 'responsive'   -> { responsive: boolean, webContentsId? }
 //
 // DISCOVERY. Apps typically call `launchMain` and then `createWindow()` from `whenReady()`, so a stage watches BOTH the
@@ -23,6 +24,11 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // (window) / `destroyed` (webContents) event WITHOUT removing listeners from it (touching a destroyed Electron object
 // throws, and its listeners died with it); at release, destroyed objects are skipped. Nothing here keeps a closed window.
 //
+// KEY WINDOW (spec platforms/javascript.md "Several windows in one session"): `keyWindowBounds()` resolves the ONE window
+// the session records per-window state for: the focused `BrowserWindow` (`getFocusedWindow`), else the most recently
+// focused one (remembered while the `windowFocus` stage is armed; forgotten on its `closed`), else the first window
+// `getAllWindows()` lists (creation order). Every read is guarded and reported; a destroyed window is never the key window.
+//
 // Ids are Electron's numeric `id`, omitted when absent: the window TITLE/URL is never read. `electron` is never
 // imported: `app` and `BrowserWindow` are INJECTED structurally. SINGLETON per `app` object
 // (`electronApplicationTrackerFor`); a relaunch rebinds the reporter and the `BrowserWindow` seam.
@@ -33,11 +39,14 @@ export type ApplicationAppSource = EmitterSource;
 /** The slice of Electron's `BrowserWindow` class this tracker uses: only the static `getAllWindows`. */
 export interface BrowserWindowSource {
   getAllWindows?(): unknown;
+  /** The focused window, or null when the app is not focused. */
+  getFocusedWindow?(): unknown;
 }
 
 export interface ElectronApplicationEvents {
   windowFocus: { focused: boolean; windowId?: number };
   windowVisibility: { visible: boolean; windowId?: number };
+  windowMoved: { windowId?: number };
   rendererResponsiveness: { responsive: boolean; webContentsId?: number };
 }
 
@@ -54,6 +63,7 @@ interface Watched extends EmitterSource {
   id?: unknown;
   isDestroyed?(): unknown;
   webContents?: unknown;
+  getBounds?(): unknown;
 }
 
 interface WatchConfig<S extends AppStage> {
@@ -93,6 +103,15 @@ const WATCH: { [S in AppStage]: WatchConfig<S> } = {
     events: {
       show: (id) => ({ visible: true, ...withId('windowId', id) }),
       hide: (id) => ({ visible: false, ...withId('windowId', id) }),
+    },
+  },
+  windowMoved: {
+    createdEvent: 'browser-window-created',
+    closeEvent: 'closed',
+    existing: windowsOf,
+    idKey: 'windowId',
+    events: {
+      moved: (id) => withId('windowId', id),
     },
   },
   rendererResponsiveness: {
@@ -135,10 +154,13 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
   protected readonly stages: readonly AppStage[] = [
     'windowFocus',
     'windowVisibility',
+    'windowMoved',
     'rendererResponsiveness',
   ];
   readonly #app: ApplicationAppSource | undefined;
   #env: ElectronApplicationEnv;
+  /** The window that last took focus (only seen while `windowFocus` is armed). */
+  #lastFocused: Watched | undefined;
 
   constructor(env: ElectronApplicationEnv = {}, onError?: (error: unknown) => unknown) {
     super(onError);
@@ -160,6 +182,38 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     this.sync();
   }
 
+  /** The key window (see the header), or undefined when there is none. Never throws. */
+  #keyWindow(): Watched | undefined {
+    const usable = (w: unknown): w is Watched =>
+      typeof w === 'object' && w !== null && !destroyed(w as Watched);
+    try {
+      const focused = this.#env.BrowserWindow?.getFocusedWindow?.();
+      if (usable(focused)) return focused;
+    } catch (error) {
+      this.report(error);
+    }
+    const last = this.#lastFocused;
+    if (last !== undefined && usable(last)) return last;
+    try {
+      return windowsOf(this.#env).find(usable);
+    } catch (error) {
+      this.report(error);
+      return undefined;
+    }
+  }
+
+  /** The key window's bounds (a rectangle), or undefined when there is no key window or it cannot say. Never throws. */
+  keyWindowBounds(): unknown {
+    const win = this.#keyWindow();
+    if (win === undefined) return undefined;
+    try {
+      return win.getBounds?.();
+    } catch (error) {
+      this.report(error);
+      return undefined;
+    }
+  }
+
   protected attachStage(stage: AppStage): (() => void) | undefined {
     const app = this.#app;
     if (app === undefined) return undefined;
@@ -174,7 +228,10 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
       const bindings = Object.entries(config.events).map(([event, payload]) => ({
         src: obj,
         event,
-        listener: () => this.emit(stage, payload(idOf(obj)) as never),
+        listener: () => {
+          if (event === 'focus') this.#lastFocused = obj; // only the windowFocus stage binds `focus`
+          this.emit(stage, payload(idOf(obj)) as never);
+        },
       }));
       bindings.push({
         src: obj,
@@ -182,6 +239,7 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
         // closed/destroyed: forget it without touching the (dead) object
         listener: () => {
           tracked.delete(candidate);
+          if (this.#lastFocused === obj) this.#lastFocused = undefined;
         },
       });
       const release = bindAll(bindings, this.report);

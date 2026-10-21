@@ -321,26 +321,27 @@ export class FpsProducer extends TraceProducerBase {
 
 /**
  * `displays` (the MOBILE name and list shape, spec bundle/traces.md `displays`; it replaces the retired JS-specific
- * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, rotation? }]` where `width`/`height` are
- * DEVICE pixels, `round(screen.width * devicePixelRatio)` / `round(screen.height * devicePixelRatio)`, `scale` is the
- * `devicePixelRatio` used, and `rotation` is the Screen Orientation `angle` / 90 (quarter turns; the trace field means Android's
- * `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device), omitted when the engine gives no angle or one that is not a multiple of 90. The browser
- * cannot tell the display `type`, `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the
- * page is on, as iOS does (a page cannot observe power).
+ * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, zoom?, rotation? }]`. `width`/`height` are
+ * DEVICE pixels, `round(screen.width * deviceScale)` / `round(screen.height * deviceScale)`, `scale` is that device scale
+ * factor, `zoom` the page zoom (`1` = 100%) and `rotation` the Screen Orientation `angle` / 90 (quarter turns; the trace field
+ * means Android's `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device),
+ * omitted when the engine gives no angle or one that is not a multiple of 90. The browser cannot tell the display `type`,
+ * `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the page is on, as iOS does (a page
+ * cannot observe power).
  *
- * KNOWN LIMITATION, approximate under page zoom on Chromium: Blink reports `screen.width/height` in device-independent
- * pixels that IGNORE page zoom, while `devicePixelRatio` INCLUDES it, so the product drifts when the user zooms (Blink
- * source; not measured in a live browser). No web API exposes a zoom-independent device ratio, so `scale` records the
- * ratio actually used for the product. iOS Safari is reported not to swap `screen.width/height` on rotation (unverified):
- * there the entry is portrait-only like native iOS.
+ * PAGE ZOOM (spec C27). On Chromium `screen.width/height` are device-independent pixels that IGNORE page zoom, while
+ * `devicePixelRatio` INCLUDES it. The UiTracker `screenSize` stage derives `zoom = outerWidth / innerWidth` (measured in
+ * Chrome 156 at 69%-144%, device scale 1 and 2) and `deviceScale = devicePixelRatio / zoom`, so the physical size no longer
+ * drifts when the user zooms. When `zoom` is not derivable (a missing/zero width, a ratio outside 0.25-5, a touch-first
+ * device), `zoom` is OMITTED and the product falls back to `devicePixelRatio` (approximate under zoom, as before).
+ * KNOWN LIMITS: a docked DevTools or side panel narrows `innerWidth` and makes `zoom` over-read (undetectable from the page);
+ * desktop Firefox and Safari were not measured; iOS Safari is reported not to swap `screen.width/height` on rotation
+ * (unverified): there the entry is portrait-only like native iOS.
  *
- * Re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker `screenSize` + `orientation` stages). A step
- * curve, so it is held and de-duplicated (a resize that moved nothing is dropped); the initial value is emitted at start.
- * Omitted entirely when the screen or the pixel ratio cannot be read as finite positive numbers.
- *
- * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
- * `resize`, so the value can go stale until the next one, unless the engine fires the `screen` `change` event the
- * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up).
+ * Re-read on `resize` / `orientationchange` / `screen` `change` and on a `(resolution: Ndppx)` change (UiTracker `screenSize`
+ * + `orientation` stages). A step curve, so it is held and de-duplicated (a resize that moved nothing is dropped); the
+ * initial value is emitted at start. Omitted entirely when the screen or the pixel ratio cannot be read as finite positive
+ * numbers.
  */
 export class DisplaysProducer extends TraceProducerBase {
   readonly name = 'displays';
@@ -369,11 +370,13 @@ export class DisplaysProducer extends TraceProducerBase {
   #publish(): void {
     const s = this.#tracker.current('screenSize');
     if (s === undefined) return;
-    const width = Math.round(s.width * s.dpr);
-    const height = Math.round(s.height * s.dpr);
+    // the zoom-independent device scale when the page zoom is derivable, else the (zoom-inclusive) pixel ratio
+    const factor = s.deviceScale ?? s.dpr;
+    const width = Math.round(s.width * factor);
+    const height = Math.round(s.height * factor);
     if (!(width > 0) || !(height > 0)) return;
     // at most 2 decimals (zoom gives 1.100000023841858), like the Electron producer; the held value is the rounded one
-    const scale = Math.round(s.dpr * 100) / 100 || s.dpr;
+    const scale = Math.round(factor * 100) / 100 || factor;
     const angle = this.#tracker.current('orientation')?.angle;
     const turns =
       angle !== undefined && angle % 90 === 0 ? (((angle / 90) % 4) + 4) % 4 : undefined;
@@ -384,6 +387,7 @@ export class DisplaysProducer extends TraceProducerBase {
         width,
         height,
         scale,
+        ...(s.zoom !== undefined ? { zoom: s.zoom } : {}),
         ...(turns !== undefined ? { rotation: turns } : {}),
       },
     ]);

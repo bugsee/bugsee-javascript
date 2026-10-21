@@ -247,67 +247,147 @@ describe('ElectronDisplayTracker', () => {
     expect(s.count('display-added')).toBe(1);
   });
 
-  describe('session ids and state', () => {
-    it('numbers the PRIMARY display 0 even when getAllDisplays lists it later, then the rest in order', () => {
-      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 }), display({ id: 6 })], {
-        getPrimaryDisplay: vi.fn(() => display({ id: 5 })),
+  describe('key-window numbering and state', () => {
+    const trackKey = (
+      s: ReturnType<typeof fakeScreen>,
+      keyWindowBounds?: () => unknown,
+      onError?: (e: unknown) => unknown,
+    ) => {
+      keys.push(s.screen);
+      return electronDisplayTrackerFor(
+        { screen: s.screen, ...(keyWindowBounds !== undefined ? { keyWindowBounds } : {}) },
+        onError,
+      );
+    };
+    /** A screen whose getDisplayMatching answers by the rectangle's `x` (display id = x). */
+    const keyed = (ids: number[], primary = ids[0] as number) =>
+      fakeScreen(() => ids.map((id) => display({ id })), {
+        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
+        getDisplayMatching: vi.fn((r: { x: number }) => display({ id: r.x })),
       });
-      const list = track(s).current('displays')?.displays;
-      expect(list?.map((d) => [d.nativeId, d.id])).toEqual([
-        [7, 1],
-        [5, 0],
-        [6, 2],
+
+    it('numbers the KEY window display 0 and the rest ascending by Electron id, state:on on id 0 only', () => {
+      const s = keyed([7, 5, 6], 7);
+      const list = trackKey(s, () => ({ x: 6, y: 0, width: 1, height: 1 })).current(
+        'displays',
+      )?.displays;
+      expect(list?.map((d) => [d.nativeId, d.id, d.state])).toEqual([
+        [6, 0, 'on'],
+        [5, 1, undefined],
+        [7, 2, undefined],
+      ]);
+      expect(s.screen.getDisplayMatching).toHaveBeenCalledWith({ x: 6, y: 0, width: 1, height: 1 });
+    });
+    it('is recomputed on every read: the key window moving display renumbers (no session memory)', () => {
+      const s = keyed([1, 2, 3]);
+      let x = 1;
+      const t = trackKey(s, () => ({ x }));
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [1, 0],
+        [2, 1],
+        [3, 2],
+      ]);
+      x = 3;
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
+        [3, 0],
+        [1, 1],
+        [2, 2],
+      ]);
+      x = 2;
+      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id, d.state])).toEqual([
+        [2, 0, 'on'],
+        [1, 1, undefined],
+        [3, 2, undefined],
       ]);
     });
-    it('marks state:on on the primary display only', () => {
-      const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
-        getPrimaryDisplay: vi.fn(() => display({ id: 5 })),
-      });
-      const list = track(s).current('displays')?.displays;
-      expect(list?.map((d) => d.state)).toEqual([undefined, 'on']);
+    it('falls back to the PRIMARY display for id 0 when there is no key window (or no source)', () => {
+      const ids = [7, 5, 6];
+      for (const source of [undefined, () => undefined, () => 'not a rect']) {
+        const s = keyed(ids, 6);
+        const list = trackKey(s, source).current('displays')?.displays;
+        expect(list?.map((d) => [d.nativeId, d.id, d.state])).toEqual([
+          [6, 0, 'on'],
+          [5, 1, undefined],
+          [7, 2, undefined],
+        ]);
+        expect(s.screen.getDisplayMatching).not.toHaveBeenCalled();
+        resetElectronDisplayTracker(s.screen);
+      }
     });
-    it('without getPrimaryDisplay: numbering follows getAllDisplays and no state is written', () => {
+    it('falls back to the primary when getDisplayMatching is missing or names a display not in the list', () => {
+      const a = keyed([2, 1], 2);
+      const noMatch = { ...a, screen: a.screen };
+      (noMatch.screen as { getDisplayMatching?: unknown }).getDisplayMatching = undefined;
+      expect(
+        trackKey(noMatch, () => ({ x: 1 }))
+          .current('displays')
+          ?.displays.map((d) => d.nativeId),
+      ).toEqual([2, 1]);
+      const b = keyed([2, 1], 2);
+      expect(
+        trackKey(b, () => ({ x: 99 }))
+          .current('displays')
+          ?.displays.map((d) => d.nativeId),
+      ).toEqual([2, 1]);
+      const c = fakeScreen(() => [display({ id: 4 }), display({ id: 2 })], {
+        getPrimaryDisplay: undefined,
+        getDisplayMatching: vi.fn(() => null),
+      });
+      expect(
+        trackKey(c, () => ({ x: 1 }))
+          .current('displays')
+          ?.displays.map((d) => [d.nativeId, d.id, d.state]),
+      ).toEqual([
+        [2, 0, 'on'],
+        [4, 1, undefined],
+      ]);
+    });
+    it('without getPrimaryDisplay and without a key window: ascending Electron id, id 0 still carries state:on', () => {
       const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
         getPrimaryDisplay: undefined,
       });
-      const list = track(s).current('displays')?.displays;
-      expect(list?.map((d) => [d.id, d.state])).toEqual([
-        [0, undefined],
-        [1, undefined],
+      expect(
+        track(s)
+          .current('displays')
+          ?.displays.map((d) => [d.nativeId, d.id, d.state]),
+      ).toEqual([
+        [5, 0, 'on'],
+        [7, 1, undefined],
       ]);
     });
-    it('never reuses a number: a removed display keeps its id, a later one takes the next unused', () => {
-      let list: unknown[] = [display({ id: 1 }), display({ id: 2 })];
-      const s = fakeScreen(() => list);
-      const t = track(s);
-      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0, 1]);
-      list = [display({ id: 1 })];
-      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0]);
-      list = [display({ id: 1 }), display({ id: 3 })];
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [1, 0],
-        [3, 2],
+    it('a throwing / hostile key-window source or getDisplayMatching is reported and the list is still produced', () => {
+      const onError = vi.fn();
+      const a = keyed([3, 1], 3);
+      const list = trackKey(
+        a,
+        () => {
+          throw new Error('bounds');
+        },
+        onError,
+      ).current('displays')?.displays;
+      expect(list?.map((d) => [d.nativeId, d.id])).toEqual([
+        [3, 0],
+        [1, 1],
       ]);
-      list = [display({ id: 1 }), display({ id: 2 }), display({ id: 3 })];
-      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0, 1, 2]);
-    });
-    it('only the FIRST read puts the primary first: displays appearing later are numbered in list order even if one became primary', () => {
-      let list: unknown[] = [display({ id: 1 })];
-      let primary = 1;
-      const s = fakeScreen(() => list, {
-        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ message: 'bounds' }),
+      );
+      const onError2 = vi.fn();
+      const b = fakeScreen(() => [display({ id: 3 }), display({ id: 1 })], {
+        getDisplayMatching: vi.fn(() => {
+          throw new Error('matching');
+        }),
       });
-      const t = track(s);
-      expect(t.current('displays')?.displays.map((d) => d.id)).toEqual([0]);
-      list = [display({ id: 1 }), display({ id: 8 }), display({ id: 9 })];
-      primary = 9;
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [1, 0],
-        [8, 1],
-        [9, 2],
-      ]);
+      expect(
+        trackKey(b, () => ({ x: 1 }), onError2)
+          .current('displays')
+          ?.displays.map((d) => d.nativeId),
+      ).toEqual([3, 1]);
+      expect(onError2).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ message: 'matching' }),
+      );
     });
-    it('a throwing getPrimaryDisplay is reported ONCE and the list is still produced, without state', () => {
+    it('a throwing getPrimaryDisplay is reported ONCE and the list is still produced (ascending, id 0 on)', () => {
       const onError = vi.fn();
       const s = fakeScreen(() => [display({ id: 7 }), display({ id: 5 })], {
         getPrimaryDisplay: vi.fn(() => {
@@ -316,51 +396,36 @@ describe('ElectronDisplayTracker', () => {
       });
       const list = track(s, onError).current('displays')?.displays;
       expect(list?.map((d) => [d.nativeId, d.id, d.state])).toEqual([
-        [7, 0, undefined],
-        [5, 1, undefined],
+        [5, 0, 'on'],
+        [7, 1, undefined],
       ]);
       expect(onError).toHaveBeenCalledTimes(1);
     });
-    it('numbering restarts at 0 (primary first) for a new session: forgotten when the last subscriber leaves', () => {
-      let primary = 1;
-      const s = fakeScreen(() => [display({ id: 1 }), display({ id: 2 })], {
-        getPrimaryDisplay: vi.fn(() => display({ id: primary })),
-      });
-      const t = track(s);
-      const off = t.on('displays', () => undefined);
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [1, 0],
-        [2, 1],
-      ]);
-      const other = t.on('displayAdded', () => undefined);
-      off();
-      // still subscribed through another stage: same session, numbering kept
-      primary = 2;
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [1, 0],
-        [2, 1],
-      ]);
-      other();
-      t.on('displays', () => undefined);
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [1, 1],
-        [2, 0],
-      ]);
+    it('a relaunch hands the shared tracker the new key-window source; an absent one keeps the old', () => {
+      const s = keyed([1, 2]);
+      const t = trackKey(s, () => ({ x: 2 }));
+      expect(t.current('displays')?.displays[0]?.nativeId).toBe(2);
+      expect(electronDisplayTrackerFor({ screen: s.screen })).toBe(t);
+      expect(t.current('displays')?.displays[0]?.nativeId).toBe(2);
+      electronDisplayTrackerFor({ screen: s.screen, keyWindowBounds: () => ({ x: 1 }) });
+      expect(t.current('displays')?.displays[0]?.nativeId).toBe(1);
     });
-    it('events carry the same session id as the list, seeding the numbering on a first event', () => {
-      const s = fakeScreen(() => [display({ id: 9 }), display({ id: 4 })], {
+    it('events carry the id the display has in the CURRENT list; a removed display takes the next number; no state', () => {
+      let list: unknown[] = [display({ id: 9 }), display({ id: 4 })];
+      const s = fakeScreen(() => list, {
         getPrimaryDisplay: vi.fn(() => display({ id: 4 })),
       });
       const t = track(s);
-      const seen = vi.fn();
-      t.on('displayAdded', seen);
+      const added = vi.fn();
+      const removed = vi.fn();
+      t.on('displayAdded', added);
+      t.on('displayRemoved', removed);
       s.fire('display-added', display({ id: 9 }));
-      expect(seen.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 1 });
-      expect(seen.mock.calls[0]?.[0]).not.toHaveProperty('state');
-      expect(t.current('displays')?.displays.map((d) => [d.nativeId, d.id])).toEqual([
-        [9, 1],
-        [4, 0],
-      ]);
+      expect(added.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 1 });
+      expect(added.mock.calls[0]?.[0]).not.toHaveProperty('state');
+      list = [display({ id: 4 })];
+      s.fire('display-removed', display({ id: 9 }));
+      expect(removed.mock.calls[0]?.[0]).toMatchObject({ nativeId: 9, id: 1 });
     });
     it('a throwing getAllDisplays at the first event is reported and the display still gets the next number', () => {
       const onError = vi.fn();

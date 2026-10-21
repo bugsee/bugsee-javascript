@@ -196,6 +196,183 @@ describe('UiTracker screenSize and viewport', () => {
   });
 });
 
+describe('UiTracker page zoom (screenSize.zoom / deviceScale)', () => {
+  // Chrome 156, device scale 2: outerWidth is fixed, innerWidth = outer / zoom, devicePixelRatio = zoom x 2.
+  const at = (outer: unknown, inner: unknown, dpr: number) => {
+    const w = mkWorld();
+    Object.assign(w.win, { outerWidth: outer, innerWidth: inner, devicePixelRatio: dpr });
+    return { w, t: new UiTracker(w.env) };
+  };
+
+  it('derives zoom = outerWidth / innerWidth (2 decimals) and the zoom-independent device scale', () => {
+    expect(at(1600, 1600, 2).t.current('screenSize')).toEqual({
+      width: 1000,
+      height: 2000,
+      dpr: 2,
+      zoom: 1,
+      deviceScale: 2,
+    });
+    // 144%: inner = 1600 / 1.44 = 1111.11, dpr 2.88
+    expect(at(1600, 1600 / 1.44, 2.88).t.current('screenSize')).toMatchObject({
+      dpr: 2.88,
+      zoom: 1.44,
+      deviceScale: 2,
+    });
+    // 69%, device scale 1: ratio 1.449 -> 0.69
+    expect(at(800, 800 / 0.69, 0.69).t.current('screenSize')).toMatchObject({
+      zoom: 0.69,
+      deviceScale: 1,
+    });
+    // a long-fraction ratio is rounded to 2 decimals (1000 / 900 = 1.1111...)
+    expect(at(1000, 900, 2.2222).t.current('screenSize')).toMatchObject({
+      zoom: 1.11,
+      deviceScale: 2,
+    });
+    // a device scale that rounds to 0 is unusable: no zoom keys either
+    expect(at(1000, 1000, 0.001).t.current('screenSize')).toEqual({
+      width: 1000,
+      height: 2000,
+      dpr: 0.001,
+    });
+    // measured 1.999 device scale rounds to 2
+    expect(at(1600, 1600 / 1.2, 2.3988).t.current('screenSize')).toMatchObject({
+      zoom: 1.2,
+      deviceScale: 2,
+    });
+  });
+
+  it('omits zoom and deviceScale (keeping width/height/dpr) when not derivable', () => {
+    const bare = { width: 1000, height: 2000, dpr: 2 };
+    for (const [outer, inner] of [
+      [undefined, 800],
+      [1600, undefined],
+      [0, 800],
+      [1600, 0],
+      [-1600, 800],
+      [Number.NaN, 800],
+      [1600, Infinity],
+      ['1600', 800],
+      [1600, 1600 / 0.24], // ratio below 0.25
+      [1600, 1600 / 5.01], // ratio above 5
+    ]) {
+      expect(at(outer, inner, 2).t.current('screenSize')).toEqual(bare);
+    }
+  });
+
+  it('accepts the ratio bounds 0.25 and 5 inclusively', () => {
+    expect(at(1000, 250, 2).t.current('screenSize')).toMatchObject({ zoom: 4 });
+    expect(at(1000, 4000, 2).t.current('screenSize')).toMatchObject({ zoom: 0.25 });
+    expect(at(1000, 200, 5).t.current('screenSize')).toMatchObject({ zoom: 5, deviceScale: 1 });
+  });
+
+  it('omits zoom on a touch-first device (pinch zoom is not page zoom) but keeps it when the query is false or unanswered', () => {
+    const { w, t } = at(1600, 1600, 2);
+    t.current('screenSize'); // the fake creates a query list on first ask
+    q(w, '(pointer: coarse)').matches = true;
+    expect(t.current('screenSize')).toEqual({ width: 1000, height: 2000, dpr: 2 });
+    q(w, '(pointer: coarse)').matches = false;
+    expect(t.current('screenSize')).toMatchObject({ zoom: 1 });
+    const noMm = mkWorld();
+    Object.assign(noMm.win, { outerWidth: 1600, innerWidth: 1600 });
+    const { matchMedia: _drop, ...env } = noMm.env;
+    expect(new UiTracker(env).current('screenSize')).toMatchObject({ zoom: 1 });
+  });
+
+  it('hostile outerWidth / innerWidth / window getters never fail the read and are reported', () => {
+    const w = mkWorld();
+    const errors: unknown[] = [];
+    Object.defineProperty(w.win, 'outerWidth', {
+      get() {
+        throw new Error('outer boom');
+      },
+    });
+    const t = new UiTracker(w.env, (e) => errors.push(e));
+    expect(t.current('screenSize')).toEqual({ width: 1000, height: 2000, dpr: 2 });
+    expect(errors).toHaveLength(1);
+    const w2 = mkWorld();
+    Object.defineProperty(w2.win, 'outerWidth', { value: 1600 });
+    Object.defineProperty(w2.win, 'innerWidth', {
+      get() {
+        throw new Error('inner boom');
+      },
+    });
+    const errors2: unknown[] = [];
+    // innerWidth throws in the zoom read; the screenSize read itself (screen + dpr) still succeeds
+    expect(new UiTracker(w2.env, (e) => errors2.push(e)).current('screenSize')).toEqual({
+      width: 1000,
+      height: 2000,
+      dpr: 2,
+    });
+    expect(errors2.length).toBeGreaterThan(0);
+  });
+
+  it('re-emits on a resize that changes the zoom, and de-duplicates when nothing moved', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const got: unknown[] = [];
+    t.on('screenSize', (s) => got.push(s));
+    w.win.fire('resize');
+    expect(got).toEqual([]);
+    Object.assign(w.win, { innerWidth: 1600 / 1.25, devicePixelRatio: 2.5 });
+    w.win.fire('resize');
+    expect(got).toEqual([{ width: 1000, height: 2000, dpr: 2.5, zoom: 1.25, deviceScale: 2 }]);
+  });
+
+  it('watches the (resolution) query for the current ratio, re-arms it on the new ratio after a change, and releases it', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    const first = q(w, '(resolution: 2dppx)');
+    expect(first.count('change')).toBe(1);
+    // zoom to 125% with NO resize event: only the resolution query fires
+    Object.assign(w.win, { innerWidth: 1600 / 1.25, devicePixelRatio: 2.5 });
+    first.fire('change', {});
+    expect(got).toEqual([{ width: 1000, height: 2000, dpr: 2.5, zoom: 1.25, deviceScale: 2 }]);
+    expect(first.count('change')).toBe(0); // old query released
+    const second = q(w, '(resolution: 2.5dppx)');
+    expect(second.count('change')).toBe(1);
+    off();
+    expect(second.count('change')).toBe(0);
+  });
+
+  it('a change delivered after release neither re-arms nor publishes', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const list = w.env.matchMedia('(resolution: 2dppx)') as unknown as ReturnType<typeof mkTarget>;
+    let late: ((e?: unknown) => void) | undefined;
+    const add = list.addEventListener;
+    list.addEventListener = (type, l) => {
+      late = l;
+      add(type, l);
+    };
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    off();
+    Object.assign(w.win, { innerWidth: 1600 / 1.25, devicePixelRatio: 2.5 });
+    late?.({});
+    expect(got).toEqual([]);
+    expect(w.queries.has('(resolution: 2.5dppx)')).toBe(false);
+  });
+
+  it('does not watch the resolution query when the ratio is unreadable, and a hostile matchMedia never throws', () => {
+    const w = mkWorld();
+    w.win.devicePixelRatio = 0;
+    const t = new UiTracker(w.env);
+    t.on('screenSize', () => {});
+    expect([...w.queries.keys()].some((k) => k.startsWith('(resolution'))).toBe(false);
+    const errors: unknown[] = [];
+    const hostile = new UiTracker(
+      {
+        ...mkWorld().env,
+        matchMedia: () => {
+          throw new Error('mm boom');
+        },
+      },
+      (e) => errors.push(e),
+    );
+    expect(() => hostile.on('screenSize', () => {})).not.toThrow();
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
 describe('UiTracker visualViewport stage', () => {
   const mkVv = () =>
     Object.assign(mkTarget(), {

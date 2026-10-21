@@ -60,6 +60,40 @@ describe('DisplaysProducer', () => {
     ]);
   });
 
+  it('page zoom: width/height/scale use the recovered device scale (no drift) and zoom is written', () => {
+    // Chrome 156 shape at 144%, device scale 2: screen fixed, dpr 2.88, inner = outer / 1.44
+    const win = Object.assign(mkTarget(), {
+      devicePixelRatio: 2.88,
+      outerWidth: 1440,
+      innerWidth: 1000,
+    });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 1440, height: 900 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toEqual([
+      { id: 0, state: 'on', width: 2880, height: 1800, scale: 2, zoom: 1.44 },
+    ]);
+    // back to 100%: the physical size is unchanged, only zoom moves
+    Object.assign(win, { devicePixelRatio: 2, innerWidth: 1440 });
+    win.fire('resize');
+    expect(out.map((o) => o.value)).toEqual([
+      [{ id: 0, state: 'on', width: 2880, height: 1800, scale: 2, zoom: 1.44 }],
+      [{ id: 0, state: 'on', width: 2880, height: 1800, scale: 2, zoom: 1 }],
+    ]);
+  });
+
+  it('without a derivable zoom the entry has no zoom key and uses devicePixelRatio', () => {
+    const win = Object.assign(mkTarget(), { devicePixelRatio: 2, outerWidth: 0, innerWidth: 800 });
+    const out: Emit[] = [];
+    new DisplaysProducer(
+      new UiTracker({ window: win, screen: { width: 400, height: 300 } as never }),
+    ).start(sinkOf(out));
+    expect(out[0]?.value).toStrictEqual([
+      { id: 0, state: 'on', width: 800, height: 600, scale: 2 },
+    ]);
+  });
+
   it('rounds the device pixels from a fractional ratio and records the ratio used in scale', () => {
     const win = Object.assign(mkTarget(), { devicePixelRatio: 1.25 });
     const out: Emit[] = [];

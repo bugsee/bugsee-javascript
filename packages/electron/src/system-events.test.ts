@@ -324,18 +324,19 @@ describe('createElectronSystemEventsSource: domain trackers', () => {
     d.screen.emit('display-removed', display(3));
     d.screen.emit('display-metrics-changed', display(4), ['bounds']);
     expect(d.events().slice(1)).toEqual([
-      // ids are the SESSION indexes (display 1 is seeded as 0 by the baseline read), device pixels, camelCase
+      // ids are the position in the CURRENT list (only display 1 is listed; an unlisted display takes the next number),
+      // device pixels, camelCase
       {
         name: 'display_added',
         params: { id: 1, nativeId: 2, width: 1600, height: 1200, scale: 2 },
       },
       {
         name: 'display_removed',
-        params: { id: 2, nativeId: 3, width: 1600, height: 1200, scale: 2 },
+        params: { id: 1, nativeId: 3, width: 1600, height: 1200, scale: 2 },
       },
       {
         name: 'display_metrics_changed',
-        params: { id: 3, nativeId: 4, width: 1600, height: 1200, scale: 2, changed: ['bounds'] },
+        params: { id: 1, nativeId: 4, width: 1600, height: 1200, scale: 2, changed: ['bounds'] },
       },
     ]);
   });
