@@ -47,13 +47,13 @@ describe('BatteryProducer', () => {
     offOther();
   });
 
-  it('charging with an unusable level emits no battery and the charging (not full) wire state', async () => {
+  it('an unreadable level while charging emits NOTHING: no battery, and no fabricated charging state', async () => {
     const m = mkManager(Number.NaN, true);
     const { out } = run(
       createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
     );
     await flush();
-    expect(out).toEqual([{ name: 'charging', value: { state: 2 } }]);
+    expect(out).toEqual([]);
   });
 
   it('emits battery (rounded percent) and charging ({state}) once the manager resolves, then only on change', async () => {
@@ -180,13 +180,13 @@ describe('BatteryProducer', () => {
     });
   });
 
-  it('an unusable level emits no battery trace (never NaN) but still emits charging', async () => {
+  it('an unusable level emits no battery trace (never NaN) and no charging entry (never state 0 or a level-0 guess)', async () => {
     const m = mkManager(Number.NaN, false);
     const { out } = run(
       createBrowserSystemTraceProducers({ getBattery: () => Promise.resolve(m) }),
     );
     await flush();
-    expect(out).toEqual([{ name: 'charging', value: { state: 1 } }]);
+    expect(out).toEqual([]);
   });
 
   it('an unsupported browser (no getBattery) emits nothing and reports no error', async () => {
