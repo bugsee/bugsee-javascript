@@ -168,6 +168,9 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         const current = orientationToWire(type, angle);
         const before = previousOrientation;
         previousOrientation = current;
+        // Android/iOS announce only a REAL change: the tracker de-duplicates on the raw {type, angle}, but after a bare
+        // (unreadable) event the same orientation can arrive again, and a 180-degree flip stays distinct (own ints).
+        if (current === before) return;
         this.emit('event', {
           name: 'OrientationChanged',
           params: { current, ...(before !== undefined ? { prev: before } : {}), type, angle },

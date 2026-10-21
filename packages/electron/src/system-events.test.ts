@@ -488,7 +488,24 @@ describe('conformance: every emitted event param key is camelCase', () => {
     expect(events.map((e) => e.name)).toEqual(
       expect.arrayContaining(['child_process_gone', 'display_metrics_changed', 'window_focus']),
     );
-    expect(keys.size).toBeGreaterThanOrEqual(12); // not vacuous: the whole key surface was exercised
+    // the EXACT key surface (a dropped key must fail, not just a renamed one)
+    expect([...keys].sort()).toEqual([
+      'changed',
+      'exitCode',
+      'height',
+      'id',
+      'internal',
+      'name',
+      'reason',
+      'refreshRate',
+      'rotation',
+      'scaleFactor',
+      'serviceName',
+      'type',
+      'webContentsId',
+      'width',
+      'windowId',
+    ]);
     expect([...keys].filter((k) => !CAMEL.test(k))).toEqual([]);
   });
 });

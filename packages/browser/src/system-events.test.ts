@@ -303,6 +303,7 @@ describe('createBrowserSystemEventsSource: dark mode, freeze and resume', () => 
     source.on('event', () => {
       throw new Error('consumer');
     });
+    orientation.type = 'landscape-primary';
     orientation.angle = 90;
     expect(() => win.emit('orientationchange', {})).not.toThrow();
     expect(events.map((e) => e.name)).toContain('OrientationChanged');
@@ -582,6 +583,26 @@ describe('createBrowserSystemEventsSource', () => {
     });
   });
 
+  it('OrientationChanged is announced only when the Android orientation int really changed (a raw {type, angle} change that maps to the same int is silent)', () => {
+    const { env, win } = fakeEnv();
+    const { events } = activate(env);
+    const at = (orientation: { type: string; angle: number } | undefined) => {
+      (env.screen as { orientation?: unknown }).orientation = orientation;
+      win.emit('orientationchange', {});
+    };
+    at(undefined); // bare
+    at({ type: 'portrait-primary', angle: 0 }); // the tracker already knows it: nothing
+    at({ type: 'portrait-primary', angle: 180 }); // the raw state changed but the Android int (1) did not: no event
+    expect(events.slice(1)).toEqual([{ name: 'OrientationChanged' }]);
+    at({ type: 'portrait-secondary', angle: 180 }); // a 180-degree flip is a different int (1 -> 2)
+    expect(events.at(-1)).toEqual({
+      name: 'OrientationChanged',
+      params: { current: 2, prev: 1, type: 'portrait-secondary', angle: 180 },
+    });
+    at({ type: 'portrait-secondary', angle: 180 }); // unchanged again
+    expect(events).toHaveLength(3);
+  });
+
   it('OrientationChanged is bare when only one of type / angle is readable (never a half-built current)', () => {
     const { env, win } = fakeEnv();
     const screen = {
@@ -834,7 +855,25 @@ describe('createBrowserSystemEventsSource', () => {
       });
       environment.emit('privateMode', { private: 'yes', method: 'storage-quota' });
       const keys = new Set(events.flatMap((e) => Object.keys(e.params ?? {})));
-      expect(keys.size).toBeGreaterThanOrEqual(12); // not vacuous
+      // the EXACT key surface (a dropped key must fail, not just a renamed one)
+      expect([...keys].sort()).toEqual([
+        'angle',
+        'current',
+        'dark',
+        'language',
+        'languages',
+        'method',
+        'mode',
+        'persisted',
+        'prev',
+        'previousLanguage',
+        'previousMode',
+        'previousTimezone',
+        'previousUtcOffsetMinutes',
+        'timezone',
+        'type',
+        'utcOffsetMinutes',
+      ]);
       expect([...keys].filter((k) => !/^[a-z][a-zA-Z0-9]*$/.test(k))).toEqual([]);
     });
   });

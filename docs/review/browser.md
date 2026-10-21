@@ -1,5 +1,7 @@
 # Adversarial review — @bugsee/browser
 
+> Note: this review is a dated snapshot. Four system-event names it mentions were renamed in C2 (`process_foreground`/`process_background` are now `UIApplicationDidBecomeActiveNotification`/`UIApplicationDidEnterBackgroundNotification`, `orientation_changed` is `OrientationChanged`, `dark_mode_changed` is `DarkModeChanged`).
+
 **Reviewed:** 2026-07-26 · **Scope:** `packages/browser` (impl 1884 LOC across 13 files, tests 3162 LOC across 12 files; 208 tests, all green; `tsc --noEmit` clean)
 **Method:** full source read of the package + the seams it calls into (`@bugsee/replay`, `@bugsee/browser-utils`, `@bugsee/core`), plus **empirical probes** — three temporary jsdom test files that booted the real `launchCore` and were deleted afterwards (`git status --short packages/` verified EMPTY) — and a **20-mutation battery** (`cp` backup → patch → `vitest run` → restore from backup).
 
@@ -27,7 +29,7 @@
 ### 2. Nothing is flushed on page hide — a backgrounded mobile tab that is killed loses the whole session, and at default settings the crash that was already detected
 
 - **Where:** `packages/browser/src/launch.ts:435-437` (the only `pagehide` consumer), `packages/browser/src/system-events.ts:39-44,70,74`, `packages/browser-utils/src/fetch-transport.ts:26`.
-- **What:** `pagehide` and `visibilitychange` are hooked, but only to *emit a capture entry* (`process_exiting` / `UIApplicationDidEnterBackgroundNotification`). Nothing calls `client.flush()`, nothing drains the upload pipeline, nothing forces the IndexedDB writes. Measured: launch in jsdom → `dispatchEvent(new Event('pagehide'))` + `visibilitychange` → **transport calls: `[]`**. `beforeunload`, `freeze`, `resume` and `unload` are not hooked anywhere in the repo. There is no `sendBeacon` and no `keepalive` anywhere: `fetch-transport.ts:26` builds `{ method, headers, signal }` only, so any in-flight upload is cancelled by the browser at unload — the ~64 KB keepalive budget is not even in play because keepalive is never requested.
+- **What:** `pagehide` and `visibilitychange` are hooked, but only to *emit a capture entry* (`process_exiting` / `process_background`). Nothing calls `client.flush()`, nothing drains the upload pipeline, nothing forces the IndexedDB writes. Measured: launch in jsdom → `dispatchEvent(new Event('pagehide'))` + `visibilitychange` → **transport calls: `[]`**. `beforeunload`, `freeze`, `resume` and `unload` are not hooked anywhere in the repo. There is no `sendBeacon` and no `keepalive` anywhere: `fetch-transport.ts:26` builds `{ method, headers, signal }` only, so any in-flight upload is cancelled by the browser at unload — the ~64 KB keepalive budget is not even in play because keepalive is never requested.
 - **Why it matters — exactly what a mobile user loses:**
   - **Default config (`persist` unset → false):** capture lives in `createMemoryCaptureStore` (`launch.ts:372`) and the bundle queue is in-memory (`launch.ts:299-322` builds neither when `persist` is false). Tab killed ⇒ the entire rolling buffer **and** any assembled-but-unsent bundle are gone. A crash detected 200 ms before the user swipes the tab away is never delivered.
   - **In-flight upload, any config:** cancelled at unload (no `keepalive`).
@@ -148,7 +150,7 @@ No `window.onerror =` / `window.onunhandledrejection =` assignment exists anywhe
 | event | hooked? | what is flushed | what is lost | file:line |
 |---|---|---|---|---|
 | `pagehide` | yes (capture only) | **nothing** — emits a `process_exiting` capture entry; measured 0 transport calls | default config: the entire in-memory rolling buffer + any assembled bundle; any config: the in-flight upload (no `keepalive`) | `system-events.ts:39-44,70`; `fetch-transport.ts:26` |
-| `visibilitychange` | yes (capture only) | **nothing** — emits `UIApplicationDidEnterBackgroundNotification`/`UIApplicationDidBecomeActiveNotification` | same as above; backgrounding is the last chance on mobile | `system-events.ts:45-48,74` |
+| `visibilitychange` | yes (capture only) | **nothing** — emits `process_background`/`process_foreground` | same as above; backgrounding is the last chance on mobile | `system-events.ts:45-48,74` |
 | `beforeunload` | **no** | — | — | not present anywhere in the repo |
 | `freeze` / `resume` (Page Lifecycle API) | **no** | — | bfcache-frozen tabs that are discarded | not present |
 | `unload` | **no** | — | — | not present |
