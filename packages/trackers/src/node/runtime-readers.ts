@@ -200,8 +200,8 @@ export interface SystemFreeSources {
  *     same definition as Electron's `getSystemMemoryInfo`; see ./vm-stat). When it has no fresh value the trace is
  *     omitted for that tick, it never falls back to `os.freemem()`.
  *  4. `os.freemem()`, except on macOS. libuv reads `MemAvailable` on Linux (since 1.43, Node >= 16.14; Deno since
- *     2023) and `ullAvailPhys` on Windows. On macOS it is only free pages (about 0.2% of RAM on a busy 64 GB Mac
- *     while the OS reports about half available), so it is not a source there.
+ *     2023) and `ullAvailPhys` on Windows. On macOS it is only free pages (measured 0.2-0.7% of RAM on a 64 GB Mac
+ *     while the vm_stat available estimate was ~29%), so it is not a source there.
  * `process.availableMemory()` is never used: it equals `os.freemem()` without a cgroup limit, reads lower inside one,
  * is 0 on Windows Deno and includes inactive pages on macOS Deno. Inside a container the value is the HOST's
  * figure; the cgroup cap is carried by `process_memory_limit`.

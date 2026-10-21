@@ -214,7 +214,7 @@ describe('createNodeSystemTraceProducers', () => {
         run1({
           platform: 'darwin',
           freeMemory: () => 9,
-          vmStat: { read: () => 8, stop: () => {} },
+          vmStat: { read: () => 8, peek: () => 8, stop: () => {} },
         }).get('ram_system_free'),
       ).toBe(8); // macOS Node/Bun: the vm_stat-derived figure
       expect(

@@ -670,6 +670,114 @@ describe('ProcessTracker', () => {
           expect(events.every((e) => !('free' in e))).toBe(true);
         });
 
+        it('current() on an UNARMED stage reads the cache only and never spawns; an armed tick does read', () => {
+          let reads = 0;
+          const vmStat = {
+            read: () => {
+              reads += 1;
+              return 5;
+            },
+            peek: () => 7,
+            stop: () => {},
+          };
+          const { tracker, fs } = mk({ systemMemory: undefined, platform: 'darwin', vmStat });
+          expect(tracker.current('systemMemory')?.free).toBe(7);
+          expect(reads).toBe(0);
+          const events: ProcessEvents['systemMemory'][] = [];
+          tracker.on('systemMemory', (e) => void events.push(e));
+          fs.tick();
+          expect(reads).toBe(1);
+          expect(events.at(-1)?.free).toBe(5);
+          expect(tracker.current('systemMemory')?.free).toBe(5); // armed: a live read, as before
+          expect(reads).toBe(2);
+        });
+
+        describe('on Deno (never prompts)', () => {
+          const withDeno = (
+            state: string,
+            run: (spawned: () => number, asked: () => number) => void,
+          ) => {
+            const g = globalThis as { Deno?: unknown };
+            const had = 'Deno' in g;
+            const prev = g.Deno;
+            let spawned = 0;
+            let asked = 0;
+            g.Deno = {
+              Command: class {
+                constructor() {
+                  spawned += 1;
+                }
+                output() {
+                  return new Promise(() => {});
+                }
+              },
+              permissions: {
+                querySync: () => {
+                  asked += 1;
+                  return { state };
+                },
+              },
+              systemMemoryInfo: () => ({ available: 999 }),
+            };
+            try {
+              run(
+                () => spawned,
+                () => asked,
+              );
+            } finally {
+              if (had) g.Deno = prev;
+              else delete g.Deno;
+            }
+          };
+          const tickFree = (over: Partial<ProcessEnv> = {}) => {
+            const { tracker, fs } = mk({ systemMemory: undefined, platform: 'darwin', ...over });
+            const events: ProcessEvents['systemMemory'][] = [];
+            tracker.on('systemMemory', (e) => void events.push(e));
+            fs.tick();
+            tracker.reset();
+            return events.at(-1);
+          };
+
+          it('run permission GRANTED: spawns through Deno.Command and does not mix in the larger estimate', () => {
+            withDeno('granted', (spawned) => {
+              const got = tickFree();
+              expect(spawned()).toBe(1);
+              expect(got).not.toHaveProperty('free'); // async: no value on the first tick, never the 999 estimate
+            });
+          });
+
+          it.each([
+            'prompt',
+            'denied',
+          ])('run permission %s: no spawn (so no prompt), Deno systemMemoryInfo answers', (state) => {
+            withDeno(state, (spawned, asked) => {
+              expect(tickFree()?.free).toBe(999);
+              expect(spawned()).toBe(0);
+              expect(asked()).toBeGreaterThan(0);
+            });
+          });
+
+          it('an injected spawn function is honoured on Deno regardless of the permission (test seam)', () => {
+            withDeno('prompt', (spawned) => {
+              let injected = 0;
+              const vmStatExecFile = (() => {
+                injected += 1;
+                return { kill: () => {} };
+              }) as never;
+              tickFree({ vmStatExecFile });
+              expect(injected).toBe(1);
+              expect(spawned()).toBe(0);
+            });
+          });
+
+          it('readsVmStat:false on Deno: estimate only, permission never even queried for a spawn', () => {
+            withDeno('granted', (spawned) => {
+              expect(tickFree({ readsVmStat: false })?.free).toBe(999);
+              expect(spawned()).toBe(0);
+            });
+          });
+        });
+
         it('readsVmStat:false never spawns; vm_stat is not consulted off macOS', () => {
           const x = fakeExec();
           for (const over of [{ platform: 'darwin', readsVmStat: false }, { platform: 'linux' }]) {
@@ -755,9 +863,10 @@ describe('ProcessTracker', () => {
         };
         expect(at({})?.free).toBe(11); // freeMemory + platform(linux: freemem is a source)
         expect(at({ platform: 'darwin', readsVmStat: false })).not.toHaveProperty('free'); // platform + readsVmStat
-        expect(at({ platform: 'darwin', vmStat: { read: () => 55, stop: () => {} } })?.free).toBe(
-          55,
-        ); // vmStat
+        expect(
+          at({ platform: 'darwin', vmStat: { read: () => 55, peek: () => 55, stop: () => {} } })
+            ?.free,
+        ).toBe(55); // vmStat
         expect(at({ readsProcMeminfo: true, meminfo: () => 'MemAvailable: 1 kB\n' })?.free).toBe(
           1024,
         ); // readsProcMeminfo + meminfo
@@ -768,9 +877,20 @@ describe('ProcessTracker', () => {
           spawned += 1;
           return { kill: () => {} };
         }) as never;
-        at({ platform: 'darwin', vmStatExecFile, readsVmStat: false });
+        const armed = (env: Partial<ProcessEnv>) => {
+          const key = {};
+          const fs = fakeScheduler();
+          try {
+            const tracker = processTrackerFor({ key, scheduler: fs.scheduler, ...env });
+            tracker.on('systemMemory', () => {});
+            fs.tick();
+          } finally {
+            resetProcessTracker(key);
+          }
+        };
+        armed({ platform: 'darwin', vmStatExecFile, readsVmStat: false });
         expect(spawned).toBe(0); // readsVmStat survives processTrackerFor
-        at({ platform: 'darwin', vmStatExecFile });
+        armed({ platform: 'darwin', vmStatExecFile });
         expect(spawned).toBe(1); // vmStatExecFile survives processTrackerFor
       });
     });

@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { createVmStatSampler, type ExecFileLike, parseVmStat } from './vm-stat';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createDenoExecFile,
+  createVmStatSampler,
+  type DenoRunLike,
+  denoVmStatGranted,
+  type ExecFileLike,
+  parseVmStat,
+} from './vm-stat';
 
 const OUTPUT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                3000.
@@ -256,5 +263,262 @@ describe('createVmStatSampler', () => {
       },
     });
     expect(sampler.read()).toBeUndefined();
+  });
+});
+
+describe('createVmStatSampler: cadence, streaks, silent misses', () => {
+  it('the DEFAULT interval is 10 s (and the default freshness window 20 s)', () => {
+    const calls: Call[] = [];
+    let now = 0;
+    const sampler = createVmStatSampler({
+      execFile: (file, args, options, cb) => {
+        calls.push({ file, args, options, cb, killed: false, unref: 0 });
+        return { kill: () => true };
+      },
+      now: () => now,
+    });
+    sampler.read();
+    calls[0]?.cb(null, OUTPUT);
+    now = 9_999;
+    sampler.read();
+    expect(calls).toHaveLength(1);
+    now = 10_000;
+    sampler.read();
+    expect(calls).toHaveLength(2);
+    calls[1]?.cb(null, OUTPUT);
+    now = 30_000;
+    expect(sampler.read()).toBe(10_000 * PAGE); // 20 s after the second value: still served
+    now = 30_001;
+    expect(sampler.peek()).toBeUndefined();
+  });
+
+  it('spawns exactly once per interval over several intervals, ticking every second', () => {
+    const h = harness();
+    for (let second = 0; second < 50; second += 1) {
+      h.sampler.read();
+      h.calls.at(-1)?.cb(null, OUTPUT);
+      h.advance(1000);
+    }
+    expect(h.calls).toHaveLength(5);
+  });
+
+  it('a failure streak is reported again after stop() and a restart', () => {
+    const h = harness();
+    h.sampler.read();
+    h.calls[0]?.cb(new Error('x'), '');
+    expect(h.errors).toHaveLength(1);
+    h.sampler.stop();
+    h.sampler.read();
+    h.calls[1]?.cb(new Error('x'), '');
+    expect(h.errors).toHaveLength(2);
+  });
+
+  it('empty stdout with no error (a resumed execFile timeout killed an exited child) is a silent miss: no report, cache kept', () => {
+    const h = harness();
+    h.sampler.read();
+    h.calls[0]?.cb(null, OUTPUT);
+    h.advance(10_000);
+    h.sampler.read();
+    h.calls[1]?.cb(null, '');
+    expect(h.errors).toEqual([]);
+    expect(h.sampler.read()).toBe(10_000 * PAGE); // still inside its two-interval life
+    h.advance(10_001);
+    expect(h.sampler.read()).toBeUndefined(); // and never beyond it
+    expect(h.errors).toEqual([]);
+  });
+
+  it('empty stdout does not end an ongoing failure streak (no re-report)', () => {
+    const h = harness();
+    h.sampler.read();
+    h.calls[0]?.cb(new Error('x'), '');
+    h.advance(10_000);
+    h.sampler.read();
+    h.calls[1]?.cb(null, '');
+    h.advance(10_000);
+    h.sampler.read();
+    h.calls[2]?.cb(new Error('y'), '');
+    expect(h.errors).toHaveLength(1);
+  });
+
+  it('peek() answers the fresh cache and NEVER spawns', () => {
+    const h = harness();
+    expect(h.sampler.peek()).toBeUndefined();
+    expect(h.calls).toHaveLength(0);
+    h.sampler.read();
+    h.calls[0]?.cb(null, OUTPUT);
+    h.advance(10_000);
+    expect(h.sampler.peek()).toBe(10_000 * PAGE);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('canSpawn:false neither spawns nor reports; true spawns', () => {
+    let allowed = false;
+    const calls: unknown[] = [];
+    const errors: unknown[] = [];
+    const sampler = createVmStatSampler({
+      execFile: () => {
+        calls.push(1);
+        return { kill: () => true };
+      },
+      canSpawn: () => allowed,
+      onError: (e) => errors.push(e),
+      now: () => 0,
+    });
+    expect(sampler.read()).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    expect(errors).toHaveLength(0);
+    allowed = true;
+    sampler.read();
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('Deno spawn (never prompts)', () => {
+  const deno = (state: unknown): DenoRunLike & { asked: unknown[] } => {
+    const asked: unknown[] = [];
+    return {
+      asked,
+      Command: class {} as never,
+      permissions: {
+        querySync: (d) => {
+          asked.push(d);
+          return { state };
+        },
+      },
+    };
+  };
+
+  it('granted only: queries exactly the run permission for /usr/bin/vm_stat via querySync', () => {
+    const granted = deno('granted');
+    expect(denoVmStatGranted(granted)).toBe(true);
+    expect(granted.asked).toEqual([{ name: 'run', command: '/usr/bin/vm_stat' }]);
+    expect(denoVmStatGranted(deno('prompt'))).toBe(false);
+    expect(denoVmStatGranted(deno('denied'))).toBe(false);
+    expect(denoVmStatGranted(deno(undefined))).toBe(false);
+  });
+
+  it('not granted when Deno, Command, permissions or querySync is missing, or querySync throws', () => {
+    expect(denoVmStatGranted(undefined)).toBe(false);
+    expect(denoVmStatGranted({ permissions: { querySync: () => ({ state: 'granted' }) } })).toBe(
+      false,
+    );
+    expect(denoVmStatGranted({ Command: class {} as never })).toBe(false);
+    expect(denoVmStatGranted({ Command: class {} as never, permissions: {} })).toBe(false);
+    expect(
+      denoVmStatGranted({
+        Command: class {} as never,
+        permissions: {
+          querySync: () => {
+            throw new Error('nope');
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  interface Made {
+    command: string;
+    options: Record<string, unknown>;
+  }
+  const fakeCommand = (
+    behave: (
+      signal: AbortSignal,
+    ) => Promise<{ success: boolean; code: number; stdout: Uint8Array }>,
+  ) => {
+    const made: Made[] = [];
+    const Command = class {
+      constructor(command: string, options: Record<string, unknown>) {
+        made.push({ command, options });
+        this.options = options;
+      }
+      options: Record<string, unknown>;
+      output() {
+        return behave(this.options.signal as AbortSignal);
+      }
+    };
+    return { made, deno: { Command } as unknown as DenoRunLike };
+  };
+  const opts = { timeout: 2000, maxBuffer: 1, encoding: 'utf8' } as const;
+
+  it('runs Deno.Command with clearEnv, no stdin/stderr and the abort signal, and decodes stdout', async () => {
+    const f = fakeCommand(async () => ({
+      success: true,
+      code: 0,
+      stdout: new TextEncoder().encode(OUTPUT),
+    }));
+    const got = await new Promise<[Error | null, string]>((resolve) =>
+      createDenoExecFile(f.deno)('/usr/bin/vm_stat', [], opts, (e, o) => resolve([e, o])),
+    );
+    expect(got).toEqual([null, OUTPUT]);
+    expect(f.made[0]?.command).toBe('/usr/bin/vm_stat');
+    expect(f.made[0]?.options).toMatchObject({
+      args: [],
+      clearEnv: true,
+      stdin: 'null',
+      stdout: 'piped',
+      stderr: 'null',
+    });
+  });
+
+  it('a non-zero exit and a rejected spawn become errors; the callback fires once', async () => {
+    const exit = fakeCommand(async () => ({ success: false, code: 3, stdout: new Uint8Array() }));
+    const e1 = await new Promise<Error | null>((resolve) =>
+      createDenoExecFile(exit.deno)('/usr/bin/vm_stat', [], opts, (e) => resolve(e)),
+    );
+    expect(e1?.message).toContain('3');
+    const rejected = fakeCommand(async () => {
+      throw new Error('NotCapable');
+    });
+    const e2 = await new Promise<Error | null>((resolve) =>
+      createDenoExecFile(rejected.deno)('/usr/bin/vm_stat', [], opts, (e) => resolve(e)),
+    );
+    expect(e2?.message).toBe('NotCapable');
+    const strange = fakeCommand(async () => Promise.reject('plain'));
+    const e3 = await new Promise<Error | null>((resolve) =>
+      createDenoExecFile(strange.deno)('/usr/bin/vm_stat', [], opts, (e) => resolve(e)),
+    );
+    expect(e3?.message).toBe('plain');
+  });
+
+  it('clears its timeout once the command settles (no timer left behind)', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fakeCommand(async () => ({ success: true, code: 0, stdout: new Uint8Array([65]) }));
+      let called = false;
+      createDenoExecFile(f.deno)('/usr/bin/vm_stat', [], opts, () => {
+        called = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(called).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('kill() aborts the signal, and the timeout aborts it too', async () => {
+    const hang = (signal: AbortSignal) =>
+      new Promise<never>((_r, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    const a = fakeCommand(hang);
+    let err: Error | null = null;
+    const child = createDenoExecFile(a.deno)('/usr/bin/vm_stat', [], opts, (e) => {
+      err = e;
+    });
+    child.kill();
+    await new Promise((r) => setTimeout(r, 5));
+    expect((err as Error | null)?.message).toBe('aborted');
+    const b = fakeCommand(hang);
+    const timed = await new Promise<Error | null>((resolve) =>
+      createDenoExecFile(b.deno)('/usr/bin/vm_stat', [], { ...opts, timeout: 5 }, (e) =>
+        resolve(e),
+      ),
+    );
+    expect(timed?.message).toBe('aborted');
+  });
+
+  it('throws (so the sampler reports a miss) when Deno.Command is absent', () => {
+    expect(() => createDenoExecFile({})('/x', [], opts, () => {})).toThrow('Deno.Command');
   });
 });

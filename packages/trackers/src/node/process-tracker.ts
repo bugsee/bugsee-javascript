@@ -25,7 +25,14 @@ import {
   firstAnswer,
   type V8HeapStats,
 } from './runtime-readers';
-import { createVmStatSampler, type ExecFileLike, type VmStatSource } from './vm-stat';
+import {
+  createDenoExecFile,
+  createVmStatSampler,
+  type DenoRunLike,
+  denoVmStatGranted,
+  type ExecFileLike,
+  type VmStatSource,
+} from './vm-stat';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
 // owns everything the runtime can say about its own process, as EIGHT independent stages:
@@ -134,14 +141,16 @@ export interface ProcessEnv {
   freeMemory?: () => number;
   /**
    * macOS only: read memory available to new work from `/usr/bin/vm_stat` (a rare async read; see ./vm-stat) when no
-   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun).
-   * `@bugsee/deno` keeps the default, because under a scoped `--allow-run` the spawn is only attempted when
-   * `Deno.systemMemoryInfo()` could not answer.
+   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun, and
+   * Deno uses its larger `systemMemoryInfo().available` estimate). On DENO the spawn is made through `Deno.Command`
+   * and ONLY when `Deno.permissions.querySync({name:'run', command:'/usr/bin/vm_stat'})` is already `granted` (it never
+   * prompts); otherwise Deno answers `systemMemoryInfo().available` (free + inactive: a larger estimate than the
+   * vm_stat definition).
    */
   readsVmStat?: boolean;
   /** Replaces the `vm_stat` sampler (it is stopped when the memory stage loses its last listener). */
   vmStat?: VmStatSource;
-  /** `child_process.execFile` for the default `vm_stat` sampler (test seam). */
+  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`, or `Deno.Command` on Deno). */
   vmStatExecFile?: ExecFileLike;
   /**
    * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:
@@ -245,6 +254,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   readonly #armed = new Map<Stage, StageRun>();
   /** The last emitted/seeded sample of each WINDOWED stage, for the current run only. */
   readonly #last = new Map<Stage, unknown>();
+  /** True while `current()` answers a stage that is NOT armed: free memory may then read the vm_stat cache but never spawn. */
+  #peekOnly = false;
   #timer: { handle: unknown; scheduler: ProcessTimers } | null = null;
   /** Bumped whenever the timer is torn down: a callback of an older run never emits. */
   #gen = 0;
@@ -302,12 +313,15 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         ? undefined
         : (this.#last.get(stage) as ProcessEvents[S] | undefined);
     }
+    this.#peekOnly = !this.#armed.has(stage);
     try {
       const value = this.#makeRun(stage).read() as ProcessEvents[S] | undefined;
       return value === undefined ? undefined : { ...value };
     } catch (error) {
       this.#onError(error);
       return undefined;
+    } finally {
+      this.#peekOnly = false;
     }
   }
 
@@ -426,14 +440,32 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     // `??` / explicit gates (never a spread over defaults): an injected source wins; otherwise the default is wired
     // only where the runtime can give a true value, and an unwired source means the stage is ABSENT.
     const platform = env.platform ?? nodeProcess.platform;
+    // macOS free memory. On Deno the spawn needs the `run` permission and node:child_process would PROMPT for it, so it is
+    // made through Deno.Command and only when already granted; otherwise Deno's own (larger) estimate answers.
+    const deno = (globalThis as { Deno?: DenoRunLike & DenoMemoryInfoLike }).Deno;
+    const injectedSpawn = env.vmStat !== undefined || env.vmStatExecFile !== undefined;
     const vmStat =
       platform === 'darwin' && env.readsVmStat !== false
         ? (env.vmStat ??
           createVmStatSampler({
-            ...(env.vmStatExecFile !== undefined ? { execFile: env.vmStatExecFile } : {}),
+            ...(env.vmStatExecFile !== undefined
+              ? { execFile: env.vmStatExecFile }
+              : deno !== undefined && typeof deno.Command === 'function'
+                ? { execFile: createDenoExecFile(deno) }
+                : {}),
             onError: (error) => this.#onError(error),
           }))
         : undefined;
+    const denoEstimate = createDenoMemoryReader(deno, platform);
+    const macFree = (): number | undefined => {
+      if (
+        vmStat !== undefined &&
+        (deno === undefined || injectedSpawn || denoVmStatGranted(deno))
+      ) {
+        return this.#peekOnly ? vmStat.peek() : vmStat.read();
+      }
+      return denoEstimate();
+    };
     const resolved: Resolved = {
       vmStat,
       eventLoop:
@@ -453,12 +485,11 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
           env.nativeAvailableMemory ??
           firstAnswer([
             createElectronMemoryReader(nodeProcess as ElectronMemoryInfoLike, platform),
-            createDenoMemoryReader((globalThis as { Deno?: DenoMemoryInfoLike }).Deno, platform),
           ]),
         ...(env.readsProcMeminfo === true
           ? { meminfo: env.meminfo ?? createProcMeminfoReader(platform, readProcFile) }
           : {}),
-        ...(vmStat !== undefined ? { vmStat: () => vmStat.read() } : {}),
+        vmStat: macFree,
         freemem: env.freeMemory ?? freemem,
         total: totalmem,
       }),

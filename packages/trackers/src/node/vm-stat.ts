@@ -2,7 +2,8 @@
 // (Node and Bun; Deno when `systemMemoryInfo` is unavailable). On macOS `os.freemem()` is free pages ONLY (measured
 // 151-309 MB on a 64 GB Mac while the kernel's available estimate was ~17 GB), so the number is read from the
 // kernel's own counters instead. It costs a short-lived system process, therefore it is RARE (one read per
-// `intervalMs`, default 10 s), fully ASYNC, single in-flight, unref'd and time-boxed, and it spawns NOTHING until
+// `intervalMs`, default 10 s), fully ASYNC, single in-flight and time-boxed (2 s; a HUNG child can therefore delay a
+// process exit by up to that long: unref() releases the process handle, not the child's stdio pipes), and it spawns NOTHING until
 // something asks for the value (so Electron, which has a native figure, never pays for it).
 //
 // FORMULA (verified against Electron 44.9.3's `process.getSystemMemoryInfo()` on macOS, so Electron, Node and Bun agree):
@@ -44,6 +45,8 @@ export type ExecFileLike = (
 export interface VmStatSource {
   /** The latest value (bytes) or undefined. Never blocks; may start the next async read. */
   read(): number | undefined;
+  /** The cached value only (same freshness rule as `read`): NEVER starts a read. */
+  peek(): number | undefined;
   /** Kill an in-flight read, drop the cached value. A later `read()` starts afresh. */
   stop(): void;
 }
@@ -55,6 +58,8 @@ export interface VmStatOptions {
   now?: () => number;
   /** Minimum gap between reads (default 10 000 ms). A value is served for at most two intervals. */
   intervalMs?: number;
+  /** Return false to skip spawning (and answer nothing, without an error), e.g. a Deno `run` permission not granted. */
+  canSpawn?: () => boolean;
   /** Receives the first failure of each failure streak. */
   onError?: (error: unknown) => void;
 }
@@ -98,6 +103,10 @@ export function createVmStatSampler(options: VmStatOptions = {}): VmStatSource {
           if (myGen !== gen) return;
           child = undefined;
           if (error !== null) return fail(error);
+          // Node's execFile timeout can fire on RESUME after a long event-loop block (>= timeout) and kill a child that
+          // had already exited: it then answers err === null with EMPTY stdout. That is a missed sample, not a failure:
+          // no report, and the cache keeps its (two-interval) lifetime.
+          if (stdout.length === 0) return;
           const bytes = parseVmStat(stdout);
           if (bytes === undefined) return fail(new Error('unrecognized vm_stat output'));
           failing = false;
@@ -112,11 +121,23 @@ export function createVmStatSampler(options: VmStatOptions = {}): VmStatSource {
     }
   };
 
+  const fresh = (t: number): number | undefined =>
+    cached !== undefined && t - cached.at <= 2 * intervalMs ? cached.bytes : undefined;
+
   return {
     read() {
       const t = now();
-      if (child === undefined && (lastStart === undefined || t - lastStart >= intervalMs)) start();
-      return cached !== undefined && t - cached.at <= 2 * intervalMs ? cached.bytes : undefined;
+      if (
+        child === undefined &&
+        (lastStart === undefined || t - lastStart >= intervalMs) &&
+        (options.canSpawn?.() ?? true)
+      ) {
+        start();
+      }
+      return fresh(t);
+    },
+    peek() {
+      return fresh(now());
     },
     stop() {
       gen += 1;
@@ -131,5 +152,74 @@ export function createVmStatSampler(options: VmStatOptions = {}): VmStatSource {
         /* already gone */
       }
     },
+  };
+}
+
+/** The slice of the Deno namespace the vm_stat spawn needs. */
+export interface DenoRunLike {
+  Command?: new (
+    command: string,
+    options: {
+      args: string[];
+      clearEnv: boolean;
+      stdin: 'null';
+      stdout: 'piped';
+      stderr: 'null';
+      signal: AbortSignal;
+    },
+  ) => { output(): Promise<{ success: boolean; code: number; stdout: Uint8Array }> };
+  permissions?: {
+    querySync?: (descriptor: { name: 'run'; command: string }) => { state?: unknown };
+  };
+}
+
+/**
+ * Is spawning `/usr/bin/vm_stat` already GRANTED on this Deno? `permissions.querySync` never prompts (unlike the
+ * node:child_process shim, which would show a blocking interactive prompt). Anything else (prompt, denied, API missing,
+ * a throw) is "not granted": the caller falls back to `Deno.systemMemoryInfo()`.
+ */
+export function denoVmStatGranted(deno: DenoRunLike | undefined): boolean {
+  try {
+    return (
+      typeof deno?.Command === 'function' &&
+      deno.permissions?.querySync?.({ name: 'run', command: VM_STAT })?.state === 'granted'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `execFile` over `Deno.Command` (works with only `--allow-run=/usr/bin/vm_stat`; `clearEnv` keeps the spawn from reading
+ * any environment variable, which would itself need `--allow-env`). Only call after {@link denoVmStatGranted}.
+ */
+export function createDenoExecFile(deno: DenoRunLike): ExecFileLike {
+  return (file, args, options, callback) => {
+    const Command = deno.Command;
+    if (typeof Command !== 'function') throw new Error('Deno.Command is unavailable');
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), options.timeout);
+    (timer as { unref?: () => void }).unref?.();
+    const finish = (error: Error | null, stdout: string): void => {
+      clearTimeout(timer);
+      callback(error, stdout);
+    };
+    new Command(file, {
+      args: [...args],
+      clearEnv: true,
+      stdin: 'null',
+      stdout: 'piped',
+      stderr: 'null',
+      signal: abort.signal,
+    })
+      .output()
+      .then(
+        (result) =>
+          result.success
+            ? finish(null, new TextDecoder().decode(result.stdout))
+            : finish(new Error(`vm_stat exited with ${result.code}`), ''),
+        (error: unknown) => finish(error instanceof Error ? error : new Error(String(error)), ''),
+      );
+    return { kill: () => abort.abort() };
   };
 }
