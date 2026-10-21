@@ -146,6 +146,7 @@ export interface DenoMemoryInfoLike {
 
 /**
  * `Deno.systemMemoryInfo().available`, on macOS ONLY (free + inactive pages: the quantity `os.freemem()` lacks there).
+ * (If it is unavailable, the `vm_stat` source covers macOS.)
  * On Linux and Windows Deno's `os.freemem()` is already the available figure, so this source is not consulted.
  */
 export function createDenoMemoryReader(
@@ -183,6 +184,8 @@ export interface SystemFreeSources {
   native?: () => number | undefined;
   /** Raw `/proc/meminfo` text, only supplied for a runtime whose `os.freemem()` is not MemAvailable (Bun < 1.3.13). */
   meminfo?: () => string | undefined;
+  /** macOS only: `vm_stat`-derived bytes (see ./vm-stat). Never consulted on another platform. */
+  vmStat?: () => number | undefined;
   /** `os.freemem()`. */
   freemem: () => number;
   total: () => number;
@@ -193,11 +196,12 @@ export interface SystemFreeSources {
  * Sources in order, first plausible value (finite, >= 0, <= total) wins:
  *  1. `native`: Electron `process.getSystemMemoryInfo()`; Deno `systemMemoryInfo().available` on macOS.
  *  2. `meminfo`: `MemAvailable` from `/proc/meminfo` (Bun only).
- *  3. `os.freemem()`, except on macOS. libuv reads `MemAvailable` on Linux (since 1.43, Node >= 16.14; Deno since
+ *  3. `vmStat`, on macOS only: free + file-backed + purgeable pages from a RARE async `/usr/bin/vm_stat` read (the
+ *     same definition as Electron's `getSystemMemoryInfo`; see ./vm-stat). When it has no fresh value the trace is
+ *     omitted for that tick, it never falls back to `os.freemem()`.
+ *  4. `os.freemem()`, except on macOS. libuv reads `MemAvailable` on Linux (since 1.43, Node >= 16.14; Deno since
  *     2023) and `ullAvailPhys` on Windows. On macOS it is only free pages (about 0.2% of RAM on a busy 64 GB Mac
- *     while the OS reports about half available), and Node/Bun have no native available figure, so on macOS Node
- *     and Bun OMIT the trace rather than report a number that is not the mobile quantity. (A rare async
- *     `sysctl`/`vm_stat` read or `bun:ffi` could fill that gap later.)
+ *     while the OS reports about half available), so it is not a source there.
  * `process.availableMemory()` is never used: it equals `os.freemem()` without a cgroup limit, reads lower inside one,
  * is 0 on Windows Deno and includes inactive pages on macOS Deno. Inside a container the value is the HOST's
  * figure; the cgroup cap is carried by `process_memory_limit`.
@@ -213,7 +217,11 @@ export function createSystemFreeReader(src: SystemFreeSources): () => number | u
       return text === undefined ? undefined : parseMemAvailable(text);
     });
   }
-  if (src.platform !== 'darwin') sources.push(src.freemem);
+  if (src.platform === 'darwin') {
+    if (src.vmStat !== undefined) sources.push(src.vmStat);
+  } else {
+    sources.push(src.freemem);
+  }
   return () => {
     const total = src.total();
     for (const source of sources) {

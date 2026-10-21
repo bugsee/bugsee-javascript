@@ -25,12 +25,14 @@ import {
   firstAnswer,
   type V8HeapStats,
 } from './runtime-readers';
+import { createVmStatSampler, type ExecFileLike, type VmStatSource } from './vm-stat';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
 // owns everything the runtime can say about its own process, as EIGHT independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
-//   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader)
+//   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader;
+//                   macOS Node/Bun: a rare async vm_stat read, started lazily and stopped with this stage)
 //   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct? }
 //   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs?, maxMs?, p99Ms? }
 //   utilization     performance.eventLoopUtilization() (guarded)   -> { utilizationPercent }
@@ -128,8 +130,19 @@ export interface ProcessEnv {
   memoryLimit?: () => number | undefined;
   /** Raw `/proc/meminfo` text (Linux), consulted only when `readsProcMeminfo` is true. Default reads the file on Linux only. */
   meminfo?: () => string | undefined;
-  /** `os.freemem()` bytes (not a source on macOS; see `createSystemFreeReader`). */
+  /** `os.freemem()` bytes (not a source on macOS, where `vm_stat` is; see `createSystemFreeReader`). */
   freeMemory?: () => number;
+  /**
+   * macOS only: read memory available to new work from `/usr/bin/vm_stat` (a rare async read; see ./vm-stat) when no
+   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun).
+   * `@bugsee/deno` keeps the default, because under a scoped `--allow-run` the spawn is only attempted when
+   * `Deno.systemMemoryInfo()` could not answer.
+   */
+  readsVmStat?: boolean;
+  /** Replaces the `vm_stat` sampler (it is stopped when the memory stage loses its last listener). */
+  vmStat?: VmStatSource;
+  /** `child_process.execFile` for the default `vm_stat` sampler (test seam). */
+  vmStatExecFile?: ExecFileLike;
   /**
    * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:
    * Electron's `process.getSystemMemoryInfo()` when the `process` object has it, else `Deno.systemMemoryInfo()`
@@ -190,6 +203,9 @@ const SEAM_KEYS = [
   'memoryLimit',
   'meminfo',
   'freeMemory',
+  'readsVmStat',
+  'vmStat',
+  'vmStatExecFile',
   'nativeAvailableMemory',
   'platform',
   'perfHooks',
@@ -215,6 +231,8 @@ interface Resolved {
   v8Heap: (() => V8HeapStats | undefined) | undefined;
   memoryLimit: () => number | undefined;
   systemFree: () => number | undefined;
+  /** macOS only: the `vm_stat` sampler behind `systemFree` (stopped with the systemMemory stage). */
+  vmStat: VmStatSource | undefined;
 }
 
 const NOOP_RUN: StageRun = { read: () => undefined, stop: () => {} };
@@ -408,7 +426,16 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     // `??` / explicit gates (never a spread over defaults): an injected source wins; otherwise the default is wired
     // only where the runtime can give a true value, and an unwired source means the stage is ABSENT.
     const platform = env.platform ?? nodeProcess.platform;
+    const vmStat =
+      platform === 'darwin' && env.readsVmStat !== false
+        ? (env.vmStat ??
+          createVmStatSampler({
+            ...(env.vmStatExecFile !== undefined ? { execFile: env.vmStatExecFile } : {}),
+            onError: (error) => this.#onError(error),
+          }))
+        : undefined;
     const resolved: Resolved = {
+      vmStat,
       eventLoop:
         env.eventLoop ??
         (env.measuresEventLoopDelay !== false
@@ -431,6 +458,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         ...(env.readsProcMeminfo === true
           ? { meminfo: env.meminfo ?? createProcMeminfoReader(platform, readProcFile) }
           : {}),
+        ...(vmStat !== undefined ? { vmStat: () => vmStat.read() } : {}),
         freemem: env.freeMemory ?? freemem,
         total: totalmem,
       }),
@@ -456,7 +484,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
             const free = res.systemFree();
             return free === undefined ? { total } : { total, free };
           });
-        return { read, stop: () => {} };
+        return { read, stop: () => res.vmStat?.stop() };
       }
       case 'v8Heap':
         return optionalRun(res.v8Heap);

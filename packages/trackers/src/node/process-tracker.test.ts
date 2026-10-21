@@ -399,7 +399,10 @@ describe('ProcessTracker', () => {
 
   describe('honest defaults and runtime gates', () => {
     it('without injected sources the real node readers answer (memory, system memory, heap, limit)', () => {
-      const tracker = new ProcessTracker({ scheduler: fakeScheduler().scheduler });
+      const tracker = new ProcessTracker({
+        scheduler: fakeScheduler().scheduler,
+        readsVmStat: false,
+      });
       expect(tracker.current('memory')?.rss).toBeGreaterThan(0);
       expect(tracker.current('systemMemory')?.total).toBeGreaterThan(0);
       expect(tracker.current('v8Heap')?.limit).toBeGreaterThan(0);
@@ -408,7 +411,7 @@ describe('ProcessTracker', () => {
       if (cap !== undefined) expect(cap.bytes).toBeGreaterThan(0);
       const sys = tracker.current('systemMemory');
       if (process.platform === 'darwin') {
-        expect(sys).not.toHaveProperty('free'); // os.freemem() is not memory available to new work there
+        expect(sys).not.toHaveProperty('free'); // os.freemem() is not available memory there; vm_stat is opted out here
       } else {
         expect(sys?.free).toBeGreaterThanOrEqual(0);
         expect(sys?.free).toBeLessThanOrEqual(sys?.total ?? 0);
@@ -588,14 +591,119 @@ describe('ProcessTracker', () => {
         expect(free({ ...base, nativeAvailableMemory: () => undefined })?.free).toBe(2048);
       });
 
-      it('macOS: os.freemem() (free pages only) is NOT a source, so Node/Bun omit free and keep total', () => {
-        const got = free({ platform: 'darwin', freeMemory: () => 7 });
+      it('macOS: os.freemem() (free pages only) is NOT a source; with vm_stat opted out free is omitted and total kept', () => {
+        const got = free({ platform: 'darwin', freeMemory: () => 7, readsVmStat: false });
         expect(got?.total).toBeGreaterThan(0);
         expect(got).not.toHaveProperty('free');
         expect(
           free({ platform: 'darwin', freeMemory: () => 7, nativeAvailableMemory: () => 9 })?.free,
         ).toBe(9);
         expect(free({ platform: 'win32', freeMemory: () => 7 })?.free).toBe(7);
+      });
+
+      describe('macOS vm_stat source', () => {
+        const OUT =
+          'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 10.\nFile-backed pages: 20.\nPages purgeable: 30.\n';
+        const fakeExec = () => {
+          const calls: { cb: (e: Error | null, out: string) => void; killed: boolean }[] = [];
+          const execFile = ((_f: string, _a: unknown, _o: unknown, cb: never) => {
+            const call = { cb: cb as never, killed: false };
+            calls.push(call);
+            return {
+              kill: () => {
+                call.killed = true;
+              },
+            };
+          }) as never;
+          return { calls, execFile };
+        };
+
+        it('default sampler: lazy (nothing spawned by merely building), starts on the first free read, serves the value on the next tick', () => {
+          const x = fakeExec();
+          const { tracker, fs } = mk({
+            systemMemory: undefined,
+            platform: 'darwin',
+            vmStatExecFile: x.execFile,
+          });
+          expect(x.calls).toHaveLength(0);
+          const events: ProcessEvents['systemMemory'][] = [];
+          tracker.on('systemMemory', (e) => void events.push(e));
+          expect(x.calls).toHaveLength(0);
+          fs.tick();
+          expect(x.calls).toHaveLength(1);
+          expect(events.at(-1)).not.toHaveProperty('free');
+          x.calls[0]?.cb(null, OUT);
+          fs.tick();
+          expect(events.at(-1)?.free).toBe(60 * 4096);
+          expect(x.calls).toHaveLength(1); // cached between 1 s ticks
+        });
+
+        it('stops (kills the in-flight child) when the stage loses its last listener, and restarts afresh', () => {
+          const x = fakeExec();
+          const { tracker, fs } = mk({
+            systemMemory: undefined,
+            platform: 'darwin',
+            vmStatExecFile: x.execFile,
+          });
+          const off = tracker.on('systemMemory', () => {});
+          fs.tick();
+          off();
+          expect(x.calls[0]?.killed).toBe(true);
+          tracker.on('systemMemory', () => {});
+          fs.tick();
+          expect(x.calls).toHaveLength(2);
+        });
+
+        it('a failing vm_stat is reported through onError once per streak and the trace is omitted', () => {
+          const x = fakeExec();
+          const errors: unknown[] = [];
+          const { tracker, fs } = mk(
+            { systemMemory: undefined, platform: 'darwin', vmStatExecFile: x.execFile },
+            (e) => void errors.push(e),
+          );
+          const events: ProcessEvents['systemMemory'][] = [];
+          tracker.on('systemMemory', (e) => void events.push(e));
+          fs.tick();
+          x.calls[0]?.cb(new Error('exit 1'), '');
+          fs.tick();
+          expect(errors).toHaveLength(1);
+          expect(events.every((e) => !('free' in e))).toBe(true);
+        });
+
+        it('readsVmStat:false never spawns; vm_stat is not consulted off macOS', () => {
+          const x = fakeExec();
+          for (const over of [{ platform: 'darwin', readsVmStat: false }, { platform: 'linux' }]) {
+            const { tracker, fs } = mk({
+              systemMemory: undefined,
+              vmStatExecFile: x.execFile,
+              freeMemory: () => 1,
+              ...over,
+            });
+            tracker.on('systemMemory', () => {});
+            fs.tick();
+          }
+          expect(x.calls).toHaveLength(0);
+        });
+
+        it.skipIf(process.platform !== 'darwin')(
+          'real macOS: /usr/bin/vm_stat answers a plausible available figure asynchronously',
+          async () => {
+            const { tracker, fs } = mk({ systemMemory: undefined });
+            const events: ProcessEvents['systemMemory'][] = [];
+            tracker.on('systemMemory', (e) => void events.push(e));
+            try {
+              for (let i = 0; i < 100 && events.at(-1)?.free === undefined; i += 1) {
+                fs.tick();
+                await new Promise((r) => setTimeout(r, 20));
+              }
+              const last = events.at(-1);
+              expect(last?.free).toBeGreaterThan(0);
+              expect(last?.free).toBeLessThanOrEqual(last?.total ?? 0);
+            } finally {
+              tracker.reset();
+            }
+          },
+        );
       });
 
       it('default native sources: Electron process.getSystemMemoryInfo() on this process object, Deno systemMemoryInfo on macOS', () => {
@@ -646,12 +754,24 @@ describe('ProcessTracker', () => {
           }
         };
         expect(at({})?.free).toBe(11); // freeMemory + platform(linux: freemem is a source)
-        expect(at({ platform: 'darwin' })).not.toHaveProperty('free'); // platform
+        expect(at({ platform: 'darwin', readsVmStat: false })).not.toHaveProperty('free'); // platform + readsVmStat
+        expect(at({ platform: 'darwin', vmStat: { read: () => 55, stop: () => {} } })?.free).toBe(
+          55,
+        ); // vmStat
         expect(at({ readsProcMeminfo: true, meminfo: () => 'MemAvailable: 1 kB\n' })?.free).toBe(
           1024,
         ); // readsProcMeminfo + meminfo
         expect(at({ meminfo: () => 'MemAvailable: 1 kB\n' })?.free).toBe(11); // meminfo ignored without readsProcMeminfo
         expect(at({ nativeAvailableMemory: () => 77 })?.free).toBe(77); // nativeAvailableMemory
+        let spawned = 0;
+        const vmStatExecFile = (() => {
+          spawned += 1;
+          return { kill: () => {} };
+        }) as never;
+        at({ platform: 'darwin', vmStatExecFile, readsVmStat: false });
+        expect(spawned).toBe(0); // readsVmStat survives processTrackerFor
+        at({ platform: 'darwin', vmStatExecFile });
+        expect(spawned).toBe(1); // vmStatExecFile survives processTrackerFor
       });
     });
 
