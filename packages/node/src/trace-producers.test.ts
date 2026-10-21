@@ -373,17 +373,19 @@ describe('createNodeSystemTraceProducers', () => {
     expect(h.got.get('cpu_usage_system')).toBe(50);
   });
 
-  it('writes only the event-loop lag traces the source could measure (an absent field is omitted, never 0)', () => {
+  it.each([
+    ['meanMs', { maxMs: 2, p99Ms: 3 }, ['event_loop_lag_max_ms', 'event_loop_lag_p99_ms']],
+    ['maxMs', { meanMs: 1, p99Ms: 3 }, ['event_loop_lag_ms', 'event_loop_lag_p99_ms']],
+    ['p99Ms', { meanMs: 1, maxMs: 2 }, ['event_loop_lag_ms', 'event_loop_lag_max_ms']],
+    ['every field', {}, []],
+  ])('with %s absent, only the measurable lag traces are written (never a 0)', (_n, reading, written) => {
     const h = harness(
-      constDeps({
-        eventLoop: { read: () => ({ meanMs: 1, p99Ms: 3 }), start: () => {}, stop: () => {} },
-      }),
+      constDeps({ eventLoop: { read: () => reading, start: () => {}, stop: () => {} } }),
     );
     h.startAll();
     h.tick();
-    expect(h.got.get('event_loop_lag_ms')).toBe(1);
-    expect(h.got.get('event_loop_lag_p99_ms')).toBe(3);
-    expect(h.got.has('event_loop_lag_max_ms')).toBe(false);
+    const lag = ['event_loop_lag_ms', 'event_loop_lag_max_ms', 'event_loop_lag_p99_ms'];
+    expect(lag.filter((n) => h.got.has(n)).sort()).toEqual([...written].sort());
   });
 
   it('omits lag and utilization when no eventLoop / utilization source answers', () => {

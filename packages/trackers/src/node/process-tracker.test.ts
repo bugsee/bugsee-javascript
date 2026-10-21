@@ -212,6 +212,17 @@ describe('ProcessTracker', () => {
       });
     });
 
+    it('a BACKWARDS wall window also omits processPct (not only a zero one)', () => {
+      const { tracker, fs, advance } = mk();
+      const { got } = collect(tracker);
+      advance({ user: 500, system: 500 }, -100);
+      fs.tick();
+      expect(got.find(([n]) => n === 'cpu')?.[1]).toStrictEqual({
+        userDelta: 500,
+        systemDelta: 500,
+      });
+    });
+
     it('the cpu window moves on every tick (each tick covers only its own interval)', () => {
       const { tracker, fs, advance } = mk();
       const cpu: unknown[] = [];

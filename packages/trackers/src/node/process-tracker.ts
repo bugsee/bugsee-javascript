@@ -73,7 +73,7 @@ export interface ProcessMemory {
 export interface ProcessEvents {
   memory: ProcessMemory;
   systemMemory: { total: number; free: number };
-  /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window. */
+  /** Deltas since the previous tick (µs), and the process's share of all cores (%) over that window (`processPct` is omitted when the window has no positive length). */
   cpu: { userDelta: number; systemDelta: number; processPct?: number };
   eventLoop: { meanMs?: number; maxMs?: number; p99Ms?: number };
   /** Event-loop utilization over the previous tick, 0..1. */
