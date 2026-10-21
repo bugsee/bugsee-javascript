@@ -29,8 +29,8 @@ describe.each([
     expect(manifest.peerDependencies?.['@opentelemetry/sdk-trace-base']).toBe('>=1.0.0 <3');
   });
 
-  it('sdk-trace covers OTel 3.x', () => {
-    expect(manifest.peerDependencies?.['@opentelemetry/sdk-trace']).toBe('>=3');
+  it('sdk-trace covers 2.9+ (a hard dependency of sdk-trace-base 2.9+) and 3.x', () => {
+    expect(manifest.peerDependencies?.['@opentelemetry/sdk-trace']).toBe('>=2.9.0');
   });
 
   it('keeps every OTel peer optional', () => {

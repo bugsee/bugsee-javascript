@@ -8,6 +8,24 @@
 
 export { type ActiveSpanStore, createSingleSlotActiveSpanStore } from './active-span-store';
 export {
+  boundedBase64,
+  bytesToBase64,
+  flattenAttributes,
+  flattenAttributeValue,
+  isByteArray,
+  MAX_ATTRIBUTE_ARRAY_LENGTH,
+  MAX_ATTRIBUTE_DEPTH,
+  MAX_ATTRIBUTE_JSON_LENGTH,
+  MAX_ATTRIBUTE_NODES,
+  MAX_ATTRIBUTE_STRING_LENGTH,
+  MAX_ATTRIBUTE_TREE_CHARS,
+  normalizeAttributes,
+  normalizeAttributeValue,
+  safeAnyValue,
+  stringifyAnyValue,
+  TRUNCATION_MARKER,
+} from './attribute-value';
+export {
   createPerformanceController,
   NAME_SOURCE_ATTRIBUTE,
   type PerformanceApi,

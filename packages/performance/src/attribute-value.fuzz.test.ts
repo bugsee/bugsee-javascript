@@ -1,15 +1,16 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  flattenAttributes,
   MAX_ATTRIBUTE_DEPTH,
   MAX_ATTRIBUTE_JSON_LENGTH,
+  MAX_ATTRIBUTE_STRING_LENGTH,
+  MAX_ATTRIBUTE_TREE_CHARS,
   normalizeAttributes,
   normalizeAttributeValue,
   stringifyAnyValue,
   TRUNCATION_MARKER,
 } from './attribute-value';
-import { readableSpanToConsumed } from './span-processor';
-import { toAnyValue, toKeyValues } from './to-otlp';
 
 /**
  * Property tests for complex attribute values (OTel API 1.10 AnyValue). `onEnd` runs inside the customer's
@@ -116,22 +117,22 @@ describe('stringifyAnyValue (fuzz)', () => {
   });
 });
 
+const jsonLength = (value: unknown): number => JSON.stringify(value)?.length ?? 0;
+
 describe('normalizeAttributeValue (fuzz)', () => {
-  it('returns a scalar, a homogeneous scalar array, a bounded string, or nothing', () => {
+  it('returns a scalar, an array, a JSON-safe bounded tree, or nothing, and never throws', () => {
     fc.assert(
       fc.property(anyValue, (value) => {
         const out = normalizeAttributeValue(value);
         if (out === undefined) return;
         if (typeof out === 'string') {
-          // A string input is passed through untouched; any other input is bounded.
-          if (typeof value !== 'string')
-            expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_JSON_LENGTH);
+          expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
           return;
         }
-        if (Array.isArray(out)) {
-          const kinds = new Set(out.map((v) => typeof v));
-          expect(kinds.size).toBeLessThanOrEqual(1);
-          for (const kind of kinds) expect(['string', 'number', 'boolean']).toContain(kind);
+        if (typeof out === 'object') {
+          // A tree is always JSON-serializable and its size is bounded by the budgets, whatever came in.
+          expect(() => JSON.stringify(out)).not.toThrow();
+          expect(jsonLength(out)).toBeLessThanOrEqual(MAX_ATTRIBUTE_TREE_CHARS * 4);
           return;
         }
         expect(['number', 'boolean']).toContain(typeof out);
@@ -140,15 +141,15 @@ describe('normalizeAttributeValue (fuzz)', () => {
     );
   });
 
-  it('leaves every scalar and every homogeneous scalar array untouched', () => {
-    const scalar = fc.oneof(fc.string(), fc.boolean(), fc.double(), fc.integer());
+  it('leaves every scalar and every small homogeneous scalar array untouched', () => {
+    const scalar = fc.oneof(fc.string({ maxLength: 100 }), fc.boolean(), fc.double(), fc.integer());
     fc.assert(
       fc.property(scalar, (v) => {
         expect(normalizeAttributeValue(v)).toBe(v);
       }),
     );
     const arrays: fc.Arbitrary<unknown[]>[] = [
-      fc.array(fc.string(), { maxLength: 50 }),
+      fc.array(fc.string({ maxLength: 20 }), { maxLength: 50 }),
       fc.array(fc.boolean(), { maxLength: 50 }),
       fc.array(fc.double(), { maxLength: 50 }),
     ];
@@ -162,44 +163,39 @@ describe('normalizeAttributeValue (fuzz)', () => {
   });
 });
 
-describe('the OTLP and consume mappings accept any attribute value (fuzz)', () => {
-  it('toAnyValue never throws and its result survives JSON serialization', () => {
-    fc.assert(
-      fc.property(anyValue, (value) => {
-        const out = toAnyValue(value);
-        if (out === undefined) return;
-        expect(JSON.parse(JSON.stringify(out))).toEqual(out);
-      }),
-      { numRuns: 400 },
-    );
-  });
-
-  it('toKeyValues and readableSpanToConsumed keep working with an exotic value among the attributes', () => {
-    fc.assert(
-      fc.property(anyValue, (value) => {
-        const attributes = { before: 'a', hostile: value, after: 1 };
-        expect(() => toKeyValues(attributes)).not.toThrow();
-        const consumed = readableSpanToConsumed({
-          spanContext: () => ({ traceId: 't', spanId: 's' }),
-          name: 'n',
-          startTime: [0, 0],
-          endTime: [1, 0],
-          status: { code: 0 },
-          attributes,
-        });
-        expect(consumed.attributes?.before).toBe('a');
-        expect(consumed.attributes?.after).toBe(1);
-        expect(JSON.parse(JSON.stringify(consumed.attributes))).toBeDefined();
-      }),
-      { numRuns: 300 },
-    );
-  });
-
-  it('normalizeAttributes output is always JSON-serializable', () => {
+describe('flattenAttributes (fuzz)', () => {
+  it('always yields scalars, small scalar arrays or bounded strings, and is JSON-serializable', () => {
     fc.assert(
       fc.property(fc.dictionary(fc.string({ maxLength: 8 }), anyValue, { maxKeys: 8 }), (attrs) => {
-        const out = normalizeAttributes(attrs);
+        const out = flattenAttributes(attrs);
         expect(() => JSON.stringify(out)).not.toThrow();
+        for (const value of Object.values(out)) {
+          expect(value !== null && typeof value === 'object' && !Array.isArray(value)).toBe(false);
+          if (typeof value === 'string') {
+            expect(value.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
+          }
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('is idempotent', () => {
+    fc.assert(
+      fc.property(fc.dictionary(fc.string({ maxLength: 8 }), anyValue, { maxKeys: 8 }), (attrs) => {
+        const once = flattenAttributes(attrs);
+        expect(flattenAttributes(once)).toEqual(once);
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+describe('normalizeAttributes (fuzz)', () => {
+  it('output is always JSON-serializable', () => {
+    fc.assert(
+      fc.property(fc.dictionary(fc.string({ maxLength: 8 }), anyValue, { maxKeys: 8 }), (attrs) => {
+        expect(() => JSON.stringify(normalizeAttributes(attrs))).not.toThrow();
       }),
       { numRuns: 200 },
     );

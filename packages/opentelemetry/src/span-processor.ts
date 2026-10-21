@@ -1,6 +1,5 @@
 import { neverThrow } from '@bugsee/core';
-import type { TransactionWire } from '@bugsee/performance';
-import { normalizeAttributes } from './attribute-value';
+import { normalizeAttributes, type TransactionWire } from '@bugsee/performance';
 import type { ConsumedSpan } from './from-otlp';
 import { createTraceAssembler } from './trace-assembler';
 
@@ -103,9 +102,11 @@ export function createBugseeSpanProcessor(
     ...(options.maxAgeMs !== undefined ? { maxAgeMs: options.maxAgeMs } : {}),
     ...(options.maxTraces !== undefined ? { maxTraces: options.maxTraces } : {}),
   });
+  let stopped = false;
   return {
     onStart() {}, // we assemble on span end, not start
     onEnd(span) {
+      if (stopped) return; // OTel: a shut-down processor receives nothing further
       // CONTAINED. Two independent host inputs meet here and BOTH can throw: the `span` (whatever OTel
       // version and exporter chain the app configured — every property read is a chance) and, downstream of
       // the assembler, the application's own `onTransaction` sink. Either one escaping lands inside the
@@ -116,6 +117,7 @@ export function createBugseeSpanProcessor(
       return Promise.resolve();
     },
     shutdown() {
+      stopped = true;
       assembler.clear();
       return Promise.resolve();
     },

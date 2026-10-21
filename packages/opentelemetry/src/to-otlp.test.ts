@@ -69,7 +69,39 @@ describe('toAnyValue', () => {
   it('caps an oversized object at the attribute JSON length', () => {
     const out = toAnyValue({ big: 'x'.repeat(100_000) }) as { stringValue: string };
     expect(out.stringValue.length).toBeLessThanOrEqual(8192);
-    expect(out.stringValue.endsWith('...[truncated]')).toBe(true);
+    expect(out.stringValue).toContain('...[truncated]');
+  });
+  it('caps a huge byte array (bytesValue is bounded like every other branch)', () => {
+    const out = toAnyValue(new Uint8Array(1_000_000)) as { bytesValue: string };
+    expect(out.bytesValue.length).toBe(8192);
+    expect(out.bytesValue.endsWith('...[truncated]')).toBe(true);
+  });
+  it('never throws: an unencodable object yields no value instead of an exception', () => {
+    const original = JSON.stringify;
+    JSON.stringify = () => {
+      throw new RangeError('Invalid string length');
+    };
+    try {
+      expect(toAnyValue({ a: 1 })).toEqual({ stringValue: '"[Unreadable]"' });
+    } finally {
+      JSON.stringify = original;
+    }
+  });
+  it('drops (never throws on) an object whose type probe throws', () => {
+    const trap = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('getPrototypeOf');
+        },
+      },
+    );
+    expect(toAnyValue(trap)).toBeUndefined();
+  });
+  it('bounds a huge nested leaf by size, not just count (no 64 MB copy, output within the cap)', () => {
+    const huge = 'x'.repeat(64 * 1024 * 1024);
+    const out = toAnyValue({ a: huge, b: [huge] }) as { stringValue: string };
+    expect(out.stringValue.length).toBeLessThanOrEqual(8192);
   });
   it('returns undefined for undefined/null (the key is dropped)', () => {
     expect(toAnyValue(undefined)).toBeUndefined();
@@ -78,6 +110,84 @@ describe('toAnyValue', () => {
   it('returns undefined for an unencodable value (function/symbol → JSON.stringify undefined)', () => {
     expect(toAnyValue(() => 1)).toBeUndefined();
     expect(toAnyValue(Symbol('x'))).toBeUndefined();
+  });
+});
+
+describe('toKeyValues is total (one bad attribute never costs the batch)', () => {
+  it('drops a throwing attribute and keeps its siblings', () => {
+    const attrs = {
+      before: 'a',
+      get boom(): never {
+        throw new Error('getter');
+      },
+      after: 'b',
+    };
+    expect(toKeyValues(attrs)).toEqual([
+      { key: 'before', value: { stringValue: 'a' } },
+      { key: 'after', value: { stringValue: 'b' } },
+    ]);
+  });
+  it('returns no key values, not a throw, for a Proxy whose ownKeys trap throws', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    expect(toKeyValues(hostile as Record<string, unknown>)).toEqual([]);
+  });
+  it('lets a whole export request survive a hostile attribute on one span', () => {
+    const txn = {
+      traceId: 'a'.repeat(32),
+      spanId: 'b'.repeat(16),
+      name: 'root',
+      operation: 'op',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      attributes: new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error('ownKeys');
+          },
+        },
+      ),
+      spans: [],
+    } as unknown as TransactionWire;
+    const hostileProxy = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    const withChild = {
+      ...txn,
+      attributes: { ok: 1 },
+      spans: [
+        {
+          spanId: 'd'.repeat(16),
+          operation: 'child',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes: hostileProxy,
+        },
+      ],
+    } as unknown as TransactionWire;
+    expect(() =>
+      toOtlpExportRequest([withChild], { resource: hostileProxy as never }),
+    ).not.toThrow();
+    const resourced = toOtlpExportRequest([withChild], { resource: hostileProxy as never });
+    expect(resourced.resourceSpans[0]?.scopeSpans[0]?.spans).toHaveLength(2);
+    const good = { ...txn, spanId: 'c'.repeat(16), attributes: { ok: 1 } };
+    const request = toOtlpExportRequest([txn, good]);
+    expect(request.resourceSpans[0]?.scopeSpans[0]?.spans).toHaveLength(2);
   });
 });
 

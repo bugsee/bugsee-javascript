@@ -113,3 +113,76 @@ describe('sanitizeSpan', () => {
     expect(sanitizeSpan(input).attributes?.['db.statement']).toBe(42);
   });
 });
+
+describe('sanitizeSpan on nested (AnyValue) attributes', () => {
+  // OTel API 1.10 lets an attribute be a map. The key-based rule must see INTO it: `user.password` is
+  // redacted as a flat key, so `user: { password }` has to be redacted too.
+  it('redacts sensitive keys inside a nested map, keeping the rest', () => {
+    const out = sanitizeSpan(
+      span({ user: { name: 'ann', password: 'hunter2', authorization: 'Bearer abc' } }),
+    );
+    expect(out.attributes?.user).toEqual({
+      name: 'ann',
+      password: REDACTED,
+      authorization: REDACTED,
+    });
+  });
+
+  it('redacts header maps and keys at any depth, including inside arrays', () => {
+    const out = sanitizeSpan(
+      span({
+        'http.request.headers': { authorization: 'Bearer abc', cookie: 'sid=1', accept: 'x' },
+        calls: [{ meta: { token: 't', ok: 1 } }],
+      }),
+    );
+    expect(out.attributes?.['http.request.headers']).toEqual({
+      authorization: REDACTED,
+      cookie: REDACTED,
+      accept: 'x',
+    });
+    expect(out.attributes?.calls).toEqual([{ meta: { token: REDACTED, ok: 1 } }]);
+  });
+
+  it('applies the content-key and statement rules to nested keys', () => {
+    const out = sanitizeSpan(
+      span({
+        payload: {
+          'http.request.body': 'secret body',
+          'db.statement': "SELECT * FROM users WHERE email = 'a@b.com'",
+        },
+      }),
+    );
+    expect(out.attributes?.payload).toEqual({
+      'http.request.body': REDACTED,
+      'db.statement': 'SELECT * FROM users WHERE email = ?',
+    });
+  });
+
+  it('scans nested string leaves for secret shapes', () => {
+    const out = sanitizeSpan(span({ ctx: { note: 'key AKIAIOSFODNN7EXAMPLE end' } }));
+    expect(JSON.stringify(out.attributes?.ctx)).not.toContain('AKIAIOSFODNN7EXAMPLE');
+  });
+
+  it('is bounded: a tree deeper than the walk limit is redacted whole, never recursed into', () => {
+    let deep: unknown = { password: 'p' };
+    for (let i = 0; i < 5000; i++) deep = { n: deep };
+    const out = sanitizeSpan(span({ deep }));
+    expect(JSON.stringify(out.attributes?.deep)).not.toContain('"p"');
+    expect(JSON.stringify(out.attributes?.deep)).toContain(REDACTED);
+  });
+
+  it('returns the SAME span when a nested value needs no change', () => {
+    const attrs = { ctx: { a: 1, b: ['x'] }, flat: 'ok' };
+    const input = span(attrs);
+    expect(sanitizeSpan(input)).toBe(input);
+  });
+
+  it('leaves null-prototype maps and non-plain leaves alone', () => {
+    const map = Object.assign(Object.create(null) as Record<string, unknown>, {
+      k: 1,
+      password: 'p',
+    });
+    const out = sanitizeSpan(span({ map }));
+    expect(out.attributes?.map).toEqual({ k: 1, password: REDACTED });
+  });
+});

@@ -3,10 +3,10 @@ import {
   readableSpanToConsumed,
   toOtlpExportRequest,
 } from '@bugsee/opentelemetry';
-import type { TransactionWire } from '@bugsee/performance';
+import { flattenAttributes, type TransactionWire } from '@bugsee/performance';
 import { type Context, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { describe, expect, it } from 'vitest';
-import { OTEL3_SKIP_NOTE, otel3Supported } from './node-gate';
+import { OTEL3_SKIP_NOTE, otel3Required, otel3Supported } from './node-gate';
 
 // The documented registration on OpenTelemetry JS 3.x: `new TracerProvider({ spanProcessors: [...] })` from
 // `@opentelemetry/sdk-trace` (3.0 removed `sdk-trace-base`, and `BasicTracerProvider` was renamed
@@ -54,6 +54,14 @@ async function boot(): Promise<{
     seen,
   };
 }
+
+// CI sets BUGSEE_REQUIRE_OTEL3=1 on the Node 22 job: there the suite below must RUN, so an unsupported Node
+// fails here instead of skipping silently.
+describe.runIf(otel3Required)('OpenTelemetry 3 suite is mandatory in this environment', () => {
+  it(`runs on a Node that supports it (${OTEL3_SKIP_NOTE})`, () => {
+    expect(otel3Supported).toBe(true);
+  });
+});
 
 describe.skipIf(!otel3Supported)(
   `a real @opentelemetry/sdk-trace@3 provider (${OTEL3_SKIP_NOTE})`,
@@ -146,7 +154,7 @@ describe.skipIf(!otel3Supported)(
       });
     });
 
-    it('keeps complex AnyValue attributes the 3.x SDK retains: nested map, mixed array, bytes become strings', async () => {
+    it('keeps complex AnyValue attributes the 3.x SDK retains as bounded trees (bytes as base64), flattened at the wire', async () => {
       const { provider, tracer, transactions, errors, seen } = await boot();
       const span = tracer.startSpan('complex');
       span.setAttributes({
@@ -165,7 +173,15 @@ describe.skipIf(!otel3Supported)(
         expect.arrayContaining(['map', 'mixed', 'bytes', 'tags', 'scalar']),
       );
       expect(errors).toEqual([]);
+      // Consumed as TREES, so redaction can read nested keys; flattening is the later wire step.
       expect(transactions[0]?.attributes).toMatchObject({
+        map: { a: { b: [1, 'x', true, null] } },
+        mixed: [1, 'a', true],
+        bytes: 'Zm9v',
+        tags: ['a', 'b'],
+        scalar: 1,
+      });
+      expect(flattenAttributes(transactions[0]?.attributes ?? {})).toMatchObject({
         map: '{"a":{"b":[1,"x",true,null]}}',
         mixed: '[1,"a",true]',
         bytes: 'Zm9v',

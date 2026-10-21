@@ -1,5 +1,10 @@
-import type { SpanStatus, TransactionWire } from '@bugsee/performance';
-import { bytesToBase64, isByteArray, stringifyAnyValue } from './attribute-value';
+import {
+  boundedBase64,
+  isByteArray,
+  type SpanStatus,
+  stringifyAnyValue,
+  type TransactionWire,
+} from '@bugsee/performance';
 import {
   OTLP_SPAN_FLAG_SAMPLED,
   type OtlpAnyValue,
@@ -63,20 +68,56 @@ export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
       // with a genuinely large integer should pass a `bigint`, which is exact.
       return Number.isSafeInteger(value) ? { intValue: String(value) } : toDoubleValue(value);
     default: {
-      if (isByteArray(value)) return { bytesValue: bytesToBase64(value) };
-      // objects/arrays → bounded JSON string that cannot throw (cycles, bigint, depth); functions/symbols → dropped
-      const json = stringifyAnyValue(value);
-      return json !== undefined ? { stringValue: json } : undefined;
+      try {
+        if (isByteArray(value)) return { bytesValue: boundedBase64(value) };
+        // objects/arrays → bounded JSON string that cannot throw (cycles, bigint, depth); functions/symbols → dropped
+        const json = stringifyAnyValue(value);
+        return json !== undefined ? { stringValue: json } : undefined;
+      } catch {
+        // An exotic object whose type probe throws (a Proxy with a throwing getPrototypeOf trap). One
+        // attribute must never cost the export batch: drop it.
+        return undefined;
+      }
     }
   }
 }
 
-/** Map an attributes record to OTLP `KeyValue[]`, dropping keys whose value does not encode. */
+/**
+ * Copy an attributes record's own enumerable string keys, skipping any attribute that cannot be read (a
+ * throwing getter) and returning an empty copy when the keys cannot be listed (a Proxy with a throwing
+ * `ownKeys` trap). A spread (`{ ...attributes }`) throws on both, and a throw here rejects the whole export
+ * batch, so every produce-path read of a caller-supplied record goes through this.
+ */
+function safeCopy(attributes: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (attributes === undefined) return out;
+  let keys: string[];
+  try {
+    keys = Object.keys(attributes);
+  } catch {
+    return out;
+  }
+  for (const key of keys) {
+    try {
+      Object.defineProperty(out, key, {
+        value: attributes[key],
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
+      // unreadable attribute: dropped, the rest survive
+    }
+  }
+  return out;
+}
+
+/** Map an attributes record to OTLP `KeyValue[]`, dropping keys whose value does not encode. Total. */
 export function toKeyValues(attributes: Record<string, unknown> | undefined): OtlpKeyValue[] {
   const out: OtlpKeyValue[] = [];
-  if (attributes === undefined) return out;
-  for (const [key, raw] of Object.entries(attributes)) {
-    const value = toAnyValue(raw);
+  const safe = safeCopy(attributes);
+  for (const key of Object.keys(safe)) {
+    const value = toAnyValue(safe[key]);
     if (value !== undefined) out.push({ key, value });
   }
   return out;
@@ -140,7 +181,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
   const flags = txn.sampled ? OTLP_SPAN_FLAG_SAMPLED : 0;
 
   const rootAttributes: Record<string, unknown> = {
-    ...txn.attributes,
+    ...safeCopy(txn.attributes),
     // Root requirements: the transaction name, the sampling decision, the lossless
     // original status, plus the operation + app info + snapshot flag.
     'bugsee.transaction.name': txn.name,
@@ -176,7 +217,7 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
     startTimeUnixNano: toUnixNanoString(s.startTimestampMs),
     endTimeUnixNano: toUnixNanoString(s.endTimestampMs ?? s.startTimestampMs),
     attributes: toKeyValues({
-      ...s.attributes,
+      ...safeCopy(s.attributes),
       'bugsee.operation': s.operation,
       'bugsee.span.status': s.status,
     }),
@@ -213,7 +254,7 @@ export function toOtlpExportRequest(
         // resource, so they can't be overridden away); service.* + telemetry.sdk.language come from `resource`.
         resource: {
           attributes: toKeyValues({
-            ...options.resource,
+            ...safeCopy(options.resource),
             'telemetry.sdk.name': 'bugsee',
             'bugsee.profile.version': '1',
           }),

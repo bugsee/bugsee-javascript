@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundedBase64,
   bytesToBase64,
+  flattenAttributes,
+  flattenAttributeValue,
   MAX_ATTRIBUTE_ARRAY_LENGTH,
   MAX_ATTRIBUTE_DEPTH,
   MAX_ATTRIBUTE_JSON_LENGTH,
   MAX_ATTRIBUTE_NODES,
+  MAX_ATTRIBUTE_STRING_LENGTH,
+  MAX_ATTRIBUTE_TREE_CHARS,
   normalizeAttributes,
   normalizeAttributeValue,
+  safeAnyValue,
   stringifyAnyValue,
   TRUNCATION_MARKER,
 } from './attribute-value';
@@ -134,16 +140,74 @@ describe('stringifyAnyValue', () => {
     expect(Object.keys(parsed).length).toBeLessThan(MAX_ATTRIBUTE_NODES / 3);
   });
 
-  it('caps the output length and ends with the truncation marker', () => {
+  it('caps the output length and marks the cut', () => {
     const out = stringifyAnyValue({ big: 'x'.repeat(50_000) }) as string;
     expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_JSON_LENGTH);
-    expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+    expect(out).toContain(TRUNCATION_MARKER);
     expect(out.startsWith('{"big":"xxx')).toBe(true);
+    // Many mid-size leaves overflow the text cap itself: the text is cut and ends with the marker.
+    const many = stringifyAnyValue(Array.from({ length: 20 }, () => 'y'.repeat(2000))) as string;
+    expect(many.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
+    expect(many.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 
   it('does not truncate output that fits exactly at the cap', () => {
-    const exact = 'y'.repeat(MAX_ATTRIBUTE_JSON_LENGTH - 2); // the two quotes make it exactly the cap
-    expect(stringifyAnyValue(exact)).toBe(JSON.stringify(exact));
+    // `["<a>","<b>"]` is a.length + b.length + 7 characters of JSON.
+    const first = 'y'.repeat(4000);
+    const second = 'z'.repeat(MAX_ATTRIBUTE_JSON_LENGTH - 7 - first.length);
+    const out = stringifyAnyValue([first, second]) as string;
+    expect(out).toBe(JSON.stringify([first, second]));
+    expect(out.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
+  });
+
+  it('cuts a single leaf string and a key to a bounded length, marked', () => {
+    const leaf = JSON.parse(stringifyAnyValue('x'.repeat(100_000)) as string) as string;
+    expect(leaf.length).toBeLessThan(MAX_ATTRIBUTE_JSON_LENGTH);
+    expect(leaf.endsWith(TRUNCATION_MARKER)).toBe(true);
+    const keyed = safeAnyValue({ ['k'.repeat(100_000)]: 1 }) as Record<string, unknown>;
+    const [key] = Object.keys(keyed);
+    expect((key as string).length).toBeLessThan(MAX_ATTRIBUTE_JSON_LENGTH);
+    expect((key as string).endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it('bounds WORK by size, not just count: a huge nested leaf is cut before it is copied or encoded', () => {
+    const huge = 'x'.repeat(64 * 1024 * 1024);
+    const out = stringifyAnyValue({ a: huge, b: [huge, { c: huge }] }) as string;
+    expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_JSON_LENGTH);
+    const safe = safeAnyValue({ a: huge, b: [huge, { c: huge }] });
+    expect(JSON.stringify(safe).length).toBeLessThanOrEqual(MAX_ATTRIBUTE_TREE_CHARS + 1024);
+  });
+
+  it('stops copying string leaves after the character budget, however many leaves there are', () => {
+    const megabyte = 'x'.repeat(1_000_000);
+    const many = Array.from({ length: 1000 }, () => megabyte);
+    const safe = safeAnyValue(many) as unknown[];
+    expect(safe.at(-1)).toBe('[Truncated]');
+    expect(JSON.stringify(safe).length).toBeLessThan(MAX_ATTRIBUTE_TREE_CHARS * 2);
+    expect((stringifyAnyValue(many) as string).length).toBeLessThanOrEqual(
+      MAX_ATTRIBUTE_JSON_LENGTH,
+    );
+  });
+
+  it('reads a non-byte typed array by index within the node budget instead of listing every key', () => {
+    const embedding = new Float32Array(MAX_ATTRIBUTE_NODES * 10).fill(0.5);
+    const safe = safeAnyValue(embedding) as unknown[];
+    expect(safe[0]).toBe(0.5);
+    expect(safe.at(-1)).toBe('[Truncated]');
+    expect(safe.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_NODES);
+  });
+
+  it('does not throw when the serialized tree cannot be stringified', () => {
+    // A tree is JSON-safe by construction; force the failure path through an unusable JSON.stringify.
+    const original = JSON.stringify;
+    JSON.stringify = () => {
+      throw new RangeError('Invalid string length');
+    };
+    try {
+      expect(stringifyAnyValue({ a: 1 })).toBe('"[Unreadable]"');
+    } finally {
+      JSON.stringify = original;
+    }
   });
 
   it('survives a hostile object: a throwing getter or a throwing Proxy never escapes', () => {
@@ -219,24 +283,47 @@ describe('normalizeAttributeValue', () => {
     expect(normalizeAttributeValue(empty)).toBe(empty);
   });
 
-  it('turns a mixed array, an array with null, or a nested array into a JSON string', () => {
-    expect(normalizeAttributeValue([1, 'a', true])).toBe('[1,"a",true]');
-    expect(normalizeAttributeValue(['a', null])).toBe('["a",null]');
-    expect(normalizeAttributeValue([[1], [2]])).toBe('[[1],[2]]');
+  it('keeps a mixed array, an array with null, or a nested array as a bounded COPY, not text', () => {
+    expect(normalizeAttributeValue([1, 'a', true])).toEqual([1, 'a', true]);
+    expect(normalizeAttributeValue(['a', null])).toEqual(['a', null]);
+    expect(normalizeAttributeValue([[1], [2]])).toEqual([[1], [2]]);
   });
 
-  it('turns a primitive array past the length cap into a (truncated) JSON string', () => {
+  it('routes a primitive array past the length cap through the bounded tree (truncated)', () => {
     const long = Array.from({ length: MAX_ATTRIBUTE_ARRAY_LENGTH + 1 }, () => 'a');
-    const out = normalizeAttributeValue(long);
-    expect(typeof out).toBe('string');
+    const out = normalizeAttributeValue(long) as unknown[];
+    expect(out).not.toBe(long);
+    expect(out.at(-1)).toBe('[Truncated]');
     const atCap = Array.from({ length: MAX_ATTRIBUTE_ARRAY_LENGTH }, () => 'a');
     expect(normalizeAttributeValue(atCap)).toBe(atCap);
   });
 
-  it('turns an object into a JSON string and a byte array into a base64 string', () => {
-    expect(normalizeAttributeValue({ a: { b: [1, 'x'] } })).toBe('{"a":{"b":[1,"x"]}}');
+  it('keeps an object as a safe copy (nested keys still visible to redaction) and bytes as base64', () => {
+    const input = { a: { b: [1, 'x'] } };
+    const out = normalizeAttributeValue(input);
+    expect(out).toEqual(input);
+    expect(out).not.toBe(input);
     expect(normalizeAttributeValue(new Uint8Array([102, 111, 111]))).toBe('Zm9v');
     expect(normalizeAttributeValue(nodeBuffer.from('hi'))).toBe('aGk=');
+  });
+
+  it('caps a scalar string at the documented limit, marked, and leaves one at the limit alone', () => {
+    const atLimit = 'x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(normalizeAttributeValue(atLimit)).toBe(atLimit);
+    const over = normalizeAttributeValue(`${atLimit}y`) as string;
+    expect(over.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(over.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it('does not pass a string array through when its strings add up past the string limit', () => {
+    const big = Array.from({ length: 4 }, () => 'x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2));
+    const out = normalizeAttributeValue(big) as string[];
+    expect(out).not.toBe(big);
+    const small = [
+      'a'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2),
+      'b'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2),
+    ];
+    expect(normalizeAttributeValue(small)).toBe(small);
   });
 
   it('drops the attribute for the OTel empty value and for values with no JSON form', () => {
@@ -267,7 +354,7 @@ describe('normalizeAttributes', () => {
         und: undefined,
         fn: () => 1,
       }),
-    ).toEqual({ s: 'x', n: 3, tags: ['a', 'b'], obj: '{"k":1}', mixed: '[1,"a"]', bytes: 'AQ==' });
+    ).toEqual({ s: 'x', n: 3, tags: ['a', 'b'], obj: { k: 1 }, mixed: [1, 'a'], bytes: 'AQ==' });
   });
 
   it('keeps the other attributes when one attribute is unreadable', () => {
@@ -289,9 +376,87 @@ describe('normalizeAttributes', () => {
     expect(out.k).toBe(1);
   });
 
+  it('yields no attributes, not a throw, when the keys cannot be listed (Proxy ownKeys trap)', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    expect(normalizeAttributes(hostile)).toEqual({});
+  });
+
   it('reads only own enumerable string keys', () => {
     const inherited = Object.create({ inherited: 'no' }) as Record<string, unknown>;
     inherited.own = 'yes';
     expect(normalizeAttributes(inherited)).toEqual({ own: 'yes' });
+  });
+});
+
+describe('boundedBase64', () => {
+  it('encodes small arrays whole and cuts a huge one with the marker', () => {
+    expect(boundedBase64(new Uint8Array([102, 111, 111]))).toBe('Zm9v');
+    const out = boundedBase64(new Uint8Array(1_000_000));
+    expect(out.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
+    expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+});
+
+describe('flattenAttributeValue (the wire form)', () => {
+  it('leaves scalars and small homogeneous scalar arrays untouched', () => {
+    const arr = ['a', 'b'];
+    expect(flattenAttributeValue('s')).toBe('s');
+    expect(flattenAttributeValue(3)).toBe(3);
+    expect(flattenAttributeValue(arr)).toBe(arr);
+  });
+
+  it('turns any remaining complex value into one bounded JSON string', () => {
+    expect(flattenAttributeValue({ a: { b: 1 } })).toBe('{"a":{"b":1}}');
+    expect(flattenAttributeValue([1, 'a'])).toBe('[1,"a"]');
+    expect(flattenAttributeValue(new Uint8Array([102, 111, 111]))).toBe('Zm9v');
+    const cyc: Record<string, unknown> = {};
+    cyc.self = cyc;
+    expect(flattenAttributeValue(cyc)).toBe('{"self":"[Circular]"}');
+    expect((flattenAttributeValue({ big: 'x'.repeat(1e6) }) as string).length).toBeLessThanOrEqual(
+      MAX_ATTRIBUTE_JSON_LENGTH,
+    );
+  });
+
+  it('drops what has no representation', () => {
+    expect(flattenAttributeValue(null)).toBeUndefined();
+    expect(flattenAttributeValue(() => 1)).toBeUndefined();
+  });
+});
+
+describe('flattenAttributes', () => {
+  it('returns the SAME record when nothing needed changing', () => {
+    const attrs = { a: 'x', n: 1, tags: ['a', 'b'] };
+    expect(flattenAttributes(attrs)).toBe(attrs);
+  });
+
+  it('flattens only the complex entries and drops the unrepresentable ones', () => {
+    const out = flattenAttributes({ a: 'x', o: { k: 1 }, nul: null });
+    expect(out).toEqual({ a: 'x', o: '{"k":1}' });
+  });
+
+  it('never throws: an unreadable attribute is dropped, an unlistable record is emptied', () => {
+    const getter = {
+      ok: 1,
+      get boom(): never {
+        throw new Error('getter');
+      },
+    };
+    expect(flattenAttributes(getter)).toEqual({ ok: 1 });
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    expect(flattenAttributes(hostile)).toEqual({});
   });
 });

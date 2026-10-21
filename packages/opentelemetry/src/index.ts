@@ -5,15 +5,19 @@
 // compatible); and the SpanProcessor consume bridge — `createBugseeSpanProcessor` below.
 // PLANNED: the interception-transformer propagation.
 
+// Attribute normalization lives in @bugsee/performance (the redaction and wire steps need it below this
+// package); re-exported so existing imports keep working.
 export {
+  flattenAttributes,
   MAX_ATTRIBUTE_ARRAY_LENGTH,
   MAX_ATTRIBUTE_DEPTH,
   MAX_ATTRIBUTE_JSON_LENGTH,
   MAX_ATTRIBUTE_NODES,
+  MAX_ATTRIBUTE_STRING_LENGTH,
   normalizeAttributes,
   normalizeAttributeValue,
   stringifyAnyValue,
-} from './attribute-value';
+} from '@bugsee/performance';
 export {
   type ConsumedSpan,
   consumedRootToTransaction,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { nodeAtLeast, OTEL3_MIN_NODE, otel3Supported } from './node-gate';
+import {
+  nodeAtLeast,
+  OTEL3_MIN_NODE,
+  otel3Required,
+  otel3Supported,
+  skipIsForbidden,
+} from './node-gate';
 
 describe('nodeAtLeast', () => {
   it.each([
@@ -29,5 +35,19 @@ describe('nodeAtLeast', () => {
 
   it('agrees with the running Node', () => {
     expect(otel3Supported).toBe(nodeAtLeast(process.versions.node));
+  });
+});
+
+describe('skipIsForbidden (BUGSEE_REQUIRE_OTEL3)', () => {
+  it('is on only for the exact value "1"', () => {
+    expect(skipIsForbidden({ BUGSEE_REQUIRE_OTEL3: '1' })).toBe(true);
+    for (const v of [undefined, '', '0', 'true', 'yes', ' 1']) {
+      expect(skipIsForbidden({ BUGSEE_REQUIRE_OTEL3: v })).toBe(false);
+    }
+    expect(skipIsForbidden({})).toBe(false);
+  });
+
+  it('reads the real environment for the exported flag', () => {
+    expect(otel3Required).toBe(skipIsForbidden(process.env));
   });
 });

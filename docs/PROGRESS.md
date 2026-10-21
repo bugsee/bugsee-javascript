@@ -595,23 +595,29 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   — STRUCTURAL `ReadableSpanLike`/`SpanProcessor` (no OTel import; covers SDK 1.x `parentSpanId` + 2.x
   `parentSpanContext`/`isRemote`→local-root); `@opentelemetry/*` are OPTIONAL peers (verified not pulled
   into node_modules) + a dev-only `.test-d.ts` drift guard. **OTel spans now flow INTO Bugsee.**
-- **OTel JS 3.x compatibility — DONE (2026-10-21, issue #94)** → `docs/design/opentelemetry-integration.md`
+- **OTel JS 3.x compatibility — DONE (2026-10-21, issue #94, PR #104)** → `docs/design/opentelemetry-integration.md`
   "OpenTelemetry JS major compatibility". (1) `@bugsee/opentelemetry` + `@bugsee/nextjs` peers: `sdk-trace-base`
-  `>=1.0.0 <3` (OTel 1.x/2.x) AND `sdk-trace` `>=3` (3.x, which REMOVED sdk-trace-base and renamed
-  `BasicTracerProvider` to `TracerProvider`), all optional; guard `packaging-guard/src/otel-peers.test.ts`.
+  `>=1.0.0 <3` (OTel 1.x/2.x) AND `sdk-trace` `>=2.9.0` (sdk-trace exists from 2.9, a hard dependency of
+  sdk-trace-base 2.9+, and is the only SDK package on 3.x, where sdk-trace-base was REMOVED and `BasicTracerProvider`
+  renamed `TracerProvider`), all optional; guard `packaging-guard/src/otel-peers.test.ts`.
   (2) The REAL `sdk-trace@3` is tested in the private `dev-packages/otel3-compat` (not in the package: `sdk-trace@3`
   peers `api >=1.10 <1.11`, `sdk-trace-base@2` peers `api <1.10`, one install cannot hold both), skipped below
   Node 22.15 (OTel 3 engines floor); `packages/opentelemetry/src/span-processor.real-sdk.test.ts` is the 2.x
   runtime twin; a tsc type test pins `ReadableSpan` -> `ReadableSpanLike` and processor -> 3.x `SpanProcessor`.
-  (3) `AnyValue` attributes: `attribute-value.ts` — scalars/homogeneous scalar arrays unchanged, anything else one
-  bounded JSON string (bytes base64, `bytesValue` on OTLP produce), never throws; fast-check fuzz. Found+fixed a
-  real bug on the way: a `bigint` attribute reached the transaction as a value `JSON.stringify` throws on.
+  (3) `AnyValue` attributes, normalized LATE: `@bugsee/performance` `attribute-value.ts` — consume keeps scalars and
+  small homogeneous scalar arrays (strings capped at 32 KiB) and turns anything else into a bounded JSON-safe TREE
+  (bytes base64, bigint exact-or-text); the span filter / default sanitizer sees the tree (nested key-based
+  redaction, `span-sanitizer.ts`); `flattenTransactionAttributes` (extension, after the filter) flattens what
+  remains to bounded JSON strings at the wire. Bounded in WORK (leaf, key and total-character budgets, typed
+  arrays read by index) and total (never throws; produce path drops one bad attribute, never the batch). Native
+  OTLP `kvlistValue`/`arrayValue` on produce NOT done: the OTLP tee reads the post-wire (already flattened)
+  store, and the Bugsee wire/viewer read scalar attribute values. Found+fixed: a `bigint` attribute reached the
+  transaction as a value `JSON.stringify` throws on.
   (4) `packaging-guard/src/otel-no-deep-imports.test.ts`: no `@opentelemetry/*` deep import / `package.json`
   read / `node_modules/@opentelemetry` path anywhere (none existed). Also: nextjs zero-config provider falls back to
-  `sdk-trace` (`loadOtelModules`). `pnpm-workspace.yaml` carries 4 temporary `minimumReleaseAgeExclude` entries for
-  the OTel 3.0 GA versions; delete them once they are a day old. NOT verified: OTel 3 on Node < 22.15 (unsupported
-  upstream; the suite skips), a real Next.js app on OTel 3 end to end.
- in `@bugsee/capture`. Capture interceptors
+  `sdk-trace` (`loadOtelModules`). NOT verified: OTel 3 on Node < 22.15 (unsupported upstream; the suite skips), a
+  real Next.js app on OTel 3 end to end.
+- **T — DONE (`main`):** the interception-transformer seam in `@bugsee/capture`. Capture interceptors
   stay observe-only; a `RequestDecorator` (sync, truthful-capture, never on SDK-internal traffic) is the
   ONLY way piped data is altered — byte-identical when none registered. Shared `createRequestDecoratorRegistry`
   on BOTH fetch (rebuilds `init.headers`) and xhr (original `setRequestHeader` at send). The "interceptors

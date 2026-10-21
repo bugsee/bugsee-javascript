@@ -41,7 +41,7 @@ export interface AttachOtelProviderOptions {
   load?: () => Promise<OtelTracerModules | undefined>;
 }
 
-/** A provider class: `BasicTracerProvider` (sdk-trace-base 1.x/2.x) or `TracerProvider` (sdk-trace 3.x). */
+/** A provider class: `BasicTracerProvider` (sdk-trace-base 1.x/2.x) or `TracerProvider` (sdk-trace 2.9+, the only SDK package on 3.x). */
 type ProviderCtor = new (options: { spanProcessors: unknown[] }) => unknown;
 
 /** The module loaders {@link loadOtelModules} uses — injectable so every install shape is testable. */
@@ -49,13 +49,13 @@ export interface OtelImporters {
   api(): Promise<{ trace: { setGlobalTracerProvider(provider: never): boolean } }>;
   /** OTel JS 1.x/2.x. */
   sdkTraceBase(): Promise<{ BasicTracerProvider?: ProviderCtor }>;
-  /** OTel JS 3.x (which removed `sdk-trace-base` and renamed `BasicTracerProvider` to `TracerProvider`). */
+  /** OTel JS 2.9+ and 3.x (3.x removed `sdk-trace-base` and renamed `BasicTracerProvider` to `TracerProvider`). */
   sdkTrace(): Promise<{ TracerProvider?: ProviderCtor }>;
 }
 
 /**
  * Resolve the OTel modules from whichever optional SDK package is installed: `sdk-trace-base` first (OTel
- * 1.x/2.x, unchanged behaviour), then `sdk-trace` (OTel 3.x). `undefined` when `@opentelemetry/api` or every
+ * 1.x/2.x, unchanged behaviour), then `sdk-trace` (2.9+ and 3.x). `undefined` when `@opentelemetry/api` or every
  * SDK package is absent.
  */
 export async function loadOtelModules(

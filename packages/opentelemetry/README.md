@@ -15,7 +15,7 @@ Consuming spans also needs your own OpenTelemetry SDK, all optional peers of thi
 | Your OpenTelemetry JS | Install |
 | --- | --- |
 | 1.x / 2.x | `@opentelemetry/api` and `@opentelemetry/sdk-trace-base` |
-| 3.x (Node.js 22.15 or newer) | `@opentelemetry/api` and `@opentelemetry/sdk-trace` (3.0 replaced `sdk-trace-base`) |
+| 3.x (Node.js 22.15 or newer) | `@opentelemetry/api` and `@opentelemetry/sdk-trace` (3.0 removed `sdk-trace-base`; `sdk-trace` also exists on 2.9+) |
 
 ## Usage
 

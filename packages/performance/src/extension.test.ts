@@ -270,6 +270,72 @@ describe('createPerformanceExtension — the span filter reaches CONSUMED spans'
   });
 });
 
+describe('createPerformanceExtension — nested (AnyValue) attributes: redact as a tree, then flatten', () => {
+  const external = (attributes: Record<string, unknown>) => ({
+    traceId: 't',
+    spanId: 's',
+    name: 'req',
+    operation: 'http',
+    status: 'OK' as const,
+    sampled: true,
+    startTimestampMs: 1,
+    endTimestampMs: 2,
+    isSnapshot: false,
+    attributes,
+    spans: [],
+  });
+
+  it('redacts nested sensitive keys by DEFAULT and only then stringifies, in both sinks', () => {
+    const { client, captured } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(
+      external({
+        user: { name: 'ann', password: 'hunter2', authorization: 'Bearer abc' },
+        'http.request.headers': { cookie: 'sid=1', accept: 'x' },
+      }),
+    );
+    const stored = extension.store.drain()[0]?.attributes as Record<string, unknown>;
+    expect(JSON.parse(stored.user as string)).toEqual({
+      name: 'ann',
+      password: '<redacted>',
+      authorization: '<redacted>',
+    });
+    expect(JSON.parse(stored['http.request.headers'] as string)).toEqual({
+      cookie: '<redacted>',
+      accept: 'x',
+    });
+    for (const sink of [JSON.stringify(stored), JSON.stringify(captured)]) {
+      expect(sink).not.toContain('hunter2');
+      expect(sink).not.toContain('Bearer abc');
+      expect(sink).not.toContain('sid=1');
+    }
+  });
+
+  it('hands an integrator span filter the TREE, and still flattens whatever it returns', () => {
+    const filters = createFilterStore(() => {});
+    let seen: unknown;
+    filters.span = (span) => {
+      seen = span.attributes?.ctx;
+      return span;
+    };
+    const { client } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(external({ ctx: { a: { b: 1 } } }));
+    expect(seen).toEqual({ a: { b: 1 } });
+    expect(extension.store.drain()[0]?.attributes?.ctx).toBe('{"a":{"b":1}}');
+  });
+
+  it('flattens before the sinks even when the sanitizer is switched off', () => {
+    const { client } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension({ sanitizeSpans: false });
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(external({ ctx: { k: [1, 'a'] } }));
+    expect(extension.store.drain()[0]?.attributes?.ctx).toBe('{"k":[1,"a"]}');
+  });
+});
+
 // `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
 describe('createPerformanceExtension — sanitizeSpans is fail-on', () => {
