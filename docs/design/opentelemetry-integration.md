@@ -202,6 +202,12 @@ OTel); the OTel 3 suite is meant to run on the 22/24 legs of the 18-24 matrix on
 `register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
 package in `dev-packages/otel3-compat`.
 
+**Next.js zero-config provider.** `@bugsee/nextjs` lazy-imports the SDK for its zero-config provider
+(`otel-provider.ts` `loadOtelModules`): `sdk-trace-base` first (`BasicTracerProvider`, OTel 1.x/2.x, behaviour
+unchanged), then `sdk-trace` (`TracerProvider`, 3.x). Before this, an OTel 3 install reported `unavailable`
+because `sdk-trace-base` does not exist there. A real `next build` of `packages/nextjs-e2e` with neither package
+installed compiles without a module-not-found error, so the second optional import does not break webpack.
+
 **Browser builds and deep imports.** OTel 3 ships an `exports` map on every package, so
 `@opentelemetry/<pkg>/build/...` deep imports and `@opentelemetry/<pkg>/package.json` reads no longer resolve,
 and the `browser` field was replaced by `#platform` subpath imports. A bundler that pulls OTel 3 into a
