@@ -19,7 +19,8 @@ import { hostGlobal, hostRead } from './host-global';
 // to the browser lifecycle/context signals, mapping each to an events.system entry; on deactivate it
 // removes the listeners. Captured (Android events.system parity, web-native):
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
-//   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
+//   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState; only when the
+//                            de-duplicated ApplicationTracker `state` changes, so a duplicate/synthetic event emits nothing)
 //   online / offline       → online / offline (one event per DOM event; the ConnectivityTracker `transition` stage, its kind the
 //                            event's own type — never a navigator.onLine read; attaching is not an event)
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker
@@ -136,8 +137,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
       l.on('pagehide', ({ persisted }) =>
         this.emit('event', { name: 'process_exiting', params: { persisted } }),
       ),
-      l.on('visibility', ({ visible }) =>
-        this.emit('event', { name: visible ? 'process_foreground' : 'process_background' }),
+      // The de-duplicated `state` stage, NOT the raw `visibility` one: a visibilitychange that leaves the page where it
+      // already was (a synthetic/duplicate event) is not a foreground/background transition.
+      l.on('state', ({ state }) =>
+        this.emit('event', {
+          name: state === 'foreground' ? 'process_foreground' : 'process_background',
+        }),
       ),
       l.on('freeze', () => this.emit('event', { name: 'freeze' })),
       l.on('resume', () => this.emit('event', { name: 'resume' })),

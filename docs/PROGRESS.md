@@ -1149,6 +1149,15 @@ body — and a rejection uploads the bundle with `PutBundleOptions.checksumSha25
 node launch integration test watches `node:crypto` hash the PUT body, since delivery alone no longer proves
 the injection ran.
 
+**Browser smoke-run findings (2026-10-21).** A real-Chrome run found three defects, all fixed: (1) the `connection`
+trace repeated the browser's stale `downlink`/`downlinkMax`/`rtt` on a `not_reachable` row, so those three are now
+omitted on any `not_reachable` row (offline, or online with connection type `none`); `effective_type` goes too, only `save_data` (a preference) is kept; (2) a duplicate/synthetic `visibilitychange` on an
+already-visible page emitted `process_foreground`, so the events source now consumes the de-duplicated
+`ApplicationTracker` `state` stage (the raw `visibility` stage is unchanged); (3) sample drift: the browser-side samples
+called the now-async `launch()` synchronously, `mechanism` is no longer a public `LogExceptionOptions` key, and every
+sample's `pnpm-workspace.yaml` overrides lacked `@bugsee/trackers` (`scripts/pack-local.mjs` already enumerates
+packages dynamically, so only the checked-in override lists were stale).
+
 ---
 
 ### 2026-10-21 — Real-Electron smoke findings (Electron 44.9.3, macOS arm64) → `fix/electron-smoke-findings`

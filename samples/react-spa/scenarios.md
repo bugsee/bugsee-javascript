@@ -51,7 +51,7 @@ right request left the process, inspected via Playwright) · **B** = backend (co
 | `logException(new Error)` | issue, correct message + stack | B | `SREACT-1` — full `get_issue` output matches: message `S4: logException(new Error(...))`, stack resolves to `ScenarioPage.tsx:539` |
 | non-Error: string/object/null | 3 separate issues, all reported (not dropped) | W/B | `verify.mjs`: `s4-string`/`s4-object`/`s4-null` all produced an `/v2/issues` call; `SREACT-9` (`Error at at onClick`) confirmed via `list_issues` |
 | nested `cause` chain | `Caused by:` chain in the description | B | `get_issue` supports a `Cause:` section (confirmed via `SREACT-13`/`SREACT-23`'s `linkComponentStack` case, which uses the same mechanism) |
-| `LogExceptionOptions` (mechanism/severity/labels) | labels present | W | wire capture of the `/v2/issues` POST body: `"labels":["scenario-panel","s4-options"]`, `"source":{"mechanism":"programmatic"}`, `"severity":3` |
+| `LogExceptionOptions` (severity/labels) | labels present | W | wire capture of the `/v2/issues` POST body: `"labels":["scenario-panel","s4-options"]`, `"source":{"mechanism":"programmatic"}`, `"severity":3` |
 | same instance twice (dedupe) | 1 issue call, not 2 | W | `verify.mjs`: `s4-dedupe` → `1 issue calls` |
 | storm: 200 in ~1s | rate-limited (few requests), app stays responsive | W/B | `verify.mjs`: `s4-storm` → `3 issue calls (of 200 attempted)`; **see `FINDINGS.md` F-8**: one of the resulting issues (`SREACT-2`) shows `"Crash data for the issue was not found"` on `get_issue` — an anomaly, not confirmed root-caused |
 | — | cross-session dedup | B | `SREACT-10` events_count grew 2→4→32 across separate `verify.mjs` runs (separate SDK sessions) — same signature, one issue |

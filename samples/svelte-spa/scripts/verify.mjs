@@ -386,7 +386,7 @@ async function main() {
   record('s4-options', 'logException with LogExceptionOptions — its own bundle reaches the wire', optionsBundle !== undefined);
   // `request.json` is parsed in full by the tee but only `.summary`/`.labels` were ever read out of it.
   // The OPTIONS this control passes are right there: `labels` is the discriminating one (nothing else in
-  // the run carries these two), `source.mechanism` is `mechanism`, and `severity: 3` is `'high'`
+  // the run carries these two), `source.mechanism` is the SDK-stamped default (`mechanism` is no longer a public option), and `severity: 3` is `'high'`
   // (protocol Severity.High). The severity half is stated for completeness and is NOT independent
   // evidence — 3 is also what an un-optioned report carries, measured on the capture-probe bundle in the
   // same run — so the check would still fail on a `labels`/`mechanism` regression and would not on a

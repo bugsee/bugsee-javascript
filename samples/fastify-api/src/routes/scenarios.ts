@@ -61,11 +61,11 @@ export function buildScenariosPlugin() {
       c.setAttribute('bool_attr', true);
       c.setAttribute('arr_attr', ['a', 'b', 'c']);
       const beforeSnapshot = c.getAllAttributes();
-      void c.logException(new Error(`s2-before-${marker}`), { mechanism: 'programmatic' });
+      void c.logException(new Error(`s2-before-${marker}`));
 
       c.setAttribute('after_attr', `set-after-event-${marker}`);
       const afterSnapshot = c.getAllAttributes();
-      void c.logException(new Error(`s2-after-${marker}`), { mechanism: 'programmatic' });
+      void c.logException(new Error(`s2-after-${marker}`));
 
       await reply.send({
         userIdentifier: c.getUserIdentifier(),
@@ -113,7 +113,7 @@ export function buildScenariosPlugin() {
         level: 'info',
         data: { marker, step: 1 },
       });
-      void c.logException(new Error(`s3-${marker}`), { mechanism: 'programmatic' });
+      void c.logException(new Error(`s3-${marker}`));
       await reply.send({ ok: true, marker });
     });
 
@@ -144,7 +144,6 @@ export function buildScenariosPlugin() {
     fastify.post('/s4/options', async (req: FastifyRequest, reply: FastifyReply) => {
       const marker = markerOf(req);
       void client().logException(new Error(`s4-options-${marker}`), {
-        mechanism: 'programmatic',
         severity: 'critical',
         labels: ['sample-fastify-api', 's4-options', marker],
       });

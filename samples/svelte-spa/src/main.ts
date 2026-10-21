@@ -5,9 +5,12 @@ import { initRouter } from './router.svelte';
 import './app.css';
 
 // launch() once, at app bootstrap — every scenario after this reads the same client via getClient().
-launchApp();
-initRouter();
+// launch() is async (it restores durable state before it resolves): boot only once the client is up.
+async function boot(): Promise<void> {
+  await launchApp();
+  initRouter();
 
-const app = mount(App, { target: document.getElementById('app')! });
+  mount(App, { target: document.getElementById('app')! });
+}
 
-export default app;
+void boot();

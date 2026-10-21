@@ -180,6 +180,55 @@ describe('ConnectionProducer', () => {
     expect(out.map((r) => (r.value as { type: string }).type)).toEqual(['wifi', 'not_reachable']);
   });
 
+  it('omits the stale link estimates (downlink, downlinkMax, rtt) while offline, keeping the other fields', () => {
+    const win = mkTarget();
+    const nav = {
+      onLine: true,
+      connection: {
+        type: 'wifi',
+        effectiveType: '4g',
+        downlink: 9.5,
+        downlinkMax: 100,
+        rtt: 50,
+        saveData: true,
+      },
+    };
+    const { out } = startAll([
+      new ConnectionProducer(new ConnectivityTracker({ window: win, navigator: nav })),
+    ]);
+    nav.onLine = false;
+    win.fire('offline');
+    expect(out[0]?.value).toMatchObject({
+      type: 'wifi',
+      link_downstream_kbps: 9500,
+      link_downstream_max_kbps: 100_000,
+      rtt: 50,
+    });
+    // An offline link has no downlink: the last estimate is stale, so it is omitted, never repeated.
+    expect(out[1]?.value).toEqual({
+      type: 'not_reachable',
+      save_data: true,
+    });
+  });
+
+  it('also omits the measurements when ONLINE but the browser reports connection type none (not_reachable)', () => {
+    const nav = {
+      onLine: true,
+      connection: {
+        type: 'none',
+        effectiveType: '4g',
+        downlink: 9.5,
+        downlinkMax: 100,
+        rtt: 50,
+        saveData: false,
+      },
+    };
+    const { out } = startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: nav }))]);
+    expect(out).toEqual([
+      { name: 'connection', value: { type: 'not_reachable', save_data: false } },
+    ]);
+  });
+
   it('still emits (type unknown) with NO NetworkInformation, because onLine alone is worth a row', () => {
     expect(
       startAll([new ConnectionProducer(new ConnectivityTracker({ navigator: { onLine: true } }))])

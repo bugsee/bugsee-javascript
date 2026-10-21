@@ -37,8 +37,8 @@ function perf(): PerfApi {
 onMounted(() => note(`Scenario panel ready — RUN_ID=${RUN_ID}`));
 
 // ---------- S1 Launch & lifecycle ----------
-function s1Relaunch(): void {
-  attemptRelaunch();
+async function s1Relaunch(): Promise<void> {
+  await attemptRelaunch();
   note(`S1: attempted a second launch() — isLaunched=${getBugsee().isLaunched()}`);
 }
 async function s1Flush(): Promise<void> {
@@ -123,14 +123,14 @@ function s3Breadcrumb(): void {
 // ---------- S4 Exceptions ----------
 async function s4Error(): Promise<void> {
   const m = marker('S4-error');
-  await getBugsee().logException(new Error(`S4 plain Error ${m}`), { mechanism: 'programmatic' });
+  await getBugsee().logException(new Error(`S4 plain Error ${m}`));
   note(`S4: logException(Error) — ${m}`);
 }
 async function s4NonError(): Promise<void> {
   const m = marker('S4-nonerror');
-  await getBugsee().logException(`a thrown string ${m}`, { mechanism: 'programmatic' });
-  await getBugsee().logException({ code: 'BOOM', marker: m }, { mechanism: 'programmatic' });
-  await getBugsee().logException(null, { mechanism: 'programmatic' });
+  await getBugsee().logException(`a thrown string ${m}`);
+  await getBugsee().logException({ code: 'BOOM', marker: m });
+  await getBugsee().logException(null);
   note(`S4: logException(string/object/null) — ${m}`);
 }
 async function s4Cause(): Promise<void> {
@@ -138,7 +138,6 @@ async function s4Cause(): Promise<void> {
   const root = new Error(`root cause ${m}`);
   const wrapped = new Error(`wrapped ${m}`, { cause: root });
   await getBugsee().logException(wrapped, {
-    mechanism: 'programmatic',
     severity: 'high',
     labels: [`scenario:S4-cause`, m],
   });
@@ -147,15 +146,15 @@ async function s4Cause(): Promise<void> {
 async function s4Dedupe(): Promise<void> {
   const m = marker('S4-dedupe');
   const err = new Error(`same instance twice ${m}`);
-  await getBugsee().logException(err, { mechanism: 'programmatic' });
-  await getBugsee().logException(err, { mechanism: 'programmatic' });
+  await getBugsee().logException(err);
+  await getBugsee().logException(err);
   note(`S4: same Error instance reported twice (expect dedupe) — ${m}`);
 }
 async function s4Storm(): Promise<void> {
   const m = marker('S4-storm');
   const results = await Promise.all(
     Array.from({ length: 200 }, (_, i) =>
-      getBugsee().logException(new Error(`storm #${i} ${m}`), { mechanism: 'programmatic' }),
+      getBugsee().logException(new Error(`storm #${i} ${m}`)),
     ),
   );
   const dropped = results.filter((r) => !r.ok).length;
@@ -317,16 +316,14 @@ async function s8TriggerReportBefore(): Promise<void> {
       return request;
     },
   });
-  await getBugsee().logException(new Error(`S8 before-mutate ${m}`), { mechanism: 'programmatic' });
+  await getBugsee().logException(new Error(`S8 before-mutate ${m}`));
   getBugsee().setReportHandler(null);
   note(`S8: setReportHandler before mutated the report (added a label) — ${m}`);
 }
 async function s8TriggerReportVeto(): Promise<void> {
   const m = marker('S8-report-veto');
   getBugsee().setReportHandler({ before: () => null });
-  const result = await getBugsee().logException(new Error(`S8 vetoed report ${m}`), {
-    mechanism: 'programmatic',
-  });
+  const result = await getBugsee().logException(new Error(`S8 vetoed report ${m}`));
   getBugsee().setReportHandler(null);
   note(`S8: setReportHandler before vetoed the report — ok=${result.ok} (expect no issue to arrive) — ${m}`);
 }

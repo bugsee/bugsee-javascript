@@ -174,7 +174,7 @@ any sample. F-3 is still present in the live source as of this writing.
 - **Severity:** minor (tooling/verification-surface gap, not a data-loss bug — the data genuinely
   reaches the backend, see wire evidence)
 - **Package:** N/A (Bugsee staging MCP server / viewer surface, not an SDK package)
-- **Scenario:** S2 (attributes), S4 `options` (labels/severity/mechanism), S8 `report-mutate` (label
+- **Scenario:** S2 (attributes), S4 `options` (labels/severity; `mechanism` was passed then and is no longer a public option), S8 `report-mutate` (label
   added by a `ReportHandler.before`)
 - **Expected:** per PLAN §6 step 4, `get_issue` should let us confirm "attributes, labels and the user
   identifier set in S2 are present."

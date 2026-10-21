@@ -158,8 +158,8 @@ export default function ScenarioPage(): JSX.Element {
           <span className="label">Second launch() on the same carrier (must be ignored)</span>
           <button
             data-testid="s1-duplicate-launch"
-            onClick={() => {
-              const { sameInstance } = attemptDuplicateLaunch();
+            onClick={async () => {
+              const { sameInstance } = await attemptDuplicateLaunch();
               setStatus('s1-dup', `same instance returned: ${sameInstance}`, sameInstance);
             }}
           >
@@ -351,17 +351,16 @@ export default function ScenarioPage(): JSX.Element {
           <StatusLine status={statuses['s4-cause']} />
         </div>
         <div className="control-row">
-          <span className="label">LogExceptionOptions (mechanism/severity/labels)</span>
+          <span className="label">LogExceptionOptions (severity/labels)</span>
           <button
             data-testid="s4-options"
             onClick={async () => {
               const options: LogExceptionOptions = {
-                mechanism: 'programmatic',
                 severity: 'high',
                 labels: ['scenario-panel', 's4-options'],
               };
               const r = await client?.logException(new Error('S4: with LogExceptionOptions'), options);
-              setStatus('s4-options', `logException(err, {mechanism, severity, labels}) -> ok=${r?.ok}`, r?.ok);
+              setStatus('s4-options', `logException(err, {severity, labels}) -> ok=${r?.ok}`, r?.ok);
             }}
           >
             logException with options

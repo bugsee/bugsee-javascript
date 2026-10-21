@@ -118,7 +118,6 @@ function scenarioS2(marker: string, res: import('node:http').ServerResponse): vo
   const user = client.getUserIdentifier();
   void client
     .logException(new Error(`S2 identity+attributes marker=${marker}`), {
-      mechanism: 'programmatic',
       labels: ['scenario:s2', `marker:${marker}`],
     })
     .then(() => {
@@ -198,7 +197,7 @@ async function scenarioS4(
       const inner = new Error(`S4 inner cause marker=${marker}`);
       const outer = new Error(`S4 outer marker=${marker}`, { cause: inner });
       const p = client
-        .logException(outer, { mechanism: 'programmatic', severity: 'high', labels: ['scenario:s4', 'cause-chain'] })
+        .logException(outer, { severity: 'high', labels: ['scenario:s4', 'cause-chain'] })
         .catch(() => ({ ok: false as const }));
       const r = sync ? await p : undefined;
       json(res, 200, { kind, marker, accepted: true, ...(r !== undefined ? { result: r } : {}) });
@@ -592,7 +591,7 @@ const server = createServer((req, res) => {
       // it become an uncaught exception path by rethrowing on the next tick would kill the request
       // instead; log + report explicitly here so the HTTP response is still well-formed.
       void client
-        .logException(error, { mechanism: 'programmatic', labels: ['route-handler-error'] })
+        .logException(error, { labels: ['route-handler-error'] })
         .catch(() => {});
       json(res, 500, { error: (error as Error).message ?? String(error) });
     }

@@ -477,11 +477,33 @@ describe('launch', () => {
     expect(events?.map((e) => (e.data as { name: string }).name)).toContain('process_started');
   });
 
-  it('ONE shared lifecycle tracker serves traces and events: a single listener per type; visibility reaches events.system via the injected document', async () => {
+  it('a page hidden at launch does not report process_background for a duplicate hidden visibilitychange', async () => {
     const store = memStore();
     const w = fakeWindow();
     const doc = fakeWindow();
     const docWin = { ...doc.win, visibilityState: 'hidden' };
+    await launchTracked(
+      'tok',
+      baseOptions({
+        window: w.win,
+        document: docWin as unknown as Document,
+        captureStore: store,
+        systemMetricsSampler: undefined,
+      }),
+    );
+    doc.emit('visibilitychange', {});
+    const names = ((await drain(store, 'events.system')) ?? []).map(
+      (e) => (e.data as { name: string }).name,
+    );
+    expect(names).not.toContain('process_background');
+    expect(names).toContain('process_started');
+  });
+
+  it('ONE shared lifecycle tracker serves traces and events: a single listener per type; visibility reaches events.system via the injected document', async () => {
+    const store = memStore();
+    const w = fakeWindow();
+    const doc = fakeWindow();
+    const docWin = { ...doc.win, visibilityState: 'visible' };
     const client = await launchTracked(
       'tok',
       baseOptions({
@@ -497,6 +519,8 @@ describe('launch', () => {
     expect(w.count('online')).toBe(1);
     expect(w.count('offline')).toBe(1);
     expect(w.count('orientationchange')).toBe(1);
+    // The page starts visible, so only a REAL change to hidden is a background transition.
+    docWin.visibilityState = 'hidden';
     doc.emit('visibilitychange', {});
     const names = ((await drain(store, 'events.system')) ?? []).map(
       (e) => (e.data as { name: string }).name,

@@ -415,6 +415,36 @@ describe('createBrowserSystemEventsSource', () => {
     ]);
   });
 
+  it('does not re-announce a foreground/background the page is already in (duplicate visibilitychange)', () => {
+    const { env, doc, state } = fakeEnv();
+    const { events } = activate(env);
+    // Startup state is visible: a synthetic/duplicate visibilitychange(visible) changes nothing.
+    doc.emit('visibilitychange', {});
+    expect(events.slice(1)).toEqual([]);
+    state.visibilityState = 'hidden';
+    doc.emit('visibilitychange', {});
+    doc.emit('visibilitychange', {});
+    state.visibilityState = 'visible';
+    doc.emit('visibilitychange', {});
+    doc.emit('visibilitychange', {});
+    expect(events.slice(1)).toEqual([
+      { name: 'process_background' },
+      { name: 'process_foreground' },
+    ]);
+  });
+
+  it('a page hidden at launch: a duplicate hidden visibilitychange emits nothing beyond process_started', () => {
+    const { env, doc, state } = fakeEnv();
+    state.visibilityState = 'hidden';
+    const { events } = activate(env);
+    doc.emit('visibilitychange', {});
+    doc.emit('visibilitychange', {});
+    expect(events).toEqual([{ name: 'process_started' }]);
+    state.visibilityState = 'visible';
+    doc.emit('visibilitychange', {});
+    expect(events.slice(1)).toEqual([{ name: 'process_foreground' }]);
+  });
+
   it('emits online / offline on connectivity transitions', () => {
     const { env, connect } = fakeEnv();
     const { events } = activate(env);

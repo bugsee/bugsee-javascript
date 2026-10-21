@@ -47,7 +47,7 @@ wire checks that `samples/FINDINGS.md` F-X19 previously left failing.
 | error instance | `POST /scenarios/s4/error-instance` | `logException(new Error)` | **Backend** — verified, `SEXPRESS-2` |
 | non-Error | `POST /scenarios/s4/non-error` | a string, an object, and `null` all accepted without throwing | **Local** — verified (200 OK, no crash) |
 | cause chain | `POST /scenarios/s4/cause` | nested `cause` | **Local** — verified (200 OK); description field carries the cause chain on the wire (spot-checked in an earlier bundle) |
-| options | `POST /scenarios/s4/options` | `mechanism`/`severity`/`labels` | **Local** — verified (200 OK) |
+| options | `POST /scenarios/s4/options` | `severity`/`labels` (`mechanism` is no longer a public option) | **Local** — verified (200 OK) |
 | dedupe | `POST /scenarios/s4/dedupe` | the SAME `Error` instance logged twice produces exactly ONE upload | **Backend** — verified. Local response `{r1:{ok:true}, r2:{ok:false}}` proves the SDK's own dedup check; wire-verified separately (isolated re-run): exactly 1 bundle uploaded for 2 `logException` calls on the same instance |
 | storm (200) | `POST /scenarios/s4/storm` | 200 rapid `logException` calls; app stays responsive, no crash | **Local** — verified (`stillResponsive: true`, request completes in low tens of ms). **Backend** — partially verified: several storm-triggered issues DID arrive (see FINDINGS "Bulk delivery throughput" for why not all 200 were confirmed within the test window) |
 

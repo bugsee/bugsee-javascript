@@ -55,11 +55,11 @@ export function buildScenariosRouter(): Router {
     c.setAttribute('bool_attr', true);
     c.setAttribute('arr_attr', ['a', 'b', 'c']);
     const beforeSnapshot = c.getAllAttributes();
-    void c.logException(new Error(`s2-before-${marker}`), { mechanism: 'programmatic' });
+    void c.logException(new Error(`s2-before-${marker}`));
 
     c.setAttribute('after_attr', `set-after-event-${marker}`);
     const afterSnapshot = c.getAllAttributes();
-    void c.logException(new Error(`s2-after-${marker}`), { mechanism: 'programmatic' });
+    void c.logException(new Error(`s2-after-${marker}`));
 
     res.json({
       userIdentifier: c.getUserIdentifier(),
@@ -103,7 +103,7 @@ export function buildScenariosRouter(): Router {
       level: 'info',
       data: { marker, step: 1 },
     });
-    void c.logException(new Error(`s3-${marker}`), { mechanism: 'programmatic' });
+    void c.logException(new Error(`s3-${marker}`));
     res.json({ ok: true, marker });
   });
 
@@ -134,7 +134,6 @@ export function buildScenariosRouter(): Router {
   router.post('/s4/options', (req: Request, res: Response) => {
     const marker = markerOf(req);
     void client().logException(new Error(`s4-options-${marker}`), {
-      mechanism: 'programmatic',
       severity: 'critical',
       labels: ['sample-express-api', 's4-options', marker],
     });
