@@ -17,6 +17,9 @@ export interface ControlSenderLike {
    * a sender is still registered and still broadcast to, just never pruned early.
    */
   once?(event: string, listener: () => void): void;
+  /** Releases the `destroyed` subscription on `stop()` (optional; `off` is the fallback). Absent: the one-shot listener stays until the webContents dies. */
+  removeListener?(event: string, listener: () => void): unknown;
+  off?(event: string, listener: () => void): unknown;
   isDestroyed?(): boolean;
   /**
    * True after the renderer process died (OOM, native crash) while the webContents object is still alive:
@@ -82,9 +85,9 @@ export function createElectronMainControl(
   // Registered renderers, deduped by sender identity (a reload reuses the same webContents object).
   const renderers = new Set<ControlSenderLike>();
 
-  // webContents that already carry our `destroyed` subscription: a forget-then-rejoin (crash + reload) must not
-  // stack a second listener on the same object.
-  const subscribed = new WeakSet<ControlSenderLike>();
+  // The `destroyed` subscription we hold per webContents: a forget-then-rejoin (crash + reload) must not stack a
+  // second listener on the same object, and `stop()` releases every one so a stopped control leaves nothing on it.
+  const subscribed = new Map<ControlSenderLike, () => void>();
 
   const isCrashed = (sender: ControlSenderLike): boolean => {
     try {
@@ -155,8 +158,12 @@ export function createElectronMainControl(
     if (!renderers.has(sender)) {
       renderers.add(sender);
       if (!subscribed.has(sender)) {
-        subscribed.add(sender);
-        sender.once?.('destroyed', () => forget(sender));
+        const onDestroyed = (): void => {
+          subscribed.delete(sender);
+          forget(sender);
+        };
+        subscribed.set(sender, onDestroyed);
+        sender.once?.('destroyed', onDestroyed);
       }
     }
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
@@ -178,6 +185,14 @@ export function createElectronMainControl(
     stop(): void {
       broadcast('stop');
       options.ipcMain.removeListener(helloChannel, onHello);
+      for (const [sender, onDestroyed] of subscribed) {
+        try {
+          (sender.removeListener ?? sender.off)?.call(sender, 'destroyed', onDestroyed);
+        } catch {
+          // a webContents that is already gone may throw on removal: nothing left to release
+        }
+      }
+      subscribed.clear();
     },
     pause(): void {
       broadcast('pause');

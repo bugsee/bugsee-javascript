@@ -694,14 +694,26 @@ describe('childProcessGone stage', () => {
       reason: 'crashed',
       exitCode: 139,
       name: ' Network Service ',
-      serviceName: 'x',
+      serviceName: ' network.mojom.NetworkService ',
     });
     fire({ type: 'Utility', reason: 'oom' });
     fire({ type: 'Utility', reason: 'killed', exitCode: Number.NaN, name: '  ' });
     fire({ type: 'Utility', reason: 'killed', exitCode: '1', name: 5 });
     expect(seen.mock.calls.map((c) => c[0])).toEqual([
-      { type: 'GPU', reason: 'crashed', exitCode: 139, name: 'Network Service' },
+      {
+        type: 'GPU',
+        reason: 'crashed',
+        exitCode: 139,
+        name: 'Network Service',
+        serviceName: 'network.mojom.NetworkService',
+      },
       { type: 'Utility', reason: 'oom' },
+      { type: 'Utility', reason: 'killed' },
+      { type: 'Utility', reason: 'killed' },
+    ]);
+    fire({ type: 'Utility', reason: 'killed', serviceName: '  ' });
+    fire({ type: 'Utility', reason: 'killed', serviceName: 7 });
+    expect(seen.mock.calls.slice(4).map((c) => c[0])).toEqual([
       { type: 'Utility', reason: 'killed' },
       { type: 'Utility', reason: 'killed' },
     ]);

@@ -1387,7 +1387,7 @@ describe('launchMain — render-process-gone listener lifecycle', () => {
 
   it('a missing remover does not throw and stop still runs', () => {
     const f = fakeLaunch();
-    const { app } = countingApp('none');
+    const { app, listeners } = countingApp('none');
     const onError = vi.fn();
     const client = launchMain('tok', {
       ipcMain: fakeIpcMain().ipcMain,
@@ -1396,8 +1396,39 @@ describe('launchMain — render-process-gone listener lifecycle', () => {
       onError,
     });
     expect(() => client.stop()).not.toThrow();
-    expect(f.client.stop).toBeDefined();
+    expect(f.stop).toHaveBeenCalledTimes(1); // the real shutdown ran
+    expect(listeners).toHaveLength(1); // nothing could remove it, and nothing pretended to
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'removeListener',
+    'off',
+  ] as const)('a throwing %s is reported and every other cleanup step still runs on the FIRST stop', (mode) => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const onError = vi.fn();
+    const boom = new Error('remover boom');
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      onError,
+      app: {
+        on: vi.fn(),
+        [mode]: () => {
+          throw boom;
+        },
+      } as never,
+    });
+    const r = fakeSender(1);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+    r.sent.length = 0;
+    void client.stop();
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // control.stop() ran
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // receiver.stop() ran
+    expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toContain('stop'); // renderers told to stop
+    expect(f.stop).toHaveBeenCalledTimes(1);
   });
 
   it('relaunch after stop leaves exactly one listener; a repeat launch adds none', () => {
@@ -1434,6 +1465,29 @@ describe('launchMain — a gone renderer is forgotten by the control channel', (
     r.sent.length = 0;
     void client.flush();
     expect(r.sent).toHaveLength(1);
+  });
+
+  it('an id-less gone event forgets nothing even with other senders registered; a shared id forgets every match', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    let gone: ((e: unknown, c: unknown, d: { reason: string }) => void) | undefined;
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      app: { on: (_e: string, l: never) => (gone = l) } as never,
+    });
+    const noId = { ...fakeSender(1), id: undefined as number | undefined };
+    const a = fakeSender(5);
+    const b = fakeSender(5);
+    for (const s of [noId, a, b]) ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: s }, encodeHello());
+    for (const s of [noId, a, b]) s.sent.length = 0;
+    gone?.({}, {}, { reason: 'killed' }); // contents without an id
+    void client.flush();
+    expect([noId.sent.length, a.sent.length, b.sent.length]).toEqual([1, 1, 1]);
+    for (const s of [noId, a, b]) s.sent.length = 0;
+    gone?.({}, { id: 5 }, { reason: 'killed' });
+    void client.flush();
+    expect([noId.sent.length, a.sent.length, b.sent.length]).toEqual([1, 0, 0]);
   });
 
   it('a gone event without a contents id forgets nothing', () => {

@@ -508,7 +508,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   (client as { stop: Bugsee['stop'] }).stop = ((timeout?: number): ReturnType<Bugsee['stop']> => {
     // Electron cleanup must NEVER block the real shutdown: guard it so `stop(timeout)` always runs.
     try {
-      releaseGone?.(); // the render-process-gone listener must not outlive the client
+      // The render-process-gone listener must not outlive the client. Its own guard: a hostile `app` whose remover
+      // throws must not skip the rest of the cleanup below.
+      releaseGone?.();
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
+    try {
       tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       control.stop(); // broadcast stop to renderers + remove the hello listener

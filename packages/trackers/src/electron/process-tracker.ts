@@ -78,6 +78,8 @@ export interface ChildProcessGone {
   exitCode?: number;
   /** The utility's service name (`Network Service`, …) when Electron supplies it. */
   name?: string;
+  /** The Mojo service interface of a utility process (e.g. `network.mojom.NetworkService`), when Electron supplies it. Useful for triage. */
+  serviceName?: string;
 }
 
 export interface ElectronProcessEvents {
@@ -197,7 +199,7 @@ const copyMetrics = (m: { processes: AppProcessMetric[] }): { processes: AppProc
 function mapChildGone(details: unknown): ChildProcessGone | undefined {
   const d = record(details);
   if (d === undefined) return undefined;
-  const { type, reason, exitCode, name } = d;
+  const { type, reason, exitCode, name, serviceName } = d;
   if (typeof type !== 'string' || type === '' || typeof reason !== 'string' || reason === '') {
     return undefined;
   }
@@ -206,6 +208,9 @@ function mapChildGone(details: unknown): ChildProcessGone | undefined {
     reason,
     ...(typeof exitCode === 'number' && Number.isFinite(exitCode) ? { exitCode } : {}),
     ...(typeof name === 'string' && name.trim() !== '' ? { name: name.trim() } : {}),
+    ...(typeof serviceName === 'string' && serviceName.trim() !== ''
+      ? { serviceName: serviceName.trim() }
+      : {}),
   };
 }
 
