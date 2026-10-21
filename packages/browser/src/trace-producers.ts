@@ -63,9 +63,14 @@ export class BatteryProducer extends TraceProducerBase {
   }
 
   #publish(s: BatteryState): void {
-    // 0-1 -> 0-100 (Android parity); an unusable level (omitted by the tracker) emits no `battery` at all.
-    if (s.level !== undefined) this.emitIfChanged('battery', Math.round(s.level * 100));
-    this.emitIfChanged('charging', chargingToWire({ charging: s.charging, level: s.level ?? 0 }));
+    // 0-1 -> 0-100 (Android parity). An unusable level (omitted by the tracker) means an unreadable battery: NO
+    // `battery` and NO `charging` entry (never a state derived from a substituted level, never `state: 0`).
+    // Known edge: both are held, and the provider has no retract path, so a level that goes readable -> unreadable
+    // mid-session leaves the last values being re-recorded (same as `battery` before). Unreachable in practice.
+    if (s.level !== undefined) {
+      this.emitIfChanged('battery', Math.round(s.level * 100));
+      this.emitIfChanged('charging', chargingToWire({ charging: s.charging, level: s.level }));
+    }
     this.#publishTime('battery_charging_time_s', s.chargingTimeS);
     this.#publishTime('battery_discharging_time_s', s.dischargingTimeS);
   }
@@ -160,7 +165,7 @@ export class MemoryProducer extends TraceProducerBase {
 
   #publish(m: HeapState): void {
     this.emit('ram_js_heap_total', m.limit);
-    this.emit('ram_js_heap_free', m.limit - m.used);
+    this.emit('ram_js_heap_free', Math.max(m.limit - m.used, 0));
     this.emit('ram_js_heap_used', m.used);
   }
 }
@@ -256,9 +261,9 @@ export class OrientationProducer extends TraceProducerBase {
   }
 
   #publish(s: OrientationState): void {
-    // A bare notification (the engine could not read an orientation) has nothing to report.
+    // Both `type` and `angle`, or nothing: a bare or partial notification has nothing to report (spec).
     if (s.type === undefined || s.angle === undefined) return;
-    this.emitIfChanged('orientation', orientationToWire(s.type, s.angle));
+    this.emitIfChanged('orientation', orientationToWire(s.type));
   }
 }
 
