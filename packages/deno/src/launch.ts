@@ -28,9 +28,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // its own tell (a zero `idle`), so it needs no flag.
     systemTraceProducers: createNodeSystemTraceProducers({
       measuresEventLoopDelay: false,
-      // Deno's `process.availableMemory()` is not the Node quantity: 23 GB vs 3.4 GB on one macOS host, and on
-      // Linux it ignores the container cap (11.2 GB under `docker -m 256m` vs Node's 253 MB).
-      measuresAvailableMemory: false,
+      // `ram_system_free` on Deno: `os.freemem()` (MemAvailable on Linux since 2023, avail_phys on Windows) and
+      // `Deno.systemMemoryInfo().available` on macOS. It must NOT read /proc/meminfo (no `readsProcMeminfo`): the
+      // read triggers an interactive permission prompt under a scoped `--allow-read`.
       // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
       measuresGc: false,
       // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
