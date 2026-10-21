@@ -138,7 +138,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     const known = this.#ui.current('orientation');
     let previousOrientation =
       known?.type !== undefined && known.angle !== undefined
-        ? orientationToWire(known.type, known.angle)
+        ? orientationToWire(known.type)
         : undefined;
     this.#unsubscribe = [
       l.on('pagehide', ({ persisted }) =>
@@ -165,7 +165,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
           this.emit('event', { name: 'OrientationChanged' });
           return;
         }
-        const current = orientationToWire(type, angle);
+        const current = orientationToWire(type);
         const before = previousOrientation;
         previousOrientation = current;
         // Android/iOS announce only a REAL change: the tracker de-duplicates on the raw {type, angle}, but after a bare
