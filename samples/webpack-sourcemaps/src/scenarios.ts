@@ -402,7 +402,7 @@ function wire(): void {
         severity: 'high',
         labels: ['scenario-panel', 's4-options'],
       })
-      .then(() => setStatus('s4-options', 'reported with mechanism/severity/labels'));
+      .then(() => setStatus('s4-options', 'reported with severity/labels'));
   });
   q('s4-dedupe')?.addEventListener('click', () => {
     const c = getClient();
