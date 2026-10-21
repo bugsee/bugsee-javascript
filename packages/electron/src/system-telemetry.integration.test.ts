@@ -341,7 +341,10 @@ const displayOf = (id: number) => ({
 function domainWorld(existing: Win[] = []) {
   const powerMonitor = new Emitter();
   const displays = [displayOf(1)];
-  const screen = Object.assign(new Emitter(), { getAllDisplays: () => [...displays] });
+  const screen = Object.assign(new Emitter(), {
+    getAllDisplays: () => [...displays],
+    getPrimaryDisplay: () => displays[0],
+  });
   const app = new Emitter();
   const BrowserWindow = { getAllWindows: () => existing };
   return { powerMonitor, screen, app, BrowserWindow, displays };
@@ -369,7 +372,7 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
       fp,
     );
 
-  it('power, display and window events AND the electron_displays trace land in the uploaded bundle', async () => {
+  it('power, display and window events AND the displays trace land in the uploaded bundle', async () => {
     const early = new Win(1);
     const w = domainWorld([early]);
     const { client, puts } = launchDomains(w);
@@ -400,11 +403,12 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     expect(byName('power_resume')).toHaveLength(1);
     expect(byName('power_battery')).toHaveLength(1);
     expect(byName('display_added')[0]?.params).toEqual({
-      id: 2,
-      width: 1440,
-      height: 900,
-      scaleFactor: 2,
-      internal: true,
+      id: 1,
+      nativeId: 2,
+      width: 2880,
+      height: 1800,
+      scale: 2,
+      type: 'internal',
     });
     expect(byName('window_focus')[0]?.params).toEqual({ windowId: 1 });
     expect(byName('window_blur')[0]?.params).toEqual({ windowId: 2 });
@@ -416,11 +420,11 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     const traces = fileOf<{ name: string; value: unknown }>(
       puts[0] as Uint8Array,
       'traces.system.json',
-    ).filter((t) => t.name === 'electron_displays');
-    expect(traces.map((t) => (t.value as { displays: unknown[] }).displays.length)).toEqual([1, 2]);
-    expect(traces[0]?.value).toEqual({
-      displays: [{ id: 1, width: 1440, height: 900, scale_factor: 2, internal: true }],
-    });
+    ).filter((t) => t.name === 'displays');
+    expect(traces.map((t) => (t.value as unknown[]).length)).toEqual([1, 2]);
+    expect(traces[0]?.value).toEqual([
+      { id: 0, native_id: 1, state: 'on', type: 'internal', width: 2880, height: 1800, scale: 2 },
+    ]);
     await client.stop();
   });
 
@@ -430,7 +434,7 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     expect(w.powerMonitor.total()).toBe(0);
     expect(w.app.count('browser-window-created')).toBe(0);
     expect(w.app.count('web-contents-created')).toBe(0);
-    expect(w.screen.total()).toBe(3); // the electron_displays trace producer, not the events
+    expect(w.screen.total()).toBe(3); // the displays trace producer, not the events
     await client.stop();
     expect(w.screen.total()).toBe(0);
 

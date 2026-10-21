@@ -464,6 +464,12 @@ export interface BugseeLaunchOptions {
   window?: WindowEvents;
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
+  /**
+   * Host composition seam (set by `@bugsee/electron`'s renderer launch): system trace names the HOST of this page
+   * already writes, which this launch must not write too (one writer per name per session). Only `'displays'` is honoured
+   * today. A standalone browser leaves it unset.
+   */
+  hostOwnedTraces?: readonly string[];
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -931,6 +937,9 @@ async function buildLaunch(
           // Every surface comes from the INJECTED window/document, never the host globals.
           ...browserTraceEnvFrom(win, domDocument, options.onError),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          ...(options.hostOwnedTraces !== undefined
+            ? { hostOwnedTraces: options.hostOwnedTraces }
+            : {}),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

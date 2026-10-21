@@ -148,9 +148,9 @@ describe('createElectronSystemTraceProducers', () => {
   });
 });
 
-// ---- electron_displays ----------------------------------------------------------------------------------------
+// ---- displays ----------------------------------------------------------------------------------------
 
-describe('electron_displays producer', () => {
+describe('displays producer', () => {
   type L = (...a: unknown[]) => void;
   const display = (over: Record<string, unknown> = {}) => ({
     id: 1,
@@ -166,6 +166,7 @@ describe('electron_displays producer', () => {
     const table = new Map<string, L[]>();
     const screen = {
       getAllDisplays: vi.fn(list),
+      getPrimaryDisplay: vi.fn(() => (list() as unknown[])[0]),
       on: vi.fn((e: string, l: L) => {
         table.set(e, [...(table.get(e) ?? []), l]);
       }),
@@ -205,50 +206,59 @@ describe('electron_displays producer', () => {
     expect(createElectronSystemTraceProducers({})).toEqual([]);
   });
 
-  it('touches nothing until started; then emits the baseline list as a HELD step trace with the documented shape', () => {
+  it('touches nothing until started; then emits the baseline list as a HELD step trace in the mobile layout (a bare array, snake_case)', () => {
     const d = displays(() => [
       display(),
-      display({ id: 2, size: { width: 10, height: 20 }, rotation: 7 }),
+      display({ id: 2779098405, size: { width: 10, height: 20 }, rotation: 7, internal: false }),
     ]);
     expect(d.screen.on).not.toHaveBeenCalled();
     d.producer.start(d.sink);
     expect(d.emitted).toStrictEqual([
       {
-        name: 'electron_displays',
+        name: 'displays',
         hold: true,
-        value: {
-          displays: [
-            {
-              id: 1,
-              width: 1440,
-              height: 900,
-              scale_factor: 2,
-              rotation: 90,
-              internal: true,
-              refresh_rate_hz: 120,
-            },
-            { id: 2, width: 10, height: 20, scale_factor: 2, internal: true, refresh_rate_hz: 120 },
-          ],
-        },
+        value: [
+          {
+            id: 0,
+            native_id: 1,
+            state: 'on',
+            type: 'internal',
+            width: 2880,
+            height: 1800,
+            natural_width: 1800,
+            natural_height: 2880,
+            scale: 2,
+            max_fps: 120,
+            rotation: 1,
+          },
+          {
+            id: 1,
+            native_id: 2779098405,
+            type: 'external',
+            width: 20,
+            height: 40,
+            scale: 2,
+            max_fps: 120,
+          },
+        ],
       },
     ]);
     expect(JSON.stringify(d.emitted)).not.toContain('secret');
     d.producer.stop();
   });
 
-  it('rounds the real-Electron float refresh rate and scale factor to at most 2 decimals', () => {
+  it('rounds the real-Electron float refresh rate to an integer and the scale factor to 2 decimals', () => {
     // Real Electron 44.9.3 (macOS, LG 4K): displayFrequency is 59.996700286865234.
     const d = displays(() => [
       display({ displayFrequency: 59.996700286865234, scaleFactor: 1.2000000476837158 }),
-      display({ id: 2, displayFrequency: 59.994, scaleFactor: 1.5 }),
+      display({ id: 2, displayFrequency: 59.4, scaleFactor: 1.5 }),
       display({ id: 3, displayFrequency: 60, scaleFactor: 2 }),
     ]);
     d.producer.start(d.sink);
-    const list = (d.emitted[0] as { value: { displays: Array<Record<string, unknown>> } }).value
-      .displays;
-    expect(list.map((x) => [x.refresh_rate_hz, x.scale_factor])).toEqual([
+    const list = (d.emitted[0] as { value: Array<Record<string, unknown>> }).value;
+    expect(list.map((x) => [x.max_fps, x.scale])).toEqual([
       [60, 1.2],
-      [59.99, 1.5],
+      [59, 1.5],
       [60, 2],
     ]);
     d.producer.stop();

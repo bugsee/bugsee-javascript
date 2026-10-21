@@ -10,15 +10,22 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 //   displayMetricsChanged 'display-metrics-changed' -> { display: DisplayInfo, changed: string[] }
 //   displays              any of the three above    -> { displays: DisplayInfo[] }   (the fresh `getAllDisplays()` list)
 //
-// `current('displays')` is a LIVE `screen.getAllDisplays()` read. {@link DisplayInfo} keeps only what is safe and stable:
-// `id`, `width`/`height` (Electron's `size`, device-independent pixels; `bounds` as a fallback), and, when Electron gave
-// them, `scaleFactor`, `rotation` (0/90/180/270), `internal`, `refreshRate` (Hz). A display with no usable id or size is
-// DROPPED (id -1 is Electron's 'invalid or not yet known' marker; id -10, the virtual unified display, is kept as
-// reported), an empty list is `undefined`, and a throwing/hostile `getAllDisplays` is reported and omitted: nothing is
-// fabricated and absence is never zero. Display `label`, `bounds` position and `workArea` are not kept.
+// `current('displays')` is a LIVE `screen.getAllDisplays()` read. {@link DisplayInfo} is the MOBILE `displays` entry in
+// camelCase (spec bundle/traces.md `displays`): `id` is a small per-session index (the display set at the first read is
+// numbered from 0 with `screen.getPrimaryDisplay()` FIRST, later displays take the next unused number, a number is NEVER
+// reused within the tracker's life even after a display is removed), `nativeId` is Electron's own id (can exceed int32),
+// `width`/`height` are DEVICE pixels in the CURRENT orientation (`size` x `scaleFactor`, rounded), `naturalWidth`/
+// `naturalHeight` the rotation-0 device pixels (swapped for quarter turns 1 and 3; omitted when the rotation is unknown),
+// `scale` = `scaleFactor`, `maxFps` = `displayFrequency` rounded, `rotation` in QUARTER TURNS 0-3 (Electron's 0/90/180/270
+// divided by 90), `type` internal|external from `internal`, and `state:'on'` on the CURRENT primary display only (Electron
+// cannot observe power; the spec says a producer that cannot observe power marks the one display the app is on).
+// A display with no usable id or size is DROPPED (id -1 is Electron's 'invalid or not yet known' marker; id -10, the
+// virtual unified display, is kept as reported), an empty list is `undefined`, and a throwing/hostile `getAllDisplays` is
+// reported and omitted: nothing is fabricated and absence is never zero. Without a readable `scaleFactor` the factor is 1
+// and `scale` is omitted (Electron always supplies it). Display `label`, `bounds` position and `workArea` are not kept.
 // `electron` is never imported: `screen` is INJECTED as a structural {@link ScreenSource}.
 //
-// HELD-VALUE CAVEAT for the `electron_displays` trace built on `displays`: a refresh that cannot read a usable list
+// HELD-VALUE CAVEAT for the `displays` trace built on the `displays` stage: a refresh that cannot read a usable list
 // emits nothing, so the previous list stays held (and is re-recorded every refreshMs). Absence is true only BEFORE the first
 // emit. This is the same open owner decision as storage_estimate / user_idle_state (docs/PROGRESS.md).
 //
@@ -27,18 +34,32 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 /** The slice of Electron's `screen` this tracker reads. */
 export interface ScreenSource extends EmitterSource {
   getAllDisplays?(): unknown;
+  getPrimaryDisplay?(): unknown;
 }
 
-export interface DisplayInfo {
-  id: number;
-  /** Device-independent pixels (Electron's `size`). */
+/** What one Electron `Display` says, before the session index is assigned (see {@link DisplayInfo}). */
+export interface MappedDisplay {
+  /** Electron's own display id (`Display.id`). */
+  nativeId: number;
+  /** Device pixels, current orientation. */
   width: number;
   height: number;
-  scaleFactor?: number;
-  rotation?: 0 | 90 | 180 | 270;
-  internal?: boolean;
-  /** Hz. */
-  refreshRate?: number;
+  /** Device pixels, rotation 0. */
+  naturalWidth?: number;
+  naturalHeight?: number;
+  /** Device pixels per DIP (`scaleFactor`). */
+  scale?: number;
+  /** Hz, rounded. */
+  maxFps?: number;
+  /** Quarter turns, 0-3. */
+  rotation?: 0 | 1 | 2 | 3;
+  type?: 'internal' | 'external';
+}
+
+/** A {@link MappedDisplay} with its stable per-session `id` (and `state` on the primary display of a list read). */
+export interface DisplayInfo extends MappedDisplay {
+  id: number;
+  state?: 'on';
 }
 
 export interface ElectronDisplayEvents {
@@ -54,6 +75,14 @@ export interface ElectronDisplayEnv {
 }
 
 type DisplayStage = keyof ElectronDisplayEvents;
+
+/** Electron's `rotation` degrees (counter-clockwise) -> quarter turns, as Android's `Surface.ROTATION_*`. */
+const ROTATION_TURNS = new Map<number, 0 | 1 | 2 | 3>([
+  [0, 0],
+  [90, 1],
+  [180, 2],
+  [270, 3],
+]);
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -71,30 +100,36 @@ const round2 = (n: number | undefined): number | undefined =>
   n === undefined ? undefined : positive(Math.round(n * 100) / 100); // a value that rounds to 0 is unusable, like 0
 
 /** Maps one Electron `Display`; undefined unless it has an id and a positive size. */
-export function mapDisplay(raw: unknown): DisplayInfo | undefined {
+export function mapDisplay(raw: unknown): MappedDisplay | undefined {
   const d = record(raw);
   if (d === undefined) return undefined;
-  const id = finite(d.id);
+  const nativeId = finite(d.id);
   // -1 is Electron's 'invalid or not yet known' id: never a real display. (-10 is the virtual unified display and is kept.)
-  if (id === -1) return undefined;
+  if (nativeId === -1) return undefined;
   const size = record(d.size) ?? record(d.bounds);
-  const width = positive(size?.width);
-  const height = positive(size?.height);
-  if (id === undefined || width === undefined || height === undefined) return undefined;
-  const scaleFactor = round2(positive(d.scaleFactor));
-  const rotation =
-    d.rotation === 0 || d.rotation === 90 || d.rotation === 180 || d.rotation === 270
-      ? d.rotation
-      : undefined;
-  const refreshRate = round2(positive(d.displayFrequency));
+  const dipWidth = positive(size?.width);
+  const dipHeight = positive(size?.height);
+  if (nativeId === undefined || dipWidth === undefined || dipHeight === undefined) return undefined;
+  const factor = positive(d.scaleFactor) ?? 1;
+  const width = Math.round(dipWidth * factor);
+  const height = Math.round(dipHeight * factor);
+  if (width <= 0 || height <= 0) return undefined;
+  const scale = round2(positive(d.scaleFactor));
+  const turns = ROTATION_TURNS.get(d.rotation as number);
+  const swap = turns === 1 || turns === 3;
+  const maxFps = positive(d.displayFrequency);
+  const roundedFps = maxFps === undefined ? undefined : positive(Math.round(maxFps));
   return {
-    id,
+    nativeId,
     width,
     height,
-    ...(scaleFactor !== undefined ? { scaleFactor } : {}),
-    ...(rotation !== undefined ? { rotation } : {}),
-    ...(typeof d.internal === 'boolean' ? { internal: d.internal } : {}),
-    ...(refreshRate !== undefined ? { refreshRate } : {}),
+    ...(turns !== undefined
+      ? { naturalWidth: swap ? height : width, naturalHeight: swap ? width : height }
+      : {}),
+    ...(scale !== undefined ? { scale } : {}),
+    ...(roundedFps !== undefined ? { maxFps: roundedFps } : {}),
+    ...(turns !== undefined ? { rotation: turns } : {}),
+    ...(typeof d.internal === 'boolean' ? { type: d.internal ? 'internal' : 'external' } : {}),
   };
 }
 
@@ -107,6 +142,8 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     'displays',
   ];
   readonly #screen: ScreenSource | undefined;
+  /** Electron's display id -> the session index. Only ever grows: a number is never reused. */
+  readonly #ids = new Map<number, number>();
 
   constructor(env: ElectronDisplayEnv = {}, onError?: (error: unknown) => unknown) {
     super(onError);
@@ -118,6 +155,30 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     this.setReporter(onError);
   }
 
+  /** The session index for an Electron display id: the first sight takes the next unused number. */
+  #indexOf(nativeId: number): number {
+    let id = this.#ids.get(nativeId);
+    if (id === undefined) {
+      id = this.#ids.size;
+      this.#ids.set(nativeId, id);
+    }
+    return id;
+  }
+
+  /** The Electron id of the primary display (guarded by the caller: Electron's `screen` throws before app ready). */
+  #primaryNativeId(screen: ScreenSource): number | undefined {
+    if (typeof screen.getPrimaryDisplay !== 'function') return undefined;
+    return mapDisplay(screen.getPrimaryDisplay())?.nativeId;
+  }
+
+  /** The first read numbers the primary display 0 (the order of `getAllDisplays()` is not documented), then the rest. */
+  #seed(screen: ScreenSource, all: readonly MappedDisplay[]): void {
+    if (this.#ids.size > 0) return;
+    const primary = this.#primaryNativeId(screen);
+    if (primary !== undefined) this.#indexOf(primary);
+    for (const d of all) this.#indexOf(d.nativeId);
+  }
+
   /** The live display list, or undefined when Electron cannot say (never an empty/zero list). */
   current(stage: 'displays'): ElectronDisplayEvents['displays'] | undefined {
     const screen = this.#screen;
@@ -127,12 +188,43 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
       if (typeof screen.getAllDisplays !== 'function') return undefined;
       const raw = screen.getAllDisplays();
       if (!Array.isArray(raw)) return undefined;
-      const displays = raw.map(mapDisplay).filter((d): d is DisplayInfo => d !== undefined);
-      return displays.length > 0 ? { displays } : undefined;
+      const mapped = raw.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined);
+      if (mapped.length === 0) return undefined;
+      this.#seed(screen, mapped);
+      const primary = this.#primaryNativeId(screen);
+      const displays = mapped.map(
+        (d): DisplayInfo => ({
+          id: this.#indexOf(d.nativeId),
+          ...d,
+          ...(d.nativeId === primary ? { state: 'on' as const } : {}),
+        }),
+      );
+      return { displays };
     } catch (error) {
       this.report(error);
       return undefined;
     }
+  }
+
+  /** A display from an event argument, with its session index (seeding the numbering on the first sight). */
+  #identify(raw: unknown): DisplayInfo | undefined {
+    const display = mapDisplay(raw);
+    const screen = this.#screen;
+    if (display === undefined || screen === undefined) return undefined;
+    try {
+      if (this.#ids.size === 0 && typeof screen.getAllDisplays === 'function') {
+        const all = screen.getAllDisplays();
+        this.#seed(
+          screen,
+          Array.isArray(all)
+            ? all.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined)
+            : [],
+        );
+      }
+    } catch (error) {
+      this.report(error);
+    }
+    return { id: this.#indexOf(display.nativeId), ...display };
   }
 
   protected attachStage(stage: DisplayStage): (() => void) | undefined {
@@ -142,7 +234,7 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     const mapped =
       (fn: (display: DisplayInfo, args: unknown[]) => void) =>
       (...args: unknown[]) => {
-        const display = mapDisplay(args[1]);
+        const display = this.#identify(args[1]);
         if (display !== undefined) fn(display, args);
       };
     if (stage === 'displayAdded') {

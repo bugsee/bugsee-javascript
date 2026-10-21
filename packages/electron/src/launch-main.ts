@@ -156,7 +156,7 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   powerMonitor?: PowerMonitorSource;
   /**
    * Electron's `screen` — optional. When present, `display_added`/`display_removed`/`display_metrics_changed` are recorded
-   * on `events.system` (system events on) and the `electron_displays` list is traced (system traces on). Absent: off.
+   * on `events.system` (system events on) and the `displays` list is traced (system traces on). Absent: off.
    * Pass it only after `app` is ready (Electron throws if `screen` is touched earlier).
    */
   screen?: ScreenSource;
@@ -314,7 +314,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
-  // node set never emits (`app_metrics`, `electron_displays`). Not built when the legacy `systemMetricsSampler` replaces
+  // node set never emits (`app_metrics`, `displays`). Not built when the legacy `systemMetricsSampler` replaces
   // the producer list (they would never start).
   if (
     (tracker !== undefined || display !== undefined) &&
@@ -363,7 +363,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // relaunch option, so a relaunch keeps THIS wrapper (closing over the tracker) and `hardware.gpu` keeps being served
   // (stop() does not clear it; a GPU that had not yet resolved is not re-requested). `systemTraceProducers` and
   // `wrapSystemEventsSource` are RESET options, so a relaunched client has the plain node producers and events source:
-  // every Electron trace and event (`app_metrics`, `electron_displays`, `child_process_gone`, `power_*`, `display_*`,
+  // every Electron trace and event (`app_metrics`, `displays`, `child_process_gone`, `power_*`, `display_*`,
   // `window_*`, `renderer_*`) stops until `launchMain` is called again (the carrier client must be cleared by a stop for
   // that, as for any launch).
   const callerExtras = nodeOptions.hardwareExtras;

@@ -733,6 +733,8 @@ export function launchWithSeams(
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
+          // the native host writes `displays`; a WebView must not write a second one (spec host-owned table)
+          hostOwnedTraces: ['displays'],
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),

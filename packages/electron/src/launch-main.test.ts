@@ -1182,7 +1182,7 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(seen).toHaveBeenCalledWith({ name: 'power_suspend' });
   });
 
-  it('a screen adds the electron_displays producer next to the node set, once', () => {
+  it('a screen adds the displays producer next to the node set, once', () => {
     const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
     const f = fakeLaunch();
     launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, screen });
