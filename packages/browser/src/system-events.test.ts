@@ -433,6 +433,18 @@ describe('createBrowserSystemEventsSource', () => {
     ]);
   });
 
+  it('a page hidden at launch: a duplicate hidden visibilitychange emits nothing beyond process_started', () => {
+    const { env, doc, state } = fakeEnv();
+    state.visibilityState = 'hidden';
+    const { events } = activate(env);
+    doc.emit('visibilitychange', {});
+    doc.emit('visibilitychange', {});
+    expect(events).toEqual([{ name: 'process_started' }]);
+    state.visibilityState = 'visible';
+    doc.emit('visibilitychange', {});
+    expect(events.slice(1)).toEqual([{ name: 'process_foreground' }]);
+  });
+
   it('emits online / offline on connectivity transitions', () => {
     const { env, connect } = fakeEnv();
     const { events } = activate(env);

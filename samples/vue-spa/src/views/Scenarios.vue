@@ -323,8 +323,7 @@ async function s8TriggerReportBefore(): Promise<void> {
 async function s8TriggerReportVeto(): Promise<void> {
   const m = marker('S8-report-veto');
   getBugsee().setReportHandler({ before: () => null });
-  const result = await getBugsee().logException(new Error(`S8 vetoed report ${m}`), {
-  });
+  const result = await getBugsee().logException(new Error(`S8 vetoed report ${m}`));
   getBugsee().setReportHandler(null);
   note(`S8: setReportHandler before vetoed the report — ok=${result.ok} (expect no issue to arrive) — ${m}`);
 }

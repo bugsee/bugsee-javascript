@@ -19,7 +19,8 @@ import { hostGlobal, hostRead } from './host-global';
 // to the browser lifecycle/context signals, mapping each to an events.system entry; on deactivate it
 // removes the listeners. Captured (Android events.system parity, web-native):
 //   pagehide               → process_exiting (the best "about to unload — flush now" signal + bfcache flag)
-//   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState)
+//   visibilitychange       → process_foreground / process_background (app fg/bg, from document.visibilityState; only when the
+//                            de-duplicated ApplicationTracker `state` changes, so a duplicate/synthetic event emits nothing)
 //   online / offline       → online / offline (one event per DOM event; the ConnectivityTracker `transition` stage, its kind the
 //                            event's own type — never a navigator.onLine read; attaching is not an event)
 //   languagechange         → language_changed ({language?, languages?, previousLanguage?}) — from the EnvironmentTracker

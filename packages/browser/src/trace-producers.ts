@@ -208,24 +208,27 @@ export class ConnectionProducer extends TraceProducerBase {
 
   #publish({ online, networkInfo: connection }: ConnectivityState): void {
     if (online === undefined) return; // an unreadable onLine is not evidence of anything: no row
+    const type = connectionTypeToWire(connection, online);
+    // Measurements (effectiveType/downlink/downlinkMax/rtt) are omitted on a `not_reachable` row, whether the page is
+    // offline or the browser reports connection type `none`: the browser keeps reporting its last measurement, which
+    // would read as a live link (honesty rule: omit, never stale). `save_data` is a user preference, so it stays.
+    const reachable = type !== 'not_reachable';
     this.emitIfChanged('connection', {
-      type: connectionTypeToWire(connection, online),
-      // Link estimates (downlink/downlinkMax/rtt) are omitted while offline: the browser keeps reporting its last
-      // measurement, which would read as a live link on a `not_reachable` row (honesty rule: omit, never stale).
+      type,
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
       // as undefined — an explicitly absent key is what the other tiers send.
-      ...(connection?.effectiveType !== undefined
+      ...(reachable && connection?.effectiveType !== undefined
         ? { effective_type: connection.effectiveType }
         : {}),
       // Android reports bandwidth in kbps (`link_downstream_kbps`); `downlink` is Mbps.
-      ...(online && connection?.downlink !== undefined
+      ...(reachable && connection?.downlink !== undefined
         ? { link_downstream_kbps: Math.round(connection.downlink * 1000) }
         : {}),
       // `downlinkMax` (the link's ceiling, Mbps) rides the same unit; the key is additive detail on the open object.
-      ...(online && connection?.downlinkMax !== undefined
+      ...(reachable && connection?.downlinkMax !== undefined
         ? { link_downstream_max_kbps: Math.round(connection.downlinkMax * 1000) }
         : {}),
-      ...(online && connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
+      ...(reachable && connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
       ...(connection?.saveData !== undefined ? { save_data: connection.saveData } : {}),
     });
   }

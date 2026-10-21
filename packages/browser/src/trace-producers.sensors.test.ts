@@ -207,9 +207,28 @@ describe('ConnectionProducer', () => {
     // An offline link has no downlink: the last estimate is stale, so it is omitted, never repeated.
     expect(out[1]?.value).toEqual({
       type: 'not_reachable',
-      effective_type: '4g',
       save_data: true,
     });
+  });
+
+  it('also omits the measurements when ONLINE but the browser reports connection type none (not_reachable)', () => {
+    const nav = {
+      onLine: true,
+      connection: {
+        type: 'none',
+        effectiveType: '4g',
+        downlink: 9.5,
+        downlinkMax: 100,
+        rtt: 50,
+        saveData: false,
+      },
+    };
+    const { out } = startAll([
+      new ConnectionProducer(new ConnectivityTracker({ navigator: nav })),
+    ]);
+    expect(out).toEqual([
+      { name: 'connection', value: { type: 'not_reachable', save_data: false } },
+    ]);
   });
 
   it('still emits (type unknown) with NO NetworkInformation, because onLine alone is worth a row', () => {

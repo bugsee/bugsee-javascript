@@ -495,6 +495,7 @@ async function main() {
   const s4OptionsOk =
     s4OptionsReq !== undefined &&
     s4OptionsReq.severity === 5 &&
+    s4OptionsReq.source?.mechanism === 'programmatic' &&
     Array.isArray(s4OptionsReq.labels) &&
     s4OptionsReq.labels.includes('scenario-panel') &&
     s4OptionsReq.labels.includes('s4-options');
