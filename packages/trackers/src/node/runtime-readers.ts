@@ -109,6 +109,10 @@ const KIB = 1024;
  *    closest native analogue of Android's `availMem`; Electron's `free` alone is only never-used pages);
  *  - Linux: `available` (the kernel's MemAvailable);
  *  - Windows: `free` (Electron fills it from `avail_phys`, standby cache included).
+ * Field semantics are from Electron 44.9.3's `SystemMemoryInfo` typings (platform tags: `fileBacked` and `purgeable`
+ * are macOS, `available` is Linux, `free` on Windows is avail_phys). Verified live on macOS only: a real run gave
+ * {total: 67108864, free: 1236912, fileBacked: 10428768, purgeable: 388784} KB, i.e. about 11.5 GB by this formula
+ * against 1.2 GB for `free` alone. Linux and Windows semantics are from the typings, not a live run.
  * Undefined on any other platform, when the API is absent, or when a needed field is not a finite non-negative number.
  * The caller still bounds the result by total RAM.
  */
