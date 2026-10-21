@@ -47,7 +47,6 @@ const constDeps = (over: NodeTraceProducerDeps = {}): NodeTraceProducerDeps => (
   uptime: () => 42.7,
   v8Heap: () => ({ limit: 1000, used: 300, available: 700, malloced: 11, peakMalloced: 12 }),
   memoryLimit: () => 500,
-  availableMemory: () => 250,
   ...over,
 });
 
@@ -124,7 +123,6 @@ describe('createNodeSystemTraceProducers', () => {
       ['ram_js_heap_free', 700],
       ['ram_js_heap_total', 1000],
       ['ram_js_heap_used', 300],
-      ['ram_system_available', 250],
       ['ram_system_free', 400],
       ['ram_system_total', 1000],
       ['v8_heap_available', 700],
@@ -185,10 +183,9 @@ describe('createNodeSystemTraceProducers', () => {
       expect(h.got.has('process_memory_rss')).toBe(true);
     });
 
-    it('omits process_memory_limit / ram_system_available when their readers answer undefined', () => {
-      const h = run({ memoryLimit: () => undefined, availableMemory: () => undefined });
+    it('omits process_memory_limit when its reader answers undefined', () => {
+      const h = run({ memoryLimit: () => undefined });
       expect(h.got.has('process_memory_limit')).toBe(false);
-      expect(h.got.has('ram_system_available')).toBe(false);
       expect(h.got.get('process_uptime_s')).toBe(42);
     });
 
@@ -199,36 +196,45 @@ describe('createNodeSystemTraceProducers', () => {
       for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
     });
 
-    it('measuresAvailableMemory:false omits ram_system_available even where the runtime answers (Bun/Deno)', () => {
-      const { availableMemory: _off, ...base } = constDeps({ eventLoop });
-      const h = harness({ ...base, measuresAvailableMemory: false });
-      h.startAll();
-      expect(h.got.has('ram_system_available')).toBe(false);
-    });
-
-    it('an injected reader wins over the measures* flag (as for the event-loop source)', () => {
-      const h = harness({
-        ...constDeps({ eventLoop }),
-        measuresV8Heap: false,
-        measuresAvailableMemory: false,
-      });
-      h.startAll();
-      expect(h.got.get('v8_heap_size_limit')).toBe(1000);
-      expect(h.got.get('ram_system_available')).toBe(250);
+    it('ram_system_free: os.freemem() (not on macOS), MemAvailable first for readsProcMeminfo, native first of all; total stays total', () => {
+      const { systemMemory: _s, ...base } = constDeps({ eventLoop });
+      const run1 = (over: NodeTraceProducerDeps) => {
+        const h = harness({ ...base, memoryLimit: () => undefined, ...over });
+        h.startAll();
+        return h.got;
+      };
+      const meminfo = () => 'MemAvailable: 3 kB\n';
+      expect(run1({ platform: 'linux', meminfo, freeMemory: () => 9 }).get('ram_system_free')).toBe(
+        9,
+      );
+      expect(run1({ platform: 'darwin', freeMemory: () => 9 }).has('ram_system_free')).toBe(false);
+      expect(
+        run1({ platform: 'darwin', nativeAvailableMemory: () => 5 }).get('ram_system_free'),
+      ).toBe(5);
+      expect(
+        run1({ platform: 'linux', readsProcMeminfo: true, meminfo, freeMemory: () => 9 }).get(
+          'ram_system_free',
+        ),
+      ).toBe(3072);
+      expect(
+        run1({
+          platform: 'linux',
+          readsProcMeminfo: true,
+          meminfo: () => undefined,
+          freeMemory: () => 9,
+        }).get('ram_system_free'),
+      ).toBe(9);
+      const none = run1({ platform: 'linux', freeMemory: () => Number.NaN });
+      expect(none.has('ram_system_free')).toBe(false);
+      expect(Number(none.get('ram_system_total'))).toBeGreaterThan(0);
     });
 
     it('an explicit undefined reader does not clobber the wired default (measures* true)', () => {
-      const {
-        v8Heap: _a,
-        memoryLimit: _b,
-        availableMemory: _c,
-        ...base
-      } = constDeps({ eventLoop });
+      const { v8Heap: _a, memoryLimit: _b, ...base } = constDeps({ eventLoop });
       const h = harness({
         ...base,
         v8Heap: undefined,
         memoryLimit: undefined,
-        availableMemory: undefined,
       });
       h.startAll();
       expect(Number(h.got.get('v8_heap_size_limit'))).toBeGreaterThan(0); // the real node default, not absent
@@ -452,7 +458,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(9);
+    expect(h.producers).toHaveLength(8);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
@@ -566,9 +572,9 @@ describe('createNodeSystemTraceProducers', () => {
     await new Promise((r) => setTimeout(r, 120));
     tick?.();
     for (const p of ps) p.stop();
-    // `process_memory_limit` exists only inside a real cgroup cap and `ram_system_available` only on
-    // Node >= 20.13, so each is checked for what the host can answer rather than demanded.
-    const optional = ['process_memory_limit', 'ram_system_available'];
+    // `process_memory_limit` exists only inside a real cgroup cap, so it is checked for what the host can answer.
+    // `ram_system_free` is omitted on macOS (os.freemem() there is not memory available to new work).
+    const optional = ['process_memory_limit', 'ram_system_free'];
     expect([...got.keys()].filter((k) => !optional.includes(k)).sort()).toEqual([
       'cpu_usage_process',
       'cpu_usage_system',
@@ -586,16 +592,19 @@ describe('createNodeSystemTraceProducers', () => {
       'ram_js_heap_free',
       'ram_js_heap_total',
       'ram_js_heap_used',
-      'ram_system_free',
       'ram_system_total',
       'v8_heap_available',
       'v8_heap_malloced',
       'v8_heap_peak_malloced',
       'v8_heap_size_limit',
     ]);
-    expect(got.has('ram_system_available')).toBe(
-      typeof (process as { availableMemory?: unknown }).availableMemory === 'function',
-    );
+    expect(got.has('ram_system_available')).toBe(false); // retired
+    if (process.platform === 'darwin') expect(got.has('ram_system_free')).toBe(false);
+    else {
+      expect(Number(got.get('ram_system_free'))).toBeLessThanOrEqual(
+        Number(got.get('ram_system_total')),
+      );
+    }
     expect(Number(got.get('v8_heap_size_limit'))).toBeGreaterThan(0);
     for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
   });

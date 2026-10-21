@@ -312,10 +312,10 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     );
   });
 
-  it('opts out of ram_system_available (a different quantity) and gc (blind observer) and keeps the V8 heap (real V8)', () => {
+  it('never reads /proc/meminfo for ram_system_free (a scoped --allow-read would prompt), opts out of gc (blind observer) and keeps the V8 heap (real V8)', () => {
     track(launchCore('tok', base()).client);
     const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];
-    expect(arg?.measuresAvailableMemory).toBe(false);
+    expect(arg).not.toHaveProperty('readsProcMeminfo'); // only Bun reads /proc/meminfo
     expect(arg?.measuresGc).toBe(false);
     expect(arg).not.toHaveProperty('measuresV8Heap'); // the node default (true) applies
   });
@@ -432,7 +432,6 @@ describe('@bugsee/deno — the runtime gates reach the shared ProcessTracker', (
     };
     track(launchCore('tok', base({ scheduler, captureSystemTraces: true })).client);
     const tracker = processTrackerFor(); // the launch went through the registry accessor: same `process` singleton
-    expect(tracker.current('availableMemory')).toBeUndefined();
     expect(tracker.current('v8Heap')?.limit).toBeGreaterThan(0);
     const seen: string[] = [];
     const off = tracker.onAny((name) => void seen.push(name));
@@ -441,7 +440,6 @@ describe('@bugsee/deno — the runtime gates reach the shared ProcessTracker', (
     expect(seen).toContain('memory');
     expect(seen).not.toContain('eventLoop');
     expect(seen).not.toContain('gc');
-    expect(seen).not.toContain('availableMemory');
   });
 });
 

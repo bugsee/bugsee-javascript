@@ -29,9 +29,14 @@ export {
   resetProcessTracker,
 } from './process-tracker';
 export {
-  createAvailableMemoryReader,
+  createDenoMemoryReader,
+  createElectronMemoryReader,
   createMemoryLimitReader,
+  createProcMeminfoReader,
+  createSystemFreeReader,
   createV8HeapReader,
+  firstAnswer,
+  parseMemAvailable,
   type V8HeapStats,
 } from './runtime-readers';
 export {

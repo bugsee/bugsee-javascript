@@ -1,3 +1,4 @@
+import nodeProcessForTest from 'node:process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type EventLoopSource,
@@ -65,7 +66,7 @@ function mk(over: ProcessEnv = {}, onError?: (e: unknown) => void) {
       measuresEventLoopDelay: false,
       measuresGc: false,
       measuresV8Heap: false,
-      measuresAvailableMemory: false,
+      meminfo: () => undefined,
       eventLoopUtilization: () => undefined,
       memoryLimit: () => undefined,
       scheduler: fs.scheduler,
@@ -181,7 +182,6 @@ describe('ProcessTracker', () => {
         eventLoopUtilization: () => 50,
         v8Heap: () => ({ limit: 10, used: 4, available: 6, malloced: 1, peakMalloced: 2 }),
         memoryLimit: () => 500,
-        availableMemory: () => 250,
       });
       const { got } = collect(tracker);
       advance({ user: 100_000, system: 50_000 }, 1000);
@@ -195,7 +195,6 @@ describe('ProcessTracker', () => {
         ['utilization', { utilizationPercent: 50 }],
         ['v8Heap', { limit: 10, used: 4, available: 6, malloced: 1, peakMalloced: 2 }],
         ['memoryLimit', { bytes: 500 }],
-        ['availableMemory', { bytes: 250 }],
         ['uptime', { seconds: 12 }],
         ['gc', { count: 3, pauseMs: 12.5, maxPauseMs: 8 }],
       ]);
@@ -242,7 +241,6 @@ describe('ProcessTracker', () => {
         eventLoop: source('loop', [], () => undefined),
         gc: source('gc', [], () => undefined),
         v8Heap: () => undefined,
-        availableMemory: () => undefined,
       });
       const { got } = collect(tracker);
       fs.tick();
@@ -383,7 +381,6 @@ describe('ProcessTracker', () => {
       const { tracker } = mk({ v8Heap: () => undefined });
       expect(tracker.current('v8Heap')).toBeUndefined();
       expect(tracker.current('memoryLimit')).toBeUndefined();
-      expect(tracker.current('availableMemory')).toBeUndefined(); // gated off, nothing wired
     });
 
     it('a throwing live read is reported and answers undefined', () => {
@@ -412,8 +409,13 @@ describe('ProcessTracker', () => {
       // a real cap only: undefined on an unconstrained host, a positive number inside a cgroup
       const cap = tracker.current('memoryLimit');
       if (cap !== undefined) expect(cap.bytes).toBeGreaterThan(0);
-      const avail = tracker.current('availableMemory');
-      if (avail !== undefined) expect(avail.bytes).toBeGreaterThanOrEqual(0);
+      const sys = tracker.current('systemMemory');
+      if (process.platform === 'darwin') {
+        expect(sys).not.toHaveProperty('free'); // os.freemem() is not memory available to new work there
+      } else {
+        expect(sys?.free).toBeGreaterThanOrEqual(0);
+        expect(sys?.free).toBeLessThanOrEqual(sys?.total ?? 0);
+      }
     });
 
     it('real cpu defaults: the first tick reports finite deltas and a percentage', () => {
@@ -502,11 +504,6 @@ describe('ProcessTracker', () => {
         { measuresEventLoopDelay: false },
       ],
       ['v8Heap (Bun: measuresV8Heap:false)', 'v8Heap', { measuresV8Heap: false }],
-      [
-        'availableMemory (measuresAvailableMemory:false)',
-        'availableMemory',
-        { measuresAvailableMemory: false },
-      ],
     ] as const)('%s: a gated stage alone arms no timer', (_label, stage, over) => {
       const { tracker, fs } = mk(over as ProcessEnv);
       const off = tracker.on(stage, () => {});
@@ -569,15 +566,96 @@ describe('ProcessTracker', () => {
       expect(injected.tracker.current('v8Heap')?.limit).toBe(1);
     });
 
-    it('measuresAvailableMemory:false wires no reader; an injected reader wins', () => {
-      expect(
-        mk({ measuresAvailableMemory: false }).tracker.current('availableMemory'),
-      ).toBeUndefined();
-      expect(
-        mk({ measuresAvailableMemory: false, availableMemory: () => 5 }).tracker.current(
-          'availableMemory',
-        ),
-      ).toEqual({ bytes: 5 });
+    describe('systemMemory.free: memory available to new work', () => {
+      const free = (over: Partial<ProcessEnv>) =>
+        mk({ systemMemory: undefined, platform: 'linux', ...over }).tracker.current('systemMemory');
+      const meminfo = () => 'MemAvailable: 2 kB\n';
+
+      it('default: os.freemem(), and /proc/meminfo is never read (Deno must not trigger a permission prompt)', () => {
+        let reads = 0;
+        const got = free({ freeMemory: () => 7, meminfo: () => (reads++, 'MemAvailable: 2 kB\n') });
+        expect(got?.free).toBe(7);
+        expect(reads).toBe(0);
+      });
+
+      it('readsProcMeminfo (Bun): MemAvailable first, then os.freemem()', () => {
+        expect(free({ readsProcMeminfo: true, freeMemory: () => 7, meminfo })?.free).toBe(2048);
+        expect(
+          free({ readsProcMeminfo: true, freeMemory: () => 7, meminfo: () => undefined })?.free,
+        ).toBe(7);
+      });
+
+      it('a native source (Electron/Deno) wins over every other; it falls through when it has no answer', () => {
+        const base = { freeMemory: () => 7, readsProcMeminfo: true, meminfo };
+        expect(free({ ...base, nativeAvailableMemory: () => 5 })?.free).toBe(5);
+        expect(free({ ...base, nativeAvailableMemory: () => undefined })?.free).toBe(2048);
+      });
+
+      it('macOS: os.freemem() (free pages only) is NOT a source, so Node/Bun omit free and keep total', () => {
+        const got = free({ platform: 'darwin', freeMemory: () => 7 });
+        expect(got?.total).toBeGreaterThan(0);
+        expect(got).not.toHaveProperty('free');
+        expect(
+          free({ platform: 'darwin', freeMemory: () => 7, nativeAvailableMemory: () => 9 })?.free,
+        ).toBe(9);
+        expect(free({ platform: 'win32', freeMemory: () => 7 })?.free).toBe(7);
+      });
+
+      it('default native sources: Electron process.getSystemMemoryInfo() on this process object, Deno systemMemoryInfo on macOS', () => {
+        const proc = nodeProcessForTest as { getSystemMemoryInfo?: unknown };
+        const g = globalThis as { Deno?: unknown };
+        const hadDeno = 'Deno' in g;
+        const prevDeno = g.Deno;
+        try {
+          proc.getSystemMemoryInfo = () => ({ available: 3 }); // KiB, linux
+          expect(free({ platform: 'linux', freeMemory: () => 7 })?.free).toBe(3072);
+          delete proc.getSystemMemoryInfo;
+          g.Deno = { systemMemoryInfo: () => ({ available: 4096 }) };
+          expect(free({ platform: 'darwin' })?.free).toBe(4096);
+          expect(free({ platform: 'linux', freeMemory: () => 7 })?.free).toBe(7); // Deno source is macOS-only
+        } finally {
+          delete proc.getSystemMemoryInfo;
+          if (hadDeno) g.Deno = prevDeno;
+          else delete g.Deno;
+        }
+      });
+
+      it('omits free (keeps total) when no source answers a plausible value', () => {
+        const got = free({ freeMemory: () => Number.NaN });
+        expect(got?.total).toBeGreaterThan(0);
+        expect(got).not.toHaveProperty('free');
+      });
+
+      it('an injected systemMemory replaces every free source', () => {
+        expect(mk({ freeMemory: () => 5 }).tracker.current('systemMemory')).toEqual({
+          total: 100,
+          free: 40,
+        });
+      });
+
+      it('every free-memory seam survives processTrackerFor (a dropped SEAM_KEYS entry would silently ignore it)', () => {
+        const at = (env: Partial<ProcessEnv>) => {
+          const key = {};
+          try {
+            return processTrackerFor({
+              key,
+              scheduler: fakeScheduler().scheduler,
+              platform: 'linux',
+              freeMemory: () => 11,
+              ...env,
+            }).current('systemMemory');
+          } finally {
+            resetProcessTracker(key);
+          }
+        };
+        expect(at({})?.free).toBe(11); // freeMemory + platform(linux: freemem is a source)
+        expect(at({ platform: 'darwin' })).not.toHaveProperty('free'); // platform
+        expect(at({ readsProcMeminfo: true, meminfo: () => 'MemAvailable: 1 kB\n' })?.free).toBe(
+          1024,
+        ); // readsProcMeminfo + meminfo
+        expect(at({ meminfo: () => 'MemAvailable: 1 kB\n' })?.free).toBe(11); // meminfo ignored without readsProcMeminfo
+        expect(at({ nativeAvailableMemory: () => 77 })?.free).toBe(77); // nativeAvailableMemory
+      });
     });
 
     it('guarded ELU: a fresh baseline per arming, and Bun/Deno-style flat zeros are omitted, never reported as 0%', () => {
