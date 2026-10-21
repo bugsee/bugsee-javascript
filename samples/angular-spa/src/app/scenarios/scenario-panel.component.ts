@@ -81,8 +81,8 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
     this.setStatus('s1-flush', `flush() -> ${ok}`, ok === true);
   }
 
-  duplicateLaunch(): void {
-    const { sameInstance } = attemptDuplicateLaunch();
+  async duplicateLaunch(): Promise<void> {
+    const { sameInstance } = await attemptDuplicateLaunch();
     this.setStatus('s1-dup', `same instance returned: ${sameInstance}`, sameInstance);
   }
 
@@ -172,25 +172,15 @@ export class ScenarioPanelComponent implements OnInit, OnDestroy {
   }
 
   async logWithOptions(): Promise<void> {
-    // EVERY value here is deliberately NON-DEFAULT, which the earlier fixture was not.
-    //
-    // It used to pass `mechanism: 'programmatic'` + `severity: 'high'`, and those are exactly what the
-    // SDK produces when the options object is absent: `client.ts:661` defaults `mechanism` to
-    // `'programmatic'`, and `defaultSeverity('error')` (`packages/core/src/reporting.ts:96-97`) is
-    // `'high'`. So the backend evidence for "LogExceptionOptions was honoured" was byte-identical to a
-    // control that passes no options at all — `get_issue SANGULAR-148` (`s4-error`) rendered the same
-    // `Trigger: error / Mechanism: programmatic` and the same `severity: High` as `SANGULAR-153`
-    // (`s4-options`). Only `# Labels` discriminated.
-    //
-    // `blocker` is wire severity 5 vs the default's 3, and `manual-dialog` is a mechanism nothing else in
-    // this sample emits — so `verify.mjs`'s `s4-options-wire` now fails if either is dropped on the floor.
+    // EVERY value here is deliberately NON-DEFAULT (`severity: 'blocker'` is wire severity 5 vs the default's 3), so
+    // `verify.mjs`'s `s4-options-wire` fails if it is dropped on the floor. `mechanism` is no longer part of the public
+    // LogExceptionOptions (the SDK stamps it), so it is not passed here.
     const options: LogExceptionOptions = {
-      mechanism: 'manual-dialog',
       severity: 'blocker',
       labels: ['scenario-panel', 's4-options'],
     };
     const r = await this.client?.logException(new Error('S4: with LogExceptionOptions'), options);
-    this.setStatus('s4-options', `logException(err, {mechanism, severity, labels}) -> ok=${r?.ok}`, r?.ok === true);
+    this.setStatus('s4-options', `logException(err, {severity, labels}) -> ok=${r?.ok}`, r?.ok === true);
   }
 
   async logDedupe(): Promise<void> {

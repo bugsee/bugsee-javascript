@@ -24,11 +24,11 @@ export const RUN_ID = `run-${Date.now().toString(36)}-${Math.random().toString(3
 
 let client: Bugsee | undefined;
 
-export function launchBugsee(): Bugsee {
+export async function launchBugsee(): Promise<Bugsee> {
   if (client) return client;
 
   if (minimalLaunch) {
-    client = launch(import.meta.env.VITE_BUGSEE_APP_TOKEN as string, {
+    client = await launch(import.meta.env.VITE_BUGSEE_APP_TOKEN as string, {
       endpoint: import.meta.env.VITE_BUGSEE_ENDPOINT as string,
     });
     client.setUserIdentifier(SAMPLE_USER_ID);
@@ -38,7 +38,7 @@ export function launchBugsee(): Bugsee {
     return client;
   }
 
-  client = launch(import.meta.env.VITE_BUGSEE_APP_TOKEN as string, {
+  client = await launch(import.meta.env.VITE_BUGSEE_APP_TOKEN as string, {
     endpoint: import.meta.env.VITE_BUGSEE_ENDPOINT as string,
     appVersion: '1.0.0',
     appBuild: String(import.meta.env.VITE_BUGSEE_APP_BUILD ?? '1'),
@@ -95,6 +95,6 @@ export function getBugsee(): Bugsee {
  * "a second launch() while launched must be ignored, not duplicated". Returns the SAME client
  * instance both times, and the SDK itself routes a warning to `onError` (see the launch() call above).
  */
-export function attemptRelaunch(): Bugsee {
+export async function attemptRelaunch(): Promise<Bugsee> {
   return launchBugsee();
 }

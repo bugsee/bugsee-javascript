@@ -42,7 +42,7 @@ const SCENARIOS: ScenarioDef[] = [
       const before = sdkErrors.length;
       const { launch } = await import('@bugsee/bugsee');
       const token = import.meta.env.BUGSEE_APP_TOKEN;
-      const client = launch(token, {
+      const client = await launch(token, {
         endpoint: `${window.location.origin}/bugsee-proxy`,
         sdkVersion: '1.0.0', // the packed SDK version (0.0.0) is below the backend floor
       });
@@ -179,10 +179,10 @@ const SCENARIOS: ScenarioDef[] = [
   {
     id: 'S4-options',
     title: 'S4 logException with LogExceptionOptions',
-    detail: 'mechanism/severity/labels.',
+    detail: 'domain/severity/labels.',
     run: async () => {
       const r = await getClient()?.logException(new Error('scenario-panel: with options'), {
-        mechanism: 'programmatic',
+        domain: 'scenario-panel',
         severity: 'high',
         labels: ['scenario-panel', 'S4'],
       });

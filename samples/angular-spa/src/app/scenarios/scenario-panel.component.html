@@ -95,7 +95,7 @@
     @if (statuses()['s4-cause']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
   </div>
   <div class="control-row">
-    <span class="label">LogExceptionOptions (mechanism/severity/labels)</span>
+    <span class="label">LogExceptionOptions (severity/labels)</span>
     <button data-testid="s4-options" (click)="logWithOptions()">logException with options</button>
     @if (statuses()['s4-options']; as s) { <p class="status-line" [class.ok]="s.ok" [class.err]="!s.ok">{{ s.text }}</p> }
   </div>

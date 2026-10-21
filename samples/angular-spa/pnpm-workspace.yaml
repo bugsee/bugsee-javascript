@@ -50,6 +50,7 @@ overrides:
   '@bugsee/svelte': 'file:../../.local-registry/bugsee-svelte.tgz'
   '@bugsee/svelte-plugin-component-annotate': 'file:../../.local-registry/bugsee-svelte-plugin-component-annotate.tgz'
   '@bugsee/sveltekit': 'file:../../.local-registry/bugsee-sveltekit.tgz'
+  '@bugsee/trackers': 'file:../../.local-registry/bugsee-trackers.tgz'
   '@bugsee/types': 'file:../../.local-registry/bugsee-types.tgz'
   '@bugsee/util': 'file:../../.local-registry/bugsee-util.tgz'
   '@bugsee/vercel-edge': 'file:../../.local-registry/bugsee-vercel-edge.tgz'

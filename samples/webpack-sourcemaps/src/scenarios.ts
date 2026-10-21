@@ -237,8 +237,8 @@ function wire(): void {
     const ok = await getClient()?.flush(5000);
     setStatus('s1-flush', `flush -> ${String(ok)}`, ok === true);
   });
-  q('s1-duplicate-launch')?.addEventListener('click', () => {
-    const { sameInstance } = attemptDuplicateLaunch();
+  q('s1-duplicate-launch')?.addEventListener('click', async () => {
+    const { sameInstance } = await attemptDuplicateLaunch();
     setStatus('s1-duplicate-launch', `same instance returned: ${sameInstance}`, sameInstance);
   });
   q('s1-relaunch-minimal')?.addEventListener('click', async () => {
@@ -399,7 +399,6 @@ function wire(): void {
   q('s4-options')?.addEventListener('click', () => {
     void getClient()
       ?.logException(new Error('S4: with LogExceptionOptions'), {
-        mechanism: 'programmatic',
         severity: 'high',
         labels: ['scenario-panel', 's4-options'],
       })

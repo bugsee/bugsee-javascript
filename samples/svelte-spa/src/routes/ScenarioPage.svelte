@@ -39,8 +39,8 @@
       setStatus('s1-flush', `flush(5000) threw: ${String((err as Error)?.message ?? err)}`);
     }
   }
-  function s1DuplicateLaunch(): void {
-    const { sameInstance } = attemptDuplicateLaunch();
+  async function s1DuplicateLaunch(): Promise<void> {
+    const { sameInstance } = await attemptDuplicateLaunch();
     setStatus('s1-duplicate-launch', `same instance returned: ${sameInstance}`);
   }
   async function s1RelaunchMinimal(): Promise<void> {
@@ -104,7 +104,6 @@
   }
   function s4Options(): void {
     void getClient()?.logException(new Error('S4: logException with LogExceptionOptions'), {
-      mechanism: 'programmatic',
       severity: 'high',
       labels: ['scenario-panel', 's4-options'],
     });

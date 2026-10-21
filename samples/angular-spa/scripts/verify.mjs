@@ -495,13 +495,12 @@ async function main() {
   const s4OptionsOk =
     s4OptionsReq !== undefined &&
     s4OptionsReq.severity === 5 &&
-    s4OptionsReq.source?.mechanism === 'manual-dialog' &&
     Array.isArray(s4OptionsReq.labels) &&
     s4OptionsReq.labels.includes('scenario-panel') &&
     s4OptionsReq.labels.includes('s4-options');
   record(
     's4-options-wire',
-    'LogExceptionOptions actually reach the wire — the UPLOADED request.json carries the NON-DEFAULT severity (blocker=5, not the default high=3), mechanism (manual-dialog, not the default programmatic) and both labels',
+    'LogExceptionOptions actually reach the wire — the UPLOADED request.json carries the NON-DEFAULT severity (blocker=5, not the default high=3) and both labels',
     s4OptionsOk,
     `bundle found=${s4OptionsBundle !== undefined}; severity=${s4OptionsReq?.severity} (default would be 3); ` +
       `source=${JSON.stringify(s4OptionsReq?.source ?? null)}; labels=${JSON.stringify(s4OptionsReq?.labels ?? null)}`,

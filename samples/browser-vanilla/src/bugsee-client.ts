@@ -172,7 +172,7 @@ export async function relaunchBugsee(settings: SampleSettings): Promise<Bugsee> 
   if (token === undefined || token.length === 0) {
     throw new Error('BUGSEE_APP_TOKEN is not set — copy .env.example to .env and fill it in');
   }
-  const client = launch(token, toLaunchOptions(settings));
+  const client = await launch(token, toLaunchOptions(settings));
   client.setUserIdentifier(SAMPLE_USER);
   client.setAttribute('sample', 'browser-vanilla');
   client.setAttribute('cartAttrSetAt', new Date().toISOString());

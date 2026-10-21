@@ -130,15 +130,18 @@ if (typeof window !== 'undefined') {
  */
 export const MINIMAL_LAUNCH_OPTIONS: BugseeLaunchOptionsWithPerformance = {};
 
-function doLaunch(options: BugseeLaunchOptionsWithPerformance, useCarrier: object): Bugsee {
+async function doLaunch(
+  options: BugseeLaunchOptionsWithPerformance,
+  useCarrier: object,
+): Promise<Bugsee> {
   return launch(APP_TOKEN, { ...options, carrier: useCarrier });
 }
 
 /** Launch (or return the already-launched) client with the app's full option set. Called once from
  *  main.ts. */
-export function launchApp(): Bugsee {
+export async function launchApp(): Promise<Bugsee> {
   if (client !== undefined) return client;
-  client = doLaunch(FULL_LAUNCH_OPTIONS, carrier);
+  client = await doLaunch(FULL_LAUNCH_OPTIONS, carrier);
   client.setUserIdentifier(SAMPLE_USER_ID);
   client.setAttribute('build', APP_BUILD);
   client.setAttribute('sample', 'svelte-spa');
@@ -155,9 +158,9 @@ export function getClient(): Bugsee | undefined {
  * this must be IGNORED (return the existing client, not build a second one) and route a diagnostic
  * through `onError` rather than throwing. Returns whether the returned client is the SAME instance.
  */
-export function attemptDuplicateLaunch(): { sameInstance: boolean } {
+export async function attemptDuplicateLaunch(): Promise<{ sameInstance: boolean }> {
   const before = client;
-  const again = doLaunch({ endpoint: ENDPOINT }, carrier);
+  const again = await doLaunch({ endpoint: ENDPOINT }, carrier);
   return { sameInstance: again === before };
 }
 
@@ -185,7 +188,7 @@ export async function relaunch(
   if (client !== undefined) {
     await client.stop(stopTimeoutMs);
   }
-  client = doLaunch(
+  client = await doLaunch(
     {
       endpoint: ENDPOINT,
       appId: 'com.bugsee.sample.svelte-spa',
