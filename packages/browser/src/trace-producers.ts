@@ -210,20 +210,22 @@ export class ConnectionProducer extends TraceProducerBase {
     if (online === undefined) return; // an unreadable onLine is not evidence of anything: no row
     this.emitIfChanged('connection', {
       type: connectionTypeToWire(connection, online),
+      // Link estimates (downlink/downlinkMax/rtt) are omitted while offline: the browser keeps reporting its last
+      // measurement, which would read as a live link on a `not_reachable` row (honesty rule: omit, never stale).
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
       // as undefined — an explicitly absent key is what the other tiers send.
       ...(connection?.effectiveType !== undefined
         ? { effective_type: connection.effectiveType }
         : {}),
       // Android reports bandwidth in kbps (`link_downstream_kbps`); `downlink` is Mbps.
-      ...(connection?.downlink !== undefined
+      ...(online && connection?.downlink !== undefined
         ? { link_downstream_kbps: Math.round(connection.downlink * 1000) }
         : {}),
       // `downlinkMax` (the link's ceiling, Mbps) rides the same unit; the key is additive detail on the open object.
-      ...(connection?.downlinkMax !== undefined
+      ...(online && connection?.downlinkMax !== undefined
         ? { link_downstream_max_kbps: Math.round(connection.downlinkMax * 1000) }
         : {}),
-      ...(connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
+      ...(online && connection?.rtt !== undefined ? { rtt: connection.rtt } : {}),
       ...(connection?.saveData !== undefined ? { save_data: connection.saveData } : {}),
     });
   }
