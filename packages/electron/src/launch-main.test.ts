@@ -1330,3 +1330,86 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(app.total()).toBe(appBefore);
   });
 });
+
+describe('launchMain — render-process-gone listener lifecycle', () => {
+  type Gone = (e: unknown, c: { id?: number }, d: { reason: string }) => void;
+  function countingApp(mode: 'removeListener' | 'off' | 'none') {
+    const listeners: Gone[] = [];
+    const app: Record<string, unknown> = {
+      on: (event: string, l: Gone) => {
+        if (event === 'render-process-gone') listeners.push(l);
+      },
+    };
+    const remove = (event: string, l: Gone) => {
+      const i = listeners.indexOf(l);
+      if (event === 'render-process-gone' && i >= 0) listeners.splice(i, 1);
+    };
+    if (mode !== 'none') app[mode] = remove;
+    return { app: app as never, listeners };
+  }
+
+  it.each(['removeListener', 'off'] as const)('releases the handler on stop via %s', (mode) => {
+    const { launch } = fakeLaunch();
+    const { app, listeners } = countingApp(mode);
+    const client = launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch, app });
+    expect(listeners).toHaveLength(1);
+    void client.stop();
+    expect(listeners).toHaveLength(0);
+  });
+
+  it('stop twice removes once and does not throw', () => {
+    const { launch } = fakeLaunch();
+    const remove = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: vi.fn(), removeListener: remove } as never,
+    });
+    void client.stop();
+    void client.stop();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('render-process-gone', expect.any(Function));
+  });
+
+  it('prefers removeListener over off when both exist (one removal only)', () => {
+    const { launch } = fakeLaunch();
+    const removeListener = vi.fn();
+    const off = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch,
+      app: { on: vi.fn(), removeListener, off } as never,
+    });
+    void client.stop();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    expect(off).not.toHaveBeenCalled();
+  });
+
+  it('a missing remover does not throw and stop still runs', () => {
+    const f = fakeLaunch();
+    const { app } = countingApp('none');
+    const onError = vi.fn();
+    const client = launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      onError,
+    });
+    expect(() => client.stop()).not.toThrow();
+    expect(f.client.stop).toBeDefined();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('relaunch after stop leaves exactly one listener; a repeat launch adds none', () => {
+    const { app, listeners } = countingApp('removeListener');
+    const a = fakeLaunch();
+    const c1 = launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: a.launch, app });
+    void c1.stop();
+    const b = fakeLaunch();
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: b.launch, app });
+    expect(listeners).toHaveLength(1);
+    const rep = fakeLaunch({ internals: false });
+    launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: rep.launch, app });
+    expect(listeners).toHaveLength(1);
+  });
+});
