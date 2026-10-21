@@ -1,0 +1,22 @@
+{
+  "name": "@bugsee/otel3-compat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs @bugsee/opentelemetry against a REAL @opentelemetry/sdk-trace@3 (OpenTelemetry JS 3.x). Separate from the package itself because sdk-trace@3 peers @opentelemetry/api >=1.10 <1.11 while sdk-trace-base@2 (the package's own devDependency) peers <1.10: one workspace package cannot satisfy both. Node >=22.15 only (OTel 3's engines floor); the suite skips cleanly below it.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@bugsee/opentelemetry": "workspace:*",
+    "@bugsee/performance": "workspace:*",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/sdk-trace": "^3.0.0"
+  },
+  "license": "MIT"
+}

@@ -99,7 +99,8 @@ network interceptor's transformer seam, the `TransactionStore`) — core and per
   `TracerProvider`. `onEnd(otelSpan)` → map → Bugsee. Open sub-decision (Faro does both): consumed spans
   become Bugsee **Transactions** (native model, for UI/correlation) and/or are preserved as an **OTLP
   blob** in the bundle (full fidelity — events/links/resource/scope our model lacks). Peer:
-  `@opentelemetry/sdk-trace-base`. **Node-first.**
+  `@opentelemetry/sdk-trace-base` (OTel JS 1.x/2.x) or `@opentelemetry/sdk-trace` (3.x) — see
+  "OpenTelemetry JS major compatibility". **Node-first.**
 - **Produce (OTLP-JSON):** `TransactionStore.drain()` → `resourceSpans` (OTLP-JSON) → `POST
   application/json` → the user's collector / OTLP endpoint. Hand-rolled mapping or a thin
   `@opentelemetry/otlp-transformer` dep — no full SDK. Dropped vs the SDK exporter: protobuf, gzip,
@@ -138,7 +139,7 @@ Mapping core is portable. **Produce** (light) ships on both runtimes. **Consume*
 - **A. Portable mapping core** — `@bugsee/opentelemetry`: Span/Transaction ↔ OTel span + the OTLP-JSON
   encoder. Foundation; pure; test-first.
 - **B. Produce** — OTLP-JSON exporter from `TransactionStore`. Read-only, low-risk, first user-visible win.
-- **C. Consume** — `BugseeSpanProcessor` (peer `sdk-trace-base`), **Node-first**. Resolve the
+- **C. Consume** — `BugseeSpanProcessor` (peer `sdk-trace-base` on OTel 1.x/2.x, `sdk-trace` on 3.x), **Node-first**. Resolve the
   native-map-vs-OTLP-blob sub-decision here (likely both, Faro-style).
 - **T. Interception-transformer seam** — in `@bugsee/capture`/`InterceptorBase` (general; sync; truthful
   capture). Prerequisite for D, independently useful.
@@ -166,6 +167,40 @@ move earlier if the distributed-trace story is the priority.
 - **Cross-origin trace leakage** — same-origin/allowlist default is a hard security requirement, not a knob.
 - **Mapping fidelity** — our model lacks OTel events/links/resource/scope; preserving the OTLP blob on
   Consume avoids lossy round-trips.
+
+---
+
+## OpenTelemetry JS major compatibility (issue #94, OTel JS 3.0 GA 2026-10-20)
+
+**Peers, split by OTel major.** OTel JS 3.0 removed `@opentelemetry/sdk-trace-base`, `-web` and `-node`
+(npm `deprecated: "Use @opentelemetry/sdk-trace package"`; `sdk-trace-base` stays at 2.12.0, there is no 3.x)
+and replaced them with the single `@opentelemetry/sdk-trace`. Both `@bugsee/opentelemetry` and
+`@bugsee/nextjs` therefore declare, all OPTIONAL (a produce-only user installs none):
+
+| peer | range | for |
+| --- | --- | --- |
+| `@opentelemetry/api` | `>=1.0.0` | every major |
+| `@opentelemetry/sdk-trace-base` | `>=1.0.0 <3` | OTel 1.x / 2.x |
+| `@opentelemetry/sdk-trace` | `>=3` | OTel 3.x |
+
+Guard: `dev-packages/packaging-guard/src/otel-peers.test.ts`.
+
+**The API peer ranges do not overlap, so the two SDKs cannot share one test install.**
+`sdk-trace-base@2.12` peers `@opentelemetry/api >=1.3.0 <1.10.0`; `sdk-trace@3.0.0` peers
+`>=1.10.0 <1.11.0`. One workspace package cannot satisfy both, so the 2.x tests stay in
+`packages/opentelemetry` (api 1.9.x) and the 3.x tests live in the private `dev-packages/otel3-compat`
+(api 1.10.x). That is a TEST-install constraint only: the package imports no OTel code at runtime (structural
+`ReadableSpanLike` / `SpanProcessor`), so a customer is bound only by their own SDK's peer range.
+
+**Node floor.** `@opentelemetry/api@1.10` keeps `engines.node >=8`, but `core@3`, `resources@3` and
+`sdk-trace@3` require `>=22.15.0`. `@bugsee/opentelemetry` itself still supports Node 18+ (it never loads
+OTel); the OTel 3 suite is meant to run on the 22/24 legs of the 18-24 matrix only.
+
+**Registering the processor on 3.x.** `new TracerProvider({ spanProcessors: [processor] })` from
+`@opentelemetry/sdk-trace`. Same `spanProcessors` option as 2.x, but the class was renamed from
+`BasicTracerProvider` (which no longer exists), and `addSpanProcessor` has been gone since 2.0. There is no
+`register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
+package in `dev-packages/otel3-compat`.
 
 ---
 

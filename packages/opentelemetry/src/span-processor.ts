@@ -7,8 +7,9 @@ import { createTraceAssembler } from './trace-assembler';
 // `onEnd(readableSpan)` normalizes the span and feeds the trace assembler, which emits one Bugsee
 // transaction per trace (root-end policy). STRUCTURAL types (no @opentelemetry/* import) — robust to OTel
 // SDK version churn (1.x `parentSpanId` vs 2.x `parentSpanContext`) and keeps the package install-lean;
-// @opentelemetry/api + sdk-trace-base are declared as OPTIONAL peer deps (a consumer needs them for their
-// TracerProvider; produce-only users do not). The returned object is structurally assignable to OTel's
+// @opentelemetry/api + the SDK (sdk-trace-base on OTel 1.x/2.x, sdk-trace on 3.x, which removed the former)
+// are declared as OPTIONAL peer deps (a consumer needs them for their TracerProvider; produce-only users
+// do not). The returned object is structurally assignable to OTel's
 // `SpanProcessor`.
 
 /** OTel `HrTime`: `[seconds, nanoseconds]` since the epoch. */

@@ -21,3 +21,10 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@bugsee/bugsee-cli@0.7.11'
+  # OpenTelemetry JS 3.0 GA (2026-10-20): the lockfile pins these inside the minimum-release-age window, and a
+  # frozen install rejects them without an exclusion. Remove these four lines once the versions are a day old
+  # (the policy then accepts them on its own).
+  - '@opentelemetry/api@1.10.0'
+  - '@opentelemetry/core@3.0.0'
+  - '@opentelemetry/resources@3.0.0'
+  - '@opentelemetry/sdk-trace@3.0.0'

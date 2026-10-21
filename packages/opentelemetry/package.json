@@ -38,13 +38,17 @@
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.0.0",
-    "@opentelemetry/sdk-trace-base": ">=1.0.0"
+    "@opentelemetry/sdk-trace-base": ">=1.0.0 <3",
+    "@opentelemetry/sdk-trace": ">=3"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
       "optional": true
     },
     "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace": {
       "optional": true
     }
   },

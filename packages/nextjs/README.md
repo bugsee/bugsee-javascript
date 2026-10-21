@@ -16,7 +16,7 @@ pnpm add @bugsee/nextjs
 yarn add @bugsee/nextjs
 ```
 
-Optional peer dependencies: `react` >= 18, and `@opentelemetry/api` and `@opentelemetry/sdk-trace-base` (>= 1.0.0) for the automatic OpenTelemetry bridge. Server code requires Node.js 18 or newer.
+Optional peer dependencies: `react` >= 18, and `@opentelemetry/api` and `@opentelemetry/api` plus your OpenTelemetry SDK for the automatic OpenTelemetry bridge: `@opentelemetry/sdk-trace-base` (OTel JS 1.x/2.x) or `@opentelemetry/sdk-trace` (OTel JS 3.x). Server code requires Node.js 18 or newer.
 
 ## Usage
 
