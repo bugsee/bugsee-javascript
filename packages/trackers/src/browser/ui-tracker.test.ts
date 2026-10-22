@@ -196,6 +196,276 @@ describe('UiTracker screenSize and viewport', () => {
   });
 });
 
+describe('UiTracker page zoom (screenSize.zoom / deviceScale)', () => {
+  // Chrome, device scale 2: outerWidth is fixed, innerWidth = outer / zoom, devicePixelRatio = zoom x 2.
+  const at = (outer: unknown, inner: unknown, dpr: number, extra: Record<string, unknown> = {}) => {
+    const w = mkWorld();
+    Object.assign(w.win, {
+      outerWidth: outer,
+      innerWidth: inner,
+      devicePixelRatio: dpr,
+      chrome: {},
+    });
+    Object.assign(w.win, extra);
+    return { w, t: new UiTracker(w.env) };
+  };
+  const bare = { width: 1000, height: 2000, dpr: 2 };
+
+  it('snaps the derived ratio to the nearest preset and recovers the device scale from it', () => {
+    expect(at(1600, 1600, 2).t.current('screenSize')).toEqual({
+      ...bare,
+      zoom: 1,
+      deviceScale: 2,
+    });
+    // every preset, with the integer-rounded innerWidth a real browser reports
+    const presets: Array<[number, number]> = [
+      [0.25, 0.25],
+      [1 / 3, 0.33],
+      [0.5, 0.5],
+      [2 / 3, 0.67],
+      [0.75, 0.75],
+      [0.8, 0.8],
+      [0.9, 0.9],
+      [1.1, 1.1],
+      [1.25, 1.25],
+      [1.5, 1.5],
+      [1.75, 1.75],
+      [2, 2],
+      [2.5, 2.5],
+      [3, 3],
+      [4, 4],
+      [5, 5],
+    ];
+    for (const [preset, field] of presets) {
+      const s = at(1920, Math.round(1920 / preset), 2 * preset).t.current('screenSize');
+      expect(s?.zoom).toBe(field);
+      expect(s?.deviceScale).toBeCloseTo(2, 5);
+    }
+  });
+
+  it('the device scale is dpr / preset UNROUNDED (the spec formula); only the zoom field is rounded', () => {
+    expect(at(1600, 1280, 2.5000001).t.current('screenSize')?.deviceScale).toBe(2.5000001 / 1.25);
+  });
+
+  it('500% (ratio 5.02 with an integer innerWidth) and 300% (3.01) are trusted and do not flap', () => {
+    expect(at(1920, 382, 10).t.current('screenSize')).toMatchObject({ zoom: 5 }); // 1920/382 = 5.026
+    expect(at(1920, 637, 6).t.current('screenSize')).toMatchObject({ zoom: 3 }); // 3.014
+    expect(at(1920, 638, 6).t.current('screenSize')).toMatchObject({ zoom: 3 }); // 3.009
+  });
+
+  it('a resize sweep around one real zoom re-emits nothing (the snapped value is stable)', () => {
+    const { w, t } = at(1920, 640, 6);
+    const got: unknown[] = [];
+    t.on('screenSize', (s) => got.push(s));
+    for (const inner of [638, 639, 640, 641, 637]) {
+      w.win.innerWidth = inner;
+      w.win.fire('resize');
+    }
+    expect(got).toEqual([]);
+  });
+
+  it('docked DevTools / side panel (ratio matches no preset): zoom and deviceScale are omitted, never guessed', () => {
+    // 1200 window at 100% zoom, DevTools docked: innerWidth 645 -> ratio 1.86
+    expect(at(1200, 645, 2).t.current('screenSize')).toEqual(bare);
+    // 200% zoom with a docked panel: ratio over 5
+    expect(at(1200, 200, 4).t.current('screenSize')).toEqual({ ...bare, dpr: 4 });
+  });
+
+  it('frame borders and scrollbars: within 1.5% still snaps, beyond it is omitted', () => {
+    expect(at(1936, 1920, 2).t.current('screenSize')).toMatchObject({ zoom: 1 }); // +0.83%
+    expect(at(1950, 1920, 2).t.current('screenSize')).toEqual(bare); // +1.56%
+    expect(at(1920, 1960, 2).t.current('screenSize')).toEqual(bare); // -2.0%
+    expect(at(1920, 1900, 2).t.current('screenSize')).toMatchObject({ zoom: 1 }); // +1.05%
+  });
+
+  it('a custom (non-preset) zoom such as Chrome 1.2^n steps is omitted', () => {
+    expect(at(1600, 1600 / 1.44, 2.88).t.current('screenSize')).toEqual({ ...bare, dpr: 2.88 });
+  });
+
+  it('omits zoom (keeping width/height/dpr) when the widths are not usable', () => {
+    for (const [outer, inner] of [
+      [undefined, 800],
+      [1600, undefined],
+      [0, 800],
+      [1600, 0],
+      [-1600, 800],
+      [Number.NaN, 800],
+      [1600, Infinity],
+      ['1600', 800],
+    ]) {
+      expect(at(outer, inner, 2).t.current('screenSize')).toEqual(bare);
+    }
+  });
+
+  it('is trusted ONLY on Chromium: Firefox / Safari-like windows keep dpr-only values and no zoom', () => {
+    // Firefox at 150%: outerWidth scales with zoom too, so outer == inner and the ratio says 100%
+    const firefox = mkWorld();
+    Object.assign(firefox.win, { outerWidth: 853, innerWidth: 853, devicePixelRatio: 3 });
+    expect(new UiTracker(firefox.env).current('screenSize')).toEqual({ ...bare, dpr: 3 });
+    // Safari with a plausible ratio of exactly 1.25 and no Chromium tell
+    const safari = mkWorld();
+    Object.assign(safari.win, {
+      outerWidth: 1600,
+      innerWidth: 1280,
+      devicePixelRatio: 2,
+      navigator: { userAgentData: undefined },
+    });
+    expect(new UiTracker(safari.env).current('screenSize')).toEqual(bare);
+    // a non-Chromium brand list is not trusted even with a stray window.chrome absent
+    expect(
+      at(1600, 1600, 2, {
+        chrome: undefined,
+        navigator: { userAgentData: { brands: [{ brand: 'Safari' }] } },
+      }).t.current('screenSize'),
+    ).toEqual(bare);
+  });
+
+  it('Chromium is recognised by its brands (Chromium, Google Chrome, Microsoft Edge) or by window.chrome', () => {
+    for (const brand of ['Chromium', 'Google Chrome', 'Microsoft Edge']) {
+      expect(
+        at(1600, 1600, 2, {
+          chrome: undefined,
+          navigator: { userAgentData: { brands: [{ brand: 'Not A;Brand' }, { brand: brand }] } },
+        }).t.current('screenSize'),
+      ).toMatchObject({ zoom: 1 });
+    }
+    // brands present but not Chromium wins over a stray window.chrome
+    expect(
+      at(1600, 1600, 2, {
+        chrome: {},
+        navigator: { userAgentData: { brands: [{ brand: 'Safari' }, null, { brand: 7 }] } },
+      }).t.current('screenSize'),
+    ).toEqual(bare);
+    // window.chrome alone (no userAgentData) is enough
+    expect(at(1600, 1600, 2, { navigator: {} }).t.current('screenSize')).toMatchObject({ zoom: 1 });
+    expect(at(1600, 1600, 2, { chrome: null }).t.current('screenSize')).toEqual(bare);
+  });
+
+  it('is not derived inside a frame (window.top is another window), but an absent or equal top is the top window', () => {
+    expect(at(1200, 400, 2, { top: {} }).t.current('screenSize')).toEqual(bare);
+    const w = mkWorld();
+    Object.assign(w.win, { outerWidth: 1600, innerWidth: 1600, chrome: {}, top: w.win });
+    expect(new UiTracker(w.env).current('screenSize')).toMatchObject({ zoom: 1 });
+    expect(at(1600, 1600, 2).t.current('screenSize')).toMatchObject({ zoom: 1 });
+  });
+
+  it('omits zoom on a touch-first device (pinch zoom is not page zoom) but keeps it when the query is false or unanswered', () => {
+    const { w, t } = at(1600, 1600, 2);
+    t.current('screenSize'); // the fake creates a query list on first ask
+    q(w, '(pointer: coarse)').matches = true;
+    expect(t.current('screenSize')).toEqual(bare);
+    q(w, '(pointer: coarse)').matches = false;
+    expect(t.current('screenSize')).toMatchObject({ zoom: 1 });
+    const noMm = mkWorld();
+    Object.assign(noMm.win, { outerWidth: 1600, innerWidth: 1600, chrome: {} });
+    const { matchMedia: _drop, ...env } = noMm.env;
+    expect(new UiTracker(env).current('screenSize')).toMatchObject({ zoom: 1 });
+  });
+
+  it('re-evaluates when (pointer: coarse) changes (touch emulation toggled) without a resize', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    const coarse = q(w, '(pointer: coarse)');
+    expect(coarse.count('change')).toBe(1);
+    coarse.matches = true;
+    coarse.fire('change', {});
+    coarse.matches = false;
+    coarse.fire('change', {});
+    expect(got).toEqual([bare, { ...bare, zoom: 1, deviceScale: 2 }]);
+    off();
+    expect(coarse.count('change')).toBe(0);
+  });
+
+  it('hostile outerWidth / innerWidth / top / navigator / chrome getters never fail the read and are reported', () => {
+    const boom = (name: string) => ({
+      get() {
+        throw new Error(name);
+      },
+    });
+    for (const prop of ['outerWidth', 'innerWidth', 'top', 'navigator', 'chrome']) {
+      const w = mkWorld();
+      const errors: unknown[] = [];
+      Object.assign(w.win, { outerWidth: 1600, innerWidth: 1600 });
+      if (prop !== 'chrome') Object.assign(w.win, { chrome: {} });
+      Object.defineProperty(w.win, prop, { ...boom(prop), configurable: true });
+      const t = new UiTracker(w.env, (e) => errors.push(e));
+      // an unreadable width or `chrome` cannot be trusted; an unreadable `top`/`navigator` falls back to the other tells
+      const trusted = prop === 'top' || prop === 'navigator';
+      expect(t.current('screenSize')).toEqual(
+        trusted ? { ...bare, zoom: 1, deviceScale: 2 } : bare,
+      );
+      expect(errors.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('re-emits on a resize that changes the zoom, and de-duplicates when nothing moved', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const got: unknown[] = [];
+    t.on('screenSize', (s) => got.push(s));
+    w.win.fire('resize');
+    expect(got).toEqual([]);
+    Object.assign(w.win, { innerWidth: 1280, devicePixelRatio: 2.5 });
+    w.win.fire('resize');
+    expect(got).toEqual([{ ...bare, dpr: 2.5, zoom: 1.25, deviceScale: 2 }]);
+  });
+
+  it('watches the (resolution) query for the current ratio, re-arms it on the new ratio after a change, and releases it', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    const first = q(w, '(resolution: 2dppx)');
+    expect(first.count('change')).toBe(1);
+    // zoom to 125% with NO resize event: only the resolution query fires
+    Object.assign(w.win, { innerWidth: 1280, devicePixelRatio: 2.5 });
+    first.fire('change', {});
+    expect(got).toEqual([{ ...bare, dpr: 2.5, zoom: 1.25, deviceScale: 2 }]);
+    expect(first.count('change')).toBe(0); // old query released
+    const second = q(w, '(resolution: 2.5dppx)');
+    expect(second.count('change')).toBe(1);
+    off();
+    expect(second.count('change')).toBe(0);
+  });
+
+  it('a change delivered after release neither re-arms nor publishes', () => {
+    const { w, t } = at(1600, 1600, 2);
+    const list = w.env.matchMedia('(resolution: 2dppx)') as unknown as ReturnType<typeof mkTarget>;
+    let late: ((e?: unknown) => void) | undefined;
+    const add = list.addEventListener;
+    list.addEventListener = (type, l) => {
+      late = l;
+      add(type, l);
+    };
+    const got: unknown[] = [];
+    const off = t.on('screenSize', (s) => got.push(s));
+    off();
+    Object.assign(w.win, { innerWidth: 1280, devicePixelRatio: 2.5 });
+    late?.({});
+    expect(got).toEqual([]);
+    expect(w.queries.has('(resolution: 2.5dppx)')).toBe(false);
+  });
+
+  it('does not watch the resolution query when the ratio is unreadable, and a hostile matchMedia never throws', () => {
+    const w = mkWorld();
+    w.win.devicePixelRatio = 0;
+    const t = new UiTracker(w.env);
+    t.on('screenSize', () => {});
+    expect([...w.queries.keys()].some((k) => k.startsWith('(resolution'))).toBe(false);
+    const errors: unknown[] = [];
+    const hostile = new UiTracker(
+      {
+        ...mkWorld().env,
+        matchMedia: () => {
+          throw new Error('mm boom');
+        },
+      },
+      (e) => errors.push(e),
+    );
+    expect(() => hostile.on('screenSize', () => {})).not.toThrow();
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
 describe('UiTracker visualViewport stage', () => {
   const mkVv = () =>
     Object.assign(mkTarget(), {

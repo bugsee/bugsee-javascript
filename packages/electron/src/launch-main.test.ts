@@ -1148,7 +1148,10 @@ describe('launchMain — Electron domain trackers: power, display, application w
     });
     const a = accessors();
     expect(a.power).toHaveBeenCalledExactlyOnceWith({ powerMonitor }, onError);
-    expect(a.display).toHaveBeenCalledExactlyOnceWith({ screen }, onError);
+    expect(a.display).toHaveBeenCalledExactlyOnceWith(
+      { screen, keyWindowBounds: expect.any(Function) },
+      onError,
+    );
     expect(a.application).toHaveBeenCalledExactlyOnceWith({ app, BrowserWindow }, onError);
   });
 
@@ -1254,6 +1257,32 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(app.table.get('browser-window-created')).toBeUndefined();
     expect(app.table.get('web-contents-created')).toBeUndefined();
     expect(powerMonitor.total()).toBe(6);
+  });
+
+  it('with a screen, the application tracker is built for the KEY window even when captureWindowEvents is false; the display tracker reads its bounds; no window EVENTS are forwarded', () => {
+    clear();
+    const app = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const bounds = { x: 5, y: 6, width: 7, height: 8 };
+    const BrowserWindow = {
+      getAllWindows: () => [],
+      getFocusedWindow: () => ({ isDestroyed: () => false, getBounds: () => bounds }),
+    };
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      app,
+      screen,
+      BrowserWindow,
+      captureWindowEvents: false,
+    });
+    expect(accessors().application).toHaveBeenCalledOnce();
+    const env = vi.mocked(electronDisplayTrackerFor).mock.calls[0]?.[0];
+    expect(env?.keyWindowBounds?.()).toEqual(bounds);
+    const mux = wrapOf(f)(new Inner());
+    mux.on('event', () => {});
+    expect(app.table.get('browser-window-created')).toBeUndefined(); // the events mux arms none
   });
 
   it.each([
