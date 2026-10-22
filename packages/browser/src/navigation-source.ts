@@ -127,7 +127,6 @@ interface HistoryHook {
   orig: (...args: unknown[]) => unknown;
   wrapper: (...args: unknown[]) => unknown;
   live: boolean;
-  released: boolean;
   emit: () => void;
 }
 // Every wrapper any source installed, by function, so a source stopping on top can unwind the dead ones under it.
@@ -193,23 +192,19 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
   }
 
   /**
-   * Wrap one History method (call the original FIRST, then emit). A wrapper that is still somewhere in the chain from an
-   * earlier activation is REUSED (flipped live again) rather than stacked, so a restart never double-emits.
+   * Wrap one History method (call the original FIRST, then emit). Every activation puts a FRESH wrapper on top of
+   * whatever is there now. A wrapper left from an earlier activation (a stop that could not take it out because a third
+   * party sits above it) is inert (`live` is false) wherever it is in the chain, so a restart never double-emits, and it
+   * is never reused: whether it is still reachable cannot be known (a third party may have restored the original).
    */
   #hook(
     history: HistoryLike,
     method: 'pushState' | 'replaceState',
     type: 'push' | 'replace',
-    existing: HistoryHook | undefined,
   ): HistoryHook {
-    if (existing !== undefined && !existing.released) {
-      existing.live = true;
-      return existing;
-    }
     const hook: HistoryHook = {
       orig: history[method],
       live: true,
-      released: false,
       wrapper: undefined as never, // assigned just below (the wrapper closes over `hook`)
       emit: () => this.#emitFromLocation(type),
     };
@@ -237,13 +232,11 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
     hook.live = false;
     if (history[method] !== hook.wrapper) return;
     let target = hook.orig;
-    hook.released = true;
     for (
       let below = hooks.get(target);
       below !== undefined && !below.live;
       below = hooks.get(target)
     ) {
-      below.released = true;
       target = below.orig;
     }
     history[method] = target;
@@ -256,8 +249,8 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
       return;
     }
     if (this.#history !== undefined) {
-      this.#pushHook = this.#hook(this.#history, 'pushState', 'push', this.#pushHook);
-      this.#replaceHook = this.#hook(this.#history, 'replaceState', 'replace', this.#replaceHook);
+      this.#pushHook = this.#hook(this.#history, 'pushState', 'push');
+      this.#replaceHook = this.#hook(this.#history, 'replaceState', 'replace');
     }
     this.#target?.addEventListener('popstate', this.#onPopstate);
     this.#target?.addEventListener('hashchange', this.#onHashchange);

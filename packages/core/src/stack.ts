@@ -4,6 +4,8 @@
 // report-path steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
 // config-driven and belong to the report path, not this pure parser.
 
+import { sanitizeUrl } from '@bugsee/protocol';
+
 /** Source lines around a frame: the line itself, plus a bounded window either side. */
 export interface FrameContext {
   /** Lines BEFORE the throwing line, in file order. */
@@ -87,8 +89,10 @@ function scrubFramePath(path: string): string {
   } else if (scrubbed.startsWith('webpack://')) {
     return scrubbed.replace(/^webpack:\/\/+/, '');
   } else if (scrubbed.includes('://')) {
-    // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak.
-    return scrubbed;
+    // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak. A script URL can
+    // still carry credentials (`https://user:pw@host/`) or a signed query (`app.js?token=…`), so it goes through the
+    // network URL sanitizer; an ordinary `app.js?v=2` is unchanged.
+    return sanitizeUrl(scrubbed);
   }
   const dependency = scrubbed.indexOf('/node_modules/');
   if (dependency >= 0) {

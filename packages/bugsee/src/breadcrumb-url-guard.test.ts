@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 const packages = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Names that hold an UNSANITIZED address. A breadcrumb argument must not mention one. */
-const RAW_ADDRESS = /^(href|url|uri|pathname|location|path|destination|referrer)$/i;
+const RAW_ADDRESS =
+  /^(href|url|uri|newurl|oldurl|pathname|location|path|aspath|to|from|search|hash|baseuri|destination|referrer)$/i;
 
 /** The raw-address identifiers used inside the arguments of every `.addBreadcrumb(...)` call in `text`. */
 export function rawAddressesInBreadcrumbCalls(text: string): string[] {
@@ -55,6 +56,10 @@ describe('the guard itself detects every form of a raw address in a breadcrumb',
     ['a member access', 'client.addBreadcrumb({ message: location.pathname });'],
     ['a spread', 'client.addBreadcrumb({ ...url });'],
     ['a call result', 'this.client.addBreadcrumb(make(pathname));'],
+    ['an event URL', 'client.addBreadcrumb({ message: event.newURL });'],
+    ['a router destination', 'client.addBreadcrumb({ message: to });'],
+    ['a router asPath', 'client.addBreadcrumb({ data: { asPath } });'],
+    ['a hash', 'client.addBreadcrumb({ message: hash });'],
   ];
   it.each(bad)('flags %s', (_name, code) => {
     expect(rawAddressesInBreadcrumbCalls(code).length).toBeGreaterThan(0);
@@ -111,6 +116,31 @@ describe('every SDK-internal breadcrumb writer is classified (no URL breadcrumb 
       // UI crumbs again, plus the page's own addBreadcrumb forwarded to native (application data, not a location)
       'webview/src/launch.ts',
     ]);
+  });
+
+  it('no single-file component (.vue/.svelte/.astro) writes a breadcrumb at all (they cannot be parsed here)', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        if (name === 'node_modules') continue;
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (
+          /\.(vue|svelte|astro)$/.test(name) &&
+          readFileSync(full, 'utf8').includes('.addBreadcrumb(')
+        ) {
+          offenders.push(relative(packages, full));
+        }
+      }
+    };
+    for (const pkg of readdirSync(packages)) {
+      try {
+        walk(join(packages, pkg, 'src'));
+      } catch {
+        // a package without a src directory
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('no call site mentions a raw address in its arguments', () => {

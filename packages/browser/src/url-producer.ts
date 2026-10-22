@@ -12,6 +12,9 @@ import {
 // written from the browser NAVIGATION SOURCE (`navigate` events carry the absolute `href`), plus the location at start,
 // so it is independent of the performance extension (which owns the source only when it is on).
 
+/** The longest string a `urlSanitizer` result may be; longer is clipped and marked `%3Ctruncated%3E`. */
+export const MAX_HOOK_RESULT_CHARS = 2048;
+
 /**
  * The application's own sanitizer for the `url` trace. Runs AFTER the default sanitizer and receives the
  * already-sanitized URL; the string it returns is written as given (it is the application's responsibility not to
@@ -20,9 +23,6 @@ import {
  * every case where nothing is written the PREVIOUS value stays held (a held trace cannot be retracted). A result over
  * 2048 characters is clipped. The hook runs synchronously, so keep it cheap.
  */
-/** The longest string a `urlSanitizer` result may be; longer is clipped and marked `%3Ctruncated%3E`. */
-export const MAX_HOOK_RESULT_CHARS = 2048;
-
 export type UrlSanitizer = (url: string) => string | null;
 
 export interface UrlProducerDeps {

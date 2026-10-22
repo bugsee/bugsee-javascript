@@ -175,6 +175,29 @@ describe('UrlProducer', () => {
       expect(errors).toEqual([boom, boom]);
     });
 
+    it.each([
+      ['a number', 42],
+      ['NaN', Number.NaN],
+      ['undefined', undefined],
+      ['an object', { url: 'https://a.com/' }],
+      ['an array', ['https://a.com/']],
+      ['a boolean', true],
+      ['a function', () => 'x'],
+    ])('a hook returning %s is reported and writes nothing', (_name, result) => {
+      const { producer, emits, sink, errors } = setup({
+        urlSanitizer: (() => result) as unknown as UrlProducerDeps['urlSanitizer'],
+      });
+      producer.start(sink);
+      expect(emits).toEqual([]);
+      expect(errors).toHaveLength(1);
+    });
+
+    it('a hook returning an empty string writes the empty string (as given)', () => {
+      const { producer, emits, sink } = setup({ urlSanitizer: () => '' });
+      producer.start(sink);
+      expect(emits.map((e) => e.value)).toEqual(['']);
+    });
+
     it('a hook returning a non-string is reported and writes nothing', () => {
       const { producer, emits, sink, errors } = setup({
         urlSanitizer: (() => 42) as unknown as UrlProducerDeps['urlSanitizer'],

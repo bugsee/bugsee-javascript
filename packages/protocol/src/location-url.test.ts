@@ -291,6 +291,53 @@ describe('sanitizeLocationUrl: the rule table', () => {
     ['blob: the last @ wins in the authority', 'blob:https://a@b:p@c.com/x', 'blob:https://c.com'],
     ['blob: a backslash ends the origin', 'blob:https://u:p@a.com\\x', 'blob:https://a.com'],
     [
+      'file: nested URL in the query',
+      'file:///app/index.html?next=https://b.com/?token=SECRET',
+      `file:///…/index.html?next=https://b.com/?token=${R}`,
+    ],
+    [
+      'file: nested encoded URL in a hash route',
+      'file:///app/index.html#/r?next=https%3A%2F%2Fb.com%2F%3Fcode%3DSECRET',
+      `file:///…/index.html#/r?next=https%3A%2F%2Fb.com%2F%3Fcode%3D%253Credacted%253E`,
+    ],
+    [
+      'malformed escape (a stray %) in an encoded nested URL',
+      'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D100%%26token%3DSECRET',
+      `https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D100%25%26token%3D%253Credacted%253E`,
+    ],
+    [
+      'invalid UTF-8 escape in an encoded nested URL',
+      'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D%E0%A4%26token%3DSECRET',
+      `https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D%25E0%25A4%26token%3D%253Credacted%253E`,
+    ],
+    [
+      'nested URL in a plain fragment (encoded)',
+      'https://a.com/x#next=https%3A%2F%2Fb.com%2F%3Ftoken%3DSECRET',
+      `https://a.com/x#next=https%3A%2F%2Fb.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'nested URL with its own fragment in a fragment',
+      'https://a.com/x#a=1&next=https://b.com/cb#access_token=SECRET',
+      `https://a.com/x#a=1&next=https://b.com/cb#access_token=${R}`,
+    ],
+    [
+      'relative return path in a fragment',
+      'https://a.com/x#next=%2Fcb%3Fcode%3DSECRET',
+      `https://a.com/x#next=%2Fcb%3Fcode%3D%253Credacted%253E`,
+    ],
+    [
+      'array-style key',
+      'https://a.com/?code[]=S&state%5B0%5D=S',
+      `https://a.com/?code[]=${R}&state%5B0%5D=${R}`,
+    ],
+    ['percent-encoded array key', 'https://a.com/?code%5B%5D=S', `https://a.com/?code%5B%5D=${R}`],
+    ['form-plus key', 'https://a.com/?+code=S', `https://a.com/?+code=${R}`],
+    [
+      'keys the shared list already catches stay redacted',
+      'https://a.com/?sessionid=S&signature=S&otp=S&footprint=1',
+      `https://a.com/?sessionid=${R}&signature=${R}&otp=${R}&footprint=${R}`,
+    ],
+    [
       'file: the shape pass runs on the kept segment',
       'file:///a/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123_-signaturepart',
       'file:///…/<redacted>',
@@ -308,6 +355,27 @@ describe('sanitizeLocationUrl: the rule table', () => {
 
   describe('input cap', () => {
     const MARK = '%3Ctruncated%3E';
+    it('a cut inside an escape drops the partial escape and cannot leak the value beside it', () => {
+      const prefix = 'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3D';
+      const body = 'S'.repeat(8192 - prefix.length - 2);
+      const out = sanitizeLocationUrl(`${prefix}${body}%2F%2FSECRETTAIL`);
+      expect(out.endsWith(MARK)).toBe(true);
+      expect(out).not.toMatch(/%[0-9A-Fa-f]%3C/);
+      expect(out).not.toContain('SECRETTAIL');
+      expect(out).not.toContain(body);
+    });
+    it('a cut inside an escape in plain text drops the partial escape', () => {
+      const out = sanitizeLocationUrl(`https://a.com/${'a'.repeat(8192 - 14 - 2)}%2Fzzz`);
+      expect(out.endsWith(`a${MARK}`)).toBe(true);
+    });
+    it('a cut right after a lone % drops it too', () => {
+      const out = sanitizeLocationUrl(`https://a.com/${'a'.repeat(8192 - 14 - 1)}%2Fzzz`);
+      expect(out.endsWith(`a${MARK}`)).toBe(true);
+    });
+    it('clips BEFORE normalising: a huge input costs the same as a clipped one', () => {
+      const out = sanitizeLocationUrl(`https:${'/'.repeat(1_000_000)}a.com/x`);
+      expect(out.length).toBeLessThanOrEqual(8192 + MARK.length + 8);
+    });
     it('clips an over-long address to 8192 characters plus a marker', () => {
       const out = sanitizeLocationUrl(`https://a.com/${'a'.repeat(20_000)}`);
       expect(out.length).toBe(8192 + MARK.length);
@@ -334,6 +402,31 @@ describe('sanitizeLocationUrl: the rule table', () => {
   });
 
   describe('nested values: tolerant reading', () => {
+    it('a nested file: address two levels down is not scanned (the documented depth)', () => {
+      const url = 'https://x.com/l?a=https://y.com/?b=file:///x/y.html?next=https://z.com/?token=S';
+      expect(sanitizeLocationUrl(url)).toBe(
+        'https://x.com/l?a=https://y.com/?b=file:///…/y.html?next=https://z.com/?token=S',
+      ); // the file: path is shortened, the third-level nested query is not scanned
+    });
+    it('an invalid UTF-8 escape beside a valid ASCII one still decodes the ASCII (a hidden key letter)', () => {
+      expect(
+        sanitizeLocationUrl('https://a.com/?next=https%3A%2F%2Fb.com%2F%3F%E0%74oken%3DSECRET'),
+      ).toBe(`https://a.com/?next=https%3A%2F%2Fb.com%2F%3F%25E0token%3D%253Credacted%253E`);
+    });
+    it('a multi-byte UTF-8 escape is decoded as ONE character', () => {
+      expect(
+        sanitizeLocationUrl('https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D%C3%A9%26token%3DS'),
+      ).toBe(
+        'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D%C3%A9%26token%3D%253Credacted%253E',
+      );
+    });
+    it('a lone surrogate in a nested value never throws and keeps the shape', () => {
+      const out = sanitizeLocationUrl(
+        'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D\ud800',
+      );
+      expect(out.startsWith('https://a.com/?next=')).toBe(true);
+      expect(out).not.toContain('token%3DS%26');
+    });
     it('a malformed escape falls back to the raw value', () => {
       expect(sanitizeLocationUrl('https://a.com/l?u=%E0%A4%A/x?token=S')).toBe(
         `https://a.com/l?u=%E0%A4%A/x?token=${R}`,
@@ -365,6 +458,8 @@ describe('sanitizeLocationUrl: the rule table', () => {
       [undefined, '/cb?token=S&tab=1', `/cb`],
       [undefined, '/app;jsessionid=ABC/x', `/app;jsessionid=${R}/x`],
       [undefined, '/a#frag', '/a'],
+      ['about:blank?code=C', '/x', 'about:blank'],
+      ['view-source:https://a.com/p/q?x#y', '/x', 'view-source:https://a.com/p/q'],
     ];
     it.each(cases)('%s + %s -> %s', (href, pathname, expected) => {
       expect(sanitizeLocationName(href, pathname)).toBe(expected);
@@ -491,7 +586,22 @@ describe('sanitizeLocationUrl: properties', () => {
           const doubly = `https://a.com/p?u=${encodeURIComponent(encodeURIComponent(`https://b.com/?${key}=${s}`))}`;
           const hashRouter = `https://a.com/p?x=1#/r?next=https://b.com/?${key}=${s}`;
           const file = `file:///app/index.html#/r?${key}=${s}`;
-          for (const url of [top, one, two, encoded, relative, doubly, hashRouter, file]) {
+          const fileNested = `file:///app/index.html?next=${encodeURIComponent(`https://b.com/?${key}=${s}`)}`;
+          const fragmentNested = `https://a.com/p#next=${encodeURIComponent(`https://b.com/?${key}=${s}`)}`;
+          const stray = `https://a.com/p?next=https%3A%2F%2Fb.com%2F%3Fq%3D100%%26${key}%3D${s}`;
+          for (const url of [
+            top,
+            one,
+            two,
+            encoded,
+            relative,
+            doubly,
+            hashRouter,
+            file,
+            fileNested,
+            fragmentNested,
+            stray,
+          ]) {
             expect(sanitizeLocationUrl(url)).not.toContain(s);
           }
         },

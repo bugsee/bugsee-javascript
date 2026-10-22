@@ -310,6 +310,9 @@ describe('bugsee umbrella launch', () => {
       await track(await launch('tok', base({ carrier, window: w.win as never })));
       const { getCarrier } = await import('@bugsee/core');
       expect(getCarrier(carrier).interceptors.get('browser-navigation')).toBeDefined();
+      // The umbrella asked for the source on the SAME carrier the launch was given: it did not build a second one on the
+      // process-global carrier (which would wrap `history` a second time).
+      expect(getCarrier(globalThis).interceptors.get('browser-navigation')).toBeUndefined();
       w.history.pushState({}, '', '/n'); // wrapped: runs the original exactly once, however many consumers listen
       expect(w.pushState).toHaveBeenCalledTimes(1);
     });
@@ -385,6 +388,26 @@ describe('bugsee umbrella launch', () => {
     vi.stubGlobal('location', { pathname: '/p', href: 42 });
     const client = await track(await launch('tok', base({ carrier: {} })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/p');
+  });
+
+  it('names the pageload from the INJECTED window, not the host global', async () => {
+    vi.stubGlobal('location', { pathname: '/host' });
+    const win = { ...fakeWindow().win, location: { pathname: '/injected;jsessionid=S/x' } };
+    const client = await track(await launch('tok', base({ carrier: {}, window: win as never })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe(
+      `/injected;jsessionid=%3Credacted%3E/x`,
+    );
+  });
+
+  it('an injected window with a throwing location getter falls back to the stable default', async () => {
+    const win = {
+      ...fakeWindow().win,
+      get location(): never {
+        throw new Error('torn down');
+      },
+    };
+    const client = await track(await launch('tok', base({ carrier: {}, window: win as never })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
   it('defaults the pageload name to "pageload" when no location is available', async () => {

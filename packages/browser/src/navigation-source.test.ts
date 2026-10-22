@@ -433,14 +433,57 @@ describe('createBrowserNavigationSource', () => {
       expect(orig.push).toHaveBeenCalledTimes(1);
     });
 
-    it('a restart under a third party reuses the wrapper in the chain (the chain does not grow)', () => {
+    it('a restart right after a clean stop wraps afresh on the restored original', () => {
       const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const wrapper = history.pushState;
+      first.off(); // outermost: restored
+      const second = collect(source);
+      expect(history.pushState).not.toBe(wrapper); // restored, then wrapped afresh
+      second.off();
+    });
+
+    it('a third party that RESTORED the original after our stop does not cost a restart its detection (regression)', () => {
+      const { history, orig, mk, location } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const tp = thirdParty(history); // wraps over us
+      first.off(); // ours stays as a pass-through under the third party
+      history.pushState = orig.push; // the third party takes everything off again
+      const second = collect(source);
+      location.pathname = '/two';
+      history.pushState({}, '', '/two');
+      expect(second.events.map((e) => e.to)).toEqual(['/two']);
+      expect(tp.calls).toHaveLength(0);
+      second.off();
+    });
+
+    it('a restart under a live third-party wrapper wraps afresh and emits exactly once', () => {
+      const { history, mk, location } = sharedEnv();
       const source = mk();
       const first = collect(source);
       const tp = thirdParty(history);
       first.off();
       const second = collect(source);
-      expect(history.pushState).toBe(tp.wrapper); // nothing stacked on top of the third party
+      location.pathname = '/again';
+      history.pushState({}, '', '/again');
+      expect(second.events.map((e) => e.to)).toEqual(['/again']); // the retired wrapper beneath stays inert
+      expect(tp.calls).toHaveLength(1);
+      second.off();
+    });
+
+    it('a deleted method is wrapped afresh on restart', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      first.off();
+      const replacement = vi.fn();
+      history.pushState = replacement;
+      const second = collect(source);
+      expect(history.pushState).not.toBe(replacement);
+      history.pushState({}, '', '/q');
+      expect(replacement).toHaveBeenCalledTimes(1);
       second.off();
     });
 

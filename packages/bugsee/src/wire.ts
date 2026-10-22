@@ -77,6 +77,8 @@ export interface UmbrellaBrowserSources {
   createNavigationSource?: () => WirePerformanceOptions['navigationSource'];
   createInteractionSource?: () => NonNullable<WirePerformanceOptions['interactionSource']>;
   readMetaTraceContinuation?: () => WirePerformanceOptions['pageloadContinuation'];
+  /** The location of the window the SDK is bound to (the pageload name). Absent: the host global. */
+  readLocation?: () => { pathname?: string; href?: string } | undefined;
 }
 
 // The runtime-agnostic umbrella wiring: given a launched client + its LaunchInternals (from EITHER the
@@ -201,8 +203,18 @@ function otlpResourceWithDeviceId(
  * SANITIZED one (matrix session ids, token-shaped segments; a `file:` page is `/…/index.html`, never its directory):
  * a landing URL such as `/verify/<jwt>;jsessionid=…` must not become the transaction name verbatim.
  */
-function defaultPageName(): string {
-  const location = (globalThis as { location?: { pathname?: string; href?: string } }).location;
+function defaultPageName(
+  readLocation: (() => { pathname?: string; href?: string } | undefined) | undefined,
+): string {
+  let location: { pathname?: string; href?: string } | undefined;
+  try {
+    location =
+      readLocation !== undefined
+        ? readLocation()
+        : (globalThis as { location?: { pathname?: string; href?: string } }).location;
+  } catch {
+    return 'pageload'; // a torn-down window: the stable default
+  }
   const href = typeof location?.href === 'string' ? location.href : undefined;
   const pathname = location?.pathname;
   if (href === undefined && pathname === undefined) return 'pageload';
@@ -286,7 +298,7 @@ export function wireUmbrella<C extends BugseeClient>(
 
   const wired = wirePerformance({
     client,
-    pageName: options.pageName ?? defaultPageName(),
+    pageName: options.pageName ?? defaultPageName(browserSources.readLocation),
     send,
     scheduler: client.getService(SchedulerToken),
     monitoring: perf.options.get(PerformanceOption.Monitoring, true),

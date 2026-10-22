@@ -9,6 +9,16 @@ import {
 } from './stack';
 
 describe('parseV8Stack', () => {
+  it('redacts credentials and signed query values in a script URL frame, keeps an ordinary one', () => {
+    expect(parseLocation('https://u:pw@app.test/a.js?token=SECRET&v=2:3:4').file).toBe(
+      'https://u:%3Credacted%3E@app.test/a.js?token=%3Credacted%3E&v=2',
+    );
+    expect(parseLocation('https://app.test/a.js?v=2:3:4').file).toBe('https://app.test/a.js?v=2');
+    expect(parseV8Stack('Error: x\n    at fn (https://app.test/a.js?token=S:1:2)')[0]?.file).toBe(
+      'https://app.test/a.js?token=%3Credacted%3E',
+    );
+  });
+
   it('parses a typical Node stack into structured frames', () => {
     const stack = [
       'Error: boom',

@@ -45,30 +45,49 @@ const ORIGIN_ONLY_SCHEMES = new Set(['blob', 'filesystem']);
 const SPECIAL_SCHEMES = new Set(['http', 'https', 'ws', 'wss', 'ftp']);
 
 /**
- * Keys redacted in a page ADDRESS on top of the shared denylist. Matched EXACTLY (after the shared key normalisation:
- * lower case, no `-` `_` `.` or whitespace), never as substrings: `code` as a substring would eat `encoding`,
- * `barcode` and `zipcode`. These are the credential-carrying keys that the shared (substring) list lacks. `key`
- * and `t` are deliberately NOT here: far too common, and a false redaction loses a screen's identity.
+ * Keys redacted in a page ADDRESS on top of the shared denylist, for the credential-carrying keys the shared list does
+ * not match. Matched EXACTLY (after the shared key normalisation: lower case, no `-` `_` `.` or whitespace; a form `+`
+ * is a space and a trailing `[]`/`[n]` is dropped, so `code[]`, `code%5B%5D` and `+code` all match), never as
+ * substrings: `code` as a substring would eat `encoding`, `barcode` and `zipcode`. The shared list is a substring list and
+ * already catches `sessionid`, `signature`, `otp` and `code_verifier` (and, as a side effect, `footprint`), so they are
+ * not repeated here. `key` and `t` are deliberately NOT redacted: far too common, and a false redaction loses a
+ * screen's identity.
  */
-const LOCATION_EXTRA_KEYS = new Set([
-  'code',
-  'state',
-  'session',
-  'sessionid',
-  'sid',
-  'sig',
-  'signature',
-  'ticket',
-  'otp',
-]);
+const LOCATION_EXTRA_KEYS = new Set(['code', 'state', 'session', 'sid', 'sig', 'ticket']);
 const isLocationKey = (decodedKey: string): boolean =>
-  LOCATION_EXTRA_KEYS.has(normalizeKey(decodedKey.replace(/^[\s"']+|[\s"']+$/g, '')));
+  LOCATION_EXTRA_KEYS.has(
+    normalizeKey(
+      decodedKey
+        .replace(/\+/g, ' ')
+        .replace(/^[\s"']+|[\s"']+$/g, '')
+        .replace(/\[[^\]]*\]$/, ''),
+    ),
+  );
 
-const decode = (raw: string): string | undefined => {
+/**
+ * Decode percent-escapes TOLERANTLY: every maximal run of valid `%XX` escapes is decoded as UTF-8 when it is valid, and
+ * otherwise only its single-byte (ASCII) escapes are; an invalid or partial escape (`%`, `%2`, `%E0%A4`) stays as it is.
+ * `decodeURIComponent` is all-or-nothing, so one stray `%` in a value (`q%3D100%%26token%3DS`) used to disable the
+ * redaction of everything else in it.
+ */
+function decodeTolerant(raw: string): string {
+  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run.replace(/%([0-7][0-9A-Fa-f])/g, (_m, hex: string) =>
+        String.fromCharCode(Number.parseInt(hex, 16)),
+      );
+    }
+  });
+}
+
+/** `encodeURIComponent`, except a lone surrogate (which makes it throw) leaves the value as it is. */
+const encodeSafe = (value: string): string => {
   try {
-    return decodeURIComponent(raw);
+    return encodeURIComponent(value);
   } catch {
-    return undefined; // malformed escapes are common; leave the value alone
+    return value;
   }
 };
 
@@ -90,7 +109,11 @@ function redactFragment(fragment: string): string {
  * reaches the bundle while the page is still recognisable. The query and fragment are kept and redacted like http's:
  * an Electron app routing on `file:///app/index.html#/orders/42` is told apart by its fragment.
  */
-function sanitizeFileUrl(afterScheme: string, options: ShapeRedactionOptions | undefined): string {
+function sanitizeFileUrl(
+  afterScheme: string,
+  options: ShapeRedactionOptions | undefined,
+  depth: number,
+): string {
   // The browser reads a backslash in the path of a `file:` URL as a slash (the query and fragment keep theirs).
   const delimiter = afterScheme.search(/[?#]/);
   const head = delimiter < 0 ? afterScheme : afterScheme.slice(0, delimiter);
@@ -109,10 +132,12 @@ function sanitizeFileUrl(afterScheme: string, options: ShapeRedactionOptions | u
   const keptSegment = redactSensitivePairs(segment, 0, segment.length, true, isLocationKey);
   const keptQuery = query === undefined ? undefined : redactPairs(query);
   const keptFragment = fragment === undefined ? undefined : redactFragment(fragment);
+  const built = `file:///…/${keptSegment}${keptQuery === undefined ? '' : `?${keptQuery}`}${
+    keptFragment === undefined ? '' : `#${keptFragment}`
+  }`;
+  // A `file:` page (an Electron renderer) carries the same return-URL query as any other, so it gets the nested scan too.
   return redactShapes(
-    `file:///…/${keptSegment}${keptQuery === undefined ? '' : `?${keptQuery}`}${
-      keptFragment === undefined ? '' : `#${keptFragment}`
-    }`,
+    depth < MAX_NESTED_DEPTH ? sanitizeNestedQueryUrls(built, options, depth) : built,
     options,
   );
 }
@@ -171,27 +196,24 @@ function sanitizeNestedValue(
 ): string {
   if (!value.includes('%')) {
     // Plain text: sanitize it as it is.
-    if (!looksNested(value)) {
-      return value;
-    }
-    return sanitizeAddress(value, options, depth + 1);
+    return looksNested(value) ? sanitizeAddress(value, options, depth + 1) : value;
   }
   // Something is encoded (once, twice or partly: `https%3A//b`, `https:%2F%2Fb`): read the DECODED form, which is what
   // the receiving app sees. The raw form of a half-encoded URL is not a URL a parser would split correctly.
-  const once = decode(value);
-  if (once === undefined) {
-    return looksNested(value) ? sanitizeAddress(value, options, depth + 1) : value;
-  }
-  const twice = once.includes('%') ? decode(once) : undefined;
-  const decoded = twice === undefined ? once : twice;
+  const once = decodeTolerant(value);
+  const decoded = once.includes('%') ? decodeTolerant(once) : once;
   if (!looksNested(decoded)) {
     return value;
   }
   const clean = sanitizeAddress(decoded, options, depth + 1);
-  return clean === decoded ? value : encodeURIComponent(clean);
+  if (clean === decoded) {
+    return value;
+  }
+  // Nothing was really decoded (only invalid escapes): the sanitized raw text is the answer, not a re-encoding of it.
+  return decoded === value ? clean : encodeSafe(clean);
 }
 
-/** The nested scan over the main query and the fragment's hash-router query. */
+/** The nested scan over the main query and over the fragment (its `key=value` pairs, and a hash-router `?` query). */
 function sanitizeNestedQueryUrls(
   input: string,
   options: ShapeRedactionOptions | undefined,
@@ -203,12 +225,11 @@ function sanitizeNestedQueryUrls(
   if (queryStart >= 0 && (hash < 0 || queryStart < hash)) {
     url = sanitizeNestedRun(url, queryStart + 1, hash < 0 ? url.length : hash, options, depth);
   }
+  // The WHOLE fragment is scanned as pairs: `#next=https%3A%2F%2F…`, `#/route?next=…` and an implicit-flow `#a=1&next=…`
+  // all carry a nested address, and a route prefix before the first `=` is not part of any value.
   const fragment = url.indexOf('#');
   if (fragment >= 0) {
-    const inner = url.indexOf('?', fragment);
-    if (inner >= 0) {
-      url = sanitizeNestedRun(url, inner + 1, url.length, options, depth);
-    }
+    url = sanitizeNestedRun(url, fragment + 1, url.length, options, depth);
   }
   return url;
 }
@@ -239,14 +260,17 @@ function sanitizeAddress(
   options: ShapeRedactionOptions | undefined,
   depth: number,
 ): string {
-  const normalised = normalise(input);
+  // Clip FIRST, before any scan (even the normalisation reads the whole string): a megabyte `location` cost ~0.9 s of
+  // main-thread time. A cut that lands inside a percent-escape drops the partial escape, so a half escape never
+  // glues itself to the marker.
+  const clipped = input.length > MAX_INPUT_CHARS;
+  const normalised = normalise(clipped ? input.slice(0, MAX_INPUT_CHARS) : input);
   const scheme = SCHEME.exec(normalised);
   const name = scheme === null ? undefined : (scheme[1] as string).toLowerCase();
   if (name !== undefined && OPAQUE_SCHEMES.has(name)) {
     return `${name}:${REDACTED_URL_ENCODED}`;
   }
-  const clipped = normalised.length > MAX_INPUT_CHARS;
-  const url = clipped ? normalised.slice(0, MAX_INPUT_CHARS) : normalised;
+  const url = clipped ? normalised.replace(/%[0-9A-Fa-f]?$/, '') : normalised;
   const result = sanitizeBounded(
     url,
     scheme === null ? undefined : scheme[0].length,
@@ -281,7 +305,7 @@ function sanitizeBounded(
         : `${name}:${sanitizeAddress(rest, options, depth + 1)}`;
     }
     if (name === 'file') {
-      return sanitizeFileUrl(rest, options);
+      return sanitizeFileUrl(rest, options, depth);
     }
   }
   let flat = sanitizeUrlCore(url, options, isLocationKey);
@@ -295,7 +319,7 @@ function sanitizeBounded(
 
 /**
  * Sanitize the page's own address. Rules, by input:
- *  - a string over 8192 characters is clipped to that, sanitized, and marked `%3Ctruncated%3E`;
+ *  - a string over 8192 characters is clipped to that FIRST (before any scan), sanitized, and marked `%3Ctruncated%3E`;
  *  - `data:`, `javascript:`, `vbscript:` become `<scheme>:%3Credacted%3E` (the body is data or code, never an address);
  *  - `blob:` / `filesystem:` keep only the inner origin (`blob:https://a.com`), never userinfo, path or query;
  *  - `file:` becomes `file:///…/<last segment>` (query and fragment kept, redacted as for http);
@@ -303,9 +327,10 @@ function sanitizeBounded(
  *  - an `http(s)`/`ws(s)`/`ftp` string is first normalised like a browser would (`https:/u:p@a.com` is
  *    `https://u:p@a.com`, a backslash is a slash);
  *  - everything else is `sanitizeUrl` (userinfo password, sensitive query/fragment/matrix values, secret shapes) with
- *    the location denylist added (exact keys `code`, `state`, `session`, `sessionid`, `sid`, `sig`, `signature`,
- *    `ticket`, `otp`; `code_verifier` is already caught by the shared list), the hash-router query scanned, and URLs or paths with a query nested in a
- *    query value scanned to two levels (raw, or percent-encoded once or twice).
+ *    the location denylist added (exact keys `code`, `state`, `session`, `sid`, `sig`, `ticket`; the shared
+ *    substring list already catches `sessionid`, `signature`, `otp`, `code_verifier`), the hash-router query scanned,
+ *    and URLs or paths with a query nested in a query or fragment value scanned to two levels (raw, or percent-encoded
+ *    once or twice, with invalid escapes tolerated). `file:` pages get the nested scan too.
  * Not covered, by design: ids, emails, long base64 and local paths in a PATH segment (only token shapes and sensitive
  * `;key=value` matrix segments are), and keys outside the denylist. Returns the placeholder for a non-string, and
  * never throws.
@@ -322,16 +347,19 @@ export function sanitizeLocationUrl(url: string, options?: ShapeRedactionOptions
 }
 
 /**
- * The name of a navigation (a transaction name): the PATH of the sanitized address, with no scheme, host, query or
- * fragment. Given the absolute `href`, a `file:` page names as `/…/index.html` and a `blob:`/`data:` page as its
- * sanitized form, never as the raw directory; given only a pathname it is sanitized as a relative address.
+ * The name of a navigation (a transaction name): the PATH of the sanitized address, with no query or fragment. For an
+ * address with an authority (`https://a.com/p?q`, `file:///…/x`) that is the path after the host; for one without
+ * (`blob:https://a.com`, `data:…`, `about:blank?code=C`, `view-source:https://a.com/p/q?x`) it is the sanitized address with
+ * its query and fragment removed. Given the absolute `href`, a `file:` page names as `/…/index.html`, never as the raw
+ * directory; given only a pathname it is sanitized as a relative address.
  */
 export function sanitizeLocationName(href: string | undefined, pathname: string): string {
   const sanitized = sanitizeLocationUrl(href ?? pathname);
   const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/.exec(sanitized);
+  const withoutQuery = (value: string): string => value.replace(/[?#].*$/s, '');
   if (authority === null) {
-    return href === undefined ? sanitized.replace(/[?#].*$/s, '') : sanitized;
+    return withoutQuery(sanitized);
   }
-  const rest = sanitized.slice(authority[0].length).replace(/[?#].*$/s, '');
+  const rest = withoutQuery(sanitized.slice(authority[0].length));
   return rest === '' ? '/' : rest;
 }
