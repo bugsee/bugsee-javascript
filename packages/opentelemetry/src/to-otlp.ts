@@ -212,24 +212,29 @@ export function transactionToOtlpSpans(txn: TransactionWire): OtlpSpan[] {
     flags,
   };
 
-  const children: OtlpSpan[] = txn.spans.map((s) => ({
-    traceId: txn.traceId,
-    spanId: s.spanId,
-    // A parent that is itself a child stays; a dangling/absent parent (the dropped root) → the root.
-    parentSpanId:
-      s.parentSpanId !== undefined && childIds.has(s.parentSpanId) ? s.parentSpanId : rootSpanId,
-    name: s.description ?? s.operation,
-    kind: spanKindFor(s.operation, s.attributes),
-    startTimeUnixNano: toUnixNanoString(s.startTimestampMs),
-    endTimeUnixNano: toUnixNanoString(s.endTimestampMs ?? s.startTimestampMs),
-    attributes: toKeyValues({
-      ...safeCopy(s.attributes),
-      'bugsee.operation': s.operation,
-      'bugsee.span.status': s.status,
-    }),
-    status: toStatus(s.status),
-    flags,
-  }));
+  const children: OtlpSpan[] = txn.spans.map((s) => {
+    // Copied ONCE and safely: the kind lookup below reads the record too, and a getter that throws there
+    // would reject the whole export batch.
+    const attrs = safeCopy(s.attributes);
+    return {
+      traceId: txn.traceId,
+      spanId: s.spanId,
+      // A parent that is itself a child stays; a dangling/absent parent (the dropped root) → the root.
+      parentSpanId:
+        s.parentSpanId !== undefined && childIds.has(s.parentSpanId) ? s.parentSpanId : rootSpanId,
+      name: s.description ?? s.operation,
+      kind: spanKindFor(s.operation, attrs),
+      startTimeUnixNano: toUnixNanoString(s.startTimestampMs),
+      endTimeUnixNano: toUnixNanoString(s.endTimestampMs ?? s.startTimestampMs),
+      attributes: toKeyValues({
+        ...attrs,
+        'bugsee.operation': s.operation,
+        'bugsee.span.status': s.status,
+      }),
+      status: toStatus(s.status),
+      flags,
+    };
+  });
 
   return [root, ...children];
 }

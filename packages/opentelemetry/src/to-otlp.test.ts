@@ -155,6 +155,38 @@ describe('toKeyValues is total (one bad attribute never costs the batch)', () =>
     );
     expect(toKeyValues(hostile as Record<string, unknown>)).toEqual([]);
   });
+  it('does not throw while deriving a child span kind from an unreadable bugsee.span.kind', () => {
+    const attributes = {
+      get 'bugsee.span.kind'(): never {
+        throw new Error('getter');
+      },
+      ok: 1,
+    };
+    const txn = {
+      traceId: 'a'.repeat(32),
+      spanId: 'b'.repeat(16),
+      name: 'root',
+      operation: 'op',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      spans: [
+        {
+          spanId: 'c'.repeat(16),
+          operation: 'http.client',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes,
+        },
+      ],
+    } as unknown as TransactionWire;
+    const spans = transactionToOtlpSpans(txn);
+    expect(spans).toHaveLength(2);
+    expect(spans[1]?.kind).toBe(3); // falls back to the operation-derived CLIENT kind
+    expect(spans[1]?.attributes?.map((a) => a.key)).toContain('ok');
+  });
   it('lets a whole export request survive a hostile attribute on one span', () => {
     const txn = {
       traceId: 'a'.repeat(32),

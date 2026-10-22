@@ -380,6 +380,25 @@ describe("createPerformanceExtension — raw attribute values on the SDK's own s
     expect(JSON.stringify(captured)).not.toContain('hunter2');
   });
 
+  it('a 20 MB byte array set natively becomes a bounded base64 string, not a 3 GB walk', () => {
+    const { client, ext } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const started = Date.now();
+    ext()
+      .startTransaction({ name: 'T', operation: 'op' })
+      .setAttribute('buf', new Uint8Array(20 * 1024 * 1024))
+      .setAttribute(
+        'wide',
+        Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`k${i}`, i])),
+      )
+      .finish('OK');
+    expect(Date.now() - started).toBeLessThan(2000);
+    const attrs = extension.store.drain()[0]?.attributes as Record<string, string>;
+    expect(attrs.buf?.length).toBeLessThanOrEqual(8192);
+    expect(attrs.wide?.length).toBeLessThanOrEqual(8192);
+  });
+
   it('recordExternal and recordChildSpan-style raw attributes get the same treatment', () => {
     const { client } = fakeClient(createFilterStore(() => {}));
     const extension = createPerformanceExtension();
