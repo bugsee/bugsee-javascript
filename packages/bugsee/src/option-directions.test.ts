@@ -67,7 +67,8 @@ const DIRECTIONS: Record<string, Direction> = {
   reportPrioritySelectorEnabled: 'default',
   // node
   profiling: 'default', // default OFF
-  captureDiskSpace: 'default', // default OFF: only boolean true enables
+  captureDiskSpace: 'default', // default OFF (telemetry): only boolean true enables
+  diskProtection: 'on', // default ON (iOS runs the protection always): only boolean false opts out, an invalid value stays ON
   detectHangs: 'default', // default ON, a diagnostic
   captureLocalVariables: 'off',
   captureSourceContext: 'off',

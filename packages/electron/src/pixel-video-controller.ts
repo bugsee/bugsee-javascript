@@ -28,6 +28,8 @@ export interface PixelVideoControllerOptions {
 export interface PixelVideoController {
   /** Check permission, then start capture (idempotent). */
   start(): Promise<void>;
+  /** Whether capture is really running: started, not stopped, and the permission gate said yes. */
+  isActive(): boolean;
   stop(): void;
   /** The ReportSnapshotSource: the buffered video as `video` entries (or [] when inert / empty). */
   snapshot(now: number): Promise<CaptureDataEntry[]>;
@@ -102,6 +104,7 @@ export function createPixelVideoController(
         report(error);
       }
     },
+    isActive: () => active,
     stop(): void {
       generation += 1; // also cancels a start() still awaiting its permission
       if (!active) {

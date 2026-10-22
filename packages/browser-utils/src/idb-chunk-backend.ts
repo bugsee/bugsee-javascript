@@ -5,6 +5,7 @@ import {
   type ChunkCaptureStoreOptions,
   createChunkCaptureStore,
   createSystemClock,
+  type DiskPressure,
   type FrozenPart,
   type PartMeta,
   type PartRef,
@@ -25,6 +26,29 @@ import type { AsyncKeyedStore } from './idb';
 // frozen parts (so eviction can't delete them mid-read), then reads each part's data range bounded by the
 // snapshot-time count; listParts/listGenerations read the durable meta records (no data scan) — the
 // recovery index. Queue failures route to onError and never throw the capture path.
+
+const CANCELLED = Symbol('cancelled');
+const STALLED = Symbol('stalled');
+
+/** A read that has not answered after `ms` rejects (the late answer is ignored). */
+function withDeadline<T>(pending: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`bugsee: IndexedDB did not answer a read in ${ms} ms`)),
+      ms,
+    );
+    pending.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;
@@ -131,6 +155,22 @@ export interface IdbChunkBackendOptions {
    * quota blip does not become permanent silent loss.
    */
   failureThreshold?: number;
+  /**
+   * A snapshot gives up waiting for the write queue after this many ms WITHOUT PROGRESS (no queued write settled).
+   * Default 5000. Progress-based on purpose: a slow but healthy store (a low-end device, a busy main thread) may need
+   * longer than any fixed budget to drain 8 MB of queued writes and must not be mistaken for a dead one, while a store
+   * that never answers (Chromium on a full disk: `open()` neither succeeds nor fails) is caught within this window.
+   */
+  stallMs?: number;
+  /** Deadline for ONE `readPrefix` of a snapshot, in ms. Default 10000. */
+  readTimeoutMs?: number;
+  /**
+   * Called for EVERY failed write (`onError` hears only the first of an episode, by design). The disk-pressure pin
+   * needs each one: a store that keeps refusing writes must stay pinned even though it stopped being reported.
+   */
+  onWriteFailure?: (error: unknown) => void;
+  /** Called on the first successful write after one or more failures (the pressure probe's success releases the pin). */
+  onWriteRecovered?: () => void;
 }
 
 // How often a tripped circuit lets one write through to see whether the store recovered.
@@ -155,12 +195,21 @@ export function createIdbChunkBackend(
   const maxPending = options.maxPendingWrites ?? 2048;
   const maxPendingBytes = options.maxPendingBytes ?? 8 * 1024 * 1024;
   const failureThreshold = options.failureThreshold ?? 16;
-  const pending: Array<{ run: () => Promise<unknown>; bytes: number }> = [];
+  interface PendingWrite {
+    run: () => Promise<unknown>;
+    bytes: number;
+    write: boolean;
+    /** Called when this write LANDED (it is then no longer an in-memory-only record). */
+    onLanded?: () => void;
+  }
+  const pending: PendingWrite[] = [];
   let pendingBytes = 0;
   let draining = false;
   let idle: Promise<void> = Promise.resolve();
   let resolveIdle: (() => void) | undefined;
   let consecutiveFailures = 0;
+  // Set by any failure, cleared by the first successful WRITE (a delete succeeding proves nothing, see below).
+  let unhealthy = false;
   let sinceProbe = 0;
   let dropped = 0;
 
@@ -169,6 +218,18 @@ export function createIdbChunkBackend(
   const safeOnError = (error: unknown): void => {
     try {
       onError(error);
+    } catch {
+      // nothing left to report it to
+    }
+  };
+
+  /** A health hook is the host's code: it must never break the drain loop (a stuck `draining` hangs every flush). */
+  const safeCall = <A extends unknown[]>(
+    hook: ((...args: A) => void) | undefined,
+    ...args: A
+  ): void => {
+    try {
+      hook?.(...args);
     } catch {
       // nothing left to report it to
     }
@@ -195,7 +256,7 @@ export function createIdbChunkBackend(
     // burst of captures in one turn is fully enqueued before a single write has had the chance to fail.
     let probe = true;
     while (pending.length > 0) {
-      const item = pending.shift() as { run: () => Promise<unknown>; bytes: number };
+      const item = pending.shift() as PendingWrite;
       pendingBytes -= item.bytes;
       if (consecutiveFailures >= failureThreshold && !probe) {
         sinceProbe += 1;
@@ -208,9 +269,24 @@ export function createIdbChunkBackend(
       probe = false;
       try {
         await item.run();
+        lastProgressAt = Date.now();
+        item.onLanded?.();
+        // Only a WRITE proves the store accepts data again: deleting works under a full quota (it is how space
+        // comes back), so a successful delete must not release a write-failure pin.
+        if (unhealthy && item.write) {
+          unhealthy = false;
+          safeCall(options.onWriteRecovered);
+        }
         consecutiveFailures = 0; // the store is working again; close the circuit
       } catch (error) {
+        lastProgressAt = Date.now(); // a failure is an answer: the store is talking
         consecutiveFailures += 1;
+        unhealthy = true;
+        // Only a failed WRITE says anything about the medium accepting data: a failed delete or read must not
+        // make the disk-pressure pin out of a connection hiccup.
+        if (item.write) {
+          safeCall(options.onWriteFailure, error);
+        }
         // The FIRST failure of an episode is reported in full — that is the diagnosis. Everything after it
         // is counted and summarised, so a failing store cannot spam the host's sink (and cannot close the
         // capture→console→capture livelock a `console.error` sink would otherwise sustain).
@@ -227,20 +303,26 @@ export function createIdbChunkBackend(
     resolveIdle = undefined;
   };
 
-  const enqueue = (run: () => Promise<unknown>, bytes = 0): void => {
+  const enqueue = (
+    run: () => Promise<unknown>,
+    bytes = 0,
+    write = false,
+    onLanded?: () => void,
+  ): void => {
     while (
       pending.length > 0 &&
       (pending.length >= maxPending || pendingBytes + bytes > maxPendingBytes)
     ) {
       // Give up the OLDEST waiting write, matching the ring's eviction direction: the moments before a
       // crash are the ones worth keeping.
-      const evicted = pending.shift() as { bytes: number };
+      const evicted = pending.shift() as PendingWrite;
       pendingBytes -= evicted.bytes;
       dropped += 1;
     }
-    pending.push({ run, bytes });
+    pending.push({ run, bytes, write, ...(onLanded !== undefined ? { onLanded } : {}) });
     pendingBytes += bytes;
     if (resolveIdle === undefined) {
+      lastProgressAt = Date.now(); // the queue just became busy
       idle = new Promise<void>((resolve) => {
         resolveIdle = resolve;
       });
@@ -250,8 +332,18 @@ export function createIdbChunkBackend(
 
   /** Resolves when the queue has drained (never rejects — each op already routes its own failure). */
   const settled = (): Promise<void> => idle;
+  // When the queue last made PROGRESS (started, or an operation settled either way): what a waiting snapshot watches.
+  let lastProgressAt = Date.now();
+  const stallMs = options.stallMs ?? 5000;
+  const readTimeoutMs = options.readTimeoutMs ?? 10_000;
 
   const chunkKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
+  // The records the backend holds ONLY in memory: queued for the medium and not landed yet, or refused by it (a full
+  // quota), skipped by the open circuit, shed by the queue bound. Kept by sequence so a LIVE snapshot serves them in
+  // their place even when the medium cannot be read (a hung or closed connection): the capture store counted them as
+  // stored, and without this the largest record (a replay FullSnapshot) was the first one a full quota lost. A record
+  // leaves the map when its write lands, and with its part; what a crash recovers is, by definition, only what landed.
+  const unlanded = new Map<string, Map<number, StoredEntry>>();
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
   const seqByChunk = new Map<string, number>(); // chunkKey → next data sequence number
 
@@ -271,6 +363,9 @@ export function createIdbChunkBackend(
     end: number | null,
     byteSize: number,
   ): void => {
+    // NOT a health signal (`write` false): a ~60-byte meta put succeeds on a medium that still refuses real records
+    // (a per-origin quota, a data-full filesystem with free metadata), so counting it released the disk-pressure pin
+    // on every tick. Only a successful DATA put (a record, or the pressure probe's record) says writes work again.
     enqueue(() =>
       store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
     );
@@ -339,11 +434,23 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       const seq = seqByChunk.get(key) ?? 0;
       seqByChunk.set(key, seq + 1);
+      // Created now (not at the first failure) so a snapshot taken before any write has failed already holds the list
+      // that a later failure will fill.
+      const held = unlanded.get(key) ?? new Map<number, StoredEntry>();
+      unlanded.set(key, held);
+      held.set(seq, record);
       const data: StoredData = { t: record.timestamp, s: record.serialized, ty: record.type };
       const bytes = enc(data);
       // The payload is encoded here rather than inside the closure, so its size is known to the queue's
       // byte bound — a closure that encodes lazily hides exactly the memory this is meant to cap.
-      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), bytes), bytes.length);
+      enqueue(
+        () => store.put(dataKey(ref.generation, ref.number, seq), bytes),
+        bytes.length,
+        true,
+        () => {
+          held.delete(seq);
+        },
+      );
       return utf8ByteLength(record.serialized);
     },
 
@@ -358,6 +465,7 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       openStarts.delete(key);
       seqByChunk.delete(key);
+      unlanded.delete(key); // a snapshot already holding the map keeps its own reference
       if ((pins.get(key) ?? 0) > 0) {
         deferredDelete.add(key); // a live snapshot still needs the data
       } else {
@@ -366,40 +474,112 @@ export function createIdbChunkBackend(
     },
 
     removeGeneration(gen: number): void {
+      for (const key of [...unlanded.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          unlanded.delete(key);
+        }
+      }
       enqueue(() => store.deletePrefix(dataGenPrefix(gen)));
       enqueue(() => store.deletePrefix(metaGenPrefix(gen)));
     },
 
     snapshot(parts: readonly FrozenPart[]): CaptureSnapshot {
       const frozen = [...parts];
+      // The in-memory maps are captured NOW (`seq < count` is the freeze), so a part evicted, or a write that lands, while
+      // this snapshot is still being read does not take its records away.
+      // COPIED (the maps hold only what is not on the medium yet, so the copy is small): a queued write that lands after the
+      // freeze but before a failing read leaves the live map, and the in-memory fallback must still have it.
+      const heldAtFreeze = frozen.map(({ ref }) => {
+        const held = unlanded.get(chunkKey(ref));
+        return held === undefined ? undefined : new Map(held);
+      });
       const frozenQueue = settled(); // every write up to now must land before the read
       for (const { ref } of frozen) {
         const key = chunkKey(ref);
         pins.set(key, (pins.get(key) ?? 0) + 1);
       }
+      // `release()` resolves this: a read abandoned by its caller (a timeout on a hung store) stops waiting and lets go
+      // of everything it captured, instead of pinning it until a store that may never answer does.
+      let cancel!: () => void; // assigned synchronously by the promise executor below
+      const cancelled = new Promise<typeof CANCELLED>((resolve) => {
+        cancel = () => resolve(CANCELLED);
+      });
+      const until = <T>(pending: Promise<T>): Promise<T | typeof CANCELLED> =>
+        Promise.race([pending, cancelled]);
+
+      /** Resolves when the queue drained, or `STALLED` once it has made no progress for `stallMs` (checked every 250 ms). */
+      const waitForQueue = (queue: Promise<void>): Promise<void | typeof STALLED> =>
+        new Promise((resolve) => {
+          const watch = setInterval(() => {
+            if (Date.now() - lastProgressAt >= stallMs) {
+              clearInterval(watch);
+              resolve(STALLED);
+            }
+          }, 250);
+          void queue.then(() => {
+            clearInterval(watch);
+            resolve();
+          });
+          void cancelled.then(() => clearInterval(watch)); // an abandoned wait stops its timer too
+        });
+
+      /** The records held only in memory for one frozen part (`seq < count`), in sequence. */
+      const heldFor = (index: number, count: number): Array<{ seq: number; record: StoredEntry }> =>
+        [...(heldAtFreeze[index] ?? new Map<number, StoredEntry>())]
+          .filter(([seq]) => seq < count)
+          .map(([seq, record]) => ({ seq, record }))
+          .sort((a, b) => a.seq - b.seq);
 
       const readAll = async (): Promise<StoredEntry[]> => {
-        await frozenQueue;
+        const waited = await until(waitForQueue(frozenQueue));
+        if (waited === CANCELLED) {
+          return [];
+        }
+        if (waited === STALLED) {
+          throw new Error(
+            `bugsee: IndexedDB made no progress for ${stallMs} ms; the queued writes are served from memory`,
+          );
+        }
         const out: StoredEntry[] = [];
-        for (const { ref, count } of frozen) {
-          const records = await store.readPrefix(dataPrefix(ref.generation, ref.number));
-          for (let i = 0; i < count && i < records.length; i += 1) {
-            const d = dec<StoredData>((records[i] as [string, Uint8Array])[1]);
+        for (const [index, { ref, count }] of frozen.entries()) {
+          const records = await until(
+            withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
+          );
+          if (records === CANCELLED) {
+            return [];
+          }
+          // By SEQUENCE, not by position: a refused write leaves a hole in the sequence, and the freeze is `seq < count`.
+          const landed: Array<{ seq: number; record: StoredEntry }> = [];
+          for (const [recordKey, bytes] of records) {
+            const seq = Number(recordKey.slice(recordKey.lastIndexOf('/') + 1));
+            if (!(seq < count)) {
+              continue;
+            }
+            const d = dec<StoredData>(bytes);
             if (d === undefined) {
               continue; // one torn envelope loses ONE record, never the generation
             }
-            out.push({ type: d.ty, timestamp: d.t, serialized: d.s });
+            landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
+          }
+          // An entry can be BOTH landed (the read saw it) and in the frozen copy: by sequence it is one record.
+          const landedSeqs = new Set(landed.map(({ seq }) => seq));
+          const kept = heldFor(index, count).filter(({ seq }) => !landedSeqs.has(seq));
+          const merged =
+            kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
+          for (const { record } of merged) {
+            out.push(record);
           }
         }
         return out;
       };
 
-      let released = false;
-      const release = (): void => {
-        if (released) {
+      // Drops this snapshot's PINS: an evicted part may then be deleted at once. Idempotent, and shared by `release()`.
+      let unpinned = false;
+      const unpin = (): void => {
+        if (unpinned) {
           return;
         }
-        released = true;
+        unpinned = true;
         for (const { ref } of frozen) {
           const key = chunkKey(ref);
           // The part was pinned at snapshot() time, so pins.get is defined here.
@@ -416,6 +596,19 @@ export function createIdbChunkBackend(
         }
       };
 
+      let released = false;
+      const release = (): void => {
+        if (released) {
+          return;
+        }
+        released = true;
+        cancel();
+        // Let go NOW (not when the abandoned read finally unwinds, which on a hung store may be never): the in-memory
+        // maps of the frozen parts are retained by whoever holds this snapshot.
+        heldAtFreeze.fill(undefined);
+        unpin();
+      };
+
       return {
         async *stream(): AsyncIterableIterator<StoredEntry> {
           for (const record of await readAll()) {
@@ -426,6 +619,18 @@ export function createIdbChunkBackend(
           return groupByType(await readAll());
         },
         release,
+        // The read goes on (its result is discarded) but must not delay evictions: pins dropped, nothing else.
+        unpin,
+        // What the medium is not needed for: records still queued for it or refused by it (see `unlanded`).
+        inMemory(): Map<FileType, StoredEntry[]> {
+          const out: StoredEntry[] = [];
+          for (const [index, { count }] of frozen.entries()) {
+            for (const { record } of heldFor(index, count)) {
+              out.push(record);
+            }
+          }
+          return groupByType(out);
+        },
       };
     },
 
@@ -465,6 +670,15 @@ export interface IdbChunkCaptureStoreOptions extends ChunkCaptureStoreOptions {
   cleanOtherGenerations?: boolean;
   /** Failure sink for the async write queue. Default no-op. */
   onError?: (error: unknown) => void;
+  /** Every failed write / the first success after failures (see IdbChunkBackendOptions). */
+  onWriteFailure?: (error: unknown) => void;
+  onWriteRecovered?: () => void;
+  /**
+   * Disk pressure (C7): below the low threshold replay/log/network stop being written to IndexedDB, below the
+   * out-of-space one nothing is; the in-memory window is kept either way (see `@bugsee/core`'s
+   * `withDiskPressure`).
+   */
+  diskPressure?: DiskPressure;
 }
 
 /** The durable IndexedDB CaptureStore: the chunk store over {@link createIdbChunkBackend}. */
@@ -478,10 +692,19 @@ export function createIdbChunkCaptureStore(
     generation,
     cleanOtherGenerations: options?.cleanOtherGenerations,
     onError: options?.onError,
+    ...(options?.onWriteFailure !== undefined ? { onWriteFailure: options.onWriteFailure } : {}),
+    ...(options?.onWriteRecovered !== undefined
+      ? { onWriteRecovered: options.onWriteRecovered }
+      : {}),
   });
   return createChunkCaptureStore(backend, {
     maxRecordingTimeMs: options?.maxRecordingTimeMs,
     maxDataSizeBytes: options?.maxDataSizeBytes,
     clock,
+    ...(options?.diskPressure !== undefined ? { diskPressure: options.diskPressure } : {}),
+    ...(options?.onDiskWriteError !== undefined
+      ? { onDiskWriteError: options.onDiskWriteError }
+      : {}),
+    ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
   });
 }

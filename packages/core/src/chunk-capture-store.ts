@@ -1,6 +1,8 @@
 import type { ChunkBackend, FrozenPart, PartRef } from './chunk-backend';
 import { type Clock, createSystemClock } from './clock';
 import type { CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
+import type { DiskPressure } from './disk-pressure';
+import { withDiskPressure } from './disk-pressure-backend';
 
 // The chunk-based CaptureStore (Android `CapturePartManager` analog): an Android-style PartManager that
 // keeps only a part metadata INDEX in memory and writes every record through to a ChunkBackend. Captured
@@ -19,6 +21,18 @@ export interface ChunkCaptureStoreOptions {
   maxDataSizeBytes?: number;
   /** Time source for the initial part / clear. Default system clock. */
   clock?: Clock;
+  /**
+   * Disk pressure (C7). Under it the DURABLE backend stops receiving replay/log/network (low) or anything (none)
+   * while the in-memory window is kept (see `disk-pressure-backend.ts`). Absent: every record is persisted as
+   * before. Pointless over a backend that is already in memory.
+   */
+  diskPressure?: DiskPressure;
+  /** With `diskPressure`: a durable write that throws is reported here instead of being rethrown (the record is kept). */
+  onDiskWriteError?: (error: unknown) => void;
+  /** With `diskPressure`: a failed read of the durable half (once per snapshot); the snapshot serves memory instead. */
+  onDiskReadError?: (error: unknown) => void;
+  /** With `diskPressure`: how long a durable read may take before it counts as failed (default 30000 ms, a backstop). */
+  diskReadTimeoutMs?: number;
 }
 
 // The in-memory index entry per live part (NO record data — that lives in the backend).
@@ -31,9 +45,23 @@ interface IndexedPart {
 }
 
 export function createChunkCaptureStore(
-  backend: ChunkBackend,
+  durableBackend: ChunkBackend,
   options?: ChunkCaptureStoreOptions,
 ): CaptureStore {
+  const backend =
+    options?.diskPressure !== undefined
+      ? withDiskPressure(durableBackend, options.diskPressure, {
+          ...(options.onDiskWriteError !== undefined
+            ? { onWriteError: options.onDiskWriteError }
+            : {}),
+          ...(options.onDiskReadError !== undefined
+            ? { onReadError: options.onDiskReadError }
+            : {}),
+          ...(options.diskReadTimeoutMs !== undefined
+            ? { readTimeoutMs: options.diskReadTimeoutMs }
+            : {}),
+        })
+      : durableBackend;
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
   const maxDataSizeBytes = options?.maxDataSizeBytes;
   const clock = options?.clock ?? createSystemClock();

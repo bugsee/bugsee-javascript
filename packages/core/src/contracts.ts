@@ -133,6 +133,17 @@ export interface CaptureSnapshot {
   drainAll(): Promise<Map<FileType, StoredEntry[]>>;
   /** Delete the snapshot's frozen copy; called after the bundle is built. */
   release(): void;
+  /**
+   * Optional: stop holding the snapshot's parts against eviction while its read is still running. Used when a read
+   * is left to finish in the background (its data is discarded): an evicted part is then deleted at once instead of
+   * waiting for a read that may take up to the backstop. A later `release()` is still needed and still safe.
+   */
+  unpin?(): void;
+  /**
+   * Optional: what this snapshot can serve WITHOUT touching the durable medium: records still queued for it, or whose
+   * write was refused. A reader that finds the medium unreadable (or hung) serves this instead of nothing.
+   */
+  inMemory?(): Map<FileType, StoredEntry[]>;
 }
 
 /**

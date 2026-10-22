@@ -47,6 +47,51 @@ const real = (entries: CaptureDataEntry[]) =>
 
 const options = () => ({}) as never; // OptionsContainer — unused by the replay provider
 
+describe('createReplayCaptureProvider — checkout() (a fresh snapshot after an unpersisted gap)', () => {
+  const started = () => {
+    const f = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    return { f, provider, added };
+  };
+
+  it('stops the running recorder and starts a new one (a fresh Meta + FullSnapshot), with NO blackout marker', () => {
+    const { f, provider, added } = started();
+    provider.start(options());
+    const firstEmit = f.latestEmit();
+    provider.checkout();
+    expect(f.record).toHaveBeenCalledTimes(2);
+    expect(f.stop).toHaveBeenCalledTimes(1);
+    expect(added.filter((e) => (e.data as { type: number }).type === 5)).toEqual([]);
+    // the old session's late callbacks are dead; the new session's emit records
+    firstEmit(evt(1));
+    f.emit(evt(2));
+    expect(real(added).map((e) => e.timestamp)).toEqual([2]);
+  });
+
+  it('is a no-op before start, after stop, and while blacked out', () => {
+    const idle = started();
+    idle.provider.checkout();
+    expect(idle.f.record).not.toHaveBeenCalled();
+
+    const stopped = started();
+    stopped.provider.start(options());
+    stopped.provider.stop();
+    stopped.provider.checkout();
+    expect(stopped.f.record).toHaveBeenCalledTimes(1);
+
+    const dark = started();
+    dark.provider.start(options());
+    dark.provider.startBlackout();
+    dark.provider.checkout();
+    expect(dark.f.record).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createReplayCaptureProvider', () => {
   it('sanitizes the href of the opening Meta event (the raw location is not DOM, so masking never saw it)', () => {
     const { record, emit } = fakeRecord();

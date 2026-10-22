@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
@@ -441,5 +449,205 @@ describe('a corrupt pathId does not wedge the drainer', () => {
     worker.flushAndWait(1000);
     expect(existsSync(join(root, 'undefined'))).toBe(false);
     worker.stop();
+  });
+});
+
+describe('CaptureRingWriter — health hooks (onWriteFailure / onWriteRecovered)', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+  const sinks = () => {
+    const failures: unknown[] = [];
+    const state = { recovered: 0 };
+    return {
+      failures,
+      state,
+      options: {
+        onWriteFailure: (e: unknown) => void failures.push(e),
+        onWriteRecovered: () => {
+          state.recovered += 1;
+        },
+      } satisfies Partial<CaptureRingWriterOptions>,
+    };
+  };
+
+  it('meta writes: every failure counts; a meta write that works does NOT recover (only a drained data frame does)', () => {
+    const h = sinks();
+    let broken = true;
+    const s = mk(mkRoot(), {
+      ...h.options,
+      writeFile: () => {
+        if (broken) throw full();
+      },
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.write(GEN, 0, 'meta', '{}');
+    expect(h.failures).toHaveLength(2);
+    broken = false;
+    s.write(GEN, 0, 'meta', '{}');
+    s.write(GEN, 0, 'meta', '{}');
+    expect(h.state.recovered).toBe(0);
+  });
+
+  it('a drained DATA frame after failed drains recovers once (sync worker)', () => {
+    const h = sinks();
+    const root = mkRoot();
+    writeFileSync(join(root, '0000000000001'), 'x'); // the generation dir is a file: the drain cannot open
+    const s = mk(root, { ...h.options, onError: () => {} });
+    s.append(GEN, 0, 'log', 'one\n');
+    s.flushSync?.();
+    expect(h.failures.length).toBeGreaterThan(0);
+    expect(h.state.recovered).toBe(0);
+    rmSync(join(root, '0000000000001'));
+    s.flushSync?.(); // the stuck frame now lands
+    expect(h.state.recovered).toBe(1);
+    s.append(GEN, 0, 'log', 'two\n');
+    s.flushSync?.();
+    expect(h.state.recovered).toBe(1); // only the first success after a failure
+    s.dispose?.();
+  });
+
+  it('a failed chunk or generation removal counts, a later one that works does NOT recover (only a write proves it)', () => {
+    const h = sinks();
+    let broken = true;
+    const s = mk(mkRoot(), {
+      ...h.options,
+      removeDir: () => {
+        if (broken) throw full();
+      },
+    });
+    s.removeChunk(GEN, 0);
+    s.removeGeneration(GEN);
+    expect(h.failures).toHaveLength(2);
+    broken = false;
+    s.removeChunk(GEN, 0);
+    s.removeGeneration(GEN);
+    expect(h.state.recovered).toBe(0);
+  });
+
+  it('a failed fallback append counts', () => {
+    const h = sinks();
+    const s = mk(mkRoot(), {
+      ...h.options,
+      open: () => {
+        throw full();
+      },
+    });
+    s.append(GEN + 1, 0, 'log', 'x\n'); // a foreign generation takes the main-thread fallback
+    expect(h.failures).toHaveLength(1);
+  });
+
+  it('a failing drain (sync worker) reaches the health hook as well as onError', () => {
+    const h = sinks();
+    const onError = vi.fn();
+    const root = mkRoot();
+    writeFileSync(join(root, '0000000000001'), 'x'); // the generation dir is a file: the drain cannot open
+    const s = mk(root, { ...h.options, onError });
+    s.append(GEN, 0, 'log', 'x\n');
+    s.flushSync?.();
+    expect(onError).toHaveBeenCalled();
+    expect(h.failures.length).toBeGreaterThan(0);
+  });
+
+  it('throwing hooks never reach the capture path', () => {
+    let broken = true;
+    const s = mk(mkRoot(), {
+      onWriteFailure: () => {
+        throw new Error('hook');
+      },
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+      writeFile: () => {
+        if (broken) throw full();
+      },
+    });
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+    broken = false;
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+  });
+});
+
+describe('CaptureRingWriter — a host-side failure arms the worker', () => {
+  it('asks the worker to report its next drained frame whenever a meta write, a removal or a fallback append fails', () => {
+    const arm = vi.fn();
+    const inner = (args: RingWorkerArgs) => {
+      const sync = createSyncRingWorker(args);
+      return { ...sync, expectRecovery: arm } as RingWorker;
+    };
+    const s = mk(mkRoot(), {
+      workerFactory: inner,
+      writeFile: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      removeDir: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      open: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      onError: () => {},
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.removeChunk(GEN, 0);
+    s.append(GEN + 1, 0, 'log', 'x\n');
+    expect(arm).toHaveBeenCalledTimes(3);
+  });
+
+  it('works with a worker that has no expectRecovery', () => {
+    const s = mk(mkRoot(), {
+      writeFile: () => {
+        throw new Error('no space');
+      },
+      onError: () => {},
+    });
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+  });
+});
+
+describe('CaptureRingWriter — appendNow (the disk-pressure probe)', () => {
+  it('writes synchronously on the calling thread: on disk at once, and NEVER as a ring frame', () => {
+    const root = mkRoot();
+    const frames = vi.fn();
+    const s = mk(root, {
+      fileTypes: [...FILE_TYPES, 'probe'], // even a file the RING knows is written directly by appendNow, not queued
+      workerFactory: (args) => {
+        const sync = createSyncRingWorker(args);
+        return {
+          ...sync,
+          flushAndWait: (ms: number) => {
+            frames();
+            sync.flushAndWait(ms);
+          },
+        } as RingWorker;
+      },
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(readFileSync(diskPath(root, 0, 'probe'), 'utf8')).toBe('###\n'); // no flushSync needed
+    expect(frames).not.toHaveBeenCalled(); // nothing queued, nothing drained
+    s.dispose?.();
+  });
+
+  it('a successful probe write is a DATA success (it recovers after failures); a failed one is a failure', () => {
+    const failures: unknown[] = [];
+    let recovered = 0;
+    let broken = true;
+    const s = mk(mkRoot(), {
+      onWriteFailure: (e) => void failures.push(e),
+      onWriteRecovered: () => {
+        recovered += 1;
+      },
+      open: (p) => {
+        if (broken) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        return openSync(p, 'a', 0o600);
+      },
+      onError: () => {},
+    });
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(failures).toHaveLength(1);
+    expect(recovered).toBe(0);
+    broken = false;
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(recovered).toBe(1);
+    s.dispose?.();
   });
 });

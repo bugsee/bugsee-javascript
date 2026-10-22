@@ -803,3 +803,140 @@ describe('storageTrackerFor (singleton per data dir)', () => {
     resetStorageTracker(k2);
   });
 });
+
+describe('StorageTracker (node) — a hung statfs holds ONE thread, never more', () => {
+  const hung = () => {
+    const resolvers: Array<(s: StatFsResult) => void> = [];
+    const rejecters: Array<(e: Error) => void> = [];
+    let calls = 0;
+    const statfs: StatFs = () => {
+      calls += 1;
+      return new Promise((resolve, reject) => {
+        resolvers.push(resolve);
+        rejecters.push(reject);
+      });
+    };
+    return { statfs, resolvers, rejecters, calls: () => calls };
+  };
+
+  it('a never-settling statfs is reported ONCE after the timeout and NEVER read again: the call count stays 1', () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const onError = vi.fn();
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs, now: () => clock.t, statfsTimeoutMs: 5000 },
+      onError,
+    );
+    r.subscribe();
+    expect(h.calls()).toBe(1);
+    clock.t = 4999;
+    r.fs.tick();
+    expect(onError).not.toHaveBeenCalled();
+    for (let t = 5000; t <= 60_000; t += 1000) {
+      clock.t = t;
+      r.fs.tick();
+    }
+    expect(h.calls()).toBe(1); // 56 ticks later: still the one outstanding read, no libuv thread per tick
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(r.tracker.current()).toBeUndefined();
+  });
+
+  it('when the hung read finally answers, its stale value is discarded and polling resumes on the next tick', async () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs, now: () => clock.t },
+      () => {},
+    );
+    r.subscribe();
+    clock.t = 6000;
+    r.fs.tick();
+    h.resolvers[0]?.(ok(100));
+    await flush();
+    expect(r.seen).toEqual([]);
+    expect(h.calls()).toBe(1);
+    r.fs.tick();
+    expect(h.calls()).toBe(2);
+    h.resolvers[1]?.(ok(250));
+    await flush();
+    expect(r.seen).toEqual([{ freeBytes: 250 * MB, totalBytes: 1000 * MB }]);
+  });
+
+  it('a hung read that finally REJECTS is not reported a second time, and polling resumes', async () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const onError = vi.fn();
+    const r = mk(() => ok(), { statfs: h.statfs, now: () => clock.t }, onError);
+    r.subscribe();
+    clock.t = 6000;
+    r.fs.tick();
+    h.rejecters[0]?.(new Error('EIO late'));
+    await flush();
+    expect(onError).toHaveBeenCalledTimes(1);
+    r.fs.tick();
+    expect(h.calls()).toBe(2);
+    h.resolvers[1]?.(ok(250));
+    await flush();
+    expect(r.seen).toHaveLength(1); // the NEXT read's answer is not mistaken for the stale one
+  });
+
+  it('drops the previous reading when a read hangs (an unanswered volume is a gap, never the old number)', async () => {
+    let first = true;
+    const statfs: StatFs = () => {
+      if (first) {
+        first = false;
+        return Promise.resolve(ok(300));
+      }
+      return new Promise(() => {});
+    };
+    const clock = { t: 0 };
+    const r = mk(
+      () => ok(),
+      { statfs, now: () => clock.t },
+      () => {},
+    );
+    r.subscribe();
+    await flush();
+    expect(r.tracker.current()).toBeDefined();
+    r.fs.tick(); // hangs
+    clock.t = 6000;
+    r.fs.tick();
+    expect(r.tracker.current()).toBeUndefined();
+  });
+
+  it('a stop while a read hangs releases the flag, so a later start reads again', async () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs, now: () => clock.t },
+      () => {},
+    );
+    const off = r.subscribe();
+    clock.t = 6000;
+    r.fs.tick();
+    off();
+    r.subscribe();
+    expect(h.calls()).toBe(2);
+    h.resolvers[1]?.(ok(250));
+    await flush();
+    expect(r.seen).toHaveLength(1); // the restarted read is not discarded as stale
+  });
+
+  it('works with the default clock and timeout', async () => {
+    const h = hung();
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs },
+      () => {},
+    );
+    r.subscribe();
+    r.fs.tick(); // far under 5 s of real time: the same read
+    expect(h.calls()).toBe(1);
+    h.resolvers[0]?.(ok());
+    await flush();
+    expect(r.seen).toHaveLength(1);
+  });
+});

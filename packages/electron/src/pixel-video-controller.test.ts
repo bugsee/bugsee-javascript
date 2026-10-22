@@ -24,6 +24,33 @@ function fakeSource(entriesData: Uint8Array[] = [new Uint8Array([1])]) {
   return source;
 }
 
+describe('createPixelVideoController — isActive', () => {
+  it('is false before start, true once running, false after stop', async () => {
+    const controller = createPixelVideoController({ source: fakeSource() });
+    expect(controller.isActive()).toBe(false);
+    await controller.start();
+    expect(controller.isActive()).toBe(true);
+    controller.stop();
+    expect(controller.isActive()).toBe(false);
+  });
+
+  it('stays false when permission is denied, or the source fails to start', async () => {
+    const denied = createPixelVideoController({
+      source: fakeSource(),
+      hasPermission: () => false,
+    });
+    await denied.start();
+    expect(denied.isActive()).toBe(false);
+    const broken = fakeSource();
+    broken.start = () => {
+      throw new Error('boom');
+    };
+    const failing = createPixelVideoController({ source: broken, onError: () => {} });
+    await failing.start();
+    expect(failing.isActive()).toBe(false);
+  });
+});
+
 describe('createPixelVideoController', () => {
   it('starts the source and pulls its entries on snapshot when permission is granted', async () => {
     const source = fakeSource([new Uint8Array([0x9])]);

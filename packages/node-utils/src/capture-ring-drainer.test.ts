@@ -141,6 +141,33 @@ describe('RingDrainer', () => {
     expect(dec.decode(Uint8Array.from(writes.get(fdOfPath.get(a) as number) ?? []))).toBe('abcdef');
   });
 
+  it('a short write followed by a FAILURE resumes at the written offset on retry (no duplicated prefix), and the next frame starts clean', () => {
+    let calls = 0;
+    const { producer, drainer, writes, fdOfPath } = newDrainer(1024, {
+      onError: () => {},
+      writev: (fd, iov) => {
+        const buf = writes.get(fd) as number[];
+        const bytes = [...(iov[0] as Uint8Array)];
+        calls += 1;
+        if (calls === 1) {
+          for (const b of bytes.slice(0, 3)) buf.push(b);
+          return 3; // short write
+        }
+        if (calls === 2) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        for (const b of bytes) buf.push(b);
+        return bytes.length;
+      },
+    });
+    const a = encodePathId(0, 0);
+    push(producer, a, 'abcdef\n');
+    push(producer, a, 'ghi\n');
+    drainer.drain(); // 3 bytes land, then ENOSPC: the frame stays in the ring
+    drainer.drain(); // the retry writes ONLY the remaining 4 bytes, then the next frame whole
+    expect(dec.decode(Uint8Array.from(writes.get(fdOfPath.get(a) as number) ?? []))).toBe(
+      'abcdef\nghi\n',
+    );
+  });
+
   it('bails out (routes to onError, keeps the frame) when writev makes no progress', () => {
     const { producer, drainer, ops } = newDrainer(1024, {
       writev: () => 0, // a stuck sink: non-empty buffer, zero bytes → must not spin
