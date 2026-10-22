@@ -118,6 +118,37 @@ interface PartState {
   routes: Map<FileType, boolean[]>;
 }
 
+/** One snapshot over several (parts in order): records per type concatenate in part order. */
+function joinSnapshots(snaps: readonly CaptureSnapshot[]): CaptureSnapshot {
+  if (snaps.length === 1) {
+    return snaps[0] as CaptureSnapshot;
+  }
+  const merge = (maps: Array<Map<FileType, StoredEntry[]>>): Map<FileType, StoredEntry[]> => {
+    const all: StoredEntry[] = [];
+    for (const m of maps) for (const list of m.values()) all.push(...list);
+    return groupByType(all);
+  };
+  return {
+    async *stream(): AsyncIterableIterator<StoredEntry> {
+      for (const snap of snaps) {
+        yield* snap.stream();
+      }
+    },
+    async drainAll(): Promise<Map<FileType, StoredEntry[]>> {
+      const maps: Array<Map<FileType, StoredEntry[]>> = [];
+      for (const snap of snaps) maps.push(await snap.drainAll());
+      return merge(maps);
+    },
+    release(): void {
+      for (const snap of snaps) snap.release();
+    },
+    unpin(): void {
+      for (const snap of snaps) snap.unpin?.();
+    },
+    inMemory: () => merge(snaps.map((snap) => snap.inMemory?.() ?? new Map())),
+  };
+}
+
 const keyOf = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
 
 /** Replays `route` over the two per-type lists; anything the route does not cover (a torn read) is appended. */
@@ -275,14 +306,19 @@ export function withDiskPressure(
   /**
    * `durable.snapshot` itself can throw: the file backend reads EAGERLY, so an `EIO`/`EACCES` surfaces here, before any
    * promise. That must not fail the report either: the part is served from memory (the route merge appends whatever the
-   * medium did not provide), the failure is reported once per streak, and the rest of this snapshot skips the medium.
+   * medium did not provide) and the failure is reported once per streak. It is contained PER PART (a synchronous throw
+   * has no wait to avoid, and the other parts' files may read fine); a snapshot that contained one does not END the
+   * streak when its healthy parts read fine (`dead.threw`), or every report would start a new one.
    */
   const thrown = new WeakSet<CaptureSnapshot>();
-  const snapshotOrEmpty = (parts: readonly FrozenPart[]): CaptureSnapshot => {
+  const snapshotOrEmpty = (
+    parts: readonly FrozenPart[],
+    dead: { threw: boolean },
+  ): CaptureSnapshot => {
     try {
       return durable.snapshot(parts);
     } catch (error) {
-      // Contained PER PART: a synchronous throw has no wait to avoid, and the other parts' files may read fine.
+      dead.threw = true;
       noteReadFailure(error);
       const empty = createRecordSnapshot([]); // nothing from the medium for this part
       thrown.add(empty); // and reading it is not an ANSWER from the medium (it must not end the failure streak)
@@ -300,7 +336,10 @@ export function withDiskPressure(
    * (one at a time), and if it finally answers the degraded state ends, so a slow but healthy medium (a read that takes
    * 3 s) is never treated as dead for good. Its data is discarded (it is stale); the NEXT report gets a full-length wait.
    */
-  const guardedRead = (snap: CaptureSnapshot, dead: { failed: boolean }): CaptureSnapshot => {
+  const guardedRead = (
+    snap: CaptureSnapshot,
+    dead: { failed: boolean; threw: boolean },
+  ): CaptureSnapshot => {
     const timers = globalThis as unknown as {
       setTimeout(cb: () => void, ms: number): { unref?: () => void };
       clearTimeout(handle: unknown): void;
@@ -336,7 +375,9 @@ export function withDiskPressure(
           timer.unref?.(); // never hold a process open for a read
         });
         const read = await Promise.race([reading, timeout]);
-        degraded = false; // the medium answered: the streak is over
+        if (!dead.threw) {
+          degraded = false; // the medium answered and no part of this snapshot failed: the streak is over
+        }
         return read;
       } catch (error) {
         dead.failed = true;
@@ -388,6 +429,7 @@ export function withDiskPressure(
         }
       },
       ...(snap.inMemory !== undefined ? { inMemory: () => snap.inMemory?.() ?? new Map() } : {}),
+      ...(snap.unpin !== undefined ? { unpin: () => snap.unpin?.() } : {}),
     };
   };
 
@@ -507,8 +549,13 @@ export function withDiskPressure(
         durableParts.push({ ref, count: parts.get(keyOf(ref))?.durableCount ?? 0 });
       }
       if (shadowed === 0) {
-        const dead = { failed: false };
-        return guardedRead(snapshotOrEmpty(durableParts), dead);
+        // One durable snapshot PER PART, so that a part whose read throws costs only that part (the rest of the window
+        // is still served), and the results are joined in part order.
+        const dead = { failed: false, threw: false };
+        const guarded = durableParts.map((part) =>
+          guardedRead(snapshotOrEmpty([part], dead), dead),
+        );
+        return joinSnapshots(guarded);
       }
       // One snapshot per part and half, taken NOW (a file backend reads eagerly, so this freezes the view) but
       // DRAINED one part at a time: the IndexedDB half reads lazily, so only one part is in memory at once.
@@ -518,11 +565,11 @@ export function withDiskPressure(
         /** Per-type routes (append-only: records appended after this snapshot sit beyond what the frozen lists hold). */
         routes: Map<FileType, boolean[]>;
       }
-      const deadMedium = { failed: false }; // shared by every part of this snapshot (see guardedRead)
+      const deadMedium = { failed: false, threw: false }; // shared by every part of this snapshot (see guardedRead)
       const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
         const state = parts.get(keyOf(ref));
         const fromDurable = guardedRead(
-          snapshotOrEmpty([durableParts[index] as FrozenPart]),
+          snapshotOrEmpty([durableParts[index] as FrozenPart], deadMedium),
           deadMedium,
         );
         if (state === undefined || state.shadowCount === 0) {

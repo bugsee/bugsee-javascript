@@ -1,6 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChunkBackend } from './chunk-backend';
+import type { ChunkBackend, PartRef } from './chunk-backend';
 import { createChunkCaptureStore } from './chunk-capture-store';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { Clock } from './clock';
@@ -1739,7 +1739,7 @@ describe('withDiskPressure — a durable snapshot() that THROWS (the file backen
       backend.appendEntry(ref, rec('traces.system', ref.number, `persisted-${ref.number}`));
     }
     pressure.observe(30 * MB);
-    backend.appendEntry(frozen[1]!.ref, rec('log', 9, 'shadow-1')); // makes the snapshot take the per-part path
+    backend.appendEntry((frozen[1] as { ref: PartRef }).ref, rec('log', 9, 'shadow-1')); // makes the snapshot take the per-part path
     const all = await backend.snapshot(frozen).drainAll();
     expect(names(all.get('traces.system'))).toEqual(['persisted-0', 'persisted-2']); // part 2 is NOT lost with part 1
     expect(names(all.get('log'))).toEqual(['shadow-1']);
@@ -1808,5 +1808,81 @@ describe('withDiskPressure — a durable drainAll that THROWS synchronously', ()
     const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
     expect((await snap.drainAll()).size).toBe(0);
     expect(onReadError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('withDiskPressure — a part that keeps throwing', () => {
+  /** Three parts; part 1's snapshot() always throws (EIO). */
+  function threePartsOneBad() {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => {
+        if (parts.some((p) => p.ref.number === 1))
+          throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        return memory.snapshot(parts);
+      },
+    };
+    const onReadError = vi.fn();
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(durable, pressure, { onReadError });
+    const frozen = [0, 1, 2].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
+    for (const { ref } of frozen) {
+      backend.openPart(ref, 0);
+      backend.appendEntry(ref, rec('traces.system', ref.number, `persisted-${ref.number}`));
+    }
+    return { backend, frozen, onReadError, pressure };
+  }
+
+  it('SHADOWED path: five reports, ONE onReadError (healthy parts do not end the streak), the healthy parts always served', async () => {
+    const { backend, frozen, onReadError, pressure } = threePartsOneBad();
+    pressure.observe(30 * MB);
+    backend.appendEntry((frozen[0] as { ref: PartRef }).ref, rec('log', 9, 'shadow')); // a shadow record: the per-part path
+    for (let i = 0; i < 5; i++) {
+      const all = await backend.snapshot(frozen).drainAll();
+      expect(names(all.get('traces.system'))).toEqual(['persisted-0', 'persisted-2']);
+    }
+    expect(onReadError).toHaveBeenCalledOnce();
+  });
+
+  it('UNSHADOWED path: the bad part costs only itself on every report (it used to drop the whole durable window)', async () => {
+    const { backend, frozen, onReadError } = threePartsOneBad();
+    for (let i = 0; i < 5; i++) {
+      const all = await backend.snapshot(frozen).drainAll();
+      expect(names(all.get('traces.system'))).toEqual(['persisted-0', 'persisted-2']);
+    }
+    expect(onReadError).toHaveBeenCalledOnce(); // one streak
+  });
+
+  it('the joined snapshot streams in part order, and releases, unpins and serves in-memory records of every part', async () => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const calls: string[] = [];
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => {
+        const n = parts[0]?.ref.number as number;
+        const snap = memory.snapshot(parts);
+        return {
+          ...snap,
+          release: () => void calls.push(`release${n}`),
+          unpin: () => void calls.push(`unpin${n}`),
+          inMemory: () => new Map([['log' as FileType, [rec('log', n, `queued${n}`)]]]),
+        };
+      },
+    };
+    const backend = withDiskPressure(durable, createDiskPressure());
+    const frozen = [0, 1, 2].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
+    for (const { ref } of frozen) {
+      backend.openPart(ref, 0);
+      backend.appendEntry(ref, rec('traces.system', ref.number, `p${ref.number}`));
+    }
+    const snap = backend.snapshot(frozen);
+    expect(names(snap.inMemory?.().get('log'))).toEqual(['queued0', 'queued1', 'queued2']);
+    const seen: string[] = [];
+    for await (const r of snap.stream()) seen.push(r.serialized);
+    expect(seen).toEqual(['p0', 'p1', 'p2']);
+    snap.unpin?.();
+    snap.release();
+    expect(calls).toEqual(['unpin0', 'unpin1', 'unpin2', 'release0', 'release1', 'release2']);
   });
 });
