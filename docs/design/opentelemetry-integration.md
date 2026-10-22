@@ -249,9 +249,9 @@ that need it sit below `@bugsee/opentelemetry`; the OTel package re-exports it).
 2. **Redaction** sees that tree. The default span sanitizer applies the same rules to nested keys as to flat ones
    (a sensitive key redacts its whole value at any depth, content keys redact, statement keys keep their shape
    via `redactSqlLiterals`, including a statement carried as a map or an array: every string leaf under a
-   statement key is SQL; secret-shape scanning covers the string leaves INSIDE maps and arrays-of-maps only,
-   exactly as on main a top-level string attribute or a flat string array is not shape-scanned; depth-limited),
-   so
+   statement key is SQL; secret-shape scanning covers the string VALUES inside maps and arrays-of-maps only,
+   NOT nested map keys, and, exactly as on main, not a top-level string attribute or a flat string array;
+   depth-limited), so
    `user: { password }` and `http.request.headers: { authorization }` are redacted by default. An integrator
    `setSpanFilter` receives the tree too.
 3. **Wire** (`flattenTransactionAttributes`, run by the performance extension after the filter, in both sinks):
@@ -280,16 +280,25 @@ and a bounded JSON `stringValue` for maps/arrays.
 
 *Cuts and redaction.* Length caps run BEFORE redaction, so a cut must never leave something redaction can no
 longer recognise: a SQL statement cut inside a string literal has its open trailing literal replaced
-(`redactSqlLiterals` handles an unterminated `'`/`"`), and a text cut inside a token (a JWT after its payload, a
-`ghp_` token at 15 of 36 characters) drops the unfinished token, because secret shapes only match when
-complete. A text with no token boundary at all (a single blob past the cap) is dropped to the marker. Byte
-arrays (base64) are not text and are only cut.
+(`redactSqlLiterals` handles an unterminated `'`/`"`). Where secret-shape scanning applies (string leaves inside
+maps and arrays-of-maps), a leaf cut inside a token (a JWT after its payload, a `ghp_` token at 15 of 36
+characters) drops the unfinished token, because secret shapes only match when complete; a leaf with no token
+boundary at all (a hash, a URL path) keeps its cut prefix, except one that begins `eyJ` (JWT-shaped), which is
+dropped to the marker. A TOP-LEVEL string attribute is only cut (it is never shape-scanned, so dropping its
+unfinished token would protect nothing and would lose the host of a long URL). Byte arrays (base64) are not text
+and are only cut. Known limitation, pre-existing and not changed here: SQL literal redaction pairs quotes left to
+right, so comments, backslash escapes and dollar quotes can shift the pairing and leave a literal in the clear
+(bugsee/bugsee-javascript#109).
 
-*Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE and per SPAN: every string leaf and key is
+*Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE, and per SPAN for TREES: every string leaf and key is
 cut at 8128 characters before it is copied (a key that long is not kept, and its value is redacted, so a cut can
 never remove the `password` a key-based rule looks for), a tree stops at 1024 visited nodes or 32768 copied
 characters, and one span's attributes together stop at 4096 nodes or 65536 characters (the rest is
-`"[Truncated]"`; 128 attributes of 1000-node maps cost about 2 ms, not 1.2 s), depth 8 (`"[MaxDepth]"`), the JSON text at 8192 characters (`...[truncated]`), cycles become
+`"[Truncated]"`; 128 attributes of 1000-node maps cost about 2 ms, not 1.2 s). Scalar strings and scalar-array
+elements are NOT charged to the per-span budget: each is capped on its own (a string at 32 KiB, an array at 1024
+elements and 32 KiB of string), so a span is bounded by its attribute COUNT times that (the SDK default limit
+is 128 attributes, about 4 MiB per span; a caller that lifts the limit and sets 10,000 maximal attributes would
+copy about 327 MB), depth 8 (`"[MaxDepth]"`), the JSON text at 8192 characters (`...[truncated]`), cycles become
 `"[Circular]"` (a shared acyclic reference is not a cycle), non-finite numbers the OTLP spellings, byte arrays are
 encoded only up to what could fit, a non-byte typed array (a Float32Array embedding) is read by index within the
 node budget, and `toJSON` or other user code is never called. A throwing getter, an element or a Proxy trap

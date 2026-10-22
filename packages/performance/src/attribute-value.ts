@@ -110,7 +110,11 @@ const capText = (text: string, max: number, dropPartialToken = false): string =>
   if (text.length <= max) return text;
   let end = max - TRUNCATION_MARKER.length;
   if (dropPartialToken && isTokenChar(text.charCodeAt(end))) {
+    const cut = end;
     while (end > 0 && isTokenChar(text.charCodeAt(end - 1))) end--;
+    // No boundary at all: one long blob (a hash, a URL path). Keep its prefix, which carries the data that
+    // matters, unless it is JWT-shaped, where the prefix IS the readable header and claims.
+    if (end === 0 && !text.startsWith('eyJ')) end = cut;
   }
   return text.slice(0, end) + TRUNCATION_MARKER;
 };
@@ -351,11 +355,14 @@ const isScalar = (v: unknown): v is string | number | boolean =>
  * result does not alias the caller's array (a later `push({ password })` must not reach the store).
  */
 function scalarArrayCopy(value: unknown[]): unknown[] | undefined {
-  if (value.length > MAX_ATTRIBUTE_ARRAY_LENGTH) return undefined;
+  // `length` is read ONCE: a Proxy (or an array being appended to) can answer differently every time, which
+  // would walk past the limit that was just checked.
+  const length = value.length;
+  if (length > MAX_ATTRIBUTE_ARRAY_LENGTH) return undefined;
   const copy: unknown[] = [];
   let kind: string | undefined;
   let chars = 0;
-  for (let i = 0; i < value.length; i++) {
+  for (let i = 0; i < length; i++) {
     const item = value[i];
     copy.push(item);
     // OTel 2/3 keep null/undefined entries in a homogeneous array (`['a', null, 'b']`); they pass through.
@@ -382,7 +389,8 @@ const isPassThroughArray = (value: unknown[]): boolean => scalarArrayCopy(value)
  */
 export function normalizeAttributeValue(value: unknown, span?: SpanBudget): unknown {
   if (value === null || value === undefined) return undefined;
-  if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH, true);
+  // Only CUT: a top-level string is never shape-scanned, so dropping its unfinished token protects nothing.
+  if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH);
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return bigintToJson(value);
   const bytes = asBytes(value);
@@ -427,7 +435,11 @@ export function normalizeAttributes(
  * one bounded JSON string. Total: never throws. `undefined` = drop the attribute.
  */
 export function flattenAttributeValue(value: unknown, span?: SpanBudget): unknown {
-  if (Array.isArray(value) && isPassThroughArray(value)) return value; // already a normalized copy here
+  if (Array.isArray(value)) {
+    // A custom span filter may have set an array it still holds: copy, never hand the same one on.
+    const copy = scalarArrayCopy(value);
+    if (copy !== undefined) return copy;
+  }
   const normal = normalizeAttributeValue(value, span);
   if (normal === null || typeof normal !== 'object') return normal;
   return Array.isArray(normal) && isPassThroughArray(normal) ? normal : stringifyAnyValue(normal);

@@ -370,8 +370,7 @@ describe('normalizeAttributeValue', () => {
     const atLimit = 'ab '.repeat(MAX_ATTRIBUTE_STRING_LENGTH).slice(0, MAX_ATTRIBUTE_STRING_LENGTH);
     expect(normalizeAttributeValue(atLimit)).toBe(atLimit);
     const over = normalizeAttributeValue(`${atLimit}y`) as string;
-    expect(over.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
-    expect(over.length).toBeGreaterThan(MAX_ATTRIBUTE_STRING_LENGTH - 100);
+    expect(over.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
     expect(over.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 
@@ -480,34 +479,68 @@ describe('work bounds that output alone cannot show', () => {
   });
 });
 
-describe('a cut never leaves a PARTIAL secret-shaped token behind', () => {
-  const filler = 'lorem ipsum '.repeat(10_000);
+describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape scanning applies)', () => {
+  const MAX_LEAF = MAX_ATTRIBUTE_JSON_LENGTH - 64;
+  const leafEnd = MAX_LEAF - TRUNCATION_MARKER.length;
+  const spaced = (length: number): string => 'ab '.repeat(length).slice(0, length);
 
-  it('drops the unfinished final token of a scalar string cut by the cap', () => {
+  it('drops a JWT cut after its payload from a map leaf', () => {
     const jwtPrefix = 'eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6InBhdGllbnRAeC5leGFtcGxlIn0';
-    const text = `${filler.slice(0, MAX_ATTRIBUTE_STRING_LENGTH - 40 - TRUNCATION_MARKER.length)} ${jwtPrefix}.sig`;
-    const out = normalizeAttributeValue(text) as string;
-    expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
-    expect(out).toContain(TRUNCATION_MARKER);
-    expect(out).not.toContain('eyJ');
+    const out = safeAnyValue({ note: `${spaced(leafEnd - 20)} ${jwtPrefix}.sig` }) as {
+      note: string;
+    };
+    expect(out.note.endsWith(TRUNCATION_MARKER)).toBe(true);
+    expect(out.note).not.toContain('eyJ');
   });
 
   it('drops a GitHub-token prefix cut at a nested leaf', () => {
-    const cut = MAX_ATTRIBUTE_JSON_LENGTH - 64 - TRUNCATION_MARKER.length;
-    const text = `${'word '.repeat(2000).slice(0, cut - 21)} ghp_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+    const text = `${spaced(leafEnd - 21)} ghp_abcdefghijklmnopqrstuvwxyz0123456789AB`;
     const out = safeAnyValue({ note: text }) as { note: string };
     expect(out.note).not.toContain('ghp_');
     expect(out.note.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 
+  // The run is dropped only if EVERY character of it counts as a token character. `-` (base64url JWT
+  // segments), `=`, `+`, `/`, `_` and `.` each need their own case: the cut lands right after the character.
+  it.each([
+    '-',
+    '=',
+    '+',
+    '/',
+    '_',
+    '.',
+    'a',
+    'Z',
+    '5',
+  ])('treats %s as part of a token (cut right after it drops the whole unfinished token)', (ch) => {
+    const text = `${spaced(leafEnd - 8)} secret${ch}${'X'.repeat(50)}`;
+    expect(text[leafEnd - 1]).toBe(ch);
+    const out = safeAnyValue({ note: text }) as { note: string };
+    expect(out.note).not.toContain('secret');
+    expect(out.note.endsWith(`${TRUNCATION_MARKER}`)).toBe(true);
+  });
+
+  it('does NOT treat a space or punctuation as part of a token (that text is kept)', () => {
+    for (const ch of [' ', ',', ';', ':', '"']) {
+      const text = `${spaced(leafEnd - 8)} secret${ch}${'X'.repeat(50)}`;
+      const out = safeAnyValue({ note: text }) as { note: string };
+      expect(out.note).toContain(`secret${ch}`);
+    }
+  });
+
   it('keeps a token that ends exactly at the cut (it is complete, not partial)', () => {
-    const end = MAX_ATTRIBUTE_STRING_LENGTH - TRUNCATION_MARKER.length;
-    const make = (pad: number): string =>
-      `${'z'.repeat(pad)}${'tok '.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 4 + 5)}`;
-    const pad = [0, 1, 2, 3].find((p) => make(p)[end] === ' ') as number;
-    const out = normalizeAttributeValue(make(pad)) as string;
-    expect(out.endsWith(`tok${TRUNCATION_MARKER}`)).toBe(true);
-    expect(out.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
+    const make = (pad: number): string => `${'z'.repeat(pad)}${'tok '.repeat(MAX_LEAF / 4 + 5)}`;
+    const pad = [0, 1, 2, 3].find((p) => make(p)[leafEnd] === ' ') as number;
+    const out = safeAnyValue({ note: make(pad) }) as { note: string };
+    expect(out.note.endsWith(`tok${TRUNCATION_MARKER}`)).toBe(true);
+  });
+
+  it('keeps a long boundary-less leaf (a hash, a URL) cut, but drops one that begins like a JWT', () => {
+    const hash = safeAnyValue({ h: 'f'.repeat(9000) }) as { h: string };
+    expect(hash.h.length).toBe(MAX_LEAF);
+    expect(hash.h.startsWith('ffff')).toBe(true);
+    const jwt = safeAnyValue({ j: `eyJ${'a'.repeat(9000)}` }) as { j: string };
+    expect(jwt.j).toBe(TRUNCATION_MARKER);
   });
 
   it('does not touch base64 of a byte array (not text)', () => {
@@ -517,13 +550,44 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind', () => {
     expect(nested.b.length).toBeGreaterThan(MAX_ATTRIBUTE_JSON_LENGTH - 200);
   });
 
-  it('a string without any token boundary is dropped to the marker, never kept as a partial blob', () => {
-    const out = normalizeAttributeValue('x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH + 1)) as string;
-    expect(out).toBe(TRUNCATION_MARKER);
+  it('a TOP-LEVEL string is only cut: shape scanning does not apply there, so dropping protects nothing', () => {
+    const url = `https://host.example/${'p'.repeat(MAX_ATTRIBUTE_STRING_LENGTH)}`;
+    const out = normalizeAttributeValue(url) as string;
+    expect(out.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(out.startsWith('https://host.example/')).toBe(true);
+    expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 });
 
 describe('arrays are copied, not aliased', () => {
+  it('reads the length once: a Proxy array whose length keeps growing cannot loop forever', () => {
+    let reads = 0;
+    const target = ['a', 'b'];
+    const growing = new Proxy(target, {
+      get(t, key, receiver) {
+        if (key === 'length') return ++reads * 1000; // grows on every read
+        return Reflect.get(t, key, receiver);
+      },
+    });
+    const started = Date.now();
+    const out = normalizeAttributeValue(growing);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Array.isArray(out)).toBe(true);
+    expect(reads).toBeLessThan(10);
+  });
+
+  it("flattening never hands back the caller's array (a custom filter may have set it)", () => {
+    const held: unknown[] = ['a', 'b'];
+    const out = flattenAttributeValue(held) as unknown[];
+    expect(out).toEqual(['a', 'b']);
+    expect(out === held).toBe(false);
+    held.push({ password: 'x' });
+    expect(out).toEqual(['a', 'b']);
+    const attrs = { tags: held.slice(0, 2) };
+    const flat = flattenAttributes(attrs);
+    expect(flat.tags === attrs.tags).toBe(false);
+  });
+
   it('passes a scalar array through as a COPY, so a later mutation of the original cannot reach the store', () => {
     const original: unknown[] = ['a', 'b'];
     const out = normalizeAttributeValue(original) as unknown[];
@@ -591,7 +655,7 @@ describe('flattenAttributeValue (the wire form)', () => {
     const arr = ['a', 'b'];
     expect(flattenAttributeValue('s')).toBe('s');
     expect(flattenAttributeValue(3)).toBe(3);
-    expect(flattenAttributeValue(arr)).toBe(arr);
+    expect(flattenAttributeValue(arr)).toEqual(arr);
   });
 
   it('turns any remaining complex value into one bounded JSON string', () => {
@@ -614,7 +678,7 @@ describe('flattenAttributeValue (the wire form)', () => {
 
 describe('flattenAttributes', () => {
   it('returns the SAME record when nothing needed changing', () => {
-    const attrs = { a: 'x', n: 1, tags: ['a', 'b'] };
+    const attrs = { a: 'x', n: 1, ok: true };
     expect(flattenAttributes(attrs)).toBe(attrs);
   });
 

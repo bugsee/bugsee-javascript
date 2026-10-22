@@ -28,7 +28,7 @@ const child = (attributes?: Record<string, unknown>): TransactionWire['spans'][n
 
 describe('flattenTransactionAttributes', () => {
   it('returns the SAME transaction when no attribute is complex (the common path copies nothing)', () => {
-    const plain = txn({ attributes: { a: 1, tags: ['x'] }, spans: [child({ b: 'y' }), child()] });
+    const plain = txn({ attributes: { a: 1, ok: true }, spans: [child({ b: 'y' }), child()] });
     expect(flattenTransactionAttributes(plain)).toBe(plain);
     const bare = txn();
     expect(flattenTransactionAttributes(bare)).toBe(bare);

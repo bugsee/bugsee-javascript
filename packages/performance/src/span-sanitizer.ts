@@ -51,9 +51,10 @@ export function redactSqlLiterals(statement: string): string {
       .replace(/'(?:[^']|'')*'/g, '?')
       .replace(/"(?:[^"]|"")*"/g, '?')
       // A literal still OPEN at the end: the statement was cut by a length cap (which runs before this), and
-      // everything after the opening quote is literal data.
-      .replace(/'(?:[^']|'')*$/, '?')
-      .replace(/"(?:[^"]|"")*$/, '?')
+      // everything after the opening quote is literal data. (After the closed passes at most one lone quote is
+      // left, so no doubled-quote alternative is needed here.)
+      .replace(/'[^']*$/, '?')
+      .replace(/"[^"]*$/, '?')
       // numeric literals, but never the digits inside an identifier like `column2`
       .replace(/\b\d+(?:\.\d+)?\b/g, '?')
   );
