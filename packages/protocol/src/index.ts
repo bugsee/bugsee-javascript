@@ -47,7 +47,7 @@ export {
   SENSITIVE_HEADERS,
   SENSITIVE_KEY_SUBSTRINGS,
 } from './sensitive';
-export { lastSecretShapeStart, redactShapes, type ShapeRedactionOptions } from './shapes';
+export { redactShapes, type ShapeRedactionOptions, unfinishedSecretStart } from './shapes';
 export { bytesToMegabytes } from './units';
 export { sanitizeErrorMessage, sanitizeUrl } from './url';
 export type {

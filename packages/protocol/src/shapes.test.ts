@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lastSecretShapeStart, redactShapes } from './index';
+import { redactShapes, unfinishedSecretStart } from './index';
 
 const R = '<redacted>';
 
@@ -299,43 +299,101 @@ describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
   });
 });
 
-describe('lastSecretShapeStart', () => {
-  // One COMPLETE secret per shape redactShapes knows. The start finder must locate the beginning of each, so
-  // a caller that has to cut text can back off before a secret that the cut would leave half-written (a
-  // partial secret no longer matches redactShapes, so it would ship in the clear). A new pattern in
-  // SHAPE_PATTERNS needs a sample here: this is the drift guard.
-  const SAMPLES: Record<string, string> = {
-    jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
-    'aws AKIA': 'AKIAIOSFODNN7EXAMPLE',
-    'aws ASIA': 'ASIAIOSFODNN7EXAMPLE',
-    'aws AGPA': 'AGPAIOSFODNN7EXAMPLE',
-    'aws AIDA': 'AIDAIOSFODNN7EXAMPLE',
-    'aws AROA': 'AROAIOSFODNN7EXAMPLE',
-    'stripe sk': ['sk', 'live', 'abcdefghijklmnop'].join('_'),
-    'stripe pk': ['pk', 'live', 'abcdefghijklmnop'].join('_'),
-    'stripe rk': ['rk', 'live', 'abcdefghijklmnop'].join('_'),
-    'stripe webhook': ['whsec', 'abcdefghijklmnop'].join('_'),
-    'github ghp': `ghp_${'a'.repeat(36)}`,
-    'github gho': `gho_${'a'.repeat(36)}`,
-    'github ghu': `ghu_${'a'.repeat(36)}`,
-    'github ghs': `ghs_${'a'.repeat(36)}`,
+// One COMPLETE secret per shape redactShapes knows. Built from pieces where it resembles a live key, so the
+// repository's secret scanning does not take a fixture for a real one.
+const SAMPLES: Record<string, string> = {
+  jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
+  'aws AKIA': 'AKIAIOSFODNN7EXAMPLE',
+  'aws ASIA': 'ASIAIOSFODNN7EXAMPLE',
+  'aws AGPA': 'AGPAIOSFODNN7EXAMPLE',
+  'aws AIDA': 'AIDAIOSFODNN7EXAMPLE',
+  'aws AROA': 'AROAIOSFODNN7EXAMPLE',
+  'stripe sk': ['sk', 'live', 'abcdefghijklmnop'].join('_'),
+  'stripe pk': ['pk', 'live', 'abcdefghijklmnop'].join('_'),
+  'stripe rk': ['rk', 'live', 'abcdefghijklmnop'].join('_'),
+  'stripe webhook': ['whsec', 'abcdefghijklmnop'].join('_'),
+  'github ghp': `ghp_${'a'.repeat(36)}`,
+  'github gho': `gho_${'a'.repeat(36)}`,
+  'github ghu': `ghu_${'a'.repeat(36)}`,
+  'github ghs': `ghs_${'a'.repeat(36)}`,
+};
+
+describe('unfinishedSecretStart', () => {
+  const b64url = (text: string): string =>
+    (globalThis as unknown as { btoa(input: string): string })
+      .btoa(text)
+      .replace(/=+$/, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+
+  /** A JWT whose PAYLOAD contains a second `eyJ` (base64url of a nested `{"` on a 3-byte boundary). */
+  const nestedJwt = (): { jwt: string; header: string; payload: string } => {
+    for (let pad = 0; pad < 8; pad += 1) {
+      const payload = b64url(
+        `${' '.repeat(pad)}{"exp":1,"realm_access":{"roles":["admin"]},"email":"alice@corp.example"}`,
+      );
+      if (payload.indexOf('eyJ', 3) > 0) {
+        const header = 'eyJhbGciOiJIUzI1NiJ9';
+        return { jwt: `${header}.${payload}.c2lnbmF0dXJl`, header, payload };
+      }
+    }
+    throw new Error('no nested-eyJ payload found');
   };
 
-  it.each(
-    Object.entries(SAMPLES),
-  )('finds the start of a %s secret, and redactShapes agrees it is one', (_name, secret) => {
-    expect(redactShapes(secret)).not.toBe(secret);
-    // A JWT's payload segment (`{"...` base64url) also begins `eyJ`, so its LAST start is the payload's.
-    const start = secret.startsWith('eyJ') ? secret.lastIndexOf('eyJ') : 0;
-    expect(lastSecretShapeStart(secret)).toBe(start);
-    expect(lastSecretShapeStart(`prefix-${secret}`)).toBe(7 + start);
-    expect(lastSecretShapeStart(`id_token=${secret.slice(0, 8)}`)).toBe(9); // a half-written one too
+  it('is -1 when nothing secret-shaped begins, or when the text is empty', () => {
+    expect(unfinishedSecretStart('nothing secret here, just words and AKI')).toBe(-1);
+    expect(unfinishedSecretStart('')).toBe(-1);
   });
 
-  it('returns the LAST start when several are present, and -1 when there is none', () => {
-    const text = `${SAMPLES.jwt}/${SAMPLES['github ghp']}/plain`;
-    expect(lastSecretShapeStart(text)).toBe((SAMPLES.jwt?.length ?? 0) + 1);
-    expect(lastSecretShapeStart('nothing secret here, just words and AKI')).toBe(-1);
-    expect(lastSecretShapeStart('')).toBe(-1);
+  it('is -1 for a complete secret of every shape (redactShapes will handle it whole)', () => {
+    for (const secret of Object.values(SAMPLES)) {
+      expect(redactShapes(secret)).not.toBe(secret);
+      expect(unfinishedSecretStart(`id_token=${secret}`)).toBe(-1);
+    }
+  });
+
+  it('points at the start of a secret the text ENDS inside: AWS (needs all 20), GitHub (needs 36)', () => {
+    expect(unfinishedSecretStart(`k=${'AKIAIOSFODNN7EXAMPLE'.slice(0, 14)}`)).toBe(2);
+    expect(unfinishedSecretStart(`k=${`ghp_${'a'.repeat(15)}`}`)).toBe(2);
+  });
+
+  it('treats a Stripe/webhook key as finished at any length (the pattern matches a partial one)', () => {
+    expect(unfinishedSecretStart(`k=${SAMPLES['stripe sk']?.slice(0, 10)}`)).toBe(-1);
+    expect(unfinishedSecretStart(`k=${SAMPLES['stripe webhook']?.slice(0, 8)}`)).toBe(-1);
+  });
+
+  it('handles a JWT whose payload contains a second eyJ: back off to the HEADER, not the inner start', () => {
+    const { jwt, header, payload } = nestedJwt();
+    const innerAt = header.length + 1 + payload.indexOf('eyJ', 3);
+    expect(innerAt).toBeGreaterThan(header.length + 1);
+    // cut inside the payload, after the nested start
+    const cutInPayload = jwt.slice(0, innerAt + 10);
+    expect(unfinishedSecretStart(cutInPayload)).toBe(0);
+    expect(unfinishedSecretStart(`id_token=${cutInPayload}`)).toBe(9);
+    // cut inside the signature: a complete (3-segment) JWT, so nothing to back off from
+    expect(unfinishedSecretStart(jwt.slice(0, jwt.length - 4))).toBe(-1);
+  });
+
+  it('does not cut a complete secret in half because another shape begins inside it', () => {
+    // AKIA + 16 characters is a complete key even though `ASIA` appears inside its tail.
+    expect(unfinishedSecretStart('AKIAXXXXASIAYYYYYYYY')).toBe(-1);
+    // the same text one character short is unfinished, and the OUTER start is the answer
+    expect(unfinishedSecretStart('k=AKIAXXXXASIAYYYYYYY')).toBe(2);
+    // a ghp_ token that is complete with an AKIA-looking run inside it
+    expect(unfinishedSecretStart(`x=ghp_abcdefghijAKIAqrstuvwxyz0123456789ab`)).toBe(-1);
+    expect(unfinishedSecretStart('x=ghp_abcdefghijAKIAqrstuvwxyz012345')).toBe(2);
+  });
+
+  it('finds the unfinished one after several complete, independent secrets', () => {
+    const text = `${SAMPLES['github ghp']}/${SAMPLES['aws AKIA']}/${SAMPLES.jwt}/AKIAIOSFOD`;
+    expect(unfinishedSecretStart(text)).toBe(text.length - 'AKIAIOSFOD'.length);
+    expect(unfinishedSecretStart(text.slice(0, text.length - 'AKIAIOSFOD'.length))).toBe(-1);
+  });
+
+  it('stays bounded and safe on text dense with starts: past the candidate limit it backs off to the current one', () => {
+    const dense = `x=${'eyJ'.repeat(5000)}`;
+    const started = Date.now();
+    expect(unfinishedSecretStart(dense)).toBe(2);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });

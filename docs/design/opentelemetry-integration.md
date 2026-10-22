@@ -285,12 +285,19 @@ longer recognise: a SQL statement cut inside a string literal has its open trail
 maps and arrays-of-maps), a leaf cut inside a token (a JWT after its payload, a `ghp_` token at 15 of 36
 characters) drops the unfinished token, because secret shapes only match when complete. A leaf with NO token
 boundary at all (one unbroken run, such as `id_token=<jwt>`, a long hash, or a base64url blob) keeps its cut
-prefix but backs off before the LAST place a secret shape begins in it (`lastSecretShapeStart` in
-`@bugsee/protocol`, kept next to the shape patterns and guarded by a sample per shape): a JWT that begins the
-leaf collapses to the marker, `id_token=` is kept without the token, and a JWT's header segment, which carries
-no personal data, may remain while its payload does not. `:` is not a token character, so a long map-leaf URL
-(`https://host/...` past the cap) is cut back to `https:` plus the marker: that is accepted data loss, a
-scheme-and-host-keeping rule was not worth another heuristic. A TOP-LEVEL string attribute is only cut (it is
+prefix but backs off before a secret the cut LANDS INSIDE (`unfinishedSecretStart` in `@bugsee/protocol`). It
+walks the shape starts left to right keeping the current secret's start, and moves on to a later start only once
+the text since it is already a complete secret, so a start inside another secret (a JWT payload that itself
+contains `eyJ` because it holds a nested `{"` claim, an `ASIA` inside an AWS key) does not move the answer off
+the outer secret. A secret that is already complete in the prefix is left for redaction to match whole: a JWT cut
+inside its signature keeps all three segments and `redactShapes` replaces them, while one cut inside its header
+or payload backs off to the start of the header (a bare JWT collapses to the marker, `id_token=<jwt>` becomes
+`id_token=` plus the marker). Stripe-style keys are never "unfinished", because their patterns match a partial
+key. The shape starts and the redaction patterns are built from one table (`SHAPES` in `shapes.ts`), so a new
+shape cannot be added to one and missed by the other. The walk examines at most 16 starts per call and past that
+backs off to the current candidate (more dropped, never less). `:` is not a token character, so a long map-leaf
+URL (`https://host/...` past the cap) is cut back to `https:` plus the marker by the ordinary boundary rule
+(unrelated to the back-off): accepted data loss, a scheme-and-host-keeping rule was not worth another heuristic. A TOP-LEVEL string attribute is only cut (it is
 never shape-scanned, so dropping its unfinished token would protect nothing and would lose the host of a long
 URL). Byte arrays (base64) are not text and are only cut. Known limitation, pre-existing and not changed here:
 SQL literal redaction pairs quotes left to right, so comments, backslash escapes and dollar quotes can shift the

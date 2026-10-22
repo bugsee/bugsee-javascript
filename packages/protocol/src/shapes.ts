@@ -73,35 +73,62 @@ const JWT_UNANCHORED = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
  */
 const MAX_UNANCHORED_SCAN = 8192;
 
-const SHAPE_PATTERNS: readonly RegExp[] = [
-  /A(?:KIA|SIA|GPA|IDA|ROA)[0-9A-Z]{16}/g, // AWS access key id
-  /(?:sk|pk|rk)_live_[A-Za-z0-9]+/g, // Stripe live secret/publishable/restricted keys
-  /whsec_[A-Za-z0-9]+/g, // Stripe webhook signing secret
-  /gh[posu]_[A-Za-z0-9]{36,}/g, // GitHub personal access / OAuth / user / server token
+/**
+ * Each shape declares where it BEGINS (`start`) and what follows (`rest`). The redaction patterns and
+ * {@link SECRET_SHAPE_START} are both built from these, so a new shape cannot be added to one and forgotten in
+ * the other. (The JWT is separate: it has two anchored patterns and begins `eyJ`.)
+ */
+const SHAPES: readonly { start: string; rest: string }[] = [
+  { start: 'A(?:KIA|SIA|GPA|IDA|ROA)', rest: '[0-9A-Z]{16}' }, // AWS access key id
+  { start: '(?:sk|pk|rk)_live_', rest: '[A-Za-z0-9]+' }, // Stripe live secret/publishable/restricted keys
+  { start: 'whsec_', rest: '[A-Za-z0-9]+' }, // Stripe webhook signing secret
+  { start: 'gh[posu]_', rest: '[A-Za-z0-9]{36,}' }, // GitHub personal access / OAuth / user / server token
 ];
 
-/**
- * Where a secret shape BEGINS: the opening of each pattern in {@link SHAPE_PATTERNS} plus the JWT header.
- * Kept next to those patterns (and guarded by a sample per shape in the tests) so the two cannot drift.
- */
-const SECRET_SHAPE_START = /eyJ|A(?:KIA|SIA|GPA|IDA|ROA)|(?:sk|pk|rk)_live_|whsec_|gh[posu]_/g;
+const SHAPE_PATTERNS: readonly RegExp[] = SHAPES.map(
+  ({ start, rest }) => new RegExp(`${start}${rest}`, 'g'),
+);
+
+/** Where any secret shape begins: the JWT header plus the start of every entry of {@link SHAPES}. */
+const SECRET_SHAPE_START = new RegExp(['eyJ', ...SHAPES.map(({ start }) => start)].join('|'), 'g');
 
 /**
- * The offset of the LAST place in `text` where a secret shape begins, or -1. A caller that must cut text
- * before redacting it uses this to back off before a secret the cut would leave half-written: a partial
- * secret no longer matches {@link redactShapes}, so it would reach the wire in the clear.
+ * How many shape starts one call examines before it gives up and backs off to the current candidate. Each
+ * examination runs the redaction patterns over the text since that candidate, so the bound keeps the cost of a
+ * run made of nothing but starts (`eyJeyJeyJ...`) small; giving up errs toward dropping more, never less.
  */
-export function lastSecretShapeStart(text: string): number {
-  let last = -1;
-  SECRET_SHAPE_START.lastIndex = 0;
-  for (
-    let match = SECRET_SHAPE_START.exec(text);
-    match !== null;
-    match = SECRET_SHAPE_START.exec(text)
-  ) {
-    last = match.index;
+const MAX_START_CHECKS = 16;
+
+/** Does a COMPLETE secret begin at offset 0 of `text` (so {@link redactShapes} would replace it)? */
+const beginsWithSecret = (text: string): boolean => redactShapes(text).startsWith(REDACTED);
+
+/**
+ * The offset where an UNFINISHED secret begins, i.e. the secret that `text` ends inside, or -1 when there is
+ * none. A caller that must cut text before redacting it uses this to back off before a secret the cut would
+ * leave half-written: a partial secret no longer matches {@link redactShapes}, so its readable part would
+ * reach the wire in the clear.
+ *
+ * Shape starts are walked left to right keeping the CURRENT secret's start, and the current secret only
+ * advances to a later start when the text since it is already a complete secret. That is what makes a start
+ * INSIDE another secret harmless: a JWT payload that itself contains `eyJ` (base64url of a nested `{"`), or an
+ * `ASIA` inside an AWS key's tail, does not move the answer off the outer secret. If the secret at the final
+ * candidate is complete (a JWT cut inside its signature still has three segments), there is nothing to back
+ * off from and the answer is -1.
+ */
+export function unfinishedSecretStart(text: string): number {
+  let current = -1;
+  let checks = 0;
+  for (const match of text.matchAll(SECRET_SHAPE_START)) {
+    const at = match.index;
+    if (current === -1) {
+      current = at;
+    } else {
+      checks += 1;
+      if (checks > MAX_START_CHECKS) return current;
+      if (beginsWithSecret(text.slice(current, at))) current = at;
+    }
   }
-  return last;
+  return current === -1 || beginsWithSecret(text.slice(current)) ? -1 : current;
 }
 
 function isLuhnValid(digits: string): boolean {

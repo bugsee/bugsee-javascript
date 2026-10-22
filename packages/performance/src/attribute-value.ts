@@ -1,4 +1,4 @@
-import { lastSecretShapeStart, REDACTED } from '@bugsee/protocol';
+import { REDACTED, unfinishedSecretStart } from '@bugsee/protocol';
 
 // Span attribute values: bounding, safe copying and the wire flattening of complex values.
 //
@@ -113,10 +113,11 @@ const capText = (text: string, max: number, dropPartialToken = false): string =>
     const cut = end;
     while (end > 0 && isTokenChar(text.charCodeAt(end - 1))) end--;
     // No boundary at all: one long unbroken run (a hash, a URL path, `id_token=<jwt>`). Keep its prefix, which
-    // carries the data that matters, but back off before the LAST place a secret shape begins in it: a secret
-    // the cut leaves half-written no longer matches `redactShapes`, so its readable part would ship as is.
+    // carries the data that matters, but back off before a secret the cut lands INSIDE: a half-written
+    // secret no longer matches `redactShapes`, so its readable part would ship as is. A secret that is already
+    // complete in the prefix (a JWT cut inside its signature) is left for redaction, which matches it whole.
     if (end === 0) {
-      const start = lastSecretShapeStart(text.slice(0, cut));
+      const start = unfinishedSecretStart(text.slice(0, cut));
       end = start === -1 ? cut : start;
     }
   }

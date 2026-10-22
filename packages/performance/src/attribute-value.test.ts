@@ -1,3 +1,4 @@
+import { redactShapes } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
   boundedBase64,
@@ -537,12 +538,27 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape s
   });
 
   describe('a leaf with no token boundary keeps its cut prefix, but never a half-written secret', () => {
-    const payload = (globalThis as unknown as { btoa(input: string): string })
-      .btoa('{"email":"patient@clinic.example","ssn":"123-45-6789"}')
-      .replace(/=+$/, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_');
-    const jwt = `eyJhbGciOiJIUzI1NiJ9.${payload}.${'S'.repeat(9000)}`;
+    const b64url = (text: string): string =>
+      (globalThis as unknown as { btoa(input: string): string })
+        .btoa(text)
+        .replace(/=+$/, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+    const header = 'eyJhbGciOiJIUzI1NiJ9';
+    const claims = '"email":"patient@clinic.example","ssn":"123-45-6789"';
+    const longPad = `"pad":"${'p'.repeat(9000)}"`;
+    // a payload long enough that the leaf cap lands INSIDE it, and one with a nested `{"` (an inner `eyJ`)
+    const plainPayload = b64url(`{${claims},${longPad}}`);
+    const nestedPayload = ((): string => {
+      for (let pad = 0; pad < 8; pad += 1) {
+        const payload = b64url(
+          `${' '.repeat(pad)}{${claims},"realm_access":{"roles":["admin"]},${longPad}}`,
+        );
+        if (payload.indexOf('eyJ', 3) > 0) return payload;
+      }
+      throw new Error('no nested-eyJ payload found');
+    })();
+    const jwtOf = (payload: string): string => `${header}.${payload}.${'S'.repeat(40)}`;
     const leaf = (text: string): string => (safeAnyValue({ note: text }) as { note: string }).note;
 
     it('keeps a hash or a URL-shaped prefix', () => {
@@ -551,14 +567,31 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape s
       expect(hash.startsWith('ffff')).toBe(true);
     });
 
-    it('drops a JWT that begins the leaf, and one placed after other token characters', () => {
-      expect(leaf(jwt)).not.toContain(payload);
+    it.each([
+      ['a flat payload', plainPayload],
+      ['a payload with a nested claim (a second eyJ inside it)', nestedPayload],
+    ])('backs off a JWT cut inside its payload to exactly its start: %s', (_name, payload) => {
+      expect(leaf(jwtOf(payload))).toBe(TRUNCATION_MARKER); // begins the leaf, nothing before it to keep
       for (const prefix of ['id_token=', '/auth/callback/', 'token.', 'a_b-c']) {
-        const out = leaf(`${prefix}${jwt}`);
-        expect(out).toContain(prefix);
-        expect(out).not.toContain(payload); // the claims are gone
-        expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+        expect(leaf(`${prefix}${jwtOf(payload)}`)).toBe(`${prefix}${TRUNCATION_MARKER}`);
       }
+    });
+
+    it('leaves a JWT cut inside its SIGNATURE to redaction, which matches the three segments whole', () => {
+      const shortPayload = b64url(`{${claims}}`);
+      const jwt = `${header}.${shortPayload}.${'S'.repeat(9000)}`;
+      const out = leaf(`id_token=${jwt}`);
+      expect(out.startsWith(`id_token=${header}.`)).toBe(true);
+      const redacted = redactShapes(out);
+      expect(redacted).not.toContain(shortPayload);
+      expect(redacted.startsWith('id_token=<redacted>')).toBe(true);
+    });
+
+    it('drops a JWT that follows a space (the space is the boundary, the JWT is the unfinished run)', () => {
+      const out = leaf(`${'word '.repeat(10)} ${jwtOf(nestedPayload)}`);
+      expect(out).not.toContain(nestedPayload.slice(0, 20));
+      expect(out.startsWith('word word')).toBe(true);
+      expect(leaf(` ${jwtOf(plainPayload)}`)).toBe(` ${TRUNCATION_MARKER}`);
     });
 
     it('ignores a secret that begins AFTER the cut (nothing of it is kept, the leaf stays at its cap)', () => {
@@ -567,26 +600,39 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape s
       expect(out.startsWith('aaaa')).toBe(true);
     });
 
-    it('drops a JWT that follows a space (the space is the boundary, the JWT is the unfinished run)', () => {
-      const out = leaf(`${'word '.repeat(10)} ${jwt}`);
-      expect(out).not.toContain(payload);
-      expect(out.startsWith('word word')).toBe(true);
-      expect(leaf(` ${jwt}`)).toBe(` ${TRUNCATION_MARKER}`);
-    });
-
     it.each([
       ['ghp_', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
       ['AKIA', 'AKIAIOSFODNN7EXAMPLE'],
       ['ASIA', 'ASIAIOSFODNN7EXAMPLE'],
-      // Built from pieces so the repository's secret scanning does not take a fixture for a live key.
+    ])('backs off a %s secret the cut leaves half-written to exactly its start', (_needle, secret) => {
+      const filler = 'a'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - 9); // 9 characters of the secret survive
+      expect(leaf(`${filler}${secret}${'b'.repeat(200)}`)).toBe(`${filler}${TRUNCATION_MARKER}`);
+    });
+
+    it.each([
       ['sk_live_', ['sk', 'live', 'abcdefghijklmnopqrstuvwx'].join('_')],
       ['whsec_', ['whsec', 'abcdefghijklmnopqrstuvwx'].join('_')],
-    ])('drops a %s secret the cut leaves half-written', (needle, secret) => {
-      const filler = 'a'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - 9); // 9 characters of the secret survive
+    ])('keeps a %s prefix: its pattern matches a partial key, so redaction takes it whole', (_needle, secret) => {
+      const filler = 'a'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - 9);
       const out = leaf(`${filler}${secret}${'b'.repeat(200)}`);
-      expect(out).not.toContain(needle);
-      expect(out.startsWith('aaaa')).toBe(true);
-      expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+      expect(redactShapes(out)).not.toContain(secret.slice(0, 12));
+    });
+
+    it('does not cut a complete secret in half because another shape begins inside it', () => {
+      const filler = 'a'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - 30);
+      // a complete AKIA key with an ASIA inside its tail, then more run past the cut
+      const out = leaf(`x=${filler}AKIAXXXXASIAYYYYYYYY${'c'.repeat(200)}`);
+      expect(out.startsWith('x=aaaa')).toBe(true);
+      expect(out).toContain('AKIAXXXXASIAYYYYYYYY'); // complete: kept for redaction to match whole
+    });
+
+    it('finds the unfinished secret after complete, independent ones', () => {
+      const first = `ghp_${'a'.repeat(36)}`;
+      const second = 'AKIAIOSFODNN7EXAMPLE';
+      const lead = `${first}${second}`;
+      const filler = 'q'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - lead.length - 9);
+      const out = leaf(`${lead}${filler}${'AKIAIOSFODNN7EXAMPLE'}${'d'.repeat(200)}`);
+      expect(out).toBe(`${lead}${filler}${TRUNCATION_MARKER}`);
     });
   });
 
