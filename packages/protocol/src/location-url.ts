@@ -54,15 +54,32 @@ const SPECIAL_SCHEMES = new Set(['http', 'https', 'ws', 'wss', 'ftp']);
  * screen's identity.
  */
 const LOCATION_EXTRA_KEYS = new Set(['code', 'state', 'session', 'sid', 'sig', 'ticket']);
+const isKeyBlank = (char: string): boolean => char === '"' || char === "'" || /\s/.test(char);
+
+/**
+ * A key as the exact-key list compares it: a form `+` is a space, leading/trailing whitespace and quotes are dropped, and
+ * ONE trailing `[...]` group is dropped (`code[]`, `code[0]`). Index scans, not `/^[\s"']+|[\s"']+$/` and
+ * `/\[[^\]]*\]$/`: those rescan from every position of a run (a key is up to 8192 characters, ~35 ms for 8000 `[`).
+ */
+function plainKey(raw: string): string {
+  const key = raw.replace(/\+/g, ' ');
+  let start = 0;
+  let end = key.length;
+  while (start < end && isKeyBlank(key[start] as string)) start += 1;
+  while (end > start && isKeyBlank(key[end - 1] as string)) end -= 1;
+  if (end > start && key[end - 1] === ']') {
+    // the LEFTMOST `[` after the previous `]` opens the group that this final `]` closes
+    let open = -1;
+    for (let index = end - 2; index >= start && key[index] !== ']'; index -= 1) {
+      if (key[index] === '[') open = index;
+    }
+    if (open >= 0) end = open;
+  }
+  return key.slice(start, end);
+}
+
 const isLocationKey = (decodedKey: string): boolean =>
-  LOCATION_EXTRA_KEYS.has(
-    normalizeKey(
-      decodedKey
-        .replace(/\+/g, ' ')
-        .replace(/^[\s"']+|[\s"']+$/g, '')
-        .replace(/\[[^\]]*\]$/, ''),
-    ),
-  );
+  LOCATION_EXTRA_KEYS.has(normalizeKey(plainKey(decodedKey)));
 
 /**
  * Decode percent-escapes TOLERANTLY: every maximal run of valid `%XX` escapes is decoded as UTF-8 when it is valid, and

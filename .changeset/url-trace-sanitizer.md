@@ -27,3 +27,4 @@ New `url` system trace and a sanitizer for the page's own address (C11, C21, C25
 - Seventh review round (`@bugsee/core` frames): Chrome's eval wrapper ends only at `)` + any `)`s + `, ` or the end of the string, so parentheses and commas in a query or fragment no longer close it early; a clip that cuts a URL open drops that URL; a double-encoded leading `%252B`/`%2520` before a nested URL keeps its encoding.
 - Eighth review round: the eval wrapper's closing `)` cannot follow another `)` (no quadratic rescan on a run of them); leading blanks other than a plain `+`/`%20`/`%2B` before a nested URL are re-encoded with `+` kept as `+`.
 - Ninth review round: the leading blanks of an encoded nested value keep their written form unit by unit (`%2B`, `+`, `%09`, `%C2%A0`, `%252B`).
+- Tenth review round: the exact-key normalisation of the page-address sanitizer is linear on long runs of `[`, spaces or quotes (it was quadratic within the 8192 clip).

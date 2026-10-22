@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS, measure } from './linear-time.test-helper';
 import { sanitizeLocationName, sanitizeLocationUrl } from './location-url';
 import { sanitizeUrl } from './url';
 
@@ -397,6 +397,27 @@ describe('sanitizeLocationUrl: the rule table', () => {
       'a nested relative value with a fragment',
       'https://a.com/?next=cb%23code%3DS',
       `https://a.com/?next=cb%23code%3D%253Credacted%253E`,
+    ],
+    [
+      'the LEFTMOST [ opens the closing group (code[x[y])',
+      'https://a.com/?code[x[y]=S',
+      `https://a.com/?code[x[y]=${R}`,
+    ],
+    [
+      'only ONE trailing bracket group is dropped (code[0][1] is not code)',
+      'https://a.com/?code[0][1]=S',
+      'https://a.com/?code[0][1]=S',
+    ],
+    ['single quotes around the key', "https://a.com/?'code'=S", `https://a.com/?'code'=${R}`],
+    [
+      'quotes inside padding',
+      'https://a.com/?%20%22code%22%20=S',
+      `https://a.com/?%20%22code%22%20=${R}`,
+    ],
+    [
+      'quotes inside tab padding',
+      'https://a.com/?%09%27state%27%09=S',
+      `https://a.com/?%09%27state%27%09=${R}`,
     ],
     [
       'extended keys in a matrix segment',
@@ -798,6 +819,34 @@ describe('sanitizeLocationUrl: properties', () => {
         },
       ),
     );
+  });
+});
+
+describe('sanitizeLocationUrl: key normalisation is linear on long runs', () => {
+  // The address is clipped at 8192 characters first, so a `/^[\s"']+|[\s"']+$/` or `/\[[^\]]*\]$/` regex that rescans each
+  // run start cost up to ~35 ms there (measured 29 ms for 8000 `[`, 36 ms for `x` + 8000 spaces + `y`, against 0.3 ms for
+  // an `a` run). Compared with a same-size control, taking the best of several repetitions, so a loaded machine cannot flip it.
+  const best = (input: string): number => {
+    let min = Number.POSITIVE_INFINITY;
+    for (let rep = 0; rep < 7; rep += 1) {
+      min = Math.min(
+        min,
+        measure(() => {
+          sanitizeLocationUrl(input);
+        }),
+      );
+    }
+    return min;
+  };
+  const control = best(`https://a.com/?${'a'.repeat(8000)}=1`);
+  it.each([
+    ['a run of [ before the key', `https://a.com/?${'['.repeat(8000)}x=1`],
+    ['a run of [ inside the key', `https://a.com/?x${'['.repeat(8000)}=1`],
+    ['spaces between key characters', `https://a.com/?x${' '.repeat(8000)}y=1`],
+    ['a run of spaces then the key', `https://a.com/?${' '.repeat(8000)}x=1`],
+    ['a run of quotes inside the key', `https://a.com/?x${'"'.repeat(8000)}y=1`],
+  ])('%s', (_name, input) => {
+    expect(best(input)).toBeLessThan(Math.max(control * 20, 8)); // quadratic: 30-100x the control, 25-36 ms
   });
 });
 

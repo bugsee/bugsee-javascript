@@ -261,14 +261,24 @@ describe('parseV8Stack', () => {
     expect(parseLocation(frames(')')[0] as string).file).not.toContain('token=S)');
   });
 
-  it('many URL starts followed by a long run of `)` stay fast (the reviewer repro: 675 ms per frame without the lookbehind)', () => {
-    const input = `eval at ${'(https://'.repeat(152)}${')'.repeat(2700)} x`;
-    const started = Date.now();
-    parseLocation(input);
-    const stack = `Error: x\n    at eval (${input}:1:1)`;
-    for (let i = 0; i < 5; i += 1) parseV8Stack(stack);
-    // measured ~2 ms per frame at this head; the quadratic rule took ~675 ms per frame
-    expect(Date.now() - started).toBeLessThan(250);
+  it('many URL starts followed by a long run of `)` cost about the same as the same input without the run (the reviewer repro)', () => {
+    const now = (): number =>
+      (globalThis as unknown as { performance: { now(): number } }).performance.now();
+    const best = (fill: string): number => {
+      const input = `eval at ${'(https://'.repeat(152)}${fill.repeat(2700)} x`;
+      let min = Number.POSITIVE_INFINITY;
+      for (let rep = 0; rep < 7; rep += 1) {
+        const started = now();
+        parseLocation(input);
+        min = Math.min(min, now() - started);
+      }
+      return min;
+    };
+    const control = best('a');
+    const parens = best(')');
+    // fixed: ~2 ms, the same order as the control; without the `(?<!\))` lookbehind: ~675 ms per call (a few hundred times)
+    expect(parens).toBeLessThan(Math.max(control * 20, 25));
+    expect(parens).toBeLessThan(3000);
   });
 
   it('an unusual-but-valid wrapper whose URL ends in `)` is still sanitized', () => {
