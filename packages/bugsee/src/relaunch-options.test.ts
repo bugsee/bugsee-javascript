@@ -130,13 +130,18 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    wrapper is bound to the launch's tracker and reporter. A node/umbrella `relaunch()` in an Electron main re-runs
  *    the NODE launch, so like `systemTraceProducers` it is not re-applied: the relaunched client has the plain node
  *    producers and events source (no `app_metrics`/`child_process_gone`), while the kept `hardwareExtras` keeps
- *    serving `hardware.gpu`.
+ *    serving `hardware.gpu`;
+ *  - `diskPressure` (node, set by `@bugsee/electron`'s `launchMain`) is the one DiskPressure state its `capture` trace
+ *    producer also follows. It is a live object bound to that launch's producer, so a relaunch builds a fresh one for
+ *    the plain node launch (`captureDiskSpace` and `diskProtection` are kept, so the store protection survives; only the
+ *    Electron `capture` trace stops, like the other Electron producers above).
  */
 const RESET_OPTIONS: readonly string[] = [
   'BrowserWindow',
   'app',
   'appToken',
   'captureWindowEvents',
+  'diskPressure',
   'flushTimeoutMs',
   'gpuInfoType',
   'injectTraceMeta',
@@ -146,6 +151,7 @@ const RESET_OPTIONS: readonly string[] = [
   'bridge',
   'captureBreadcrumbs',
   'captureDiskSpace',
+  'diskProtection',
   'captureEnvironmentHints',
   'captureInteractions',
   'captureLocalVariables',

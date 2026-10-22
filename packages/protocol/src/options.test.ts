@@ -67,6 +67,8 @@ describe('BugseeOption canonical identifiers', () => {
       'com.bugsee.option.capture.environment-hints',
     );
     expect(BugseeOption.CaptureStartInBlackout).toBe('com.bugsee.option.capture.start-in-blackout');
+    expect(BugseeOption.CaptureDiskSpace).toBe('com.bugsee.option.capture.disk-space');
+    expect(BugseeOption.CaptureDiskProtection).toBe('com.bugsee.option.capture.disk-protection');
     expect(BugseeOption.DetectCrash).toBe('com.bugsee.option.detect.crash');
     expect(BugseeOption.Duration).toBe('com.bugsee.option.config.duration');
     expect(BugseeOption.MaxDataSize).toBe('com.bugsee.option.config.data-size');

@@ -1,8 +1,14 @@
 import 'fake-indexeddb/auto';
-import type { CaptureSnapshot, Clock, PartRef, StoredEntry } from '@bugsee/core';
+import {
+  type CaptureSnapshot,
+  type Clock,
+  createDiskPressure,
+  type PartRef,
+  type StoredEntry,
+} from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type AsyncKeyedStore, createIdbKeyedStore } from './idb';
 import { createIdbChunkBackend, createIdbChunkCaptureStore } from './idb-chunk-backend';
 
@@ -745,5 +751,899 @@ describe('write-queue back-pressure', () => {
     }
     await b.flush?.();
     expect(await store.readPrefix(dataPrefixFor(6, 0))).toHaveLength(200);
+  });
+});
+
+describe('createIdbChunkCaptureStore — disk pressure (C7)', () => {
+  const MB = 1024 * 1024;
+  const mk = (store: AsyncKeyedStore) => {
+    const pressure = createDiskPressure();
+    return {
+      pressure,
+      store: createIdbChunkCaptureStore(store, {
+        clock: clockAt(10_000),
+        generation: 42,
+        diskPressure: pressure,
+      }),
+    };
+  };
+  const dataKeys = async (store: AsyncKeyedStore): Promise<string[]> =>
+    (await store.readPrefix('d/')).map(([key]) => key);
+
+  it('stops writing replay/log/network below low, still writes traces, and keeps the window', async () => {
+    const backing = keyed();
+    const { pressure, store } = mk(backing);
+    store.add(rec('before', 'log', 10_000));
+    pressure.observe(30 * MB);
+    store.add(rec('dropped-log', 'log', 10_001));
+    store.add(rec('dropped-replay', 'replay', 10_002));
+    store.add(rec('kept-trace', 'traces.system', 10_003));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(2); // 'before' + the trace
+    const all = await store.snapshot().drainAll();
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['before', 'dropped-log']);
+    expect(all.get('replay')?.map((r) => r.serialized)).toEqual(['dropped-replay']);
+    expect(all.get('traces.system')?.map((r) => r.serialized)).toEqual(['kept-trace']);
+  });
+
+  it('persists nothing below none, then resumes on recovery', async () => {
+    const backing = keyed();
+    const { pressure, store } = mk(backing);
+    pressure.observe(5 * MB);
+    store.add(rec('a', 'traces.system', 10_000));
+    store.tick(11_000);
+    store.add(rec('b', 'log', 11_000));
+    await store.flush?.();
+    expect(await dataKeys(backing)).toEqual([]);
+    pressure.observe(100 * MB);
+    store.add(rec('c', 'log', 11_500));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(1);
+    expect((await store.snapshot().drainAll()).get('log')?.map((r) => r.serialized)).toEqual([
+      'b',
+      'c',
+    ]);
+  });
+
+  it('a snapshot taken under low stays frozen when a durable record is appended to the same open part', async () => {
+    const { pressure, store } = mk(keyed());
+    store.add(rec('d1', 'traces.system', 10_000));
+    pressure.observe(30 * MB);
+    store.add(rec('s1', 'log', 10_001));
+    const snap = store.snapshot();
+    store.add(rec('d2', 'traces.system', 10_002));
+    const all = await snap.drainAll();
+    snap.release();
+    expect(all.get('traces.system')?.map((r) => r.serialized)).toEqual(['d1']);
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['s1']);
+  });
+
+  it('is unchanged when no pressure is supplied', async () => {
+    const backing = keyed();
+    const store = createIdbChunkCaptureStore(backing, { clock: clockAt(10_000), generation: 42 });
+    store.add(rec('x', 'log', 10_000));
+    await store.flush?.();
+    expect((await dataKeys(backing)).length).toBe(1);
+  });
+});
+
+describe('createIdbChunkBackend — health hooks (onWriteFailure / onWriteRecovered)', () => {
+  const quota = (): Error => Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  const flaky = () => {
+    const inner = keyed();
+    const state = { broken: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.broken ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    return { store, state };
+  };
+  const hooks = () => {
+    const failures: unknown[] = [];
+    const counts = { recovered: 0 };
+    return {
+      failures,
+      counts,
+      options: {
+        onWriteFailure: (e: unknown) => void failures.push(e),
+        onWriteRecovered: () => {
+          counts.recovered += 1;
+        },
+      },
+    };
+  };
+
+  it('reports EVERY failed write (onError hears only the first), then recovers once on the first success after', async () => {
+    const { store, state } = flaky();
+    const h = hooks();
+    const errors: unknown[] = [];
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onError: (e) => errors.push(e),
+      failureThreshold: 1000,
+      ...h.options,
+    });
+    b.openPart(ref(5, 0), 1);
+    await b.flush?.();
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('b'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('c'));
+    await b.flush?.();
+    expect(h.failures).toHaveLength(3);
+    expect(errors.filter((e) => (e as Error).name === 'QuotaExceededError')).toHaveLength(1);
+    expect(h.counts.recovered).toBe(0);
+    state.broken = false;
+    b.appendEntry(ref(5, 0), rec('d'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('e'));
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(1);
+  });
+
+  it('neither a successful DELETE nor a META put after failures reports recovery (both work on a full quota); a DATA put does', async () => {
+    const inner = keyed();
+    const state = { broken: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.broken ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    const h = hooks();
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      ...h.options,
+    });
+    b.openPart(ref(5, 0), 1);
+    await b.flush?.();
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    expect(h.failures).toHaveLength(1);
+    b.removePart(ref(5, 0)); // deletes still work
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(0);
+    state.broken = false;
+    b.openPart(ref(5, 1), 2); // a META write succeeds: a few dozen bytes proves nothing about real records
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(0);
+    b.appendEntry(ref(5, 1), rec('real')); // a DATA write does
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(1);
+  });
+
+  it('a throwing hook never breaks the drain: later flushes still resolve', async () => {
+    const { store, state } = flaky();
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onWriteFailure: () => {
+        throw new Error('hook');
+      },
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+    });
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    state.broken = false;
+    b.appendEntry(ref(5, 0), rec('b'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('c'));
+    await expect(b.flush?.()).resolves.toBeUndefined();
+  });
+
+  it('the capture store forwards the hooks to its IndexedDB backend', async () => {
+    const { store, state } = flaky();
+    const h = hooks();
+    const s = createIdbChunkCaptureStore(store, {
+      clock: clockAt(10_000),
+      generation: 42,
+      cleanOtherGenerations: false,
+      ...h.options,
+    });
+    state.broken = true;
+    s.add(rec('a', 'log', 10_000));
+    await s.flush?.();
+    expect(h.failures.length).toBeGreaterThan(0);
+  });
+});
+
+describe('createIdbChunkBackend — a record whose write never lands stays in the live window', () => {
+  const quota = (): Error => Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  const refusing = () => {
+    const inner = keyed();
+    const state = { refuse: (_key: string): boolean => false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.refuse(key) ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    return { store, state };
+  };
+  const seqOf = (key: string): number => Number(key.slice(key.lastIndexOf('/') + 1));
+  const texts = async (snap: CaptureSnapshot): Promise<string[]> => collect(snap);
+
+  it('a refused put is served from memory, in sequence, between the records that landed', async () => {
+    const { store, state } = refusing();
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    state.refuse = (key) => key.startsWith('d/') && seqOf(key) === 1;
+    b.appendEntry(ref(5, 0), rec('r0'));
+    b.appendEntry(ref(5, 0), rec('big-replay-snapshot')); // refused
+    b.appendEntry(ref(5, 0), rec('r2'));
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 3 }]))).toEqual([
+      'r0',
+      'big-replay-snapshot',
+      'r2',
+    ]);
+  });
+
+  it('honours the freeze by sequence: a record appended after the snapshot stays out, even with a hole before it', async () => {
+    const { store, state } = refusing();
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    state.refuse = (key) => key.startsWith('d/') && seqOf(key) === 1;
+    b.appendEntry(ref(5, 0), rec('r0'));
+    b.appendEntry(ref(5, 0), rec('r1-refused'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 2 }]);
+    b.appendEntry(ref(5, 0), rec('r2-after'));
+    expect(await texts(snap)).toEqual(['r0', 'r1-refused']);
+    snap.release();
+  });
+
+  it('a record skipped by the open circuit, and one shed by the queue bound, are kept too', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      failureThreshold: 1,
+      maxPendingWrites: 3,
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 8; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const got = await texts(b.snapshot([{ ref: ref(5, 0), count: 8 }]));
+    expect(got).toEqual(Array.from({ length: 8 }, (_, i) => `r${i}`));
+  });
+
+  it('a refused record is dropped with its part, and a snapshot taken before keeps its own copy', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('lost'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    b.removePart(ref(5, 0));
+    expect(await texts(snap)).toEqual(['lost']);
+    snap.release();
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+  });
+
+  it('a write that fails AFTER its part was evicted does not retain the record (nothing will ever read it)', async () => {
+    const { store, state } = refusing();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    state.refuse = () => true;
+    const slow: AsyncKeyedStore = {
+      ...store,
+      put: async (k, v) => {
+        await gate;
+        return store.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(slow, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    b.removePart(ref(5, 0));
+    release?.();
+    await b.flush?.();
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+  });
+
+  it('removeGeneration drops the refused records of that generation only', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.openPart(ref(6, 0), 1);
+    b.appendEntry(ref(5, 0), rec('gen5'));
+    b.appendEntry(ref(6, 0), rec('gen6'));
+    await b.flush?.();
+    b.removeGeneration(5);
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+    expect(await texts(b.snapshot([{ ref: ref(6, 0), count: 1 }]))).toEqual(['gen6']);
+  });
+
+  it('a failed DELETE or META write does not call onWriteFailure for the pressure pin only when it is not a write: deletes never do', async () => {
+    const inner = keyed();
+    const failures: unknown[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      deletePrefix: () => Promise.reject(new Error('delete failed')),
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onError: () => {},
+      onWriteFailure: (e) => void failures.push(e),
+    });
+    b.openPart(ref(5, 0), 1);
+    b.removePart(ref(5, 0));
+    await b.flush?.();
+    expect(failures).toEqual([]);
+  });
+});
+
+const MB_UNREADABLE = 1024 * 1024;
+
+describe('createIdbChunkCaptureStore — an unreadable IndexedDB serves the in-memory window (a live report survives)', () => {
+  it('a read that fails (a closed connection) falls back to memory and reports once through onDiskReadError', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: () =>
+        Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' })),
+    };
+    const pressure = createDiskPressure();
+    const onDiskReadError = vi.fn();
+    const s = createIdbChunkCaptureStore(store, {
+      clock: clockAt(10_000),
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: pressure,
+      onDiskReadError,
+    });
+    pressure.observe(30 * MB_UNREADABLE);
+    s.add(rec('in-memory', 'log', 10_000));
+    const snap = s.snapshot();
+    const all = await snap.drainAll();
+    snap.release();
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['in-memory']);
+    expect(onDiskReadError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createIdbChunkBackend — inMemory(), cancellation and the freeze over unlanded records', () => {
+  const quota = (): Error => Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  const seqOf = (key: string): number => Number(key.slice(key.lastIndexOf('/') + 1));
+  const flat = (m: Map<FileType, StoredEntry[]> | undefined): string[] =>
+    [...(m?.values() ?? [])]
+      .flat()
+      .map((r) => r.serialized)
+      .sort();
+
+  it('inMemory() holds records still QUEUED for a store that never answers, grouped by type, without touching the store', () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('queued-log', 'log'));
+    b.appendEntry(ref(5, 0), rec('queued-net', 'network'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 2 }]);
+    const held = snap.inMemory?.();
+    expect(held?.get('log')?.map((r) => r.serialized)).toEqual(['queued-log']);
+    expect(held?.get('network')?.map((r) => r.serialized)).toEqual(['queued-net']);
+  });
+
+  it('inMemory() holds refused records and NOT the ones that landed, in sequence, honouring the freeze (seq < count)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) =>
+        key.startsWith('d/') && seqOf(key) % 2 === 1
+          ? Promise.reject(quota())
+          : inner.put(key, value),
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 6; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    await b.flush?.();
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 4 }]); // seq 0..3 frozen: refused are seq 1 and 3
+    expect(flat(snap.inMemory?.())).toEqual(['r1', 'r3']);
+    // the readable half applies the same freeze to the in-memory records: r5 (seq 5 >= count) must not appear
+    expect(await collect(snap)).toEqual(['r0', 'r1', 'r2', 'r3']);
+  });
+
+  it('release() cancels a read waiting on a queue that never drains, and the read resolves empty instead of hanging', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const read = snap.drainAll();
+    snap.release();
+    expect((await read).size).toBe(0);
+  });
+
+  it('release() also cancels a read stuck inside readPrefix (an open() that never answers)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = { ...inner, readPrefix: () => new Promise(() => {}) };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const read = snap.drainAll();
+    await Promise.resolve();
+    snap.release();
+    expect((await read).size).toBe(0);
+  });
+
+  it('release() lets go of the in-memory maps at once, so an abandoned snapshot cannot pin a part window of records', () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('held'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    expect(flat(snap.inMemory?.())).toEqual(['held']);
+    snap.release();
+    expect(flat(snap.inMemory?.())).toEqual([]);
+  });
+
+  it('a record that LANDED is no longer held in memory', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('landed'));
+    await b.flush?.();
+    expect(flat(b.snapshot([{ ref: ref(5, 0), count: 1 }]).inMemory?.())).toEqual([]);
+  });
+
+  it('a part removed while a snapshot holds its in-memory records keeps serving them to that snapshot only', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('kept'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    b.removePart(ref(5, 0));
+    expect(flat(snap.inMemory?.())).toEqual(['kept']);
+    expect(flat(b.snapshot([{ ref: ref(5, 0), count: 1 }]).inMemory?.())).toEqual([]);
+  });
+});
+
+describe('createIdbChunkBackend — a snapshot tells a stalled queue from a slow one', () => {
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('gives up on a queue that makes NO progress for stallMs and rejects (the wrapper then serves memory)', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+    });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const t0 = Date.now();
+    await expect(snap.drainAll()).rejects.toThrow(/no progress for 300 ms/);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(
+      snap
+        .inMemory?.()
+        .get('log')
+        ?.map((r) => r.serialized),
+    ).toEqual(['x']);
+    snap.release();
+  });
+
+  it('keeps waiting while the queue IS progressing, however long that takes (a slow healthy device must not be mistaken for a dead one)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: async (k, v) => {
+        await sleep(120); // each write is slow, but they keep landing
+        return inner.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 10; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const started = Date.now();
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 10 }]));
+    expect(Date.now() - started).toBeGreaterThan(900); // far longer than stallMs
+    expect(got).toEqual(Array.from({ length: 10 }, (_, i) => `r${i}`));
+  });
+
+  it('the stall clock starts when the queue becomes BUSY, not when it was last busy (an idle hour is not a stall)', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 600,
+    });
+    await sleep(700); // idle for longer than stallMs before anything is queued
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    const t0 = Date.now();
+    await expect(b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll()).rejects.toThrow(
+      /no progress/,
+    );
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(500); // it waited for stallMs of silence, it did not fire at once
+  });
+
+  it('an abandoned wait (release()) stops its watch timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const never = () => new Promise<never>(() => {});
+      const store: AsyncKeyedStore = {
+        put: never,
+        readPrefix: never,
+        keys: never,
+        deletePrefix: never,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+      const read = snap.drainAll();
+      expect(vi.getTimerCount()).toBeGreaterThan(0); // the watch is running
+      snap.release();
+      await read;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an op that FAILS counts as progress (the store is answering)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: async (k, v) => {
+        await sleep(120);
+        if (k.startsWith('d/'))
+          throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+        return inner.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+      failureThreshold: 1000,
+      onError: () => {},
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 8; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 8 }]));
+    expect(got).toEqual(Array.from({ length: 8 }, (_, i) => `r${i}`)); // all refused, all served from memory
+  });
+
+  it('a readPrefix that never answers rejects after readTimeoutMs, and a cancelled wait stops its watch timer', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = { ...inner, readPrefix: () => new Promise(() => {}) };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      readTimeoutMs: 200,
+    });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    await expect(b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll()).rejects.toThrow(
+      /did not answer a read in 200 ms/,
+    );
+    const never = () => new Promise<never>(() => {});
+    const stuck = createIdbChunkBackend(
+      { put: never, readPrefix: never, keys: never, deletePrefix: never },
+      {
+        generation: 6,
+        cleanOtherGenerations: false,
+        stallMs: 60_000,
+      },
+    );
+    stuck.openPart(ref(6, 0), 1);
+    stuck.appendEntry(ref(6, 0), rec('y'));
+    const snap = stuck.snapshot([{ ref: ref(6, 0), count: 1 }]);
+    const read = snap.drainAll();
+    snap.release();
+    expect((await read).size).toBe(0);
+  });
+
+  it('a read that answers in time clears its deadline timer (no timer is left behind)', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 1 }]));
+    expect(got).toEqual(['x']);
+  });
+});
+
+describe('createIdbChunkCaptureStore — a transient unreadable IndexedDB never hides what landed (no dead window)', () => {
+  it('after ONE failed read the very next report has every landed record, old and new, not just the not-yet-landed ones', async () => {
+    const inner = keyed();
+    const state = { failReads: false, failures: 0 };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        if (state.failReads) {
+          state.failures += 1;
+          return Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }));
+        }
+        return inner.readPrefix(prefix);
+      },
+    };
+    const pressure = createDiskPressure();
+    const onDiskReadError = vi.fn();
+    let now = 10_000;
+    const s = createIdbChunkCaptureStore(store, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: pressure,
+      onDiskReadError,
+    });
+    const logs = async (): Promise<string[]> => {
+      const snap = s.snapshot();
+      const all = await snap.drainAll();
+      snap.release();
+      return (all.get('log') ?? []).map((r) => r.serialized);
+    };
+    for (let i = 0; i < 5; i++) s.add(rec(`old-${i}`, 'log', now));
+    await s.flush?.();
+    state.failReads = true;
+    expect(await logs()).toEqual([]); // unreadable: nothing landed can be shown, nothing is invented
+    state.failReads = false; // one transient failure, then the store is healthy
+    for (let i = 0; i < 5; i++) s.add(rec(`new-${i}`, 'log', now));
+    await s.flush?.();
+    const expected = [
+      ...Array.from({ length: 5 }, (_, i) => `old-${i}`),
+      ...Array.from({ length: 5 }, (_, i) => `new-${i}`),
+    ];
+    for (let tick = 0; tick < 62; tick++) {
+      now += 1000;
+      s.tick(now);
+      if (tick === 0 || tick === 30 || tick === 59 || tick === 61) {
+        expect(await logs(), `tick ${tick}`).toEqual(expected); // was: 0 records until the 60-tick window ended
+      }
+    }
+    expect(state.failures).toBe(1);
+    expect(onDiskReadError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createIdbChunkBackend — freeze boundary and default deadlines', () => {
+  const never = () => new Promise<never>(() => {});
+
+  it('the in-memory freeze is EXCLUSIVE at count: seq == count was appended after the snapshot and stays out', () => {
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 3; i++) b.appendEntry(ref(5, 0), rec(`r${i}`)); // seq 0, 1, 2
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 2 }]);
+    expect([...(snap.inMemory?.().values() ?? [])].flat().map((r) => r.serialized)).toEqual([
+      'r0',
+      'r1',
+    ]);
+  });
+
+  it('a readPrefix gets 10 s by default: 9999 ms is waited out, 10000 ms rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      const store: AsyncKeyedStore = {
+        put: async () => undefined, // plain promises: fake-indexeddb schedules with timers that fake timers would freeze
+        readPrefix: never,
+        keys: async () => [],
+        deletePrefix: async () => undefined,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      await b.flush?.();
+      let rejected: unknown;
+      const read = b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll();
+      read.catch((e: unknown) => {
+        rejected = e;
+      });
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(rejected).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect((rejected as Error).message).toMatch(/did not answer a read in 10000 ms/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the queue stall default is 5 s: 4999 ms of silence is waited out, 5000 ms gives up', async () => {
+    vi.useFakeTimers();
+    try {
+      const store: AsyncKeyedStore = {
+        put: never,
+        readPrefix: never,
+        keys: never,
+        deletePrefix: never,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      let rejected: unknown;
+      b.snapshot([{ ref: ref(5, 0), count: 1 }])
+        .drainAll()
+        .catch((e: unknown) => {
+          rejected = e;
+        });
+      await vi.advanceTimersByTimeAsync(4750);
+      expect(rejected).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(250);
+      expect((rejected as Error).message).toMatch(/no progress for 5000 ms/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('createIdbChunkBackend — the frozen in-memory copy', () => {
+  const flat = (m: Map<FileType, StoredEntry[]> | undefined): string[] =>
+    [...(m?.values() ?? [])]
+      .flat()
+      .map((r) => r.serialized)
+      .sort();
+
+  it('a write that LANDS after the freeze but before a failing read is still served from memory', async () => {
+    const inner = keyed();
+    const state = { failReads: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) =>
+        state.failReads
+          ? Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }))
+          : inner.readPrefix(prefix),
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('queued', 'log')); // not landed yet at the freeze
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    await b.flush?.(); // it lands now: it leaves the live map
+    state.failReads = true;
+    await expect(snap.drainAll()).rejects.toThrow();
+    expect(flat(snap.inMemory?.())).toEqual(['queued']); // the copy still has it
+  });
+
+  it('a record that both landed and sits in the frozen copy appears ONCE when the read succeeds', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('once', 'log'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]); // frozen while queued
+    expect(await collect(snap)).toEqual(['once']); // landed by the time it is read, still in the copy
+  });
+});
+
+describe('createIdbChunkCaptureStore — a slow but healthy IndexedDB recovers from degraded (real backend, real timers)', () => {
+  it('one failed read, then reads that take 5 s: the next report is short, the one after has every landed record', async () => {
+    const inner = keyed();
+    const state = { mode: 'ok' as 'ok' | 'fail' | 'slow' };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        if (state.mode === 'fail') {
+          return Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }));
+        }
+        if (state.mode === 'slow') {
+          return new Promise((resolve) =>
+            setTimeout(() => resolve(inner.readPrefix(prefix)), 5000),
+          );
+        }
+        return inner.readPrefix(prefix);
+      },
+    };
+    const now = 10_000;
+    const s = createIdbChunkCaptureStore(store, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: createDiskPressure(),
+      onDiskReadError: () => {},
+    });
+    const report = async (): Promise<{ logs: string[]; ms: number }> => {
+      const t0 = Date.now();
+      const snap = s.snapshot();
+      const all = await snap.drainAll();
+      snap.release();
+      return { logs: (all.get('log') ?? []).map((r) => r.serialized), ms: Date.now() - t0 };
+    };
+    for (let i = 0; i < 4; i++) s.add(rec(`r${i}`, 'log', now));
+    await s.flush?.();
+    state.mode = 'fail';
+    expect((await report()).logs).toEqual([]);
+    state.mode = 'slow';
+    const second = await report(); // degraded: at most ~2 s, answered from memory
+    expect(second.ms).toBeLessThan(3500); // the 2 s deadline plus a generous margin for a loaded machine
+    expect(second.logs).toEqual([]);
+    await new Promise((r) => setTimeout(r, 4000)); // the background read finishes at ~5 s and ends the degraded state
+    const third = await report(); // full wait: it takes the 5 s and returns the data
+    expect(third.logs).toEqual(['r0', 'r1', 'r2', 'r3']);
+  }, 30_000);
+});
+
+describe('createIdbChunkBackend — unpin(): a read left to finish in the background must not delay evictions', () => {
+  const never = () => new Promise<never>(() => {});
+  const dataKeys = async (inner: AsyncKeyedStore): Promise<number> =>
+    (await inner.readPrefix('d/')).length;
+
+  it('an evicted part is deleted at once after unpin(), while the snapshot (and its read) is still alive', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = { ...inner, readPrefix: never };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    void snap.drainAll().catch(() => undefined); // a read that hangs
+    b.removePart(ref(5, 0));
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(1); // pinned by the snapshot: the delete is deferred
+    snap.unpin?.();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(0); // unpinned: deleted now, the hung read is still running
+    snap.release();
+  });
+
+  it('unpin() and release() together release the pin ONCE: another snapshot of the part keeps it pinned', async () => {
+    const inner = keyed();
+    const b = createIdbChunkBackend(inner, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const a = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const c = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    b.removePart(ref(5, 0));
+    a.unpin?.();
+    a.unpin?.();
+    a.release();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(1); // still pinned by the second snapshot (no double decrement)
+    c.release();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(0);
   });
 });

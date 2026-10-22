@@ -52,6 +52,13 @@ export interface StorageEnv {
   scheduler?: StorageTimers;
   /** Slow-poll period in ms (default 5 minutes). */
   intervalMs?: number;
+  /**
+   * Faster poll period in ms, used while the origin's HEADROOM (`quota - usage`) is under `fastBelowBytes`. Both must be
+   * given for it to apply (the disk-pressure consumer: 30 s under 500 MB). Absent: the cadence never changes.
+   */
+  fastIntervalMs?: number;
+  /** Headroom in bytes under which `fastIntervalMs` applies. */
+  fastBelowBytes?: number;
   /** Wall-clock ms for estimate age and the visibility throttle; default `Date.now`. */
   now?: () => number;
 }
@@ -91,7 +98,7 @@ export class StorageTracker extends InterceptorBase<{
   #failing = false;
   #lastPollAt: number | undefined;
   /** Present only while the slow timer is armed (the handle itself may be any value, even undefined). */
-  #timer: { handle: unknown; scheduler: StorageTimers } | undefined;
+  #timer: { handle: unknown; scheduler: StorageTimers; periodMs: number } | undefined;
   /** Present only while the visibility listener is attached. */
   #visibility: { document: NonNullable<StorageEnv['document']>; listener: () => void } | undefined;
   // Mutable indirection: the SHARED tracker outlives launches, so the reporter is always the latest launch's.
@@ -118,6 +125,8 @@ export class StorageTracker extends InterceptorBase<{
       ...pick(env.document, base.document, 'document'),
       ...pick(env.scheduler, base.scheduler, 'scheduler'),
       ...pick(env.intervalMs, base.intervalMs, 'intervalMs'),
+      ...pick(env.fastIntervalMs, base.fastIntervalMs, 'fastIntervalMs'),
+      ...pick(env.fastBelowBytes, base.fastBelowBytes, 'fastBelowBytes'),
       ...pick(env.now, base.now, 'now'),
     };
   }
@@ -208,9 +217,26 @@ export class StorageTracker extends InterceptorBase<{
     }
   }
 
+  /** The poll period for the current estimate: the fast one while headroom is under the fast threshold. */
+  #periodMs(): number {
+    const slow = this.#env.intervalMs ?? DEFAULT_INTERVAL_MS;
+    const { fastIntervalMs, fastBelowBytes } = this.#env;
+    const e = this.#estimate;
+    if (
+      fastIntervalMs === undefined ||
+      fastBelowBytes === undefined ||
+      e?.usageBytes === undefined ||
+      e.quotaBytes === undefined
+    ) {
+      return slow;
+    }
+    return e.quotaBytes - e.usageBytes < fastBelowBytes ? Math.min(fastIntervalMs, slow) : slow;
+  }
+
   #arm(): void {
     try {
       const scheduler = this.#env.scheduler ?? defaultTimers;
+      const periodMs = this.#periodMs();
       const handle = scheduler.setInterval(() => {
         // Sparse on purpose: a hidden page is not polled (visibility->visible polls on return).
         if (
@@ -221,11 +247,24 @@ export class StorageTracker extends InterceptorBase<{
         ) {
           this.#poll();
         }
-      }, this.#env.intervalMs ?? DEFAULT_INTERVAL_MS);
-      this.#timer = { handle, scheduler };
+      }, periodMs);
+      this.#timer = { handle, scheduler, periodMs };
     } catch (error) {
       this.#onError(error);
     }
+  }
+
+  /** After a reading: move an armed timer to the period that now applies (headroom crossed the fast threshold). */
+  #retune(): void {
+    const timer = this.#timer;
+    if (timer === undefined || timer.periodMs === this.#periodMs()) return;
+    this.#timer = undefined;
+    try {
+      timer.scheduler.clearInterval(timer.handle);
+    } catch (error) {
+      this.#onError(error);
+    }
+    this.#arm();
   }
 
   /** Timer + visibility listener, best-effort. */
@@ -326,6 +365,7 @@ export class StorageTracker extends InterceptorBase<{
     this.#estimate = estimate;
     // Age tracks usage/quota only: a persisted-only refresh must not make old usage/quota look fresh.
     if (usageBytes !== undefined || quotaBytes !== undefined) this.#estimateAt = this.#clock();
+    this.#retune();
     this.emit('storageEstimate', estimate);
   }
 }
@@ -363,6 +403,8 @@ function seamsOf(env: StorageTrackerEnv): StorageEnv {
     ...(env.document !== undefined ? { document: env.document } : {}),
     ...(env.scheduler !== undefined ? { scheduler: env.scheduler } : {}),
     ...(env.intervalMs !== undefined ? { intervalMs: env.intervalMs } : {}),
+    ...(env.fastIntervalMs !== undefined ? { fastIntervalMs: env.fastIntervalMs } : {}),
+    ...(env.fastBelowBytes !== undefined ? { fastBelowBytes: env.fastBelowBytes } : {}),
     ...(env.now !== undefined ? { now: env.now } : {}),
   };
 }

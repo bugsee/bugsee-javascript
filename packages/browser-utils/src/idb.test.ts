@@ -452,3 +452,198 @@ describe('close (clean shutdown)', () => {
     await Promise.resolve();
   });
 });
+
+describe('createIdbKeyedStore — a connection the browser closed under us is reopened', () => {
+  const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+  /** A factory that hands out the real database but remembers every connection and counts opens. */
+  function recordingIdb(real: IDBFactory) {
+    const dbs: IDBDatabase[] = [];
+    let opens = 0;
+    const idb = {
+      open: (name: string, version?: number) => {
+        opens += 1;
+        const request = real.open(name, version);
+        request.addEventListener('success', () => dbs.push(request.result));
+        return request;
+      },
+    } as unknown as IDBFactory;
+    return { idb, dbs, opens: () => opens };
+  }
+
+  it('reopens after the browser fires `close` on the connection (the cached handle is forgotten)', async () => {
+    const r = recordingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: r.idb });
+    await store.put('k1', bytes('a'));
+    expect(r.opens()).toBe(1);
+    const db = r.dbs[0] as IDBDatabase;
+    db.close();
+    db.onclose?.(new Event('close'));
+    await store.put('k2', bytes('b'));
+    expect(r.opens()).toBe(2);
+    expect((await store.readPrefix('k')).map(([k]) => k)).toEqual(['k1', 'k2']);
+  });
+
+  it('a stale `close` event of an OLD connection does not discard the current one', async () => {
+    const r = recordingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: r.idb });
+    await store.put('k1', bytes('a'));
+    const first = r.dbs[0] as IDBDatabase;
+    const staleClose = first.onclose;
+    first.close();
+    store.close?.(); // a clean close, then a new connection
+    await store.put('k2', bytes('b'));
+    expect(r.opens()).toBe(2);
+    staleClose?.call(first, new Event('close'));
+    await store.put('k3', bytes('c'));
+    expect(r.opens()).toBe(2); // the live connection was kept
+  });
+
+  it('a versionchange from another tab closes the connection and the next call reopens', async () => {
+    const r = recordingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: r.idb });
+    await store.put('k1', bytes('a'));
+    const db = r.dbs[0] as IDBDatabase;
+    const close = vi.spyOn(db, 'close');
+    db.onversionchange?.(new Event('versionchange') as IDBVersionChangeEvent);
+    expect(close).toHaveBeenCalledOnce(); // the old connection is released, or the other tab's upgrade stays blocked
+    await store.put('k2', bytes('b'));
+    expect(r.opens()).toBe(2);
+  });
+
+  it('a call that finds the connection closing fails with InvalidStateError, and the NEXT call works (it reopens)', async () => {
+    const r = recordingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: r.idb });
+    await store.put('k1', bytes('a'));
+    (r.dbs[0] as IDBDatabase).close(); // no `close` event: only the next transaction() tells us
+    await expect(store.put('k2', bytes('b'))).rejects.toMatchObject({ name: 'InvalidStateError' });
+    await store.put('k3', bytes('c'));
+    expect(r.opens()).toBe(2);
+    expect((await store.readPrefix('k')).map(([k]) => k)).toEqual(['k1', 'k3']);
+  });
+
+  it('any other failure leaves the connection alone', async () => {
+    const r = recordingIdb(new IDBFactory());
+    const store = createIdbKeyedStore({ indexedDB: r.idb });
+    await store.put('k1', bytes('a'));
+    await expect(store.put('k2', (() => {}) as unknown as Uint8Array)).rejects.toMatchObject({
+      name: 'DataCloneError',
+    });
+    await store.put('k3', bytes('c'));
+    expect(r.opens()).toBe(1);
+  });
+
+  it('a FAILED open is retried on the next call instead of being cached as a permanent failure', async () => {
+    const real = new IDBFactory();
+    let failNext = true;
+    const idb = {
+      open: (name: string, version?: number) => {
+        if (failNext) {
+          failNext = false;
+          const request = {} as IDBOpenDBRequest;
+          queueMicrotask(() => {
+            Object.assign(request, { error: new DOMException('blocked', 'UnknownError') });
+            request.onerror?.(new Event('error'));
+          });
+          return request;
+        }
+        return real.open(name, version);
+      },
+    } as unknown as IDBFactory;
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    await expect(store.put('k1', bytes('a'))).rejects.toBeDefined();
+    await store.put('k2', bytes('b'));
+    expect((await store.readPrefix('k')).map(([k]) => k)).toEqual(['k2']);
+  });
+
+  it('a read whose transaction ABORTS with no request error (only `abort` fires) rejects instead of hanging', async () => {
+    // A transaction the browser aborts while no request is pending fires `abort` only: fake-indexeddb also fires the
+    // requests' `error`, which hid a missing `onabort`. This factory fires nothing but `abort`.
+    const tx: Record<string, unknown> = {
+      objectStore: () => ({ getAllKeys: () => ({}), getAll: () => ({}) }),
+      error: null,
+    };
+    const db = { transaction: () => tx, close() {} };
+    const idb = {
+      open: () => {
+        const request: Record<string, unknown> = {};
+        queueMicrotask(() => {
+          request.result = db;
+          (request.onsuccess as (() => void) | undefined)?.();
+        });
+        return request;
+      },
+    } as unknown as IDBFactory;
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    const read = store.readPrefix('k');
+    await new Promise((r) => setTimeout(r, 0));
+    (tx.onabort as (() => void) | undefined)?.();
+    await expect(read).rejects.toThrow(/aborted/);
+    tx.error = new DOMException('nope', 'AbortError');
+    const again = store.readPrefix('k');
+    await new Promise((r) => setTimeout(r, 0));
+    (tx.onabort as (() => void) | undefined)?.();
+    await expect(again).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('createIdbKeyedStore — a stale InvalidStateError must not drop a NEWER connection', () => {
+  it('call A fails on the OLD connection after call B reopened: the new connection stays cached and is not orphaned', async () => {
+    const real = new IDBFactory();
+    const dbs: IDBDatabase[] = [];
+    let opens = 0;
+    const idb = {
+      open: (name: string, version?: number) => {
+        opens += 1;
+        const request = real.open(name, version);
+        request.addEventListener('success', () => dbs.push(request.result));
+        return request;
+      },
+    } as unknown as IDBFactory;
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+    await store.put('k0', enc('a')); // connection 1
+    const first = dbs[0] as IDBDatabase;
+    first.transaction = (() => {
+      throw new DOMException('closing', 'InvalidStateError');
+    }) as typeof first.transaction;
+    const callA = store.put('kA', enc('a')); // captured connection 1, fails when its microtask runs
+    first.onclose?.(new Event('close')); // the browser closes connection 1: forgotten
+    const callB = store.put('kB', enc('b')); // opens connection 2
+    await expect(callA).rejects.toMatchObject({ name: 'InvalidStateError' });
+    await callB;
+    expect(opens).toBe(2);
+    await store.put('kC', enc('c'));
+    expect(opens).toBe(2); // connection 2 is still the cached one
+    const second = dbs[1] as IDBDatabase;
+    const close = vi.spyOn(second, 'close');
+    store.close?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(close).toHaveBeenCalledOnce(); // and close() can still release it (it was not orphaned)
+  });
+
+  it('a failure on the CURRENT connection closes the dead handle quietly and the next call reopens', async () => {
+    const real = new IDBFactory();
+    const dbs: IDBDatabase[] = [];
+    const idb = {
+      open: (name: string, version?: number) => {
+        const request = real.open(name, version);
+        request.addEventListener('success', () => dbs.push(request.result));
+        return request;
+      },
+    } as unknown as IDBFactory;
+    const store = createIdbKeyedStore({ indexedDB: idb });
+    await store.put('k0', new TextEncoder().encode('a'));
+    const first = dbs[0] as IDBDatabase;
+    const close = vi.spyOn(first, 'close');
+    first.transaction = (() => {
+      throw new DOMException('closing', 'InvalidStateError');
+    }) as typeof first.transaction;
+    await expect(store.put('k1', new TextEncoder().encode('b'))).rejects.toMatchObject({
+      name: 'InvalidStateError',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(close).toHaveBeenCalledOnce();
+    await store.put('k2', new TextEncoder().encode('c'));
+    expect(dbs.length).toBe(2);
+  });
+});

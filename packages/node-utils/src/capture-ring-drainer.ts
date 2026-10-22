@@ -45,17 +45,30 @@ export interface DrainerOps {
   close(fd: number): void;
   /** Failure sink (a write/close error must never throw out of the worker). */
   onError(error: unknown): void;
+  /** A whole frame reached its file (called after every frame; the consumer decides what that means). */
+  onFrameWritten?(): void;
 }
 
-/** Write the whole of `buf` to `fd`, honoring writev's short-write contract (loop on the return value). */
-function writevAll(fd: number, buf: Uint8Array, writev: DrainerOps['writev']): void {
-  let off = 0;
+/**
+ * Write the rest of `buf` to `fd` from byte `start`, honoring writev's short-write contract (loop on the return value).
+ * `onProgress` hears the offset after every write: a LATER failure (ENOSPC after a short write) leaves the frame in
+ * the ring for a retry, and the retry must resume at that offset instead of rewriting the bytes already on disk.
+ */
+function writevAll(
+  fd: number,
+  buf: Uint8Array,
+  writev: DrainerOps['writev'],
+  start: number,
+  onProgress: (written: number) => void,
+): void {
+  let off = start;
   while (off < buf.length) {
     const n = writev(fd, [buf.subarray(off)]);
     if (n <= 0) {
       throw new Error(`writev made no progress (returned ${n})`);
     }
     off += n;
+    onProgress(off);
   }
 }
 
@@ -63,6 +76,8 @@ export class RingDrainer {
   readonly #consumer: RingConsumer;
   readonly #ops: DrainerOps;
   readonly #fds = new Map<number, number>(); // pathId → fd, opened lazily on first write and held
+  /** Bytes of the frame at the head of the ring already written by an earlier, failed pass (it stays pinned in the ring). */
+  #written = 0;
 
   constructor(consumer: RingConsumer, ops: DrainerOps) {
     this.#consumer = consumer;
@@ -90,7 +105,15 @@ export class RingDrainer {
         return;
       }
       try {
-        writevAll(this.#fdFor(frame.pathId), frame.payload, this.#ops.writev);
+        writevAll(
+          this.#fdFor(frame.pathId),
+          frame.payload,
+          this.#ops.writev,
+          this.#written,
+          (n) => {
+            this.#written = n;
+          },
+        );
       } catch (error) {
         this.#ops.onError(error);
         // WAVE 6.7 — retry-without-consuming is right for a WRITE that failed, and wrong for a frame that
@@ -98,12 +121,14 @@ export class RingDrainer {
         // the producer's drop-oldest bails, and every later append is counted as a drop. One corrupt frame
         // stopped capture permanently. Give up on THIS frame and keep draining the rest.
         if (error instanceof UnusableFrameError) {
-          this.#consumer.consume();
+          this.#consumer.consume(); // an unusable frame fails in openFor, before a byte is written: `#written` is 0
           continue;
         }
         return; // leave the frame in the ring for the next pass
       }
       this.#consumer.consume(); // only after the bytes are durably on the fd
+      this.#written = 0;
+      this.#ops.onFrameWritten?.();
     }
   }
 

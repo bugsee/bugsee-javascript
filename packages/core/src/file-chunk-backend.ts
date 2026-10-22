@@ -14,6 +14,13 @@ import type { CaptureSnapshot, StoredEntry } from './contracts';
 
 // The reserved metadata file name within a chunk group; never a FileType, so it never collides with data.
 const META_FILE = 'meta';
+// The data file the probe's padding goes into. Every file in a part is read back by name and a line without a timestamp
+// separator is skipped, so this one yields no record (it is not a FileType); readers do list and open it, they skip its
+// lines. It is deleted with the part.
+const PROBE_FILE = 'probe';
+
+/** A disk-pressure probe found the part without its meta file (its creation failed): the gate re-creates it. */
+export class PartMetaMissingError extends Error {}
 
 interface StoredMeta {
   readonly n: number;
@@ -97,6 +104,27 @@ export function createFileChunkBackend(
       // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
       // open-handle count bounded to the active chunk rather than the whole rolling window.
       storage.sealChunk?.(ref.generation, ref.number);
+    },
+
+    probeWrite(ref: PartRef, bytes: number): void {
+      // Never pad a directory that has no meta: a writer that REPORTS failures instead of throwing (the batched and ring
+      // writers) leaves the directory its failed meta write created, and padding it would turn that into a part that
+      // recovery finds with data and no meta. Drop it (deleting works on a full disk) and fail the probe.
+      if (storage.read(ref.generation, ref.number, META_FILE) === undefined) {
+        storage.removeChunk(ref.generation, ref.number);
+        throw new PartMetaMissingError(
+          'bugsee: the part has no meta on the medium; the disk is still refusing writes',
+        );
+      }
+      // `#`-padding with NO tab, in a file of its own: `snapshot` skips a line that has no timestamp separator, and a
+      // separate file cannot split a real record that a writer is still completing after a short write.
+      const padding = `${'#'.repeat(Math.max(bytes - 1, 0))}\n`;
+      if (storage.appendNow !== undefined) {
+        storage.appendNow(ref.generation, ref.number, PROBE_FILE, padding);
+        return;
+      }
+      storage.append(ref.generation, ref.number, PROBE_FILE, padding);
+      storage.flushNow?.();
     },
 
     removePart(ref: PartRef): void {

@@ -1,5 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PartRef } from './chunk-backend';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { CaptureSnapshot, StoredEntry } from './contracts';
@@ -180,5 +180,56 @@ describe('createFileChunkBackend', () => {
     storage.append(1, 0, 'log', 'prior-launch');
     createFileChunkBackend(storage, { generation: 9, cleanOtherGenerations: false });
     expect(storage.generations()).toContain(1);
+  });
+});
+
+describe('createFileChunkBackend — probeWrite', () => {
+  it('appends padding WITHOUT a timestamp separator to the part, forces a flush, and a snapshot skips it', async () => {
+    const storage = createInMemoryChunkStorage();
+    const flushNow = vi.fn();
+    (storage as { flushNow?: () => void }).flushNow = flushNow;
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    const ref = { generation: 1, number: 0 };
+    backend.openPart(ref, 0);
+    backend.appendEntry(ref, { type: 'log', timestamp: 1, serialized: 'real' });
+    backend.probeWrite?.(ref, 8);
+    expect(storage.read(1, 0, 'log')).toBe('1\treal\n'); // the real file is untouched
+    expect(storage.read(1, 0, 'probe')).toBe('#######\n'); // the padding has a file of its own
+    expect(flushNow).toHaveBeenCalledOnce();
+    const snap = backend.snapshot([{ ref, count: 9 }]);
+    expect(((await snap.drainAll()).get('log') ?? []).map((r) => r.serialized)).toEqual(['real']);
+  });
+
+  it('works on a storage without flushNow, and a zero-size probe is just a newline', () => {
+    const storage = createInMemoryChunkStorage();
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    backend.openPart({ generation: 1, number: 3 }, 0);
+    backend.probeWrite?.({ generation: 1, number: 3 }, 0);
+    expect(storage.read(1, 3, 'probe')).toBe('\n');
+  });
+
+  it('refuses to pad a part with NO meta (a failed meta write that a writer only reported): it drops that directory and throws', () => {
+    const storage = createInMemoryChunkStorage();
+    storage.append(1, 5, 'log', '1\tx\n'); // a directory a failed meta write left behind: data-less meta
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    expect(() => backend.probeWrite?.({ generation: 1, number: 5 }, 100)).toThrow(
+      /no meta on the medium/,
+    );
+    expect(storage.chunks(1)).not.toContain(5);
+    expect(storage.read(1, 5, 'probe')).toBeUndefined();
+  });
+
+  it('uses appendNow when the storage has one (a queued write could land late), and not append + flushNow', () => {
+    const storage = createInMemoryChunkStorage();
+    const appendNow = vi.fn();
+    const flushNow = vi.fn();
+    const append = vi.spyOn(storage, 'append');
+    Object.assign(storage, { appendNow, flushNow });
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    backend.openPart({ generation: 1, number: 4 }, 0);
+    backend.probeWrite?.({ generation: 1, number: 4 }, 4);
+    expect(appendNow).toHaveBeenCalledWith(1, 4, 'probe', '###\n');
+    expect(append).not.toHaveBeenCalled();
+    expect(flushNow).not.toHaveBeenCalled();
   });
 });

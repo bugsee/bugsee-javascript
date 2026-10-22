@@ -1,5 +1,5 @@
 import { closeSync, openSync, writevSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import type { ChunkStorage } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
@@ -34,6 +34,7 @@ const numericNames = (dir: string): number[] =>
 export type WritevFn = (fd: number, buffers: readonly Uint8Array[]) => number;
 
 interface OpenFile {
+  /** The open descriptor, or -1 while the file could not be created yet (its records wait in `segments`). */
   fd: number;
   segments: Uint8Array[];
   bytes: number;
@@ -44,6 +45,13 @@ export interface BatchedFsChunkStorageOptions {
   highWaterMark?: number;
   /** Failure sink for a flush/close error (a broken disk must never throw into the capture path). Default no-op. */
   onError?: (error: unknown) => void;
+  /**
+   * Called for EVERY failed disk operation (an open, a flush, a meta write, a chunk removal), unlike `onError`, which
+   * hears only the first failure of an episode. A consumer that tracks disk health (the disk-pressure pin) needs each one.
+   */
+  onWriteFailure?: (error: unknown) => void;
+  /** Called on the first successful disk operation (a flush or a meta write) after one or more failures. */
+  onWriteRecovered?: () => void;
   /**
    * Ceiling on the unwritten tail held per file before the OLDEST records are shed. Default 1 MiB.
    *
@@ -131,6 +139,27 @@ export function createBatchedFsChunkStorage(
       // nothing left to report it to
     }
   };
+  // Every failure, and the first success after one: the health signal (a sink that throws costs nothing).
+  let failing = false;
+  const noteFailure = (error: unknown): void => {
+    failing = true;
+    try {
+      options.onWriteFailure?.(error);
+    } catch {
+      // nothing left to report it to
+    }
+  };
+  const noteSuccess = (): void => {
+    if (!failing) {
+      return;
+    }
+    failing = false;
+    try {
+      options.onWriteRecovered?.();
+    } catch {
+      // nothing left to report it to
+    }
+  };
   const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
   const failureThreshold = options.failureThreshold ?? 8;
   // Circuit state. `consecutiveFailures` counts flushes that threw in a row; once it reaches the threshold
@@ -177,17 +206,24 @@ export function createBatchedFsChunkStorage(
       sinceProbe = 0;
     }
     try {
+      if (entry.fd < 0) {
+        // The file could not be created when its first record arrived (a full disk): retry now, the records wait for it.
+        ensure(dirname(path));
+        entry.fd = openFile(path);
+      }
       // writeAll consumes entry.segments in place — on success it empties them; on a mid-drain throw it
       // leaves only the still-unwritten tail.
       writeAll(entry, writev);
       consecutiveFailures = 0;
       reportedEpisode = false;
+      noteSuccess();
       reportShed();
     } catch (error) {
       // A broken/full disk must never throw into the capture path. Route it out; the unwritten tail stays
       // buffered for a later retry (never duplicating an already-written prefix), bounded by
       // `maxBufferedBytes` so the retry cannot become unbounded memory growth.
       consecutiveFailures += 1;
+      noteFailure(error);
       // The FIRST failure of an episode is the diagnosis; the rest are counted and summarised, because a
       // report per captured entry is not a diagnostic — it is a second failure mode.
       if (!reportedEpisode) {
@@ -204,10 +240,12 @@ export function createBatchedFsChunkStorage(
       return;
     }
     flushPath(path); // never throws (routes to onError); the fd is closed + dropped regardless, so no leak
-    try {
-      close(entry.fd);
-    } catch (error) {
-      onError(error);
+    if (entry.fd >= 0) {
+      try {
+        close(entry.fd);
+      } catch (error) {
+        onError(error);
+      }
     }
     open.delete(path);
   };
@@ -227,18 +265,20 @@ export function createBatchedFsChunkStorage(
       const path = filePath(generation, chunk, file);
       let entry = open.get(path);
       if (entry === undefined) {
-        let fd: number;
+        // Created BEFORE the file is opened: a record whose file cannot be created yet (a full disk) is kept with the
+        // others in the unwritten tail, so a live report still holds it and it is written once the file can be opened.
+        // (It used to be dropped here while the capture store counted it as written.)
+        entry = { fd: -1, segments: [], bytes: 0 };
+        open.set(path, entry);
         try {
           ensure(chunkDir(generation, chunk));
-          fd = openFile(path);
+          entry.fd = openFile(path);
         } catch (error) {
-          // A broken/full disk must NEVER throw into the capture path — append is reached synchronously
-          // from interceptors (console.log → capture) and from the tick. Shed this entry + report instead.
+          // A broken/full disk must NEVER throw into the capture path — append is reached synchronously from
+          // interceptors (console.log → capture) and from the tick. Report it and keep the record for a retry.
+          noteFailure(error);
           onError(error);
-          return;
         }
-        entry = { fd, segments: [], bytes: 0 };
-        open.set(path, entry);
       }
       const bytes = encoder.encode(data);
       entry.segments.push(bytes);
@@ -265,7 +305,10 @@ export function createBatchedFsChunkStorage(
       try {
         ensure(chunkDir(generation, chunk));
         writeFile(path, data);
+        // not a success signal: a small meta file lands on a volume that still refuses record data; only a successful
+        // data flush releases the health state
       } catch (error) {
+        noteFailure(error);
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
       }
     },
@@ -274,18 +317,43 @@ export function createBatchedFsChunkStorage(
       const path = filePath(generation, chunk, file);
       flushPath(path); // a snapshot/recovery reader must see everything buffered so far
       const bytes = readFileBytes(path);
-      return bytes === undefined ? undefined : Buffer.from(bytes).toString('utf8');
+      // A flush that FAILED (a full disk) keeps its unwritten tail buffered for retry: those records are captured but
+      // not on disk, and a LIVE report must still hold them (the disk-pressure gate counts them as durable). Written
+      // prefixes were already consumed from the segments, so disk + tail never duplicates.
+      const tail = open.get(path)?.segments ?? [];
+      if (bytes === undefined && tail.length === 0) {
+        return undefined;
+      }
+      // No file yet but a tail: the file could not be created (a full disk) and its records are all still buffered.
+      // Decoded ONCE over the joined bytes: a short write can end inside a multi-byte character, and decoding the disk
+      // part and the tail separately turns that character into two U+FFFD.
+      if (tail.length === 0) {
+        return Buffer.from(bytes as Uint8Array).toString('utf8');
+      }
+      return Buffer.concat([...(bytes === undefined ? [] : [bytes]), ...tail]).toString('utf8');
     },
 
     files(generation, chunk): string[] {
-      return listFiles(chunkDir(generation, chunk));
+      const listed = listFiles(chunkDir(generation, chunk));
+      // A file that could not be created yet (a full disk) has no directory entry but does hold records.
+      const within = chunkDir(generation, chunk) + sep;
+      const waiting = [...open]
+        .filter(
+          ([path, entry]) => entry.fd < 0 && entry.segments.length > 0 && path.startsWith(within),
+        )
+        .map(([path]) => basename(path))
+        .filter((name) => !listed.includes(name));
+      return waiting.length === 0 ? listed : [...listed, ...waiting];
     },
 
     removeChunk(generation, chunk): void {
       closeUnder(chunkDir(generation, chunk));
       try {
         removeDir(chunkDir(generation, chunk));
+        // NOT a success signal: deleting works on a full disk (it is how space comes back), so it proves nothing about
+        // whether a WRITE would now succeed. Only flushes and meta writes release the health state.
       } catch (error) {
+        noteFailure(error);
         onError(error); // eviction on a broken disk must never throw into the caller (the tick/add)
       }
     },
@@ -307,6 +375,29 @@ export function createBatchedFsChunkStorage(
       }
     },
 
+    appendNow(generation, chunk, file, data): void {
+      // The disk-pressure probe: buffered like any append, then FORCED out past the circuit breaker at once.
+      this.append(generation, chunk, file, data);
+      this.flushNow?.();
+      // A probe that did NOT land must not linger as a buffered tail (it would be retried and land, late, as padding
+      // that takes back space just freed) nor keep its file handle open on a part that is about to be closed.
+      const path = filePath(generation, chunk, file);
+      const entry = open.get(path);
+      if (entry !== undefined && entry.segments.length > 0) {
+        closePath(path); // one more attempt, then the handle is closed and the entry (with its tail) is dropped regardless
+      }
+    },
+
+    flushNow(): void {
+      // The disk-pressure probe's seam: the same FORCED flush, named for what it is for. Without it the probe's record
+      // went out through the unforced flush of a part removal, i.e. through the circuit breaker (one attempt per 128
+      // calls after 8 failures), and recovery after freeing the disk took thousands of ticks.
+      for (const path of open.keys()) {
+        flushPath(path, true);
+      }
+      reportShed();
+    },
+
     flushSync(): void {
       // FORCED past the circuit: this is the explicit "write now" seam (the periodic timer, exit, a
       // signal), so it is also the moment to find out whether the disk recovered.
@@ -326,7 +417,20 @@ export function createBatchedFsChunkStorage(
     },
 
     sealChunk(generation, chunk): void {
-      closeUnder(chunkDir(generation, chunk));
+      // A sealed chunk gets its handles closed, EXCEPT a file whose flush just failed (a full disk): closing it would
+      // drop the unwritten tail for good, records the capture store already counts as captured. It stays open, keeps
+      // its (bounded) tail, and the periodic flush retries it once the disk accepts writes again; eviction of the
+      // chunk (`removeChunk`) closes it as before.
+      const within = chunkDir(generation, chunk) + sep;
+      for (const path of [...open.keys()]) {
+        if (!path.startsWith(within)) {
+          continue;
+        }
+        flushPath(path);
+        if ((open.get(path)?.segments.length ?? 0) === 0) {
+          closePath(path);
+        }
+      }
     },
 
     dispose(): void {

@@ -68,6 +68,13 @@ export interface ReplayRecorder extends CaptureProvider {
    * brackets the span in the stream.
    */
   stopBlackout(): void;
+  /**
+   * Restart the recorder so the stream continues from a fresh Meta + FullSnapshot, WITHOUT any blackout marker. Used
+   * when part of the stream was not persisted (disk pressure): a durable replay that resumes with incremental events
+   * the player never saw their base for cannot be replayed, a fresh snapshot makes the resumed tail self-contained.
+   * A no-op while blacked out (the end of the blackout restarts it anyway) or when not started.
+   */
+  checkout(): void;
 }
 
 /**
@@ -215,6 +222,14 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
       data: { tag: BLACKOUT_MARKER_TAG, payload: { active } },
       timestamp,
     });
+  }
+
+  checkout(): void {
+    if (!this.#started || this.#blackedOut) {
+      return;
+    }
+    this.#halt();
+    this.#begin();
   }
 
   stopBlackout(): void {

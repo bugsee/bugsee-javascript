@@ -1882,6 +1882,7 @@ describe('launch — system trace producers', () => {
           onError,
         }),
       );
+      // the disk_mem_* producer (an explicit captureStore means no durable store, so no protection feed)
       const calls = vi.mocked(storageTrackerFor).mock.calls;
       expect(calls).toHaveLength(1);
       expect(calls[0]?.[0]).toMatchObject({ dataDir: dir, scheduler: fs.scheduler });

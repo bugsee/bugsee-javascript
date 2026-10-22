@@ -116,14 +116,14 @@ describe('launchRenderer', () => {
     expect('launch' in (f.received?.options ?? {})).toBe(false);
   });
 
-  it('tells the browser launch the host owns `displays` (main writes the list), and a caller cannot switch that back off', async () => {
+  it('tells the browser launch the host owns `displays` and `capture` (main writes them), and a caller cannot switch that back off', async () => {
     const f = fakeLaunch();
     await launchRenderer('tok', {
       launch: f.launch,
       post: () => {},
       hostOwnedTraces: [],
     } as never);
-    expect(f.received?.options.hostOwnedTraces).toEqual(['displays']);
+    expect(f.received?.options.hostOwnedTraces).toEqual(['displays', 'capture']);
   });
 
   it("the injected store streams capture to the caller's post (encoded)", async () => {
