@@ -29,7 +29,10 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     systemTraceProducers: createNodeSystemTraceProducers({
       measuresEventLoopDelay: false,
       // `ram_system_free` on Deno: `os.freemem()` (MemAvailable on Linux since 2023, avail_phys on Windows) and
-      // `Deno.systemMemoryInfo().available` on macOS. It must NOT read /proc/meminfo (no `readsProcMeminfo`): the
+      // the macOS figure is the async vm_stat read (the SAME definition as Node/Bun/Electron) when the `run`
+      // permission for /usr/bin/vm_stat is already granted (checked with the never-prompting `permissions.querySync`;
+      // spawned via `Deno.Command`, so `--allow-run=/usr/bin/vm_stat` suffices), else `Deno.systemMemoryInfo().available`
+      // (free + inactive pages: a LARGER estimate than the vm_stat definition). It must NOT read /proc/meminfo (no `readsProcMeminfo`): the
       // read triggers an interactive permission prompt under a scoped `--allow-read`.
       // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
       measuresGc: false,
