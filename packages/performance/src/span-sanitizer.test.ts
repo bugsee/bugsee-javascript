@@ -202,3 +202,28 @@ describe('sanitizeSpan: current GenAI content conventions', () => {
     expect(nested.attributes?.wrapper).toEqual({ [key]: REDACTED });
   });
 });
+
+describe('sanitizeSpan: a statement key whose value is not a plain string', () => {
+  const SQL = "SELECT * FROM users WHERE email = 'a@b.com' AND id = 42";
+  const SHAPE = 'SELECT * FROM users WHERE email = ? AND id = ?';
+
+  it('redacts the literals in string leaves under a statement key (map, array, nested)', () => {
+    const out = sanitizeSpan(
+      span({
+        'db.statement': { text: SQL, rows: 3 },
+        'db.query.text': [SQL, SQL],
+        wrapper: { 'db.statement': { inner: SQL } },
+      }),
+    );
+    const attrs = out.attributes as Record<string, unknown>;
+    expect(attrs['db.statement']).toEqual({ text: SHAPE, rows: 3 });
+    expect(attrs['db.query.text']).toEqual([SHAPE, SHAPE]);
+    expect(attrs.wrapper).toEqual({ 'db.statement': { inner: SHAPE } });
+    expect(JSON.stringify(out.attributes)).not.toContain('a@b.com');
+  });
+
+  it('still returns the same span for a statement-keyed value that has nothing to redact', () => {
+    const input = span({ 'db.statement': ['SELECT x FROM t'] });
+    expect(sanitizeSpan(input)).toBe(input);
+  });
+});

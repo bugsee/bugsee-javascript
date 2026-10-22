@@ -58,6 +58,10 @@ export function redactSqlLiterals(statement: string): string {
 /**
  * Scrub one span's attributes. Returns the SAME span when nothing needed changing, so the common case —
  * an SDK-produced span with no such attributes — copies nothing.
+ *
+ * Assumes BOUNDED input: nested values are walked with only a depth limit, so a raw cyclic or branching
+ * object would not finish. The performance extension runs `normalizeTransactionAttributes` on every
+ * transaction first; a direct caller must do the same.
  */
 export function sanitizeSpan(span: FilterableSpan): FilterableSpan {
   const attributes = span.attributes;
@@ -94,9 +98,10 @@ const isComplex = (value: unknown): boolean =>
  * the flat keys `user.password` / `http.request.headers.authorization` are redacted for, and a rule that only
  * looked at the top-level key would let them through verbatim.
  */
-function sanitizeNested(value: unknown, depth: number): unknown {
+function sanitizeNested(value: unknown, depth: number, statement = false): unknown {
   if (typeof value === 'string') {
-    return redactShapes(value);
+    // Under a statement key every string leaf is SQL: keep its shape, lose its literals.
+    return redactShapes(statement ? redactSqlLiterals(value) : value);
   }
   if (value === null || typeof value !== 'object') {
     return value;
@@ -107,7 +112,7 @@ function sanitizeNested(value: unknown, depth: number): unknown {
   if (Array.isArray(value)) {
     let changed = false;
     const items = value.map((item) => {
-      const next = sanitizeNested(item, depth + 1);
+      const next = sanitizeNested(item, depth + 1, statement);
       if (next !== item) changed = true;
       return next;
     });
@@ -116,27 +121,31 @@ function sanitizeNested(value: unknown, depth: number): unknown {
   let changed = false;
   const out: Record<string, unknown> = Object.create(null);
   for (const [key, member] of Object.entries(value)) {
-    const next = sanitizeMember(key, member, depth);
+    const next = sanitizeMember(key, member, depth, statement);
     if (next !== member) changed = true;
     out[key] = next;
   }
   return changed ? out : value;
 }
 
-function sanitizeMember(key: string, value: unknown, depth: number): unknown {
-  if (STATEMENT_KEYS.has(key) && typeof value === 'string') {
-    return redactSqlLiterals(value);
+function sanitizeMember(key: string, value: unknown, depth: number, statement: boolean): unknown {
+  if (STATEMENT_KEYS.has(key)) {
+    return typeof value === 'string'
+      ? redactSqlLiterals(value)
+      : sanitizeNested(value, depth + 1, true);
   }
   if (CONTENT_KEYS.has(key) || isSensitiveKey(key)) {
     return REDACTED;
   }
-  return sanitizeNested(value, depth + 1);
+  return sanitizeNested(value, depth + 1, statement);
 }
 
 function sanitizeAttribute(key: string, value: unknown): unknown {
   // A statement keeps its SHAPE — that is what makes it worth reporting at all — while losing its data.
-  if (STATEMENT_KEYS.has(key) && typeof value === 'string') {
-    return redactSqlLiterals(value);
+  if (STATEMENT_KEYS.has(key)) {
+    if (typeof value === 'string') return redactSqlLiterals(value);
+    // A statement carried as a map or an array: every string leaf under it is SQL.
+    return isComplex(value) || Array.isArray(value) ? sanitizeNested(value, 0, true) : value;
   }
   // Free-form content: there is no shape worth keeping, and a prompt is as sensitive as a password.
   if (CONTENT_KEYS.has(key)) {

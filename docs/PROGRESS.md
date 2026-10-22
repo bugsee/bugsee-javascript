@@ -609,8 +609,8 @@ its first consumer. Design references (Sentry/Faro/Datadog/Honeycomb/Embrace) in
   small homogeneous scalar arrays (strings capped at 32 KiB) and turns anything else into a bounded JSON-safe TREE
   (bytes base64, bigint exact-or-text); the span filter / default sanitizer sees the tree (nested key-based
   redaction, `span-sanitizer.ts`); `flattenTransactionAttributes` (extension, after the filter) flattens what
-  remains to bounded JSON strings at the wire. Bounded in WORK (leaf, key and total-character budgets, typed
-  arrays read by index) and total (never throws; produce path drops one bad attribute, never the batch). Native
+  remains to bounded JSON strings at the wire. Bounded in WORK per attribute AND per span (leaf, key, node and character budgets, a span-level
+  budget, typed arrays read by index; entry step `normalizeTransactionAttributes` bounds the SDK's own raw values too) and total (never throws; produce path drops one bad attribute, never the batch). Native
   OTLP `kvlistValue`/`arrayValue` on produce NOT done: the OTLP tee reads the post-wire (already flattened)
   store, and the Bugsee wire/viewer read scalar attribute values. Found+fixed: a `bigint` attribute reached the
   transaction as a value `JSON.stringify` throws on.

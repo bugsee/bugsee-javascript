@@ -1,6 +1,7 @@
 ---
 '@bugsee/opentelemetry': minor
 '@bugsee/performance': minor
+'@bugsee/protocol': patch
 ---
 
 Support OpenTelemetry JS 3.x (issue #94).
@@ -11,4 +12,6 @@ Complex span attributes (OpenTelemetry API 1.10 `AnyValue`) are now handled deli
 
 `createBugseeSpanProcessor` now ignores `onEnd` after `shutdown()`.
 
-New exports from `@bugsee/performance` (also re-exported from `@bugsee/opentelemetry`): `normalizeAttributes`, `normalizeAttributeValue`, `flattenAttributes`, `stringifyAnyValue` and the `MAX_ATTRIBUTE_*` limits.
+The same bounding now applies to every span the SDK records itself (`setAttribute`, `recordChildSpan`, `recordExternal`), not only consumed OpenTelemetry spans: the nested redaction walk is only run on a bounded copy, with a shared per-span node and character budget (raw cyclic or branching values used to take seconds to forever). A key too long to keep has its value redacted, and a statement carried as a map or array has its string leaves' literals redacted. `isSensitiveKey` (`@bugsee/protocol`) now normalises its denylist once.
+
+New exports from `@bugsee/performance` (some also re-exported from `@bugsee/opentelemetry`): `normalizeAttributes`, `normalizeAttributeValue`, `flattenAttributes`, `stringifyAnyValue`, `safeAnyValue`, `asBytes`, `boundedBase64` and the `MAX_ATTRIBUTE_*` limits.

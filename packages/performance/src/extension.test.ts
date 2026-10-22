@@ -336,6 +336,90 @@ describe('createPerformanceExtension — nested (AnyValue) attributes: redact as
   });
 });
 
+describe("createPerformanceExtension — raw attribute values on the SDK's own spans are bounded too", () => {
+  const dag = (levels: number, fanout: number): unknown => {
+    let node: unknown = { leaf: 'v' };
+    for (let i = 0; i < levels; i++) {
+      const level: Record<string, unknown> = {};
+      for (let j = 0; j < fanout; j++) level[`k${j}`] = node;
+      node = level;
+    }
+    return node;
+  };
+  const hostile = () => {
+    const cyc: Record<string, unknown> = { password: 'hunter2' };
+    for (let j = 0; j < 3; j++) cyc[`k${j}`] = cyc;
+    return {
+      dag: dag(14, 3),
+      cyc,
+      thrower: {
+        ok: 1,
+        get boom(): never {
+          throw new Error('getter');
+        },
+      },
+    };
+  };
+
+  it('setAttribute with a DAG, a cycle and a throwing getter finishes fast and keeps the transaction', () => {
+    const { client, ext, captured } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const txn = ext().startTransaction({ name: 'T', operation: 'op' });
+    for (const [k, v] of Object.entries(hostile())) txn.setAttribute(k, v);
+    const started = Date.now();
+    txn.finish('OK');
+    expect(Date.now() - started).toBeLessThan(2000);
+    const stored = extension.store.drain();
+    expect(stored).toHaveLength(1);
+    const attrs = stored[0]?.attributes as Record<string, string>;
+    expect(typeof attrs.dag).toBe('string');
+    expect(attrs.cyc).toContain('[Circular]');
+    expect(attrs.cyc).not.toContain('hunter2');
+    expect(attrs.thrower).toContain('[Unreadable]');
+    expect(JSON.stringify(captured)).not.toContain('hunter2');
+  });
+
+  it('recordExternal and recordChildSpan-style raw attributes get the same treatment', () => {
+    const { client } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const raw = hostile();
+    extension.recordExternal({
+      ...externalWire(),
+      attributes: raw,
+      spans: [
+        {
+          spanId: 'c',
+          operation: 'child',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes: { cyc: raw.cyc },
+        },
+      ],
+    });
+    const stored = extension.store.drain()[0];
+    expect(stored?.attributes?.thrower).toContain('[Unreadable]');
+    expect(stored?.spans[0]?.attributes?.cyc).not.toContain('hunter2');
+  });
+
+  it('hands an integrator span filter a TREE even for a raw SDK value', () => {
+    const filters = createFilterStore(() => {});
+    let seen: unknown;
+    filters.span = (span) => {
+      seen = span.attributes?.ctx;
+      return span;
+    };
+    const { client, ext } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    ext().startTransaction({ name: 'T', operation: 'op' }).setAttribute('ctx', cyc).finish('OK');
+    expect(seen).toEqual({ a: 1, self: '[Circular]' });
+  });
+});
+
 // `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
 describe('createPerformanceExtension — sanitizeSpans is fail-on', () => {

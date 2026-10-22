@@ -479,6 +479,23 @@ describe('work bounds that output alone cannot show', () => {
   });
 });
 
+describe('truncated keys cannot hide a sensitive name', () => {
+  it('redacts the value of a key too long to keep, instead of shipping it under a key that lost its tail', () => {
+    const key = `${'x'.repeat(MAX_ATTRIBUTE_JSON_LENGTH)}password`;
+    const out = safeAnyValue({ [key]: 'longkeysecret', fine: 1 }) as Record<string, unknown>;
+    expect(JSON.stringify(out)).not.toContain('longkeysecret');
+    expect(out.fine).toBe(1);
+    const [cut] = Object.keys(out);
+    expect(cut).toContain(TRUNCATION_MARKER);
+    expect(out[cut as string]).toBe('<redacted>');
+  });
+
+  it('keeps a key exactly at the limit', () => {
+    const key = 'k'.repeat(MAX_ATTRIBUTE_JSON_LENGTH - 64);
+    expect(safeAnyValue({ [key]: 'v' })).toEqual({ [key]: 'v' });
+  });
+});
+
 describe('boundedBase64', () => {
   it('encodes small arrays whole and cuts a huge one with the marker', () => {
     expect(boundedBase64(new Uint8Array([102, 111, 111]))).toBe('Zm9v');

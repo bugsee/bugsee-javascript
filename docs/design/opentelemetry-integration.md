@@ -233,6 +233,12 @@ that need it sit below `@bugsee/opentelemetry`; the OTel package re-exports it).
 
 *Normalize late, flatten at the wire.* Three steps, in this order:
 
+0. **Entry, for every span** (`normalizeTransactionAttributes`, first step of the performance extension's
+   `filterTransaction`). The SDK's own spans carry whatever `setAttribute`, `recordChildSpan({ attributes })`
+   and `recordExternal` were handed, so every transaction's attributes are bounded here (shared per-span budget,
+   cycles marked, hostile getters contained) before the redaction walk or an integrator filter sees them.
+   Measured before this step, on the raw redaction walk: a `node:http` request object 0.3-0.5 s, a branching
+   DAG (3 branches, 14 levels) 4 s, a self-referencing object 17 s; after it, each takes under 3 ms.
 1. **Consume** (`readableSpanToConsumed` -> `normalizeAttributes`). Scalars and small homogeneous scalar arrays
    (<= 1024 elements, strings totalling <= 32 KiB) pass through; a scalar string is capped at 32 KiB (so the cost
    of `span.end()` does not scale with whatever instrumentation recorded). A byte array becomes base64; a bigint
@@ -240,7 +246,10 @@ that need it sit below `@bugsee/opentelemetry`; the OTel package re-exports it).
    Everything else (nested map, mixed/nested array, long scalar array) becomes a bounded JSON-safe TREE, NOT text.
 2. **Redaction** sees that tree. The default span sanitizer applies the same rules to nested keys as to flat ones
    (a sensitive key redacts its whole value at any depth, content keys redact, statement keys keep their shape
-   via `redactSqlLiterals`, string leaves are scanned for secret shapes, depth-limited), so
+   via `redactSqlLiterals`, including a statement carried as a map or an array: every string leaf under a
+   statement key is SQL; secret-shape scanning covers the string leaves INSIDE maps and arrays-of-maps only,
+   exactly as on main a top-level string attribute or a flat string array is not shape-scanned; depth-limited),
+   so
    `user: { password }` and `http.request.headers: { authorization }` are redacted by default. An integrator
    `setSpanFilter` receives the tree too.
 3. **Wire** (`flattenTransactionAttributes`, run by the performance extension after the filter, in both sinks):
@@ -267,9 +276,11 @@ and a bounded JSON `stringValue` for maps/arrays.
 | bigint | number if exact, else decimal string | `intValue` |
 | null, undefined, function, symbol | dropped | dropped |
 
-*Bounds and totality.* Never throws, and bounded in WORK, not only output: every string leaf and key is cut at
-8128 characters before it is copied, a tree stops at 1024 visited nodes or 32768 copied characters (the rest is
-`"[Truncated]"`), depth 8 (`"[MaxDepth]"`), the JSON text at 8192 characters (`...[truncated]`), cycles become
+*Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE and per SPAN: every string leaf and key is
+cut at 8128 characters before it is copied (a key that long is not kept, and its value is redacted, so a cut can
+never remove the `password` a key-based rule looks for), a tree stops at 1024 visited nodes or 32768 copied
+characters, and one span's attributes together stop at 4096 nodes or 65536 characters (the rest is
+`"[Truncated]"`; 128 attributes of 1000-node maps cost about 2 ms, not 1.2 s), depth 8 (`"[MaxDepth]"`), the JSON text at 8192 characters (`...[truncated]`), cycles become
 `"[Circular]"` (a shared acyclic reference is not a cycle), non-finite numbers the OTLP spellings, byte arrays are
 encoded only up to what could fit, a non-byte typed array (a Float32Array embedding) is read by index within the
 node budget, and `toJSON` or other user code is never called. A throwing getter, an element or a Proxy trap
@@ -281,7 +292,11 @@ credentials removed, an Error its `name` and `message` (never the stack), a Date
 drops the attribute), `ArrayBuffer`, `DataView` and a cross-realm `Uint8Array` are bytes; a `Map`, `Set` and any
 other class instance is read by own enumerable properties (so a Map or Set is `{}`). A homogeneous scalar array
 with null entries (`['a', null]`, which OTel 2/3 keep) passes through unchanged. Known limit: `Object.keys` on a plain object with millions of
-keys still allocates its key list before the node budget stops the copy.
+keys still allocates its key list before the node budget stops the copy. Residual cost: the redaction step
+still scans string leaves for secret shapes, and an adversarial leaf dense in `eyJ` (JWT-prefix) text costs about
+10 ms per 8 KB; the per-span character budget caps that at roughly 60 ms for a span. `isSensitiveKey` now
+normalises its denylist once (0.3 us per key instead of 4 us). `sanitizeSpan` is exported but assumes bounded
+input (it is only safe on values that went through `normalizeTransactionAttributes`, as the extension does).
 
 **Using the processor.** Register it on ONE provider. Registering it on two providers, or alongside
 `@bugsee/nextjs`'s zero-config provider, produces two transactions per trace (one per registration). Cost per

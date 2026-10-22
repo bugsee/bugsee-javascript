@@ -1,3 +1,5 @@
+import { REDACTED } from '@bugsee/protocol';
+
 // Span attribute values: bounding, safe copying and the wire flattening of complex values.
 //
 // Context. Before OpenTelemetry API 1.10 an attribute was a string, number, boolean or a homogeneous array of
@@ -97,6 +99,23 @@ export function boundedBase64(bytes: Uint8Array): string {
 
 const SKIP = Symbol('skip');
 
+/**
+ * Limits shared by ALL the attributes of one span. Each attribute has its own node and character budget, but a
+ * span can carry 128 of them, so without a span-level cap the work of one `span.end()` was 128 x the
+ * per-attribute bound (measured: 128 attributes of 1024-node maps cost 1.2 s in the redaction step).
+ */
+export const MAX_SPAN_ATTRIBUTE_NODES = 4096;
+export const MAX_SPAN_ATTRIBUTE_CHARS = 65536;
+
+/** A running total across the attributes of one span. */
+export interface SpanBudget {
+  nodes: number;
+  chars: number;
+}
+
+/** A fresh span-level budget (one per span, root and children each get their own). */
+export const createSpanBudget = (): SpanBudget => ({ nodes: 0, chars: 0 });
+
 /** A bigint as JSON can carry it: a number when exact, decimal text beyond the safe range. */
 const bigintToJson = (value: bigint): number | string =>
   value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
@@ -117,10 +136,20 @@ const UrlClass = ():
 interface Budget {
   nodes: number;
   chars: number;
+  span?: SpanBudget;
 }
 
 const exhausted = (budget: Budget): boolean =>
-  budget.nodes >= MAX_ATTRIBUTE_NODES || budget.chars >= MAX_ATTRIBUTE_TREE_CHARS;
+  budget.nodes >= MAX_ATTRIBUTE_NODES ||
+  budget.chars >= MAX_ATTRIBUTE_TREE_CHARS ||
+  (budget.span !== undefined &&
+    (budget.span.nodes >= MAX_SPAN_ATTRIBUTE_NODES ||
+      budget.span.chars >= MAX_SPAN_ATTRIBUTE_CHARS));
+
+const countNode = (budget: Budget): void => {
+  budget.nodes++;
+  if (budget.span !== undefined) budget.span.nodes++;
+};
 
 const setOwn = (target: Record<string, unknown>, key: string, value: unknown): void => {
   // `target[key] = v` with key "__proto__" rewrites the prototype instead of adding a key.
@@ -136,6 +165,7 @@ const setOwn = (target: Record<string, unknown>, key: string, value: unknown): v
 function leafText(text: string, budget: Budget): string {
   const cut = capText(text, MAX_LEAF_LENGTH);
   budget.chars += cut.length;
+  if (budget.span !== undefined) budget.span.chars += cut.length;
   return cut;
 }
 
@@ -179,6 +209,7 @@ function toSafe(value: unknown, depth: number, budget: Budget, ancestors: Set<ob
     return out;
   }
   if (depth >= MAX_ATTRIBUTE_DEPTH) return '[MaxDepth]';
+  if (exhausted(budget)) return '[Truncated]';
   if (ancestors.has(value)) return '[Circular]';
   ancestors.add(value);
   try {
@@ -202,13 +233,13 @@ function listToSafe(
   ancestors: Set<object>,
 ): unknown[] {
   const out: unknown[] = [];
-  budget.nodes++;
+  countNode(budget);
   for (let i = 0; i < items.length; i++) {
     if (exhausted(budget)) {
       out.push('[Truncated]');
       break;
     }
-    budget.nodes++;
+    countNode(budget);
     let item: unknown;
     try {
       item = toSafe(items[i], depth + 1, budget, ancestors);
@@ -227,18 +258,24 @@ function objectToSafe(
   ancestors: Set<object>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  budget.nodes++;
+  countNode(budget);
   for (const key of Object.keys(source)) {
     if (exhausted(budget)) {
       setOwn(out, '[Truncated]', true);
       break;
     }
-    budget.nodes++;
+    countNode(budget);
     let member: unknown;
-    try {
-      member = toSafe(source[key], depth + 1, budget, ancestors);
-    } catch {
-      member = '[Unreadable]';
+    if (key.length > MAX_LEAF_LENGTH) {
+      // The key is cut below, and a cut can remove the very word (`password`) a key-based redaction looks
+      // for. A key this long is not a real field name: keep neither its tail nor its value.
+      member = REDACTED;
+    } else {
+      try {
+        member = toSafe(source[key], depth + 1, budget, ancestors);
+      } catch {
+        member = '[Unreadable]';
+      }
     }
     if (member !== SKIP) setOwn(out, leafText(key, budget), member);
   }
@@ -250,10 +287,15 @@ function objectToSafe(
  * (undefined/function/symbol). Never throws; never follows a cycle; bytes become base64, bigint decimal text,
  * non-finite numbers the OTLP spellings, `toJSON` and other user code is never called.
  */
-export function safeAnyValue(value: unknown): unknown {
+export function safeAnyValue(value: unknown, span?: SpanBudget): unknown {
   let safe: unknown;
   try {
-    safe = toSafe(value, 0, { nodes: 0, chars: 0 }, new Set());
+    safe = toSafe(
+      value,
+      0,
+      { nodes: 0, chars: 0, ...(span !== undefined ? { span } : {}) },
+      new Set(),
+    );
   } catch {
     safe = '[Unreadable]';
   }
@@ -304,7 +346,7 @@ function isPassThroughArray(value: unknown[]): boolean {
  * base64; everything else becomes a bounded JSON-safe tree. `undefined` means no representation: the
  * attribute is dropped.
  */
-export function normalizeAttributeValue(value: unknown): unknown {
+export function normalizeAttributeValue(value: unknown, span?: SpanBudget): unknown {
   if (value === null || value === undefined) return undefined;
   if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH);
   if (typeof value === 'number' || typeof value === 'boolean') return value;
@@ -312,7 +354,7 @@ export function normalizeAttributeValue(value: unknown): unknown {
   const bytes = asBytes(value);
   if (bytes !== undefined) return boundedBase64(bytes);
   if (Array.isArray(value) && isPassThroughArray(value)) return value;
-  const safe = safeAnyValue(value);
+  const safe = safeAnyValue(value, span);
   return safe === null ? undefined : safe; // an invalid Date: no value
 }
 
@@ -321,7 +363,10 @@ export function normalizeAttributeValue(value: unknown): unknown {
  * cannot be read (a throwing getter) is skipped without losing its siblings, and a record whose keys cannot
  * be listed (a Proxy with a throwing `ownKeys`) yields no attributes rather than throwing.
  */
-export function normalizeAttributes(attributes: Record<string, unknown>): Record<string, unknown> {
+export function normalizeAttributes(
+  attributes: Record<string, unknown>,
+  span: SpanBudget = createSpanBudget(),
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   let keys: string[];
   try {
@@ -331,7 +376,7 @@ export function normalizeAttributes(attributes: Record<string, unknown>): Record
   }
   for (const key of keys) {
     try {
-      const value = normalizeAttributeValue(attributes[key]);
+      const value = normalizeAttributeValue(attributes[key], span);
       if (value !== undefined) setOwn(out, key, value);
     } catch {
       // unreadable attribute: skip it, keep the rest
@@ -344,14 +389,15 @@ export function normalizeAttributes(attributes: Record<string, unknown>): Record
  * The wire form of one attribute value: scalars and small homogeneous scalar arrays unchanged, anything else
  * one bounded JSON string. Total: never throws. `undefined` = drop the attribute.
  */
-export function flattenAttributeValue(value: unknown): unknown {
-  const normal = normalizeAttributeValue(value);
+export function flattenAttributeValue(value: unknown, span?: SpanBudget): unknown {
+  const normal = normalizeAttributeValue(value, span);
   if (normal === null || typeof normal !== 'object') return normal;
   return Array.isArray(normal) && isPassThroughArray(normal) ? normal : stringifyAnyValue(normal);
 }
 
 /** Flatten an attributes record for the wire. Returns the SAME record when nothing needed changing. */
 export function flattenAttributes(attributes: Record<string, unknown>): Record<string, unknown> {
+  const span = createSpanBudget();
   let changed = false;
   const out: Record<string, unknown> = {};
   let keys: string[];
@@ -363,7 +409,7 @@ export function flattenAttributes(attributes: Record<string, unknown>): Record<s
   for (const key of keys) {
     try {
       const raw = attributes[key];
-      const flat = flattenAttributeValue(raw);
+      const flat = flattenAttributeValue(raw, span);
       if (flat !== raw) changed = true;
       if (flat !== undefined) setOwn(out, key, flat);
     } catch {

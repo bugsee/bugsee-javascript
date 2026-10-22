@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { TransactionWire } from './span';
-import { flattenTransactionAttributes } from './transaction-attributes';
+import {
+  flattenTransactionAttributes,
+  normalizeTransactionAttributes,
+} from './transaction-attributes';
 
 const txn = (over: Partial<TransactionWire> = {}): TransactionWire => ({
   traceId: 't'.repeat(32),
@@ -50,5 +53,86 @@ describe('flattenTransactionAttributes', () => {
     const out = flattenTransactionAttributes(input);
     expect(out.attributes).toBe(rootAttrs);
     expect(out.spans[0]?.attributes).toEqual({ m: '{"k":1}' });
+  });
+});
+
+const dag = (levels: number, fanout: number): unknown => {
+  let node: unknown = { leaf: 'v' };
+  for (let i = 0; i < levels; i++) {
+    const level: Record<string, unknown> = {};
+    for (let j = 0; j < fanout; j++) level[`k${j}`] = node;
+    node = level;
+  }
+  return node;
+};
+
+describe('normalizeTransactionAttributes (SDK-produced spans carry RAW values too)', () => {
+  it('returns the SAME transaction when every attribute is already a scalar or scalar array', () => {
+    const plain = txn({ attributes: { a: 1, tags: ['x'] }, spans: [child({ b: 'y' }), child()] });
+    expect(normalizeTransactionAttributes(plain)).toBe(plain);
+    const bare = txn();
+    expect(normalizeTransactionAttributes(bare)).toBe(bare);
+  });
+
+  it('turns raw complex values (a DAG, a cycle, a throwing getter) into bounded trees on root and children', () => {
+    const cyc: Record<string, unknown> = {};
+    for (let j = 0; j < 3; j++) cyc[`k${j}`] = cyc;
+    const hostile = {
+      ok: 1,
+      get boom(): never {
+        throw new Error('getter');
+      },
+    };
+    const input = txn({
+      attributes: { dag: dag(14, 3), cyc, plain: 1 },
+      spans: [child({ hostile, nul: null })],
+    });
+    const started = Date.now();
+    const out = normalizeTransactionAttributes(input);
+    expect(Date.now() - started).toBeLessThan(2000); // 3^14 = 4.7M paths walked raw
+    expect(JSON.stringify(out.attributes).length).toBeLessThan(200_000);
+    expect(out.attributes?.plain).toBe(1);
+    expect(JSON.stringify(out.attributes?.cyc)).toContain('[Circular]');
+    expect(out.spans[0]?.attributes).toEqual({ hostile: { ok: 1, boom: '[Unreadable]' } });
+    expect(input.attributes?.plain).toBe(1); // input untouched
+  });
+
+  it('shares one budget across a span: many large attributes cannot each take a full share', () => {
+    const wide = (): Record<string, unknown> =>
+      Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`k${i}`, 0]));
+    const attributes = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`a${i}`, wide()]));
+    const out = normalizeTransactionAttributes(txn({ attributes }));
+    const sizes = Object.values(out.attributes ?? {}).map(
+      (v) => Object.keys(v as Record<string, unknown>).length,
+    );
+    const total = sizes.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(6000); // 40 x 1000 members unbounded; the span budget is 4096 nodes
+    expect(out.attributes?.a39).toBe('[Truncated]');
+  });
+
+  it('also caps the characters copied per span, not only the node count', () => {
+    const attributes = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`a${i}`, { text: 'x'.repeat(8000) }]),
+    );
+    const out = normalizeTransactionAttributes(txn({ attributes }));
+    expect(JSON.stringify(out.attributes).length).toBeLessThan(120_000); // 40 x 8 KB unbounded
+    expect(out.attributes?.a0).toEqual({ text: 'x'.repeat(8000) });
+    expect(out.attributes?.a39).toBe('[Truncated]');
+  });
+
+  it('survives an attribute record whose keys cannot be listed (a Proxy with a throwing ownKeys trap)', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    const out = normalizeTransactionAttributes(
+      txn({ attributes: hostile, spans: [child(hostile)] }),
+    );
+    expect(out.attributes).toEqual({});
+    expect(out.spans[0]?.attributes).toEqual({});
   });
 });
