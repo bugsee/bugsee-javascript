@@ -73,10 +73,15 @@ describe('toAnyValue', () => {
     expect(out.stringValue.length).toBeLessThanOrEqual(8192);
     expect(out.stringValue).toContain('...[truncated]');
   });
-  it('caps a huge byte array (bytesValue is bounded like every other branch)', () => {
-    const out = toAnyValue(new Uint8Array(1_000_000)) as { bytesValue: string };
-    expect(out.bytesValue.length).toBe(8192);
-    expect(out.bytesValue.endsWith('...[truncated]')).toBe(true);
+  it('keeps bytesValue valid base64: a cut array is sent as a stringValue, never as bytesValue with a marker', () => {
+    const out = toAnyValue(new Uint8Array(1_000_000)) as { stringValue: string };
+    expect('bytesValue' in out).toBe(false);
+    expect(out.stringValue.length).toBe(8192);
+    expect(out.stringValue.endsWith('...[truncated]')).toBe(true);
+    // An array that fits stays a real bytesValue.
+    expect(toAnyValue(new Uint8Array(1000))).toEqual({
+      bytesValue: expect.stringMatching(/^[A-Za-z0-9+/]+=*$/),
+    });
   });
   it('never throws: an unencodable object yields no value instead of an exception', () => {
     const original = JSON.stringify;

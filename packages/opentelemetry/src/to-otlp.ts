@@ -4,6 +4,7 @@ import {
   type SpanStatus,
   safeAnyValue,
   stringifyAnyValue,
+  TRUNCATION_MARKER,
   type TransactionWire,
 } from '@bugsee/performance';
 import {
@@ -71,7 +72,14 @@ export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
     default: {
       try {
         const bytes = asBytes(value);
-        if (bytes !== undefined) return { bytesValue: boundedBase64(bytes) };
+        if (bytes !== undefined) {
+          const encoded = boundedBase64(bytes);
+          // `bytesValue` must be valid base64: a collector may reject the whole request over a marker in it.
+          // A cut array is therefore sent as plain text instead.
+          return encoded.endsWith(TRUNCATION_MARKER)
+            ? { stringValue: encoded }
+            : { bytesValue: encoded };
+        }
         // A value that is a plain string once made safe (a Date, a URL) is that string, not JSON text.
         const safe = safeAnyValue(value);
         if (typeof safe === 'string') return { stringValue: safe };

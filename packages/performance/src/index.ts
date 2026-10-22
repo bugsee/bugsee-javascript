@@ -20,6 +20,7 @@ export {
   normalizeAttributeValue,
   safeAnyValue,
   stringifyAnyValue,
+  TRUNCATION_MARKER,
 } from './attribute-value';
 export {
   createPerformanceController,
