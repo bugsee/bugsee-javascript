@@ -19,6 +19,9 @@ const META_FILE = 'meta';
 // lines. It is deleted with the part.
 const PROBE_FILE = 'probe';
 
+/** A disk-pressure probe found the part without its meta file (its creation failed): the gate re-creates it. */
+export class PartMetaMissingError extends Error {}
+
 interface StoredMeta {
   readonly n: number;
   readonly s: number;
@@ -109,7 +112,7 @@ export function createFileChunkBackend(
       // recovery finds with data and no meta. Drop it (deleting works on a full disk) and fail the probe.
       if (storage.read(ref.generation, ref.number, META_FILE) === undefined) {
         storage.removeChunk(ref.generation, ref.number);
-        throw new Error(
+        throw new PartMetaMissingError(
           'bugsee: the part has no meta on the medium; the disk is still refusing writes',
         );
       }

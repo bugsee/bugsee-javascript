@@ -1001,3 +1001,29 @@ describe('createBatchedFsChunkStorage — appendNow (the disk-pressure probe)', 
     s.dispose?.();
   });
 });
+
+describe('createBatchedFsChunkStorage — read() decodes the joined bytes once', () => {
+  it('a short write that ends INSIDE a multi-byte character does not turn it into two replacement characters', () => {
+    const root = mkRoot();
+    let calls = 0;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      onError: () => {},
+      writev: (fd, bufs) => {
+        calls += 1;
+        if (calls === 1) {
+          // 'é' is 0xC3 0xA9: write the first segment up to and including 0xC3 (inside the character), then fail
+          const first = bufs[0] as Uint8Array;
+          const cut = first.indexOf(0xc3) + 1;
+          writevSync(fd, [first.subarray(0, cut)]);
+          return cut;
+        }
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'café ☃\n');
+    s.flushSync?.();
+    expect(s.read(GEN, CHUNK, 'log')).toBe('café ☃\n'); // intact across the disk/tail boundary
+    s.dispose?.();
+  });
+});

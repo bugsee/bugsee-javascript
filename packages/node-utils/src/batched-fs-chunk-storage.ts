@@ -325,8 +325,12 @@ export function createBatchedFsChunkStorage(
         return undefined;
       }
       // No file yet but a tail: the file could not be created (a full disk) and its records are all still buffered.
-      const onDisk = bytes === undefined ? '' : Buffer.from(bytes).toString('utf8');
-      return tail.length === 0 ? onDisk : onDisk + Buffer.concat(tail).toString('utf8');
+      // Decoded ONCE over the joined bytes: a short write can end inside a multi-byte character, and decoding the disk
+      // part and the tail separately turns that character into two U+FFFD.
+      if (tail.length === 0) {
+        return Buffer.from(bytes as Uint8Array).toString('utf8');
+      }
+      return Buffer.concat([...(bytes === undefined ? [] : [bytes]), ...tail]).toString('utf8');
     },
 
     files(generation, chunk): string[] {

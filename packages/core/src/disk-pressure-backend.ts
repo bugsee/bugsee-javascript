@@ -1,8 +1,9 @@
 import type { FileType } from '@bugsee/protocol';
-import { groupByType } from './capture-snapshot';
+import { createRecordSnapshot, groupByType } from './capture-snapshot';
 import type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 import type { CaptureSnapshot, StoredEntry } from './contracts';
 import type { DiskPressure } from './disk-pressure';
+import { PartMetaMissingError } from './file-chunk-backend';
 import { createMemoryChunkBackend } from './memory-chunk-backend';
 
 // The DISK-PRESSURE gate over a DURABLE ChunkBackend (spec `traces.md#capture`, JavaScript C7). Under pressure the
@@ -235,7 +236,11 @@ export function withDiskPressure(
             Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), FILE_PROBE_MAX_BYTES),
           );
         } catch (error) {
-          currentState.opened = false; // its meta never landed: the next durable write creates it again
+          // Only a part that has NO meta is re-created by the next durable write; any other failure (the padding itself
+          // was refused) leaves a part whose meta is there, which must stay open so that it is sealed and evicted.
+          if (error instanceof PartMetaMissingError) {
+            currentState.opened = false;
+          }
           throw error;
         }
         return;
@@ -258,6 +263,35 @@ export function withDiskPressure(
   let degraded = false;
   // At most ONE abandoned read is kept alive in the background at a time (see guardedRead).
   let backgroundRead = false;
+
+  /** A read failure: the streak is reported ONCE (the next read that succeeds ends it). */
+  const noteReadFailure = (error: unknown): void => {
+    if (!degraded) {
+      degraded = true;
+      options.onReadError?.(error);
+    }
+  };
+
+  /**
+   * `durable.snapshot` itself can throw: the file backend reads EAGERLY, so an `EIO`/`EACCES` surfaces here, before any
+   * promise. That must not fail the report either: the part is served from memory (the route merge appends whatever the
+   * medium did not provide), the failure is reported once per streak, and the rest of this snapshot skips the medium.
+   */
+  const snapshotOrEmpty = (
+    parts: readonly FrozenPart[],
+    dead: { failed: boolean },
+  ): CaptureSnapshot => {
+    if (dead.failed) {
+      return createRecordSnapshot([]); // nothing from the medium
+    }
+    try {
+      return durable.snapshot(parts);
+    } catch (error) {
+      dead.failed = true;
+      noteReadFailure(error);
+      return createRecordSnapshot([]); // nothing from the medium
+    }
+  };
 
   /**
    * A durable read that fails or hangs serves what the backend still holds in memory (records queued for the medium or
@@ -299,10 +333,7 @@ export function withDiskPressure(
         return read;
       } catch (error) {
         dead.failed = true;
-        if (!degraded) {
-          degraded = true;
-          options.onReadError?.(error); // once per streak, not once per snapshot
-        }
+        noteReadFailure(error); // once per streak, not once per snapshot
         const held = snap.inMemory?.() ?? new Map();
         if (error === overran && !backgroundRead) {
           // Let the overrunning read finish in the background, up to the backstop: if it answers, the medium is fine.
@@ -468,7 +499,8 @@ export function withDiskPressure(
         durableParts.push({ ref, count: parts.get(keyOf(ref))?.durableCount ?? 0 });
       }
       if (shadowed === 0) {
-        return guardedRead(durable.snapshot(durableParts), { failed: false });
+        const dead = { failed: false };
+        return guardedRead(snapshotOrEmpty(durableParts, dead), dead);
       }
       // One snapshot per part and half, taken NOW (a file backend reads eagerly, so this freezes the view) but
       // DRAINED one part at a time: the IndexedDB half reads lazily, so only one part is in memory at once.
@@ -482,7 +514,7 @@ export function withDiskPressure(
       const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
         const state = parts.get(keyOf(ref));
         const fromDurable = guardedRead(
-          durable.snapshot([durableParts[index] as FrozenPart]),
+          snapshotOrEmpty([durableParts[index] as FrozenPart], deadMedium),
           deadMedium,
         );
         if (state === undefined || state.shadowCount === 0) {

@@ -1626,3 +1626,103 @@ describe('withDiskPressure — a slow but HEALTHY medium is never treated as dea
     }
   });
 });
+
+describe('withDiskPressure — a durable snapshot() that THROWS (the file backend reads eagerly)', () => {
+  const throwing = (state: { throws: boolean }): ChunkBackend => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    return {
+      ...memory,
+      snapshot: (parts) => {
+        if (state.throws) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        return memory.snapshot(parts);
+      },
+    };
+  };
+
+  it('serves the in-memory shadow, reports once per streak, and never throws to the exporter (shadowed path)', async () => {
+    const state = { throws: true };
+    const onReadError = vi.fn();
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(throwing(state), pressure, { onReadError });
+    pressure.observe(5 * MB); // none: everything is in the shadow, the only copy
+    const frozen = [0, 1].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
+    for (const { ref } of frozen) {
+      backend.openPart(ref, 0);
+      backend.appendEntry(ref, rec('log', ref.number, `mem-${ref.number}`));
+    }
+    const read = async (): Promise<string[]> =>
+      names((await backend.snapshot(frozen).drainAll()).get('log'));
+    expect(await read()).toEqual(['mem-0', 'mem-1']);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect((onReadError.mock.calls[0]?.[0] as { code?: string }).code).toBe('EIO');
+    expect(await read()).toEqual(['mem-0', 'mem-1']); // the same streak: still one report
+    expect(onReadError).toHaveBeenCalledOnce();
+    state.throws = false; // the medium reads again: the streak ends, and a later failure is a new report
+    expect(await read()).toEqual(['mem-0', 'mem-1']);
+    state.throws = true;
+    await read();
+    expect(onReadError).toHaveBeenCalledTimes(2);
+  });
+
+  it('the unshadowed fast path is guarded too: nothing to serve, but the report does not fail', async () => {
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(throwing({ throws: true }), createDiskPressure(), {
+      onReadError,
+    });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+    expect((await snap.drainAll()).size).toBe(0);
+    const seen: StoredEntry[] = [];
+    for await (const r of snap.stream()) seen.push(r);
+    expect(seen).toEqual([]);
+    expect(() => snap.release()).not.toThrow();
+    expect(onReadError).toHaveBeenCalledOnce();
+  });
+
+  it('after one part throws, the rest of THAT snapshot does not call the medium again', async () => {
+    let calls = 0;
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: () => {
+        calls += 1;
+        throw new Error('EIO');
+      },
+    };
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(durable, pressure, { onReadError: () => {} });
+    pressure.observe(30 * MB);
+    const frozen = [0, 1, 2].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
+    for (const { ref } of frozen) {
+      backend.openPart(ref, 0);
+      backend.appendEntry(ref, rec('log', ref.number, `m${ref.number}`));
+    }
+    await backend.snapshot(frozen).drainAll();
+    expect(calls).toBe(1);
+  });
+});
+
+describe('withDiskPressure — a failed probe keeps a part that HAS its meta open', () => {
+  it('only a part with NO meta is marked unopened: a refused padding write leaves the part to be sealed and evicted', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError: () => {},
+    });
+    const append = storage.append.bind(storage);
+    storage.append = (g, c, f, d) => {
+      if (f === 'probe') throw new Error('padding refused');
+      append(g, c, f, d);
+    };
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    store.tick(2000); // part 1 opens WITH its meta, the padding into it is refused
+    expect(storage.read(1, 1, 'meta')).toBeDefined();
+    store.tick(3000); // part 1 is closed: it must be sealed (it is still marked opened)
+    const meta = JSON.parse(storage.read(1, 1, 'meta') as string) as { e: number | null };
+    expect(meta.e).toBe(3000);
+  });
+});
