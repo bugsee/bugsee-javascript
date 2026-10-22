@@ -215,6 +215,13 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: false,
     ...BOOLEAN_OPTION,
   },
+  // The store protection: ON by default (iOS runs it always), only boolean `false` opts out; invalid stays ON.
+  {
+    friendly: 'diskProtection',
+    key: BugseeOption.CaptureDiskProtection,
+    default: true,
+    ...FAIL_ON_BOOLEAN_OPTION,
+  },
   // Persistence collects data at rest, so only boolean `true`/`false` count: anything else is OFF and reported
   // (the launch substitutes the IndexedDB default only when the option is absent).
   { friendly: 'persist', key: PERSIST_OPTION_KEY, default: false, ...FAIL_CLOSED_BOOLEAN_OPTION },
@@ -410,13 +417,20 @@ export interface BugseeLaunchOptions {
    */
   captureUserIdle?: boolean;
   /**
-   * Observe the origin's storage headroom (`navigator.storage.estimate()`, `quota - usage`) and protect the capture
-   * store: under 50 MB the IndexedDB store stops persisting replay, log and network data, under 10 MB it persists
-   * nothing (the in-memory window is kept either way), a state is left only 10 MB above its threshold, and a
-   * `QuotaExceededError` write failure moves to out-of-space at once. With replay on it also writes the `capture`
-   * trace's `low_disk_space` / `no_disk_space` states. Opt-in, default FALSE; only boolean `true` enables it.
+   * Disk-space TELEMETRY: with replay on, the `capture` trace also states `low_disk_space` / `no_disk_space`. Opt-in,
+   * default FALSE; only boolean `true` enables it. It needs the protection below (a durable store) and is reported once
+   * through `onError` when there is none.
    */
   captureDiskSpace?: boolean;
+  /**
+   * Protect the capture store from a full quota (iOS runs this always). The SDK watches `navigator.storage.estimate()`
+   * headroom (`quota - usage`; an estimate, not device free space; Chromium reports a flat generous one) every 5 minutes
+   * and every 30 s under 500 MiB. Under 50 MiB the IndexedDB store stops persisting replay, log and network data, under
+   * 10 MiB it persists nothing, a state is left only 10 MiB above its threshold, and a `QuotaExceededError` write failure
+   * moves to out-of-space until a write succeeds again. The in-memory window is kept either way, so a live report is
+   * complete. Only where a durable store exists (`persist`). Default TRUE; only boolean `false` opts out.
+   */
+  diskProtection?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
   /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
@@ -789,22 +803,31 @@ async function buildLaunch(
   if (reportMarkers !== undefined) {
     services.addService(defineService(ReportMarkerStoreToken, () => reportMarkers));
   }
-  // Disk pressure (C7, opt-in `captureDiskSpace`): the origin's storage HEADROOM drives the IndexedDB store, which stops
-  // persisting replay/log/network below 50 MB and everything below 10 MB while keeping the in-memory window, and the
-  // `capture` trace. A write refused with `QuotaExceededError` moves it to `none` at once, so the IndexedDB writer's error
-  // sink goes through `noteWriteError` first. Built whether or not the store persists (the trace needs it either way).
-  const diskPressure: DiskPressureState | undefined = resolved.isEnabled(
-    BugseeOption.CaptureDiskSpace,
-  )
-    ? createDiskPressure({ ...(options.onError !== undefined ? { onError: options.onError } : {}) })
-    : undefined;
-  const writerOnError: ((error: unknown) => void) | undefined =
-    diskPressure === undefined
-      ? options.onError
-      : (error) => {
-          diskPressure.noteWriteError(error);
-          reportGuarded(options.onError, error);
-        };
+  // Disk pressure (C7). The PROTECTION is on by default wherever the page has a durable store (iOS runs it always; only
+  // its telemetry sits behind `captureDiskSpace`): the origin's storage HEADROOM drives the IndexedDB store, which stops
+  // persisting replay/log/network below 50 MiB and everything below 10 MiB while keeping the in-memory window.
+  // `diskProtection: false` opts out. No durable store (`persist` off, an injected `captureStore`, a streaming store in
+  // an Electron renderer) = nothing persisted = nothing to protect, so no pressure and no polling. A write refused with
+  // `QuotaExceededError` pins `none` until a durable write succeeds again (the store reports every failure and its
+  // first success). NOTE: Chromium's `estimate()` reports a flat, generous headroom (measured: usage + 10 GiB), so on
+  // Chrome this pin is the effective trigger; the headroom reading matters on browsers that report a real quota.
+  const diskPressure: DiskPressureState | undefined =
+    captureKeyed !== undefined &&
+    options.captureStore === undefined &&
+    resolved.isEnabled(BugseeOption.CaptureDiskProtection)
+      ? createDiskPressure({
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+        })
+      : undefined;
+  // Telemetry asked for but nothing to observe: say so once instead of silently doing nothing.
+  if (resolved.isEnabled(BugseeOption.CaptureDiskSpace) && diskPressure === undefined) {
+    reportGuarded(
+      options.onError,
+      new Error(
+        'Bugsee: captureDiskSpace needs a durable capture store (persist) and diskProtection on; disk space is not observed',
+      ),
+    );
+  }
   if (diskPressure !== undefined) {
     services.addService(defineService(DiskPressureToken, () => diskPressure));
   }
@@ -814,8 +837,16 @@ async function buildLaunch(
       ? createIdbChunkCaptureStore(captureKeyed, {
           ...storeBounds,
           generation: captureGeneration,
-          ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
-          ...(diskPressure !== undefined ? { diskPressure } : {}),
+          ...(options.onError !== undefined ? { onError: options.onError } : {}),
+          ...(diskPressure !== undefined
+            ? {
+                diskPressure,
+                onWriteFailure: (error: unknown): void => {
+                  diskPressure.noteWriteError(error);
+                },
+                onWriteRecovered: (): void => diskPressure.noteWriteRecovered(),
+              }
+            : {}),
         })
       : createMemoryCaptureStore(storeBounds));
 
@@ -996,6 +1027,7 @@ async function buildLaunch(
   // (a WebView / Electron renderer leaves it to its native host / main). It writes `active`/`blackout` once the recorder
   // really started (below) and the disk states under `captureDiskSpace`; blackout and pressure are bound now, the
   // recorder's own signal later.
+  let stopReplayCheckout: (() => void) | undefined;
   const feedNavigator =
     diskPressure !== undefined
       ? browserTraceEnvFrom(win, domDocument, options.onError).navigator
@@ -1005,8 +1037,8 @@ async function buildLaunch(
       ? new CaptureStateProducer()
       : undefined;
   captureState?.bindBlackout(blackout);
-  if (diskPressure !== undefined) {
-    captureState?.bindPressure(diskPressure);
+  if (diskPressure !== undefined && resolved.isEnabled(BugseeOption.CaptureDiskSpace)) {
+    captureState?.bindPressure(diskPressure); // the disk STATES are telemetry: behind the opt-in, the protection is not
   }
   client.addCaptureProvider(
     createSystemTracesProvider({
@@ -1150,6 +1182,17 @@ async function buildLaunch(
         // `undefined` = a DOM-less host, where nothing records: only a real recorder makes `capture` claim `active`.
         if (recorder !== undefined) {
           captureState?.setVisualCapture(true);
+          // Replay stops being persisted under pressure (the window stays in memory), so the durable stream has a
+          // gap of incremental events. When persistence resumes, restart the recorder: the resumed tail then begins
+          // with a fresh FullSnapshot and a chunk-recovered replay never applies mutations to nodes it never saw.
+          if (diskPressure !== undefined) {
+            // `onChange` fires only on a real transition, so reaching `normal` means replay was being held back.
+            stopReplayCheckout = diskPressure.onChange((level) => {
+              if (level === 'normal') {
+                recorder.checkout();
+              }
+            });
+          }
         }
       })
       .catch((error) => {
@@ -1413,6 +1456,7 @@ async function buildLaunch(
       }
       uninstallPageHideFlush();
       stopDiskFeed?.();
+      stopReplayCheckout?.();
       let drained = false;
       try {
         const stopping = stopCore(timeout);

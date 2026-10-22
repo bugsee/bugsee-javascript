@@ -6,22 +6,29 @@ import { serviceToken } from '@bugsee/service';
 // browser: `navigator.storage.estimate()` headroom) and the capture stores / the `capture` trace READ it (pub/sub, no
 // piercing the core).
 //
-//   normal -> low   when free < 50 MB            low -> normal  only at free >= 60 MB   (+10 MB hysteresis)
-//   any    -> none  when free < 10 MB            none -> low    only at free >= 20 MB; none -> normal at >= 60 MB
+//   normal -> low   when free < 50 MiB           low -> normal  only at free >= 60 MiB   (+10 MiB hysteresis)
+//   any    -> none  when free < 10 MiB           none -> low    only at free >= 20 MiB; none -> normal at >= 60 MiB
 //
-// Units are DECIMAL megabytes, as iOS. A reading that is not a finite non-negative number is IGNORED: the state never
-// changes on an absent, hostile or impossible reading, so pressure is never fabricated (a failed `statfs` is not a full
-// disk). A write that fails for lack of space pins `none` at once; the pin is released only by a sane reading that
-// clears the none-leave margin, so a quota estimate that still looks healthy cannot undo the evidence of a failed write
-// until the next poll shows room.
+// Units are BINARY mebibytes, as iOS (`BGSUtil.m`: `freeMB = totalFree / 1024 / 1024`, the 50 / 10 / 10 constants in
+// `BGSTrackerDiskSpace.m` compare against that). A reading that is not a finite non-negative number is IGNORED: the
+// state never changes on an absent, hostile or impossible reading, so pressure is never fabricated (a failed `statfs`
+// is not a full disk).
+//
+// WRITE FAILURE PIN. A write that fails for lack of space (`noteWriteError`) holds `none` regardless of what the size
+// readings say, until a durable write SUCCEEDS (`noteWriteRecovered`): a size reading is a different instrument from a
+// refused write (a fuzzed browser quota, a per-user `EDQUOT`) and must not undo it. While pinned, `pinned()` is true so
+// the store can send a probe write; the size readings keep updating the underlying level, which takes over again
+// when the pin clears.
 
 /** `normal` = persist everything; `low` = stop persisting replay/log/network; `none` = persist nothing. */
 export type DiskPressureLevel = 'normal' | 'low' | 'none';
 
 /** The read-only view a capture store / trace producer is handed. */
 export interface DiskPressure {
-  /** The current level. */
+  /** The current level (`none` while pinned by a refused write). */
   level(): DiskPressureLevel;
+  /** True while `none` is held by a refused write rather than by a size reading. */
+  pinned(): boolean;
   /** Subscribe to level changes (fires only on a real transition, with the NEW level). Returns an unsubscribe. */
   onChange(listener: (level: DiskPressureLevel) => void): () => void;
 }
@@ -30,16 +37,18 @@ export interface DiskPressure {
 export interface DiskPressureState extends DiskPressure {
   /** Apply a free-space reading in BYTES. Not a finite number >= 0: ignored. */
   observe(freeBytes: number): void;
-  /** A persistence write failed. When `error` says "out of space", move to `none` and return true; else false. */
+  /** A persistence write failed (call it for EVERY failure). When `error` says "out of space", pin `none` and return true. */
   noteWriteError(error: unknown): boolean;
+  /** A durable write succeeded: release a write-failure pin (the size readings decide again). */
+  noteWriteRecovered(): void;
 }
 
-/** iOS thresholds (decimal MB): below this free space the store stops persisting replay, log and network. */
-export const DISK_LOW_BYTES = 50_000_000;
+/** iOS thresholds (binary MiB): below this free space the store stops persisting replay, log and network. */
+export const DISK_LOW_BYTES = 50 * 1024 * 1024;
 /** Below this free space nothing is persisted. */
-export const DISK_NONE_BYTES = 10_000_000;
+export const DISK_NONE_BYTES = 10 * 1024 * 1024;
 /** A state is left only at its threshold plus this margin. */
-export const DISK_RECOVERY_MARGIN_BYTES = 10_000_000;
+export const DISK_RECOVERY_MARGIN_BYTES = 10 * 1024 * 1024;
 
 /** Service token: the platform registers the launch's disk pressure when `captureDiskSpace` is on. */
 export const DiskPressureToken = serviceToken<DiskPressureState>('diskPressure');
@@ -89,10 +98,14 @@ function nextLevel(free: number, current: DiskPressureLevel): DiskPressureLevel 
 }
 
 export function createDiskPressure(options: DiskPressureOptions = {}): DiskPressureState {
+  // What the size readings say, with their own hysteresis; a pin overrides it without disturbing it.
+  let reading: DiskPressureLevel = 'normal';
+  let pin = false;
   let current: DiskPressureLevel = 'normal';
   const listeners = new Set<(level: DiskPressureLevel) => void>();
 
-  const set = (level: DiskPressureLevel): void => {
+  const publish = (): void => {
+    const level: DiskPressureLevel = pin ? 'none' : reading;
     if (level === current) {
       return;
     }
@@ -112,6 +125,7 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
 
   return {
     level: () => current,
+    pinned: () => pin,
     onChange(listener) {
       listeners.add(listener);
       return () => {
@@ -122,14 +136,20 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
       if (typeof freeBytes !== 'number' || !Number.isFinite(freeBytes) || freeBytes < 0) {
         return;
       }
-      set(nextLevel(freeBytes, current));
+      reading = nextLevel(freeBytes, reading);
+      publish();
     },
     noteWriteError(error) {
       if (!isOutOfSpaceError(error)) {
         return false;
       }
-      set('none');
+      pin = true;
+      publish();
       return true;
+    },
+    noteWriteRecovered() {
+      pin = false;
+      publish();
     },
   };
 }

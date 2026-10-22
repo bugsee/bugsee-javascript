@@ -2,19 +2,34 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CaptureProviderBase,
   CaptureStoreToken,
   ChunkStorageToken,
+  createMemoryCaptureStore,
   DiskPressureToken,
   type HttpResponse,
   type HttpTransport,
 } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// C7 WIRING through the real node launch: `captureDiskSpace` + a data dir builds one DiskPressure, feeds it from the
-// shared StorageTracker's `statfs`, hands it to the file capture store, and routes every writer's error sink through
-// `noteWriteError`. The real fs medium is used; only `statfs` and the poll timer are injected.
-const { batchedSpy } = vi.hoisted(() => ({ batchedSpy: vi.fn() }));
+// C7 WIRING through the real node launch: a DURABLE store (a data dir, no explicit captureStore) builds one DiskPressure BY
+// DEFAULT (iOS runs the protection always; `diskProtection: false` opts out), feeds it from the shared StorageTracker's
+// `statfs`, hands it to the file capture store, and wires every writer's health hooks to it. `captureDiskSpace` is only
+// the telemetry. The real fs medium is used; only `statfs` and the poll timer are injected.
+const { batchedSpy, ringSpy, fileStoreSpy } = vi.hoisted(() => ({
+  batchedSpy: vi.fn(),
+  ringSpy: vi.fn(),
+  fileStoreSpy: vi.fn(),
+}));
+vi.mock('@bugsee/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@bugsee/core')>();
+  return {
+    ...actual,
+    createFileCaptureStore: (...args: Parameters<typeof actual.createFileCaptureStore>) => {
+      fileStoreSpy(args[1]);
+      return actual.createFileCaptureStore(...args);
+    },
+  };
+});
 vi.mock('@bugsee/node-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@bugsee/node-utils')>();
   return {
@@ -25,13 +40,17 @@ vi.mock('@bugsee/node-utils', async (importOriginal) => {
       batchedSpy(args[1]);
       return actual.createBatchedFsChunkStorage(...args);
     },
+    createCaptureRingWriter: (...args: Parameters<typeof actual.createCaptureRingWriter>) => {
+      ringSpy(args[1]);
+      return actual.createCaptureRingWriter(...args);
+    },
   };
 });
 
 import { resetStorageTracker } from '@bugsee/trackers/node';
 import { type BugseeLaunchOptions, launch, type NodeRuntime } from './launch';
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 const fakeProc = (): NodeRuntime => ({
   on: () => undefined as never,
   off: () => undefined as never,
@@ -70,7 +89,6 @@ function setup(over: Partial<BugseeLaunchOptions> = {}) {
     detectCrashes: false,
     systemMetricsSampler: () => [],
     dataDir: dir,
-    captureDiskSpace: true,
     diskStatfs: statfs,
     scheduler: {
       setInterval: (cb: () => void, ms: number) => {
@@ -143,18 +161,61 @@ describe('launch — captureDiskSpace disk-pressure protection (C7)', () => {
     expect(all.get('log')?.map((r) => r.serialized)).toEqual(['before', 'during-pressure']);
   });
 
-  it('is absent without the opt-in, and for a non-boolean-true value', () => {
-    for (const v of [undefined, false, 'true', 1, null]) {
-      const h = setup({ captureDiskSpace: v as unknown as boolean });
-      expect(() => h.pressure(), String(v)).toThrow();
-      expect(h.statfs, String(v)).not.toHaveBeenCalled();
-    }
+  it('is ON by default, with no captureDiskSpace (the opt-in is only telemetry)', async () => {
+    const h = setup();
+    await settle();
+    expect(h.pressure().level()).toBe('normal');
+    expect(h.statfs).toHaveBeenCalled();
   });
 
-  it('is absent without a data dir (an in-memory launch has nothing it persists to)', () => {
-    const h = setup({ dataDir: undefined, capturedDataStore: 'memory' });
-    expect(() => h.pressure()).toThrow();
-    expect(h.statfs).not.toHaveBeenCalled();
+  it('diskProtection:false opts out (no pressure, no polling)', () => {
+    const off = setup({ diskProtection: false });
+    expect(() => off.pressure()).toThrow();
+    expect(off.statfs).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'false',
+    0,
+    null,
+    'no',
+  ])('diskProtection %j is not a boolean false: the protection stays ON', async (v) => {
+    const h = setup({ diskProtection: v as unknown as boolean, onError: () => {} });
+    expect(h.pressure()).toBeDefined();
+    await h.client.stop(50);
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('is absent with no durable store: an in-memory launch, or an explicit captureStore, persists nothing to protect', () => {
+    const memory = setup({ dataDir: undefined, capturedDataStore: 'memory' });
+    expect(() => memory.pressure()).toThrow();
+    expect(memory.statfs).not.toHaveBeenCalled();
+    const explicit = setup({ captureStore: createMemoryCaptureStore() });
+    expect(() => explicit.pressure()).toThrow();
+    expect(explicit.statfs).not.toHaveBeenCalled();
+  });
+
+  const noDirReports = (onError: ReturnType<typeof vi.fn>): unknown[] =>
+    onError.mock.calls.filter((c) =>
+      /captureDiskSpace needs an on-disk data directory/.test(String((c[0] as Error).message)),
+    );
+
+  it('captureDiskSpace without any data directory says so ONCE through onError', () => {
+    const onError = vi.fn();
+    setup({ dataDir: undefined, capturedDataStore: 'memory', captureDiskSpace: true, onError });
+    expect(noDirReports(onError)).toHaveLength(1);
+  });
+
+  it('captureDiskSpace without a data directory and without onError stays silent (never throws)', () => {
+    expect(() =>
+      setup({ dataDir: undefined, capturedDataStore: 'memory', captureDiskSpace: true }),
+    ).not.toThrow();
+  });
+
+  it('an in-memory launch that did not ask for the telemetry is not told anything', () => {
+    const onError = vi.fn();
+    setup({ dataDir: undefined, capturedDataStore: 'memory', onError });
+    expect(noDirReports(onError)).toHaveLength(0);
   });
 
   it('a failing or impossible statfs never creates pressure', async () => {
@@ -168,50 +229,64 @@ describe('launch — captureDiskSpace disk-pressure protection (C7)', () => {
     expect(h.pressure().level()).toBe('normal');
   });
 
-  it('routes the chunk writer error sink through noteWriteError, and still tells the host', async () => {
+  const hooksOf = () =>
+    batchedSpy.mock.calls.at(-1)?.[0] as {
+      onError?: (e: unknown) => void;
+      onWriteFailure: (e: unknown) => void;
+      onWriteRecovered: () => void;
+    };
+
+  it('wires the chunk writer health hooks: every out-of-space failure pins none, a healthy reading does not undo it, a successful write does', async () => {
     const onError = vi.fn();
     const h = setup({ onError });
     await settle();
-    const sink = batchedSpy.mock.calls.at(-1)?.[0]?.onError as (e: unknown) => void;
+    const hooks = hooksOf();
     const full = Object.assign(new Error('no space left'), { code: 'ENOSPC' });
-    sink(full);
+    hooks.onWriteFailure(full);
     expect(h.pressure().level()).toBe('none');
-    expect(onError).toHaveBeenCalledWith(full);
-    await h.setFree(500 * MB); // the next sane reading ends it
+    expect(h.pressure().pinned()).toBe(true);
+    await h.setFree(500 * MB);
+    expect(h.pressure().level()).toBe('none'); // the size reading is a different instrument
+    hooks.onWriteFailure(new Error('EPERM')); // not out-of-space: ignored
+    hooks.onWriteRecovered();
     expect(h.pressure().level()).toBe('normal');
-    sink(new Error('EPERM'));
-    expect(h.pressure().level()).toBe('normal');
+    expect(hooks.onError).toBe(onError); // host reporting is untouched
   });
 
-  it('routes an error the capture funnel itself reports (a store that refuses a write) through noteWriteError too', async () => {
-    const onError = vi.fn();
-    const h = setup({ onError });
+  it("wires the OFF-THREAD ring writer's health hooks the same way (captureWriter: 'worker')", async () => {
+    const h = setup({ captureWriter: 'worker' });
     await settle();
-    class Probe extends CaptureProviderBase {
-      readonly name = 'probe';
-      protected onStart(): void {}
-      refuse(error: Error): void {
-        this.capture('log', Date.now(), {
-          toJSON() {
-            throw error;
-          },
-        });
-      }
-    }
-    const probe = new Probe();
-    h.client.addCaptureProvider(probe);
-    const full = Object.assign(new Error('no space left'), { code: 'ENOSPC' });
-    probe.refuse(full);
+    const hooks = ringSpy.mock.calls.at(-1)?.[0] as {
+      onWriteFailure: (e: unknown) => void;
+      onWriteRecovered: () => void;
+    };
+    hooks.onWriteFailure({ code: 'ENOSPC' });
     expect(h.pressure().level()).toBe('none');
-    expect(onError).toHaveBeenCalledWith(full);
+    hooks.onWriteRecovered();
+    expect(h.pressure().level()).toBe('normal');
   });
 
-  it('works without a host onError (the sink still pins and nothing throws)', async () => {
+  it('passes the host onError to the writer unwrapped, and works without one', async () => {
     const h = setup();
     await settle();
-    const sink = batchedSpy.mock.calls.at(-1)?.[0]?.onError as (e: unknown) => void;
-    expect(() => sink({ code: 'ENOSPC' })).not.toThrow();
+    expect(hooksOf().onError).toBeUndefined();
+    hooksOf().onWriteFailure({ code: 'ENOSPC' });
     expect(h.pressure().level()).toBe('none');
+  });
+
+  it('gives the file store an onDiskWriteError that pins none and still tells the host', async () => {
+    const onError = vi.fn();
+    const h = setup({ onError });
+    await settle();
+    const given = fileStoreSpy.mock.calls.at(-1)?.[0] as {
+      diskPressure?: unknown;
+      onDiskWriteError: (e: unknown) => void;
+    };
+    expect(given.diskPressure).toBe(h.pressure());
+    const full = Object.assign(new Error('no space left'), { code: 'ENOSPC' });
+    given.onDiskWriteError(full);
+    expect(h.pressure().level()).toBe('none');
+    expect(onError).toHaveBeenCalledWith(full);
   });
 
   it('uses the DiskPressure a platform injects, so the platform can follow the same state', async () => {

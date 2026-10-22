@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
@@ -338,5 +338,94 @@ describe('createWorkerThreadRingWorker (real worker_threads)', () => {
     expect(readFileSync(diskPath(root, 0, 'log'), 'utf8')).toBe('S\n');
     worker.stop();
     expect(existsSync(diskPath(root, 0, 'log'))).toBe(true);
+  });
+});
+
+describe('createWorkerThreadRingWorker — drain failures reach the host', () => {
+  const full = { fail: { code: 'ENOSPC', message: 'no space left on device' } };
+  const fakeWorker = () => {
+    const handlers = new Map<string, (e: unknown) => void>();
+    return {
+      handlers,
+      worker: {
+        on: (event: string, cb: (e: unknown) => void) => void handlers.set(event, cb),
+        postMessage: () => {},
+        terminate: () => Promise.resolve(0),
+        unref: () => {},
+      },
+    };
+  };
+  const build = (onWriteFailure?: (e: unknown) => void) => {
+    const { data, control } = allocCaptureRing(1024);
+    const onError = vi.fn();
+    const fake = fakeWorker();
+    createWorkerThreadRingWorker(
+      {
+        data,
+        control,
+        flags: new SharedArrayBuffer(16),
+        captureDir: '/tmp/never',
+        generation: GEN,
+        fileTypes: FILE_TYPES,
+        onError,
+        ...(onWriteFailure !== undefined ? { onWriteFailure } : {}),
+      },
+      function FakeCtor() {
+        return fake.worker;
+      } as unknown as Parameters<typeof createWorkerThreadRingWorker>[1],
+    );
+    return { onError, message: fake.handlers.get('message') as (m: unknown) => void };
+  };
+
+  it('forwards EVERY failure message as an error carrying the errno code, and reports only the first to onError', () => {
+    const seen: Array<{ code?: unknown; message: string }> = [];
+    const { message, onError } = build((e) => seen.push(e as { code?: unknown; message: string }));
+    message(full);
+    message(full);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({ code: 'ENOSPC', message: 'no space left on device' });
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failure without a string code carries none, and messages that are not failures are ignored', () => {
+    const seen: Array<{ code?: unknown }> = [];
+    const { message, onError } = build((e) => seen.push(e as { code?: unknown }));
+    message({ fail: { code: 5, message: 'weird' } });
+    message(null);
+    message({ other: true });
+    expect(seen).toHaveLength(1);
+    expect('code' in (seen[0] as object)).toBe(false);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('works without a health hook', () => {
+    const { message, onError } = build();
+    message(full);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a REAL worker that cannot write tells the host (the old behaviour swallowed it)', async () => {
+    const root = mkRoot();
+    const blocked = join(root, 'a-file-not-a-dir');
+    writeFileSync(blocked, 'x'); // the capture dir is a regular file: mkdir/open inside it fails (ENOTDIR)
+    const { data, control } = allocCaptureRing(64 * 1024);
+    const failures: unknown[] = [];
+    const worker = createWorkerThreadRingWorker({
+      data,
+      control,
+      flags: new SharedArrayBuffer(16),
+      captureDir: blocked,
+      generation: GEN,
+      fileTypes: FILE_TYPES,
+      onError: () => {},
+      onWriteFailure: (e) => failures.push(e),
+    });
+    const p = new RingProducer(data, control);
+    const b = new TextEncoder().encode('L1\n');
+    (p.reserve(b.length) as Uint8Array).set(b);
+    p.commit(encodePathId(0, 0), b.length);
+    await vi.waitFor(() => expect(failures.length).toBeGreaterThan(0), { timeout: 3000 });
+    expect((failures[0] as { code?: string }).code).toBe('ENOTDIR');
+    worker.stop();
   });
 });

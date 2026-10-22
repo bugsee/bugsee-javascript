@@ -803,3 +803,100 @@ describe('storageTrackerFor (singleton per data dir)', () => {
     resetStorageTracker(k2);
   });
 });
+
+describe('StorageTracker (node) — a hung statfs must not blind the tracker for the whole launch', () => {
+  const hung = () => {
+    const resolvers: Array<(s: StatFsResult) => void> = [];
+    let calls = 0;
+    const statfs: StatFs = () => {
+      calls += 1;
+      return new Promise((resolve) => resolvers.push(resolve));
+    };
+    return { statfs, resolvers, calls: () => calls };
+  };
+
+  it('abandons a read pending past the timeout, reads again on the next tick, and reports ONCE per streak', async () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const onError = vi.fn();
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs, now: () => clock.t, statfsTimeoutMs: 5000 },
+      onError,
+    );
+    r.subscribe();
+    expect(h.calls()).toBe(1);
+    clock.t = 4999;
+    r.fs.tick(); // not yet hung
+    expect(h.calls()).toBe(1);
+    expect(onError).not.toHaveBeenCalled();
+    clock.t = 5000;
+    r.fs.tick(); // hung: abandoned, a fresh read starts
+    expect(h.calls()).toBe(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    clock.t = 10_000;
+    r.fs.tick(); // the second one hangs too: still one report for the streak
+    expect(h.calls()).toBe(3);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(r.tracker.current()).toBeUndefined();
+  });
+
+  it('a late answer of an abandoned read is ignored; the fresh read answers normally', async () => {
+    const h = hung();
+    const clock = { t: 0 };
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs, now: () => clock.t },
+      () => {},
+    );
+    r.subscribe();
+    clock.t = 6000;
+    r.fs.tick();
+    h.resolvers[0]?.(ok(100)); // the abandoned one finally answers: ignored
+    await flush();
+    expect(r.seen).toEqual([]);
+    h.resolvers[1]?.(ok(250));
+    await flush();
+    expect(r.seen).toEqual([{ freeBytes: 250 * MB, totalBytes: 1000 * MB }]);
+  });
+
+  it('drops the previous reading when a read hangs (an unanswered volume is a gap, never the old number)', async () => {
+    let first = true;
+    const resolvers: Array<(s: StatFsResult) => void> = [];
+    const statfs: StatFs = () => {
+      if (first) {
+        first = false;
+        return Promise.resolve(ok(300));
+      }
+      return new Promise((resolve) => resolvers.push(resolve));
+    };
+    const clock = { t: 0 };
+    const r = mk(
+      () => ok(),
+      { statfs, now: () => clock.t },
+      () => {},
+    );
+    r.subscribe();
+    await flush();
+    expect(r.tracker.current()).toBeDefined();
+    r.fs.tick(); // hangs
+    clock.t = 6000;
+    r.fs.tick(); // abandoned
+    expect(r.tracker.current()).toBeUndefined();
+  });
+
+  it('works with the default clock and timeout, and ends the streak with a successful read', async () => {
+    const h = hung();
+    const r = mk(
+      () => ok(),
+      { statfs: h.statfs },
+      () => {},
+    );
+    r.subscribe();
+    r.fs.tick(); // far under 5 s of real time: still the same read
+    expect(h.calls()).toBe(1);
+    h.resolvers[0]?.(ok());
+    await flush();
+    expect(r.seen).toHaveLength(1);
+  });
+});

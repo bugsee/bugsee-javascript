@@ -1,6 +1,7 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChunkBackend } from './chunk-backend';
+import { createChunkCaptureStore } from './chunk-capture-store';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { Clock } from './clock';
 import type { CaptureStore, StoredEntry } from './contracts';
@@ -10,7 +11,7 @@ import { createFileCaptureStore } from './file-capture-store';
 import { createFileChunkBackend } from './file-chunk-backend';
 import { createMemoryChunkBackend } from './memory-chunk-backend';
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 const clockAt = (now: number): Clock => ({ wallNow: () => now, monotonicNow: () => 0 });
 const rec = (
   type: FileType,
@@ -133,12 +134,117 @@ describe('disk pressure over the file capture store', () => {
     expect(names(all.get('log'))).toEqual(['log@1', 'log@2', 'log@3', 'log@4']);
   });
 
-  it('breaks a timestamp tie in write order (the persisted record first)', async () => {
+  it('keeps WRITE order at onset when timestamps tie', async () => {
     const { pressure, store } = setup();
     store.add(rec('log', 9, 'durable'));
     pressure.observe(30 * MB);
     store.add(rec('log', 9, 'shadow'));
     expect(names((await drain(store)).get('log'))).toEqual(['durable', 'shadow']);
+  });
+
+  it('keeps WRITE order at recovery when timestamps tie (the shadowed record first)', async () => {
+    const { pressure, store } = setup();
+    pressure.observe(30 * MB);
+    store.add(rec('replay', 500, 'A'));
+    pressure.observe(100 * MB);
+    store.add(rec('replay', 500, 'B'));
+    expect(names((await drain(store)).get('replay'))).toEqual(['A', 'B']);
+  });
+
+  it('orders by write sequence, not timestamp, when timestamps are not monotonic', async () => {
+    const { pressure, store } = setup();
+    store.add(rec('log', 50, 'd1'));
+    pressure.observe(30 * MB);
+    store.add(rec('log', 10, 's1'));
+    store.add(rec('log', 40, 's2'));
+    pressure.observe(100 * MB);
+    store.add(rec('log', 5, 'd2'));
+    pressure.observe(30 * MB);
+    store.add(rec('log', 70, 's3'));
+    expect(names((await drain(store)).get('log'))).toEqual(['d1', 's1', 's2', 'd2', 's3']);
+  });
+
+  it('keeps each type in its own write order when types interleave across the halves', async () => {
+    const { pressure, store } = setup();
+    store.add(rec('traces.system', 1, 't1'));
+    pressure.observe(30 * MB);
+    store.add(rec('log', 2, 'l1'));
+    store.add(rec('traces.system', 3, 't2')); // durable under low
+    store.add(rec('log', 4, 'l2'));
+    pressure.observe(5 * MB);
+    store.add(rec('traces.system', 5, 't3')); // shadow under none
+    const all = await drain(store);
+    expect(names(all.get('traces.system'))).toEqual(['t1', 't2', 't3']);
+    expect(names(all.get('log'))).toEqual(['l1', 'l2']);
+  });
+
+  it('a type that first appears durable AFTER the part was shadowed is still ordered', async () => {
+    const { pressure, store } = setup();
+    pressure.observe(5 * MB);
+    store.add(rec('log', 1, 's1'));
+    pressure.observe(100 * MB);
+    store.add(rec('traces.system', 2, 'd1'));
+    store.add(rec('log', 3, 'd2'));
+    expect(names((await drain(store)).get('log'))).toEqual(['s1', 'd2']);
+  });
+
+  it('streams one part at a time, oldest part first, releasing each before the next', async () => {
+    const { pressure, store } = setup();
+    pressure.observe(30 * MB);
+    store.add(rec('log', 1, 'p0'));
+    store.tick(2000);
+    store.add(rec('log', 2001, 'p1'));
+    store.add(rec('traces.system', 2002, 'p1t'));
+    const snap = store.snapshot();
+    const seen: string[] = [];
+    for await (const r of snap.stream()) seen.push(r.serialized);
+    snap.release();
+    expect(seen).toEqual(['p0', 'p1t', 'p1']); // part order first; within a part, grouped by type
+  });
+
+  it('releases each part as it is streamed, not all at the end', async () => {
+    const releases: number[] = [];
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => {
+        const snap = memory.snapshot(parts);
+        const first = parts[0]?.ref.number as number;
+        return {
+          ...snap,
+          release: () => {
+            releases.push(first);
+            snap.release();
+          },
+        };
+      },
+    };
+    const pressure = createDiskPressure();
+    const store = createChunkCaptureStore(durable, {
+      clock: clockAt(1000),
+      diskPressure: pressure,
+    });
+    pressure.observe(30 * MB);
+    store.add(rec('log', 1, 'p0'));
+    store.tick(2000);
+    store.add(rec('log', 2001, 'p1'));
+    const snap = store.snapshot();
+    const stream = snap.stream();
+    await stream.next(); // part 0's first record
+    expect(releases).toEqual([0]); // part 0 is already released while part 1 is still unread
+    await stream.next();
+    await stream.next();
+    expect(releases).toEqual([0, 1]);
+  });
+
+  it('release() before reading frees every half, and a second release is harmless', async () => {
+    const { pressure, store } = setup();
+    pressure.observe(30 * MB);
+    store.add(rec('log', 1));
+    const snap = store.snapshot();
+    snap.release();
+    snap.release();
+    expect((await snap.drainAll()).size).toBe(0);
   });
 
   it('streams the merged window too', async () => {
@@ -212,14 +318,66 @@ describe('disk pressure over the file capture store', () => {
     });
   });
 
-  it('does not seal a part while there is no room, and never creates a meta for a part the medium never saw', () => {
+  it('seals an opened part at every level (its meta must not lie, the writer closes its handles), and never creates a meta for a part the medium never saw', () => {
     const { storage, pressure, store } = setup();
-    store.add(rec('traces.system', 1));
+    store.add(rec('traces.system', 1, 'abcd'));
     pressure.observe(5 * MB);
     store.tick(2000);
-    expect(JSON.parse(storage.read(7, 0, 'meta') as string).e).toBeNull();
+    expect(JSON.parse(storage.read(7, 0, 'meta') as string)).toEqual({
+      n: 0,
+      s: 1000,
+      e: 2000,
+      b: 7,
+    });
     store.tick(3000); // part 1 was opened under none and never written
     expect(storage.chunks(7)).toEqual([0]);
+  });
+
+  it('NONE still persists the `capture` state entry, so a chunk-recovered report can explain its own emptiness', async () => {
+    const { storage, pressure, store } = setup();
+    pressure.observe(5 * MB);
+    const state =
+      '{"timestamp":9,"data":{"timestamp":9,"name":"capture","value":{"state":"no_disk_space"}}}';
+    store.add(rec('traces.system', 9, state));
+    store.add(
+      rec(
+        'traces.system',
+        10,
+        '{"timestamp":10,"data":{"timestamp":10,"name":"cpu_usage_process","value":1}}',
+      ),
+    );
+    store.add(rec('log', 11));
+    expect(storage.read(7, 0, 'traces.system')).toBe(`9\t${state}\n`);
+    expect(storage.files(7, 0).sort()).toEqual(['meta', 'traces.system']);
+    expect(names((await drain(store)).get('traces.system'))).toHaveLength(2); // the live window still has both
+  });
+
+  it('only a traces.system record counts as the state entry (a log line mentioning it is gated like any log)', () => {
+    const { storage, pressure, store } = setup();
+    pressure.observe(5 * MB);
+    store.add(rec('log', 1, '"name":"capture","value":{"state":"x"}'));
+    expect(storage.files(7, 0)).toEqual(['meta']);
+  });
+
+  it('a part whose meta could not be created is retried by the first durable write', () => {
+    const storage = createInMemoryChunkStorage();
+    const real = storage.write.bind(storage);
+    let broken = true;
+    storage.write = (...args) => {
+      if (broken) throw new Error('no room for a meta');
+      real(...args);
+    };
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+      onDiskWriteError,
+    });
+    expect(onDiskWriteError).toHaveBeenCalledOnce(); // construction opened part 0: meta refused
+    broken = false;
+    store.add(rec('traces.system', 1));
+    expect(JSON.parse(storage.read(1, 0, 'meta') as string)).toMatchObject({ n: 0, e: null });
   });
 
   it('opens a part lazily on its first durable write after recovery', () => {
@@ -263,29 +421,145 @@ describe('disk pressure over the file capture store', () => {
 });
 
 describe('withDiskPressure — failures and surface', () => {
-  it('a refused durable write keeps the record in the in-memory window and surfaces the error', async () => {
+  const refusingStorage = () => {
     const storage = createInMemoryChunkStorage();
     const real = storage.append.bind(storage);
-    let full = false;
+    const state = { full: false };
     storage.append = (...args) => {
-      if (full) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      if (state.full) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
       real(...args);
     };
+    return { storage, state };
+  };
+
+  it('a refused durable write keeps the record in the window and rethrows when nobody owns reporting', async () => {
+    const { storage, state } = refusingStorage();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+    });
+    store.add(rec('log', 1));
+    state.full = true;
+    expect(() => store.add(rec('log', 2))).toThrow('no space');
+    expect(names((await drain(store)).get('log'))).toEqual(['log@1', 'log@2']);
+  });
+
+  it('with onDiskWriteError the refused write is reported, kept, counted by the byte cap, and does not throw', async () => {
+    const { storage, state } = refusingStorage();
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+      onDiskWriteError,
+      maxDataSizeBytes: 20,
+    });
+    store.add(rec('log', 1, 'a'.repeat(15)));
+    store.tick(2000);
+    state.full = true;
+    store.add(rec('log', 2001, 'b'.repeat(15))); // refused: counted at its shadow size, so the cap evicts part 0
+    expect(onDiskWriteError).toHaveBeenCalledOnce();
+    expect(onDiskWriteError.mock.calls[0]?.[0]).toMatchObject({ code: 'ENOSPC' });
+    expect(names((await drain(store)).get('log'))).toEqual(['b'.repeat(15)]);
+  });
+
+  it('while PINNED each tick probes the medium with a throwaway part, and the probe leaves nothing behind', () => {
+    const storage = createInMemoryChunkStorage();
     const pressure = createDiskPressure();
     const store = createFileCaptureStore(storage, {
       clock: clockAt(1000),
       generation: 1,
       diskPressure: pressure,
     });
-    store.add(rec('log', 1));
-    full = true;
-    expect(() => store.add(rec('log', 2))).toThrow('no space');
-    expect(pressure.noteWriteError({ code: 'ENOSPC' })).toBe(true);
-    store.add(rec('log', 3));
-    expect(names((await drain(store)).get('log'))).toEqual(['log@1', 'log@2', 'log@3']);
+    store.tick(2000);
+    expect(storage.chunks(1)).toEqual([0, 1]);
+    const open = vi.spyOn(storage, 'write');
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    store.tick(3000);
+    expect(open.mock.calls.some((c) => c[1] === 2_000_000_000)).toBe(true);
+    expect(storage.chunks(1)).not.toContain(2_000_000_000);
   });
 
-  it('a durable openPart that throws does not mark the part opened (it is retried)', () => {
+  it('does not probe when not pinned (a size-reading none must not touch the full disk)', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+    });
+    pressure.observe(5 * MB);
+    const write = vi.spyOn(storage, 'write');
+    store.tick(2000);
+    expect(write.mock.calls.some((c) => c[1] === 2_000_000_000)).toBe(false); // the seal is a write; the probe is not
+    expect(storage.chunks(1)).toEqual([0]);
+  });
+
+  it('a probe that throws is reported through onDiskWriteError and swallowed', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError,
+    });
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    storage.write = () => {
+      throw new Error('still full');
+    };
+    expect(() => store.tick(2000)).not.toThrow();
+    expect(onDiskWriteError).toHaveBeenCalled();
+  });
+
+  it('a seal that throws is reported through onDiskWriteError and does not take the tick down', () => {
+    const storage = createInMemoryChunkStorage();
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+      onDiskWriteError,
+    });
+    storage.write = () => {
+      throw new Error('cannot seal');
+    };
+    expect(() => store.tick(2000)).not.toThrow();
+    expect(onDiskWriteError).toHaveBeenCalled(); // the seal and the next part's meta both failed
+    store.add(rec('traces.system', 2001));
+  });
+
+  it('a seal that throws with no owner of reporting is swallowed too', () => {
+    const storage = createInMemoryChunkStorage();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+    });
+    storage.write = () => {
+      throw new Error('cannot seal');
+    };
+    expect(() => store.tick(2000)).not.toThrow();
+  });
+
+  it('a probe that throws with no owner of reporting is swallowed too', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+    });
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    storage.write = () => {
+      throw new Error('still full');
+    };
+    expect(() => store.tick(2000)).not.toThrow();
+  });
+
+  it('a durable openPart that throws is swallowed, does not mark the part opened, and the first durable write retries it', () => {
     const storage = createInMemoryChunkStorage();
     const durable = createFileChunkBackend(storage, { generation: 1 });
     const open = vi.spyOn(durable, 'openPart');
@@ -293,10 +567,23 @@ describe('withDiskPressure — failures and surface', () => {
       throw new Error('open failed');
     });
     const backend = withDiskPressure(durable, createDiskPressure());
-    // the part is opened lazily under normal pressure at openPart, which threw; a later durable write retries it
-    expect(() => backend.openPart({ generation: 1, number: 0 }, 5)).toThrow('open failed');
+    expect(() => backend.openPart({ generation: 1, number: 0 }, 5)).not.toThrow();
     backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
     expect(open).toHaveBeenCalledTimes(2);
+  });
+
+  it('with nobody owning reporting, a durable open that throws on the first write keeps the record and rethrows', () => {
+    const durable = createFileChunkBackend(createInMemoryChunkStorage(), { generation: 1 });
+    const backend = withDiskPressure(durable, createDiskPressure());
+    backend.openPart({ generation: 1, number: 0 }, 5);
+    vi.spyOn(durable, 'openPart').mockImplementation(() => {
+      throw new Error('open failed');
+    });
+    // a part the backend never opened (its meta write was refused): force the lazy path
+    backend.openPart({ generation: 1, number: 1 }, 6);
+    expect(() => backend.appendEntry({ generation: 1, number: 1 }, rec('log', 2))).toThrow(
+      'open failed',
+    );
   });
 
   it('forwards flush only when the durable backend has one', async () => {

@@ -11,11 +11,13 @@ import { TraceProducerBase } from './trace-producer';
 //   no_disk_space    free space under the out-of-space threshold (iOS 10 MB): nothing reaches disk
 //
 // Disk outranks blackout (iOS): a shortage explains far more of a thin report than a deliberate redaction does.
+// Nothing at all is written until the host says its recorder runs (`setVisualCapture(true)`): that includes the disk
+// states, because a held `low_disk_space` for a capture that never started would be re-recorded as if it were true.
 //
 // WHO BUILDS IT. Only a host that HAS visual capture: the browser with rrweb replay on, Electron main with pixel
 // video. Node/Bun/Deno never build one (an `active` there would assert a capture that is not running), and WebViews and
 // Electron renderers must not (the native host / main writes it). `active`/`blackout` are written only after
-// `setVisualCapture(true)` (the host says the recorder really started); the disk states do not wait for it.
+// `setVisualCapture(true)` (the host says the recorder really started), and so do the disk states.
 //
 // LATE BINDING. The producer is built before the client (the traces provider needs it), while the blackout state and
 // the disk pressure belong to the client / the platform launch, so they are bound afterwards; binding re-evaluates.
@@ -28,7 +30,6 @@ export class CaptureStateProducer extends TraceProducerBase {
   #blackout: BlackoutGate | undefined;
   #pressure: DiskPressure | undefined;
   #visual = false;
-  #wroteDisk = false;
   #running = false;
   #offBlackout: (() => void) | undefined;
   #offPressure: (() => void) | undefined;
@@ -77,19 +78,17 @@ export class CaptureStateProducer extends TraceProducerBase {
   }
 
   #state(): CaptureStateName | undefined {
+    // No recorder, no claim: neither `active` nor a disk state describes a capture that is not running (a held trace
+    // cannot be retracted, so a state written now would be re-recorded as if it were still true).
+    if (!this.#visual) return undefined;
     const level = this.#pressure?.level();
     if (level === 'none') return 'no_disk_space';
     if (level === 'low') return 'low_disk_space';
-    // No recorder: an `active` would assert a capture that is not running, EXCEPT to end a disk state this producer
-    // already wrote (a held trace cannot be retracted, so silence would keep `low_disk_space` alive after recovery).
-    if (!this.#visual) return this.#wroteDisk ? 'active' : undefined;
     return this.#blackout?.isActive() === true ? 'blackout' : 'active';
   }
 
   #refresh(): void {
     const state = this.#state();
-    if (state === undefined) return;
-    this.#wroteDisk = state === 'low_disk_space' || state === 'no_disk_space';
-    this.emitIfChanged('capture', { state });
+    if (state !== undefined) this.emitIfChanged('capture', { state });
   }
 }

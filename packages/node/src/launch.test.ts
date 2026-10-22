@@ -1882,13 +1882,11 @@ describe('launch — system trace producers', () => {
           onError,
         }),
       );
-      // two consumers of the SAME singleton: the disk-pressure feed (store protection) and the disk_mem_* producer
+      // the disk_mem_* producer (an explicit captureStore means no durable store, so no protection feed)
       const calls = vi.mocked(storageTrackerFor).mock.calls;
-      expect(calls).toHaveLength(2);
-      for (const call of calls) {
-        expect(call[0]).toMatchObject({ dataDir: dir, scheduler: fs.scheduler });
-        expect(call[1]).toBe(onError);
-      }
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[0]).toMatchObject({ dataDir: dir, scheduler: fs.scheduler });
+      expect(calls[0]?.[1]).toBe(onError);
       // the launch's producer is subscribed to THE process singleton: its poll is armed (5 s, the launch's scheduler)
       expect(fs.calls.some((c) => c.ms === 5000)).toBe(true);
       expect(paths).toEqual([dir]);
@@ -1921,7 +1919,7 @@ describe('launch — system trace producers', () => {
       expect(storageTrackerFor).not.toHaveBeenCalled();
     });
 
-    it('does not build the disk producer when systemMetricsSampler replaces the producer list, but the store protection still observes the volume (once)', () => {
+    it('does not build the disk producer (nor touch the shared tracker) when systemMetricsSampler replaces the producer list', () => {
       vi.mocked(storageTrackerFor).mockClear();
       launchTracked(
         'tok',
@@ -1931,7 +1929,7 @@ describe('launch — system trace producers', () => {
           captureDiskSpace: true, // baseOptions carries a systemMetricsSampler
         }),
       );
-      expect(storageTrackerFor).toHaveBeenCalledTimes(1); // the feed only, no producer
+      expect(storageTrackerFor).not.toHaveBeenCalled();
     });
 
     it('measures the effective data dir (never / or the cwd), through the statfs seam', async () => {

@@ -595,3 +595,224 @@ describe('back-pressure on a failing disk', () => {
     expect(written.split('\n').filter(Boolean)).toHaveLength(500);
   });
 });
+
+describe('createBatchedFsChunkStorage — health hooks (onWriteFailure / onWriteRecovered)', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+  const hooks = () => {
+    const failures: unknown[] = [];
+    let recovered = 0;
+    return {
+      failures,
+      get recovered() {
+        return recovered;
+      },
+      options: {
+        onWriteFailure: (e: unknown) => void failures.push(e),
+        onWriteRecovered: () => {
+          recovered += 1;
+        },
+      },
+    };
+  };
+
+  it('reports EVERY failed flush (onError hears only the first), then the first success after them once', () => {
+    const root = mkRoot();
+    const h = hooks();
+    const errors: unknown[] = [];
+    let failWrites = true;
+    const s = createBatchedFsChunkStorage(root, {
+      ...h.options,
+      onError: (e) => errors.push(e),
+      failureThreshold: 100,
+      writev: (fd, bufs) => {
+        if (failWrites) throw full();
+        return writevSync(fd, bufs);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'a\n');
+    s.flushSync?.();
+    s.flushSync?.();
+    s.flushSync?.();
+    expect(h.failures).toHaveLength(3);
+    expect(errors).toHaveLength(1);
+    expect(h.recovered).toBe(0);
+    failWrites = false;
+    s.flushSync?.();
+    expect(h.recovered).toBe(1);
+    s.append(GEN, CHUNK, 'log', 'b\n');
+    s.flushSync?.();
+    expect(h.recovered).toBe(1); // only after a failure
+    s.dispose?.();
+  });
+
+  it('a failed open, meta write and chunk removal each count, and a meta write that works recovers', () => {
+    const root = mkRoot();
+    const h = hooks();
+    let broken = true;
+    const s = createBatchedFsChunkStorage(root, {
+      ...h.options,
+      open: (path) => {
+        if (broken) throw full();
+        return 1_000_000 + path.length;
+      },
+      writeFile: (path, data) => {
+        if (broken) throw full();
+        void path;
+        void data;
+      },
+      removeDir: () => {
+        if (broken) throw full();
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'a\n');
+    s.write(GEN, CHUNK, 'meta', '{}');
+    s.removeChunk(GEN, CHUNK);
+    expect(h.failures).toHaveLength(3);
+    broken = false;
+    s.write(GEN, CHUNK, 'meta', '{}');
+    expect(h.recovered).toBe(1);
+  });
+
+  it('a successful chunk removal after a failure does NOT recover (deleting works on a full disk; only a write proves it)', () => {
+    const root = mkRoot();
+    const h = hooks();
+    let broken = true;
+    const s = createBatchedFsChunkStorage(root, {
+      ...h.options,
+      removeDir: () => {
+        if (broken) throw full();
+      },
+    });
+    s.removeChunk(GEN, CHUNK);
+    broken = false;
+    s.removeChunk(GEN, CHUNK);
+    expect(h.failures).toHaveLength(1);
+    expect(h.recovered).toBe(0);
+  });
+
+  it('a throwing hook never reaches the caller', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, {
+      onWriteFailure: () => {
+        throw new Error('hook');
+      },
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+      removeDir: (() => {
+        throw full();
+      }) as never,
+    });
+    expect(() => s.removeChunk(GEN, CHUNK)).not.toThrow();
+    let broken = true;
+    const ok = createBatchedFsChunkStorage(mkRoot(), {
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+      writeFile: () => {
+        if (broken) throw full();
+      },
+    });
+    ok.write(GEN, CHUNK, 'meta', 'x');
+    broken = false;
+    expect(() => ok.write(GEN, CHUNK, 'meta', 'x')).not.toThrow();
+  });
+});
+
+describe('createBatchedFsChunkStorage — a failed flush must not hide the buffered tail from a live reader', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+
+  it('read() returns the disk content PLUS the still-buffered segments when the flush fails (ENOSPC)', () => {
+    const root = mkRoot();
+    let broken = false;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      writev: (fd, bufs) => {
+        if (broken) throw full();
+        return writevSync(fd, bufs);
+      },
+      onError: () => {},
+    });
+    s.append(GEN, CHUNK, 'log', 'on-disk\n');
+    s.flushSync?.();
+    broken = true;
+    s.append(GEN, CHUNK, 'log', 'buffered-1\n');
+    s.append(GEN, CHUNK, 'log', 'buffered-2\n');
+    expect(s.read(GEN, CHUNK, 'log')).toBe('on-disk\nbuffered-1\nbuffered-2\n');
+    expect(s.read(GEN, CHUNK, 'log')).toBe('on-disk\nbuffered-1\nbuffered-2\n'); // reading again duplicates nothing
+    broken = false;
+    s.flushSync?.();
+    expect(s.read(GEN, CHUNK, 'log')).toBe('on-disk\nbuffered-1\nbuffered-2\n'); // and once written, still no duplicates
+    s.dispose?.();
+  });
+
+  it('a partially written segment is neither lost nor duplicated across the disk/tail boundary', () => {
+    const root = mkRoot();
+    let calls = 0;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      onError: () => {},
+      writev: (fd, bufs) => {
+        calls += 1;
+        if (calls === 1) return writevSync(fd, [bufs[0]?.subarray(0, 3) as Uint8Array]); // short write of 3 bytes
+        throw full();
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'abcdef\n');
+    s.flushSync?.();
+    expect(s.read(GEN, CHUNK, 'log')).toBe('abcdef\n');
+    s.dispose?.();
+  });
+
+  it('a file that exists only in the buffer (its flush failed before anything was written) is readable', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, {
+      writev: () => {
+        throw full();
+      },
+      onError: () => {},
+    });
+    s.append(GEN, CHUNK, 'log', 'only-buffered\n');
+    expect(s.read(GEN, CHUNK, 'log')).toBe('only-buffered\n');
+    s.dispose?.();
+  });
+});
+
+describe('createBatchedFsChunkStorage — sealing a chunk whose flush fails keeps its tail', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+
+  it('does not drop the unwritten tail at seal; the next flush writes it once the disk accepts data again', () => {
+    const root = mkRoot();
+    let broken = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      onError: () => {},
+      writev: (fd, bufs) => {
+        if (broken) throw full();
+        return writevSync(fd, bufs);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'one\n');
+    s.append(GEN, CHUNK, 'log', 'two\n');
+    s.sealChunk?.(GEN, CHUNK); // the flush fails: the file stays open with its tail
+    expect(s.read(GEN, CHUNK, 'log')).toBe('one\ntwo\n'); // still readable (disk + tail)
+    broken = false;
+    s.flushSync?.();
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['one', 'two']);
+    s.sealChunk?.(GEN, CHUNK); // nothing left to write: the handle closes now
+    s.append(GEN, CHUNK, 'log', 'three\n'); // a fresh handle is opened for the late append
+    s.dispose?.();
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['one', 'two', 'three']);
+  });
+
+  it('a seal only touches the sealed chunk’s files, and still closes the healthy ones', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, { onError: () => {} });
+    s.append(GEN, 0, 'log', 'a\n');
+    s.append(GEN, 1, 'log', 'b\n');
+    s.sealChunk?.(GEN, 0);
+    expect(rawLines(join(root, '0000000000001', '000000000000', 'log'))).toEqual(['a']);
+    expect(rawLines(join(root, '0000000000001', '000000000001', 'log'))).toEqual([]); // chunk 1 still buffered
+    s.dispose?.();
+  });
+});

@@ -295,14 +295,22 @@ export interface BugseeLaunchOptions {
    * observer and arms the shared 1 s tracker sampling timer while events are captured; `false` attaches neither.
    */
   captureSystemEvents?: boolean;
-  /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on. Opt-in; needs a data dir (explicit or the default on-disk root). Default false. */
+  /** Report `disk_mem_free` / `disk_mem_total` (integer MB) for the volume the data dir lives on (and, in Electron main, the `capture` trace's disk states). Opt-in telemetry; needs a data dir (explicit or the default on-disk root), else one `onError` report. Default false. Does not gate the store protection (`diskProtection`). */
   captureDiskSpace?: boolean;
+  /**
+   * The capture store's disk-pressure protection (iOS runs it always): below 50 MiB free the on-disk store stops persisting
+   * replay, log and network data, below 10 MiB it persists nothing, and the in-memory window is kept either way, so a live
+   * report stays complete. Polls `statfs` of the data dir every 5 s, only while an on-disk store exists. Default true; only
+   * boolean `false` opts out (any other value keeps it on).
+   */
+  diskProtection?: boolean;
   /** Test seam: replaces `fs.promises.statfs` for `captureDiskSpace`. */
   diskStatfs?: StatFs;
   /**
    * Platform-extension seam (advanced; `@bugsee/electron` main uses it): the disk-pressure state this launch feeds and
-   * its file capture store obeys, so the platform can follow it too (the `capture` trace). Used only when
-   * `captureDiskSpace` is on and there is a data directory; otherwise ignored. Default: one created by the launch.
+   * its file capture store obeys, so the platform can follow it too (the `capture` trace). Used only where the launch
+   * would create its own (a durable store and `diskProtection` not `false`); otherwise ignored. Default: one created by
+   * the launch.
    */
   diskPressure?: DiskPressureState;
   /**
@@ -786,13 +794,17 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   //   'worker' (opt-in insurance): the off-thread RING writer — the host thread encodes each frame
   //     IN PLACE into a shared SAB ring (zero-copy) + a worker_threads worker drains it to disk, so the host
   //     NEVER blocks on a write() even under a pathologically slow disk; drop-oldest sheds load.
-  // Disk pressure (C7, opt-in `captureDiskSpace`, needs a data dir): the volume's free space, read by the shared
-  // StorageTracker every 5 s, drives (a) the file capture store, which stops persisting replay/log/network below
-  // 50 MB free and everything below 10 MB while keeping the in-memory window, and (b) any platform `capture` trace.
-  // A write the medium refuses for lack of room (ENOSPC / EDQUOT) moves it to `none` at once: every error sink a
-  // writer reports to goes through `noteWriteError` first. No data dir = no volume we persist to = nothing to protect.
+  // Disk pressure (C7). The PROTECTION is on by default wherever a durable store exists (iOS runs it always; only its
+  // telemetry sits behind `captureDiskSpace`): the data dir volume's free space, read by the shared StorageTracker
+  // every 5 s, drives the file capture store, which stops persisting replay/log/network below 50 MiB free and
+  // everything below 10 MiB while keeping the in-memory window. `diskProtection: false` opts out. No durable store
+  // (in-memory launch, an explicit `captureStore`) = nothing persisted = nothing to protect, and no polling.
+  // A write the medium refuses for lack of room (ENOSPC / EDQUOT) pins `none` until a durable write succeeds again:
+  // every writer reports EACH failure and its first success (`onWriteFailure` / `onWriteRecovered`).
+  const durableStore =
+    options.captureStore === undefined && instanceLayout !== undefined && diskCapture;
   const diskPressure: DiskPressureState | undefined =
-    resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir !== undefined
+    durableStore && resolved.isEnabled(NodeTraceOption.CaptureDiskProtection)
       ? (options.diskPressure ??
         createDiskPressure({
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -801,24 +813,37 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   if (diskPressure !== undefined) {
     services.addService(defineService(DiskPressureToken, () => diskPressure));
   }
-  const writerOnError: ((error: unknown) => void) | undefined =
+  // The telemetry was asked for but there is nothing to observe: say so once instead of silently doing nothing.
+  if (resolved.isEnabled(NodeTraceOption.CaptureDiskSpace) && effectiveDataDir === undefined) {
+    reportGuarded(
+      options.onError,
+      new Error(
+        'Bugsee: captureDiskSpace needs an on-disk data directory (none in use: in-memory launch or a degraded data dir); disk space is not observed',
+      ),
+    );
+  }
+  const writerHealth =
     diskPressure === undefined
-      ? options.onError
-      : (error) => {
-          diskPressure.noteWriteError(error);
-          reportGuarded(options.onError, error);
+      ? {}
+      : {
+          onWriteFailure: (error: unknown): void => {
+            diskPressure.noteWriteError(error);
+          },
+          onWriteRecovered: (): void => diskPressure.noteWriteRecovered(),
         };
   const chunkStorage =
-    options.captureStore === undefined && instanceLayout !== undefined && diskCapture
+    durableStore && instanceLayout !== undefined
       ? options.captureWriter === 'worker'
         ? createCaptureRingWriter(instanceLayout.captureDir, {
             generation: captureGeneration,
             fileTypes: CAPTURE_FILE_TYPES,
             workerFactory: createWorkerThreadRingWorker,
-            ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
+            ...writerHealth,
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
           })
         : createBatchedFsChunkStorage(instanceLayout.captureDir, {
-            ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
+            ...writerHealth,
+            ...(options.onError !== undefined ? { onError: options.onError } : {}),
           })
       : undefined;
   if (chunkStorage !== undefined) {
@@ -841,7 +866,16 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
           ...storeOptions,
           generation: captureGeneration,
           cleanOtherGenerations: !recoverEnabled,
-          ...(diskPressure !== undefined ? { diskPressure } : {}),
+          ...(diskPressure !== undefined
+            ? {
+                diskPressure,
+                // A durable write that throws synchronously keeps its record in the window and pins `none`.
+                onDiskWriteError: (error: unknown): void => {
+                  diskPressure.noteWriteError(error);
+                  reportGuarded(options.onError, error);
+                },
+              }
+            : {}),
         })
       : createMemoryCaptureStore(storeOptions));
   // The feed starts with the launch and is released by stop(): the tracker polls only while someone listens.
@@ -950,7 +984,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-    ...(writerOnError !== undefined ? { onError: writerOnError } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
 
   if (profilingEnabled) {

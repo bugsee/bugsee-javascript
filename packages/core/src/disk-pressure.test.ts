@@ -8,10 +8,10 @@ import {
   isOutOfSpaceError,
 } from './disk-pressure';
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 
 describe('thresholds', () => {
-  it('are the iOS numbers in decimal MB', () => {
+  it('are the iOS numbers in binary MiB (BGSUtil freeMB = bytes / 1024 / 1024)', () => {
     expect(DISK_LOW_BYTES).toBe(50 * MB);
     expect(DISK_NONE_BYTES).toBe(10 * MB);
     expect(DISK_RECOVERY_MARGIN_BYTES).toBe(10 * MB);
@@ -154,47 +154,86 @@ describe('createDiskPressure — subscription', () => {
   });
 });
 
-describe('createDiskPressure — write failure', () => {
-  it('moves to none on an out-of-space error even when the last reading was healthy', () => {
+describe('createDiskPressure — write failure pin', () => {
+  const full = (): Error => Object.assign(new Error('full'), { name: 'QuotaExceededError' });
+
+  it('pins none on an out-of-space error even when the last reading was healthy', () => {
     const p = createDiskPressure();
     p.observe(500 * MB);
-    expect(p.noteWriteError(Object.assign(new Error('full'), { name: 'QuotaExceededError' }))).toBe(
-      true,
-    );
+    expect(p.noteWriteError(full())).toBe(true);
     expect(p.level()).toBe('none');
+    expect(p.pinned()).toBe(true);
   });
 
   it('ignores an error that is not out-of-space', () => {
     const p = createDiskPressure();
     expect(p.noteWriteError(new Error('EPERM'))).toBe(false);
     expect(p.level()).toBe('normal');
+    expect(p.pinned()).toBe(false);
   });
 
-  it('stays none against a reading below the none-leave margin and leaves it at 20 MB', () => {
+  it('a healthy size reading does NOT undo the pin (a size reading is not a successful write)', () => {
     const p = createDiskPressure();
-    p.noteWriteError({ code: 'ENOSPC' });
-    p.observe(19 * MB);
-    expect(p.level()).toBe('none');
-    p.observe(5 * MB);
-    expect(p.level()).toBe('none');
-    p.observe(20 * MB);
-    expect(p.level()).toBe('low');
-  });
-
-  it('a healthy reading after the failure ends it, and later readings apply normally', () => {
-    const p = createDiskPressure();
-    p.noteWriteError({ code: 'ENOSPC' });
-    p.observe(500 * MB);
-    expect(p.level()).toBe('normal');
-    p.observe(30 * MB);
-    expect(p.level()).toBe('low');
-  });
-
-  it('moves from low to none', () => {
-    const p = createDiskPressure();
-    p.observe(30 * MB);
     p.noteWriteError({ code: 'EDQUOT' });
+    p.observe(500 * MB);
+    p.observe(900 * MB);
     expect(p.level()).toBe('none');
+    expect(p.pinned()).toBe(true);
+  });
+
+  it('a durable write succeeding releases the pin, and the readings take over again', () => {
+    const p = createDiskPressure();
+    p.observe(30 * MB);
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.observe(500 * MB); // the readings keep tracking underneath the pin
+    p.noteWriteRecovered();
+    expect(p.level()).toBe('normal');
+    expect(p.pinned()).toBe(false);
+  });
+
+  it('keeps the reading hysteresis underneath the pin', () => {
+    const p = createDiskPressure();
+    p.observe(30 * MB); // low
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.noteWriteRecovered();
+    expect(p.level()).toBe('low');
+    p.observe(59 * MB);
+    expect(p.level()).toBe('low');
+  });
+
+  it('readings arriving under a pin are judged from the READING level, not from the pinned none', () => {
+    const p = createDiskPressure();
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.observe(55 * MB); // from a normal reading level this is still normal (the none hysteresis does not apply)
+    p.noteWriteRecovered();
+    expect(p.level()).toBe('normal');
+  });
+
+  it('is re-pinned by the next failure, every time', () => {
+    const p = createDiskPressure();
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.noteWriteRecovered();
+    expect(p.level()).toBe('normal');
+    p.noteWriteError({ code: 'ENOSPC' });
+    expect(p.level()).toBe('none');
+  });
+
+  it('releasing without a pin changes nothing and tells nobody', () => {
+    const p = createDiskPressure();
+    const listener = vi.fn();
+    p.onChange(listener);
+    p.noteWriteRecovered();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('notifies on the pin and on the release', () => {
+    const p = createDiskPressure();
+    const seen: DiskPressureLevel[] = [];
+    p.onChange((l) => seen.push(l));
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.noteWriteRecovered();
+    expect(seen).toEqual(['none', 'normal']);
   });
 });
 

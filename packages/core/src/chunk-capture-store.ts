@@ -27,6 +27,8 @@ export interface ChunkCaptureStoreOptions {
    * before. Pointless over a backend that is already in memory.
    */
   diskPressure?: DiskPressure;
+  /** With `diskPressure`: a durable write that throws is reported here instead of being rethrown (the record is kept). */
+  onDiskWriteError?: (error: unknown) => void;
 }
 
 // The in-memory index entry per live part (NO record data — that lives in the backend).
@@ -44,7 +46,11 @@ export function createChunkCaptureStore(
 ): CaptureStore {
   const backend =
     options?.diskPressure !== undefined
-      ? withDiskPressure(durableBackend, options.diskPressure)
+      ? withDiskPressure(durableBackend, options.diskPressure, {
+          ...(options.onDiskWriteError !== undefined
+            ? { onWriteError: options.onDiskWriteError }
+            : {}),
+        })
       : durableBackend;
   const maxRecordingTimeMs = options?.maxRecordingTimeMs ?? 60_000;
   const maxDataSizeBytes = options?.maxDataSizeBytes;

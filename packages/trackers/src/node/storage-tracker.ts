@@ -65,9 +65,18 @@ export interface StorageEnv {
   scheduler?: StorageTimers;
   /** Poll period in ms (default 5000; Android reads disk every 5 s). */
   intervalMs?: number;
+  /**
+   * A read still pending after this many ms is ABANDONED (default 5000): a hung `statfs` (a dead network mount) would
+   * otherwise hold the in-flight flag for the whole launch and blind the tracker for good. The next tick reads again;
+   * the abandoned read's late answer, if it ever comes, is ignored. Reported once per failure streak.
+   */
+  statfsTimeoutMs?: number;
+  /** Wall clock for the timeout above; default `Date.now`. */
+  now?: () => number;
 }
 
 const DEFAULT_INTERVAL_MS = 5000;
+const DEFAULT_STATFS_TIMEOUT_MS = 5000;
 
 const defaultScheduler: StorageTimers = {
   setInterval: (cb, ms) => {
@@ -83,6 +92,8 @@ const SEAM_KEYS = [
   'statfs',
   'scheduler',
   'intervalMs',
+  'statfsTimeoutMs',
+  'now',
 ] as const satisfies readonly (keyof StorageEnv)[];
 
 const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
@@ -95,6 +106,9 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
   #active = false;
   #timer: { handle: unknown; scheduler: StorageTimers } | null = null;
   #inFlight = false;
+  /** When the read in flight started (ms), for the abandon rule; and an id so an abandoned read's late answer is ignored. */
+  #inFlightSince = 0;
+  #readId = 0;
   #failing = false;
   /** Bumped by every teardown/restart: a read or timer callback of an older run never reports or emits. */
   #gen = 0;
@@ -210,7 +224,20 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
   #read(gen: number): void {
     const statfs = this.#statfs();
     const dataDir = this.#env.dataDir;
-    if (this.#inFlight || statfs === undefined || dataDir === undefined) return;
+    const now = (this.#env.now ?? Date.now)();
+    const hung =
+      this.#inFlight &&
+      now - this.#inFlightSince >= (this.#env.statfsTimeoutMs ?? DEFAULT_STATFS_TIMEOUT_MS);
+    if ((this.#inFlight && !hung) || statfs === undefined || dataDir === undefined) return;
+    if (hung) {
+      // Hung: give the read up (its late answer is ignored by id) and carry on with a fresh one below.
+      this.#last = undefined;
+      if (!this.#failing)
+        this.#onError(new Error('bugsee: statfs did not answer in time; the read was abandoned'));
+      this.#failing = true;
+    }
+    const id = ++this.#readId;
+    this.#inFlightSince = now;
     this.#inFlight = true;
     let pending: Promise<StatFsResult>;
     try {
@@ -220,13 +247,13 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
     }
     pending.then(
       (s) => {
-        if (gen !== this.#gen) return;
+        if (gen !== this.#gen || id !== this.#readId) return;
         this.#inFlight = false;
         this.#failing = false;
         this.#publish(s);
       },
       (error: unknown) => {
-        if (gen !== this.#gen) return;
+        if (gen !== this.#gen || id !== this.#readId) return;
         this.#inFlight = false;
         this.#last = undefined; // an unreadable volume is a gap, never the previous number
         // One report per failure streak: a removed data dir fails on every poll.

@@ -26,6 +26,8 @@ export interface FileCaptureStoreOptions {
   cleanOtherGenerations?: boolean;
   /** Disk pressure gate over the file backend (see ChunkCaptureStoreOptions.diskPressure). */
   diskPressure?: DiskPressure;
+  /** See ChunkCaptureStoreOptions.onDiskWriteError. */
+  onDiskWriteError?: (error: unknown) => void;
 }
 
 export function createFileCaptureStore(
@@ -43,6 +45,9 @@ export function createFileCaptureStore(
     maxDataSizeBytes: options?.maxDataSizeBytes,
     clock,
     ...(options?.diskPressure !== undefined ? { diskPressure: options.diskPressure } : {}),
+    ...(options?.onDiskWriteError !== undefined
+      ? { onDiskWriteError: options.onDiskWriteError }
+      : {}),
   };
   return createChunkCaptureStore(backend, storeOptions);
 }

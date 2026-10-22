@@ -58,6 +58,8 @@ export interface RingWorkerArgs {
   /** File-type names; index = the `typeIndex` packed into a `pathId`. Shared main↔worker. */
   fileTypes: readonly string[];
   onError: (error: unknown) => void;
+  /** Every failed drain write (the worker retries a stuck frame, so this can repeat); `onError` hears the first only. */
+  onWriteFailure?: (error: unknown) => void;
 }
 
 export interface CaptureRingWriterOptions {
@@ -72,6 +74,13 @@ export interface CaptureRingWriterOptions {
   /** Worker factory; the seam the worker_threads impl swaps into. Default the sync (main-thread) worker. */
   workerFactory?: (args: RingWorkerArgs) => RingWorker;
   onError?: (error: unknown) => void;
+  /**
+   * Called for EVERY failed disk operation: a worker drain write, a meta write, a chunk removal, a fallback append.
+   * Unlike `onError` (the first failure of an episode), it is the health signal a disk-pressure pin needs.
+   */
+  onWriteFailure?: (error: unknown) => void;
+  /** Called on the first successful meta write (the pressure probe) after one or more failures. */
+  onWriteRecovered?: () => void;
   /** Open a file for the main-thread append fallback. Default `openSync(path,'a',0o600)`; injectable for tests. */
   open?: (path: string) => number;
   /** Replace a file's contents (meta/write). Default fs-storage `writeFileSecure`; injectable for tests. */
@@ -113,7 +122,10 @@ export function createSyncRingWorker(args: RingWorkerArgs): RingWorker {
     },
     writev: (fd, iov) => writevSync(fd, iov as NodeJS.ArrayBufferView[]),
     close: (fd) => closeSync(fd),
-    onError: args.onError,
+    onError: (error) => {
+      args.onError(error);
+      args.onWriteFailure?.(error);
+    },
   };
   const drainer = new RingDrainer(consumer, ops);
   return {
@@ -140,6 +152,27 @@ export function createCaptureRingWriter(
   const removeDir = options.removeDir ?? remove;
   ensureDir(root);
 
+  let failing = false;
+  const noteFailure = (error: unknown): void => {
+    failing = true;
+    try {
+      options.onWriteFailure?.(error);
+    } catch {
+      // a throwing sink must not take the capture path with it
+    }
+  };
+  const noteSuccess = (): void => {
+    if (!failing) {
+      return;
+    }
+    failing = false;
+    try {
+      options.onWriteRecovered?.();
+    } catch {
+      // a throwing sink must not take the capture path with it
+    }
+  };
+
   const { data, control } = allocCaptureRing(options.ringCapacity ?? DEFAULT_RING_CAPACITY);
   const flags = new SharedArrayBuffer(16);
   const producer = new RingProducer(data, control);
@@ -152,6 +185,7 @@ export function createCaptureRingWriter(
     generation,
     fileTypes,
     onError,
+    onWriteFailure: noteFailure,
   });
 
   const chunkDir = (g: number, c: number): string => join(root, pad(g, GEN_PAD), pad(c, CHUNK_PAD));
@@ -168,6 +202,7 @@ export function createCaptureRingWriter(
     } catch (error) {
       // A broken/full disk must NEVER throw out of append — it is reached synchronously from interceptors
       // and the tick (the fallback path: unknown type / foreign gen / oversized). Shed + report instead.
+      noteFailure(error);
       onError(error);
     } finally {
       if (fd !== undefined) {
@@ -204,7 +239,9 @@ export function createCaptureRingWriter(
       try {
         ensureDir(chunkDir(g, c));
         writeFile(filePath(g, c, file), dataStr); // meta / replace — main thread
+        noteSuccess();
       } catch (error) {
+        noteFailure(error);
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
       }
     },
@@ -227,7 +264,9 @@ export function createCaptureRingWriter(
       }
       try {
         removeDir(chunkDir(g, c));
+        // not a success signal: deleting works on a full disk, only a WRITE proves the medium accepts data again
       } catch (error) {
+        noteFailure(error);
         onError(error); // eviction on a broken disk must never throw into the caller (the tick/add)
       }
     },
@@ -249,7 +288,9 @@ export function createCaptureRingWriter(
       }
       try {
         removeDir(join(root, pad(g, GEN_PAD)));
+        // not a success signal: deleting works on a full disk, only a WRITE proves the medium accepts data again
       } catch (error) {
+        noteFailure(error);
         onError(error); // generation eviction on a broken disk must never throw into the caller
       }
     },

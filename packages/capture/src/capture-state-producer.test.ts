@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CaptureStateProducer } from './capture-state-producer';
 import type { TraceSink } from './trace-producer';
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 
 function harness() {
   const emitted: Array<{ name: string; value: unknown; hold: boolean | undefined }> = [];
@@ -79,13 +79,15 @@ describe('CaptureStateProducer', () => {
     ]);
   });
 
-  it('writes a disk state even before the recorder reports running (the state is true regardless)', () => {
+  it('writes NO disk state before the recorder reports running, and the first claim after it is the current state', () => {
     const { sink, states } = harness();
     const pressure = createDiskPressure();
     const p = new CaptureStateProducer();
     p.bindPressure(pressure);
     p.start(sink);
     pressure.observe(30 * MB);
+    expect(states()).toEqual([]);
+    p.setVisualCapture(true);
     expect(states()).toEqual(['low_disk_space']);
   });
 
@@ -161,18 +163,17 @@ describe('CaptureStateProducer', () => {
     expect(states()).toEqual(['active']);
   });
 
-  it('ends a disk state with active on recovery even without a recorder (a held trace cannot be retracted)', () => {
+  it('after the recorder stops running, recovery writes nothing (never an active for a capture that is gone)', () => {
     const { sink, states } = harness();
     const pressure = createDiskPressure();
     const p = new CaptureStateProducer();
     p.bindPressure(pressure);
     p.start(sink);
+    p.setVisualCapture(true);
     pressure.observe(30 * MB);
+    p.setVisualCapture(false);
     pressure.observe(100 * MB);
-    expect(states()).toEqual(['low_disk_space', 'active']);
-    pressure.observe(30 * MB);
-    pressure.observe(100 * MB);
-    expect(states()).toEqual(['low_disk_space', 'active', 'low_disk_space', 'active']);
+    expect(states()).toEqual(['active', 'low_disk_space']);
   });
 
   it('writes again after a restart', () => {

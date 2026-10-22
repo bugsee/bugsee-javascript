@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import type { LockManagerLike } from '@bugsee/browser-utils';
 import {
-  type CaptureStore,
+  CaptureStoreToken,
   createMemoryCaptureStore,
   DiskPressureToken,
   type StoredEntry,
@@ -12,9 +12,10 @@ import { type DeviceIdLocalStorage, resetBrowserDeviceIdCache } from './device-i
 import type { BrowserProbe } from './environment';
 import { type Bugsee, type BugseeLaunchOptions, launch } from './launch';
 
-// C7 WIRING through the real browser launch: `captureDiskSpace` builds one DiskPressure fed by the window's
-// `navigator.storage.estimate()` headroom, hands it to the IndexedDB store (error sink included), and drives the
-// `capture` trace, which exists only while rrweb replay is configured and records only once the recorder is real.
+// C7 WIRING through the real browser launch: where a DURABLE (IndexedDB) store exists, ONE DiskPressure is built BY DEFAULT
+// (iOS runs the protection always; `diskProtection: false` opts out), fed by the window's `navigator.storage.estimate()`
+// headroom and handed to the store with its health hooks. `captureDiskSpace` is only the telemetry: the `capture`
+// trace's disk states, which exist only while rrweb replay is configured and the recorder is real.
 const { registerReplay } = vi.hoisted(() => ({ registerReplay: vi.fn() }));
 vi.mock('@bugsee/replay', () => ({ registerReplay }));
 const { idbStoreSpy } = vi.hoisted(() => ({ idbStoreSpy: vi.fn() }));
@@ -29,7 +30,7 @@ vi.mock('@bugsee/browser-utils', async (importOriginal) => {
   };
 });
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 const DEVICE_ID = 'a1b2c3d4-e5f6-4789-a012-3456789abcde';
 const probe: BrowserProbe = {
   userAgent: () => 'Mozilla/5.0 Chrome/119.0.0.0 Safari/537.36',
@@ -68,7 +69,7 @@ afterEach(async () => {
 });
 
 function setup(over: Partial<BugseeLaunchOptions> = {}, estimate = { usage: 0, quota: 900 * MB }) {
-  const store: CaptureStore = createMemoryCaptureStore();
+  const store = createMemoryCaptureStore();
   const state = { ...estimate };
   const estimateFn = vi.fn(async () => ({ usage: state.usage, quota: state.quota }));
   const intervals: Array<{ cb: () => void; ms: number }> = [];
@@ -114,6 +115,11 @@ function setup(over: Partial<BugseeLaunchOptions> = {}, estimate = { usage: 0, q
     },
   };
 }
+/** A launch with the default DURABLE store (IndexedDB over the injected factory). */
+const durable = (
+  over: Partial<BugseeLaunchOptions> = {},
+  estimate?: { usage: number; quota: number },
+) => setup({ persist: true, captureStore: undefined, ...over }, estimate);
 
 const launched = async (options: BugseeLaunchOptions): Promise<Bugsee> => {
   const client = await launch('tok', options);
@@ -121,7 +127,9 @@ const launched = async (options: BugseeLaunchOptions): Promise<Bugsee> => {
   return client;
 };
 
-const captureStates = async (store: CaptureStore): Promise<string[]> => {
+const captureStates = async (store: {
+  snapshot(): { drainAll(): Promise<Map<string, StoredEntry[]>>; release(): void };
+}): Promise<string[]> => {
   const snap = store.snapshot();
   const all = await snap.drainAll();
   snap.release();
@@ -133,10 +141,11 @@ const captureStates = async (store: CaptureStore): Promise<string[]> => {
     .filter((e) => e.name === 'capture')
     .map((e) => e.value?.state as string);
 };
+const statesOf = (client: Bugsee) => captureStates(client.getService(CaptureStoreToken));
 
 describe('launch — the `capture` trace (C7)', () => {
   it('writes active once the replay recorder is real, then follows blackout both ways', async () => {
-    registerReplay.mockReturnValue({});
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
     const h = setup();
     const client = await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
@@ -149,38 +158,31 @@ describe('launch — the `capture` trace (C7)', () => {
 
   it('writes NOTHING before the recorder exists, and never claims active when replay did not start (DOM-less)', async () => {
     registerReplay.mockReturnValue(undefined);
-    const h = setup();
+    const h = durable({ captureDiskSpace: true });
     const client = await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     client.startBlackout();
+    h.state.quota = 5 * MB;
+    h.tick();
     await settle();
-    expect(await captureStates(h.store)).toEqual([]);
+    expect(await statesOf(client)).toEqual([]);
   });
 
-  it('writes no capture trace when replay is off', async () => {
-    registerReplay.mockReturnValue({});
-    const h = setup({ replay: false });
-    const client = await launched(h.options);
-    client.startBlackout();
-    await settle();
-    expect(registerReplay).not.toHaveBeenCalled();
-    expect(await captureStates(h.store)).toEqual([]);
-  });
-
-  it('writes no capture trace on a replay-less launch even when the disk is low (no visual capture, no `capture`)', async () => {
-    registerReplay.mockReturnValue({});
-    const h = setup({ replay: false, captureDiskSpace: true });
+  it('writes no capture trace when replay is off, even with the telemetry on and a low disk (no recorder, no claim)', async () => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const h = durable({ replay: false, captureDiskSpace: true });
     const client = await launched(h.options);
     await settle();
     h.state.quota = 5 * MB;
     h.tick();
     await settle();
+    expect(registerReplay).not.toHaveBeenCalled();
     expect(client.getService(DiskPressureToken).level()).toBe('none'); // the protection still applies
-    expect(await captureStates(h.store)).toEqual([]);
+    expect(await statesOf(client)).toEqual([]);
   });
 
   it('writes none when the host owns the name (WebView / Electron renderer)', async () => {
-    registerReplay.mockReturnValue({});
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
     const h = setup({ hostOwnedTraces: ['capture'] });
     await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
@@ -188,26 +190,26 @@ describe('launch — the `capture` trace (C7)', () => {
     expect(await captureStates(h.store)).toEqual([]);
   });
 
-  it('writes the disk states from storage headroom, which outrank blackout, and recovers with hysteresis', async () => {
-    registerReplay.mockReturnValue({});
-    const h = setup({ captureDiskSpace: true });
+  it('with the telemetry on, writes the disk states from storage headroom (they outrank blackout) and recovers with hysteresis', async () => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const h = durable({ captureDiskSpace: true });
     const client = await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     await settle();
-    h.state.quota = 40 * MB; // headroom 40 MB: low
+    h.state.quota = 40 * MB; // headroom 40 MiB: low
     h.tick();
     await settle();
     client.startBlackout();
-    h.state.quota = 5 * MB; // headroom 5 MB: none
+    h.state.quota = 5 * MB; // 5 MiB: none
     h.tick();
     await settle();
-    h.state.quota = 55 * MB; // 55 MB: still low (needs 20 MB to leave none)
+    h.state.quota = 55 * MB; // 55 MiB: still low (needs 20 MiB to leave none)
     h.tick();
     await settle();
     h.state.quota = 900 * MB;
     h.tick();
     await settle();
-    expect(await captureStates(h.store)).toEqual([
+    expect(await statesOf(client)).toEqual([
       'active',
       'low_disk_space',
       'no_disk_space',
@@ -215,12 +217,25 @@ describe('launch — the `capture` trace (C7)', () => {
       'blackout',
     ]);
   });
+
+  it('without the telemetry the protection still runs but the trace carries NO disk states', async () => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const h = durable();
+    const client = await launched(h.options);
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    await settle();
+    h.state.quota = 5 * MB;
+    h.tick();
+    await settle();
+    expect(client.getService(DiskPressureToken).level()).toBe('none');
+    expect(await statesOf(client)).toEqual(['active']);
+  });
 });
 
-describe('launch — captureDiskSpace pressure (C7)', () => {
-  it('is registered, fed by quota - usage, and polls every 30 s once headroom is under 500 MB', async () => {
-    registerReplay.mockReturnValue({});
-    const h = setup({ captureDiskSpace: true }, { usage: 0, quota: 900 * MB });
+describe('launch — disk-pressure protection (C7)', () => {
+  it('is ON by default with a durable store, fed by quota - usage, polling every 30 s once headroom is under 500 MiB', async () => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const h = durable({}, { usage: 0, quota: 900 * MB });
     const client = await launched(h.options);
     await settle();
     const pressure = client.getService(DiskPressureToken);
@@ -236,30 +251,82 @@ describe('launch — captureDiskSpace pressure (C7)', () => {
     expect(pressure.level()).toBe('low');
   });
 
+  it('diskProtection:false opts out: no pressure and no extra polling', async () => {
+    const h = durable({ diskProtection: false });
+    const client = await launched(h.options);
+    expect(() => client.getService(DiskPressureToken)).toThrow();
+    expect(h.intervals.map((i) => i.ms)).not.toContain(30_000);
+  });
+
+  it.each([
+    'false',
+    0,
+    null,
+    'no',
+  ])('diskProtection %j is not a boolean false: the protection stays ON', async (v) => {
+    const h = durable({ diskProtection: v as unknown as boolean, onError: () => {} });
+    const client = await launched(h.options);
+    expect(client.getService(DiskPressureToken)).toBeDefined();
+    await client.stop(0);
+    delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
+  });
+
+  it('is absent when persist is off and the store is the in-memory default (no IndexedDB view at all)', async () => {
+    const h = setup({ persist: false, captureStore: undefined });
+    const client = await launched(h.options);
+    expect(() => client.getService(DiskPressureToken)).toThrow();
+  });
+
+  it('is absent when an injected captureStore replaces the IndexedDB store, even with persist on', async () => {
+    const h = setup({ persist: true });
+    const client = await launched(h.options);
+    expect(() => client.getService(DiskPressureToken)).toThrow();
+  });
+
+  it('is absent with no durable store (persist off, or an injected captureStore): nothing is persisted, nothing polled', async () => {
+    const h = setup(); // an injected in-memory captureStore
+    const client = await launched(h.options);
+    expect(() => client.getService(DiskPressureToken)).toThrow();
+    h.state.quota = 5 * MB;
+    h.tick();
+    await settle();
+    expect(h.intervals.map((i) => i.ms)).not.toContain(30_000); // no fast-cadence seams without a pressure to feed
+  });
+
+  it('captureDiskSpace with no durable store says so ONCE through onError', async () => {
+    const onError = vi.fn();
+    const h = setup({ captureDiskSpace: true, onError });
+    await launched(h.options);
+    const mine = onError.mock.calls.filter((c) =>
+      /captureDiskSpace needs a durable capture store/.test(String((c[0] as Error).message)),
+    );
+    expect(mine).toHaveLength(1);
+  });
+
+  it('captureDiskSpace with no durable store and no onError stays silent', async () => {
+    const h = setup({ captureDiskSpace: true });
+    await expect(launched(h.options)).resolves.toBeDefined();
+  });
+
+  it('a launch without the telemetry is not told anything about it', async () => {
+    const onError = vi.fn();
+    const h = setup({ onError });
+    await launched(h.options);
+    expect(
+      onError.mock.calls.some((c) => /captureDiskSpace/.test(String((c[0] as Error).message))),
+    ).toBe(false);
+  });
+
   it('the feed alone arms the poll on the launch scheduler (no system traces needed)', async () => {
-    const h = setup({ captureDiskSpace: true, captureSystemTraces: false });
+    const h = durable({ captureSystemTraces: false });
     await launched(h.options);
     await settle();
     expect(h.estimateFn).toHaveBeenCalled();
     expect(h.intervals.map((i) => i.ms)).toContain(300_000);
   });
 
-  it('is absent without the opt-in (and for a non-boolean-true value): no pressure, no extra polling', async () => {
-    for (const v of [undefined, false, 'true', 1, null]) {
-      const h = setup({
-        ...(v === undefined ? {} : { captureDiskSpace: v as unknown as boolean }),
-      });
-      const client = await launched(h.options);
-      expect(() => client.getService(DiskPressureToken), String(v)).toThrow();
-      expect(
-        h.intervals.map((i) => i.ms),
-        String(v),
-      ).not.toContain(30_000);
-    }
-  });
-
   it('an unusable estimate never creates pressure', async () => {
-    const h = setup({ captureDiskSpace: true });
+    const h = durable();
     const client = await launched(h.options);
     await settle();
     for (const bad of [
@@ -274,45 +341,100 @@ describe('launch — captureDiskSpace pressure (C7)', () => {
     }
   });
 
-  it('hands the pressure to the IndexedDB store and routes its error sink through noteWriteError', async () => {
+  it('hands the pressure and the health hooks to the IndexedDB store: a refused write pins none, a healthy reading does not undo it, a successful write does', async () => {
     const onError = vi.fn();
-    const h = setup({ captureDiskSpace: true, persist: true, onError, captureStore: undefined });
+    const h = durable({ onError });
     const client = await launched(h.options);
     const given = idbStoreSpy.mock.calls.at(-1)?.[0] as {
       diskPressure?: unknown;
-      onError?: (e: unknown) => void;
+      onError?: unknown;
+      onWriteFailure: (e: unknown) => void;
+      onWriteRecovered: () => void;
     };
-    expect(given.diskPressure).toBe(client.getService(DiskPressureToken));
-    const quota = Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
-    given.onError?.(quota);
-    expect(client.getService(DiskPressureToken).level()).toBe('none');
-    expect(onError).toHaveBeenCalledWith(quota);
-  });
-
-  it('works without a host onError (the sink still pins, nothing throws)', async () => {
-    const h = setup({ captureDiskSpace: true, persist: true, captureStore: undefined });
-    const client = await launched(h.options);
-    const given = idbStoreSpy.mock.calls.at(-1)?.[0] as { onError?: (e: unknown) => void };
-    expect(() => given.onError?.({ name: 'QuotaExceededError' })).not.toThrow();
-    expect(client.getService(DiskPressureToken).level()).toBe('none');
-  });
-
-  it('gives the IndexedDB store no pressure without the opt-in', async () => {
-    const h = setup({ persist: true, captureStore: undefined });
-    await launched(h.options);
-    expect(
-      (idbStoreSpy.mock.calls.at(-1)?.[0] as { diskPressure?: unknown }).diskPressure,
-    ).toBeUndefined();
-  });
-
-  it('stop() releases the poll: later ticks no longer move the state', async () => {
-    const h = setup({ captureDiskSpace: true });
-    const client = await launched(h.options);
-    await settle();
-    await client.stop(0);
-    h.state.quota = 5 * MB;
+    const pressure = client.getService(DiskPressureToken);
+    expect(given.diskPressure).toBe(pressure);
+    expect(given.onError).toBe(onError); // host reporting is untouched
+    given.onWriteFailure(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }));
+    expect(pressure.level()).toBe('none');
+    h.state.quota = 900 * MB;
     h.tick();
     await settle();
-    expect(client.getService(DiskPressureToken).level()).toBe('normal');
+    expect(pressure.level()).toBe('none');
+    given.onWriteRecovered();
+    expect(pressure.level()).toBe('normal');
+  });
+
+  it('gives the IndexedDB store neither pressure nor hooks when the protection is off', async () => {
+    const h = durable({ diskProtection: false });
+    await launched(h.options);
+    const given = idbStoreSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(given.diskPressure).toBeUndefined();
+    expect(given.onWriteFailure).toBeUndefined();
+  });
+
+  it('restarts the replay recorder when persistence resumes (a fresh FullSnapshot after the unpersisted gap)', async () => {
+    const checkout = vi.fn();
+    registerReplay.mockReturnValue({ checkout });
+    const h = durable();
+    const client = await launched(h.options);
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    await settle();
+    h.state.quota = 30 * MB; // low: replay stops being persisted
+    h.tick();
+    await settle();
+    expect(checkout).not.toHaveBeenCalled();
+    h.state.quota = 5 * MB; // none: still gated, nothing to restart
+    h.tick();
+    await settle();
+    h.state.quota = 40 * MB; // none -> low: still gated
+    h.tick();
+    await settle();
+    expect(checkout).not.toHaveBeenCalled();
+    h.state.quota = 900 * MB; // normal: persistence resumes
+    h.tick();
+    await settle();
+    expect(checkout).toHaveBeenCalledTimes(1);
+    h.state.quota = 800 * MB; // already normal: nothing more
+    h.tick();
+    await settle();
+    expect(checkout).toHaveBeenCalledTimes(1);
+    await client.stop(0);
+  });
+
+  it('a launch that starts already under pressure restarts the recorder on its first recovery', async () => {
+    const checkout = vi.fn();
+    registerReplay.mockReturnValue({ checkout });
+    const h = durable({}, { usage: 0, quota: 30 * MB });
+    await launched(h.options);
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    await settle();
+    h.state.quota = 900 * MB;
+    h.tick();
+    await settle();
+    expect(checkout).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() releases the poll and the recorder hook: later ticks no longer move the state or restart anything', async () => {
+    const checkout = vi.fn();
+    registerReplay.mockReturnValue({ checkout });
+    const h = durable();
+    const client = await launched(h.options);
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    await settle();
+    h.state.quota = 30 * MB;
+    h.tick();
+    await settle();
+    await client.stop(0);
+    h.state.quota = 900 * MB;
+    h.tick();
+    await settle();
+    expect(checkout).not.toHaveBeenCalled();
+    expect(client.getService(DiskPressureToken).level()).toBe('low'); // the feed is released
+    const pressure = client.getService(DiskPressureToken);
+    pressure.noteWriteRecovered(); // low -> still low (no pin): nothing
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    pressure.noteWriteRecovered();
+    pressure.observe(900 * MB);
+    expect(checkout).not.toHaveBeenCalled(); // the recorder hook is released too
   });
 });

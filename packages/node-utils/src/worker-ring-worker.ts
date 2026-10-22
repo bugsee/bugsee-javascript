@@ -28,6 +28,7 @@ const start = (wt, fs) => {
   const HEAD=0, TAIL=1, READING=3, FREQ=1, FACK=2, SHUT=3, HEADER=8, SKIP=0xffffffff, NO_READ=-1n;
   const genDir = captureDir + '/' + String(generation).padStart(13,'0');
   const fds = new Map();
+  let lastFail = 0;
   const openFor = (pid) => {
     let fd = fds.get(pid);
     if (fd === undefined) {
@@ -71,7 +72,16 @@ const start = (wt, fs) => {
           if (n <= 0) throw new Error('writev no progress');
           off += n;
         }
-      } catch (e) { return; } // leave the frame; retry next tick (transient) or shed via drop-oldest
+      } catch (e) {
+        // Leave the frame; retry next tick (transient) or shed via drop-oldest. TELL the host: a disk that refuses
+        // writes is otherwise invisible from this thread (rate-limited: the retry runs every tick).
+        const now = Date.now();
+        if (now - lastFail > 250) {
+          lastFail = now;
+          wt.parentPort.postMessage({ fail: { code: e && e.code, message: String(e && e.message) } });
+        }
+        return;
+      }
       Atomics.store(ctl, HEAD, Atomics.load(ctl, READING) + BigInt(size)); // cached size, not a re-read
       Atomics.store(ctl, READING, NO_READ);
     }
@@ -131,6 +141,24 @@ export function createWorkerThreadRingWorker(
     return createSyncRingWorker(args); // no worker_threads → graceful on-thread fallback
   }
   worker.on('error', (e) => args.onError(e));
+  // A drain write the worker could not complete (ENOSPC, EIO, ...): the worker retries the frame every tick, so these
+  // arrive rate-limited. The first reaches the host's error sink (`onError` hears one per episode), every one the
+  // health signal.
+  let reported = false;
+  worker.on('message', (m: unknown) => {
+    const fail = (m as { fail?: { code?: unknown; message?: unknown } } | null)?.fail;
+    if (fail === undefined) {
+      return;
+    }
+    const error = Object.assign(new Error(String(fail.message)), {
+      ...(typeof fail.code === 'string' ? { code: fail.code } : {}),
+    });
+    args.onWriteFailure?.(error);
+    if (!reported) {
+      reported = true;
+      args.onError(error);
+    }
+  });
   worker.unref?.(); // never let the I/O worker keep the host process alive
 
   // Block the host thread until the worker has drained up to OUR request token (bounded). Atomics.wait on the

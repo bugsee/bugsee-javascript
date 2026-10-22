@@ -133,8 +133,8 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    serving `hardware.gpu`;
  *  - `diskPressure` (node, set by `@bugsee/electron`'s `launchMain`) is the one DiskPressure state its `capture` trace
  *    producer also follows. It is a live object bound to that launch's producer, so a relaunch builds a fresh one for
- *    the plain node launch (`captureDiskSpace` itself is kept, so the store protection survives; only the Electron
- *    `capture` trace stops, like the other Electron producers above).
+ *    the plain node launch (`captureDiskSpace` and `diskProtection` are kept, so the store protection survives; only the
+ *    Electron `capture` trace stops, like the other Electron producers above).
  */
 const RESET_OPTIONS: readonly string[] = [
   'BrowserWindow',
@@ -151,6 +151,7 @@ const RESET_OPTIONS: readonly string[] = [
   'bridge',
   'captureBreadcrumbs',
   'captureDiskSpace',
+  'diskProtection',
   'captureEnvironmentHints',
   'captureInteractions',
   'captureLocalVariables',

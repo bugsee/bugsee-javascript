@@ -755,7 +755,7 @@ describe('write-queue back-pressure', () => {
 });
 
 describe('createIdbChunkCaptureStore — disk pressure (C7)', () => {
-  const MB = 1_000_000;
+  const MB = 1024 * 1024;
   const mk = (store: AsyncKeyedStore) => {
     const pressure = createDiskPressure();
     return {
@@ -824,5 +824,128 @@ describe('createIdbChunkCaptureStore — disk pressure (C7)', () => {
     store.add(rec('x', 'log', 10_000));
     await store.flush?.();
     expect((await dataKeys(backing)).length).toBe(1);
+  });
+});
+
+describe('createIdbChunkBackend — health hooks (onWriteFailure / onWriteRecovered)', () => {
+  const quota = (): Error => Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  const flaky = () => {
+    const inner = keyed();
+    const state = { broken: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.broken ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    return { store, state };
+  };
+  const hooks = () => {
+    const failures: unknown[] = [];
+    const counts = { recovered: 0 };
+    return {
+      failures,
+      counts,
+      options: {
+        onWriteFailure: (e: unknown) => void failures.push(e),
+        onWriteRecovered: () => {
+          counts.recovered += 1;
+        },
+      },
+    };
+  };
+
+  it('reports EVERY failed write (onError hears only the first), then recovers once on the first success after', async () => {
+    const { store, state } = flaky();
+    const h = hooks();
+    const errors: unknown[] = [];
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onError: (e) => errors.push(e),
+      failureThreshold: 1000,
+      ...h.options,
+    });
+    b.openPart(ref(5, 0), 1);
+    await b.flush?.();
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('b'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('c'));
+    await b.flush?.();
+    expect(h.failures).toHaveLength(3);
+    expect(errors.filter((e) => (e as Error).name === 'QuotaExceededError')).toHaveLength(1);
+    expect(h.counts.recovered).toBe(0);
+    state.broken = false;
+    b.appendEntry(ref(5, 0), rec('d'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('e'));
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(1);
+  });
+
+  it('a successful DELETE after failures does not report recovery (deleting works on a full quota); a write does', async () => {
+    const inner = keyed();
+    const state = { broken: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.broken ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    const h = hooks();
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      ...h.options,
+    });
+    b.openPart(ref(5, 0), 1);
+    await b.flush?.();
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    expect(h.failures).toHaveLength(1);
+    b.removePart(ref(5, 0)); // deletes still work
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(0);
+    state.broken = false;
+    b.openPart(ref(5, 1), 2); // a meta WRITE succeeds
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(1);
+  });
+
+  it('a throwing hook never breaks the drain: later flushes still resolve', async () => {
+    const { store, state } = flaky();
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onWriteFailure: () => {
+        throw new Error('hook');
+      },
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+    });
+    state.broken = true;
+    b.appendEntry(ref(5, 0), rec('a'));
+    await b.flush?.();
+    state.broken = false;
+    b.appendEntry(ref(5, 0), rec('b'));
+    await b.flush?.();
+    b.appendEntry(ref(5, 0), rec('c'));
+    await expect(b.flush?.()).resolves.toBeUndefined();
+  });
+
+  it('the capture store forwards the hooks to its IndexedDB backend', async () => {
+    const { store, state } = flaky();
+    const h = hooks();
+    const s = createIdbChunkCaptureStore(store, {
+      clock: clockAt(10_000),
+      generation: 42,
+      cleanOtherGenerations: false,
+      ...h.options,
+    });
+    state.broken = true;
+    s.add(rec('a', 'log', 10_000));
+    await s.flush?.();
+    expect(h.failures.length).toBeGreaterThan(0);
   });
 });

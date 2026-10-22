@@ -316,10 +316,10 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // The `capture` trace (C7): main writes it, and only while it HAS visual capture (opt-in pixel video: a renderer's
   // rrweb replay is the renderer's own and streams up, but the trace names the session's state, which main owns).
   // `active`/`blackout` are written once the controller is really running (below); the disk states follow the SAME
-  // DiskPressure the node launch feeds from `statfs` of the data dir under `captureDiskSpace`. Not on a repeat call
+  // DiskPressure the node launch feeds from `statfs` of the data dir (its disk-protection feed; the STATES are the `captureDiskSpace` telemetry, so the pressure is shared only then). They describe main's own on-disk store (renderer replay/log/network); the pixel video is never persisted, so "video stops reaching disk" does not apply to it. Not on a repeat call
   // (it would never be started); under the legacy sampler (which replaces the producer list) it is simply never added.
   const diskPressure =
-    nodeOptions.captureDiskSpace === true && !repeat
+    nodeOptions.captureDiskSpace === true && nodeOptions.diskProtection !== false && !repeat
       ? createDiskPressure({
           ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
         })

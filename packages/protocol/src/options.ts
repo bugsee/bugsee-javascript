@@ -80,13 +80,19 @@ export const BugseeOption = {
    */
   CaptureEnvironmentHints: 'com.bugsee.option.capture.environment-hints',
   /**
-   * Observe free disk space (iOS `monitorDiskSpace`, the same opt-in meaning): the `capture` trace's `low_disk_space` /
-   * `no_disk_space` states, the Node-family `disk_mem_free` / `disk_mem_total` traces, and the capture store's
-   * stop-persisting protection below 50 MB / 10 MB free. Opt-in, default false; only boolean `true` enables it. The
-   * Node launches measure the data directory's volume (`statfs`), the browser measures `navigator.storage.estimate()`
-   * headroom.
+   * Disk-space TELEMETRY (iOS `monitorDiskSpace`, the same opt-in meaning): the `capture` trace's `low_disk_space` /
+   * `no_disk_space` states and the Node-family `disk_mem_free` / `disk_mem_total` traces. Opt-in, default false; only
+   * boolean `true` enables it. It does NOT gate the capture store's protection (see `CaptureDiskProtection`), which is
+   * on by default, as on iOS.
    */
   CaptureDiskSpace: 'com.bugsee.option.capture.disk-space',
+  /**
+   * The capture store's disk-pressure PROTECTION (iOS runs it always; only its telemetry is behind the option): below
+   * 50 MiB free the durable store stops persisting replay, log and network data, below 10 MiB it persists nothing, and
+   * the in-memory window is kept either way. Applies only where a durable store exists (Node-family data directory,
+   * browser IndexedDB). Default true; only boolean `false` opts out, any other value keeps it on.
+   */
+  CaptureDiskProtection: 'com.bugsee.option.capture.disk-protection',
   /** Detect uncaught exceptions / unhandled rejections and report them. */
   DetectCrash: 'com.bugsee.option.detect.crash',
   /** Report failed HTTP responses (>= 400) and network failures as `error` reports. Default false. */
@@ -158,6 +164,7 @@ export interface BugseeOptionTypes {
   'com.bugsee.option.capture.environment-hints': boolean;
   'com.bugsee.option.capture.start-in-blackout': boolean;
   'com.bugsee.option.capture.disk-space': boolean;
+  'com.bugsee.option.capture.disk-protection': boolean;
   'com.bugsee.option.detect.crash': boolean;
   'com.bugsee.option.detect.hang': boolean;
   'com.bugsee.option.detect.hang.level.fair': number;

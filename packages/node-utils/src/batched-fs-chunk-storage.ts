@@ -45,6 +45,13 @@ export interface BatchedFsChunkStorageOptions {
   /** Failure sink for a flush/close error (a broken disk must never throw into the capture path). Default no-op. */
   onError?: (error: unknown) => void;
   /**
+   * Called for EVERY failed disk operation (an open, a flush, a meta write, a chunk removal), unlike `onError`, which
+   * hears only the first failure of an episode. A consumer that tracks disk health (the disk-pressure pin) needs each one.
+   */
+  onWriteFailure?: (error: unknown) => void;
+  /** Called on the first successful disk operation (a flush or a meta write) after one or more failures. */
+  onWriteRecovered?: () => void;
+  /**
    * Ceiling on the unwritten tail held per file before the OLDEST records are shed. Default 1 MiB.
    *
    * The retry-without-duplication design keeps the still-unwritten tail buffered so a later retry cannot
@@ -131,6 +138,27 @@ export function createBatchedFsChunkStorage(
       // nothing left to report it to
     }
   };
+  // Every failure, and the first success after one: the health signal (a sink that throws costs nothing).
+  let failing = false;
+  const noteFailure = (error: unknown): void => {
+    failing = true;
+    try {
+      options.onWriteFailure?.(error);
+    } catch {
+      // nothing left to report it to
+    }
+  };
+  const noteSuccess = (): void => {
+    if (!failing) {
+      return;
+    }
+    failing = false;
+    try {
+      options.onWriteRecovered?.();
+    } catch {
+      // nothing left to report it to
+    }
+  };
   const maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
   const failureThreshold = options.failureThreshold ?? 8;
   // Circuit state. `consecutiveFailures` counts flushes that threw in a row; once it reaches the threshold
@@ -182,12 +210,14 @@ export function createBatchedFsChunkStorage(
       writeAll(entry, writev);
       consecutiveFailures = 0;
       reportedEpisode = false;
+      noteSuccess();
       reportShed();
     } catch (error) {
       // A broken/full disk must never throw into the capture path. Route it out; the unwritten tail stays
       // buffered for a later retry (never duplicating an already-written prefix), bounded by
       // `maxBufferedBytes` so the retry cannot become unbounded memory growth.
       consecutiveFailures += 1;
+      noteFailure(error);
       // The FIRST failure of an episode is the diagnosis; the rest are counted and summarised, because a
       // report per captured entry is not a diagnostic — it is a second failure mode.
       if (!reportedEpisode) {
@@ -234,6 +264,7 @@ export function createBatchedFsChunkStorage(
         } catch (error) {
           // A broken/full disk must NEVER throw into the capture path — append is reached synchronously
           // from interceptors (console.log → capture) and from the tick. Shed this entry + report instead.
+          noteFailure(error);
           onError(error);
           return;
         }
@@ -265,7 +296,9 @@ export function createBatchedFsChunkStorage(
       try {
         ensure(chunkDir(generation, chunk));
         writeFile(path, data);
+        noteSuccess();
       } catch (error) {
+        noteFailure(error);
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
       }
     },
@@ -274,7 +307,15 @@ export function createBatchedFsChunkStorage(
       const path = filePath(generation, chunk, file);
       flushPath(path); // a snapshot/recovery reader must see everything buffered so far
       const bytes = readFileBytes(path);
-      return bytes === undefined ? undefined : Buffer.from(bytes).toString('utf8');
+      // A flush that FAILED (a full disk) keeps its unwritten tail buffered for retry: those records are captured but
+      // not on disk, and a LIVE report must still hold them (the disk-pressure gate counts them as durable). Written
+      // prefixes were already consumed from the segments, so disk + tail never duplicates.
+      const tail = open.get(path)?.segments ?? [];
+      if (bytes === undefined) {
+        return undefined; // the file is created when the handle is opened, so a buffered tail implies it exists
+      }
+      const onDisk = Buffer.from(bytes).toString('utf8');
+      return tail.length === 0 ? onDisk : onDisk + Buffer.concat(tail).toString('utf8');
     },
 
     files(generation, chunk): string[] {
@@ -285,7 +326,10 @@ export function createBatchedFsChunkStorage(
       closeUnder(chunkDir(generation, chunk));
       try {
         removeDir(chunkDir(generation, chunk));
+        // NOT a success signal: deleting works on a full disk (it is how space comes back), so it proves nothing about
+        // whether a WRITE would now succeed. Only flushes and meta writes release the health state.
       } catch (error) {
+        noteFailure(error);
         onError(error); // eviction on a broken disk must never throw into the caller (the tick/add)
       }
     },
@@ -326,7 +370,20 @@ export function createBatchedFsChunkStorage(
     },
 
     sealChunk(generation, chunk): void {
-      closeUnder(chunkDir(generation, chunk));
+      // A sealed chunk gets its handles closed, EXCEPT a file whose flush just failed (a full disk): closing it would
+      // drop the unwritten tail for good, records the capture store already counts as captured. It stays open, keeps
+      // its (bounded) tail, and the periodic flush retries it once the disk accepts writes again; eviction of the
+      // chunk (`removeChunk`) closes it as before.
+      const within = chunkDir(generation, chunk) + sep;
+      for (const path of [...open.keys()]) {
+        if (!path.startsWith(within)) {
+          continue;
+        }
+        flushPath(path);
+        if ((open.get(path)?.segments.length ?? 0) === 0) {
+          closePath(path);
+        }
+      }
     },
 
     dispose(): void {

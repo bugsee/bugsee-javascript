@@ -15,7 +15,7 @@ import type { VideoCaptureSource } from './video-capture';
 // once the controller is really running, and shares the disk pressure the node launch feeds under `captureDiskSpace`.
 afterEach(() => resetProcessTracker());
 
-const MB = 1_000_000;
+const MB = 1024 * 1024;
 const ipcMain = { on: vi.fn(), removeListener: vi.fn() };
 
 function fakeLaunch(opts: { internals?: boolean } = {}) {
@@ -182,6 +182,18 @@ describe('launchMain — disk pressure (C7)', () => {
     launchMain('tok', { ipcMain, launch: f.launch, captureDiskSpace: true });
     expect(f.options.diskPressure).toBeDefined();
     expect(f.options.systemTraceProducers).toBeUndefined();
+  });
+
+  it('passes none when the protection is switched off (the node launch would not create one either)', () => {
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain,
+      launch: f.launch,
+      captureDiskSpace: true,
+      diskProtection: false,
+      video: { source: source() },
+    });
+    expect(f.options.diskPressure).toBeUndefined();
   });
 
   it('passes none without the opt-in, or for a non-boolean-true value', () => {

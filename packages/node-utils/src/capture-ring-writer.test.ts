@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
@@ -441,5 +441,101 @@ describe('a corrupt pathId does not wedge the drainer', () => {
     worker.flushAndWait(1000);
     expect(existsSync(join(root, 'undefined'))).toBe(false);
     worker.stop();
+  });
+});
+
+describe('CaptureRingWriter — health hooks (onWriteFailure / onWriteRecovered)', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+  const sinks = () => {
+    const failures: unknown[] = [];
+    const state = { recovered: 0 };
+    return {
+      failures,
+      state,
+      options: {
+        onWriteFailure: (e: unknown) => void failures.push(e),
+        onWriteRecovered: () => {
+          state.recovered += 1;
+        },
+      } satisfies Partial<CaptureRingWriterOptions>,
+    };
+  };
+
+  it('meta writes: every failure counts, the first success after them recovers once', () => {
+    const h = sinks();
+    let broken = true;
+    const s = mk(mkRoot(), {
+      ...h.options,
+      writeFile: () => {
+        if (broken) throw full();
+      },
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.write(GEN, 0, 'meta', '{}');
+    expect(h.failures).toHaveLength(2);
+    broken = false;
+    s.write(GEN, 0, 'meta', '{}');
+    s.write(GEN, 0, 'meta', '{}');
+    expect(h.state.recovered).toBe(1);
+  });
+
+  it('a failed chunk or generation removal counts, a later one that works does NOT recover (only a write proves it)', () => {
+    const h = sinks();
+    let broken = true;
+    const s = mk(mkRoot(), {
+      ...h.options,
+      removeDir: () => {
+        if (broken) throw full();
+      },
+    });
+    s.removeChunk(GEN, 0);
+    s.removeGeneration(GEN);
+    expect(h.failures).toHaveLength(2);
+    broken = false;
+    s.removeChunk(GEN, 0);
+    s.removeGeneration(GEN);
+    expect(h.state.recovered).toBe(0);
+  });
+
+  it('a failed fallback append counts', () => {
+    const h = sinks();
+    const s = mk(mkRoot(), {
+      ...h.options,
+      open: () => {
+        throw full();
+      },
+    });
+    s.append(GEN + 1, 0, 'log', 'x\n'); // a foreign generation takes the main-thread fallback
+    expect(h.failures).toHaveLength(1);
+  });
+
+  it('a failing drain (sync worker) reaches the health hook as well as onError', () => {
+    const h = sinks();
+    const onError = vi.fn();
+    const root = mkRoot();
+    writeFileSync(join(root, '0000000000001'), 'x'); // the generation dir is a file: the drain cannot open
+    const s = mk(root, { ...h.options, onError });
+    s.append(GEN, 0, 'log', 'x\n');
+    s.flushSync?.();
+    expect(onError).toHaveBeenCalled();
+    expect(h.failures.length).toBeGreaterThan(0);
+  });
+
+  it('throwing hooks never reach the capture path', () => {
+    let broken = true;
+    const s = mk(mkRoot(), {
+      onWriteFailure: () => {
+        throw new Error('hook');
+      },
+      onWriteRecovered: () => {
+        throw new Error('hook');
+      },
+      writeFile: () => {
+        if (broken) throw full();
+      },
+    });
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+    broken = false;
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
   });
 });

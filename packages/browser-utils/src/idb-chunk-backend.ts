@@ -132,6 +132,13 @@ export interface IdbChunkBackendOptions {
    * quota blip does not become permanent silent loss.
    */
   failureThreshold?: number;
+  /**
+   * Called for EVERY failed write (`onError` hears only the first of an episode, by design). The disk-pressure pin
+   * needs each one: a store that keeps refusing writes must stay pinned even though it stopped being reported.
+   */
+  onWriteFailure?: (error: unknown) => void;
+  /** Called on the first successful write after one or more failures (the pressure probe's success releases the pin). */
+  onWriteRecovered?: () => void;
 }
 
 // How often a tripped circuit lets one write through to see whether the store recovered.
@@ -156,12 +163,14 @@ export function createIdbChunkBackend(
   const maxPending = options.maxPendingWrites ?? 2048;
   const maxPendingBytes = options.maxPendingBytes ?? 8 * 1024 * 1024;
   const failureThreshold = options.failureThreshold ?? 16;
-  const pending: Array<{ run: () => Promise<unknown>; bytes: number }> = [];
+  const pending: Array<{ run: () => Promise<unknown>; bytes: number; write: boolean }> = [];
   let pendingBytes = 0;
   let draining = false;
   let idle: Promise<void> = Promise.resolve();
   let resolveIdle: (() => void) | undefined;
   let consecutiveFailures = 0;
+  // Set by any failure, cleared by the first successful WRITE (a delete succeeding proves nothing, see below).
+  let unhealthy = false;
   let sinceProbe = 0;
   let dropped = 0;
 
@@ -170,6 +179,18 @@ export function createIdbChunkBackend(
   const safeOnError = (error: unknown): void => {
     try {
       onError(error);
+    } catch {
+      // nothing left to report it to
+    }
+  };
+
+  /** A health hook is the host's code: it must never break the drain loop (a stuck `draining` hangs every flush). */
+  const safeCall = <A extends unknown[]>(
+    hook: ((...args: A) => void) | undefined,
+    ...args: A
+  ): void => {
+    try {
+      hook?.(...args);
     } catch {
       // nothing left to report it to
     }
@@ -196,7 +217,11 @@ export function createIdbChunkBackend(
     // burst of captures in one turn is fully enqueued before a single write has had the chance to fail.
     let probe = true;
     while (pending.length > 0) {
-      const item = pending.shift() as { run: () => Promise<unknown>; bytes: number };
+      const item = pending.shift() as {
+        run: () => Promise<unknown>;
+        bytes: number;
+        write: boolean;
+      };
       pendingBytes -= item.bytes;
       if (consecutiveFailures >= failureThreshold && !probe) {
         sinceProbe += 1;
@@ -209,9 +234,17 @@ export function createIdbChunkBackend(
       probe = false;
       try {
         await item.run();
+        // Only a WRITE proves the store accepts data again: deleting works under a full quota (it is how space
+        // comes back), so a successful delete must not release a write-failure pin.
+        if (unhealthy && item.write) {
+          unhealthy = false;
+          safeCall(options.onWriteRecovered);
+        }
         consecutiveFailures = 0; // the store is working again; close the circuit
       } catch (error) {
         consecutiveFailures += 1;
+        unhealthy = true;
+        safeCall(options.onWriteFailure, error);
         // The FIRST failure of an episode is reported in full — that is the diagnosis. Everything after it
         // is counted and summarised, so a failing store cannot spam the host's sink (and cannot close the
         // capture→console→capture livelock a `console.error` sink would otherwise sustain).
@@ -228,7 +261,7 @@ export function createIdbChunkBackend(
     resolveIdle = undefined;
   };
 
-  const enqueue = (run: () => Promise<unknown>, bytes = 0): void => {
+  const enqueue = (run: () => Promise<unknown>, bytes = 0, write = false): void => {
     while (
       pending.length > 0 &&
       (pending.length >= maxPending || pendingBytes + bytes > maxPendingBytes)
@@ -239,7 +272,7 @@ export function createIdbChunkBackend(
       pendingBytes -= evicted.bytes;
       dropped += 1;
     }
-    pending.push({ run, bytes });
+    pending.push({ run, bytes, write });
     pendingBytes += bytes;
     if (resolveIdle === undefined) {
       idle = new Promise<void>((resolve) => {
@@ -272,8 +305,10 @@ export function createIdbChunkBackend(
     end: number | null,
     byteSize: number,
   ): void => {
-    enqueue(() =>
-      store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
+    enqueue(
+      () => store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
+      0,
+      true,
     );
   };
 
@@ -344,7 +379,7 @@ export function createIdbChunkBackend(
       const bytes = enc(data);
       // The payload is encoded here rather than inside the closure, so its size is known to the queue's
       // byte bound — a closure that encodes lazily hides exactly the memory this is meant to cap.
-      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), bytes), bytes.length);
+      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), bytes), bytes.length, true);
       return utf8ByteLength(record.serialized);
     },
 
@@ -466,6 +501,9 @@ export interface IdbChunkCaptureStoreOptions extends ChunkCaptureStoreOptions {
   cleanOtherGenerations?: boolean;
   /** Failure sink for the async write queue. Default no-op. */
   onError?: (error: unknown) => void;
+  /** Every failed write / the first success after failures (see IdbChunkBackendOptions). */
+  onWriteFailure?: (error: unknown) => void;
+  onWriteRecovered?: () => void;
   /**
    * Disk pressure (C7): below the low threshold replay/log/network stop being written to IndexedDB, below the
    * out-of-space one nothing is; the in-memory window is kept either way (see `@bugsee/core`'s
@@ -485,6 +523,10 @@ export function createIdbChunkCaptureStore(
     generation,
     cleanOtherGenerations: options?.cleanOtherGenerations,
     onError: options?.onError,
+    ...(options?.onWriteFailure !== undefined ? { onWriteFailure: options.onWriteFailure } : {}),
+    ...(options?.onWriteRecovered !== undefined
+      ? { onWriteRecovered: options.onWriteRecovered }
+      : {}),
   });
   return createChunkCaptureStore(backend, {
     maxRecordingTimeMs: options?.maxRecordingTimeMs,

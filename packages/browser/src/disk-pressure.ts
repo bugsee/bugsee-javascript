@@ -13,8 +13,8 @@ import { type StorageTrackerEnv, storageTrackerFor } from '@bugsee/trackers/brow
 
 /** Poll period once headroom is under {@link DISK_FAST_BELOW_BYTES}. */
 export const DISK_FAST_POLL_MS = 30_000;
-/** Headroom under which the faster cadence applies (decimal MB, like the thresholds). */
-export const DISK_FAST_BELOW_BYTES = 500_000_000;
+/** Headroom under which the faster cadence applies (binary MiB, like the thresholds). */
+export const DISK_FAST_BELOW_BYTES = 500 * 1024 * 1024;
 
 export interface BrowserDiskPressureFeedDeps
   extends Omit<StorageTrackerEnv, 'fastIntervalMs' | 'fastBelowBytes'> {
