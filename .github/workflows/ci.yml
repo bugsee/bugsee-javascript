@@ -90,6 +90,10 @@ jobs:
       # <NONEXISTENT> hole the e2e job exists to close.
       - name: Harness unit tests (vitest)
         run: pnpm exec turbo run test:unit
+        env:
+          # This job runs Node 22, which OpenTelemetry JS 3.x supports (>= 22.15): the otel3-compat suite must
+          # RUN here. With this set, a too-old Node fails that suite instead of skipping it silently.
+          BUGSEE_REQUIRE_OTEL3: '1'
 
   # End-to-end harnesses: the REAL SDK booted in real node/bun/deno processes against a
   # mock collector, plus the real-framework suites (nuxt / sveltekit / astro / next).

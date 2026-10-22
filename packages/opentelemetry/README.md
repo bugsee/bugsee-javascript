@@ -10,7 +10,12 @@ You do not need to install this package. It is a dependency of `@bugsee/bugsee`,
 npm install @bugsee/bugsee
 ```
 
-Consuming spans also needs your own OpenTelemetry SDK (`@opentelemetry/api` and `@opentelemetry/sdk-trace-base`, optional peers of this package).
+Consuming spans also needs your own OpenTelemetry SDK, all optional peers of this package:
+
+| Your OpenTelemetry JS | Install |
+| --- | --- |
+| 1.x / 2.x | `@opentelemetry/api` and `@opentelemetry/sdk-trace-base` |
+| 3.x (Node.js 22.15 or newer) | `@opentelemetry/api` and `@opentelemetry/sdk-trace` (3.0 removed `sdk-trace-base`; `sdk-trace` also exists on 2.9+) |
 
 ## Usage
 
@@ -36,7 +41,9 @@ await launch('YOUR_APP_TOKEN', {
   onOtelSpanProcessor: (processor: BugseeSpanProcessor) => {
     // Register `processor` on your OpenTelemetry TracerProvider.
     // How depends on your OpenTelemetry SDK version (for example the
-    // `spanProcessors` constructor option on SDK 2.x).
+    // `spanProcessors` constructor option of `BasicTracerProvider` from
+    // `@opentelemetry/sdk-trace-base` on SDK 2.x, or of `TracerProvider` from
+    // `@opentelemetry/sdk-trace` on 3.x).
   },
 });
 ```

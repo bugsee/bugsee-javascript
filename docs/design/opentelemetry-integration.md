@@ -99,7 +99,8 @@ network interceptor's transformer seam, the `TransactionStore`) — core and per
   `TracerProvider`. `onEnd(otelSpan)` → map → Bugsee. Open sub-decision (Faro does both): consumed spans
   become Bugsee **Transactions** (native model, for UI/correlation) and/or are preserved as an **OTLP
   blob** in the bundle (full fidelity — events/links/resource/scope our model lacks). Peer:
-  `@opentelemetry/sdk-trace-base`. **Node-first.**
+  `@opentelemetry/sdk-trace-base` (OTel JS 1.x/2.x) or `@opentelemetry/sdk-trace` (2.9+, the only one on 3.x) — see
+  "OpenTelemetry JS major compatibility". **Node-first.**
 - **Produce (OTLP-JSON):** `TransactionStore.drain()` → `resourceSpans` (OTLP-JSON) → `POST
   application/json` → the user's collector / OTLP endpoint. Hand-rolled mapping or a thin
   `@opentelemetry/otlp-transformer` dep — no full SDK. Dropped vs the SDK exporter: protobuf, gzip,
@@ -138,7 +139,7 @@ Mapping core is portable. **Produce** (light) ships on both runtimes. **Consume*
 - **A. Portable mapping core** — `@bugsee/opentelemetry`: Span/Transaction ↔ OTel span + the OTLP-JSON
   encoder. Foundation; pure; test-first.
 - **B. Produce** — OTLP-JSON exporter from `TransactionStore`. Read-only, low-risk, first user-visible win.
-- **C. Consume** — `BugseeSpanProcessor` (peer `sdk-trace-base`), **Node-first**. Resolve the
+- **C. Consume** — `BugseeSpanProcessor` (peer `sdk-trace-base` on OTel 1.x/2.x, `sdk-trace` on 2.9+/3.x), **Node-first**. Resolve the
   native-map-vs-OTLP-blob sub-decision here (likely both, Faro-style).
 - **T. Interception-transformer seam** — in `@bugsee/capture`/`InterceptorBase` (general; sync; truthful
   capture). Prerequisite for D, independently useful.
@@ -166,6 +167,179 @@ move earlier if the distributed-trace story is the priority.
 - **Cross-origin trace leakage** — same-origin/allowlist default is a hard security requirement, not a knob.
 - **Mapping fidelity** — our model lacks OTel events/links/resource/scope; preserving the OTLP blob on
   Consume avoids lossy round-trips.
+
+---
+
+## OpenTelemetry JS major compatibility (issue #94, OTel JS 3.0 GA 2026-10-20)
+
+**Peers, split by OTel major.** OTel JS 3.0 removed `@opentelemetry/sdk-trace-base`, `-web` and `-node`
+(npm `deprecated: "Use @opentelemetry/sdk-trace package"`; `sdk-trace-base` stays at 2.12.0, there is no 3.x)
+and replaced them with the single `@opentelemetry/sdk-trace`. Both `@bugsee/opentelemetry` and
+`@bugsee/nextjs` therefore declare, all OPTIONAL (a produce-only user installs none):
+
+| peer | range | for |
+| --- | --- | --- |
+| `@opentelemetry/api` | `>=1.0.0` | every major |
+| `@opentelemetry/sdk-trace-base` | `>=1.0.0 <3` | OTel 1.x / 2.x |
+| `@opentelemetry/sdk-trace` | `>=2.9.0` | OTel 2.9+ (a hard dependency of `sdk-trace-base` 2.9+, exports the same `TracerProvider`) and 3.x (the only SDK package there) |
+
+Guard: `dev-packages/packaging-guard/src/otel-peers.test.ts`.
+
+**The API peer ranges do not overlap, so the two SDKs cannot share one test install.**
+`sdk-trace-base@2.12` peers `@opentelemetry/api >=1.3.0 <1.10.0`; `sdk-trace@3.0.0` peers
+`>=1.10.0 <1.11.0`. One workspace package cannot satisfy both, so the 2.x tests stay in
+`packages/opentelemetry` (api 1.9.x) and the 3.x tests live in the private `dev-packages/otel3-compat`
+(api 1.10.x). That is a TEST-install constraint only: the package imports no OTel code at runtime (structural
+`ReadableSpanLike` / `SpanProcessor`). What binds a customer is OUR optional peer ranges (`api >=1.0.0`,
+`sdk-trace-base >=1.0.0 <3`, `sdk-trace >=2.9.0`), which accept every released OTel SDK, plus their own SDK's
+peer range on `@opentelemetry/api`.
+
+**Node floor.** `@opentelemetry/api@1.10` keeps `engines.node >=8`, but `core@3`, `resources@3` and
+`sdk-trace@3` require `>=22.15.0`. `@bugsee/opentelemetry` itself still supports the Node
+versions the SDK supports (it never loads OTel). CI runs Node 22 only (both jobs), which satisfies the floor, so
+the OTel 3 suite runs there; on a developer machine with an older Node it skips with a stated reason, unless `BUGSEE_REQUIRE_OTEL3=1` (set on the CI Node 22 job, passed through turbo `test:unit` env), which
+turns the skip into a failure so the 3.x coverage cannot rot silently.
+
+**Registering the processor on 3.x.** `new TracerProvider({ spanProcessors: [processor] })` from
+`@opentelemetry/sdk-trace`. Same `spanProcessors` option as `BasicTracerProvider` on `sdk-trace-base` 2.x
+(`sdk-trace` 2.9+ already exports a `TracerProvider` with that option; on 3.x it is the only provider class,
+`BasicTracerProvider` is gone), and `addSpanProcessor` has been gone since 2.0. There is no
+`register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
+package in `dev-packages/otel3-compat`.
+
+**Next.js zero-config provider.** `@bugsee/nextjs` lazy-imports the SDK for its zero-config provider
+(`otel-provider.ts` `loadOtelModules`): `sdk-trace-base` first (`BasicTracerProvider`, OTel 1.x/2.x, behaviour
+unchanged), then `sdk-trace` (`TracerProvider`, 2.9+ and 3.x). Before this, an OTel 3 install reported `unavailable`
+because `sdk-trace-base` does not exist there. A real `next build` of `packages/nextjs-e2e` with neither package
+installed compiles without a module-not-found error, so the second optional import does not break webpack.
+
+**Browser builds and deep imports.** OTel 3 ships an `exports` map on every package, so
+`@opentelemetry/<pkg>/build/...` deep imports and `@opentelemetry/<pkg>/package.json` reads no longer resolve,
+and the `browser` field was replaced by `#platform` subpath imports. A bundler that pulls OTel 3 into a
+browser build therefore needs `imports` support (webpack >= 5.54; current Vite, Rollup, esbuild and Rspack
+have it). That constraint falls on the customer's own OTel usage: `@bugsee/opentelemetry` imports no OTel code
+(structural types only), and a repo-wide guard (`dev-packages/packaging-guard/src/otel-no-deep-imports.test.ts`)
+fails the unit gate on any `@opentelemetry/*` deep import, `package.json` read or `node_modules/@opentelemetry`
+path in tracked source, config or sample files (audited 2026-10-21: none, including the browser, webworker,
+edge and bundler-plugin packages).
+
+**Complex attributes (OTEP 4485, `@opentelemetry/api` 1.10 `AnyValue`).** Since 1.10 `Attributes` values are
+`AnyValue`: string/number/boolean, byte array (`Uint8Array`), array of any value, map of any value, null.
+Verified against `sdk-trace@3.0.0`: the SDK keeps nested maps, mixed arrays, `Uint8Array` and `null` on
+`ReadableSpan.attributes`, and itself drops bigint, `Date`, functions, symbols and cyclic values. An older or
+third-party SDK can still hand us anything, so the mapping is total. Implementation:
+`packages/performance/src/attribute-value.ts` (in `@bugsee/performance` because the redaction and wire steps
+that need it sit below `@bugsee/opentelemetry`; the OTel package re-exports it).
+
+*Normalize late, flatten at the wire.* Three steps, in this order:
+
+0. **Entry, for every span** (`normalizeTransactionAttributes`, first step of the performance extension's
+   `filterTransaction`). The SDK's own spans carry whatever `setAttribute`, `recordChildSpan({ attributes })`
+   and `recordExternal` were handed, so every transaction's attributes are bounded here (shared per-span budget,
+   cycles marked, a throwing getter or Proxy trap turns into `"[Unreadable]"` or a dropped attribute) before the
+   redaction walk or an integrator filter sees them. Every later step reads the normalized COPY (plain data
+   properties, each source getter read exactly once), never the caller's record.
+   Measured before this step, on the raw redaction walk: a `node:http` request object 0.3-0.5 s, a branching
+   DAG (3 branches, 14 levels) 4 s, a self-referencing object 17 s; after it, each takes under 3 ms.
+1. **Consume** (`readableSpanToConsumed` -> `normalizeAttributes`). Scalars and small homogeneous scalar arrays
+   (<= 1024 elements, strings totalling <= 32 KiB) pass through; a scalar string is capped at 32 KiB (so the cost
+   of `span.end()` does not scale with whatever instrumentation recorded). A byte array becomes base64; a bigint
+   a number when exact, decimal text otherwise; `null`/`undefined`/function/symbol drop the attribute.
+   Everything else (nested map, mixed/nested array, long scalar array) becomes a bounded JSON-safe TREE, NOT text.
+2. **Redaction** sees that tree. The default span sanitizer applies the same rules to nested keys as to flat ones
+   (a sensitive key redacts its whole value at any depth, content keys redact, statement keys keep their shape
+   via `redactSqlLiterals`, including a statement carried as a map or an array: every string leaf under a
+   statement key is SQL; secret-shape scanning covers the string VALUES inside maps and arrays-of-maps only,
+   NOT nested map keys, and, exactly as on main, not a top-level string attribute or a flat string array;
+   depth-limited), so
+   `user: { password }` and `http.request.headers: { authorization }` are redacted by default. An integrator
+   `setSpanFilter` receives the tree too.
+3. **Wire** (`flattenTransactionAttributes`, run by the performance extension after the filter, in both sinks):
+   what remains complex becomes one bounded JSON string, because the Bugsee attribute model and viewer read
+   scalar attribute values.
+
+An earlier revision stringified at step 1, which defeated step 2: the default sanitizer is key-based, so a nested
+`{ password }` inside a JSON string was invisible to it while the flat key was redacted. That is the reason for
+the ordering.
+
+Rejected: flattening to dotted keys (key explosion, no stable form for arrays) and dropping (silent loss of
+exactly what OTEP 4485 carries). Native OTLP `kvlistValue`/`arrayValue` on produce was reconsidered and NOT done:
+the OTLP tee exports from the store, which holds the post-wire (already flattened) transactions, and the
+Bugsee wire and viewer read scalar attribute values, so a native kvlist could only be emitted by carrying trees
+through the store and upload wire. `toAnyValue` (the exported mapping) still emits `bytesValue` for a byte array that fits (up to 6144 bytes, exactly
+8192 base64 characters)
+and a bounded JSON `stringValue` for maps/arrays.
+
+| input | after consume | at the wire / OTLP produce |
+| --- | --- | --- |
+| string / boolean / number | unchanged (a string over 32 KiB is cut, marked, and its unfinished final token dropped) | `stringValue` / `boolValue` / `intValue` or `doubleValue` |
+| homogeneous scalar array (null entries allowed) | an equal COPY (never the caller's array: a later `push` cannot reach the store) | the same copy; OTLP: JSON `stringValue` (existing behaviour) |
+| nested map, mixed/nested array | bounded tree (redactable) | one bounded JSON string |
+| byte array | base64 string (cut at 8192 characters, marked) | string; `toAnyValue`: `bytesValue` (valid base64) up to 6144 bytes, a cut array is a `stringValue` carrying the marker |
+| bigint | number if exact, else decimal string | `intValue` for a safe-range value (a number by then); a beyond-safe-range bigint is already decimal text and exports as `stringValue` |
+| null, undefined, function, symbol | dropped | dropped |
+
+*Cuts and redaction.* Length caps run BEFORE redaction, so a cut must never leave something redaction can no
+longer recognise: a SQL statement cut inside a string literal has its open trailing literal replaced
+(`redactSqlLiterals` handles an unterminated `'`/`"`). Where secret-shape scanning applies (string leaves inside
+maps and arrays-of-maps), a leaf cut inside a token (a JWT after its payload, a `ghp_` token at 15 of 36
+characters) drops the unfinished token, because secret shapes only match when complete. A leaf with NO token
+boundary at all (one unbroken run, such as `id_token=<jwt>`, a long hash, or a base64url blob) keeps its cut
+prefix but backs off before a secret the cut LANDS INSIDE (`unfinishedSecretStart` in `@bugsee/protocol`). It
+walks the shape starts left to right keeping the current secret's start, and moves on to a later start only once
+the text since it is already a complete secret, so a start inside another secret (a JWT payload that itself
+contains `eyJ` because it holds a nested `{"` claim, an `ASIA` inside an AWS key) does not move the answer off
+the outer secret. A secret that is already complete in the prefix is left for redaction to match whole: a JWT cut
+inside its signature keeps all three segments and `redactShapes` replaces them, while one cut inside its header
+or payload backs off to the start of the header (a bare JWT collapses to the marker, `id_token=<jwt>` becomes
+`id_token=` plus the marker). A Stripe-style key counts as finished as soon as one character follows its
+prefix, because its pattern matches a partial key (a cut right after `sk_live_` or `whsec_` itself is still
+reported as unfinished). The shape starts and the redaction patterns are built from one table (`SHAPES` in `shapes.ts`), so a new
+shape cannot be added to one and missed by the other. The walk examines the first start plus at most 16 further
+starts per call and past that backs off to the current candidate (more dropped, never less). Known limitation, pinned by a test: a shape glued to a partial token of another
+shape (`sk_live_` directly followed by `gho_<30>`) lets the outer pattern complete by swallowing the inner
+token's alphanumeric prefix, so part of the inner token is not seen as unfinished; the same glue already survives
+`redactShapes` on main without any cut. `:` is not a token character, so a long map-leaf
+URL (`https://host/...` past the cap) is cut back to `https:` plus the marker by the ordinary boundary rule
+(unrelated to the back-off): accepted data loss, a scheme-and-host-keeping rule was not worth another heuristic. A TOP-LEVEL string attribute is only cut (it is
+never shape-scanned, so dropping its unfinished token would protect nothing and would lose the host of a long
+URL). Byte arrays (base64) are not text and are only cut. Known limitation, pre-existing and not changed here:
+SQL literal redaction pairs quotes left to right, so comments, backslash escapes and dollar quotes can shift the
+pairing and leave a literal in the clear (bugsee/bugsee-javascript#109).
+
+*Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE, and per SPAN for TREES: every string leaf and key is
+cut at 8128 characters before it is copied (a key that long is not kept, and its value is redacted, so a cut can
+never remove the `password` a key-based rule looks for), a tree stops at 1024 visited nodes or 32768 copied
+characters, and one span's attributes together stop at 4096 nodes or 65536 characters (the rest is
+`"[Truncated]"`; 128 attributes of 1000-node maps cost about 2 ms, not 1.2 s). Scalar strings and scalar-array
+elements are NOT charged to the per-span budget: each is capped on its own (a string at 32 KiB, an array at 1024
+elements and 32 KiB of string), so a span is bounded by its attribute COUNT times that (the SDK default limit
+is 128 attributes, about 4 MiB per span; a caller that lifts the limit and sets 10,000 maximal attributes would
+copy about 327 MB), depth 8 (`"[MaxDepth]"`), the JSON text at 8192 characters (`...[truncated]`), cycles become
+`"[Circular]"` (a shared acyclic reference is not a cycle), non-finite numbers the OTLP spellings, byte arrays are
+encoded only up to what could fit, a non-byte typed array (a Float32Array embedding) is read by index within the
+node budget, and `toJSON` or other user code is never called. A throwing getter, an element or a Proxy trap
+yields `"[Unreadable]"` for that value, an unlistable record (a Proxy with a throwing `ownKeys`) yields no
+attributes, and on the produce path (`toKeyValues`, `toOtlpExportRequest`) one bad attribute is dropped without
+costing its siblings, the span or the export batch. Truncated text is NOT valid JSON after the `...[truncated]` marker (a cut at a leaf keeps the JSON valid;
+a cut of the whole text does not). Non-plain values are handled deliberately: a URL becomes its href with
+credentials removed, an Error its `name` and `message` (never the stack), a Date its ISO string (an invalid Date
+drops the attribute), `ArrayBuffer`, `DataView` and a cross-realm `Uint8Array` are bytes; a `Map`, `Set` and any
+other class instance is read by own enumerable properties (so a Map or Set is `{}`). A homogeneous scalar array
+with null entries (`['a', null]`, which OTel 2/3 keep) passes through unchanged. Known limit: `Object.keys` on a plain object with millions of
+keys still allocates its key list before the node budget stops the copy. Residual cost: the redaction step
+still scans string leaves for secret shapes, and an adversarial leaf dense in `eyJ` (JWT-prefix) text costs about
+10 ms per 8 KB; the per-span character budget caps that at roughly 100 ms for a span (measured by the review). `isSensitiveKey` now
+normalises its denylist once (0.3 us per key instead of 4 us). `sanitizeSpan` is exported but assumes bounded
+input (it is only safe on values that went through `normalizeTransactionAttributes`, as the extension does).
+
+**Using the processor.** Register it on ONE provider. Registering it on two providers, or alongside
+`@bugsee/nextjs`'s zero-config provider, produces two transactions per trace (one per registration). Cost per
+ended span is one normalization of its attributes plus one assembler insert; a span whose attributes are all
+scalars copies nothing beyond the attribute record. After `shutdown()` the processor ignores further `onEnd`
+calls. The zero-config provider in `@bugsee/nextjs` registers no context manager (pre-existing, identical on
+`BasicTracerProvider` 2.12, `sdk-trace` 2.12 and 3.0), so a nested `startActiveSpan` there produces a separate
+root transaction, not a child span.
 
 ---
 

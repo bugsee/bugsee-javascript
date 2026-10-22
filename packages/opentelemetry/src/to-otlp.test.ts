@@ -12,6 +12,15 @@ import {
   transactionToOtlpSpans,
 } from './to-otlp';
 
+/** Node's `Buffer` (a Uint8Array subclass) without pulling @types/node into this portable package. */
+const nodeBuffer = (
+  globalThis as unknown as {
+    Buffer: {
+      from(input: string | Uint8Array): Uint8Array & { toString(encoding: string): string };
+    };
+  }
+).Buffer;
+
 describe('toUnixNanoString', () => {
   it('converts wall-clock ms to a decimal ns string WITHOUT precision loss (BigInt, not Number*1e6)', () => {
     // 1709990000123 * 1e6 = 1.709990000123e18 — beyond 2^53, so Number would lose the low digits.
@@ -22,6 +31,8 @@ describe('toUnixNanoString', () => {
     expect(toUnixNanoString(0)).toBe('0');
   });
 });
+
+const Url = (globalThis as unknown as { URL: new (input: string) => object }).URL;
 
 describe('toAnyValue', () => {
   it('maps a string to stringValue', () => {
@@ -45,6 +56,84 @@ describe('toAnyValue', () => {
     expect(toAnyValue({ a: 1 })).toEqual({ stringValue: '{"a":1}' });
     expect(toAnyValue([1, 2])).toEqual({ stringValue: '[1,2]' });
   });
+  it('maps a byte array to bytesValue as base64 (the OTLP/JSON bytes encoding)', () => {
+    expect(toAnyValue(new Uint8Array([102, 111, 111]))).toEqual({ bytesValue: 'Zm9v' });
+    expect(toAnyValue(nodeBuffer.from('hi'))).toEqual({ bytesValue: 'aGk=' });
+    expect(toAnyValue(new Uint8Array(0))).toEqual({ bytesValue: '' });
+  });
+  it('never throws on exotic objects: a cycle, a nested bigint and a nested byte array are encoded safely', () => {
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    expect(toAnyValue(cyc)).toEqual({ stringValue: '{"a":1,"self":"[Circular]"}' });
+    expect(toAnyValue({ n: 10n })).toEqual({ stringValue: '{"n":10}' });
+    expect(toAnyValue({ b: new Uint8Array([1, 2]) })).toEqual({ stringValue: '{"b":"AQI="}' });
+  });
+  it('caps an oversized object at the attribute JSON length', () => {
+    const out = toAnyValue({ big: 'x'.repeat(100_000) }) as { stringValue: string };
+    expect(out.stringValue.length).toBeLessThanOrEqual(8192);
+    expect(out.stringValue).toContain('...[truncated]');
+  });
+  it('keeps bytesValue valid base64: a cut array is sent as a stringValue, never as bytesValue with a marker', () => {
+    const out = toAnyValue(new Uint8Array(1_000_000)) as { stringValue: string };
+    expect('bytesValue' in out).toBe(false);
+    expect(out.stringValue.length).toBe(8192);
+    expect(out.stringValue.endsWith('...[truncated]')).toBe(true);
+    // An array that fits stays a real bytesValue.
+    expect(toAnyValue(new Uint8Array(1000))).toEqual({
+      bytesValue: expect.stringMatching(/^[A-Za-z0-9+/]+=*$/),
+    });
+  });
+  it('pins the byte boundary: 6144 bytes (exactly 8192 base64 characters) stays bytesValue, 6145 is cut', () => {
+    const fits = toAnyValue(new Uint8Array(6144)) as { bytesValue: string };
+    expect(fits.bytesValue.length).toBe(8192);
+    expect(fits.bytesValue.endsWith('...[truncated]')).toBe(false);
+    const cut = toAnyValue(new Uint8Array(6145)) as { stringValue: string };
+    expect('bytesValue' in cut).toBe(false);
+    expect(cut.stringValue.length).toBe(8192);
+    expect(cut.stringValue.endsWith('...[truncated]')).toBe(true);
+  });
+  it('never throws: an unencodable object yields no value instead of an exception', () => {
+    const original = JSON.stringify;
+    JSON.stringify = () => {
+      throw new RangeError('Invalid string length');
+    };
+    try {
+      expect(toAnyValue({ a: 1 })).toEqual({ stringValue: '"[Unreadable]"' });
+    } finally {
+      JSON.stringify = original;
+    }
+  });
+  it('exports a Date as its ISO string (not a doubly quoted one) and survives a revoked Proxy', () => {
+    expect(toAnyValue(new Date(0))).toEqual({ stringValue: '1970-01-01T00:00:00.000Z' });
+    expect(toAnyValue(new Date(Number.NaN))).toBeUndefined();
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(toAnyValue(proxy)).toBeUndefined();
+  });
+  it('exports a URL as its credential-free href and an Error as name and message', () => {
+    expect(toAnyValue(new Url('https://u:p@example.com/a'))).toEqual({
+      stringValue: 'https://example.com/a',
+    });
+    expect(toAnyValue(new RangeError('too big'))).toEqual({
+      stringValue: '{"name":"RangeError","message":"too big"}',
+    });
+  });
+  it('drops (never throws on) an object whose type probe throws', () => {
+    const trap = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('getPrototypeOf');
+        },
+      },
+    );
+    expect(toAnyValue(trap)).toBeUndefined();
+  });
+  it('bounds a huge nested leaf by size, not just count (no 64 MB copy, output within the cap)', () => {
+    const huge = 'x'.repeat(64 * 1024 * 1024);
+    const out = toAnyValue({ a: huge, b: [huge] }) as { stringValue: string };
+    expect(out.stringValue.length).toBeLessThanOrEqual(8192);
+  });
   it('returns undefined for undefined/null (the key is dropped)', () => {
     expect(toAnyValue(undefined)).toBeUndefined();
     expect(toAnyValue(null)).toBeUndefined();
@@ -52,6 +141,116 @@ describe('toAnyValue', () => {
   it('returns undefined for an unencodable value (function/symbol → JSON.stringify undefined)', () => {
     expect(toAnyValue(() => 1)).toBeUndefined();
     expect(toAnyValue(Symbol('x'))).toBeUndefined();
+  });
+});
+
+describe('toKeyValues is total (one bad attribute never costs the batch)', () => {
+  it('drops a throwing attribute and keeps its siblings', () => {
+    const attrs = {
+      before: 'a',
+      get boom(): never {
+        throw new Error('getter');
+      },
+      after: 'b',
+    };
+    expect(toKeyValues(attrs)).toEqual([
+      { key: 'before', value: { stringValue: 'a' } },
+      { key: 'after', value: { stringValue: 'b' } },
+    ]);
+  });
+  it('returns no key values, not a throw, for a Proxy whose ownKeys trap throws', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    expect(toKeyValues(hostile as Record<string, unknown>)).toEqual([]);
+  });
+  it('does not throw while deriving a child span kind from an unreadable bugsee.span.kind', () => {
+    const attributes = {
+      get 'bugsee.span.kind'(): never {
+        throw new Error('getter');
+      },
+      ok: 1,
+    };
+    const txn = {
+      traceId: 'a'.repeat(32),
+      spanId: 'b'.repeat(16),
+      name: 'root',
+      operation: 'op',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      spans: [
+        {
+          spanId: 'c'.repeat(16),
+          operation: 'http.client',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes,
+        },
+      ],
+    } as unknown as TransactionWire;
+    const spans = transactionToOtlpSpans(txn);
+    expect(spans).toHaveLength(2);
+    expect(spans[1]?.kind).toBe(3); // falls back to the operation-derived CLIENT kind
+    expect(spans[1]?.attributes?.map((a) => a.key)).toContain('ok');
+  });
+  it('lets a whole export request survive a hostile attribute on one span', () => {
+    const txn = {
+      traceId: 'a'.repeat(32),
+      spanId: 'b'.repeat(16),
+      name: 'root',
+      operation: 'op',
+      status: 'OK',
+      sampled: true,
+      startTimestampMs: 1,
+      endTimestampMs: 2,
+      isSnapshot: false,
+      attributes: new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error('ownKeys');
+          },
+        },
+      ),
+      spans: [],
+    } as unknown as TransactionWire;
+    const hostileProxy = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+    const withChild = {
+      ...txn,
+      attributes: { ok: 1 },
+      spans: [
+        {
+          spanId: 'd'.repeat(16),
+          operation: 'child',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes: hostileProxy,
+        },
+      ],
+    } as unknown as TransactionWire;
+    expect(() =>
+      toOtlpExportRequest([withChild], { resource: hostileProxy as never }),
+    ).not.toThrow();
+    const resourced = toOtlpExportRequest([withChild], { resource: hostileProxy as never });
+    expect(resourced.resourceSpans[0]?.scopeSpans[0]?.spans).toHaveLength(2);
+    const good = { ...txn, spanId: 'c'.repeat(16), attributes: { ok: 1 } };
+    const request = toOtlpExportRequest([txn, good]);
+    expect(request.resourceSpans[0]?.scopeSpans[0]?.spans).toHaveLength(2);
   });
 });
 

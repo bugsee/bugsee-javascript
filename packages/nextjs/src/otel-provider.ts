@@ -8,7 +8,8 @@
 // Competitor-grounded mechanism: the OTel global tracer-provider slot is single-owner /
 // FIRST-WINS (`setGlobalTracerProvider` returns `false` if one exists) and `getTracerProvider()` hands
 // back a Proxy with no `addSpanProcessor` — so we register ONLY when the slot is free and NEVER clobber a
-// pre-existing `@vercel/otel`. Mirrors @vercel/otel's own choice of `BasicTracerProvider`. The OTel SDK is
+// pre-existing `@vercel/otel`. Mirrors @vercel/otel's own choice of `BasicTracerProvider` (`TracerProvider` on
+// OTel JS 3, which removed sdk-trace-base). The OTel SDK is
 // an OPTIONAL peer (install-lean, matching @bugsee/opentelemetry) — lazy-imported and skipped if absent.
 //
 // SERVER-only (node OTel SDK) → reached only from `./server`; never the portable `.` graph.
@@ -19,7 +20,7 @@ import { describeValue, reportGuarded, resolveFailClosedBoolean } from '@bugsee/
 export interface OtelTracerModules {
   /** `@opentelemetry/api` `trace.setGlobalTracerProvider` — returns `false` if a provider already exists. */
   setGlobalTracerProvider(provider: unknown): boolean;
-  /** Build a concrete provider (`@opentelemetry/sdk-trace-base` `BasicTracerProvider`) with our processors. */
+  /** Build a concrete provider (`sdk-trace-base`'s `BasicTracerProvider` on OTel 1.x/2.x, `sdk-trace`'s `TracerProvider` on 3.x) with our processors. */
   createProvider(spanProcessors: unknown[]): unknown;
 }
 
@@ -40,23 +41,59 @@ export interface AttachOtelProviderOptions {
   load?: () => Promise<OtelTracerModules | undefined>;
 }
 
-/** Dynamic-import the OPTIONAL OTel peers; returns `undefined` when they are not installed. */
-async function defaultLoad(): Promise<OtelTracerModules | undefined> {
+/** A provider class: `BasicTracerProvider` (sdk-trace-base 1.x/2.x) or `TracerProvider` (sdk-trace 2.9+, the only SDK package on 3.x). */
+type ProviderCtor = new (options: { spanProcessors: unknown[] }) => unknown;
+
+/** The module loaders {@link loadOtelModules} uses — injectable so every install shape is testable. */
+export interface OtelImporters {
+  api(): Promise<{ trace: { setGlobalTracerProvider(provider: never): boolean } }>;
+  /** OTel JS 1.x/2.x. */
+  sdkTraceBase(): Promise<{ BasicTracerProvider?: ProviderCtor }>;
+  /** OTel JS 2.9+ and 3.x (3.x removed `sdk-trace-base` and renamed `BasicTracerProvider` to `TracerProvider`). */
+  sdkTrace(): Promise<{ TracerProvider?: ProviderCtor }>;
+}
+
+/**
+ * Resolve the OTel modules from whichever optional SDK package is installed: `sdk-trace-base` first (OTel
+ * 1.x/2.x, unchanged behaviour), then `sdk-trace` (2.9+ and 3.x). `undefined` when `@opentelemetry/api` or every
+ * SDK package is absent.
+ */
+export async function loadOtelModules(
+  imports: OtelImporters,
+): Promise<OtelTracerModules | undefined> {
   try {
-    const [api, sdk] = await Promise.all([
-      import('@opentelemetry/api'),
-      import('@opentelemetry/sdk-trace-base'),
-    ]);
+    const api = await imports.api();
+    let Provider: ProviderCtor | undefined;
+    try {
+      Provider = (await imports.sdkTraceBase()).BasicTracerProvider;
+    } catch {
+      // not installed (OTel 3 removed it) — try its replacement
+    }
+    if (Provider === undefined) {
+      try {
+        Provider = (await imports.sdkTrace()).TracerProvider;
+      } catch {
+        // not installed either
+      }
+    }
+    if (Provider === undefined) return undefined;
+    const ProviderClass = Provider;
     return {
       setGlobalTracerProvider: (provider) => api.trace.setGlobalTracerProvider(provider as never),
-      createProvider: (spanProcessors) =>
-        new sdk.BasicTracerProvider({ spanProcessors: spanProcessors as never }),
+      createProvider: (spanProcessors) => new ProviderClass({ spanProcessors }),
     };
   } catch {
-    /* v8 ignore next -- optional-peer-absent path: unreachable when the OTel peers are installed (as they
-       are, as devDeps, in the test env); the 'unavailable' outcome is covered via the injected `load` seam. */
     return undefined; // peers absent → the coexistence path (onSpanProcessor) still stands
   }
+}
+
+/** Dynamic-import the OPTIONAL OTel peers; returns `undefined` when they are not installed. */
+function defaultLoad(): Promise<OtelTracerModules | undefined> {
+  return loadOtelModules({
+    api: () => import('@opentelemetry/api'),
+    sdkTraceBase: () => import('@opentelemetry/sdk-trace-base') as never,
+    sdkTrace: () => import('@opentelemetry/sdk-trace') as never,
+  });
 }
 
 /**

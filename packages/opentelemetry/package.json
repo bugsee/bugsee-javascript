@@ -34,17 +34,22 @@
   },
   "devDependencies": {
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.0.0",
-    "@opentelemetry/sdk-trace-base": ">=1.0.0"
+    "@opentelemetry/sdk-trace-base": ">=1.0.0 <3",
+    "@opentelemetry/sdk-trace": ">=2.9.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
       "optional": true
     },
     "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace": {
       "optional": true
     }
   },
