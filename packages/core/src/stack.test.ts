@@ -239,6 +239,37 @@ describe('parseV8Stack', () => {
     });
   });
 
+  it('a run of `)` costs linear time (no quadratic rescan of the lazy URL)', () => {
+    const frames = (fill: string): string[] =>
+      Array.from(
+        { length: 50 },
+        () => `eval at f (https://x.com/a.js?token=S${fill.repeat(4000)}x`,
+      );
+    const time = (inputs: string[]): number => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let rep = 0; rep < 5; rep += 1) {
+        const started = Date.now();
+        for (const input of inputs) parseLocation(input);
+        best = Math.min(best, Date.now() - started);
+      }
+      return best;
+    };
+    const parens = time(frames(')'));
+    const control = time(frames('a'));
+    // quadratic measured ~500x the control; linear is within a small factor of it
+    expect(parens).toBeLessThan(Math.max(control * 25, 50));
+    expect(parseLocation(frames(')')[0] as string).file).not.toContain('token=S)');
+  });
+
+  it('an unusual-but-valid wrapper whose URL ends in `)` is still sanitized', () => {
+    expect(parseLocation('eval at f (https://x.com/(g)), <anonymous>').file).toBe(
+      'eval at f (https://x.com/(g)), <anonymous>',
+    );
+    expect(parseLocation('eval at f (https://x.com/(g)?token=S), <anonymous>').file).toBe(
+      'eval at f (https://x.com/(g)?token=%3Credacted%3E), <anonymous>',
+    );
+  });
+
   describe('real V8 async frames: `at async <location>` (no function name, no parentheses)', () => {
     it('sanitizes a signed URL and drops the password', () => {
       const frames = parseV8Stack(
@@ -304,6 +335,19 @@ describe('parseV8Stack', () => {
         parseLocation(`eval at ${pad} (https://x.com/a.js:1:2), <anonymous> ${tail}`).file ?? '';
       expect(out).not.toMatch(/SECRETPAS/);
       expect(out).toContain('(https://x.com/a.js:1:2), <anonymous> ');
+    });
+
+    it('the open URL is dropped exactly from its start (exact output)', () => {
+      const pad = 'p'.repeat(4096 - 'eval at  (https://user:SECRETPAS'.length);
+      const out = parseLocation(
+        `eval at ${pad} (https://user:SECRETPASSWORD@x.com/a.js:1:2), <anonymous>`,
+      ).file;
+      expect(out).toBe(`eval at ${pad} (…`);
+    });
+
+    it('a URL followed by a TAB (not a space) before the cut is not open and is kept', () => {
+      const input = `eval at (https://x.com/a.js:1:2),\t${'q'.repeat(5000)}`;
+      expect(parseLocation(input).file).toBe(`${input.slice(0, 4096)}…`);
     });
 
     it('a clip AFTER the last URL ended (whitespace follows it) keeps everything before the cut', () => {

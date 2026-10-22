@@ -207,6 +207,10 @@ const LEADING_BLANKS = /^[\s+]+/;
 /** The same blanks as they appear in an ENCODED value (`+`, a space, `%20`, `%2B`). */
 const RAW_LEADING_BLANKS = /^(?:[\s+]|%20|%2[Bb]|%25(?:20|2[Bb]))+/;
 
+/** Encode leading blanks that were not written as a plain `+`/`%20`/`%2B`: `+` stays `+`, any other blank is percent-encoded. */
+const encodeLead = (lead: string): string =>
+  lead.replace(/[\s+]/g, (c) => (c === '+' ? '+' : encodeURIComponent(c)));
+
 /** Sanitize nested TEXT as an address, ignoring (and keeping) its leading blanks: `%20https%3A%2F%2F…` is an address
  *  to a browser, and the normalisation inside would otherwise drop the space and make a harmless value look changed. */
 function sanitizeNestedText(
@@ -249,7 +253,7 @@ function sanitizeNestedValue(
   return (
     (decodeTolerant(rawLead) === lead || decodeTolerant(decodeTolerant(rawLead)) === lead
       ? rawLead
-      : encodeSafe(lead)) + encodeSafe(clean.slice(lead.length))
+      : encodeLead(lead)) + encodeSafe(clean.slice(lead.length))
   );
 }
 

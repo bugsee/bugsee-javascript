@@ -304,6 +304,26 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/?next=%252Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
+      'a leading tab (%09) is kept encoded',
+      'https://a.com/?next=%09https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%09https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a leading no-break space (%C2%A0) is kept encoded',
+      'https://a.com/?next=%C2%A0https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%C2%A0https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a plus then a tab keeps the plus a plus',
+      'https://a.com/?next=+%09https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=+%09https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a tab then a plus',
+      'https://a.com/?next=%09+https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%09+https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
       'a literal leading space (not encoded) is kept as is',
       'https://a.com/?next= https%3A%2F%2Fu%3Apw%40b%2F',
       `https://a.com/?next= https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,

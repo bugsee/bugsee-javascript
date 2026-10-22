@@ -94,9 +94,10 @@ const SCHEME_START = /^(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 // wrapper only ends at a `)` that is followed by any further `)`s (a nested eval) and then `, ` (the next part of the
 // frame) or the end of the string. Every other `)` and `,` belongs to the URL, wherever it sits (a route group in the
 // path, `and(eq(a,1),eq(b,2))` in the query, `(b),c` in the fragment). An eval whose origin has a `sourceURL` has no
-// position at all. The cap on the examined text bounds the lazy scan.
+// position at all. The closing `)` must not follow another `)`: without that, the lazy URL stops at every `)` of a run of
+// them and rescans (quadratic in the run length, bounded only by the 4096 clip). The cap on the examined text bounds the scan.
 const EVAL_WRAPPED_URL =
-  /\(((?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\/\S*?)((?::\d+:\d+)?)\)(?=\)*(?:,\s|$))/g;
+  /\(((?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\/\S*?)((?::\d+:\d+)?)(?<!\))\)(?=\)*(?:,\s|$))/g;
 // A URL standing outside any wrapper (after a comma, after `async `, or cut off by the clip): everything to the next
 // whitespace is the URL. The lookbehind makes only a token START a candidate (linear on a long run of letters).
 const FREE_URL = /(?<![A-Za-z0-9+.-])(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+/g;
