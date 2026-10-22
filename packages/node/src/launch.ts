@@ -874,6 +874,8 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
                   diskPressure.noteWriteError(error);
                   reportGuarded(options.onError, error);
                 },
+                // a durable read that fails serves the in-memory window and must not be silent
+                onDiskReadError: (error: unknown): void => reportGuarded(options.onError, error),
               }
             : {}),
         })

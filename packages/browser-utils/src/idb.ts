@@ -193,8 +193,14 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
   const withDb = <T>(use: (db: IDBDatabase) => Promise<T>): Promise<T> => {
     const attempt = open();
     return attempt.then(use).catch((error: unknown) => {
-      if ((error as { name?: unknown } | null)?.name === 'InvalidStateError') {
+      // Only if the cached connection is still the one that failed: another call may have reopened a newer one since,
+      // and dropping THAT would orphan an open connection nothing can close (it blocks other tabs' upgrades).
+      if (
+        (error as { name?: unknown } | null)?.name === 'InvalidStateError' &&
+        dbPromise === attempt
+      ) {
         dbPromise = undefined;
+        closeQuietly(attempt);
       }
       throw error;
     });

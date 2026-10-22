@@ -1228,3 +1228,168 @@ describe('createIdbChunkBackend — inMemory(), cancellation and the freeze over
     expect(flat(b.snapshot([{ ref: ref(5, 0), count: 1 }]).inMemory?.())).toEqual([]);
   });
 });
+
+describe('createIdbChunkBackend — a snapshot tells a stalled queue from a slow one', () => {
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('gives up on a queue that makes NO progress for stallMs and rejects (the wrapper then serves memory)', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+    });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const t0 = Date.now();
+    await expect(snap.drainAll()).rejects.toThrow(/no progress for 300 ms/);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(
+      snap
+        .inMemory?.()
+        .get('log')
+        ?.map((r) => r.serialized),
+    ).toEqual(['x']);
+    snap.release();
+  });
+
+  it('keeps waiting while the queue IS progressing, however long that takes (a slow healthy device must not be mistaken for a dead one)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: async (k, v) => {
+        await sleep(120); // each write is slow, but they keep landing
+        return inner.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 10; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const started = Date.now();
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 10 }]));
+    expect(Date.now() - started).toBeGreaterThan(900); // far longer than stallMs
+    expect(got).toEqual(Array.from({ length: 10 }, (_, i) => `r${i}`));
+  });
+
+  it('the stall clock starts when the queue becomes BUSY, not when it was last busy (an idle hour is not a stall)', async () => {
+    const never = () => new Promise<never>(() => {});
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 600,
+    });
+    await sleep(700); // idle for longer than stallMs before anything is queued
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    const t0 = Date.now();
+    await expect(b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll()).rejects.toThrow(
+      /no progress/,
+    );
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(500); // it waited for stallMs of silence, it did not fire at once
+  });
+
+  it('an abandoned wait (release()) stops its watch timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const never = () => new Promise<never>(() => {});
+      const store: AsyncKeyedStore = {
+        put: never,
+        readPrefix: never,
+        keys: never,
+        deletePrefix: never,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+      const read = snap.drainAll();
+      expect(vi.getTimerCount()).toBeGreaterThan(0); // the watch is running
+      snap.release();
+      await read;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an op that FAILS counts as progress (the store is answering)', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: async (k, v) => {
+        await sleep(120);
+        if (k.startsWith('d/'))
+          throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+        return inner.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      stallMs: 300,
+      failureThreshold: 1000,
+      onError: () => {},
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 8; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 8 }]));
+    expect(got).toEqual(Array.from({ length: 8 }, (_, i) => `r${i}`)); // all refused, all served from memory
+  });
+
+  it('a readPrefix that never answers rejects after readTimeoutMs, and a cancelled wait stops its watch timer', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = { ...inner, readPrefix: () => new Promise(() => {}) };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      readTimeoutMs: 200,
+    });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    await expect(b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll()).rejects.toThrow(
+      /did not answer a read in 200 ms/,
+    );
+    const never = () => new Promise<never>(() => {});
+    const stuck = createIdbChunkBackend(
+      { put: never, readPrefix: never, keys: never, deletePrefix: never },
+      {
+        generation: 6,
+        cleanOtherGenerations: false,
+        stallMs: 60_000,
+      },
+    );
+    stuck.openPart(ref(6, 0), 1);
+    stuck.appendEntry(ref(6, 0), rec('y'));
+    const snap = stuck.snapshot([{ ref: ref(6, 0), count: 1 }]);
+    const read = snap.drainAll();
+    snap.release();
+    expect((await read).size).toBe(0);
+  });
+
+  it('a read that answers in time clears its deadline timer (no timer is left behind)', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const got = await collect(b.snapshot([{ ref: ref(5, 0), count: 1 }]));
+    expect(got).toEqual(['x']);
+  });
+});

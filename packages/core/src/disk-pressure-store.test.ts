@@ -942,6 +942,40 @@ describe('withDiskPressure — the probe backs off instead of flapping', () => {
   });
 });
 
+describe('withDiskPressure — a SLOW but healthy durable read is not mistaken for a dead one', () => {
+  it('a read that completes after 12 s (a slow device with a long write queue) still returns its data and reports nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      const onReadError = vi.fn();
+      const memory = createMemoryChunkBackend({ generation: 1 });
+      const slow: ChunkBackend = {
+        ...memory,
+        snapshot: (parts) => {
+          const snap = memory.snapshot(parts);
+          return {
+            ...snap,
+            drainAll: () =>
+              new Promise((resolve) => {
+                (
+                  globalThis as unknown as { setTimeout(cb: () => void, ms: number): void }
+                ).setTimeout(() => resolve(snap.drainAll()), 12_000);
+              }),
+          };
+        },
+      };
+      const backend = withDiskPressure(slow, createDiskPressure(), { onReadError });
+      backend.openPart({ generation: 1, number: 0 }, 0);
+      backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'persisted'));
+      const read = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(names((await read).get('log'))).toEqual(['persisted']);
+      expect(onReadError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('withDiskPressure — a durable read that never answers', () => {
   const hanging = (): ChunkBackend => {
     const memory = createMemoryChunkBackend({ generation: 1 });
@@ -977,7 +1011,7 @@ describe('withDiskPressure — a durable read that never answers', () => {
     }
   });
 
-  it('a read that answers in time clears its timer and reports nothing; the default timeout is 5 s and the store forwards the override', async () => {
+  it('a read that answers in time clears its timer and reports nothing; the default backstop is 30 s and the store forwards the override', async () => {
     vi.useFakeTimers();
     try {
       const onReadError = vi.fn();
@@ -994,7 +1028,7 @@ describe('withDiskPressure — a durable read that never answers', () => {
       hung.openPart({ generation: 1, number: 0 }, 0);
       hung.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
       const read = hung.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
-      await vi.advanceTimersByTimeAsync(4999);
+      await vi.advanceTimersByTimeAsync(29_999);
       expect(onReadError).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await read;

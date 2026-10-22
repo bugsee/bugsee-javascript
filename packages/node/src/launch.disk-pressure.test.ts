@@ -274,6 +274,24 @@ describe('launch — captureDiskSpace disk-pressure protection (C7)', () => {
     expect(h.pressure().level()).toBe('none');
   });
 
+  it('gives the file store an onDiskReadError that reports through onError (a failed durable read is not silent on Node)', async () => {
+    const onError = vi.fn();
+    const h = setup({ onError });
+    await settle();
+    const given = fileStoreSpy.mock.calls.at(-1)?.[0] as { onDiskReadError: (e: unknown) => void };
+    const boom = new Error('unreadable');
+    given.onDiskReadError(boom);
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(h.pressure().level()).toBe('normal'); // a read failure is not a full disk
+  });
+
+  it('works without a host onError for the read hook too', async () => {
+    setup();
+    await settle();
+    const given = fileStoreSpy.mock.calls.at(-1)?.[0] as { onDiskReadError: (e: unknown) => void };
+    expect(() => given.onDiskReadError(new Error('unreadable'))).not.toThrow();
+  });
+
   it('gives the file store an onDiskWriteError that pins none and still tells the host', async () => {
     const onError = vi.fn();
     const h = setup({ onError });

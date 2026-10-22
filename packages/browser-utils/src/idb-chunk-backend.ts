@@ -28,6 +28,27 @@ import type { AsyncKeyedStore } from './idb';
 // recovery index. Queue failures route to onError and never throw the capture path.
 
 const CANCELLED = Symbol('cancelled');
+const STALLED = Symbol('stalled');
+
+/** A read that has not answered after `ms` rejects (the late answer is ignored). */
+function withDeadline<T>(pending: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`bugsee: IndexedDB did not answer a read in ${ms} ms`)),
+      ms,
+    );
+    pending.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;
@@ -135,6 +156,15 @@ export interface IdbChunkBackendOptions {
    */
   failureThreshold?: number;
   /**
+   * A snapshot gives up waiting for the write queue after this many ms WITHOUT PROGRESS (no queued write settled).
+   * Default 5000. Progress-based on purpose: a slow but healthy store (a low-end device, a busy main thread) may need
+   * longer than any fixed budget to drain 8 MB of queued writes and must not be mistaken for a dead one, while a store
+   * that never answers (Chromium on a full disk: `open()` neither succeeds nor fails) is caught within this window.
+   */
+  stallMs?: number;
+  /** Deadline for ONE `readPrefix` of a snapshot, in ms. Default 10000. */
+  readTimeoutMs?: number;
+  /**
    * Called for EVERY failed write (`onError` hears only the first of an episode, by design). The disk-pressure pin
    * needs each one: a store that keeps refusing writes must stay pinned even though it stopped being reported.
    */
@@ -239,6 +269,7 @@ export function createIdbChunkBackend(
       probe = false;
       try {
         await item.run();
+        lastProgressAt = Date.now();
         item.onLanded?.();
         // Only a WRITE proves the store accepts data again: deleting works under a full quota (it is how space
         // comes back), so a successful delete must not release a write-failure pin.
@@ -248,6 +279,7 @@ export function createIdbChunkBackend(
         }
         consecutiveFailures = 0; // the store is working again; close the circuit
       } catch (error) {
+        lastProgressAt = Date.now(); // a failure is an answer: the store is talking
         consecutiveFailures += 1;
         unhealthy = true;
         // Only a failed WRITE says anything about the medium accepting data: a failed delete or read must not
@@ -290,6 +322,7 @@ export function createIdbChunkBackend(
     pending.push({ run, bytes, write, ...(onLanded !== undefined ? { onLanded } : {}) });
     pendingBytes += bytes;
     if (resolveIdle === undefined) {
+      lastProgressAt = Date.now(); // the queue just became busy
       idle = new Promise<void>((resolve) => {
         resolveIdle = resolve;
       });
@@ -299,6 +332,10 @@ export function createIdbChunkBackend(
 
   /** Resolves when the queue has drained (never rejects — each op already routes its own failure). */
   const settled = (): Promise<void> => idle;
+  // When the queue last made PROGRESS (started, or an operation settled either way): what a waiting snapshot watches.
+  let lastProgressAt = Date.now();
+  const stallMs = options.stallMs ?? 5000;
+  const readTimeoutMs = options.readTimeoutMs ?? 10_000;
 
   const chunkKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
   // The records the backend holds ONLY in memory: queued for the medium and not landed yet, or refused by it (a full
@@ -465,6 +502,22 @@ export function createIdbChunkBackend(
       const until = <T>(pending: Promise<T>): Promise<T | typeof CANCELLED> =>
         Promise.race([pending, cancelled]);
 
+      /** Resolves when the queue drained, or `STALLED` once it has made no progress for `stallMs` (checked every 250 ms). */
+      const waitForQueue = (queue: Promise<void>): Promise<void | typeof STALLED> =>
+        new Promise((resolve) => {
+          const watch = setInterval(() => {
+            if (Date.now() - lastProgressAt >= stallMs) {
+              clearInterval(watch);
+              resolve(STALLED);
+            }
+          }, 250);
+          void queue.then(() => {
+            clearInterval(watch);
+            resolve();
+          });
+          void cancelled.then(() => clearInterval(watch)); // an abandoned wait stops its timer too
+        });
+
       /** The records held only in memory for one frozen part (`seq < count`), in sequence. */
       const heldFor = (index: number, count: number): Array<{ seq: number; record: StoredEntry }> =>
         [...(heldAtFreeze[index] ?? new Map<number, StoredEntry>())]
@@ -473,12 +526,20 @@ export function createIdbChunkBackend(
           .sort((a, b) => a.seq - b.seq);
 
       const readAll = async (): Promise<StoredEntry[]> => {
-        if ((await until(frozenQueue)) === CANCELLED) {
+        const waited = await until(waitForQueue(frozenQueue));
+        if (waited === CANCELLED) {
           return [];
+        }
+        if (waited === STALLED) {
+          throw new Error(
+            `bugsee: IndexedDB made no progress for ${stallMs} ms; the queued writes are served from memory`,
+          );
         }
         const out: StoredEntry[] = [];
         for (const [index, { ref, count }] of frozen.entries()) {
-          const records = await until(store.readPrefix(dataPrefix(ref.generation, ref.number)));
+          const records = await until(
+            withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
+          );
           if (records === CANCELLED) {
             return [];
           }

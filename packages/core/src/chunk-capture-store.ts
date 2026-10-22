@@ -31,7 +31,7 @@ export interface ChunkCaptureStoreOptions {
   onDiskWriteError?: (error: unknown) => void;
   /** With `diskPressure`: a failed read of the durable half (once per snapshot); the snapshot serves memory instead. */
   onDiskReadError?: (error: unknown) => void;
-  /** With `diskPressure`: how long a durable read may take before it counts as failed (default 5000 ms). */
+  /** With `diskPressure`: how long a durable read may take before it counts as failed (default 30000 ms, a backstop). */
   diskReadTimeoutMs?: number;
 }
 

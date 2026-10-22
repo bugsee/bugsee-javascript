@@ -61,7 +61,8 @@ function explainsEmptiness(record: StoredEntry): boolean {
 
 /** A pin that follows a release within this many ticks counts as a flap and slows the probe down. */
 const FLAP_WINDOW = 10;
-const DEFAULT_READ_TIMEOUT_MS = 5000;
+/** The wrapper's BACKSTOP for a durable read (backends with their own watchdog, like IndexedDB's, fail much sooner). */
+const DEFAULT_READ_TIMEOUT_MS = 30_000;
 const MAX_PROBE_EVERY = 60;
 /** The probe record is the largest recent record, clamped to this range. */
 const PROBE_MIN_BYTES = 1024;
@@ -88,9 +89,11 @@ export interface DiskPressureBackendOptions {
    */
   onReadError?: (error: unknown) => void;
   /**
-   * A durable read that has not answered after this many ms counts as failed (default 5000). Measured in Chromium on a
-   * full disk: `indexedDB.open()` neither succeeded nor failed, so a snapshot (and every report built from it) waited
-   * forever. A late answer is discarded.
+   * A durable read that has not answered after this many ms counts as failed (default 30000): the BACKSTOP for a
+   * backend with no watchdog of its own. Measured in Chromium on a full disk: `indexedDB.open()` neither succeeded nor
+   * failed, so a snapshot (and every report built from it) waited forever; the IndexedDB backend now detects that
+   * itself (no progress for 5 s) so this only matters for backends that cannot. It is deliberately long: a slow but
+   * healthy store must not be mistaken for a dead one. A late answer is discarded.
    */
   readTimeoutMs?: number;
 }
