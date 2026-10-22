@@ -139,7 +139,12 @@ describe.each(
       const env = collector.sessions[0]?.environment as {
         platform: { type: string; version: string };
         runtime: { type: string; version: string };
+        app: { uptime_s?: number };
       };
+      // C14: process uptime at session start is a whole-second snapshot in environment.app (replaces the
+      // retired per-second `process_uptime_s` trace); process.uptime() answers on real node, bun and deno.
+      expect(Number.isInteger(env.app.uptime_s)).toBe(true);
+      expect(env.app.uptime_s).toBeGreaterThanOrEqual(0);
       expect(env.runtime.type).toBe(target.name);
       expect(typeof env.runtime.version).toBe('string');
       expect(env.runtime.version.length).toBeGreaterThan(0);

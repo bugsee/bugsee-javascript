@@ -7,6 +7,7 @@ import {
   realSystemProbe,
   type SystemProbe,
   sanitizeHardwareGpu,
+  withoutUptime,
 } from './environment';
 
 const fakeProbe: SystemProbe = {
@@ -360,5 +361,56 @@ describe('sanitizeHardwareGpu (exported)', () => {
     expect(sanitizeHardwareGpu({ vendor: ' ' })).toBeUndefined();
     expect(sanitizeHardwareGpu(null)).toBeUndefined();
     expect(sanitizeHardwareGpu('x')).toBeUndefined();
+  });
+});
+
+describe('buildNodeEnvironment — app.uptime_s (process uptime at session start)', () => {
+  it('writes the floored whole-second uptime snapshot it is given', () => {
+    const env = buildNodeEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 42.9 }, fakeProbe);
+    expect(env.app?.uptime_s).toBe(42);
+  });
+
+  it('keeps a genuine 0 (a process that just started) but never invents one', () => {
+    expect(
+      buildNodeEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 0.4 }, fakeProbe).app?.uptime_s,
+    ).toBe(0);
+    expect(
+      buildNodeEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: 0 }, fakeProbe).app?.uptime_s,
+    ).toBe(0);
+    expect('uptime_s' in (buildNodeEnvironment({ sdkVersion: '1.0.0' }, fakeProbe).app ?? {})).toBe(
+      false,
+    );
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])('omits an unusable value (%s)', (bad) => {
+    const env = buildNodeEnvironment({ sdkVersion: '1.0.0', uptimeSeconds: bad }, fakeProbe);
+    expect('uptime_s' in (env.app ?? {})).toBe(false);
+  });
+
+  it('the real probe reads process.uptime() in seconds', () => {
+    const value = realSystemProbe.uptimeSeconds?.() as number;
+    expect(Math.abs(value - process.uptime())).toBeLessThan(5);
+  });
+});
+
+describe('withoutUptime', () => {
+  it('drops app.uptime_s and keeps every other field, without mutating the input', () => {
+    const env = buildNodeEnvironment(
+      { sdkVersion: '1.0.0', appVersion: '2.0.0', uptimeSeconds: 5 },
+      fakeProbe,
+    );
+    expect(env.app?.uptime_s).toBe(5);
+    const stripped = withoutUptime(env);
+    expect('uptime_s' in (stripped.app ?? {})).toBe(false);
+    expect(stripped.app?.version).toBe('2.0.0');
+    expect(stripped.sdk).toEqual(env.sdk);
+    expect(env.app?.uptime_s).toBe(5);
+  });
+
+  it('returns an envelope that has no uptime (or no app) unchanged', () => {
+    const noUptime = buildNodeEnvironment({ sdkVersion: '1.0.0' }, fakeProbe);
+    expect(withoutUptime(noUptime)).toBe(noUptime);
+    const noApp = { ...noUptime, app: undefined };
+    expect(withoutUptime(noApp)).toBe(noApp);
   });
 });

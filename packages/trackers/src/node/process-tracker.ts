@@ -25,19 +25,27 @@ import {
   firstAnswer,
   type V8HeapStats,
 } from './runtime-readers';
+import {
+  createDenoExecFile,
+  createVmStatSampler,
+  type DenoRunLike,
+  denoVmStatGranted,
+  type ExecFileLike,
+  type VmStatSource,
+} from './vm-stat';
 
 // Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
-// owns everything the runtime can say about its own process, as NINE independent stages:
+// owns everything the runtime can say about its own process, as EIGHT independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
-//   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader)
+//   systemMemory    os.totalmem() + memory AVAILABLE to new work   -> { total, free? }  (see createSystemFreeReader;
+//                   macOS Node/Bun: a rare async vm_stat read, started lazily and stopped with this stage)
 //   cpu             process.cpuUsage() deltas over the wall window -> { userDelta, systemDelta, processPct? }
 //   eventLoop       monitorEventLoopDelay histogram (guarded)      -> { meanMs?, maxMs?, p99Ms? }
 //   utilization     performance.eventLoopUtilization() (guarded)   -> { utilizationPercent }
 //   gc              PerformanceObserver('gc') interval             -> { count, pauseMs, maxPauseMs }
 //   v8Heap          v8.getHeapStatistics()                         -> { limit, used, available, malloced, peakMalloced }
 //   memoryLimit     process.constrainedMemory() (a real cap only)  -> { bytes }
-//   uptime          process.uptime(), whole seconds                -> { seconds }
 //
 // PER-STAGE ACTIVATION. Nothing runs at construction. ONE shared sampling timer exists only while some stage has a
 // listener (`listenerCount`, re-evaluated after every listener mutation via `onListenersChanged`; an `onAny` listener
@@ -89,8 +97,6 @@ export interface ProcessEvents {
   gc: GcInterval;
   v8Heap: V8HeapStats;
   memoryLimit: { bytes: number };
-  /** Whole seconds since process start. */
-  uptime: { seconds: number };
 }
 type Stage = keyof ProcessEvents;
 // Read order of a tick. GC is last: its read drains the interval, so nothing after it may fail the tick.
@@ -102,7 +108,6 @@ const STAGES: readonly Stage[] = [
   'utilization',
   'v8Heap',
   'memoryLimit',
-  'uptime',
   'gc',
 ];
 /** Stages whose reading is a window since the previous read: they cannot be re-read on demand. */
@@ -121,8 +126,6 @@ export interface ProcessEnv {
   systemMemory?: () => { total: number; free?: number };
   cpuCount?: () => number;
   monotonicNowMs?: () => number;
-  /** Seconds since process start (fractions floored). Default `process.uptime()`. */
-  uptime?: () => number;
   /** Overrides the guarded histogram source (and its gate). */
   eventLoop?: EventLoopSource;
   /** Overrides the GC observer source (and its gate). */
@@ -134,8 +137,21 @@ export interface ProcessEnv {
   memoryLimit?: () => number | undefined;
   /** Raw `/proc/meminfo` text (Linux), consulted only when `readsProcMeminfo` is true. Default reads the file on Linux only. */
   meminfo?: () => string | undefined;
-  /** `os.freemem()` bytes (not a source on macOS; see `createSystemFreeReader`). */
+  /** `os.freemem()` bytes (not a source on macOS, where `vm_stat` is; see `createSystemFreeReader`). */
   freeMemory?: () => number;
+  /**
+   * macOS only: read memory available to new work from `/usr/bin/vm_stat` (a rare async read; see ./vm-stat) when no
+   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun, and
+   * Deno uses its larger `systemMemoryInfo().available` estimate). On DENO the spawn is made through `Deno.Command`
+   * and ONLY when `Deno.permissions.querySync({name:'run', command:'/usr/bin/vm_stat'})` is already `granted` (it never
+   * prompts); otherwise Deno answers `systemMemoryInfo().available` (free + inactive: a larger estimate than the
+   * vm_stat definition).
+   */
+  readsVmStat?: boolean;
+  /** Replaces the `vm_stat` sampler (it is stopped when the memory stage loses its last listener). */
+  vmStat?: VmStatSource;
+  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`, or `Deno.Command` on Deno). */
+  vmStatExecFile?: ExecFileLike;
   /**
    * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:
    * Electron's `process.getSystemMemoryInfo()` when the `process` object has it, else `Deno.systemMemoryInfo()`
@@ -173,6 +189,7 @@ export interface ProcessEnv {
 }
 
 const DEFAULT_INTERVAL_MS = 1000;
+const VM_STAT_MIN_INTERVAL_MS = 10_000;
 
 const defaultScheduler: ProcessTimers = {
   setInterval: (cb, ms) => {
@@ -189,7 +206,6 @@ const SEAM_KEYS = [
   'systemMemory',
   'cpuCount',
   'monotonicNowMs',
-  'uptime',
   'eventLoop',
   'gc',
   'eventLoopUtilization',
@@ -197,6 +213,9 @@ const SEAM_KEYS = [
   'memoryLimit',
   'meminfo',
   'freeMemory',
+  'readsVmStat',
+  'vmStat',
+  'vmStatExecFile',
   'nativeAvailableMemory',
   'platform',
   'perfHooks',
@@ -222,6 +241,8 @@ interface Resolved {
   v8Heap: (() => V8HeapStats | undefined) | undefined;
   memoryLimit: () => number | undefined;
   systemFree: () => number | undefined;
+  /** macOS only: the `vm_stat` sampler behind `systemFree` (stopped with the systemMemory stage). */
+  vmStat: VmStatSource | undefined;
 }
 
 const NOOP_RUN: StageRun = { read: () => undefined, stop: () => {} };
@@ -234,6 +255,8 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
   readonly #armed = new Map<Stage, StageRun>();
   /** The last emitted/seeded sample of each WINDOWED stage, for the current run only. */
   readonly #last = new Map<Stage, unknown>();
+  /** True while `current()` answers a stage that is NOT armed: free memory may then read the vm_stat cache but never spawn. */
+  #peekOnly = false;
   #timer: { handle: unknown; scheduler: ProcessTimers } | null = null;
   /** Bumped whenever the timer is torn down: a callback of an older run never emits. */
   #gen = 0;
@@ -291,12 +314,15 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
         ? undefined
         : (this.#last.get(stage) as ProcessEvents[S] | undefined);
     }
+    this.#peekOnly = !this.#armed.has(stage);
     try {
       const value = this.#makeRun(stage).read() as ProcessEvents[S] | undefined;
       return value === undefined ? undefined : { ...value };
     } catch (error) {
       this.#onError(error);
       return undefined;
+    } finally {
+      this.#peekOnly = false;
     }
   }
 
@@ -415,7 +441,37 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     // `??` / explicit gates (never a spread over defaults): an injected source wins; otherwise the default is wired
     // only where the runtime can give a true value, and an unwired source means the stage is ABSENT.
     const platform = env.platform ?? nodeProcess.platform;
+    // macOS free memory. On Deno the spawn needs the `run` permission and node:child_process would PROMPT for it, so it is
+    // made through Deno.Command and only when already granted; otherwise Deno's own (larger) estimate answers.
+    const deno = (globalThis as { Deno?: DenoRunLike & DenoMemoryInfoLike }).Deno;
+    const injectedSpawn = env.vmStat !== undefined || env.vmStatExecFile !== undefined;
+    const vmStat =
+      platform === 'darwin' && env.readsVmStat !== false
+        ? (env.vmStat ??
+          createVmStatSampler({
+            ...(env.vmStatExecFile !== undefined
+              ? { execFile: env.vmStatExecFile }
+              : deno !== undefined && typeof deno.Command === 'function'
+                ? { execFile: createDenoExecFile(deno) }
+                : {}),
+            // A value read on one tick must still be fresh (<= 2 sampler intervals) on the next tick, so the cache life
+            // follows a slower tracker interval; never faster than 10 s (the spawn cadence).
+            intervalMs: Math.max(VM_STAT_MIN_INTERVAL_MS, env.intervalMs ?? DEFAULT_INTERVAL_MS),
+            onError: (error) => this.#onError(error),
+          }))
+        : undefined;
+    const denoEstimate = createDenoMemoryReader(deno, platform);
+    const macFree = (): number | undefined => {
+      if (
+        vmStat !== undefined &&
+        (deno === undefined || injectedSpawn || denoVmStatGranted(deno))
+      ) {
+        return this.#peekOnly ? vmStat.peek() : vmStat.read();
+      }
+      return denoEstimate();
+    };
     const resolved: Resolved = {
+      vmStat,
       eventLoop:
         env.eventLoop ??
         (env.measuresEventLoopDelay !== false
@@ -433,11 +489,11 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
           env.nativeAvailableMemory ??
           firstAnswer([
             createElectronMemoryReader(nodeProcess as ElectronMemoryInfoLike, platform),
-            createDenoMemoryReader((globalThis as { Deno?: DenoMemoryInfoLike }).Deno, platform),
           ]),
         ...(env.readsProcMeminfo === true
           ? { meminfo: env.meminfo ?? createProcMeminfoReader(platform, readProcFile) }
           : {}),
+        vmStat: macFree,
         freemem: env.freeMemory ?? freemem,
         total: totalmem,
       }),
@@ -463,11 +519,7 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
             const free = res.systemFree();
             return free === undefined ? { total } : { total, free };
           });
-        return { read, stop: () => {} };
-      }
-      case 'uptime': {
-        const uptime = env.uptime ?? (() => nodeProcess.uptime());
-        return { read: () => ({ seconds: Math.floor(uptime()) }), stop: () => {} };
+        return { read, stop: () => res.vmStat?.stop() };
       }
       case 'v8Heap':
         return optionalRun(res.v8Heap);

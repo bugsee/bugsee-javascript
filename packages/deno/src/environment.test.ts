@@ -43,3 +43,13 @@ describe('denoSystemProbe — defaults + reuse', () => {
     expect(typeof denoSystemProbe.locale()).toBe('string');
   });
 });
+
+describe('denoSystemProbe — uptime', () => {
+  it("inherits node's real process.uptime() reader (app.uptime_s would silently vanish otherwise)", () => {
+    expect(typeof denoSystemProbe.uptimeSeconds).toBe('function');
+    const up = denoSystemProbe.uptimeSeconds?.();
+    expect(typeof up).toBe('number');
+    expect(up as number).toBeGreaterThan(0);
+    expect(up as number).toBeLessThan(process.uptime() + 1);
+  });
+});

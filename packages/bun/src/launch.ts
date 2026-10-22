@@ -24,7 +24,8 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // so the V8 heap traces are omitted here.
       measuresV8Heap: false,
       // Bun < 1.3.13's `os.freemem()` is not MemAvailable on Linux, so `ram_system_free` reads /proc/meminfo
-      // MemAvailable first there, then os.freemem() (omitted on macOS: Bun has no native available figure).
+      // MemAvailable first there, then os.freemem(). On macOS it comes from a rare async `/usr/bin/vm_stat` read
+      // (the tracker default; os.freemem() there is free pages only).
       // `process.availableMemory()` is never used.
       readsProcMeminfo: true,
       // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking

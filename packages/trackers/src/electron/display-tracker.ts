@@ -11,15 +11,20 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 //   displays              any of the three above    -> { displays: DisplayInfo[] }   (the fresh `getAllDisplays()` list)
 //
 // `current('displays')` is a LIVE `screen.getAllDisplays()` read. {@link DisplayInfo} is the MOBILE `displays` entry in
-// camelCase (spec bundle/traces.md `displays`): `id` is a small per-session index (the display set at the first read is
-// numbered from 0 with `screen.getPrimaryDisplay()` FIRST, later displays take the next unused number, a number is NEVER
-// reused within a SESSION even after a display is removed; the numbering is forgotten when the LAST subscriber leaves
-// (a session stop / relaunch), so the next session numbers again from 0 with the then-current primary first), `nativeId` is Electron's own id (can exceed int32),
+// camelCase (spec bundle/traces.md `displays`; platforms/javascript.md "Several windows in one session"). `id` follows
+// the iOS rule and is STATELESS, recomputed on every read: `0` is the display showing the KEY window (the focused window,
+// else the most recently focused, else the first created: resolved by the application tracker and injected as
+// `keyWindowBounds`, matched to a display with `screen.getDisplayMatching`), the other displays follow in ASCENDING order
+// of Electron's id. With no key window (none created yet, or the bounds unreadable) the PRIMARY display takes `0`, and
+// with no primary either the lowest Electron id does. Because the numbering moves with the key window, the producer
+// re-reads on focus / window-moved changes too. `nativeId` is Electron's own id (can exceed int32),
 // `width`/`height` are DEVICE pixels in the CURRENT orientation (`size` x `scaleFactor`, rounded), `naturalWidth`/
 // `naturalHeight` the rotation-0 device pixels (swapped for quarter turns 1 and 3; omitted when the rotation is unknown),
 // `scale` = `scaleFactor`, `maxFps` = `displayFrequency` rounded, `rotation` in QUARTER TURNS 0-3 (Electron's 0/90/180/270
-// divided by 90), `type` internal|external from `internal`, and `state:'on'` on the CURRENT primary display only (Electron
-// cannot observe power; the spec says a producer that cannot observe power marks the one display the app is on).
+// divided by 90), `type` internal|external from `internal`, and `state:'on'` on id 0 ONLY (Electron cannot observe power;
+// the spec says a producer that cannot observe power marks the one display the app is recorded on).
+// Event payloads (`displayAdded`/`Removed`/`MetricsChanged`) carry the id the display has in the CURRENT list; a REMOVED
+// display is no longer in the list and takes the number after the last listed one. Windows on other displays are not recorded.
 // A display with no usable id or size is DROPPED (id -1 is Electron's 'invalid or not yet known' marker; id -10, the
 // virtual unified display, is kept as reported), an empty list is `undefined`, and a throwing/hostile `getAllDisplays` is
 // reported and omitted: nothing is fabricated and absence is never zero. Without a readable `scaleFactor` the factor is 1
@@ -30,15 +35,17 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // emits nothing, so the previous list stays held (and is re-recorded every refreshMs). Absence is true only BEFORE the first
 // emit. This is the same open owner decision as storage_estimate / user_idle_state (docs/PROGRESS.md).
 //
-// SINGLETON per `screen` object (`electronDisplayTrackerFor`); a relaunch only rebinds the reporter.
+// SINGLETON per `screen` object (`electronDisplayTrackerFor`); a relaunch only rebinds the reporter and the key-window source.
 
 /** The slice of Electron's `screen` this tracker reads. */
 export interface ScreenSource extends EmitterSource {
   getAllDisplays?(): unknown;
   getPrimaryDisplay?(): unknown;
+  /** The display a rectangle (a window's bounds) mostly sits on. */
+  getDisplayMatching?(rect: unknown): unknown;
 }
 
-/** What one Electron `Display` says, before the session index is assigned (see {@link DisplayInfo}). */
+/** What one Electron `Display` says, before its `id` is assigned (see {@link DisplayInfo}). */
 export interface MappedDisplay {
   /** Electron's own display id (`Display.id`). */
   nativeId: number;
@@ -57,7 +64,7 @@ export interface MappedDisplay {
   type?: 'internal' | 'external';
 }
 
-/** A {@link MappedDisplay} with its stable per-session `id` (and `state` on the primary display of a list read). */
+/** A {@link MappedDisplay} with its `id` (0 = the key window's display) and `state:'on'` on id 0 of a list read. */
 export interface DisplayInfo extends MappedDisplay {
   id: number;
   state?: 'on';
@@ -73,6 +80,8 @@ export interface ElectronDisplayEvents {
 export interface ElectronDisplayEnv {
   /** Electron's `screen` (or a structural fake). */
   screen?: ScreenSource;
+  /** The KEY window's bounds (a rectangle for `screen.getDisplayMatching`), or undefined when there is none. May throw. */
+  keyWindowBounds?: () => unknown;
 }
 
 type DisplayStage = keyof ElectronDisplayEvents;
@@ -148,38 +157,27 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     'displays',
   ];
   readonly #screen: ScreenSource | undefined;
-  /** Electron's display id -> the session index. Grows within a session (a number is never reused); cleared with the last subscriber. */
-  readonly #ids = new Map<number, number>();
+  #keyWindowBounds: (() => unknown) | undefined;
 
   constructor(env: ElectronDisplayEnv = {}, onError?: (error: unknown) => unknown) {
     super(onError);
     this.#screen = env.screen;
-  }
-
-  /** Hand the latest launch's reporter to this shared tracker (a defined `onError` replaces it, undefined keeps it). */
-  rebind(onError?: (error: unknown) => unknown): void {
-    this.setReporter(onError);
-  }
-
-  /** The session index for an Electron display id: the first sight takes the next unused number. */
-  #indexOf(nativeId: number): number {
-    let id = this.#ids.get(nativeId);
-    if (id === undefined) {
-      id = this.#ids.size;
-      this.#ids.set(nativeId, id);
-    }
-    return id;
-  }
-
-  /** A new session starts numbering from 0 again: forget the numbers once nothing listens any more. */
-  protected override onListenersChanged(): void {
-    super.onListenersChanged();
-    if (this.stages.every((stage) => this.listenerCount(stage) === 0)) this.#ids.clear();
+    this.#keyWindowBounds = env.keyWindowBounds;
   }
 
   /**
-   * The Electron id of the primary display, GUARDED on its own: a throwing/hostile `getPrimaryDisplay` is reported once
-   * and answers undefined, so the list is still produced (just without `state`, and not primary-first).
+   * Hand the latest launch's reporter (a defined one replaces, undefined keeps) and key-window source to this shared tracker.
+   * The key-window source is the LAUNCH's: a relaunch without one (no `app`) clears the previous launch's, which would
+   * otherwise keep reading a stale application tracker.
+   */
+  rebind(onError?: (error: unknown) => unknown, keyWindowBounds?: () => unknown): void {
+    this.setReporter(onError);
+    this.#keyWindowBounds = keyWindowBounds;
+  }
+
+  /**
+   * The Electron id of the primary display, GUARDED on its own: a throwing/hostile `getPrimaryDisplay` is reported and
+   * answers undefined, so the list is still produced.
    */
   #primaryNativeId(screen: ScreenSource): number | undefined {
     try {
@@ -191,11 +189,38 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     }
   }
 
-  /** The first read numbers the primary display 0 (the order of `getAllDisplays()` is not documented), then the rest. */
-  #seed(primary: number | undefined, all: readonly MappedDisplay[]): void {
-    if (this.#ids.size > 0) return;
-    if (primary !== undefined) this.#indexOf(primary);
-    for (const d of all) this.#indexOf(d.nativeId);
+  /** The Electron id of the display showing the key window, GUARDED (a throwing source or `getDisplayMatching` is reported). */
+  #keyNativeId(screen: ScreenSource): number | undefined {
+    try {
+      const bounds = this.#keyWindowBounds?.();
+      if (record(bounds) === undefined || typeof screen.getDisplayMatching !== 'function') {
+        return undefined;
+      }
+      return mapDisplay(screen.getDisplayMatching(bounds))?.nativeId;
+    } catch (error) {
+      this.report(error);
+      return undefined;
+    }
+  }
+
+  /** The list in id order: the key display (else the primary) first, the rest ascending by Electron id. */
+  #ordered(screen: ScreenSource, mapped: readonly MappedDisplay[]): MappedDisplay[] {
+    const key = this.#keyNativeId(screen);
+    const first = mapped.some((d) => d.nativeId === key) ? key : this.#primaryNativeId(screen);
+    return [...mapped].sort(
+      (a, b) =>
+        Number(b.nativeId === first) - Number(a.nativeId === first) || a.nativeId - b.nativeId,
+    );
+  }
+
+  /** The mapped, non-empty display list from `getAllDisplays()`; throws on a hostile screen (callers guard). */
+  #readAll(screen: ScreenSource): MappedDisplay[] | undefined {
+    // inside the callers' guard: Electron's real `screen` throws on ANY property read before the app is ready
+    if (typeof screen.getAllDisplays !== 'function') return undefined;
+    const raw = screen.getAllDisplays();
+    if (!Array.isArray(raw)) return undefined;
+    const mapped = raw.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined);
+    return mapped.length === 0 ? undefined : mapped;
   }
 
   /** The live display list, or undefined when Electron cannot say (never an empty/zero list). */
@@ -203,20 +228,10 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     const screen = this.#screen;
     if (stage !== 'displays' || screen === undefined) return undefined;
     try {
-      // inside the guard: Electron's real `screen` throws on ANY property read before the app is ready
-      if (typeof screen.getAllDisplays !== 'function') return undefined;
-      const raw = screen.getAllDisplays();
-      if (!Array.isArray(raw)) return undefined;
-      const mapped = raw.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined);
-      if (mapped.length === 0) return undefined;
-      const primary = this.#primaryNativeId(screen);
-      this.#seed(primary, mapped);
-      const displays = mapped.map(
-        (d): DisplayInfo => ({
-          id: this.#indexOf(d.nativeId),
-          ...d,
-          ...(d.nativeId === primary ? { state: 'on' as const } : {}),
-        }),
+      const mapped = this.#readAll(screen);
+      if (mapped === undefined) return undefined;
+      const displays = this.#ordered(screen, mapped).map(
+        (d, id): DisplayInfo => ({ id, ...d, ...(id === 0 ? { state: 'on' as const } : {}) }),
       );
       return { displays };
     } catch (error) {
@@ -225,27 +240,20 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     }
   }
 
-  /** A display from an event argument, with its session index (seeding the numbering on the first sight). */
+  /** A display from an event argument, with the id it has in the current list (a removed one takes the next number). */
   #identify(raw: unknown): DisplayInfo | undefined {
     const display = mapDisplay(raw);
     const screen = this.#screen;
     if (display === undefined || screen === undefined) return undefined;
+    let listed: MappedDisplay[] = [];
     try {
-      if (this.#ids.size === 0 && typeof screen.getAllDisplays === 'function') {
-        const all = screen.getAllDisplays();
-        this.#seed(
-          this.#primaryNativeId(screen),
-          Array.isArray(all)
-            ? all.map(mapDisplay).filter((d): d is MappedDisplay => d !== undefined)
-            : [],
-        );
-      }
+      const mapped = this.#readAll(screen);
+      if (mapped !== undefined) listed = this.#ordered(screen, mapped);
     } catch (error) {
       this.report(error);
     }
-    // Without `getAllDisplays` nothing seeds the numbering, so an event's display takes the next unused number (0 when it
-    // is the first thing seen) even when it is not the primary.
-    return { id: this.#indexOf(display.nativeId), ...display };
+    const at = listed.findIndex((d) => d.nativeId === display.nativeId);
+    return { id: at === -1 ? listed.length : at, ...display };
   }
 
   protected attachStage(stage: DisplayStage): (() => void) | undefined {
@@ -303,7 +311,7 @@ export function electronDisplayTrackerFor(
   return registry.for(
     key,
     () => new ElectronDisplayTracker(env, onError),
-    (tracker) => tracker.rebind(onError),
+    (tracker) => tracker.rebind(onError, env.keyWindowBounds),
   );
 }
 

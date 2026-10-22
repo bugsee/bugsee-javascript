@@ -44,7 +44,6 @@ const constDeps = (over: NodeTraceProducerDeps = {}): NodeTraceProducerDeps => (
   cpuUsage: () => ({ user: 100_000, system: 200_000 }),
   cpuCount: () => 2,
   monotonicNowMs: () => 1000,
-  uptime: () => 42.7,
   v8Heap: () => ({ limit: 1000, used: 300, available: 700, malloced: 11, peakMalloced: 12 }),
   memoryLimit: () => 500,
   ...over,
@@ -119,7 +118,6 @@ describe('createNodeSystemTraceProducers', () => {
       ['process_memory_heap_used', 30],
       ['process_memory_limit', 500],
       ['process_memory_rss', 10],
-      ['process_uptime_s', 42],
       ['ram_js_heap_free', 700],
       ['ram_js_heap_total', 1000],
       ['ram_js_heap_used', 300],
@@ -186,7 +184,7 @@ describe('createNodeSystemTraceProducers', () => {
     it('omits process_memory_limit when its reader answers undefined', () => {
       const h = run({ memoryLimit: () => undefined });
       expect(h.got.has('process_memory_limit')).toBe(false);
-      expect(h.got.get('process_uptime_s')).toBe(42);
+      expect(h.got.has('process_uptime_s')).toBe(false); // retired: now environment.app.uptime_s
     });
 
     it('measuresV8Heap:false wires NO heap reader (Bun): nothing constructed, nothing emitted', () => {
@@ -207,7 +205,18 @@ describe('createNodeSystemTraceProducers', () => {
       expect(run1({ platform: 'linux', meminfo, freeMemory: () => 9 }).get('ram_system_free')).toBe(
         9,
       );
-      expect(run1({ platform: 'darwin', freeMemory: () => 9 }).has('ram_system_free')).toBe(false);
+      expect(
+        run1({ platform: 'darwin', freeMemory: () => 9, readsVmStat: false }).has(
+          'ram_system_free',
+        ),
+      ).toBe(false); // os.freemem() is not a macOS source; vm_stat opted out
+      expect(
+        run1({
+          platform: 'darwin',
+          freeMemory: () => 9,
+          vmStat: { read: () => 8, peek: () => 8, stop: () => {} },
+        }).get('ram_system_free'),
+      ).toBe(8); // macOS Node/Bun: the vm_stat-derived figure
       expect(
         run1({ platform: 'darwin', nativeAvailableMemory: () => 5 }).get('ram_system_free'),
       ).toBe(5);
@@ -458,7 +467,7 @@ describe('createNodeSystemTraceProducers', () => {
   it('gate: creating the producers constructs no histogram and starts no timer until start', () => {
     const { perfHooks, state } = fakePerfHooks();
     const h = harness({ ...constDeps(), perfHooks });
-    expect(h.producers).toHaveLength(8);
+    expect(h.producers).toHaveLength(7);
     expect(state.monitor).toBe(0);
     expect(h.spy.set).toBe(0);
     h.producers[0]?.start({ emit: () => {} }); // memory: arms the shared timer only
@@ -573,7 +582,7 @@ describe('createNodeSystemTraceProducers', () => {
     tick?.();
     for (const p of ps) p.stop();
     // `process_memory_limit` exists only inside a real cgroup cap, so it is checked for what the host can answer.
-    // `ram_system_free` is omitted on macOS (os.freemem() there is not memory available to new work).
+    // `ram_system_free` on macOS comes from an ASYNC vm_stat read, so the very first tick has no value yet.
     const optional = ['process_memory_limit', 'ram_system_free'];
     expect([...got.keys()].filter((k) => !optional.includes(k)).sort()).toEqual([
       'cpu_usage_process',
@@ -588,7 +597,6 @@ describe('createNodeSystemTraceProducers', () => {
       'process_memory_heap_total',
       'process_memory_heap_used',
       'process_memory_rss',
-      'process_uptime_s',
       'ram_js_heap_free',
       'ram_js_heap_total',
       'ram_js_heap_used',
@@ -599,12 +607,11 @@ describe('createNodeSystemTraceProducers', () => {
       'v8_heap_size_limit',
     ]);
     expect(got.has('ram_system_available')).toBe(false); // retired
-    if (process.platform === 'darwin') expect(got.has('ram_system_free')).toBe(false);
-    else {
+    if (got.has('ram_system_free')) {
       expect(Number(got.get('ram_system_free'))).toBeLessThanOrEqual(
         Number(got.get('ram_system_total')),
       );
-    }
+    } else expect(process.platform).toBe('darwin'); // only macOS may lack it on the first tick
     expect(Number(got.get('v8_heap_size_limit'))).toBeGreaterThan(0);
     for (const v of got.values()) expect(Number.isFinite(v)).toBe(true);
   });

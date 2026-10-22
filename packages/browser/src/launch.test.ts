@@ -672,7 +672,7 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
+      expect(m.thisSeen).toHaveLength(12); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9); displays: the (pointer: coarse) watch (1)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'DarkModeChanged')).toEqual([
@@ -2122,9 +2122,19 @@ describe('launch', () => {
         const w = fakeWindow();
         Object.assign(w.win, { devicePixelRatio: 2 });
         const store = memStore();
-        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        const settle: Array<() => void> = [];
+        const scheduler = {
+          setInterval: (cb: () => void, ms: number) => {
+            if (ms === 250) settle.push(cb); // the displays settle timer (never cleared in this test)
+            return settle.length;
+          },
+          clearInterval: () => {},
+        };
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store, scheduler }));
         Object.assign(w.win, { devicePixelRatio: 3 });
         w.emit('resize', {});
+        expect(settle).toHaveLength(1); // settled, not written immediately
+        settle[0]?.();
         expect(await rowsOf(store, 'displays')).toEqual([
           [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
           [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
@@ -3051,6 +3061,36 @@ describe('launch — capture recovery (multi-instance)', () => {
     expect(await siblingMarkers(idb, 'livesib')).toEqual(['livesib/inc-livesib']);
     expect((await siblingGenerations(idb, 'livesib')).has(700)).toBe(true);
     expect(puts).toHaveLength(1); // only the dead sibling was delivered, not the live one
+  });
+
+  it('a recovered incident carries NO app.uptime_s (it is this tab’s), while a live report does', async () => {
+    const idb = new IDBFactory();
+    const locks = fakeWebLocks();
+    await seedSibling(idb, 'deadsib', 500, { m: 'pre-crash' }, true);
+    const { fn: transport, puts } = recordingTransport();
+    const client = await launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        persist: true,
+        clock: recoveryClock,
+        scheduler: noopScheduler,
+        indexedDB: idb,
+        locks,
+        systemProbe: { ...probe, uptimeSeconds: () => 77 },
+      }),
+    );
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
+    const appOf = (put: Uint8Array) =>
+      (
+        JSON.parse(strFromU8(unzipSync(put)['request.json'] as Uint8Array)) as {
+          environment: { app: Record<string, unknown> };
+        }
+      ).environment.app;
+    expect(appOf(puts[0] as Uint8Array)).not.toHaveProperty('uptime_s');
+    await client.logException(new Error('live'));
+    await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(2));
+    expect(appOf(puts[puts.length - 1] as Uint8Array).uptime_s).toBe(77);
   });
 
   // (recovery double-upload, confirmed on 4 samples — events_count +2 per incident, never +1): the
@@ -4199,5 +4239,56 @@ describe('app identity resolution', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const out = await launchApp({ window: fakeWindow().win });
     expect(out.app).toMatchObject({ version: '0.0.0' });
+  });
+});
+
+describe('launch — environment.app.uptime_s (snapshot at session start)', () => {
+  it('stamps the probe value ONCE at launch; later environment builds do not drift', async () => {
+    let seconds = 0.4;
+    const spy = vi.fn(() => seconds);
+    const { client, internals } = await launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        systemProbe: { ...probe, uptimeSeconds: spy },
+      }),
+    );
+    clients.push(client);
+    seconds = 900;
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(0);
+    expect(internals?.getEnvironment().app?.uptime_s).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a probe whose uptimeSeconds throws omits the field and reports to onError; launch survives', async () => {
+    const onError = vi.fn();
+    const boom = new Error('probe broke');
+    const { client, internals } = await launchCore(
+      'tok',
+      baseOptions({
+        carrier: {},
+        captureStore: memStore(),
+        onError,
+        systemProbe: {
+          ...probe,
+          uptimeSeconds: () => {
+            throw boom;
+          },
+        },
+      }),
+    );
+    clients.push(client);
+    expect('uptime_s' in (internals?.getEnvironment().app ?? {})).toBe(false);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it('omits the key when the probe has no clock', async () => {
+    const { client, internals } = await launchCore(
+      'tok',
+      baseOptions({ carrier: {}, captureStore: memStore() }),
+    );
+    clients.push(client);
+    expect('uptime_s' in (internals?.getEnvironment().app ?? {})).toBe(false);
   });
 });

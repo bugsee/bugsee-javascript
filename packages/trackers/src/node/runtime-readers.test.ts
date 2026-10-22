@@ -168,6 +168,18 @@ describe('createSystemFreeReader', () => {
     expect(make({ platform: 'darwin', meminfo })()).toBe(10240);
   });
 
+  it('macOS: vm_stat is the source after native/meminfo, and is consulted on macOS only', () => {
+    const vmStat = () => 4242;
+    expect(make({ platform: 'darwin', vmStat })()).toBe(4242);
+    expect(make({ platform: 'darwin', vmStat, native: () => 7 })()).toBe(7);
+    expect(make({ platform: 'darwin', vmStat, meminfo })()).toBe(10240);
+    expect(make({ platform: 'darwin', vmStat: () => undefined })()).toBeUndefined(); // no stale/free-pages fallback
+    expect(make({ platform: 'darwin', vmStat: boom })()).toBeUndefined();
+    expect(make({ platform: 'darwin', vmStat: () => 1_000_001 })()).toBeUndefined(); // bounded by total
+    expect(make({ platform: 'linux', vmStat })()).toBe(111);
+    expect(make({ platform: 'win32', vmStat })()).toBe(111);
+  });
+
   it('skips a source that answers an implausible value (NaN, Infinity, negative, > total)', () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1_000_001]) {
       expect(make({ freemem: () => bad })()).toBeUndefined();
