@@ -410,6 +410,22 @@ describe('bugsee umbrella launch', () => {
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
   });
 
+  it.each([
+    'href',
+    'pathname',
+  ])('a Location whose %s getter throws falls back to the stable default', async (prop) => {
+    const location = {
+      pathname: '/p',
+      href: 'https://a.com/p',
+      get [prop](): never {
+        throw new Error('cross-origin');
+      },
+    };
+    const win = { ...fakeWindow().win, location };
+    const client = await track(await launch('tok', base({ carrier: {}, window: win as never })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');
+  });
+
   it('defaults the pageload name to "pageload" when no location is available', async () => {
     const client = await track(await launch('tok', base({ carrier: {} })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('pageload');

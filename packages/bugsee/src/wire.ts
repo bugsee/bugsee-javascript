@@ -206,17 +206,19 @@ function otlpResourceWithDeviceId(
 function defaultPageName(
   readLocation: (() => { pathname?: string; href?: string } | undefined) | undefined,
 ): string {
-  let location: { pathname?: string; href?: string } | undefined;
+  let href: string | undefined;
+  let pathname: string | undefined;
   try {
-    location =
+    const location =
       readLocation !== undefined
         ? readLocation()
         : (globalThis as { location?: { pathname?: string; href?: string } }).location;
+    // Every property read is guarded too: a cross-origin or torn-down Location can throw from a getter.
+    href = typeof location?.href === 'string' ? location.href : undefined;
+    pathname = location?.pathname;
   } catch {
     return 'pageload'; // a torn-down window: the stable default
   }
-  const href = typeof location?.href === 'string' ? location.href : undefined;
-  const pathname = location?.pathname;
   if (href === undefined && pathname === undefined) return 'pageload';
   return sanitizeLocationName(href, pathname ?? '/');
 }

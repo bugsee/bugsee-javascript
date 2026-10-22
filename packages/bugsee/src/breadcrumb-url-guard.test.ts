@@ -78,6 +78,44 @@ describe('the guard itself detects every form of a raw address in a breadcrumb',
   });
 });
 
+/** Whether `text` calls `.addBreadcrumb` in ANY syntactic form (`x.addBreadcrumb(`, `x.addBreadcrumb (`, `x?.addBreadcrumb?.(`,
+ *  `x['addBreadcrumb'](`): found by the AST, not by a text pattern that a spelling variant would slip past. */
+export function hasBreadcrumbCall(text: string): boolean {
+  const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (
+        (ts.isPropertyAccessExpression(callee) && callee.name.text === 'addBreadcrumb') ||
+        (ts.isElementAccessExpression(callee) &&
+          ts.isStringLiteralLike(callee.argumentExpression) &&
+          callee.argumentExpression.text === 'addBreadcrumb')
+      ) {
+        found = true;
+      }
+    }
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+describe('the guard discovers a breadcrumb call in every syntactic form', () => {
+  it.each([
+    'x.addBreadcrumb({});',
+    'x.addBreadcrumb ({});',
+    'x?.addBreadcrumb?.({});',
+    "x['addBreadcrumb']({});",
+    'this.client.addBreadcrumb({});',
+  ])('finds %s', (code) => {
+    expect(hasBreadcrumbCall(code)).toBe(true);
+  });
+  it('does not flag a mention in a comment or an unrelated call', () => {
+    expect(hasBreadcrumbCall('// x.addBreadcrumb({})\nother.add({});')).toBe(false);
+  });
+});
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
@@ -98,7 +136,7 @@ const callSites = (): Map<string, string> => {
     }
     for (const file of sourceFiles(src)) {
       const text = readFileSync(file, 'utf8');
-      if (/\.addBreadcrumb\(/.test(text)) found.set(relative(packages, file), text);
+      if (hasBreadcrumbCall(text)) found.set(relative(packages, file), text);
     }
   }
   return found;
