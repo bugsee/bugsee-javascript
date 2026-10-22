@@ -997,7 +997,9 @@ describe('withDiskPressure — a durable read that never answers', () => {
       expect((onReadError.mock.calls[0]?.[0] as Error).message).toMatch(
         /did not answer a read in time/,
       );
-      expect(vi.getTimerCount()).toBe(0); // the timer is cleared once settled
+      expect(vi.getTimerCount()).toBe(1); // only the background backstop of the abandoned read is left
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(vi.getTimerCount()).toBe(0); // and it is cleared when that read is cancelled at its backstop
     } finally {
       vi.useRealTimers();
     }
@@ -1418,5 +1420,209 @@ describe('withDiskPressure — a probe that cannot land its meta leaves nothing 
     store.add(rec('traces.system', 2500, 'real'));
     expect(storage.read(1, 1, 'meta')).toBeDefined(); // the first durable write re-opened the part
     expect(storage.read(1, 1, 'traces.system')).toBe('2500\treal\n');
+  });
+});
+
+describe('withDiskPressure — a slow but HEALTHY medium is never treated as dead for good', () => {
+  /** A durable backend whose read latency (ms) and outcome can be switched; counts reads and releases. */
+  function slowMedium() {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const state = {
+      mode: 'ok' as 'ok' | 'fail' | 'slow' | 'slowfail' | 'hang',
+      slowMs: 3000,
+      reads: 0,
+      releases: 0,
+      hangingReads: new Set<number>(),
+    };
+    let nextId = 0;
+    const timers = globalThis as unknown as { setTimeout(cb: () => void, ms: number): unknown };
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => {
+        const snap = memory.snapshot(parts);
+        let cancel: (() => void) | undefined;
+        const id = nextId++;
+        return {
+          ...snap,
+          drainAll: () => {
+            state.reads += 1;
+            if (state.mode === 'fail') {
+              return Promise.reject(
+                Object.assign(new Error('closing'), { name: 'InvalidStateError' }),
+              );
+            }
+            if (state.mode === 'hang') {
+              // like IndexedDB: a cancelled read resolves EMPTY (that is not an answer from the medium)
+              state.hangingReads.add(id);
+              return new Promise((resolve) => {
+                cancel = () => {
+                  state.hangingReads.delete(id);
+                  resolve(new Map());
+                };
+              });
+            }
+            if (state.mode === 'slowfail') {
+              return new Promise((_, reject) => {
+                timers.setTimeout(() => reject(new Error('still broken')), state.slowMs);
+              });
+            }
+            if (state.mode === 'slow') {
+              return new Promise((resolve) => {
+                timers.setTimeout(() => resolve(snap.drainAll()), state.slowMs);
+              });
+            }
+            return snap.drainAll();
+          },
+          release: () => {
+            state.releases += 1;
+            cancel?.();
+            snap.release();
+          },
+        };
+      },
+    };
+    return { durable, state };
+  }
+  const setup = () => {
+    const m = slowMedium();
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(m.durable, createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'landed'));
+    const report = async (): Promise<string[]> => {
+      const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+      const all = await snap.drainAll();
+      snap.release();
+      return names(all.get('log'));
+    };
+    return { ...m, onReadError, backend, report };
+  };
+
+  it('one failed read, then every read takes 3 s: it recovers (the old code answered [] for ever): the second report is short, the third is complete', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      expect(await m.report()).toEqual([]); // the failure: degraded
+      m.state.mode = 'slow';
+      const second = m.report(); // degraded: waits 2 s, then answers from memory while its read goes on in the background
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await second).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1000); // the background read answers at 3 s: the medium is healthy
+      const third = m.report(); // no longer degraded: it gets the full wait and the data
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await third).toEqual(['landed']);
+      expect(m.onReadError).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0); // the finished background read cleared its 30 s backstop
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('twenty reports in a row against a medium that is slow (3 s) after one failure: from the second on, EVERY one has the data', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'slow';
+      const seen: string[][] = [];
+      for (let i = 0; i < 20; i++) {
+        const report = m.report();
+        await vi.advanceTimersByTimeAsync(3000);
+        seen.push(await report);
+      }
+      expect(seen[0]).toEqual([]); // the degraded report: short wait, answered from memory
+      expect(seen.slice(1).every((r) => r.join() === 'landed')).toBe(true); // the background read cleared the state
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('slow then fast: once the medium is fast again the very next report has the data', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'slow';
+      const slow = m.report();
+      await vi.advanceTimersByTimeAsync(2000);
+      await slow;
+      m.state.mode = 'ok';
+      await vi.advanceTimersByTimeAsync(1000); // the background read answered
+      expect(await m.report()).toEqual(['landed']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('only ONE overrunning read is kept alive in the background; the others are cancelled at once', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'hang';
+      const reports = [m.report(), m.report(), m.report()];
+      await vi.advanceTimersByTimeAsync(2000);
+      await Promise.all(reports);
+      expect(m.state.hangingReads.size).toBe(1); // three overran, one lives on in the background
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a background read that never answers is cancelled at the 30 s backstop, and that cancellation is NOT an answer (still degraded)', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'hang';
+      const hung = m.report();
+      await vi.advanceTimersByTimeAsync(2000);
+      await hung;
+      expect(m.state.hangingReads.size).toBe(1); // alive in the background after the report was answered
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(m.state.hangingReads.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(1); // the backstop: the read is cancelled (it resolves empty)
+      expect(m.state.hangingReads.size).toBe(0);
+      m.state.mode = 'hang';
+      const next = m.report(); // still degraded: 2 s, not 30 s
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await next).toEqual([]);
+      expect(m.onReadError).toHaveBeenCalledOnce(); // the same streak throughout
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a background read that REJECTS leaves the state degraded (the next report still waits only 2 s), and a new background attempt can start', async () => {
+    vi.useFakeTimers();
+    try {
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'slowfail';
+      const first = m.report();
+      await vi.advanceTimersByTimeAsync(2000);
+      await first;
+      await vi.advanceTimersByTimeAsync(1000); // the background read rejects at 3 s: still degraded
+      const second = m.report();
+      await vi.advanceTimersByTimeAsync(2000); // degraded: 2 s, not the 30 s backstop
+      expect(await second).toEqual([]);
+      m.state.mode = 'slow';
+      await vi.advanceTimersByTimeAsync(3000); // the second background attempt (slowfail) is over too
+      const third = m.report();
+      await vi.advanceTimersByTimeAsync(2000);
+      await third;
+      await vi.advanceTimersByTimeAsync(1000); // the third attempt is a SLOW read that succeeds: healthy again
+      const fourth = m.report();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await fourth).toEqual(['landed']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

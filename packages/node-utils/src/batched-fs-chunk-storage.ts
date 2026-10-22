@@ -1,5 +1,5 @@
 import { closeSync, openSync, writevSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import type { ChunkStorage } from '@bugsee/core';
 import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './fs-storage';
 
@@ -34,6 +34,7 @@ const numericNames = (dir: string): number[] =>
 export type WritevFn = (fd: number, buffers: readonly Uint8Array[]) => number;
 
 interface OpenFile {
+  /** The open descriptor, or -1 while the file could not be created yet (its records wait in `segments`). */
   fd: number;
   segments: Uint8Array[];
   bytes: number;
@@ -205,6 +206,11 @@ export function createBatchedFsChunkStorage(
       sinceProbe = 0;
     }
     try {
+      if (entry.fd < 0) {
+        // The file could not be created when its first record arrived (a full disk): retry now, the records wait for it.
+        ensure(dirname(path));
+        entry.fd = openFile(path);
+      }
       // writeAll consumes entry.segments in place — on success it empties them; on a mid-drain throw it
       // leaves only the still-unwritten tail.
       writeAll(entry, writev);
@@ -234,10 +240,12 @@ export function createBatchedFsChunkStorage(
       return;
     }
     flushPath(path); // never throws (routes to onError); the fd is closed + dropped regardless, so no leak
-    try {
-      close(entry.fd);
-    } catch (error) {
-      onError(error);
+    if (entry.fd >= 0) {
+      try {
+        close(entry.fd);
+      } catch (error) {
+        onError(error);
+      }
     }
     open.delete(path);
   };
@@ -257,19 +265,20 @@ export function createBatchedFsChunkStorage(
       const path = filePath(generation, chunk, file);
       let entry = open.get(path);
       if (entry === undefined) {
-        let fd: number;
+        // Created BEFORE the file is opened: a record whose file cannot be created yet (a full disk) is kept with the
+        // others in the unwritten tail, so a live report still holds it and it is written once the file can be opened.
+        // (It used to be dropped here while the capture store counted it as written.)
+        entry = { fd: -1, segments: [], bytes: 0 };
+        open.set(path, entry);
         try {
           ensure(chunkDir(generation, chunk));
-          fd = openFile(path);
+          entry.fd = openFile(path);
         } catch (error) {
-          // A broken/full disk must NEVER throw into the capture path — append is reached synchronously
-          // from interceptors (console.log → capture) and from the tick. Shed this entry + report instead.
+          // A broken/full disk must NEVER throw into the capture path — append is reached synchronously from
+          // interceptors (console.log → capture) and from the tick. Report it and keep the record for a retry.
           noteFailure(error);
           onError(error);
-          return;
         }
-        entry = { fd, segments: [], bytes: 0 };
-        open.set(path, entry);
       }
       const bytes = encoder.encode(data);
       entry.segments.push(bytes);
@@ -312,15 +321,25 @@ export function createBatchedFsChunkStorage(
       // not on disk, and a LIVE report must still hold them (the disk-pressure gate counts them as durable). Written
       // prefixes were already consumed from the segments, so disk + tail never duplicates.
       const tail = open.get(path)?.segments ?? [];
-      if (bytes === undefined) {
-        return undefined; // the file is created when the handle is opened, so a buffered tail implies it exists
+      if (bytes === undefined && tail.length === 0) {
+        return undefined;
       }
-      const onDisk = Buffer.from(bytes).toString('utf8');
+      // No file yet but a tail: the file could not be created (a full disk) and its records are all still buffered.
+      const onDisk = bytes === undefined ? '' : Buffer.from(bytes).toString('utf8');
       return tail.length === 0 ? onDisk : onDisk + Buffer.concat(tail).toString('utf8');
     },
 
     files(generation, chunk): string[] {
-      return listFiles(chunkDir(generation, chunk));
+      const listed = listFiles(chunkDir(generation, chunk));
+      // A file that could not be created yet (a full disk) has no directory entry but does hold records.
+      const within = chunkDir(generation, chunk) + sep;
+      const waiting = [...open]
+        .filter(
+          ([path, entry]) => entry.fd < 0 && entry.segments.length > 0 && path.startsWith(within),
+        )
+        .map(([path]) => basename(path))
+        .filter((name) => !listed.includes(name));
+      return waiting.length === 0 ? listed : [...listed, ...waiting];
     },
 
     removeChunk(generation, chunk): void {

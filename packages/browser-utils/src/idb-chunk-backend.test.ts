@@ -1557,3 +1557,50 @@ describe('createIdbChunkBackend — the frozen in-memory copy', () => {
     expect(await collect(snap)).toEqual(['once']); // landed by the time it is read, still in the copy
   });
 });
+
+describe('createIdbChunkCaptureStore — a slow but healthy IndexedDB recovers from degraded (real backend, real timers)', () => {
+  it('one failed read, then reads that take 2.5 s: the next report is short, the one after has every landed record', async () => {
+    const inner = keyed();
+    const state = { mode: 'ok' as 'ok' | 'fail' | 'slow' };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        if (state.mode === 'fail') {
+          return Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }));
+        }
+        if (state.mode === 'slow') {
+          return new Promise((resolve) =>
+            setTimeout(() => resolve(inner.readPrefix(prefix)), 2500),
+          );
+        }
+        return inner.readPrefix(prefix);
+      },
+    };
+    const now = 10_000;
+    const s = createIdbChunkCaptureStore(store, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: createDiskPressure(),
+      onDiskReadError: () => {},
+    });
+    const report = async (): Promise<{ logs: string[]; ms: number }> => {
+      const t0 = Date.now();
+      const snap = s.snapshot();
+      const all = await snap.drainAll();
+      snap.release();
+      return { logs: (all.get('log') ?? []).map((r) => r.serialized), ms: Date.now() - t0 };
+    };
+    for (let i = 0; i < 4; i++) s.add(rec(`r${i}`, 'log', now));
+    await s.flush?.();
+    state.mode = 'fail';
+    expect((await report()).logs).toEqual([]);
+    state.mode = 'slow';
+    const second = await report(); // degraded: at most ~2 s, answered from memory
+    expect(second.ms).toBeLessThan(2400);
+    expect(second.logs).toEqual([]);
+    await new Promise((r) => setTimeout(r, 800)); // the background read finishes at ~2.5 s and ends the degraded state
+    const third = await report(); // full wait: it takes the 2.5 s and returns the data
+    expect(third.logs).toEqual(['r0', 'r1', 'r2', 'r3']);
+  }, 30_000);
+});

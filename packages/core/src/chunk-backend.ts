@@ -61,7 +61,7 @@ export interface ChunkBackend {
   /**
    * Write `bytes` of throwaway padding into a file of its own in the part, as a disk-pressure PROBE: it proves the
    * medium accepts record-sized writes again. The padding is a line without a timestamp separator, which every reader
-   * skips, so no report or recovery reads it, and it belongs to a real part so it is deleted with it (a separate
+   * skips (its bytes are not counted in the store's byte cap: at most 16 KiB per probed part), so no report or recovery reads a record from it, and it belongs to a real part so it is deleted with it (a separate
    * throwaway part would be a directory to clean up). The write is made synchronously and pushed out (see
    * `ChunkStorage.appendNow` / `flushNow`), never queued behind a full disk where it could land late. Absent: the
    * pressure gate probes with a throwaway part instead.

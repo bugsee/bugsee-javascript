@@ -15,7 +15,8 @@ import type { CaptureSnapshot, StoredEntry } from './contracts';
 // The reserved metadata file name within a chunk group; never a FileType, so it never collides with data.
 const META_FILE = 'meta';
 // The data file the probe's padding goes into. Every file in a part is read back by name and a line without a timestamp
-// separator is skipped, so this one yields no record (it is not a FileType); it is deleted with the part.
+// separator is skipped, so this one yields no record (it is not a FileType); readers do list and open it, they skip its
+// lines. It is deleted with the part.
 const PROBE_FILE = 'probe';
 
 interface StoredMeta {

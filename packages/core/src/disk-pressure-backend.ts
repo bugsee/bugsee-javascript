@@ -35,7 +35,7 @@ import { createMemoryChunkBackend } from './memory-chunk-backend';
 // so on the store's ~1 s tick a throwaway DATA write is made: its success is what the writers report back
 // (`noteWriteRecovered`), which releases the pin. Backends that can (the file backends) write padding into the part
 // that has JUST been opened after the tick (never the one being closed: nothing would seal it) and into a file of its
-// own (`probe`) that every reader skips; the others (IndexedDB) write a record into a throwaway part and remove it.
+// own (`probe`) whose lines every reader skips (a line without a timestamp separator; the bytes are not counted in the store's byte cap: at most 16 KiB per probed part); the others (IndexedDB) write a record into a throwaway part and remove it.
 // Only a data write counts (a meta write is a few dozen bytes and lands on a medium that still refuses real records),
 // and the probe is as large as the biggest record recently seen (clamped), because a quota that refuses a replay
 // snapshot accepts a 60-byte record. It can still succeed where a burst of real records fails, so the pin can flap;
@@ -256,18 +256,27 @@ export function withDiskPressure(
 
   // Whether the last durable read failed (a STREAK: reported once, ended by the next read that succeeds).
   let degraded = false;
+  // At most ONE abandoned read is kept alive in the background at a time (see guardedRead).
+  let backgroundRead = false;
 
   /**
    * A durable read that fails or hangs serves what the backend still holds in memory (records queued for the medium or
-   * refused by it) instead of failing the snapshot, releases the abandoned read, and reports once per streak of failures.
-   * While degraded each snapshot still tries the medium with a short deadline, so records that landed meanwhile show up
-   * again at once; within ONE snapshot a failed part skips the others (a 60-part window must not wait per part).
+   * refused by it) instead of failing the snapshot, and reports once per streak of failures. While degraded each snapshot
+   * still tries the medium, but a REPORT waits at most DEGRADED_READ_TIMEOUT_MS for it, so records that landed meanwhile
+   * show up again at once; within ONE snapshot a failed part skips the others (a 60-part window must not wait per part).
+   *
+   * A read that merely overruns its deadline is NOT abandoned: it keeps running in the background for the full backstop
+   * (one at a time), and if it finally answers the degraded state ends, so a slow but healthy medium (a read that takes
+   * 3 s) is never treated as dead for good. Its data is discarded (it is stale); the NEXT report gets a full-length wait.
    */
   const guardedRead = (snap: CaptureSnapshot, dead: { failed: boolean }): CaptureSnapshot => {
     const timers = globalThis as unknown as {
       setTimeout(cb: () => void, ms: number): { unref?: () => void };
       clearTimeout(handle: unknown): void;
     };
+    // Set when the background attempt took over the underlying snapshot: the owner's release() must not cancel it.
+    let backgrounded = false;
+    const backstopMs = options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     const drainAll = async (): Promise<Map<FileType, StoredEntry[]>> => {
       if (dead.failed) {
         // An earlier part of THIS snapshot already failed to read: do not wait out the timeout again for each part (a
@@ -275,18 +284,17 @@ export function withDiskPressure(
         return snap.inMemory?.() ?? new Map();
       }
       let timer: { unref?: () => void } | undefined;
+      const overran = new Error('bugsee: the durable capture store did not answer a read in time');
+      const reading = snap.drainAll();
       try {
         const timeout = new Promise<never>((_, reject) => {
           timer = timers.setTimeout(
-            () =>
-              reject(new Error('bugsee: the durable capture store did not answer a read in time')),
-            degraded
-              ? Math.min(DEGRADED_READ_TIMEOUT_MS, options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS)
-              : (options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS),
+            () => reject(overran),
+            degraded ? Math.min(DEGRADED_READ_TIMEOUT_MS, backstopMs) : backstopMs,
           );
           timer.unref?.(); // never hold a process open for a read
         });
-        const read = await Promise.race([snap.drainAll(), timeout]);
+        const read = await Promise.race([reading, timeout]);
         degraded = false; // the medium answered: the streak is over
         return read;
       } catch (error) {
@@ -296,7 +304,33 @@ export function withDiskPressure(
           options.onReadError?.(error); // once per streak, not once per snapshot
         }
         const held = snap.inMemory?.() ?? new Map();
-        snap.release(); // abandon the read: drop its pins and references (a hung one would hold them forever)
+        if (error === overran && !backgroundRead) {
+          // Let the overrunning read finish in the background, up to the backstop: if it answers, the medium is fine.
+          backgroundRead = true;
+          backgrounded = true;
+          let capped = false;
+          const cap = timers.setTimeout(() => {
+            capped = true;
+            snap.release(); // a hung read is cancelled (it then resolves empty: that is not an answer)
+          }, backstopMs);
+          cap.unref?.();
+          reading
+            .then(
+              () => {
+                if (!capped) {
+                  degraded = false;
+                }
+              },
+              () => undefined,
+            )
+            .finally(() => {
+              timers.clearTimeout(cap);
+              backgroundRead = false;
+              snap.release();
+            });
+        } else {
+          snap.release(); // abandon the read: drop its pins and references
+        }
         return held;
       } finally {
         timers.clearTimeout(timer);
@@ -309,7 +343,11 @@ export function withDiskPressure(
         }
       },
       drainAll,
-      release: () => snap.release(),
+      release: () => {
+        if (!backgrounded) {
+          snap.release();
+        }
+      },
       ...(snap.inMemory !== undefined ? { inMemory: () => snap.inMemory?.() ?? new Map() } : {}),
     };
   };

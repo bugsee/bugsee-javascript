@@ -539,3 +539,59 @@ describe('the probe never leaves a descriptor open on a part nobody will seal (b
     storage.dispose?.();
   });
 });
+
+describe('a record whose DATA FILE cannot be created is not lost (real batched writer)', () => {
+  it('the first record of a new part written while the disk refuses to create files stays in the live report and is written once it can be', async () => {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const st = { full: false };
+    const storage = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      open: (path) => {
+        if (st.full) throw full(); // a full disk cannot create the new part's file
+        return openSync(path, 'a', 0o600);
+      },
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    const add = (serialized: string): void =>
+      store.add({ type: 'log', timestamp: now, serialized });
+    add('before');
+    now += 1000;
+    store.tick(now); // a new part: its log file does not exist yet
+    st.full = true;
+    add('first-after-full'); // the file cannot be created: this record used to be dropped here
+    add('second-after-full');
+    const snap = store.snapshot();
+    const all = await snap.drainAll();
+    snap.release();
+    expect((all.get('log') ?? []).map((r) => r.serialized)).toEqual([
+      'before',
+      'first-after-full',
+      'second-after-full',
+    ]);
+    st.full = false;
+    storage.flushSync?.(); // the disk can create the file again
+    // the first record is written once the file can be created; the second arrived after the failure pinned the state,
+    // so it was held in memory only (and was in the live report above)
+    expect(rawLogLines(root)).toEqual(['first-after-full']);
+    storage.dispose?.();
+  });
+});
+
+/** The serialized payloads of every record in the SECOND part's log file. */
+function rawLogLines(root: string): string[] {
+  const dir = join(root, '0000000000001', '000000000001', 'log');
+  return existsSync(dir)
+    ? readFileSync(dir, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => l.slice(l.indexOf('\t') + 1))
+    : [];
+}

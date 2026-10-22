@@ -2,6 +2,7 @@ import {
   closeSync as closeSyncReal,
   existsSync,
   mkdtempSync,
+  openSync as openSyncReal,
   readFileSync,
   rmSync,
   statSync,
@@ -272,21 +273,87 @@ describe('createBatchedFsChunkStorage', () => {
     expect(errors.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('append: a disk error opening the data file routes to onError and sheds — never throws into the caller', () => {
-    // append is reached SYNCHRONOUSLY from interceptors (console.log → capture → add → appendEntry) and
-    // from the capture tick; a mid-run broken/full disk must NEVER throw into that path (it would crash
-    // the host app or escape as an uncaughtException). It sheds the entry and reports via onError instead.
+  it('append: a disk error opening the data file routes to onError, never throws, and KEEPS the record for a retry', () => {
+    // append is reached SYNCHRONOUSLY from interceptors (console.log → capture → add → appendEntry) and from the
+    // capture tick; a mid-run broken/full disk must NEVER throw into that path. The record is reported and kept: the
+    // capture store already counted it as written, a live report must still hold it, and it is written once the file
+    // can be created. (It used to be dropped: the first record of every new part was missing after a full disk.)
     const root = mkRoot();
     const errors: unknown[] = [];
+    let broken = true;
     const s = createBatchedFsChunkStorage(root, {
       onError: (e) => errors.push(e),
-      open: () => {
-        throw new Error('EROFS open');
+      open: (path) => {
+        if (broken) throw new Error('EROFS open');
+        return openSyncReal(path, 'a', 0o600);
       },
     });
     expect(() => s.append(GEN, CHUNK, 'log', 'x\n')).not.toThrow();
     expect(errors.map((e) => (e as Error).message)).toEqual(['EROFS open']);
-    expect(s.read(GEN, CHUNK, 'log')).toBeUndefined(); // SHED, not silently retained/buffered for a later flush
+    s.append(GEN, CHUNK, 'log', 'y\n'); // later records join it, in order
+    expect(s.read(GEN, CHUNK, 'log')).toBe('x\ny\n'); // served from memory
+    expect(s.files(GEN, CHUNK)).toContain('log'); // and the file is listed although the disk has no entry for it
+    expect(s.bufferedBytes?.()).toBe(4);
+    broken = false;
+    s.flushSync?.(); // the file can be created now: both records are written, once
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['x', 'y']);
+    expect(s.bufferedBytes?.()).toBe(0);
+    s.dispose?.();
+  });
+
+  it('a file that cannot be created is retried by flushes and the retry failures count; sealing keeps its records, disposing drops them', () => {
+    const root = mkRoot();
+    const failures: unknown[] = [];
+    const closed: number[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      onWriteFailure: (e) => void failures.push(e),
+      close: (fd) => void closed.push(fd),
+      open: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'x\n');
+    expect(failures).toHaveLength(1);
+    s.flushSync?.();
+    expect(failures).toHaveLength(2); // the retry to create the file failed again
+    s.sealChunk?.(GEN, CHUNK); // an unopened file with records is not discarded by a seal
+    expect(s.read(GEN, CHUNK, 'log')).toBe('x\n');
+    expect(() => s.dispose?.()).not.toThrow();
+    expect(s.read(GEN, CHUNK, 'log')).toBeUndefined(); // disposed: nothing is kept
+    expect(closed).toEqual([]); // and no descriptor was ever open, so none is closed (close(-1) would be EBADF)
+  });
+
+  it('a file that exists on disk AND has a waiting tail (its handle was sealed, the re-open failed) is listed and read ONCE', () => {
+    const root = mkRoot();
+    let broken = false;
+    const s = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      open: (path) => {
+        if (broken) throw new Error('no space');
+        return openSyncReal(path, 'a', 0o600);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'a\n');
+    s.sealChunk?.(GEN, CHUNK); // flushed and closed
+    broken = true;
+    s.append(GEN, CHUNK, 'log', 'b\n'); // the re-open fails: 'b' waits
+    expect(s.files(GEN, CHUNK).filter((f) => f === 'log')).toHaveLength(1);
+    expect(s.read(GEN, CHUNK, 'log')).toBe('a\nb\n');
+    s.dispose?.();
+  });
+
+  it('the shed ceiling also bounds records waiting for a file that cannot be created', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, {
+      maxBufferedBytes: 10,
+      onError: () => {},
+      open: () => {
+        throw new Error('no space');
+      },
+    });
+    for (let i = 0; i < 6; i++) s.append(GEN, CHUNK, 'log', `r${i}\n`);
+    expect(s.read(GEN, CHUNK, 'log')).toBe('r3\nr4\nr5\n'); // oldest shed beyond 10 bytes, newest kept
     s.dispose?.();
   });
 
@@ -668,8 +735,8 @@ describe('createBatchedFsChunkStorage — health hooks (onWriteFailure / onWrite
     });
     s.append(GEN, CHUNK, 'log', 'a\n');
     s.write(GEN, CHUNK, 'meta', '{}');
-    s.removeChunk(GEN, CHUNK);
-    expect(h.failures).toHaveLength(3);
+    s.removeChunk(GEN, CHUNK); // closing the chunk retries the unopened file once more
+    expect(h.failures).toHaveLength(4);
     broken = false;
     s.write(GEN, CHUNK, 'meta', '{}'); // a small meta file lands on a volume that still refuses record data
     expect(h.recovered).toBe(0);
