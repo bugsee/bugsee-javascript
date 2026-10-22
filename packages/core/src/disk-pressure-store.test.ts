@@ -1716,26 +1716,29 @@ describe('withDiskPressure — a durable snapshot() that THROWS (the file backen
     expect(onReadError).toHaveBeenCalledOnce();
   });
 
-  it('after one part throws, the rest of THAT snapshot does not call the medium again', async () => {
-    let calls = 0;
+  it('a part whose snapshot throws costs ONLY that part: the others are still read from the medium (one report)', async () => {
     const memory = createMemoryChunkBackend({ generation: 1 });
+    const onReadError = vi.fn();
     const durable: ChunkBackend = {
       ...memory,
-      snapshot: () => {
-        calls += 1;
-        throw new Error('EIO');
+      snapshot: (parts) => {
+        if (parts[0]?.ref.number === 1) throw new Error('EIO');
+        return memory.snapshot(parts);
       },
     };
     const pressure = createDiskPressure();
-    const backend = withDiskPressure(durable, pressure, { onReadError: () => {} });
-    pressure.observe(30 * MB);
+    const backend = withDiskPressure(durable, pressure, { onReadError });
     const frozen = [0, 1, 2].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
     for (const { ref } of frozen) {
       backend.openPart(ref, 0);
-      backend.appendEntry(ref, rec('log', ref.number, `m${ref.number}`));
+      backend.appendEntry(ref, rec('traces.system', ref.number, `persisted-${ref.number}`));
     }
-    await backend.snapshot(frozen).drainAll();
-    expect(calls).toBe(1);
+    pressure.observe(30 * MB);
+    backend.appendEntry(frozen[1]!.ref, rec('log', 9, 'shadow-1')); // makes the snapshot take the per-part path
+    const all = await backend.snapshot(frozen).drainAll();
+    expect(names(all.get('traces.system'))).toEqual(['persisted-0', 'persisted-2']); // part 2 is NOT lost with part 1
+    expect(names(all.get('log'))).toEqual(['shadow-1']);
+    expect(onReadError).toHaveBeenCalledOnce();
   });
 });
 

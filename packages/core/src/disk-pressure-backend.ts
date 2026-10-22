@@ -277,19 +277,16 @@ export function withDiskPressure(
    * promise. That must not fail the report either: the part is served from memory (the route merge appends whatever the
    * medium did not provide), the failure is reported once per streak, and the rest of this snapshot skips the medium.
    */
-  const snapshotOrEmpty = (
-    parts: readonly FrozenPart[],
-    dead: { failed: boolean },
-  ): CaptureSnapshot => {
-    if (dead.failed) {
-      return createRecordSnapshot([]); // nothing from the medium
-    }
+  const thrown = new WeakSet<CaptureSnapshot>();
+  const snapshotOrEmpty = (parts: readonly FrozenPart[]): CaptureSnapshot => {
     try {
       return durable.snapshot(parts);
     } catch (error) {
-      dead.failed = true;
+      // Contained PER PART: a synchronous throw has no wait to avoid, and the other parts' files may read fine.
       noteReadFailure(error);
-      return createRecordSnapshot([]); // nothing from the medium
+      const empty = createRecordSnapshot([]); // nothing from the medium for this part
+      thrown.add(empty); // and reading it is not an ANSWER from the medium (it must not end the failure streak)
+      return empty;
     }
   };
 
@@ -312,6 +309,9 @@ export function withDiskPressure(
     let backgrounded = false;
     const backstopMs = options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     const drainAll = async (): Promise<Map<FileType, StoredEntry[]>> => {
+      if (thrown.has(snap)) {
+        return new Map(); // its `snapshot()` threw: there is nothing to read, and no streak to end
+      }
       if (dead.failed) {
         // An earlier part of THIS snapshot already failed to read: do not wait out the timeout again for each part (a
         // 60-part window would hold a report for minutes).
@@ -507,7 +507,7 @@ export function withDiskPressure(
       }
       if (shadowed === 0) {
         const dead = { failed: false };
-        return guardedRead(snapshotOrEmpty(durableParts, dead), dead);
+        return guardedRead(snapshotOrEmpty(durableParts), dead);
       }
       // One snapshot per part and half, taken NOW (a file backend reads eagerly, so this freezes the view) but
       // DRAINED one part at a time: the IndexedDB half reads lazily, so only one part is in memory at once.
@@ -521,7 +521,7 @@ export function withDiskPressure(
       const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
         const state = parts.get(keyOf(ref));
         const fromDurable = guardedRead(
-          snapshotOrEmpty([durableParts[index] as FrozenPart], deadMedium),
+          snapshotOrEmpty([durableParts[index] as FrozenPart]),
           deadMedium,
         );
         if (state === undefined || state.shadowCount === 0) {
