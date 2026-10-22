@@ -817,7 +817,9 @@ describe('ProcessTracker', () => {
           performance.now = () => now;
           try {
             tracker.on('systemMemory', () => {});
-            for (; now < 10_000; now += 1000) fs.tick();
+            fs.tick();
+            x.calls[0]?.cb(null, OUT); // finished: only the cadence gates the next spawn
+            for (now = 1000; now < 10_000; now += 1000) fs.tick();
             expect(x.calls).toHaveLength(1);
             fs.tick(); // now = 10 000
             expect(x.calls).toHaveLength(2);
