@@ -304,6 +304,36 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/?next=%252Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
+      '%2B then a tab keeps the %2B (a literal plus)',
+      'https://a.com/?next=%2B%09https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%2B%09https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a tab then %2B keeps the %2B',
+      'https://a.com/?next=%09%2Bhttps%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%09%2Bhttps%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a double-encoded plus then a tab keeps both as written',
+      'https://a.com/?next=%252B%09https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=%252B%09https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a no-break space after a plus',
+      'https://a.com/?next=+%C2%A0https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
+      `https://a.com/?next=+%C2%A0https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,
+    ],
+    [
+      'a plus before a blank spelled with escaped hex digits keeps the plus',
+      'https://a.com/?next=+%25%32%30https%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=+%20https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a blank spelled with escaped hex digits has no matching raw prefix and is written %20',
+      'https://a.com/?next=%25%32%30https%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=%20https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
       'a leading tab (%09) is kept encoded',
       'https://a.com/?next=%09https%3A%2F%2Fevil.com%2F%3Ftoken%3DSEC',
       `https://a.com/?next=%09https%3A%2F%2Fevil.com%2F%3Ftoken%3D%253Credacted%253E`,

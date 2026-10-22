@@ -204,10 +204,29 @@ function sanitizeNestedRun(
 
 /** Leading whitespace, and the `+` that `URLSearchParams` writes for a leading space. */
 const LEADING_BLANKS = /^[\s+]+/;
-/** The same blanks as they appear in an ENCODED value (`+`, a space, `%20`, `%2B`). */
-const RAW_LEADING_BLANKS = /^(?:[\s+]|%20|%2[Bb]|%25(?:20|2[Bb]))+/;
+/** One unit of an ENCODED value: a double-encoded byte (`%252B`), a percent-escaped character (`%C2%A0` is one), or one char. */
+const RAW_TOKEN = /%25[0-9A-Fa-f]{2}|%[0-9A-Fa-f]{2}(?:%[89ABab][0-9A-Fa-f])*|[\s\S]/y;
 
-/** Encode leading blanks that were not written as a plain `+`/`%20`/`%2B`: `+` stays `+`, any other blank is percent-encoded. */
+/**
+ * The raw (as written) prefix of an encoded `value` that decodes, unit by unit, to exactly `lead`: `+`, `%2B`, `%20`,
+ * `%09`, `%C2%A0` and the double-encoded `%252B`/`%2520` each stay as they were written (a form decoder reads `+` as a
+ * space but `%2B` as a plus). Undefined when no prefix does (a triple-encoded blank).
+ */
+function rawLeadFor(value: string, lead: string): string | undefined {
+  let position = 0;
+  let decoded = '';
+  while (position < value.length && decoded.length < lead.length) {
+    RAW_TOKEN.lastIndex = position;
+    const token = (RAW_TOKEN.exec(value) as RegExpExecArray)[0]; // always matches: `[\s\S]` is the last alternative
+    decoded += token.startsWith('%25')
+      ? decodeTolerant(decodeTolerant(token))
+      : decodeTolerant(token);
+    position += token.length;
+  }
+  return decoded === lead ? value.slice(0, position) : undefined;
+}
+
+/** Percent-encode leading blanks that no raw prefix matched (a triple-encoded one); a `+` stays `+`. */
 const encodeLead = (lead: string): string =>
   lead.replace(/[\s+]/g, (c) => (c === '+' ? '+' : encodeURIComponent(c)));
 
@@ -247,14 +266,9 @@ function sanitizeNestedValue(
     return clean;
   }
   const lead = LEADING_BLANKS.exec(clean)?.[0] ?? '';
-  // Keep the leading blanks EXACTLY as written (`+`, `%2B` and `%20` mean different things to a form decoder): the raw
-  // prefix is reused when it decodes to the same blanks, and a double-encoded one (`%252B`, `%2520`) decodes to them in two steps and is reused too; anything else is rewritten.
-  const rawLead = RAW_LEADING_BLANKS.exec(value)?.[0] ?? '';
-  return (
-    (decodeTolerant(rawLead) === lead || decodeTolerant(decodeTolerant(rawLead)) === lead
-      ? rawLead
-      : encodeLead(lead)) + encodeSafe(clean.slice(lead.length))
-  );
+  // Keep the leading blanks EXACTLY as written (`+`, `%2B`, `%20`, `%09`, `%C2%A0`, `%252B`: a form decoder reads them
+  // differently), so reuse the raw prefix that decodes to them.
+  return (rawLeadFor(value, lead) ?? encodeLead(lead)) + encodeSafe(clean.slice(lead.length));
 }
 
 /** The nested scan over the main query and over the fragment (its `key=value` pairs, and a hash-router `?` query). */

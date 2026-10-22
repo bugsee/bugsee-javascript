@@ -261,6 +261,16 @@ describe('parseV8Stack', () => {
     expect(parseLocation(frames(')')[0] as string).file).not.toContain('token=S)');
   });
 
+  it('many URL starts followed by a long run of `)` stay fast (the reviewer repro: 675 ms per frame without the lookbehind)', () => {
+    const input = `eval at ${'(https://'.repeat(152)}${')'.repeat(2700)} x`;
+    const started = Date.now();
+    parseLocation(input);
+    const stack = `Error: x\n    at eval (${input}:1:1)`;
+    for (let i = 0; i < 5; i += 1) parseV8Stack(stack);
+    // measured ~2 ms per frame at this head; the quadratic rule took ~675 ms per frame
+    expect(Date.now() - started).toBeLessThan(250);
+  });
+
   it('an unusual-but-valid wrapper whose URL ends in `)` is still sanitized', () => {
     expect(parseLocation('eval at f (https://x.com/(g)), <anonymous>').file).toBe(
       'eval at f (https://x.com/(g)), <anonymous>',
