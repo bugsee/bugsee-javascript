@@ -1,4 +1,4 @@
-import type { TransactionWire } from '@bugsee/performance';
+import { sanitizeSpan, type TransactionWire } from '@bugsee/performance';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createBugseeSpanProcessor,
@@ -113,6 +113,21 @@ describe('readableSpanToConsumed', () => {
         readable({ attributes: { huge: { s: 'x'.repeat(1e6) } } }),
       );
       expect(JSON.stringify(consumed.attributes?.huge).length).toBeLessThanOrEqual(8192);
+    });
+
+    it('a statement cut by the consume cap still has its literals redacted by the default sanitizer', () => {
+      const doc = Array.from({ length: 4000 }, (_, i) => `p${i}@clinic.example;x`).join('\n');
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { 'db.statement': `INSERT INTO r (d) VALUES ('${doc}')` } }),
+      );
+      const out = sanitizeSpan({
+        spanId: 's',
+        operation: 'db',
+        status: 'OK',
+        startTimestampMs: 1,
+        ...(consumed.attributes !== undefined ? { attributes: consumed.attributes } : {}),
+      });
+      expect(JSON.stringify(out.attributes)).not.toContain('@clinic.example');
     });
 
     it('keeps the tree through assembly, so redaction can read nested keys (flattening is the wire step)', () => {

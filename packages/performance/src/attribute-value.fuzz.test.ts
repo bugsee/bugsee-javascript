@@ -156,7 +156,7 @@ describe('normalizeAttributeValue (fuzz)', () => {
     for (const arb of arrays) {
       fc.assert(
         fc.property(arb, (arr) => {
-          expect(normalizeAttributeValue(arr)).toBe(arr);
+          expect(normalizeAttributeValue(arr)).toEqual(arr);
         }),
       );
     }

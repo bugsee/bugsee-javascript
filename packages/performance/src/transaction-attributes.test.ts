@@ -67,11 +67,44 @@ const dag = (levels: number, fanout: number): unknown => {
 };
 
 describe('normalizeTransactionAttributes (SDK-produced spans carry RAW values too)', () => {
-  it('returns the SAME transaction when every attribute is already a scalar or scalar array', () => {
+  it('returns an equal transaction when every attribute is already a scalar or scalar array', () => {
     const plain = txn({ attributes: { a: 1, tags: ['x'] }, spans: [child({ b: 'y' }), child()] });
-    expect(normalizeTransactionAttributes(plain)).toBe(plain);
+    expect(normalizeTransactionAttributes(plain)).toEqual(plain);
     const bare = txn();
-    expect(normalizeTransactionAttributes(bare)).toBe(bare);
+    expect(normalizeTransactionAttributes(bare)).toBe(bare); // nothing to read, nothing copied
+  });
+
+  it('always carries a COPY forward: a getter cannot answer differently when a later step re-reads it', () => {
+    let reads = 0;
+    const attributes = {
+      get flip(): unknown {
+        reads++;
+        return reads === 1 ? 'ok' : dag(14, 3);
+      },
+    };
+    const out = normalizeTransactionAttributes(txn({ attributes }));
+    expect(reads).toBe(1); // read exactly once, by the normalization itself
+    expect(out.attributes).toEqual({ flip: 'ok' });
+    expect(out.attributes === attributes).toBe(false); // (a matcher would re-read the getter)
+    expect(Object.getOwnPropertyDescriptor(out.attributes, 'flip')?.get).toBeUndefined();
+    expect(out.attributes?.flip).toBe('ok'); // a plain data property, stable on every read
+    expect(reads).toBe(1);
+  });
+
+  it('keeps a child without attributes as is, and handles a root without attributes', () => {
+    const bare = child();
+    const out = normalizeTransactionAttributes(txn({ attributes: { a: 1 }, spans: [bare] }));
+    expect(out.spans[0]).toBe(bare);
+    const rootless = normalizeTransactionAttributes(txn({ spans: [child({ b: 1 })] }));
+    expect(rootless.attributes).toBeUndefined();
+    expect(rootless.spans[0]?.attributes).toEqual({ b: 1 });
+  });
+
+  it('drops a key whose value is undefined (the copy differs from the input)', () => {
+    const t = txn({ attributes: { ok: 'x', gone: undefined } });
+    const n = normalizeTransactionAttributes(t);
+    expect(n).not.toBe(t);
+    expect(Object.hasOwn(n.attributes ?? {}, 'gone')).toBe(false);
   });
 
   it('turns raw complex values (a DAG, a cycle, a throwing getter) into bounded trees on root and children', () => {

@@ -145,10 +145,10 @@ describe('stringifyAnyValue', () => {
   });
 
   it('caps the output length and marks the cut', () => {
-    const out = stringifyAnyValue({ big: 'x'.repeat(50_000) }) as string;
+    const out = stringifyAnyValue({ big: 'word '.repeat(10_000) }) as string;
     expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_JSON_LENGTH);
     expect(out).toContain(TRUNCATION_MARKER);
-    expect(out.startsWith('{"big":"xxx')).toBe(true);
+    expect(out.startsWith('{"big":"word word')).toBe(true);
     // Many mid-size leaves overflow the text cap itself: the text is cut and ends with the marker.
     const many = stringifyAnyValue(Array.from({ length: 20 }, () => 'y'.repeat(2000))) as string;
     expect(many.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
@@ -175,7 +175,7 @@ describe('stringifyAnyValue', () => {
   });
 
   it('bounds WORK by size, not just count: a huge nested leaf is cut before it is copied or encoded', () => {
-    const huge = 'x'.repeat(64 * 1024 * 1024);
+    const huge = 'word '.repeat(13 * 1024 * 1024);
     const out = stringifyAnyValue({ a: huge, b: [huge, { c: huge }] }) as string;
     expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_JSON_LENGTH);
     const safe = safeAnyValue({ a: huge, b: [huge, { c: huge }] });
@@ -183,7 +183,7 @@ describe('stringifyAnyValue', () => {
   });
 
   it('stops copying string leaves after the character budget, however many leaves there are', () => {
-    const megabyte = 'x'.repeat(1_000_000);
+    const megabyte = 'word '.repeat(200_000);
     const many = Array.from({ length: 1000 }, () => megabyte);
     const safe = safeAnyValue(many) as unknown[];
     expect(safe.at(-1)).toBe('[Truncated]');
@@ -325,11 +325,10 @@ describe('normalizeAttributeValue', () => {
     const strs = ['a', 'b'];
     const nums = [1, 2.5];
     const bools = [true, false];
-    expect(normalizeAttributeValue(strs)).toBe(strs);
-    expect(normalizeAttributeValue(nums)).toBe(nums);
-    expect(normalizeAttributeValue(bools)).toBe(bools);
-    const empty: unknown[] = [];
-    expect(normalizeAttributeValue(empty)).toBe(empty);
+    expect(normalizeAttributeValue(strs)).toEqual(strs);
+    expect(normalizeAttributeValue(nums)).toEqual(nums);
+    expect(normalizeAttributeValue(bools)).toEqual(bools);
+    expect(normalizeAttributeValue([])).toEqual([]);
   });
 
   it('keeps a mixed array, an array with null, or a nested array as a bounded COPY, not text', () => {
@@ -338,15 +337,15 @@ describe('normalizeAttributeValue', () => {
     expect(normalizeAttributeValue([[1], [2]])).toEqual([[1], [2]]);
   });
 
-  it('passes a homogeneous scalar array that contains null/undefined entries through unchanged', () => {
+  it('passes a homogeneous scalar array that contains null/undefined entries through (as an equal copy)', () => {
     const withNull = ['a', null, 'b'];
     const nums = [1, undefined, 3];
-    expect(normalizeAttributeValue(withNull)).toBe(withNull);
-    expect(normalizeAttributeValue(nums)).toBe(nums);
-    expect(flattenAttributeValue(withNull)).toBe(withNull);
+    expect(normalizeAttributeValue(withNull)).toEqual(withNull);
+    expect(normalizeAttributeValue(nums)).toEqual(nums);
+    expect(flattenAttributeValue(withNull)).toEqual(withNull);
     // ...but a mixed array still goes the tree route
     expect(normalizeAttributeValue(['a', 1, null])).toEqual(['a', 1, null]);
-    expect(normalizeAttributeValue(['a', 1, null])).not.toBe(withNull);
+    expect(normalizeAttributeValue(['a', 1, null])).not.toEqual(withNull);
   });
 
   it('routes a primitive array past the length cap through the bounded tree (truncated)', () => {
@@ -355,7 +354,7 @@ describe('normalizeAttributeValue', () => {
     expect(out).not.toBe(long);
     expect(out.at(-1)).toBe('[Truncated]');
     const atCap = Array.from({ length: MAX_ATTRIBUTE_ARRAY_LENGTH }, () => 'a');
-    expect(normalizeAttributeValue(atCap)).toBe(atCap);
+    expect(normalizeAttributeValue(atCap)).toEqual(atCap);
   });
 
   it('keeps an object as a safe copy (nested keys still visible to redaction) and bytes as base64', () => {
@@ -368,22 +367,24 @@ describe('normalizeAttributeValue', () => {
   });
 
   it('caps a scalar string at the documented limit, marked, and leaves one at the limit alone', () => {
-    const atLimit = 'x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH);
+    const atLimit = 'ab '.repeat(MAX_ATTRIBUTE_STRING_LENGTH).slice(0, MAX_ATTRIBUTE_STRING_LENGTH);
     expect(normalizeAttributeValue(atLimit)).toBe(atLimit);
     const over = normalizeAttributeValue(`${atLimit}y`) as string;
-    expect(over.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(over.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(over.length).toBeGreaterThan(MAX_ATTRIBUTE_STRING_LENGTH - 100);
     expect(over.endsWith(TRUNCATION_MARKER)).toBe(true);
   });
 
   it('does not pass a string array through when its strings add up past the string limit', () => {
     const big = Array.from({ length: 4 }, () => 'x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2));
     const out = normalizeAttributeValue(big) as string[];
-    expect(out).not.toBe(big);
+    expect(out).toHaveLength(4); // went the tree route: each over-long leaf is cut, not passed through
+    expect(out.every((leaf) => leaf.length < MAX_ATTRIBUTE_JSON_LENGTH)).toBe(true);
     const small = [
       'a'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2),
       'b'.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 2),
     ];
-    expect(normalizeAttributeValue(small)).toBe(small);
+    expect(normalizeAttributeValue(small)).toEqual(small);
   });
 
   it('drops the attribute for the OTel empty value and for values with no JSON form', () => {
@@ -476,6 +477,86 @@ describe('work bounds that output alone cannot show', () => {
     const keys = Object.keys(safeAnyValue(wide) as Record<string, unknown>);
     expect(keys).toHaveLength(1024); // 1023 members + the flag: MAX_ATTRIBUTE_NODES is 1024
     expect(keys.at(-1)).toBe('[Truncated]');
+  });
+});
+
+describe('a cut never leaves a PARTIAL secret-shaped token behind', () => {
+  const filler = 'lorem ipsum '.repeat(10_000);
+
+  it('drops the unfinished final token of a scalar string cut by the cap', () => {
+    const jwtPrefix = 'eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6InBhdGllbnRAeC5leGFtcGxlIn0';
+    const text = `${filler.slice(0, MAX_ATTRIBUTE_STRING_LENGTH - 40 - TRUNCATION_MARKER.length)} ${jwtPrefix}.sig`;
+    const out = normalizeAttributeValue(text) as string;
+    expect(out.length).toBeLessThanOrEqual(MAX_ATTRIBUTE_STRING_LENGTH);
+    expect(out).toContain(TRUNCATION_MARKER);
+    expect(out).not.toContain('eyJ');
+  });
+
+  it('drops a GitHub-token prefix cut at a nested leaf', () => {
+    const cut = MAX_ATTRIBUTE_JSON_LENGTH - 64 - TRUNCATION_MARKER.length;
+    const text = `${'word '.repeat(2000).slice(0, cut - 21)} ghp_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+    const out = safeAnyValue({ note: text }) as { note: string };
+    expect(out.note).not.toContain('ghp_');
+    expect(out.note.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it('keeps a token that ends exactly at the cut (it is complete, not partial)', () => {
+    const end = MAX_ATTRIBUTE_STRING_LENGTH - TRUNCATION_MARKER.length;
+    const make = (pad: number): string =>
+      `${'z'.repeat(pad)}${'tok '.repeat(MAX_ATTRIBUTE_STRING_LENGTH / 4 + 5)}`;
+    const pad = [0, 1, 2, 3].find((p) => make(p)[end] === ' ') as number;
+    const out = normalizeAttributeValue(make(pad)) as string;
+    expect(out.endsWith(`tok${TRUNCATION_MARKER}`)).toBe(true);
+    expect(out.length).toBe(MAX_ATTRIBUTE_STRING_LENGTH);
+  });
+
+  it('does not touch base64 of a byte array (not text)', () => {
+    const out = normalizeAttributeValue(new Uint8Array(100_000)) as string;
+    expect(out.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
+    const nested = safeAnyValue({ b: new Uint8Array(100_000) }) as { b: string };
+    expect(nested.b.length).toBeGreaterThan(MAX_ATTRIBUTE_JSON_LENGTH - 200);
+  });
+
+  it('a string without any token boundary is dropped to the marker, never kept as a partial blob', () => {
+    const out = normalizeAttributeValue('x'.repeat(MAX_ATTRIBUTE_STRING_LENGTH + 1)) as string;
+    expect(out).toBe(TRUNCATION_MARKER);
+  });
+});
+
+describe('arrays are copied, not aliased', () => {
+  it('passes a scalar array through as a COPY, so a later mutation of the original cannot reach the store', () => {
+    const original: unknown[] = ['a', 'b'];
+    const out = normalizeAttributeValue(original) as unknown[];
+    expect(out).toEqual(['a', 'b']);
+    expect(out).not.toBe(original);
+    original.push({ password: 'x' });
+    expect(out).toEqual(['a', 'b']);
+  });
+
+  it('reads an array by index: an overridden Symbol.iterator cannot smuggle values past the check', () => {
+    const sneaky: unknown[] = ['a', 'b'];
+    (sneaky as unknown as Record<symbol, unknown>)[Symbol.iterator] = function* () {
+      yield 'a';
+      yield 'b';
+    };
+    sneaky.push({ password: 'p' }); // an element the iterator hides
+    const out = normalizeAttributeValue(sneaky) as unknown[];
+    expect(out).toEqual(['a', 'b', { password: 'p' }]); // went the tree route, element visible
+  });
+
+  it('reads each element once (a getter cannot answer differently on a second read)', () => {
+    let reads = 0;
+    const arr: unknown[] = [];
+    Object.defineProperty(arr, 0, {
+      get() {
+        reads++;
+        return reads === 1 ? 'ok' : { late: true };
+      },
+      enumerable: true,
+    });
+    const out = normalizeAttributeValue(arr) as unknown[];
+    expect(out).toEqual(['ok']);
+    expect(reads).toBe(1);
   });
 });
 

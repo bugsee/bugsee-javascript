@@ -439,6 +439,59 @@ describe("createPerformanceExtension — raw attribute values on the SDK's own s
   });
 });
 
+describe('createPerformanceExtension — a statement CUT by a length cap still has its literals redacted', () => {
+  const doc = Array.from(
+    { length: 4000 },
+    (_, i) => `patient${i}@clinic.example;hypertension`,
+  ).join('\n');
+  const sql = `INSERT INTO records (doc) VALUES ('${doc}')`;
+  const leaked = (value: unknown): number =>
+    (JSON.stringify(value).match(/@clinic\.example/g) ?? []).length;
+  const run = (attributes: Record<string, unknown>, viaSdk = false) => {
+    const { client, ext } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    if (viaSdk) {
+      const txn = ext().startTransaction({ name: 'T', operation: 'op' });
+      for (const [k, v] of Object.entries(attributes)) txn.setAttribute(k, v);
+      txn.finish('OK');
+    } else {
+      extension.recordExternal({
+        traceId: 't',
+        spanId: 's',
+        name: 'q',
+        operation: 'db',
+        status: 'OK',
+        sampled: true,
+        startTimestampMs: 1,
+        endTimestampMs: 2,
+        isSnapshot: false,
+        attributes,
+        spans: [],
+      });
+    }
+    return extension.store.drain()[0]?.attributes as Record<string, unknown>;
+  };
+
+  it('scalar statement, recordExternal path', () => {
+    expect(sql.length).toBeGreaterThan(100_000);
+    expect(leaked(run({ 'db.statement': sql }))).toBe(0);
+  });
+
+  it('scalar statement, SDK setAttribute path', () => {
+    expect(leaked(run({ 'db.statement': sql }, true))).toBe(0);
+  });
+
+  it('statement carried in a map, and db.query.text as an array', () => {
+    const out = run({ 'db.statement': { text: sql }, 'db.query.text': [sql, sql] });
+    expect(leaked(out)).toBe(0);
+  });
+
+  it('a nested map under a non-statement key that holds a statement-keyed member', () => {
+    expect(leaked(run({ wrapper: { 'db.statement': sql } }))).toBe(0);
+  });
+});
+
 // `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
 describe('createPerformanceExtension — sanitizeSpans is fail-on', () => {

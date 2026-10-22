@@ -227,3 +227,24 @@ describe('sanitizeSpan: a statement key whose value is not a plain string', () =
     expect(sanitizeSpan(input)).toBe(input);
   });
 });
+
+describe('redactSqlLiterals on a statement that was CUT inside a literal', () => {
+  // Length caps run before redaction, so a long INSERT is cut mid-string. A closed-quote match alone would
+  // leave the open literal (and everything after its opening quote) in the clear.
+  it('replaces an unterminated trailing literal', () => {
+    expect(redactSqlLiterals("INSERT INTO t (doc) VALUES ('patient1@x.example;secret")).toBe(
+      'INSERT INTO t (doc) VALUES (?',
+    );
+    expect(redactSqlLiterals('SELECT "col FROM t')).toBe('SELECT ?');
+  });
+
+  it('handles closed literals followed by an unterminated one, and a doubled quote before the cut', () => {
+    expect(redactSqlLiterals("a = 'x' AND b = 'cd")).toBe('a = ? AND b = ?');
+    // `'it'` closes at the first quote and `'s a sec` is the open tail: both are data, both go.
+    expect(redactSqlLiterals("a = 'it''s a sec")).toBe('a = ??');
+  });
+
+  it('leaves a statement without any quote alone', () => {
+    expect(redactSqlLiterals('SELECT x FROM t')).toBe('SELECT x FROM t');
+  });
+});

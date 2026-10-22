@@ -22,42 +22,31 @@ export function flattenTransactionAttributes(transaction: TransactionWire): Tran
 }
 
 /**
- * `normalizeAttributes`, but returning the SAME record when it was already normal (scalars and scalar arrays
- * only, nothing dropped), so the common path copies nothing. A record whose keys or values cannot be read
- * (a Proxy trap, a throwing getter) counts as changed and yields the normalized copy.
- */
-function normalizedRecord(attributes: Record<string, unknown>): Record<string, unknown> {
-  const normal = normalizeAttributes(attributes);
-  try {
-    const keys = Object.keys(attributes);
-    const same =
-      keys.length === Object.keys(normal).length &&
-      keys.every((key) => normal[key] === attributes[key]);
-    return same ? attributes : normal;
-  } catch {
-    return normal;
-  }
-}
-
-/**
  * The FIRST step of the attribute pipeline, for EVERY transaction: bound each span's attributes (one shared
  * span budget, cycles marked, hostile getters contained) before anything walks them. Consumed OTel spans
  * already went through `normalizeAttributes`, but the SDK's own spans carry whatever `setAttribute`,
  * `recordChildSpan({ attributes })` and `recordExternal` were handed, and the redaction walk that follows
  * is only safe on a bounded tree: raw, a node:http request object took 1-2 s, a branching DAG 3-28 s and a
- * self-referencing object never finished. Returns the SAME transaction when nothing needed changing.
+ * self-referencing object never finished. Always carries the normalized COPY forward (never the caller's record), so every later step reads plain
+ * data properties once-evaluated instead of re-reading getters or proxies. A transaction with no attributes
+ * is returned as is.
  */
 export function normalizeTransactionAttributes(transaction: TransactionWire): TransactionWire {
-  const root =
-    transaction.attributes === undefined ? undefined : normalizedRecord(transaction.attributes);
-  let changed = root !== transaction.attributes;
-  const spans = transaction.spans.map((span) => {
-    if (span.attributes === undefined) return span;
-    const attributes = normalizedRecord(span.attributes);
-    if (attributes === span.attributes) return span;
-    changed = true;
-    return { ...span, attributes };
-  });
-  if (!changed) return transaction;
-  return { ...transaction, ...(root !== undefined ? { attributes: root } : {}), spans };
+  if (
+    transaction.attributes === undefined &&
+    transaction.spans.every((span) => span.attributes === undefined)
+  ) {
+    return transaction; // nothing to read, nothing copied
+  }
+  return {
+    ...transaction,
+    ...(transaction.attributes !== undefined
+      ? { attributes: normalizeAttributes(transaction.attributes) }
+      : {}),
+    spans: transaction.spans.map((span) =>
+      span.attributes === undefined
+        ? span
+        : { ...span, attributes: normalizeAttributes(span.attributes) },
+    ),
+  };
 }

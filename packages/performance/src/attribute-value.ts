@@ -88,8 +88,32 @@ export function asBytes(value: unknown): Uint8Array | undefined {
   return undefined;
 }
 
-const capText = (text: string, max: number): string =>
-  text.length <= max ? text : text.slice(0, max - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+/** Characters a secret-shaped token is made of (JWT, `ghp_`, `sk_live_`, AWS keys, base64url). */
+const isTokenChar = (code: number): boolean =>
+  (code >= 48 && code <= 57) || // 0-9
+  (code >= 65 && code <= 90) || // A-Z
+  (code >= 97 && code <= 122) || // a-z
+  code === 95 || // _
+  code === 45 || // -
+  code === 46 || // .
+  code === 61 || // =
+  code === 43 || // +
+  code === 47; // /
+
+/**
+ * Cut `text` to `max` characters, ending with the marker. With `dropPartialToken`, a token the cut lands INSIDE
+ * is dropped whole: redaction runs after the cap, and a secret shape only matches when complete, so a JWT cut
+ * after its payload (claims readable) or a `ghp_` token cut at 15 of 36 characters would otherwise ship
+ * unredacted. A token that ends exactly at the cut is complete and kept.
+ */
+const capText = (text: string, max: number, dropPartialToken = false): string => {
+  if (text.length <= max) return text;
+  let end = max - TRUNCATION_MARKER.length;
+  if (dropPartialToken && isTokenChar(text.charCodeAt(end))) {
+    while (end > 0 && isTokenChar(text.charCodeAt(end - 1))) end--;
+  }
+  return text.slice(0, end) + TRUNCATION_MARKER;
+};
 
 /** Base64 of a byte array, bounded in work (encodes at most what could fit) and in length. */
 export function boundedBase64(bytes: Uint8Array): string {
@@ -162,8 +186,8 @@ const setOwn = (target: Record<string, unknown>, key: string, value: unknown): v
 };
 
 /** A string leaf or key, cut at the leaf cap and counted against the tree's character budget. */
-function leafText(text: string, budget: Budget): string {
-  const cut = capText(text, MAX_LEAF_LENGTH);
+function leafText(text: string, budget: Budget, dropPartialToken = true): string {
+  const cut = capText(text, MAX_LEAF_LENGTH, dropPartialToken);
   budget.chars += cut.length;
   if (budget.span !== undefined) budget.span.chars += cut.length;
   return cut;
@@ -188,7 +212,7 @@ function toSafe(value: unknown, depth: number, budget: Budget, ancestors: Set<ob
       return SKIP; // undefined, function, symbol
   }
   const bytes = asBytes(value);
-  if (bytes !== undefined) return leafText(boundedBase64(bytes), budget);
+  if (bytes !== undefined) return leafText(boundedBase64(bytes), budget, false);
   if (value instanceof Date) {
     const time = value.getTime();
     return Number.isNaN(time) ? null : new Date(time).toISOString();
@@ -320,24 +344,34 @@ export function stringifyAnyValue(value: unknown): string | undefined {
 const isScalar = (v: unknown): v is string | number | boolean =>
   typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
-/** An array whose non-null elements are all strings, all numbers or all booleans (the pre-1.10 shape), and small. */
-function isPassThroughArray(value: unknown[]): boolean {
-  if (value.length > MAX_ATTRIBUTE_ARRAY_LENGTH) return false;
+/**
+ * A COPY of an array whose non-null elements are all strings, all numbers or all booleans (the pre-1.10
+ * shape) and which is small, else `undefined`. Read by INDEX, once per element: an overridden
+ * `Symbol.iterator` cannot hide an element from the check, a getter cannot answer differently later, and the
+ * result does not alias the caller's array (a later `push({ password })` must not reach the store).
+ */
+function scalarArrayCopy(value: unknown[]): unknown[] | undefined {
+  if (value.length > MAX_ATTRIBUTE_ARRAY_LENGTH) return undefined;
+  const copy: unknown[] = [];
   let kind: string | undefined;
   let chars = 0;
-  for (const item of value) {
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    copy.push(item);
     // OTel 2/3 keep null/undefined entries in a homogeneous array (`['a', null, 'b']`); they pass through.
     if (item === null || item === undefined) continue;
-    if (!isScalar(item)) return false;
+    if (!isScalar(item)) return undefined;
     kind ??= typeof item;
-    if (typeof item !== kind) return false;
+    if (typeof item !== kind) return undefined;
     if (typeof item === 'string') {
       chars += item.length;
-      if (chars > MAX_ATTRIBUTE_STRING_LENGTH) return false;
+      if (chars > MAX_ATTRIBUTE_STRING_LENGTH) return undefined;
     }
   }
-  return true;
+  return copy;
 }
+
+const isPassThroughArray = (value: unknown[]): boolean => scalarArrayCopy(value) !== undefined;
 
 /**
  * Normalize one OTel attribute value for the Bugsee attribute model (the pipeline at the top of this file).
@@ -348,12 +382,15 @@ function isPassThroughArray(value: unknown[]): boolean {
  */
 export function normalizeAttributeValue(value: unknown, span?: SpanBudget): unknown {
   if (value === null || value === undefined) return undefined;
-  if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH);
+  if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH, true);
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'bigint') return bigintToJson(value);
   const bytes = asBytes(value);
   if (bytes !== undefined) return boundedBase64(bytes);
-  if (Array.isArray(value) && isPassThroughArray(value)) return value;
+  if (Array.isArray(value)) {
+    const copy = scalarArrayCopy(value);
+    if (copy !== undefined) return copy;
+  }
   const safe = safeAnyValue(value, span);
   return safe === null ? undefined : safe; // an invalid Date: no value
 }
@@ -390,6 +427,7 @@ export function normalizeAttributes(
  * one bounded JSON string. Total: never throws. `undefined` = drop the attribute.
  */
 export function flattenAttributeValue(value: unknown, span?: SpanBudget): unknown {
+  if (Array.isArray(value) && isPassThroughArray(value)) return value; // already a normalized copy here
   const normal = normalizeAttributeValue(value, span);
   if (normal === null || typeof normal !== 'object') return normal;
   return Array.isArray(normal) && isPassThroughArray(normal) ? normal : stringifyAnyValue(normal);

@@ -236,7 +236,9 @@ that need it sit below `@bugsee/opentelemetry`; the OTel package re-exports it).
 0. **Entry, for every span** (`normalizeTransactionAttributes`, first step of the performance extension's
    `filterTransaction`). The SDK's own spans carry whatever `setAttribute`, `recordChildSpan({ attributes })`
    and `recordExternal` were handed, so every transaction's attributes are bounded here (shared per-span budget,
-   cycles marked, hostile getters contained) before the redaction walk or an integrator filter sees them.
+   cycles marked, a throwing getter or Proxy trap turns into `"[Unreadable]"` or a dropped attribute) before the
+   redaction walk or an integrator filter sees them. Every later step reads the normalized COPY (plain data
+   properties, each source getter read exactly once), never the caller's record.
    Measured before this step, on the raw redaction walk: a `node:http` request object 0.3-0.5 s, a branching
    DAG (3 branches, 14 levels) 4 s, a self-referencing object 17 s; after it, each takes under 3 ms.
 1. **Consume** (`readableSpanToConsumed` -> `normalizeAttributes`). Scalars and small homogeneous scalar arrays
@@ -269,12 +271,19 @@ and a bounded JSON `stringValue` for maps/arrays.
 
 | input | after consume | at the wire / OTLP produce |
 | --- | --- | --- |
-| string / boolean / number | unchanged (string capped at 32 KiB) | `stringValue` / `boolValue` / `intValue` or `doubleValue` |
-| homogeneous scalar array | unchanged | unchanged; OTLP: JSON `stringValue` (existing behaviour) |
+| string / boolean / number | unchanged (a string over 32 KiB is cut, marked, and its unfinished final token dropped) | `stringValue` / `boolValue` / `intValue` or `doubleValue` |
+| homogeneous scalar array (null entries allowed) | an equal COPY (never the caller's array: a later `push` cannot reach the store) | the same copy; OTLP: JSON `stringValue` (existing behaviour) |
 | nested map, mixed/nested array | bounded tree (redactable) | one bounded JSON string |
 | byte array | base64 string | string; `toAnyValue`: `bytesValue` (base64, bounded) |
-| bigint | number if exact, else decimal string | `intValue` |
+| bigint | number if exact, else decimal string | `intValue` for a safe-range value (a number by then); a beyond-safe-range bigint is already decimal text and exports as `stringValue` |
 | null, undefined, function, symbol | dropped | dropped |
+
+*Cuts and redaction.* Length caps run BEFORE redaction, so a cut must never leave something redaction can no
+longer recognise: a SQL statement cut inside a string literal has its open trailing literal replaced
+(`redactSqlLiterals` handles an unterminated `'`/`"`), and a text cut inside a token (a JWT after its payload, a
+`ghp_` token at 15 of 36 characters) drops the unfinished token, because secret shapes only match when
+complete. A text with no token boundary at all (a single blob past the cap) is dropped to the marker. Byte
+arrays (base64) are not text and are only cut.
 
 *Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE and per SPAN: every string leaf and key is
 cut at 8128 characters before it is copied (a key that long is not kept, and its value is redacted, so a cut can
@@ -294,7 +303,7 @@ other class instance is read by own enumerable properties (so a Map or Set is `{
 with null entries (`['a', null]`, which OTel 2/3 keep) passes through unchanged. Known limit: `Object.keys` on a plain object with millions of
 keys still allocates its key list before the node budget stops the copy. Residual cost: the redaction step
 still scans string leaves for secret shapes, and an adversarial leaf dense in `eyJ` (JWT-prefix) text costs about
-10 ms per 8 KB; the per-span character budget caps that at roughly 60 ms for a span. `isSensitiveKey` now
+10 ms per 8 KB; the per-span character budget caps that at roughly 100 ms for a span (measured by the review). `isSensitiveKey` now
 normalises its denylist once (0.3 us per key instead of 4 us). `sanitizeSpan` is exported but assumes bounded
 input (it is only safe on values that went through `normalizeTransactionAttributes`, as the extension does).
 
