@@ -432,7 +432,8 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     const w = domainWorld([new Win(1)]);
     const { client } = launchDomains(w, { captureSystemEvents: false });
     expect(w.powerMonitor.total()).toBe(0);
-    expect(w.app.count('browser-window-created')).toBe(0);
+    // no window/renderer EVENTS, but the displays trace follows the key window: windowFocus + windowMoved only
+    expect(w.app.count('browser-window-created')).toBe(2);
     expect(w.app.count('web-contents-created')).toBe(0);
     expect(w.screen.total()).toBe(3); // the displays trace producer, not the events
     await client.stop();
@@ -450,9 +451,9 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     const { client } = launchDomains(w);
     expect(w.powerMonitor.total()).toBe(6);
     expect(w.screen.total()).toBe(6); // events (3) + the displays trace (3)
-    expect(w.app.count('browser-window-created')).toBe(2);
+    expect(w.app.count('browser-window-created')).toBe(3); // focus, visibility, moved (the displays trace's key window)
     expect(w.app.count('web-contents-created')).toBe(1);
-    expect(win.total()).toBe(6);
+    expect(win.total()).toBe(8); // focus, blur, show, hide, moved + closed x3
     await client.stop();
     expect(domainListeners(w)).toBe(0);
     expect(win.total()).toBe(0);
