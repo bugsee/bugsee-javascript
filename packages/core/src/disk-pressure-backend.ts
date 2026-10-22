@@ -90,7 +90,7 @@ export interface DiskPressureBackendOptions {
    */
   onWriteError?: (error: unknown) => void;
   /**
-   * Called (once per snapshot) when reading the DURABLE half fails: a closed IndexedDB connection, a medium that cannot
+   * Called (once per STREAK of failed reads: a read that succeeds ends the streak) when reading the DURABLE half fails: a closed IndexedDB connection, a medium that cannot
    * be read. The snapshot then serves what the process still holds in memory instead of failing, so a live report is
    * not lost with the disk. Without a callback the failure is swallowed the same way.
    */
@@ -319,7 +319,14 @@ export function withDiskPressure(
       }
       let timer: { unref?: () => void } | undefined;
       const overran = new Error('bugsee: the durable capture store did not answer a read in time');
-      const reading = snap.drainAll();
+      // A drainAll that THROWS synchronously is a failed read like any other (a public backend may do that): it must not
+      // fail the report, so it becomes a rejection the handling below treats the same way.
+      let reading: Promise<Map<FileType, StoredEntry[]>>;
+      try {
+        reading = snap.drainAll();
+      } catch (error) {
+        reading = Promise.reject(error);
+      }
       try {
         const timeout = new Promise<never>((_, reject) => {
           timer = timers.setTimeout(

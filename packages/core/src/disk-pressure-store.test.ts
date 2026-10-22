@@ -1519,6 +1519,42 @@ describe('withDiskPressure — a slow but HEALTHY medium is never treated as dea
     }
   });
 
+  it("the underlying snapshot of a background read is released when that read SETTLES (and not before), and its backstop timer is unref'd", async () => {
+    vi.useFakeTimers();
+    try {
+      const unrefs: Array<ReturnType<typeof vi.fn>> = [];
+      const g = globalThis as unknown as {
+        setTimeout: (cb: () => void, ms?: number) => unknown;
+      };
+      const realSet = g.setTimeout;
+      vi.spyOn(g, 'setTimeout').mockImplementation(((cb: () => void, ms?: number) => {
+        const handle = realSet(cb, ms) as { unref?: () => void };
+        if (ms === 30_000) {
+          const unref = vi.fn(handle.unref?.bind(handle));
+          handle.unref = unref;
+          unrefs.push(unref);
+        }
+        return handle;
+      }) as never);
+      const m = setup();
+      m.state.mode = 'fail';
+      await m.report();
+      m.state.mode = 'slow';
+      const releasesBefore = m.state.releases;
+      const second = m.report(); // overruns: the owner's release() is deferred, the read lives on
+      await vi.advanceTimersByTimeAsync(2000);
+      await second;
+      expect(m.state.releases).toBe(releasesBefore); // nothing released while the background read is alive
+      await vi.advanceTimersByTimeAsync(1000); // it settles at 3 s
+      expect(m.state.releases).toBe(releasesBefore + 1); // and only then is the snapshot (its pins) released
+      expect(unrefs.length).toBeGreaterThan(0);
+      expect(unrefs.every((u) => u.mock.calls.length > 0)).toBe(true); // a backstop must never keep a process alive
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
   it('twenty reports in a row against a medium that is slow (3 s) after one failure: from the second on, EVERY one has the data', async () => {
     vi.useFakeTimers();
     try {
@@ -1724,5 +1760,45 @@ describe('withDiskPressure — a failed probe keeps a part that HAS its meta ope
     store.tick(3000); // part 1 is closed: it must be sealed (it is still marked opened)
     const meta = JSON.parse(storage.read(1, 1, 'meta') as string) as { e: number | null };
     expect(meta.e).toBe(3000);
+  });
+});
+
+describe('withDiskPressure — a durable drainAll that THROWS synchronously', () => {
+  const syncThrow = (): ChunkBackend => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    return {
+      ...memory,
+      snapshot: (parts) => ({
+        ...memory.snapshot(parts),
+        drainAll: () => {
+          throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        },
+      }),
+    };
+  };
+
+  it('does not fail the report: the shadow is served and the failure is reported (shadowed path)', async () => {
+    const onReadError = vi.fn();
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(syncThrow(), pressure, { onReadError });
+    pressure.observe(5 * MB);
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'only-copy'));
+    const all = await backend
+      .snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }])
+      .drainAll();
+    expect(names(all.get('log'))).toEqual(['only-copy']);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect((onReadError.mock.calls[0]?.[0] as { code?: string }).code).toBe('EIO');
+  });
+
+  it('does not fail the report on the unshadowed path either', async () => {
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(syncThrow(), createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+    expect((await snap.drainAll()).size).toBe(0);
+    expect(onReadError).toHaveBeenCalledOnce();
   });
 });

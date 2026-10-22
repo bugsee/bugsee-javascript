@@ -1,6 +1,7 @@
 import {
   closeSync as closeSyncReal,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   openSync as openSyncReal,
   readFileSync,
@@ -1024,6 +1025,27 @@ describe('createBatchedFsChunkStorage — read() decodes the joined bytes once',
     s.append(GEN, CHUNK, 'log', 'café ☃\n');
     s.flushSync?.();
     expect(s.read(GEN, CHUNK, 'log')).toBe('café ☃\n'); // intact across the disk/tail boundary
+    s.dispose?.();
+  });
+});
+
+describe('createBatchedFsChunkStorage — a file whose DIRECTORY could not be created is created by the retry', () => {
+  it('mkdir refused at the first append, allowed later: the waiting records are written once the retry creates the directory too', () => {
+    const root = mkRoot();
+    let mkdirRefused = true;
+    const s = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      ensureDir: (dir) => {
+        if (mkdirRefused && dir !== root)
+          throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'x\n'); // neither the directory nor the file can be created
+    expect(s.read(GEN, CHUNK, 'log')).toBe('x\n');
+    mkdirRefused = false;
+    s.flushSync?.(); // the retry must create the directory as well as open the file
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['x']);
     s.dispose?.();
   });
 });
