@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { redactFormBody } from './pairs';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
 
 // Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
@@ -244,6 +245,21 @@ describe('sanitizeErrorMessage', () => {
 
 // Review findings (privacy reviewer): each was reproduced against the real exports
 // before the fix, and each is pinned here.
+describe('sanitizeUrl — a second # in the fragment', () => {
+  it('redacts an implicit-flow token after a hash-router route (vue-router hash mode)', () => {
+    expect(sanitizeUrl('https://a.com/#/cb?x=1#access_token=S')).toBe(
+      'https://a.com/#/cb?x=1#access_token=%3Credacted%3E',
+    );
+    expect(sanitizeUrl('https://a.com/#a=1#b=2#token=S&c=3')).toBe(
+      'https://a.com/#a=1#b=2#token=%3Credacted%3E&c=3',
+    );
+  });
+
+  it('a # inside a form body value is still part of the value (bodies are not fragments)', () => {
+    expect(redactFormBody('password=ab#cd&x=1')).toBe('password=%3Credacted%3E&x=1');
+  });
+});
+
 describe('sanitizeUrl — separators, nesting, and bounds', () => {
   it('redacts a `;`-separated query parameter (the legacy CGI/PHP separator)', () => {
     expect(sanitizeUrl('https://x.com/a?foo=1;api_key=SECRET;bar=2')).toBe(

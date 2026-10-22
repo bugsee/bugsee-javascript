@@ -473,18 +473,121 @@ describe('createBrowserNavigationSource', () => {
       second.off();
     });
 
-    it('a deleted method is wrapped afresh on restart', () => {
-      const { history, mk } = sharedEnv();
-      const source = mk();
+    it('a deleted own wrapper (the prototype method shows through) is wrapped afresh on restart', () => {
+      const protoPush = vi.fn();
+      const protoReplace = vi.fn();
+      const history = Object.create({ pushState: protoPush, replaceState: protoReplace }) as {
+        pushState: (...a: unknown[]) => unknown;
+        replaceState: (...a: unknown[]) => unknown;
+      };
+      const location = { pathname: '/p', href: 'https://a.com/p' };
+      const source = createBrowserNavigationSource({ history, location, isolated: true });
       const first = collect(source);
       first.off();
-      const replacement = vi.fn();
-      history.pushState = replacement;
+      history.pushState = vi.fn(); // somebody replaces our slot with their own function
+      delete (history as { pushState?: unknown }).pushState; // and then deletes it again: the prototype method is back
       const second = collect(source);
-      expect(history.pushState).not.toBe(replacement);
+      location.pathname = '/q';
       history.pushState({}, '', '/q');
-      expect(replacement).toHaveBeenCalledTimes(1);
+      expect(second.events.map((e) => e.to)).toEqual(['/q']);
+      expect(protoPush).toHaveBeenCalledTimes(1);
       second.off();
+    });
+
+    it('a History method that is not a function is left alone (nothing to wrap, nothing thrown)', () => {
+      const history = { pushState: undefined, replaceState: undefined } as never;
+      const source = createBrowserNavigationSource({
+        history,
+        location: { pathname: '/p' },
+        isolated: true,
+      });
+      const events = collect(source);
+      expect((history as { pushState: unknown }).pushState).toBeUndefined();
+      expect((history as { replaceState: unknown }).replaceState).toBeUndefined();
+      events.off();
+    });
+
+    it('a restart whose top is already one of OUR wrappers does not wrap again', () => {
+      const { history, mk, location } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const ours = history.pushState; // our first wrapper
+      thirdParty(history);
+      first.off(); // stays in the chain under the third party
+      history.pushState = ours; // the third party puts our wrapper back on top
+      const again = collect(source);
+      expect(history.pushState).toBe(ours); // not wrapped a second time
+      location.pathname = '/x';
+      history.pushState({}, '', '/x');
+      expect(again.events.map((e) => e.to)).toEqual(['/x']);
+      again.off();
+    });
+
+    it('scenario D: a third party restoring the function it saved earlier still leaves a live wrapper', () => {
+      const { history, mk, location } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const saved = history.pushState; // what a third party saves before wrapping over us
+      const tp = thirdParty(history);
+      first.off(); // cannot restore: the third party is on top, our first wrapper stays in the chain
+      const second = collect(source); // a fresh wrapper on top of the third party's
+      expect(history.pushState).not.toBe(tp.wrapper);
+      history.pushState = saved; // the third party "unwraps": puts back the function it saved (our first wrapper)
+      location.pathname = '/d';
+      history.pushState({}, '', '/d');
+      expect(second.events.map((e) => e.to)).toEqual(['/d']); // exactly once, from the surviving wrapper
+      expect(tp.calls).toHaveLength(0);
+      second.off();
+    });
+
+    it('exactly one event per navigation however many of our wrappers the chain holds', () => {
+      const { history, orig, mk, location } = sharedEnv();
+      const source = mk();
+      const events = collect(source);
+      collect(source).off();
+      const tp = thirdParty(history); // wrapper over us
+      events.off();
+      const again = collect(source); // our second wrapper over the third party's: two of ours in one chain
+      location.pathname = '/once';
+      history.pushState({}, '', '/once');
+      expect(again.events.map((e) => e.to)).toEqual(['/once']);
+      expect(orig.push).toHaveBeenCalledTimes(1);
+      expect(tp.calls).toHaveLength(1);
+      again.off();
+    });
+
+    it('restarting many times with nobody else wrapping never grows the chain', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      for (let i = 0; i < 50; i += 1) collect(source).off();
+      expect(history.pushState).toBe(orig.push);
+      expect(history.replaceState).toBe(orig.replace);
+    });
+
+    it('a navigation that THROWS emits nothing and does not wedge later ones', () => {
+      const { history, orig, mk, location } = sharedEnv();
+      orig.push.mockImplementationOnce(() => {
+        throw new Error('SecurityError');
+      });
+      const events = collect(mk());
+      expect(() => history.pushState({}, '', '/bad')).toThrow('SecurityError');
+      expect(events.events).toEqual([]);
+      location.pathname = '/good';
+      history.pushState({}, '', '/good');
+      expect(events.events.map((e) => e.to)).toEqual(['/good']);
+      events.off();
+    });
+
+    it('a nested call of the same method (an inner library pushState) is one event', () => {
+      const { history, orig, mk, location } = sharedEnv();
+      orig.push.mockImplementationOnce(() => {
+        history.pushState({}, '', '/inner');
+      });
+      const events = collect(mk());
+      location.pathname = '/inner';
+      history.pushState({}, '', '/outer');
+      expect(events.events.map((e) => e.to)).toEqual(['/inner']);
+      events.off();
     });
 
     it('stopping the top source does NOT unwind a live source beneath it', () => {

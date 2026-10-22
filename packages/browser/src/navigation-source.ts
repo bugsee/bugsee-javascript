@@ -122,14 +122,15 @@ const pathOf = (url: string | undefined): string | undefined => {
   }
 };
 
-/** One History method we wrapped: what it wrapped (`orig`), whether it still emits, whether it left the chain. */
+/**
+ * One History method wrapper a source installed: what it wrapped (`orig`) and whether its source is still active. Kept
+ * for every wrapper any source installed, so a stopping source can unwind the dead wrappers on top of the chain.
+ */
 interface HistoryHook {
   orig: (...args: unknown[]) => unknown;
-  wrapper: (...args: unknown[]) => unknown;
-  live: boolean;
-  emit: () => void;
+  isLive: () => boolean;
+  owner: object;
 }
-// Every wrapper any source installed, by function, so a source stopping on top can unwind the dead ones under it.
 const hooks = new WeakMap<(...args: unknown[]) => unknown, HistoryHook>();
 
 class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDetail }> {
@@ -138,8 +139,9 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
   readonly #target: NavTarget | undefined;
   readonly #location: LocationLike | undefined;
   readonly #navigation: NavigationApiLike | undefined;
-  #pushHook: HistoryHook | undefined;
-  #replaceHook: HistoryHook | undefined;
+  #live = false;
+  /** Per method: a wrapper of this source is already running (the outermost one emits, the rest only pass through). */
+  readonly #inFlight = { pushState: false, replaceState: false };
 
   readonly #onPopstate = (): void => this.#emitFromLocation('traverse');
   readonly #onHashchange = (): void => this.#emitFromLocation('hash');
@@ -193,76 +195,83 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
 
   /**
    * Wrap one History method (call the original FIRST, then emit). Every activation puts a FRESH wrapper on top of
-   * whatever is there now. A wrapper left from an earlier activation (a stop that could not take it out because a third
-   * party sits above it) is inert (`live` is false) wherever it is in the chain, so a restart never double-emits, and it
-   * is never reused: whether it is still reachable cannot be known (a third party may have restored the original).
+   * whatever is there now (unless the top already is one of this source's own), and ALL of this source's wrappers stay
+   * live for as long as the source is: only the OUTERMOST call of a source emits (an in-flight flag), so however many of
+   * its wrappers a chain holds, one navigation is one event. That is what makes it safe when a third party restores a
+   * function it saved earlier: whichever of our wrappers that puts back on top still emits.
    */
-  #hook(
+  #wrap(
     history: HistoryLike,
     method: 'pushState' | 'replaceState',
     type: 'push' | 'replace',
-  ): HistoryHook {
-    const hook: HistoryHook = {
-      orig: history[method],
-      live: true,
-      wrapper: undefined as never, // assigned just below (the wrapper closes over `hook`)
-      emit: () => this.#emitFromLocation(type),
+  ): void {
+    const current = history[method];
+    if (typeof current !== 'function' || hooks.get(current)?.owner === this) return;
+    const hook: HistoryHook = { orig: current, isLive: () => this.#live, owner: this };
+    const inFlight = this.#inFlight;
+    const emit = (): void => {
+      if (this.#live) this.#emitFromLocation(type);
     };
-    hook.wrapper = function (this: unknown, ...args: unknown[]): unknown {
-      const result = hook.orig.apply(this, args); // the app's navigation happens FIRST (never blocked)
-      if (hook.live) hook.emit();
-      return result;
+    const installed = function (this: unknown, ...args: unknown[]): unknown {
+      const outermost = !inFlight[method];
+      inFlight[method] = true;
+      let completed = false;
+      try {
+        const result = hook.orig.apply(this, args); // the app's navigation happens FIRST (never blocked)
+        completed = true;
+        return result;
+      } finally {
+        if (outermost) {
+          inFlight[method] = false;
+          if (completed) emit(); // a navigation that threw did not happen
+        }
+      }
     };
-    hooks.set(hook.wrapper, hook);
-    history[method] = hook.wrapper;
-    return hook;
+    hooks.set(installed, hook);
+    history[method] = installed;
   }
 
   /**
-   * Stop emitting and, only if our wrapper is still the OUTERMOST one, take it out (unwinding any dead wrapper of another
-   * source beneath it). A wrapper that someone installed after us is not ours to remove: restoring the saved original
-   * would delete theirs, so ours stays in the chain as a pass-through (it no longer emits) until it can be unwound.
+   * Take our wrappers off a method once the source is stopped: starting from the TOP, drop every consecutive wrapper
+   * whose source is inactive (ours, or another stopped source's). A wrapper of a live source, or anyone else's, ends the
+   * unwinding: it is not ours to remove, and the dead ones beneath it stay as inert pass-throughs (an inactive source
+   * never emits) until a later stop can unwind them.
    */
-  #release(
-    history: HistoryLike,
-    method: 'pushState' | 'replaceState',
-    hook: HistoryHook | undefined,
-  ): void {
-    if (hook === undefined) return;
-    hook.live = false;
-    if (history[method] !== hook.wrapper) return;
-    let target = hook.orig;
+  #unwind(history: HistoryLike, method: 'pushState' | 'replaceState'): void {
+    let target = history[method];
     for (
-      let below = hooks.get(target);
-      below !== undefined && !below.live;
-      below = hooks.get(target)
+      let hook = hooks.get(target);
+      hook !== undefined && !hook.isLive();
+      hook = hooks.get(target)
     ) {
-      target = below.orig;
+      target = hook.orig;
     }
-    history[method] = target;
+    if (target !== history[method]) history[method] = target;
   }
 
   protected onActivate(): void {
+    this.#live = true;
     // Prefer the Navigation API: one `currententrychange` listener covers every same-document navigation.
     if (this.#navigation !== undefined) {
       this.#navigation.addEventListener('currententrychange', this.#onCurrentEntryChange);
       return;
     }
     if (this.#history !== undefined) {
-      this.#pushHook = this.#hook(this.#history, 'pushState', 'push');
-      this.#replaceHook = this.#hook(this.#history, 'replaceState', 'replace');
+      this.#wrap(this.#history, 'pushState', 'push');
+      this.#wrap(this.#history, 'replaceState', 'replace');
     }
     this.#target?.addEventListener('popstate', this.#onPopstate);
     this.#target?.addEventListener('hashchange', this.#onHashchange);
   }
 
   protected override onDeactivate(): void {
+    this.#live = false;
     if (this.#navigation !== undefined) {
       this.#navigation.removeEventListener('currententrychange', this.#onCurrentEntryChange);
     }
     if (this.#history !== undefined) {
-      this.#release(this.#history, 'pushState', this.#pushHook);
-      this.#release(this.#history, 'replaceState', this.#replaceHook);
+      this.#unwind(this.#history, 'pushState');
+      this.#unwind(this.#history, 'replaceState');
     }
     this.#target?.removeEventListener('popstate', this.#onPopstate);
     this.#target?.removeEventListener('hashchange', this.#onHashchange);

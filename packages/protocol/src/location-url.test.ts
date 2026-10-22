@@ -244,6 +244,36 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/?x=1#/nav?code=${R}`,
     ],
     [
+      'a second # in the fragment: access_token',
+      'https://a.com/#/cb?x=1#access_token=S',
+      `https://a.com/#/cb?x=1#access_token=${R}`,
+    ],
+    [
+      'a second # in the fragment: code',
+      'https://a.com/#/cb?x=1#code=S',
+      `https://a.com/#/cb?x=1#code=${R}`,
+    ],
+    [
+      'a third # in the fragment',
+      'https://a.com/#a=1#b=2#token=S',
+      `https://a.com/#a=1#b=2#token=${R}`,
+    ],
+    [
+      'a second # in a file: fragment',
+      'file:///app/index.html#/cb?x=1#code=S',
+      `file:///…/index.html#/cb?x=1#code=${R}`,
+    ],
+    [
+      'a nested value that is only a fragment',
+      'https://a.com/?next=%23access_token%3DS',
+      `https://a.com/?next=%23access_token%3D%253Credacted%253E`,
+    ],
+    [
+      'a nested relative value with a fragment',
+      'https://a.com/?next=cb%23code%3DS',
+      `https://a.com/?next=cb%23code%3D%253Credacted%253E`,
+    ],
+    [
       'extended keys in a matrix segment',
       'https://a.com/app;session=S/x',
       `https://a.com/app;session=${R}/x`,
@@ -372,6 +402,10 @@ describe('sanitizeLocationUrl: the rule table', () => {
       const out = sanitizeLocationUrl(`https://a.com/${'a'.repeat(8192 - 14 - 1)}%2Fzzz`);
       expect(out.endsWith(`a${MARK}`)).toBe(true);
     });
+    it('clips FIRST: tab padding that normalisation would strip still counts toward the 8192', () => {
+      const out = sanitizeLocationUrl(`https://a.com/${'\t'.repeat(9000)}${'a'.repeat(100)}`);
+      expect(out).toBe(`https://a.com/${MARK}`);
+    });
     it('clips BEFORE normalising: a huge input costs the same as a clipped one', () => {
       const out = sanitizeLocationUrl(`https:${'/'.repeat(1_000_000)}a.com/x`);
       expect(out.length).toBeLessThanOrEqual(8192 + MARK.length + 8);
@@ -420,12 +454,33 @@ describe('sanitizeLocationUrl: the rule table', () => {
         'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Fq%3D%C3%A9%26token%3D%253Credacted%253E',
       );
     });
-    it('a lone surrogate in a nested value never throws and keeps the shape', () => {
-      const out = sanitizeLocationUrl(
-        'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D\ud800',
+    it('a lone surrogate in a nested value never throws and the value stays ENCODED (the shape survives)', () => {
+      expect(
+        sanitizeLocationUrl('https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D\ud800'),
+      ).toBe(
+        'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3D%253Credacted%253E%26x%3D%EF%BF%BD',
       );
-      expect(out.startsWith('https://a.com/?next=')).toBe(true);
-      expect(out).not.toContain('token%3DS%26');
+    });
+    it('a well-formed surrogate pair (an emoji) is encoded as one character', () => {
+      expect(
+        sanitizeLocationUrl(
+          'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D%F0%9F%98%80',
+        ),
+      ).toBe(
+        'https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3D%253Credacted%253E%26x%3D%F0%9F%98%80',
+      );
+    });
+    it('runs of lone surrogates are each replaced', () => {
+      const out = (run: string) =>
+        sanitizeLocationUrl(`https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D${run}`);
+      expect(out('\ud800\ud800')).toContain('%26x%3D%EF%BF%BD%EF%BF%BD');
+      expect(out('\udc00\udc00')).toContain('%26x%3D%EF%BF%BD%EF%BF%BD');
+      expect(out('\udc00\ud800')).toContain('%26x%3D%EF%BF%BD%EF%BF%BD');
+    });
+    it('a lone LOW surrogate too', () => {
+      expect(
+        sanitizeLocationUrl('https://a.com/?next=https%3A%2F%2Fb.com%2F%3Ftoken%3DS%26x%3D\udc00y'),
+      ).toContain('%26x%3D%EF%BF%BDy');
     });
     it('a malformed escape falls back to the raw value', () => {
       expect(sanitizeLocationUrl('https://a.com/l?u=%E0%A4%A/x?token=S')).toBe(
@@ -464,8 +519,9 @@ describe('sanitizeLocationUrl: the rule table', () => {
     it.each(cases)('%s + %s -> %s', (href, pathname, expected) => {
       expect(sanitizeLocationName(href, pathname)).toBe(expected);
     });
-    it('a multi-line fragment or query is cut as well', () => {
-      expect(sanitizeLocationName(undefined, '/a?x=1\n2#f\ng')).toBe('/a');
+    it('a query or fragment with a line separator is cut as well', () => {
+      expect(sanitizeLocationName(undefined, '/a?x=1\u20282#f\u2029g')).toBe('/a');
+      expect(sanitizeLocationName('https://a.com/p?x=1\u20282#f', '/ignored')).toBe('/p');
     });
   });
 

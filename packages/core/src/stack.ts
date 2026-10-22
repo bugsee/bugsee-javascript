@@ -82,6 +82,30 @@ export function setStackAppRoot(root: string | undefined): void {
   appRoot = root.endsWith(separator) ? root : `${root}${separator}`;
 }
 
+// A page loads the same few script URLs for every frame of every stack (and `applyDebugIds` parses a chunk list per
+// error), so sanitizing each occurrence from scratch measured ~16x the parse cost (8.6 -> 141 us per 50-frame stack).
+// Results are cached by URL in a small bounded map, emptied whenever it fills (cheap, and a miss only costs one sanitize).
+const FRAME_URL_CACHE_MAX = 512;
+const frameUrlCache = new Map<string, string>();
+
+/**
+ * Sanitize the URL of a browser frame, keeping Firefox's eval suffix. Firefox reports code from `eval`/`new Function`
+ * as `https://x/app.js line 2 > Function`: everything from the first whitespace is that suffix, not part of the URL, and
+ * without it the eval frame would read as the script itself.
+ */
+function sanitizeFrameUrl(frame: string): string {
+  const space = frame.search(/\s/);
+  const url = space < 0 ? frame : frame.slice(0, space);
+  const suffix = space < 0 ? '' : frame.slice(space);
+  let clean = frameUrlCache.get(url);
+  if (clean === undefined) {
+    clean = sanitizeUrl(url);
+    if (frameUrlCache.size >= FRAME_URL_CACHE_MAX) frameUrlCache.clear();
+    frameUrlCache.set(url, clean);
+  }
+  return clean + suffix;
+}
+
 function scrubFramePath(path: string): string {
   let scrubbed = path;
   if (scrubbed.startsWith('file://')) {
@@ -92,7 +116,7 @@ function scrubFramePath(path: string): string {
     // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak. A script URL can
     // still carry credentials (`https://user:pw@host/`) or a signed query (`app.js?token=…`), so it goes through the
     // network URL sanitizer; an ordinary `app.js?v=2` is unchanged.
-    return sanitizeUrl(scrubbed);
+    return sanitizeFrameUrl(scrubbed);
   }
   const dependency = scrubbed.indexOf('/node_modules/');
   if (dependency >= 0) {

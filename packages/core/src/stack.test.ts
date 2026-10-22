@@ -9,6 +9,26 @@ import {
 } from './stack';
 
 describe('parseV8Stack', () => {
+  it("keeps Firefox's eval suffix while sanitizing the script URL", () => {
+    expect(parseLocation('https://app.test/a.js?token=S line 2 > Function:1:5').file).toBe(
+      'https://app.test/a.js?token=%3Credacted%3E line 2 > Function',
+    );
+    expect(parseLocation('https://app.test/a.js line 2 > eval line 5 > eval:1:1').file).toBe(
+      'https://app.test/a.js line 2 > eval line 5 > eval',
+    );
+  });
+
+  it('returns the same sanitized URL for repeated frames, and survives more distinct URLs than the cache holds', () => {
+    const one = parseLocation('https://app.test/a.js?token=S:1:1').file;
+    expect(parseLocation('https://app.test/a.js?token=S:2:2').file).toBe(one);
+    for (let i = 0; i < 1500; i += 1) {
+      expect(parseLocation(`https://app.test/chunk-${i}.js?token=S:1:1`).file).toBe(
+        `https://app.test/chunk-${i}.js?token=%3Credacted%3E`,
+      );
+    }
+    expect(parseLocation('https://app.test/a.js?token=S:3:3').file).toBe(one);
+  });
+
   it('redacts credentials and signed query values in a script URL frame, keeps an ordinary one', () => {
     expect(parseLocation('https://u:pw@app.test/a.js?token=SECRET&v=2:3:4').file).toBe(
       'https://u:%3Credacted%3E@app.test/a.js?token=%3Credacted%3E&v=2',

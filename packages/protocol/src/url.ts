@@ -1,4 +1,4 @@
-import { isFormSegment, redactSensitivePairs } from './pairs';
+import { isFormSegment, redactSensitiveFragmentPairs, redactSensitivePairs } from './pairs';
 import { REDACTED_URL_ENCODED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 
@@ -162,7 +162,7 @@ export function sanitizeUrlCore(
 
   const fragment = out.indexOf('#');
   if (fragment >= 0) {
-    out = redactSensitivePairs(out, fragment + 1, out.length, false, extraKey);
+    out = redactSensitiveFragmentPairs(out, fragment + 1, out.length, extraKey);
   }
 
   return redactShapes(out, options);

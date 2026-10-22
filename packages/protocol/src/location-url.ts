@@ -31,7 +31,7 @@ export const TRUNCATED_URL_MARKER = '%3Ctruncated%3E';
 
 const SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):/;
 /** A query value that is worth sanitizing as an address: an absolute or protocol-relative URL, a path, `scheme:`
- *  anything, or anything carrying a `?` (a relative return path with its own query). */
+ *  anything, or anything carrying a `?` or `#` (a relative return path with its own query, a bare `#access_token=…`). */
 const NESTED_RAW = /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\/)/;
 /** `scheme://authority` at the start of a blob/filesystem inner URL (the authority ends at `/`, `?`, `#` or `\`). */
 const INNER_ORIGIN = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#\\]*)/;
@@ -82,27 +82,32 @@ function decodeTolerant(raw: string): string {
   });
 }
 
-/** `encodeURIComponent`, except a lone surrogate (which makes it throw) leaves the value as it is. */
-const encodeSafe = (value: string): string => {
-  try {
-    return encodeURIComponent(value);
-  } catch {
-    return value;
-  }
-};
+/** `encodeURIComponent` for any string: a lone surrogate (which makes it throw) is first replaced by U+FFFD, so the
+ *  value stays ENCODED and the shape of the address survives. */
+const encodeSafe = (value: string): string =>
+  encodeURIComponent(
+    value.replace(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+      '\ufffd',
+    ),
+  );
 
 const redactPairs = (value: string): string =>
   redactSensitivePairs(value, 0, value.length, false, isLocationKey);
 
-/** A fragment (or file fragment): its pairs, then the pairs after a hash-router `?` (`#/nav?code=C`), whose first key
+/** One `#`-free piece of a fragment: its pairs, then the pairs after a hash-router `?` (`#/nav?code=C`), whose first key
  *  would otherwise carry the route as a prefix (`/nav?code`) and miss an exact-key match. */
-function redactFragment(fragment: string): string {
-  const once = redactPairs(fragment);
+function redactFragmentPiece(piece: string): string {
+  const once = redactPairs(piece);
   const question = once.indexOf('?');
   return question < 0
     ? once
     : redactSensitivePairs(once, question + 1, once.length, false, isLocationKey);
 }
+
+/** A fragment, cut at every further `#` (vue-router hash mode: `#/cb?x=1#access_token=…`), each piece scanned alone. */
+const redactFragment = (fragment: string): string =>
+  fragment.split('#').map(redactFragmentPiece).join('#');
 
 /**
  * `file:` keeps `file:///…/<last path segment>`, so a local path (`/Users/bob/…`, `C:\Users\…`, a UNC host) never
@@ -143,7 +148,8 @@ function sanitizeFileUrl(
 }
 
 /** Whether a (decoded) query value should be sanitized as an address. */
-const looksNested = (value: string): boolean => NESTED_RAW.test(value) || value.includes('?');
+const looksNested = (value: string): boolean =>
+  NESTED_RAW.test(value) || value.includes('?') || value.includes('#');
 
 /**
  * Sanitize each value of the `key=value` run in `[start, end)` that looks like a URL or a path with a query, to a
@@ -158,6 +164,8 @@ function sanitizeNestedRun(
   end: number,
   options: ShapeRedactionOptions | undefined,
   depth: number,
+  /** A fragment: a further `#` also ends a pair (`#/cb?x=1#access_token=…`). */
+  splitHash = false,
 ): string {
   const pieces: string[] = [];
   let changed = false;
@@ -168,7 +176,7 @@ function sanitizeNestedRun(
     let eq = -1;
     for (; segEnd < end; segEnd += 1) {
       const c = url[segEnd];
-      if (c === '&' || c === ';') {
+      if (c === '&' || c === ';' || (splitHash && c === '#')) {
         break;
       }
       if (eq < 0 && c === '=') {
@@ -229,7 +237,7 @@ function sanitizeNestedQueryUrls(
   // all carry a nested address, and a route prefix before the first `=` is not part of any value.
   const fragment = url.indexOf('#');
   if (fragment >= 0) {
-    url = sanitizeNestedRun(url, fragment + 1, url.length, options, depth);
+    url = sanitizeNestedRun(url, fragment + 1, url.length, options, depth, true);
   }
   return url;
 }

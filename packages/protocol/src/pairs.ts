@@ -116,6 +116,25 @@ export function redactSensitivePairs(
   return out === undefined ? input : out + input.slice(copyFrom);
 }
 
+/**
+ * Redact the pairs of a URL FRAGMENT, `[start, end)` of `input`. A fragment can hold a second `#` (vue-router's hash mode
+ * puts an implicit-flow `#access_token=…` after the route, `#/cb?x=1#access_token=…`), and `#` is not a pair separator for
+ * {@link redactSensitivePairs} (in a form body it is an ordinary value character), so the fragment is cut at every `#`
+ * and each piece is scanned on its own. Linear in the input length; the `#`s themselves are kept.
+ */
+export function redactSensitiveFragmentPairs(
+  input: string,
+  start: number,
+  end: number,
+  extraKey?: (decodedKey: string) => boolean,
+): string {
+  const pieces = input.slice(start, end).split('#');
+  const redacted = pieces.map((piece) =>
+    redactSensitivePairs(piece, 0, piece.length, false, extraKey),
+  );
+  return input.slice(0, start) + redacted.join('#') + input.slice(end);
+}
+
 /** A urlencoded parameter NAME: the RFC 3986 unreserved/sub-delim set plus `%`, `[`/`]` (PHP arrays) and
  *  `+`. Deliberately excludes whitespace, quotes and angle brackets — the characters that mark prose or
  *  markup rather than a form field. */
