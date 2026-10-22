@@ -17,16 +17,25 @@ const packages = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RAW_ADDRESS =
   /^(href|url|uri|newurl|oldurl|pathname|location|path|aspath|to|from|search|hash|baseuri|destination|referrer)$/i;
 
+/** Whether a call's callee is `addBreadcrumb` in any form: `x.addBreadcrumb`, `x?.addBreadcrumb`, `x['addBreadcrumb']`, or a
+ *  destructured / imported bare `addBreadcrumb(...)`. */
+function isBreadcrumbCallee(callee: ts.Expression): boolean {
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text === 'addBreadcrumb';
+  if (ts.isElementAccessExpression(callee)) {
+    return (
+      ts.isStringLiteralLike(callee.argumentExpression) &&
+      callee.argumentExpression.text === 'addBreadcrumb'
+    );
+  }
+  return ts.isIdentifier(callee) && callee.text === 'addBreadcrumb';
+}
+
 /** The raw-address identifiers used inside the arguments of every `.addBreadcrumb(...)` call in `text`. */
 export function rawAddressesInBreadcrumbCalls(text: string): string[] {
   const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === 'addBreadcrumb'
-    ) {
+    if (ts.isCallExpression(node) && isBreadcrumbCallee(node.expression)) {
       for (const argument of node.arguments) {
         const inspect = (inner: ts.Node): void => {
           if (ts.isIdentifier(inner) && RAW_ADDRESS.test(inner.text)) found.push(inner.text);
@@ -56,6 +65,9 @@ describe('the guard itself detects every form of a raw address in a breadcrumb',
     ['a member access', 'client.addBreadcrumb({ message: location.pathname });'],
     ['a spread', 'client.addBreadcrumb({ ...url });'],
     ['a call result', 'this.client.addBreadcrumb(make(pathname));'],
+    ['an element-access callee', "client['addBreadcrumb']({ message: href });"],
+    ['a destructured call', 'addBreadcrumb({ message: href });'],
+    ['an optional call', 'client?.addBreadcrumb?.({ message: href });'],
     ['an event URL', 'client.addBreadcrumb({ message: event.newURL });'],
     ['a router destination', 'client.addBreadcrumb({ message: to });'],
     ['a router asPath', 'client.addBreadcrumb({ data: { asPath } });'],
@@ -84,17 +96,7 @@ export function hasBreadcrumbCall(text: string): boolean {
   const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let found = false;
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      if (
-        (ts.isPropertyAccessExpression(callee) && callee.name.text === 'addBreadcrumb') ||
-        (ts.isElementAccessExpression(callee) &&
-          ts.isStringLiteralLike(callee.argumentExpression) &&
-          callee.argumentExpression.text === 'addBreadcrumb')
-      ) {
-        found = true;
-      }
-    }
+    if (ts.isCallExpression(node) && isBreadcrumbCallee(node.expression)) found = true;
     if (!found) ts.forEachChild(node, visit);
   };
   visit(source);
@@ -108,6 +110,7 @@ describe('the guard discovers a breadcrumb call in every syntactic form', () => 
     'x?.addBreadcrumb?.({});',
     "x['addBreadcrumb']({});",
     'this.client.addBreadcrumb({});',
+    'addBreadcrumb({});',
   ])('finds %s', (code) => {
     expect(hasBreadcrumbCall(code)).toBe(true);
   });

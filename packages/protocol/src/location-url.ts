@@ -1,4 +1,4 @@
-import { redactSensitivePairs } from './pairs';
+import { FRAGMENT_PIECE_BOUNDARY, isFragmentPieceBoundary, redactSensitivePairs } from './pairs';
 import { normalizeKey, REDACTED_URL_ENCODED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import { sanitizeUrlCore } from './url';
@@ -107,7 +107,7 @@ function redactFragmentPiece(piece: string): string {
 
 /** A fragment, cut at every further `#` (vue-router hash mode: `#/cb?x=1#access_token=…`), each piece scanned alone. */
 const redactFragment = (fragment: string): string =>
-  fragment.split('#').map(redactFragmentPiece).join('#');
+  fragment.split(FRAGMENT_PIECE_BOUNDARY).map(redactFragmentPiece).join('#');
 
 /**
  * `file:` keeps `file:///…/<last path segment>`, so a local path (`/Users/bob/…`, `C:\Users\…`, a UNC host) never
@@ -176,7 +176,11 @@ function sanitizeNestedRun(
     let eq = -1;
     for (; segEnd < end; segEnd += 1) {
       const c = url[segEnd];
-      if (c === '&' || c === ';' || (splitHash && c === '#')) {
+      if (
+        c === '&' ||
+        c === ';' ||
+        (splitHash && c === '#' && isFragmentPieceBoundary(url, segEnd))
+      ) {
         break;
       }
       if (eq < 0 && c === '=') {
@@ -197,23 +201,34 @@ function sanitizeNestedRun(
   return changed ? pieces.join('') + url.slice(copyFrom) : url;
 }
 
+/** Sanitize nested TEXT as an address, ignoring (and keeping) its leading whitespace: `%20https%3A%2F%2F…` is an address
+ *  to a browser, and the normalisation inside would otherwise drop the space and make a harmless value look changed. */
+function sanitizeNestedText(
+  text: string,
+  options: ShapeRedactionOptions | undefined,
+  depth: number,
+): string {
+  const body = text.trimStart();
+  if (!looksNested(body)) {
+    return text;
+  }
+  const clean = sanitizeAddress(body, options, depth + 1);
+  return clean === body ? text : text.slice(0, text.length - body.length) + clean;
+}
+
 function sanitizeNestedValue(
   value: string,
   options: ShapeRedactionOptions | undefined,
   depth: number,
 ): string {
   if (!value.includes('%')) {
-    // Plain text: sanitize it as it is.
-    return looksNested(value) ? sanitizeAddress(value, options, depth + 1) : value;
+    return sanitizeNestedText(value, options, depth); // plain text: sanitize it as it is
   }
   // Something is encoded (once, twice or partly: `https%3A//b`, `https:%2F%2Fb`): read the DECODED form, which is what
   // the receiving app sees. The raw form of a half-encoded URL is not a URL a parser would split correctly.
   const once = decodeTolerant(value);
   const decoded = once.includes('%') ? decodeTolerant(once) : once;
-  if (!looksNested(decoded)) {
-    return value;
-  }
-  const clean = sanitizeAddress(decoded, options, depth + 1);
+  const clean = sanitizeNestedText(decoded, options, depth);
   if (clean === decoded) {
     return value;
   }

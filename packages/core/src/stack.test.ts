@@ -29,6 +29,46 @@ describe('parseV8Stack', () => {
     expect(parseLocation('https://app.test/a.js?token=S:3:3').file).toBe(one);
   });
 
+  it("sanitizes the script URL INSIDE Chrome's eval wrapper, keeping the wrapper text and the position", () => {
+    const frames = parseV8Stack(
+      'Error: x\n    at eval (eval at f (https://x.com/app.js?token=S3:1:2), <anonymous>:1:1)',
+    );
+    expect(frames[0]?.file).toBe(
+      'eval at f (https://x.com/app.js?token=%3Credacted%3E:1:2), <anonymous>',
+    );
+    expect(JSON.stringify(frames)).not.toContain('S3');
+  });
+
+  it('sanitizes every URL of a nested eval chain and leaves non-URL text alone', () => {
+    const file = parseLocation(
+      'eval at a (eval at b (https://u:pw@x.com/a.js?sig=1&token=S:3:4), <anonymous>), https://y.com/b.js?token=T:5:6',
+    ).file;
+    expect(file).not.toMatch(/pw|=S\b|=T\b/);
+    expect(file).toContain('eval at a (eval at b (');
+    expect(file).toContain(':3:4)');
+  });
+
+  it('an eval wrapper around a plain script URL is unchanged (the position is not doubled)', () => {
+    expect(
+      parseV8Stack(
+        'Error: x\n    at eval (eval at f (https://x.com/app.js:1:2), <anonymous>:1:1)',
+      )[0]?.file,
+    ).toBe('eval at f (https://x.com/app.js:1:2), <anonymous>');
+  });
+
+  it('redacts the password of a blob: frame URL', () => {
+    expect(parseLocation('blob:https://u:pw@x.com/uuid-1:2:3').file).toBe(
+      'blob:https://u:%3Credacted%3E@x.com/uuid-1',
+    );
+  });
+
+  it('a long run of letters with no URL in it costs linear time and is returned as is', () => {
+    const long = `${'a'.repeat(200_000)}://`; // `://` present, but no token can start inside the run
+    const started = Date.now();
+    parseLocation(`${long}:1:1`);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('redacts credentials and signed query values in a script URL frame, keeps an ordinary one', () => {
     expect(parseLocation('https://u:pw@app.test/a.js?token=SECRET&v=2:3:4').file).toBe(
       'https://u:%3Credacted%3E@app.test/a.js?token=%3Credacted%3E&v=2',

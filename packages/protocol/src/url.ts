@@ -51,7 +51,8 @@ function authorityStartOf(url: string): number {
   // as the authority. That pushed the path window past its own end and silently disabled the matrix-param
   // scan for `/checkout;jsessionid=…?return=https://shop/thanks`: the canonical login-flow shape, and the
   // one flow that actually carries `;jsessionid=`.
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
+  // `blob:` and `filesystem:` wrap an ordinary `scheme://authority`, so their userinfo is an authority's too.
+  const scheme = /^(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//i.exec(url);
   return scheme === null ? -1 : scheme[0].length;
 }
 

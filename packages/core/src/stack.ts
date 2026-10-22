@@ -88,22 +88,28 @@ export function setStackAppRoot(root: string | undefined): void {
 const FRAME_URL_CACHE_MAX = 512;
 const frameUrlCache = new Map<string, string>();
 
-/**
- * Sanitize the URL of a browser frame, keeping Firefox's eval suffix. Firefox reports code from `eval`/`new Function`
- * as `https://x/app.js line 2 > Function`: everything from the first whitespace is that suffix, not part of the URL, and
- * without it the eval frame would read as the script itself.
- */
-function sanitizeFrameUrl(frame: string): string {
-  const space = frame.search(/\s/);
-  const url = space < 0 ? frame : frame.slice(0, space);
-  const suffix = space < 0 ? '' : frame.slice(space);
+// Every URL-looking token in a frame's file string. A frame's file is not always one URL: Chrome wraps eval code as
+// `eval at f (https://x.com/app.js?token=S:1:2), <anonymous>` and Firefox suffixes ` line 2 > Function`, so the URL is
+// found INSIDE the string. The lookbehind makes only a token START a candidate (linear on a long run of letters).
+const FRAME_URL_TOKEN = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s(),]+/g;
+const TRAILING_POSITION = /(?::\d+){1,2}$/;
+
+function sanitizeFrameUrlToken(token: string): string {
+  // A token inside an eval wrapper still carries its own `:line:col`, which is not part of the URL.
+  const position = TRAILING_POSITION.exec(token);
+  const url = position === null ? token : token.slice(0, position.index);
   let clean = frameUrlCache.get(url);
   if (clean === undefined) {
     clean = sanitizeUrl(url);
     if (frameUrlCache.size >= FRAME_URL_CACHE_MAX) frameUrlCache.clear();
     frameUrlCache.set(url, clean);
   }
-  return clean + suffix;
+  return position === null ? clean : clean + position[0];
+}
+
+/** Sanitize every URL inside a browser frame's file string (eval wrappers and Firefox's ` line N > …` suffix keep their text). */
+function sanitizeFrameUrl(frame: string): string {
+  return frame.replace(FRAME_URL_TOKEN, sanitizeFrameUrlToken);
 }
 
 function scrubFramePath(path: string): string {

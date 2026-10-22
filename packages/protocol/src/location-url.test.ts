@@ -254,6 +254,31 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/#/cb?x=1#code=${R}`,
     ],
     [
+      'a secret with a literal # is redacted whole',
+      'https://a.com/p#password=p#ss&x=1',
+      `https://a.com/p#password=${R}&x=1`,
+    ],
+    [
+      'a secret with a literal # at the end',
+      'https://a.com/p#client_secret=s3#cr3t',
+      `https://a.com/p#client_secret=${R}`,
+    ],
+    [
+      'a code with a literal # (location key)',
+      'https://a.com/p#code=a#b&state=1',
+      `https://a.com/p#code=${R}&state=${R}`,
+    ],
+    [
+      'a file: secret with a literal #',
+      'file:///app/index.html#token=abc#def',
+      `file:///…/index.html#token=${R}`,
+    ],
+    [
+      'a leading-space encoded nested URL with a path secret',
+      'https://a.com/?next=%20https%3A%2F%2Fy.com%2Fp%3Bjsessionid%3DS',
+      `https://a.com/?next=%20https%3A%2F%2Fy.com%2Fp%3Bjsessionid%3D%253Credacted%253E`,
+    ],
+    [
       'a third # in the fragment',
       'https://a.com/#a=1#b=2#token=S',
       `https://a.com/#a=1#b=2#token=${R}`,
@@ -525,9 +550,19 @@ describe('sanitizeLocationUrl: the rule table', () => {
     });
   });
 
-  it('leaves the network sanitizer untouched', () => {
+  it('the network sanitizer recognises the authority of a blob:/filesystem: URL (its userinfo password is redacted)', () => {
+    expect(sanitizeUrl('blob:https://u:p@a.com/x')).toBe(`blob:https://u:${R}@a.com/x`);
+    expect(sanitizeUrl('filesystem:https://u:p@a.com/temporary/f')).toBe(
+      `filesystem:https://u:${R}@a.com/temporary/f`,
+    );
+    expect(sanitizeUrl('BLOB:https://tok@a.com/x?token=S')).toBe(
+      `BLOB:https://${R}@a.com/x?token=${R}`,
+    );
+    expect(sanitizeUrl('blob:https://a.com/uuid')).toBe('blob:https://a.com/uuid');
+  });
+
+  it('otherwise leaves the network sanitizer untouched', () => {
     expect(sanitizeUrl('data:text/plain;token=abc,hello')).toBe(`data:text/plain;token=${R}`);
-    expect(sanitizeUrl('blob:https://u:p@a.com/x')).toBe('blob:https://u:p@a.com/x');
     expect(sanitizeUrl('file:///Users/bob/x')).toBe('file:///Users/bob/x');
     const nested = 'https://x.com/a?next=https://y.com/?token=SECRET';
     expect(sanitizeUrl(nested)).toBe(nested);

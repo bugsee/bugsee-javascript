@@ -130,6 +130,8 @@ interface HistoryHook {
   orig: (...args: unknown[]) => unknown;
   isLive: () => boolean;
   owner: object;
+  /** Called when this wrapper is unwound out of the chain. */
+  release: () => void;
 }
 const hooks = new WeakMap<(...args: unknown[]) => unknown, HistoryHook>();
 
@@ -142,6 +144,8 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
   #live = false;
   /** Per method: a wrapper of this source is already running (the outermost one emits, the rest only pass through). */
   readonly #inFlight = { pushState: false, replaceState: false };
+  /** Per method: how many of this source's wrappers may still be somewhere in the chain (installed, not yet unwound). */
+  readonly #installed = { pushState: 0, replaceState: 0 };
 
   readonly #onPopstate = (): void => this.#emitFromLocation('traverse');
   readonly #onHashchange = (): void => this.#emitFromLocation('hash');
@@ -207,14 +211,35 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
   ): void {
     const current = history[method];
     if (typeof current !== 'function' || hooks.get(current)?.owner === this) return;
-    const hook: HistoryHook = { orig: current, isLive: () => this.#live, owner: this };
+    const hook: HistoryHook = {
+      orig: current,
+      isLive: () => this.#live,
+      owner: this,
+      release: () => {
+        this.#installed[method] -= 1;
+      },
+    };
     const inFlight = this.#inFlight;
-    const emit = (): void => {
+    const readHref = (): string | undefined => hrefOf(this.#location);
+    const emit = (before: string | undefined): void => {
+      // With an OLDER wrapper of ours possibly still in the chain beneath a third party that defers or skips calling the
+      // function it saved, this (outermost) call can return before the navigation happened: the location is then still
+      // the old one, and the older wrapper will emit the real navigation when it runs. Emitting now would report the old
+      // location, and then the real one again. So an unchanged location emits nothing in that situation (a same-URL
+      // `pushState` under such a wrapper is not reported: only a restart under a re-wrapping third party gets here).
+      if (
+        this.#installed[method] > 1 &&
+        before !== undefined &&
+        before === hrefOf(this.#location)
+      ) {
+        return;
+      }
       if (this.#live) this.#emitFromLocation(type);
     };
     const installed = function (this: unknown, ...args: unknown[]): unknown {
       const outermost = !inFlight[method];
       inFlight[method] = true;
+      const before = outermost ? readHref() : undefined;
       let completed = false;
       try {
         const result = hook.orig.apply(this, args); // the app's navigation happens FIRST (never blocked)
@@ -223,10 +248,11 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
       } finally {
         if (outermost) {
           inFlight[method] = false;
-          if (completed) emit(); // a navigation that threw did not happen
+          if (completed) emit(before); // a navigation that threw did not happen
         }
       }
     };
+    this.#installed[method] += 1;
     hooks.set(installed, hook);
     history[method] = installed;
   }
@@ -244,6 +270,7 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
       hook !== undefined && !hook.isLive();
       hook = hooks.get(target)
     ) {
+      hook.release(); // its owner (this source or another stopped one) has one wrapper fewer in the chain
       target = hook.orig;
     }
     if (target !== history[method]) history[method] = target;

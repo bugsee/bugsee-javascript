@@ -117,10 +117,25 @@ export function redactSensitivePairs(
 }
 
 /**
- * Redact the pairs of a URL FRAGMENT, `[start, end)` of `input`. A fragment can hold a second `#` (vue-router's hash mode
- * puts an implicit-flow `#access_token=…` after the route, `#/cb?x=1#access_token=…`), and `#` is not a pair separator for
- * {@link redactSensitivePairs} (in a form body it is an ordinary value character), so the fragment is cut at every `#`
- * and each piece is scanned on its own. Linear in the input length; the `#`s themselves are kept.
+ * Where a URL fragment is cut into independently scanned pieces: a `#` that is directly followed by a `key=` (vue-router's
+ * hash mode puts an implicit-flow `#access_token=…` after the route, `#/cb?x=1#access_token=…`). A `#` that is NOT followed
+ * by `key=` stays inside its value: `#password=p#ss` is one secret `p#ss` (cutting every `#` shipped `ss`). Known limit:
+ * a secret whose own text contains `#key=` is cut there, and what follows is scanned as a pair of its own.
+ */
+export const FRAGMENT_PIECE_BOUNDARY = /#(?=[^#&;=]+=)/;
+const FRAGMENT_PIECE_BOUNDARY_AT = /#(?=[^#&;=]+=)/y;
+
+/** Whether the `#` at `index` of `text` starts a new fragment piece (see {@link FRAGMENT_PIECE_BOUNDARY}). */
+export function isFragmentPieceBoundary(text: string, index: number): boolean {
+  FRAGMENT_PIECE_BOUNDARY_AT.lastIndex = index;
+  return FRAGMENT_PIECE_BOUNDARY_AT.test(text);
+}
+
+/**
+ * Redact the pairs of a URL FRAGMENT, `[start, end)` of `input`. `#` is not a pair separator for
+ * {@link redactSensitivePairs} (in a form body it is an ordinary value character); the fragment is cut only at a `#`
+ * that starts a `key=` ({@link FRAGMENT_PIECE_BOUNDARY}) and each piece is scanned on its own. A fragment with no such
+ * `#` is scanned exactly as one piece. Linear in the input length; the `#`s themselves are kept.
  */
 export function redactSensitiveFragmentPairs(
   input: string,
@@ -128,7 +143,7 @@ export function redactSensitiveFragmentPairs(
   end: number,
   extraKey?: (decodedKey: string) => boolean,
 ): string {
-  const pieces = input.slice(start, end).split('#');
+  const pieces = input.slice(start, end).split(FRAGMENT_PIECE_BOUNDARY);
   const redacted = pieces.map((piece) =>
     redactSensitivePairs(piece, 0, piece.length, false, extraKey),
   );

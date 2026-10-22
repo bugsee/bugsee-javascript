@@ -1,5 +1,7 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { redactFormBody } from './pairs';
+import { FRAGMENT_PIECE_BOUNDARY, redactFormBody, redactSensitivePairs } from './pairs';
+import { redactShapes } from './shapes';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
 
 // Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
@@ -252,6 +254,31 @@ describe('sanitizeUrl — a second # in the fragment', () => {
     );
     expect(sanitizeUrl('https://a.com/#a=1#b=2#token=S&c=3')).toBe(
       'https://a.com/#a=1#b=2#token=%3Credacted%3E&c=3',
+    );
+  });
+
+  it('a secret that contains a literal # is redacted WHOLE (the # is not a boundary unless a key= follows)', () => {
+    for (const [input, expected] of [
+      ['https://a.com/p#password=p#ss&x=1', 'https://a.com/p#password=%3Credacted%3E&x=1'],
+      ['https://a.com/p#client_secret=s3#cr3t', 'https://a.com/p#client_secret=%3Credacted%3E'],
+      ['https://a.com/p#token=abc#def', 'https://a.com/p#token=%3Credacted%3E'],
+      ['https://a.com/p#token=a#b#c&y=2', 'https://a.com/p#token=%3Credacted%3E&y=2'],
+    ] as const) {
+      expect(sanitizeUrl(input)).toBe(expected);
+    }
+  });
+
+  it('a fragment with no `#key=` boundary is scanned exactly as before (differential property)', () => {
+    fc.assert(
+      fc.property(fc.stringMatching(/^[A-Za-z0-9_=&;.%#-]{0,60}$/), (fragment) => {
+        const url = `https://a.com/p#${fragment}`;
+        const oneScan = redactSensitivePairs(url, url.indexOf('#') + 1, url.length);
+        if (FRAGMENT_PIECE_BOUNDARY.test(fragment)) return; // the cut case is covered above
+        expect(sanitizeUrl(url).replace(/<redacted>/g, '')).toBe(
+          redactShapes(oneScan).replace(/<redacted>/g, ''),
+        );
+      }),
+      { numRuns: 400 },
     );
   });
 
