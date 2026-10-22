@@ -1,5 +1,9 @@
 import type { TraceSink } from '@bugsee/capture';
-import { ElectronDisplayTracker, ElectronProcessTracker } from '@bugsee/trackers/electron';
+import {
+  ElectronApplicationTracker,
+  ElectronDisplayTracker,
+  ElectronProcessTracker,
+} from '@bugsee/trackers/electron';
 import { describe, expect, it, vi } from 'vitest';
 import { createElectronSystemTraceProducers } from './system-traces';
 
@@ -311,5 +315,225 @@ describe('displays producer', () => {
     d.producer.start(d.sink);
     expect(d.emitted).toHaveLength(2);
     d.producer.stop();
+  });
+});
+
+describe('displays producer follows the key window (C26)', () => {
+  type L = (...a: unknown[]) => void;
+  class Emitter {
+    table = new Map<string, L[]>();
+    on = (e: string, l: L) => void this.table.set(e, [...(this.table.get(e) ?? []), l]);
+    removeListener = (e: string, l: L) =>
+      void this.table.set(
+        e,
+        (this.table.get(e) ?? []).filter((x) => x !== l),
+      );
+    emit(e: string) {
+      for (const l of [...(this.table.get(e) ?? [])]) l({});
+    }
+    total() {
+      return [...this.table.values()].reduce((n, l) => n + l.length, 0);
+    }
+  }
+  class Win extends Emitter {
+    gone = false;
+    constructor(
+      readonly id: number,
+      public x: number,
+    ) {
+      super();
+    }
+    isDestroyed = () => this.gone;
+    getBounds = () => ({ x: this.x, y: 0, width: 100, height: 100 });
+  }
+  const mkDisplay = (id: number) => ({
+    id,
+    size: { width: 1000, height: 500 },
+    scaleFactor: 1,
+  });
+
+  function world(wins: Win[]) {
+    let focused: Win | null = null;
+    const app = new Emitter();
+    const screen = Object.assign(new Emitter(), {
+      getAllDisplays: () => [mkDisplay(1), mkDisplay(2)],
+      getPrimaryDisplay: () => mkDisplay(1),
+      getDisplayMatching: (r: { x: number }) => mkDisplay(r.x < 1000 ? 1 : 2),
+    });
+    const application = new ElectronApplicationTracker({
+      app,
+      BrowserWindow: { getAllWindows: () => wins, getFocusedWindow: () => focused },
+    });
+    const display = new ElectronDisplayTracker({
+      screen,
+      keyWindowBounds: () => application.keyWindowBounds(),
+    });
+    const clock = { now: 0, next: 1, timers: new Map<number, { at: number; cb: () => void }>() };
+    const scheduler = {
+      setInterval: (cb: () => void, ms: number) => {
+        const id = clock.next++;
+        clock.timers.set(id, { at: clock.now + ms, cb });
+        return id;
+      },
+      clearInterval: (id: unknown) => void clock.timers.delete(id as number),
+    };
+    const advance = (ms: number) => {
+      clock.now += ms;
+      for (const [id, t] of [...clock.timers]) {
+        if (t.at <= clock.now) {
+          clock.timers.delete(id);
+          t.cb();
+        }
+      }
+    };
+    const [producer] = createElectronSystemTraceProducers({ display, application, scheduler });
+    const emitted: Array<{ name: string; value: unknown }> = [];
+    const sink: TraceSink = { emit: (name, value) => emitted.push({ name, value }) };
+    const nativeIds = () =>
+      (emitted.at(-1)?.value as Array<{ native_id: number }>).map((d) => d.native_id);
+    return {
+      advance,
+      pendingTimers: () => clock.timers.size,
+      app,
+      screen,
+      application,
+      producer: producer as NonNullable<typeof producer>,
+      emitted,
+      sink,
+      nativeIds,
+      focus: (w: Win | null) => {
+        focused = w;
+        w?.emit('focus');
+      },
+    };
+  }
+
+  it('id 0 is the key window display; the list is re-emitted when focus moves it to another display, and not when it does not', () => {
+    const a = new Win(1, 10); // on display 1
+    const b = new Win(2, 2000); // on display 2
+    const w = world([a, b]);
+    w.producer.start(w.sink);
+    expect(w.nativeIds()).toEqual([1, 2]); // no focus yet: the first created (a) is the key window
+    w.focus(b);
+    expect(w.nativeIds()).toEqual([2, 1]);
+    expect(w.emitted).toHaveLength(2);
+    expect(w.emitted.at(-1)?.value).toMatchObject([{ id: 0, state: 'on' }, { id: 1 }]);
+    w.focus(a);
+    expect(w.nativeIds()).toEqual([1, 2]);
+    w.focus(null); // blur: the most recently focused (a) stays the key window
+    a.emit('blur');
+    expect(w.emitted).toHaveLength(3);
+    w.producer.stop();
+  });
+
+  it('re-emits when the key window is moved to another display (windowMoved)', () => {
+    const a = new Win(1, 10);
+    const w = world([a]);
+    w.producer.start(w.sink);
+    expect(w.nativeIds()).toEqual([1, 2]);
+    a.x = 1500;
+    a.emit('moved');
+    expect(w.nativeIds()).toEqual([1, 2]); // debounced: not yet
+    w.advance(199);
+    expect(w.nativeIds()).toEqual([1, 2]);
+    w.advance(1);
+    expect(w.nativeIds()).toEqual([2, 1]);
+    w.producer.stop();
+  });
+
+  it('a drag (many `moved` events) is debounced to ONE re-read after the window is still for 200 ms; stop cancels a pending one', () => {
+    const a = new Win(1, 10);
+    const w = world([a]);
+    w.producer.start(w.sink);
+    const reads = vi.spyOn(w.screen, 'getAllDisplays');
+    for (let i = 0; i < 10; i++) {
+      a.x = 1500;
+      a.emit('moved');
+      w.advance(100); // each event restarts the timer
+    }
+    expect(reads).not.toHaveBeenCalled();
+    w.advance(100);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(w.nativeIds()).toEqual([2, 1]);
+    a.emit('moved');
+    expect(w.pendingTimers()).toBe(1);
+    w.producer.stop();
+    expect(w.pendingTimers()).toBe(0);
+    w.advance(1000);
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default scheduler is the global timers', () => {
+    vi.useFakeTimers();
+    try {
+      const a = new Win(1, 10);
+      const app = new Emitter();
+      const screen = Object.assign(new Emitter(), {
+        getAllDisplays: () => [mkDisplay(1), mkDisplay(2)],
+        getPrimaryDisplay: () => mkDisplay(1),
+        getDisplayMatching: (r: { x: number }) => mkDisplay(r.x < 1000 ? 1 : 2),
+      });
+      const application = new ElectronApplicationTracker({
+        app,
+        BrowserWindow: { getAllWindows: () => [a] },
+      });
+      const display = new ElectronDisplayTracker({
+        screen,
+        keyWindowBounds: () => application.keyWindowBounds(),
+      });
+      const [producer] = createElectronSystemTraceProducers({ display, application });
+      const emitted: Array<{ value: unknown }> = [];
+      producer?.start({ emit: (_n, value) => emitted.push({ value }) });
+      a.x = 1500;
+      a.emit('moved');
+      vi.advanceTimersByTime(200);
+      expect(emitted).toHaveLength(2);
+      a.emit('moved');
+      producer?.stop();
+      vi.advanceTimersByTime(1000);
+      expect(emitted).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop() releases the window listeners too (focus and moved) and nothing re-emits afterwards', () => {
+    const a = new Win(1, 10);
+    const w = world([a]);
+    w.producer.start(w.sink);
+    expect(a.total()).toBeGreaterThan(0);
+    w.producer.stop();
+    expect(a.total()).toBe(0);
+    expect(w.app.total()).toBe(0);
+    expect(w.screen.total()).toBe(0);
+    a.x = 1500;
+    a.emit('moved');
+    expect(w.emitted).toHaveLength(1);
+  });
+
+  it('without an application tracker the list follows the primary display only; with no readable list nothing is emitted', () => {
+    const screen = Object.assign(new Emitter(), {
+      getAllDisplays: () => [mkDisplay(1), mkDisplay(2)],
+      getPrimaryDisplay: () => mkDisplay(2),
+    });
+    const [producer] = createElectronSystemTraceProducers({
+      display: new ElectronDisplayTracker({ screen }),
+    });
+    const emitted: Array<{ name: string; value: unknown }> = [];
+    producer?.start({ emit: (name, value) => emitted.push({ name, value }) });
+    expect((emitted[0]?.value as Array<{ native_id: number }>).map((d) => d.native_id)).toEqual([
+      2, 1,
+    ]);
+    producer?.stop();
+
+    const lone = new Win(1, 10);
+    const w = world([lone]);
+    (w.screen as { getAllDisplays: () => unknown }).getAllDisplays = () => {
+      throw new Error('hostile');
+    };
+    w.producer.start(w.sink);
+    w.focus(lone);
+    expect(w.emitted).toEqual([]);
+    w.producer.stop();
   });
 });

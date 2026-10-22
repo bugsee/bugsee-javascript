@@ -672,7 +672,7 @@ describe('launch', () => {
         'tok',
         baseOptions({ window: w.win, captureStore: store }),
       );
-      expect(m.thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
+      expect(m.thisSeen).toHaveLength(12); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9); displays: the (pointer: coarse) watch (1)
       expect(m.thisSeen.every((t) => t === w.win)).toBe(true); // always called as a method of ITS window
       for (const f of [...m.l]) f({ matches: true });
       expect((await names(store)).filter((e) => e.name === 'DarkModeChanged')).toEqual([
@@ -2122,9 +2122,19 @@ describe('launch', () => {
         const w = fakeWindow();
         Object.assign(w.win, { devicePixelRatio: 2 });
         const store = memStore();
-        await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+        const settle: Array<() => void> = [];
+        const scheduler = {
+          setInterval: (cb: () => void, ms: number) => {
+            if (ms === 250) settle.push(cb); // the displays settle timer (never cleared in this test)
+            return settle.length;
+          },
+          clearInterval: () => {},
+        };
+        await launchTracked('tok', noSampler({ window: w.win, captureStore: store, scheduler }));
         Object.assign(w.win, { devicePixelRatio: 3 });
         w.emit('resize', {});
+        expect(settle).toHaveLength(1); // settled, not written immediately
+        settle[0]?.();
         expect(await rowsOf(store, 'displays')).toEqual([
           [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
           [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
