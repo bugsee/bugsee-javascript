@@ -133,6 +133,11 @@ export interface CaptureSnapshot {
   drainAll(): Promise<Map<FileType, StoredEntry[]>>;
   /** Delete the snapshot's frozen copy; called after the bundle is built. */
   release(): void;
+  /**
+   * Optional: what this snapshot can serve WITHOUT touching the durable medium: records still queued for it, or whose
+   * write was refused. A reader that finds the medium unreadable (or hung) serves this instead of nothing.
+   */
+  inMemory?(): Map<FileType, StoredEntry[]>;
 }
 
 /**

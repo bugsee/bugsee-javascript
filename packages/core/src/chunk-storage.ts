@@ -35,6 +35,13 @@ export interface ChunkStorage {
   /** Flush everything + close all handles (on stop()). */
   dispose?(): void;
   /**
+   * Force every buffered append out NOW, past any circuit breaker, without blocking on a slow medium. The disk-pressure
+   * probe uses it: a writer that stops attempting after repeated failures (one try per N flushes) would otherwise take
+   * hours of probes to notice the disk was freed. Absent where appends are not buffered by the host thread, or where
+   * forcing would block (the ring writer: its worker reports a drained frame instead).
+   */
+  flushNow?(): void;
+  /**
    * Bytes currently held UNWRITTEN by a batched writer, or absent where nothing is buffered.
    *
    * This is the quantity a back-pressure bound exists to cap: a storage that defers physical writes holds

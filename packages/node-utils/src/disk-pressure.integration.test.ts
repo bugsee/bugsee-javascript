@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writevSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writevSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,9 @@ import {
 } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createBatchedFsChunkStorage } from './batched-fs-chunk-storage';
+import { createCaptureRingWriter } from './capture-ring-writer';
 import { writeFileSecure } from './fs-storage';
+import { createWorkerThreadRingWorker } from './worker-ring-worker';
 
 // The REAL writer (the batched fs storage the node launch uses) under a refusing disk. Unlike a fake whose `append`
 // throws, the real writer never throws into the caller: it buffers, reports asynchronously and retries. These tests
@@ -128,6 +130,178 @@ describe('disk pressure over the REAL batched writer', () => {
     }
     expect(r.pressure.level()).toBe('none');
     expect((await live(r.store, 'log')).length).toBe(7);
+  });
+});
+
+describe('recovery after the disk is freed is BOUNDED, however long it was full', () => {
+  // The default batched writer opens a circuit breaker after 8 failed flushes (one attempt per 128 calls afterwards).
+  // The probe's padding is forced past it (`flushNow`); without that, recovery took ~128 probes x the 60-tick backoff.
+  const small = 'y'.repeat(2000);
+  const mkRig = () => {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const state = { refusing: false };
+    const storage = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      writev: (fd, bufs) => {
+        if (state.refusing) throw full();
+        return writevSync(fd, bufs);
+      },
+      writeFile: (path, data) => {
+        if (state.refusing) throw full();
+        writeFileSecure(path, data);
+      },
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    const tick = (): void => {
+      now += 1000;
+      store.add({ type: 'log', timestamp: now, serialized: small });
+      store.tick(now);
+      storage.flushSync?.();
+    };
+    return { root, pressure, state, storage, store, tick };
+  };
+
+  it.each([
+    [30],
+    [120],
+    [600],
+  ])('full for %i ticks (past the 60 s window and the writer circuit), then freed: normal again within 61 ticks', (fullTicks) => {
+    const r = mkRig();
+    r.state.refusing = true;
+    for (let i = 0; i < 9; i++) r.store.add({ type: 'log', timestamp: 1000, serialized: small });
+    for (let i = 0; i < fullTicks; i++) r.tick();
+    expect(r.pressure.pinned()).toBe(true);
+    r.state.refusing = false;
+    let ticks = 0;
+    while (r.pressure.pinned() && ticks < 10_000) {
+      r.tick();
+      ticks += 1;
+    }
+    expect(ticks).toBeLessThanOrEqual(61); // measured before the fix: 6900 ticks (1.9 h) for 120
+    expect(r.pressure.level()).toBe('normal');
+    r.storage.dispose?.();
+  });
+
+  it('a flapped probe interval (60 ticks) still recovers within one interval after the disk is freed', () => {
+    const r = mkRig();
+    for (let k = 0; k < 8; k++) {
+      r.state.refusing = true;
+      for (let i = 0; i < 9; i++) r.store.add({ type: 'log', timestamp: 1000, serialized: small });
+      r.state.refusing = false;
+      for (let t = 0; t < 200 && r.pressure.pinned(); t++) r.tick();
+    }
+    r.state.refusing = true;
+    for (let i = 0; i < 9; i++) r.store.add({ type: 'log', timestamp: 1000, serialized: small });
+    for (let i = 0; i < 120; i++) r.tick();
+    r.state.refusing = false;
+    let ticks = 0;
+    while (r.pressure.pinned() && ticks < 10_000) {
+      r.tick();
+      ticks += 1;
+    }
+    expect(ticks).toBeLessThanOrEqual(61);
+    r.storage.dispose?.();
+  });
+
+  it('the probe leaves no residue: every part directory is a real part, and the padding is skipped by a reader', async () => {
+    const r = mkRig();
+    r.state.refusing = true;
+    for (let i = 0; i < 9; i++) r.store.add({ type: 'log', timestamp: 1000, serialized: small });
+    for (let i = 0; i < 5; i++) r.tick();
+    r.state.refusing = false;
+    for (let i = 0; i < 70 && r.pressure.pinned(); i++) r.tick();
+    r.storage.dispose?.();
+    const gen = join(r.root, '0000000000001');
+    expect(readdirSync(gen).every((c) => Number(c) < 1000)).toBe(true);
+    const snap = r.store.snapshot();
+    const all = await snap.drainAll();
+    snap.release();
+    expect((all.get('log') ?? []).every((rec) => rec.serialized === small)).toBe(true);
+  });
+});
+
+describe('the off-thread ring writer (real worker_threads, real fs)', () => {
+  const small = 'z'.repeat(100 * 1024);
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const mkRig = () => {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const state = { refuseMeta: false };
+    const storage = createCaptureRingWriter(root, {
+      generation: 1,
+      fileTypes: ['log', 'network', 'traces.system'],
+      workerFactory: createWorkerThreadRingWorker,
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      writeFile: (p, d) => {
+        if (state.refuseMeta) throw full();
+        writeFileSecure(p, d);
+      },
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    const tick = async (): Promise<void> => {
+      now += 1000;
+      store.tick(now);
+      storage.flushSync?.();
+      await wait(20);
+    };
+    return {
+      root,
+      pressure,
+      state,
+      storage,
+      store,
+      tick,
+      add: () => store.add({ type: 'log', timestamp: now, serialized: small }),
+    };
+  };
+
+  it('a HOST-side failure (a refused meta write) pins, and the worker reports the next drained frame so the pin releases', async () => {
+    const r = mkRig();
+    const pins: boolean[] = [];
+    r.pressure.onPinChange((p) => pins.push(p));
+    r.add();
+    r.state.refuseMeta = true;
+    await r.tick();
+    r.state.refuseMeta = false; // the disk is fine again
+    for (let i = 0; i < 30 && r.pressure.pinned(); i++) await r.tick();
+    expect(pins).toEqual([true, false]); // pinned by the host-side failure, released by the worker's first good frame
+    expect(r.pressure.pinned()).toBe(false); // before the fix: never released, the probe's junk grew ~100 KiB per tick
+    r.storage.dispose?.();
+  });
+
+  it('the probe never leaves residue: no part directory but the real ones (the probe used to wrap to a different chunk number)', async () => {
+    const r = mkRig();
+    r.add();
+    r.state.refuseMeta = true;
+    await r.tick();
+    r.state.refuseMeta = false;
+    for (let i = 0; i < 15; i++) await r.tick();
+    const gen = join(r.root, '0000000000001');
+    expect(
+      readdirSync(gen)
+        .map(Number)
+        .every((c) => c < 100),
+    ).toBe(true);
+    const snap = r.store.snapshot();
+    const all = await snap.drainAll();
+    snap.release();
+    expect((all.get('log') ?? []).every((rec) => rec.serialized === small)).toBe(true); // no junk records
+    r.storage.dispose?.();
   });
 });
 

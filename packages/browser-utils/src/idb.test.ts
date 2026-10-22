@@ -503,7 +503,9 @@ describe('createIdbKeyedStore — a connection the browser closed under us is re
     const store = createIdbKeyedStore({ indexedDB: r.idb });
     await store.put('k1', bytes('a'));
     const db = r.dbs[0] as IDBDatabase;
+    const close = vi.spyOn(db, 'close');
     db.onversionchange?.(new Event('versionchange') as IDBVersionChangeEvent);
+    expect(close).toHaveBeenCalledOnce(); // the old connection is released, or the other tab's upgrade stays blocked
     await store.put('k2', bytes('b'));
     expect(r.opens()).toBe(2);
   });
@@ -553,33 +555,33 @@ describe('createIdbKeyedStore — a connection the browser closed under us is re
     expect((await store.readPrefix('k')).map(([k]) => k)).toEqual(['k2']);
   });
 
-  it('a read whose transaction ABORTS rejects instead of hanging', async () => {
-    const real = new IDBFactory();
+  it('a read whose transaction ABORTS with no request error (only `abort` fires) rejects instead of hanging', async () => {
+    // A transaction the browser aborts while no request is pending fires `abort` only: fake-indexeddb also fires the
+    // requests' `error`, which hid a missing `onabort`. This factory fires nothing but `abort`.
+    const tx: Record<string, unknown> = {
+      objectStore: () => ({ getAllKeys: () => ({}), getAll: () => ({}) }),
+      error: null,
+    };
+    const db = { transaction: () => tx, close() {} };
     const idb = {
-      open: (name: string, version?: number) => {
-        const request = real.open(name, version);
-        request.addEventListener('success', () => {
-          const db = request.result;
-          const transaction = db.transaction.bind(db);
-          db.transaction = ((storeName: string, mode?: IDBTransactionMode) => {
-            const t = transaction(storeName, mode);
-            if (mode === 'readonly') {
-              queueMicrotask(() => {
-                try {
-                  t.abort();
-                } catch {
-                  // already finished
-                }
-              });
-            }
-            return t;
-          }) as typeof db.transaction;
+      open: () => {
+        const request: Record<string, unknown> = {};
+        queueMicrotask(() => {
+          request.result = db;
+          (request.onsuccess as (() => void) | undefined)?.();
         });
         return request;
       },
     } as unknown as IDBFactory;
     const store = createIdbKeyedStore({ indexedDB: idb });
-    await store.put('k1', bytes('a'));
-    await expect(store.readPrefix('k')).rejects.toBeDefined();
+    const read = store.readPrefix('k');
+    await new Promise((r) => setTimeout(r, 0));
+    (tx.onabort as (() => void) | undefined)?.();
+    await expect(read).rejects.toThrow(/aborted/);
+    tx.error = new DOMException('nope', 'AbortError');
+    const again = store.readPrefix('k');
+    await new Promise((r) => setTimeout(r, 0));
+    (tx.onabort as (() => void) | undefined)?.();
+    await expect(again).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

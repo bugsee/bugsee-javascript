@@ -45,6 +45,11 @@ export interface RingWorker {
   closeAll(): void;
   /** Drain + close all + terminate (the worker stops). */
   stop(): void;
+  /**
+   * A failure happened OUTSIDE the worker (a meta write, a removal, a fallback append) and left a disk-pressure pin: the
+   * worker should report the next frame it drains successfully, so that the pin can be released. Optional.
+   */
+  expectRecovery?(): void;
 }
 
 export interface RingWorkerArgs {
@@ -158,6 +163,7 @@ export function createCaptureRingWriter(
   let failing = false;
   const noteFailure = (error: unknown): void => {
     failing = true;
+    worker.expectRecovery?.(); // a host-side failure: the next drained frame is the recovery signal
     try {
       options.onWriteFailure?.(error);
     } catch {

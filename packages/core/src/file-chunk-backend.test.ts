@@ -1,5 +1,5 @@
 import type { FileType } from '@bugsee/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PartRef } from './chunk-backend';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { CaptureSnapshot, StoredEntry } from './contracts';
@@ -180,5 +180,30 @@ describe('createFileChunkBackend', () => {
     storage.append(1, 0, 'log', 'prior-launch');
     createFileChunkBackend(storage, { generation: 9, cleanOtherGenerations: false });
     expect(storage.generations()).toContain(1);
+  });
+});
+
+describe('createFileChunkBackend — probeWrite', () => {
+  it('appends padding WITHOUT a timestamp separator to the part, forces a flush, and a snapshot skips it', async () => {
+    const storage = createInMemoryChunkStorage();
+    const flushNow = vi.fn();
+    (storage as { flushNow?: () => void }).flushNow = flushNow;
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    const ref = { generation: 1, number: 0 };
+    backend.openPart(ref, 0);
+    backend.appendEntry(ref, { type: 'log', timestamp: 1, serialized: 'real' });
+    backend.probeWrite?.(ref, 8);
+    const text = storage.read(1, 0, 'log') as string;
+    expect(text).toBe('1\treal\n#######\n');
+    expect(flushNow).toHaveBeenCalledOnce();
+    const snap = backend.snapshot([{ ref, count: 9 }]);
+    expect(((await snap.drainAll()).get('log') ?? []).map((r) => r.serialized)).toEqual(['real']);
+  });
+
+  it('works on a storage without flushNow, and a zero-size probe is just a newline', () => {
+    const storage = createInMemoryChunkStorage();
+    const backend = createFileChunkBackend(storage, { generation: 1 });
+    backend.probeWrite?.({ generation: 1, number: 3 }, 0);
+    expect(storage.read(1, 3, 'log')).toBe('\n');
   });
 });

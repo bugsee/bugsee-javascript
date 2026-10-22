@@ -4,7 +4,7 @@ import type { ChunkBackend } from './chunk-backend';
 import { createChunkCaptureStore } from './chunk-capture-store';
 import { createInMemoryChunkStorage } from './chunk-storage';
 import type { Clock } from './clock';
-import type { CaptureStore, StoredEntry } from './contracts';
+import type { CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
 import { createDiskPressure } from './disk-pressure';
 import { withDiskPressure } from './disk-pressure-backend';
 import { createFileCaptureStore } from './file-capture-store';
@@ -484,14 +484,10 @@ describe('withDiskPressure — failures and surface', () => {
     expect(names((await drain(store)).get('log'))).toEqual(['b'.repeat(15)]);
   });
 
-  it('while PINNED each tick probes the medium with a throwaway part, and the probe leaves nothing behind', () => {
+  it('while PINNED each tick probes a backend without probeWrite with a throwaway part, and the probe leaves nothing behind', () => {
     const storage = createInMemoryChunkStorage();
     const pressure = createDiskPressure();
-    const store = createFileCaptureStore(storage, {
-      clock: clockAt(1000),
-      generation: 1,
-      diskPressure: pressure,
-    });
+    const store = throwawayProbeStore(storage, { clock: clockAt(1000), diskPressure: pressure });
     store.tick(2000);
     expect(storage.chunks(1)).toEqual([0, 1]);
     const open = vi.spyOn(storage, 'write');
@@ -716,9 +712,18 @@ describe('withDiskPressure — a durable half that cannot be read', () => {
     expect(reads).toBe(1);
     expect(onReadError).toHaveBeenCalledOnce();
     expect(names(all.get('log'))).toEqual(['mem-0', 'mem-1', 'mem-2', 'mem-3']); // every in-memory record is still served
-    const second = await backend.snapshot(frozen).drainAll(); // a NEW snapshot tries the medium again
+    const within = await backend.snapshot(frozen).drainAll(); // a NEW snapshot soon after does not wait again either
+    expect(reads).toBe(1);
+    expect(within.get('log')).toHaveLength(4);
+    expect(onReadError).toHaveBeenCalledOnce();
+    for (let i = 0; i < 59; i++) backend.closePart(frozen[0]!.ref, 1, 0); // 59 ticks later: still dead
+    await backend.snapshot(frozen).drainAll();
+    expect(reads).toBe(1);
+    backend.closePart(frozen[0]!.ref, 1, 0); // the 60th tick: the TTL is over, the medium is tried again
+    const after = await backend.snapshot(frozen).drainAll();
     expect(reads).toBe(2);
-    expect(second.get('log')).toHaveLength(4);
+    expect(after.get('log')).toHaveLength(4);
+    expect(onReadError).toHaveBeenCalledTimes(2);
   });
 
   it('the fast path (nothing shadowed) is guarded too: an unreadable disk yields an empty window, not a thrown report', async () => {
@@ -770,15 +775,24 @@ describe('withDiskPressure — a durable half that cannot be read', () => {
   });
 });
 
+/** A file-backed store whose backend has NO `probeWrite` (like IndexedDB): the gate probes with a throwaway part. */
+function throwawayProbeStore(
+  storage: ReturnType<typeof createInMemoryChunkStorage>,
+  options: Parameters<typeof createChunkCaptureStore>[1],
+) {
+  const file = createFileChunkBackend(storage, { generation: 1 });
+  const { probeWrite: _omit, ...withoutProbeWrite } = file;
+  return createChunkCaptureStore(withoutProbeWrite as ChunkBackend, options);
+}
+
 describe('withDiskPressure — the probe backs off instead of flapping', () => {
   const PROBE = 2_000_000_000;
   const rig = () => {
     const storage = createInMemoryChunkStorage();
     const pressure = createDiskPressure();
     const onDiskWriteError = vi.fn();
-    const store = createFileCaptureStore(storage, {
+    const store = throwawayProbeStore(storage, {
       clock: clockAt(1000),
-      generation: 1,
       diskPressure: pressure,
       onDiskWriteError,
     });
@@ -999,5 +1013,200 @@ describe('withDiskPressure — a durable read that never answers', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('withDiskPressure — the probe on a backend that can write padding (the file backends)', () => {
+  const PAD = (d: string): boolean => d.startsWith('#');
+  const rig = () => {
+    const storage = createInMemoryChunkStorage();
+    const flushNow = vi.fn();
+    (storage as { flushNow?: () => void }).flushNow = flushNow;
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError: vi.fn(),
+    });
+    const pads: Array<{ chunk: number; file: string; bytes: number }> = [];
+    const append = storage.append.bind(storage);
+    storage.append = (g, c, f, d) => {
+      if (PAD(d)) pads.push({ chunk: c, file: f, bytes: d.length });
+      append(g, c, f, d);
+    };
+    return { storage, pressure, store, pads, flushNow };
+  };
+
+  it('pads the CURRENT part (never a throwaway one), forces the write out, and clamps the size to 1..16 KiB', () => {
+    const r = rig();
+    r.pressure.noteWriteError({ code: 'ENOSPC' });
+    r.store.tick(2000);
+    r.store.tick(3000);
+    expect(r.pads.at(-1)).toEqual({ chunk: 1, file: 'log', bytes: 1024 }); // the part open at that tick, the 1 KiB floor
+    expect(r.flushNow).toHaveBeenCalled();
+    expect(r.storage.chunks(1).every((c) => c < 1000)).toBe(true); // no throwaway part exists
+    r.store.add(rec('log', 5, 'r'.repeat(900_000)));
+    r.store.tick(4000);
+    expect(r.pads.at(-1)?.bytes).toBe(16 * 1024);
+  });
+
+  it('the padding leaves no residue: a snapshot returns the real records only, and a recovery-style read skips it', async () => {
+    const r = rig();
+    r.store.add(rec('log', 1, 'real-1'));
+    r.pressure.noteWriteError({ code: 'ENOSPC' });
+    r.store.tick(2000);
+    r.store.tick(3000);
+    r.pressure.noteWriteRecovered();
+    r.store.add(rec('log', 4, 'real-2'));
+    expect(names((await drain(r.store)).get('log'))).toEqual(['real-1', 'real-2']);
+    const reborn = createFileChunkBackend(r.storage, {
+      generation: 1,
+      cleanOtherGenerations: false,
+    });
+    const parts = (await reborn.listParts(1)).map((p) => ({
+      ref: { generation: 1, number: p.number },
+      count: 99,
+    }));
+    const all = await reborn.snapshot(parts).drainAll();
+    expect(names(all.get('log'))).toEqual(['real-1', 'real-2']);
+  });
+
+  it('opens a current part the medium never saw before padding it, and works with a storage that has no flushNow', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+    });
+    pressure.observe(5 * MB); // none: the next part is opened without a meta
+    store.tick(2000);
+    expect(storage.chunks(1)).toEqual([0]);
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    store.tick(3000);
+    expect(storage.chunks(1)).toContain(1);
+    expect(storage.read(1, 1, 'meta')).toBeDefined(); // the part that was opened under `none` got its meta before the padding
+  });
+
+  it('a padding write that throws is reported once per pin', () => {
+    const r = rig();
+    const onDiskWriteError = vi.fn();
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError,
+    });
+    const append = storage.append.bind(storage);
+    storage.append = (g, c, f, d) => {
+      if (PAD(d)) throw new Error('still full');
+      append(g, c, f, d);
+    };
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    for (let t = 2; t < 8; t++) store.tick(t * 1000);
+    expect(
+      onDiskWriteError.mock.calls.filter((c) => (c[0] as Error).message === 'still full'),
+    ).toHaveLength(1);
+    void r;
+  });
+
+  it('pin episodes are tracked by the PIN, not by level changes: with the reading already none each episode reports again', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError,
+    });
+    const append = storage.append.bind(storage);
+    storage.append = (g, c, f, d) => {
+      if (PAD(d)) throw new Error('still full');
+      append(g, c, f, d);
+    };
+    pressure.observe(5 * MB); // the size reading says none for the whole test
+    const reports = (): number =>
+      onDiskWriteError.mock.calls.filter((c) => (c[0] as Error).message === 'still full').length;
+    let t = 1000;
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        t += 1000;
+        store.tick(t);
+      }
+    };
+    const seen: number[] = [];
+    for (let episode = 0; episode < 3; episode++) {
+      pressure.noteWriteError({ code: 'ENOSPC' });
+      tick(3);
+      pressure.noteWriteRecovered();
+      tick(12);
+      seen.push(reports());
+    }
+    expect(seen).toEqual([1, 2, 3]);
+  });
+});
+
+describe('withDiskPressure — an unreadable medium serves what the backend still holds in memory', () => {
+  const held = (): Map<FileType, StoredEntry[]> =>
+    new Map([['log' as FileType, [rec('log', 1, 'queued')]]]);
+  const failing = (
+    extra: Partial<CaptureSnapshot> = {},
+  ): { backend: ChunkBackend; released: () => number } => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    let released = 0;
+    const backend: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => ({
+        ...memory.snapshot(parts),
+        drainAll: () => Promise.reject(new Error('closing')),
+        release: () => {
+          released += 1;
+        },
+        ...extra,
+      }),
+    };
+    return { backend, released: () => released };
+  };
+
+  it("serves the snapshot's inMemory() records, and releases the abandoned read (its pins and references)", async () => {
+    const f = failing({ inMemory: held });
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(f.backend, createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const all = await backend
+      .snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }])
+      .drainAll();
+    expect(names(all.get('log'))).toEqual(['queued']);
+    expect(f.released()).toBeGreaterThanOrEqual(1);
+    expect(onReadError).toHaveBeenCalledOnce();
+  });
+
+  it('serves inMemory() immediately while the medium is known dead (no waiting, no second report), and exposes it on the guarded snapshot', async () => {
+    const f = failing({ inMemory: held });
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(f.backend, createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const frozen = [{ ref: { generation: 1, number: 0 }, count: 1 }];
+    await backend.snapshot(frozen).drainAll();
+    const second = backend.snapshot(frozen);
+    expect(names((await second.drainAll()).get('log'))).toEqual(['queued']);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect(names(second.inMemory?.().get('log'))).toEqual(['queued']);
+  });
+
+  it('a snapshot without inMemory() serves nothing from the medium, and inMemory is not invented for it', async () => {
+    const f = failing();
+    const backend = withDiskPressure(f.backend, createDiskPressure());
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+    expect((await snap.drainAll()).size).toBe(0);
+    expect(snap.inMemory).toBeUndefined();
   });
 });

@@ -29,6 +29,11 @@ export interface DiskPressure {
   level(): DiskPressureLevel;
   /** True while `none` is held by a refused write rather than by a size reading. */
   pinned(): boolean;
+  /**
+   * Subscribe to the pin being SET or CLEARED. `onChange` cannot tell: when the size reading is already `none` a pin
+   * changes nothing about the level, yet a consumer that schedules probes must still see every pin episode.
+   */
+  onPinChange(listener: (pinned: boolean) => void): () => void;
   /** Subscribe to level changes (fires only on a real transition, with the NEW level). Returns an unsubscribe. */
   onChange(listener: (level: DiskPressureLevel) => void): () => void;
 }
@@ -126,6 +131,25 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
   let pin = false;
   let current: DiskPressureLevel = 'normal';
   const listeners = new Set<(level: DiskPressureLevel) => void>();
+  const pinListeners = new Set<(pinned: boolean) => void>();
+
+  const setPin = (next: boolean): void => {
+    if (next === pin) {
+      return;
+    }
+    pin = next;
+    for (const listener of [...pinListeners]) {
+      try {
+        listener(next);
+      } catch (error) {
+        try {
+          options.onError?.(error);
+        } catch {
+          /* the reporter itself failed */
+        }
+      }
+    }
+  };
 
   const publish = (): void => {
     const level: DiskPressureLevel = pin ? 'none' : reading;
@@ -149,6 +173,12 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
   return {
     level: () => current,
     pinned: () => pin,
+    onPinChange(listener) {
+      pinListeners.add(listener);
+      return () => {
+        pinListeners.delete(listener);
+      };
+    },
     onChange(listener) {
       listeners.add(listener);
       return () => {
@@ -168,12 +198,12 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
       ) {
         return false;
       }
-      pin = true;
+      setPin(true);
       publish();
       return true;
     },
     noteWriteRecovered() {
-      pin = false;
+      setPin(false);
       publish();
     },
   };

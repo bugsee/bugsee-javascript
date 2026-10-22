@@ -303,3 +303,50 @@ describe('suspect write failures (what Chromium reports for an IndexedDB write o
     expect(isStorageFullSuspect(null)).toBe(false);
   });
 });
+
+describe('onPinChange', () => {
+  it('fires when the pin is set and cleared, even when the level does not change (the reading is already none)', () => {
+    const p = createDiskPressure();
+    p.observe(5 * MB); // the size reading already says none
+    const pins: boolean[] = [];
+    const levels: DiskPressureLevel[] = [];
+    p.onPinChange((v) => pins.push(v));
+    p.onChange((l) => levels.push(l));
+    p.noteWriteError({ code: 'ENOSPC' });
+    p.noteWriteError({ code: 'ENOSPC' }); // already pinned: nothing
+    p.noteWriteRecovered();
+    p.noteWriteRecovered(); // already clear: nothing
+    expect(pins).toEqual([true, false]);
+    expect(levels).toEqual([]); // the level was none throughout
+  });
+
+  it('unsubscribes, isolates a throwing listener, and survives a throwing reporter', () => {
+    const onError = vi.fn();
+    const p = createDiskPressure({ onError });
+    const later = vi.fn();
+    const off = p.onPinChange(() => {
+      throw new Error('listener');
+    });
+    p.onPinChange(later);
+    p.noteWriteError({ code: 'ENOSPC' });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(later).toHaveBeenCalledWith(true);
+    off();
+    p.noteWriteRecovered();
+    expect(onError).toHaveBeenCalledOnce();
+    const silent = createDiskPressure({
+      onError: () => {
+        throw new Error('reporter');
+      },
+    });
+    silent.onPinChange(() => {
+      throw new Error('listener');
+    });
+    expect(() => silent.noteWriteError({ code: 'ENOSPC' })).not.toThrow();
+    const quiet = createDiskPressure();
+    quiet.onPinChange(() => {
+      throw new Error('listener');
+    });
+    expect(() => quiet.noteWriteError({ code: 'ENOSPC' })).not.toThrow();
+  });
+});

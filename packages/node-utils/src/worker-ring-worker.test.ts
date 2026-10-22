@@ -525,3 +525,32 @@ describe('the worker script — a short write then a failure never duplicates th
     ).toEqual([1, 2]);
   });
 });
+
+describe('createWorkerThreadRingWorker — expectRecovery', () => {
+  it('posts the arm message so the worker reports its next successfully drained frame', () => {
+    const { data, control } = allocCaptureRing(1024);
+    const messages: object[] = [];
+    const fake = {
+      on: () => {},
+      postMessage: (m: object) => messages.push(m),
+      terminate: () => Promise.resolve(0),
+      unref: () => {},
+    };
+    const worker = createWorkerThreadRingWorker(
+      {
+        data,
+        control,
+        flags: new SharedArrayBuffer(16),
+        captureDir: '/tmp/never',
+        generation: GEN,
+        fileTypes: FILE_TYPES,
+        onError: () => {},
+      },
+      function FakeCtor() {
+        return fake;
+      } as unknown as Parameters<typeof createWorkerThreadRingWorker>[1],
+    );
+    worker.expectRecovery?.();
+    expect(messages).toEqual([{ arm: true }]);
+  });
+});

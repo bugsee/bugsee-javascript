@@ -352,6 +352,16 @@ export function createBatchedFsChunkStorage(
       }
     },
 
+    flushNow(): void {
+      // The disk-pressure probe's seam: the same FORCED flush, named for what it is for. Without it the probe's record
+      // went out through the unforced flush of a part removal, i.e. through the circuit breaker (one attempt per 128
+      // calls after 8 failures), and recovery after freeing the disk took thousands of ticks.
+      for (const path of open.keys()) {
+        flushPath(path, true);
+      }
+      reportShed();
+    },
+
     flushSync(): void {
       // FORCED past the circuit: this is the explicit "write now" seam (the periodic timer, exit, a
       // signal), so it is also the moment to find out whether the disk recovered.

@@ -821,3 +821,55 @@ describe('createBatchedFsChunkStorage — sealing a chunk whose flush fails keep
     s.dispose?.();
   });
 });
+
+describe('createBatchedFsChunkStorage — flushNow is forced past the circuit', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+
+  it('attempts a write even while the circuit is open, where a plain flush would not, and reports the shed summary', () => {
+    const root = mkRoot();
+    let attempts = 0;
+    let broken = true;
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      failureThreshold: 2,
+      onError: (e) => errors.push(e),
+      writev: (fd, bufs) => {
+        attempts += 1;
+        if (broken) throw full();
+        return writevSync(fd, bufs);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'one\n');
+    s.flushSync?.();
+    s.flushSync?.(); // two failures: the circuit is open
+    const before = attempts;
+    s.sealChunk?.(GEN, CHUNK); // an UNFORCED flush: skipped by the open circuit
+    expect(attempts).toBe(before);
+    broken = false;
+    s.flushNow?.(); // FORCED: finds out the disk recovered
+    expect(attempts).toBe(before + 1);
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['one']);
+    s.dispose?.();
+  });
+
+  it('reports shed records like flushSync does', () => {
+    const root = mkRoot();
+    const errors: unknown[] = [];
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      maxBufferedBytes: 10,
+      failureThreshold: 100,
+      onError: (e) => errors.push(e),
+      writev: () => {
+        throw full();
+      },
+    });
+    for (let i = 0; i < 5; i++) s.append(GEN, CHUNK, 'log', `record-${i}\n`);
+    s.flushNow?.();
+    expect(errors.some((e) => /shed \d+ capture record/.test(String((e as Error).message)))).toBe(
+      true,
+    );
+    s.dispose?.();
+  });
+});

@@ -27,6 +27,8 @@ import type { AsyncKeyedStore } from './idb';
 // snapshot-time count; listParts/listGenerations read the durable meta records (no data scan) — the
 // recovery index. Queue failures route to onError and never throw the capture path.
 
+const CANCELLED = Symbol('cancelled');
+
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;
 const SEQ_PAD = 12;
@@ -167,8 +169,8 @@ export function createIdbChunkBackend(
     run: () => Promise<unknown>;
     bytes: number;
     write: boolean;
-    /** Called when this write will NEVER land (refused by the store, skipped by the open circuit, shed by the queue bound). */
-    onLost?: () => void;
+    /** Called when this write LANDED (it is then no longer an in-memory-only record). */
+    onLanded?: () => void;
   }
   const pending: PendingWrite[] = [];
   let pendingBytes = 0;
@@ -230,7 +232,6 @@ export function createIdbChunkBackend(
         sinceProbe += 1;
         if (sinceProbe < PROBE_INTERVAL) {
           dropped += 1;
-          item.onLost?.();
           continue; // circuit open — do not attempt
         }
         sinceProbe = 0;
@@ -238,6 +239,7 @@ export function createIdbChunkBackend(
       probe = false;
       try {
         await item.run();
+        item.onLanded?.();
         // Only a WRITE proves the store accepts data again: deleting works under a full quota (it is how space
         // comes back), so a successful delete must not release a write-failure pin.
         if (unhealthy && item.write) {
@@ -248,7 +250,6 @@ export function createIdbChunkBackend(
       } catch (error) {
         consecutiveFailures += 1;
         unhealthy = true;
-        item.onLost?.(); // a refused record stays in the in-memory window (see `refused`)
         // Only a failed WRITE says anything about the medium accepting data: a failed delete or read must not
         // make the disk-pressure pin out of a connection hiccup.
         if (item.write) {
@@ -274,7 +275,7 @@ export function createIdbChunkBackend(
     run: () => Promise<unknown>,
     bytes = 0,
     write = false,
-    onLost?: () => void,
+    onLanded?: () => void,
   ): void => {
     while (
       pending.length > 0 &&
@@ -285,9 +286,8 @@ export function createIdbChunkBackend(
       const evicted = pending.shift() as PendingWrite;
       pendingBytes -= evicted.bytes;
       dropped += 1;
-      evicted.onLost?.();
     }
-    pending.push({ run, bytes, write, ...(onLost !== undefined ? { onLost } : {}) });
+    pending.push({ run, bytes, write, ...(onLanded !== undefined ? { onLanded } : {}) });
     pendingBytes += bytes;
     if (resolveIdle === undefined) {
       idle = new Promise<void>((resolve) => {
@@ -301,11 +301,12 @@ export function createIdbChunkBackend(
   const settled = (): Promise<void> => idle;
 
   const chunkKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
-  // Records whose write NEVER landed (refused by a full quota, skipped by the open circuit, shed by the queue bound),
-  // kept in memory by sequence so a LIVE snapshot still holds them in their place: the capture store counted them as
-  // stored, and without this the largest record (a replay FullSnapshot) was the first one a full quota lost. Dropped
-  // with their part; what a crash recovers is, by definition, only what landed.
-  const refused = new Map<string, Array<{ seq: number; record: StoredEntry }>>();
+  // The records the backend holds ONLY in memory: queued for the medium and not landed yet, or refused by it (a full
+  // quota), skipped by the open circuit, shed by the queue bound. Kept by sequence so a LIVE snapshot serves them in
+  // their place even when the medium cannot be read (a hung or closed connection): the capture store counted them as
+  // stored, and without this the largest record (a replay FullSnapshot) was the first one a full quota lost. A record
+  // leaves the map when its write lands, and with its part; what a crash recovers is, by definition, only what landed.
+  const unlanded = new Map<string, Map<number, StoredEntry>>();
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
   const seqByChunk = new Map<string, number>(); // chunkKey → next data sequence number
 
@@ -398,8 +399,9 @@ export function createIdbChunkBackend(
       seqByChunk.set(key, seq + 1);
       // Created now (not at the first failure) so a snapshot taken before any write has failed already holds the list
       // that a later failure will fill.
-      const lost = refused.get(key) ?? [];
-      refused.set(key, lost);
+      const held = unlanded.get(key) ?? new Map<number, StoredEntry>();
+      unlanded.set(key, held);
+      held.set(seq, record);
       const data: StoredData = { t: record.timestamp, s: record.serialized, ty: record.type };
       const bytes = enc(data);
       // The payload is encoded here rather than inside the closure, so its size is known to the queue's
@@ -409,7 +411,7 @@ export function createIdbChunkBackend(
         bytes.length,
         true,
         () => {
-          lost.push({ seq, record });
+          held.delete(seq);
         },
       );
       return utf8ByteLength(record.serialized);
@@ -426,7 +428,7 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       openStarts.delete(key);
       seqByChunk.delete(key);
-      refused.delete(key); // a snapshot already holding the list keeps its own reference
+      unlanded.delete(key); // a snapshot already holding the map keeps its own reference
       if ((pins.get(key) ?? 0) > 0) {
         deferredDelete.add(key); // a live snapshot still needs the data
       } else {
@@ -435,9 +437,9 @@ export function createIdbChunkBackend(
     },
 
     removeGeneration(gen: number): void {
-      for (const key of [...refused.keys()]) {
+      for (const key of [...unlanded.keys()]) {
         if (key.startsWith(`${gen}/`)) {
-          refused.delete(key);
+          unlanded.delete(key);
         }
       }
       enqueue(() => store.deletePrefix(dataGenPrefix(gen)));
@@ -446,20 +448,40 @@ export function createIdbChunkBackend(
 
     snapshot(parts: readonly FrozenPart[]): CaptureSnapshot {
       const frozen = [...parts];
-      // The refused lists are captured NOW by reference (appends only grow them; `seq < count` is the freeze), so a
-      // part evicted while this snapshot is still being read keeps its records.
-      const refusedAtFreeze = frozen.map(({ ref }) => refused.get(chunkKey(ref)));
+      // The in-memory maps are captured NOW by reference (appends only grow them; `seq < count` is the freeze), so a part
+      // evicted while this snapshot is still being read keeps its records.
+      const heldAtFreeze = frozen.map(({ ref }) => unlanded.get(chunkKey(ref)));
       const frozenQueue = settled(); // every write up to now must land before the read
       for (const { ref } of frozen) {
         const key = chunkKey(ref);
         pins.set(key, (pins.get(key) ?? 0) + 1);
       }
+      // `release()` resolves this: a read abandoned by its caller (a timeout on a hung store) stops waiting and lets go
+      // of everything it captured, instead of pinning it until a store that may never answer does.
+      let cancel!: () => void; // assigned synchronously by the promise executor below
+      const cancelled = new Promise<typeof CANCELLED>((resolve) => {
+        cancel = () => resolve(CANCELLED);
+      });
+      const until = <T>(pending: Promise<T>): Promise<T | typeof CANCELLED> =>
+        Promise.race([pending, cancelled]);
+
+      /** The records held only in memory for one frozen part (`seq < count`), in sequence. */
+      const heldFor = (index: number, count: number): Array<{ seq: number; record: StoredEntry }> =>
+        [...(heldAtFreeze[index] ?? new Map<number, StoredEntry>())]
+          .filter(([seq]) => seq < count)
+          .map(([seq, record]) => ({ seq, record }))
+          .sort((a, b) => a.seq - b.seq);
 
       const readAll = async (): Promise<StoredEntry[]> => {
-        await frozenQueue;
+        if ((await until(frozenQueue)) === CANCELLED) {
+          return [];
+        }
         const out: StoredEntry[] = [];
         for (const [index, { ref, count }] of frozen.entries()) {
-          const records = await store.readPrefix(dataPrefix(ref.generation, ref.number));
+          const records = await until(store.readPrefix(dataPrefix(ref.generation, ref.number)));
+          if (records === CANCELLED) {
+            return [];
+          }
           // By SEQUENCE, not by position: a refused write leaves a hole in the sequence, and the freeze is `seq < count`.
           const landed: Array<{ seq: number; record: StoredEntry }> = [];
           for (const [recordKey, bytes] of records) {
@@ -473,7 +495,7 @@ export function createIdbChunkBackend(
             }
             landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
           }
-          const kept = (refusedAtFreeze[index] ?? []).filter((r) => r.seq < count);
+          const kept = heldFor(index, count);
           const merged =
             kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
           for (const { record } of merged) {
@@ -489,6 +511,10 @@ export function createIdbChunkBackend(
           return;
         }
         released = true;
+        cancel();
+        // Let go NOW (not when the abandoned read finally unwinds, which on a hung store may be never): the in-memory
+        // maps of the frozen parts are retained by whoever holds this snapshot.
+        heldAtFreeze.fill(undefined);
         for (const { ref } of frozen) {
           const key = chunkKey(ref);
           // The part was pinned at snapshot() time, so pins.get is defined here.
@@ -515,6 +541,16 @@ export function createIdbChunkBackend(
           return groupByType(await readAll());
         },
         release,
+        // What the medium is not needed for: records still queued for it or refused by it (see `unlanded`).
+        inMemory(): Map<FileType, StoredEntry[]> {
+          const out: StoredEntry[] = [];
+          for (const [index, { count }] of frozen.entries()) {
+            for (const { record } of heldFor(index, count)) {
+              out.push(record);
+            }
+          }
+          return groupByType(out);
+        },
       };
     },
 

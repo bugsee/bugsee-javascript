@@ -557,3 +557,40 @@ describe('CaptureRingWriter — health hooks (onWriteFailure / onWriteRecovered)
     expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
   });
 });
+
+describe('CaptureRingWriter — a host-side failure arms the worker', () => {
+  it('asks the worker to report its next drained frame whenever a meta write, a removal or a fallback append fails', () => {
+    const arm = vi.fn();
+    const inner = (args: RingWorkerArgs) => {
+      const sync = createSyncRingWorker(args);
+      return { ...sync, expectRecovery: arm } as RingWorker;
+    };
+    const s = mk(mkRoot(), {
+      workerFactory: inner,
+      writeFile: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      removeDir: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      open: () => {
+        throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+      },
+      onError: () => {},
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.removeChunk(GEN, 0);
+    s.append(GEN + 1, 0, 'log', 'x\n');
+    expect(arm).toHaveBeenCalledTimes(3);
+  });
+
+  it('works with a worker that has no expectRecovery', () => {
+    const s = mk(mkRoot(), {
+      writeFile: () => {
+        throw new Error('no space');
+      },
+      onError: () => {},
+    });
+    expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+  });
+});

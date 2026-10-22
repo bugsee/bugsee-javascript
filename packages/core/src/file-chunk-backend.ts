@@ -14,6 +14,8 @@ import type { CaptureSnapshot, StoredEntry } from './contracts';
 
 // The reserved metadata file name within a chunk group; never a FileType, so it never collides with data.
 const META_FILE = 'meta';
+// The data file the probe's padding goes into (a real FileType name: every file in a part is read back as one).
+const PROBE_FILE = 'log';
 
 interface StoredMeta {
   readonly n: number;
@@ -97,6 +99,17 @@ export function createFileChunkBackend(
       // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
       // open-handle count bounded to the active chunk rather than the whole rolling window.
       storage.sealChunk?.(ref.generation, ref.number);
+    },
+
+    probeWrite(ref: PartRef, bytes: number): void {
+      // `#`-padding with NO tab: `snapshot` skips a line that has no timestamp separator.
+      storage.append(
+        ref.generation,
+        ref.number,
+        PROBE_FILE,
+        `${'#'.repeat(Math.max(bytes - 1, 0))}\n`,
+      );
+      storage.flushNow?.();
     },
 
     removePart(ref: PartRef): void {

@@ -59,6 +59,15 @@ export interface ChunkBackend {
   /** Every generation with persisted parts (recovery). */
   listGenerations(): number[] | Promise<number[]>;
   /**
+   * Write `bytes` of throwaway padding into the part's data file, as a disk-pressure PROBE: it proves the medium accepts
+   * record-sized writes again. The padding is a line without a timestamp separator, which every reader skips, so it
+   * leaves no residue a report or a recovery would read, and it belongs to a real part so it is deleted with it (a
+   * separate throwaway part would be a directory to clean up, and a stuck write could recreate it later). The write is
+   * forced out where the medium buffers (see `ChunkStorage.flushNow`). Absent: the pressure gate probes with a
+   * throwaway part instead.
+   */
+  probeWrite?(part: PartRef, bytes: number): void;
+  /**
    * Commit everything captured so far. Optional: only a backend that DEFERS physical writes has
    * anything to commit, and one that writes synchronously must not advertise a guarantee it does not add.
    *

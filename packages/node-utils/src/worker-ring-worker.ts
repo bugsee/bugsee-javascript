@@ -95,7 +95,7 @@ const start = (wt, fs) => {
   };
   const closeChunk = (chunk) => { for (const pid of [...fds.keys()]) if (Math.floor(pid/256)===chunk) { try{fs.closeSync(fds.get(pid));}catch(e){} fds.delete(pid); } };
   const closeAll = () => { for (const pid of [...fds.keys()]) { try{fs.closeSync(fds.get(pid));}catch(e){} fds.delete(pid); } };
-  wt.parentPort.on('message', (m) => { if (m && m.close !== undefined) closeChunk(m.close); else if (m && m.closeAll) closeAll(); });
+  wt.parentPort.on('message', (m) => { if (m && m.close !== undefined) closeChunk(m.close); else if (m && m.closeAll) closeAll(); else if (m && m.arm) failed = true; });
   const timer = setInterval(() => {
     drain();
     const req = Atomics.load(fl, FREQ);
@@ -195,6 +195,7 @@ export function createWorkerThreadRingWorker(
   return {
     flushAndWait,
     closeChunk: (chunk) => worker.postMessage({ close: chunk }),
+    expectRecovery: () => worker.postMessage({ arm: true }),
     closeAll: () => worker.postMessage({ closeAll: true }),
     stop: () => {
       Atomics.store(fl, SHUTDOWN, 1);

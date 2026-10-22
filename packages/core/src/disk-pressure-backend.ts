@@ -66,6 +66,10 @@ const MAX_PROBE_EVERY = 60;
 /** The probe record is the largest recent record, clamped to this range. */
 const PROBE_MIN_BYTES = 1024;
 const PROBE_MAX_BYTES = 256 * 1024;
+/** The padding probe lives in the buffered writer's tail while the medium refuses it: keep it small. */
+const FILE_PROBE_MAX_BYTES = 16 * 1024;
+/** After a failed or timed-out durable read, snapshots skip the medium for this many ticks (~1 s each). */
+const DEAD_MEDIUM_TTL_TICKS = 60;
 
 /** The throwaway part the probe writes; far above any real part number. */
 const PROBE_PART = 2_000_000_000;
@@ -181,33 +185,52 @@ export function withDiskPressure(
   let nextProbeAt = 0;
   let probeEvery = 1;
   let releasedAt: number | undefined;
-  let wasPinned = pressure.pinned();
   let probeReported = false;
-  pressure.onChange(() => {
-    const nowPinned = pressure.pinned();
-    if (nowPinned && !wasPinned) {
+  // Pin episodes are tracked by the pin itself, NOT by level changes: when the size reading already says `none` a pin
+  // changes no level, and an `onChange`-driven tracker never saw the episode (its probe report stayed suppressed).
+  pressure.onPinChange((pinned) => {
+    if (pinned) {
       probeEvery =
         releasedAt !== undefined && ticks - releasedAt <= FLAP_WINDOW
           ? Math.min(probeEvery * 2, MAX_PROBE_EVERY)
           : 1;
       nextProbeAt = ticks + probeEvery;
       probeReported = false;
-    } else if (!nowPinned && wasPinned) {
+    } else {
       releasedAt = ticks;
     }
-    wasPinned = nowPinned;
   });
 
   // The biggest record seen recently (halved every 60 ticks): the probe's size.
   let largestRecent = 0;
 
+  // The part the store is currently writing (the probe's padding goes into it when the backend can do that).
+  let currentRef: PartRef | undefined;
+  let currentState: PartState | undefined;
+
   const probe = (): void => {
-    const ref: PartRef = { generation: durable.generation, number: PROBE_PART };
-    const size = Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), PROBE_MAX_BYTES);
     try {
+      if (
+        durable.probeWrite !== undefined &&
+        currentRef !== undefined &&
+        currentState !== undefined
+      ) {
+        // Padding into the CURRENT part, forced out past any writer circuit breaker: no part to clean up, nothing a
+        // report or a recovery reads, and a write that only lands later (a stuck ring frame) lands harmlessly in a part
+        // that is deleted with the window.
+        ensureOpened(currentRef, currentState);
+        durable.probeWrite(
+          currentRef,
+          Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), FILE_PROBE_MAX_BYTES),
+        );
+        return;
+      }
+      // A throwaway part: a data record, then its removal (a buffered writer flushes on the way out).
+      const ref: PartRef = { generation: durable.generation, number: PROBE_PART };
+      const size = Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), PROBE_MAX_BYTES);
       durable.openPart(ref, 0);
       durable.appendEntry(ref, { type: 'log', timestamp: 0, serialized: 'x'.repeat(size) });
-      durable.removePart(ref); // a buffered writer flushes the part before deleting it: that flush is its success signal
+      durable.removePart(ref);
     } catch (error) {
       if (!probeReported) {
         probeReported = true; // the medium is still refusing: say so once per pin, not once per tick
@@ -216,17 +239,23 @@ export function withDiskPressure(
     }
   };
 
-  /** A durable read that fails serves nothing from the medium (and says so once) instead of failing the snapshot. */
+  let deadUntilTick = -1;
+
+  /**
+   * A durable read that fails or hangs serves what the backend still holds in memory (records queued for the medium or
+   * refused by it) instead of failing the snapshot, says so once, releases the abandoned read, and keeps later snapshots
+   * from waiting out the timeout again for DEAD_MEDIUM_TTL_TICKS.
+   */
   const guardedRead = (snap: CaptureSnapshot, dead: { failed: boolean }): CaptureSnapshot => {
     const timers = globalThis as unknown as {
       setTimeout(cb: () => void, ms: number): { unref?: () => void };
       clearTimeout(handle: unknown): void;
     };
     const drainAll = async (): Promise<Map<FileType, StoredEntry[]>> => {
-      if (dead.failed) {
-        // An earlier part of THIS snapshot already failed to read: do not wait out the timeout again for each of the
-        // other parts (a 60-part window would hold a report for minutes).
-        return new Map();
+      if (dead.failed || ticks < deadUntilTick) {
+        // An earlier part of THIS snapshot (or a recent snapshot) already failed to read: do not wait out the timeout
+        // again for each part (a 60-part window would hold a report for minutes).
+        return snap.inMemory?.() ?? new Map();
       }
       let timer: { unref?: () => void } | undefined;
       try {
@@ -241,8 +270,11 @@ export function withDiskPressure(
         return await Promise.race([snap.drainAll(), timeout]);
       } catch (error) {
         dead.failed = true;
+        deadUntilTick = ticks + DEAD_MEDIUM_TTL_TICKS;
         options.onReadError?.(error);
-        return new Map();
+        const held = snap.inMemory?.() ?? new Map();
+        snap.release(); // abandon the read: drop its pins and references (a hung one would hold them forever)
+        return held;
       } finally {
         timers.clearTimeout(timer);
       }
@@ -255,6 +287,7 @@ export function withDiskPressure(
       },
       drainAll,
       release: () => snap.release(),
+      ...(snap.inMemory !== undefined ? { inMemory: () => snap.inMemory?.() ?? new Map() } : {}),
     };
   };
 
@@ -263,6 +296,7 @@ export function withDiskPressure(
 
     openPart(ref: PartRef, start: number): void {
       shadow.openPart(ref, start);
+      currentRef = ref;
       const state: PartState = {
         start,
         opened: false,
@@ -273,6 +307,7 @@ export function withDiskPressure(
         routes: new Map(),
       };
       parts.set(keyOf(ref), state);
+      currentState = state;
       if (pressure.level() !== 'none') {
         try {
           ensureOpened(ref, state);
