@@ -105,6 +105,17 @@ describe('disk pressure over the REAL batched writer', () => {
     expect(await live(r.store, 'log')).toEqual(['log-0', 'log-1', 'log-2', 'log-3', 'log-4']);
   });
 
+  it('with the default 64 KiB buffer the probe is released by its SEAL (a buffered record only reaches the disk when flushed)', () => {
+    const r = rig({ highWaterMark: 64 * 1024 });
+    r.state.refusing = true;
+    r.pressure.noteWriteError(full());
+    r.store.tick(2000);
+    expect(r.pressure.level()).toBe('none'); // the sealed probe was refused
+    r.state.refusing = false;
+    r.store.tick(3000); // the probe record is far below the high-water mark: only the seal writes it
+    expect(r.pressure.level()).toBe('normal');
+  });
+
   it('a medium that keeps refusing stays pinned across many ticks (it cannot flap back to normal)', async () => {
     const r = rig();
     r.state.refusing = true;

@@ -461,7 +461,7 @@ describe('CaptureRingWriter — health hooks (onWriteFailure / onWriteRecovered)
     };
   };
 
-  it('meta writes: every failure counts, the first success after them recovers once', () => {
+  it('meta writes: every failure counts; a meta write that works does NOT recover (only a drained data frame does)', () => {
     const h = sinks();
     let broken = true;
     const s = mk(mkRoot(), {
@@ -476,7 +476,25 @@ describe('CaptureRingWriter — health hooks (onWriteFailure / onWriteRecovered)
     broken = false;
     s.write(GEN, 0, 'meta', '{}');
     s.write(GEN, 0, 'meta', '{}');
+    expect(h.state.recovered).toBe(0);
+  });
+
+  it('a drained DATA frame after failed drains recovers once (sync worker)', () => {
+    const h = sinks();
+    const root = mkRoot();
+    writeFileSync(join(root, '0000000000001'), 'x'); // the generation dir is a file: the drain cannot open
+    const s = mk(root, { ...h.options, onError: () => {} });
+    s.append(GEN, 0, 'log', 'one\n');
+    s.flushSync?.();
+    expect(h.failures.length).toBeGreaterThan(0);
+    expect(h.state.recovered).toBe(0);
+    rmSync(join(root, '0000000000001'));
+    s.flushSync?.(); // the stuck frame now lands
     expect(h.state.recovered).toBe(1);
+    s.append(GEN, 0, 'log', 'two\n');
+    s.flushSync?.();
+    expect(h.state.recovered).toBe(1); // only the first success after a failure
+    s.dispose?.();
   });
 
   it('a failed chunk or generation removal counts, a later one that works does NOT recover (only a write proves it)', () => {

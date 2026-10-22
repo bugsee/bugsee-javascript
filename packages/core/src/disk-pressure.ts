@@ -37,8 +37,13 @@ export interface DiskPressure {
 export interface DiskPressureState extends DiskPressure {
   /** Apply a free-space reading in BYTES. Not a finite number >= 0: ignored. */
   observe(freeBytes: number): void;
-  /** A persistence write failed (call it for EVERY failure). When `error` says "out of space", pin `none` and return true. */
-  noteWriteError(error: unknown): boolean;
+  /**
+   * A persistence write failed (call it for EVERY failure). When `error` says "out of space", pin `none` and return true.
+   * `suspect: true` widens "out of space" to what a browser actually reports for a refused IndexedDB write on a full disk:
+   * Chromium surfaces it as `AbortError` or `InvalidStateError` (the transaction aborts / the connection closes), not as
+   * `QuotaExceededError`. Pass it ONLY for a failed WRITE of the capture store, never for a read or a delete.
+   */
+  noteWriteError(error: unknown, options?: { suspect?: boolean }): boolean;
   /** A durable write succeeded: release a write-failure pin (the size readings decide again). */
   noteWriteRecovered(): void;
 }
@@ -76,6 +81,24 @@ export function isOutOfSpaceError(error: unknown): boolean {
       (typeof name === 'string' && OUT_OF_SPACE_NAMES.has(name)) ||
       (typeof code === 'string' && OUT_OF_SPACE_CODES.has(code))
     );
+  } catch {
+    return false;
+  }
+}
+
+const SUSPECT_NAMES = new Set(['AbortError', 'InvalidStateError']);
+
+/** {@link isOutOfSpaceError}, plus the names Chromium uses for an IndexedDB write refused on a full disk. */
+export function isStorageFullSuspect(error: unknown): boolean {
+  if (isOutOfSpaceError(error)) {
+    return true;
+  }
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  try {
+    const { name } = error as { name?: unknown };
+    return typeof name === 'string' && SUSPECT_NAMES.has(name);
   } catch {
     return false;
   }
@@ -139,8 +162,10 @@ export function createDiskPressure(options: DiskPressureOptions = {}): DiskPress
       reading = nextLevel(freeBytes, reading);
       publish();
     },
-    noteWriteError(error) {
-      if (!isOutOfSpaceError(error)) {
+    noteWriteError(error, noteOptions) {
+      if (
+        !(noteOptions?.suspect === true ? isStorageFullSuspect(error) : isOutOfSpaceError(error))
+      ) {
         return false;
       }
       pin = true;

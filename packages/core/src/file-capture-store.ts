@@ -28,6 +28,8 @@ export interface FileCaptureStoreOptions {
   diskPressure?: DiskPressure;
   /** See ChunkCaptureStoreOptions.onDiskWriteError. */
   onDiskWriteError?: (error: unknown) => void;
+  /** See ChunkCaptureStoreOptions.onDiskReadError. */
+  onDiskReadError?: (error: unknown) => void;
 }
 
 export function createFileCaptureStore(
@@ -48,6 +50,7 @@ export function createFileCaptureStore(
     ...(options?.onDiskWriteError !== undefined
       ? { onDiskWriteError: options.onDiskWriteError }
       : {}),
+    ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
   };
   return createChunkCaptureStore(backend, storeOptions);
 }

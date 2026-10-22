@@ -29,6 +29,10 @@ export interface ChunkCaptureStoreOptions {
   diskPressure?: DiskPressure;
   /** With `diskPressure`: a durable write that throws is reported here instead of being rethrown (the record is kept). */
   onDiskWriteError?: (error: unknown) => void;
+  /** With `diskPressure`: a failed read of the durable half (once per snapshot); the snapshot serves memory instead. */
+  onDiskReadError?: (error: unknown) => void;
+  /** With `diskPressure`: how long a durable read may take before it counts as failed (default 5000 ms). */
+  diskReadTimeoutMs?: number;
 }
 
 // The in-memory index entry per live part (NO record data — that lives in the backend).
@@ -49,6 +53,12 @@ export function createChunkCaptureStore(
       ? withDiskPressure(durableBackend, options.diskPressure, {
           ...(options.onDiskWriteError !== undefined
             ? { onWriteError: options.onDiskWriteError }
+            : {}),
+          ...(options.onDiskReadError !== undefined
+            ? { onReadError: options.onDiskReadError }
+            : {}),
+          ...(options.diskReadTimeoutMs !== undefined
+            ? { readTimeoutMs: options.diskReadTimeoutMs }
             : {}),
         })
       : durableBackend;

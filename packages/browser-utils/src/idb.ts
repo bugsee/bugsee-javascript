@@ -154,16 +154,50 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
   let dbPromise: Promise<IDBDatabase> | undefined;
   const open = (): Promise<IDBDatabase> => {
     if (dbPromise === undefined) {
-      dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+      const mine: Promise<IDBDatabase> = new Promise<IDBDatabase>((resolve, reject) => {
         const request = idb.open(databaseName, 1);
         request.onupgradeneeded = () => {
           request.result.createObjectStore(storeName);
         };
-        request.onsuccess = () => resolve(request.result);
+        request.onsuccess = () => {
+          const db = request.result;
+          // The browser may close a connection under us (a full disk, an eviction, a `versionchange` from another
+          // tab): forget it so the NEXT call reopens instead of failing forever with InvalidStateError.
+          const forget = (): void => {
+            if (dbPromise === mine) {
+              dbPromise = undefined;
+            }
+          };
+          db.onclose = forget;
+          db.onversionchange = () => {
+            forget();
+            db.close();
+          };
+          resolve(db);
+        };
         request.onerror = () => reject(reqError(request));
+      });
+      dbPromise = mine;
+      // A failed open is not cached forever: the next call tries again.
+      mine.catch(() => {
+        if (dbPromise === mine) {
+          dbPromise = undefined;
+        }
       });
     }
     return dbPromise;
+  };
+
+  // A call that finds the connection already closing throws `InvalidStateError` from `db.transaction()`: the cached
+  // handle is dead, so drop it and let the next call reopen (the failing call itself still fails, and says why).
+  const withDb = <T>(use: (db: IDBDatabase) => Promise<T>): Promise<T> => {
+    const attempt = open();
+    return attempt.then(use).catch((error: unknown) => {
+      if ((error as { name?: unknown } | null)?.name === 'InvalidStateError') {
+        dbPromise = undefined;
+      }
+      throw error;
+    });
   };
 
   // Release the connection (clean shutdown). A later call lazily reopens, so a straggling write is never lost.
@@ -181,7 +215,7 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
     // Resolved on COMMIT, for the same reason as `run` above — this is the durable-as-captured chunk
     // store, where "the entry is safely on disk" is the whole contract.
     put: (key, bytes) =>
-      open().then(
+      withDb(
         (db) =>
           new Promise<void>((resolve, reject) => {
             const transaction = db.transaction(storeName, 'readwrite');
@@ -193,7 +227,7 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
       ),
 
     readPrefix: (prefix) =>
-      open().then(
+      withDb(
         (db) =>
           new Promise<Array<[string, Uint8Array]>>((resolve, reject) => {
             const transaction = db.transaction(storeName, 'readonly');
@@ -208,11 +242,14 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
             };
             transaction.onerror = () =>
               reject(transaction.error ?? new Error('indexedDB readPrefix failed'));
+            // an ABORTED read (the connection closing under it) fires onabort, not onerror: without this it never settled
+            transaction.onabort = () =>
+              reject(transaction.error ?? new Error('indexedDB readPrefix aborted'));
           }),
       ),
 
     keys: (prefix) =>
-      open().then(
+      withDb(
         (db) =>
           new Promise<string[]>((resolve, reject) => {
             const request = db
@@ -225,7 +262,7 @@ export function createIdbKeyedStore(options: IdbBlobStoreOptions = {}): AsyncKey
       ),
 
     deletePrefix: (prefix) =>
-      open().then(
+      withDb(
         (db) =>
           new Promise<void>((resolve, reject) => {
             const request = db

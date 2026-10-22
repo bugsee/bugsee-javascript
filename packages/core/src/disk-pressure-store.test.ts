@@ -247,6 +247,17 @@ describe('disk pressure over the file capture store', () => {
     expect((await snap.drainAll()).size).toBe(0);
   });
 
+  it('streams a window that is entirely on the medium (the guarded durable half yields it)', async () => {
+    const { store } = setup();
+    store.add(rec('log', 1));
+    store.add(rec('traces.system', 2));
+    const snap = store.snapshot();
+    const seen: string[] = [];
+    for await (const r of snap.stream()) seen.push(r.serialized);
+    snap.release();
+    expect(seen.sort()).toEqual(['log@1', 'traces.system@2']);
+  });
+
   it('streams the merged window too', async () => {
     const { pressure, store } = setup();
     store.add(rec('log', 1));
@@ -331,6 +342,15 @@ describe('disk pressure over the file capture store', () => {
     });
     store.tick(3000); // part 1 was opened under none and never written
     expect(storage.chunks(7)).toEqual([0]);
+  });
+
+  it('while a refused write PINS none the state entry is NOT written either (a tiny record would succeed and release the pin)', () => {
+    const { storage, pressure, store } = setup();
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    const state =
+      '{"timestamp":9,"data":{"timestamp":9,"name":"capture","value":{"state":"no_disk_space"}}}';
+    store.add(rec('traces.system', 9, state));
+    expect(storage.read(7, 0, 'traces.system')).toBeUndefined();
   });
 
   it('NONE still persists the `capture` state entry, so a chunk-recovered report can explain its own emptiness', async () => {
@@ -631,5 +651,353 @@ describe('withDiskPressure — failures and surface', () => {
     const wrapped = withDiskPressure(createMemoryChunkBackend(), createDiskPressure());
     const snap = wrapped.snapshot([{ ref: { generation: 0, number: 9 }, count: 3 }]);
     expect((await snap.drainAll()).size).toBe(0);
+  });
+});
+
+describe('withDiskPressure — a durable half that cannot be read', () => {
+  const failingRead = (): ChunkBackend => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    return {
+      ...memory,
+      snapshot: (parts) => {
+        const snap = memory.snapshot(parts);
+        return {
+          ...snap,
+          drainAll: () =>
+            Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' })),
+          stream: async function* () {
+            yield* [] as StoredEntry[];
+            throw new Error('closing');
+          },
+        };
+      },
+    };
+  };
+
+  it('serves the in-memory half and reports ONCE per snapshot when the durable read fails (a live report survives the disk)', async () => {
+    const onReadError = vi.fn();
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(failingRead(), pressure, { onReadError });
+    pressure.observe(30 * MB);
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'in-memory'));
+    backend.appendEntry({ generation: 1, number: 0 }, rec('traces.system', 2, 'on-disk'));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 2 }]);
+    const all = await snap.drainAll();
+    expect(names(all.get('log'))).toEqual(['in-memory']);
+    expect(all.has('traces.system')).toBe(false);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect(onReadError.mock.calls[0]?.[0]).toMatchObject({ name: 'InvalidStateError' });
+  });
+
+  it('after the FIRST part fails to read, the other parts of that snapshot are not waited on again (reported once)', async () => {
+    let reads = 0;
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => ({
+        ...memory.snapshot(parts),
+        drainAll: () => {
+          reads += 1;
+          return Promise.reject(new Error('closing'));
+        },
+      }),
+    };
+    const onReadError = vi.fn();
+    const pressure = createDiskPressure();
+    const backend = withDiskPressure(durable, pressure, { onReadError });
+    pressure.observe(30 * MB);
+    const frozen = [0, 1, 2, 3].map((n) => ({ ref: { generation: 1, number: n }, count: 1 }));
+    for (const { ref } of frozen) {
+      backend.openPart(ref, 0);
+      backend.appendEntry(ref, rec('log', ref.number, `mem-${ref.number}`));
+    }
+    const all = await backend.snapshot(frozen).drainAll();
+    expect(reads).toBe(1);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect(names(all.get('log'))).toEqual(['mem-0', 'mem-1', 'mem-2', 'mem-3']); // every in-memory record is still served
+    const second = await backend.snapshot(frozen).drainAll(); // a NEW snapshot tries the medium again
+    expect(reads).toBe(2);
+    expect(second.get('log')).toHaveLength(4);
+  });
+
+  it('the fast path (nothing shadowed) is guarded too: an unreadable disk yields an empty window, not a thrown report', async () => {
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(failingRead(), createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+    expect((await snap.drainAll()).size).toBe(0);
+    expect(onReadError).toHaveBeenCalledOnce();
+  });
+
+  it('stream() is guarded as well, and release() is delegated', async () => {
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(failingRead(), createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
+    const seen: string[] = [];
+    for await (const r of snap.stream()) seen.push(r.serialized);
+    expect(seen).toEqual([]);
+    expect(onReadError).toHaveBeenCalledOnce();
+    expect(() => snap.release()).not.toThrow();
+  });
+
+  it('without a callback the failure is swallowed the same way, and the store forwards onDiskReadError', async () => {
+    const backend = withDiskPressure(failingRead(), createDiskPressure());
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    expect(
+      (await backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll()).size,
+    ).toBe(0);
+    const onDiskReadError = vi.fn();
+    const store = createChunkCaptureStore(failingRead(), {
+      clock: clockAt(1000),
+      diskPressure: createDiskPressure(),
+      onDiskReadError,
+    });
+    store.add(rec('log', 1));
+    await store.snapshot().drainAll();
+    expect(onDiskReadError).toHaveBeenCalledOnce();
+    const fileStore = createFileCaptureStore(createInMemoryChunkStorage(), {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: createDiskPressure(),
+      onDiskReadError,
+    });
+    expect(fileStore).toBeDefined();
+  });
+});
+
+describe('withDiskPressure — the probe backs off instead of flapping', () => {
+  const PROBE = 2_000_000_000;
+  const rig = () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const onDiskWriteError = vi.fn();
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError,
+    });
+    let probes = 0;
+    const append = storage.append.bind(storage);
+    storage.append = (g, c, f, d) => {
+      if (c === PROBE) probes += 1; // the probe's DATA record: one per probe
+      append(g, c, f, d);
+    };
+    let t = 1000;
+    const tick = (n = 1): void => {
+      for (let i = 0; i < n; i++) {
+        t += 1000;
+        store.tick(t);
+      }
+    };
+    return { storage, pressure, store, tick, probes: () => probes, onDiskWriteError };
+  };
+  const pin = (p: ReturnType<typeof createDiskPressure>): void =>
+    void p.noteWriteError({ code: 'ENOSPC' });
+
+  it('probes on the very next tick after a fresh pin, then every tick while it holds (interval 1)', () => {
+    const r = rig();
+    pin(r.pressure);
+    r.tick(3);
+    expect(r.probes()).toBe(3);
+  });
+
+  it('a pin right after a release (a flap) doubles the interval: 1, 2, 4, ... and never probes faster again', () => {
+    const r = rig();
+    const probesAfter: number[] = [];
+    for (let flap = 0; flap < 4; flap++) {
+      pin(r.pressure);
+      const before = r.probes();
+      r.tick(12);
+      probesAfter.push(r.probes() - before);
+      r.pressure.noteWriteRecovered(); // the probe "succeeded" and released the pin
+      r.tick(1);
+    }
+    // interval 1 -> 12 probes in 12 ticks; then 2 -> 6; then 4 -> 3; then 8 -> 1 (the next one is past the window)
+    expect(probesAfter).toEqual([12, 6, 3, 1]);
+  });
+
+  it('the probe is a DATA record as large as the biggest recent record (clamped 1 KiB..256 KiB), sealed and removed', () => {
+    const sizes: number[] = [];
+    const r = rig();
+    const append = r.storage.append.bind(r.storage);
+    r.storage.append = (g, c, f, d) => {
+      if (c === PROBE) sizes.push(d.length);
+      append(g, c, f, d);
+    };
+    pin(r.pressure);
+    r.tick(1);
+    expect(sizes.at(-1)).toBe(1024 + '0\t\n'.length); // nothing seen yet: the 1 KiB floor
+    r.store.add(rec('replay', 5, 'r'.repeat(5000)));
+    r.tick(1);
+    expect(sizes.at(-1)).toBe(5000 + '0\t\n'.length);
+    r.store.add(rec('replay', 6, 'r'.repeat(900_000)));
+    r.tick(1);
+    expect(sizes.at(-1)).toBe(256 * 1024 + '0\t\n'.length); // clamped
+    expect(r.storage.chunks(1)).not.toContain(PROBE);
+  });
+
+  it('the remembered record size halves every 60 ticks, so one huge record does not size the probe forever', () => {
+    const sizes: number[] = [];
+    const r = rig();
+    const append = r.storage.append.bind(r.storage);
+    r.storage.append = (g, c, f, d) => {
+      if (c === PROBE) sizes.push(d.length);
+      append(g, c, f, d);
+    };
+    r.store.add(rec('replay', 5, 'r'.repeat(40_000)));
+    r.tick(60); // the 60th tick halves it: 20000
+    pin(r.pressure);
+    r.tick(1);
+    expect(sizes.at(-1)).toBe(20_000 + '0\t\n'.length);
+  });
+
+  it('the interval is capped at 60 ticks', () => {
+    const r = rig();
+    for (let flap = 0; flap < 12; flap++) {
+      pin(r.pressure);
+      r.tick(1);
+      r.pressure.noteWriteRecovered();
+    }
+    pin(r.pressure);
+    const before = r.probes();
+    r.tick(120);
+    expect(r.probes() - before).toBe(2); // at most one probe per 60 ticks
+  });
+
+  it('a pin that follows a LONG healthy stretch starts again at interval 1', () => {
+    const r = rig();
+    for (let flap = 0; flap < 3; flap++) {
+      pin(r.pressure);
+      r.tick(1);
+      r.pressure.noteWriteRecovered();
+    }
+    r.tick(30); // healthy for a long time
+    pin(r.pressure);
+    const before = r.probes();
+    r.tick(3);
+    expect(r.probes() - before).toBe(3);
+  });
+
+  it('the flap window is inclusive: a pin exactly 10 ticks after the release still counts, 11 does not', () => {
+    const exact = rig();
+    pin(exact.pressure);
+    exact.tick(1);
+    exact.pressure.noteWriteRecovered();
+    exact.tick(10);
+    pin(exact.pressure); // 10 ticks after the release: a flap -> interval 2
+    const before = exact.probes();
+    exact.tick(2);
+    expect(exact.probes() - before).toBe(1);
+    const late = rig();
+    pin(late.pressure);
+    late.tick(1);
+    late.pressure.noteWriteRecovered();
+    late.tick(11);
+    pin(late.pressure); // 11 ticks: not a flap -> interval 1
+    const b2 = late.probes();
+    late.tick(2);
+    expect(late.probes() - b2).toBe(2);
+  });
+
+  it('a probe the medium keeps refusing is reported ONCE per pin, not once per tick, and again after a re-pin', () => {
+    const r = rig();
+    const realWrite = r.storage.write.bind(r.storage);
+    r.storage.write = (g, c, f, d) => {
+      if (c === PROBE) throw new Error('still full'); // only the probe is refused: real parts open and seal fine
+      realWrite(g, c, f, d);
+    };
+    pin(r.pressure);
+    r.tick(5);
+    const fromProbe = (): number =>
+      r.onDiskWriteError.mock.calls.filter((c) => (c[0] as Error).message === 'still full').length;
+    const first = fromProbe();
+    expect(first).toBe(1);
+    r.tick(5);
+    expect(fromProbe()).toBe(first); // nothing new while the same pin holds
+    r.pressure.noteWriteRecovered();
+    r.tick(11); // a long healthy stretch, then the disk refuses again
+    pin(r.pressure);
+    r.tick(3);
+    expect(fromProbe()).toBeGreaterThan(first); // a new pin is a new episode: it is reported again
+  });
+});
+
+describe('withDiskPressure — a durable read that never answers', () => {
+  const hanging = (): ChunkBackend => {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    return {
+      ...memory,
+      snapshot: (parts) => ({ ...memory.snapshot(parts), drainAll: () => new Promise(() => {}) }),
+    };
+  };
+
+  it('counts as failed after the timeout, reports once, and serves the in-memory half (a report is not held hostage)', async () => {
+    vi.useFakeTimers();
+    try {
+      const onReadError = vi.fn();
+      const pressure = createDiskPressure();
+      const backend = withDiskPressure(hanging(), pressure, { onReadError, readTimeoutMs: 1000 });
+      pressure.observe(30 * MB);
+      backend.openPart({ generation: 1, number: 0 }, 0);
+      backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'in-memory'));
+      backend.appendEntry({ generation: 1, number: 0 }, rec('traces.system', 2, 'on-disk'));
+      const read = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 2 }]).drainAll();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(onReadError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const all = await read;
+      expect(names(all.get('log'))).toEqual(['in-memory']);
+      expect(onReadError).toHaveBeenCalledOnce();
+      expect((onReadError.mock.calls[0]?.[0] as Error).message).toMatch(
+        /did not answer a read in time/,
+      );
+      expect(vi.getTimerCount()).toBe(0); // the timer is cleared once settled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a read that answers in time clears its timer and reports nothing; the default timeout is 5 s and the store forwards the override', async () => {
+    vi.useFakeTimers();
+    try {
+      const onReadError = vi.fn();
+      const backend = withDiskPressure(
+        createMemoryChunkBackend({ generation: 1 }),
+        createDiskPressure(),
+        { onReadError },
+      );
+      backend.openPart({ generation: 1, number: 0 }, 0);
+      backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+      await backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
+      expect(vi.getTimerCount()).toBe(0);
+      const hung = withDiskPressure(hanging(), createDiskPressure(), { onReadError });
+      hung.openPart({ generation: 1, number: 0 }, 0);
+      hung.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+      const read = hung.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(onReadError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await read;
+      expect(onReadError).toHaveBeenCalledOnce();
+      const store = createChunkCaptureStore(hanging(), {
+        clock: clockAt(1000),
+        diskPressure: createDiskPressure(),
+        diskReadTimeoutMs: 100,
+        onDiskReadError: onReadError,
+      });
+      store.add(rec('log', 1));
+      const pending = store.snapshot().drainAll();
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+      expect(onReadError).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

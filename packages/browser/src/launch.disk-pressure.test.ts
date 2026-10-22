@@ -62,6 +62,7 @@ const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
 const clients: Bugsee[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(clients.splice(0).map((c) => c.stop(0)));
   resetBrowserDeviceIdCache();
   vi.clearAllMocks();
@@ -120,6 +121,42 @@ const durable = (
   over: Partial<BugseeLaunchOptions> = {},
   estimate?: { usage: number; quota: number },
 ) => setup({ persist: true, captureStore: undefined, ...over }, estimate);
+
+/** Holds the recorder-restart debounce timer (the only 5 s setTimeout the launch arms) so a test can fire or cancel it. */
+function holdCheckoutTimers() {
+  const real = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const held: Array<{ id: number; cb: () => void; live: boolean }> = [];
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    cb: () => void,
+    ms?: number,
+    ...rest: unknown[]
+  ) => {
+    if (ms === 5000) {
+      const entry = { id: -(held.length + 1), cb, live: true };
+      held.push(entry);
+      return entry.id as unknown as ReturnType<typeof setTimeout>;
+    }
+    return real(cb, ms, ...rest);
+  }) as unknown as typeof setTimeout);
+  vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((handle: unknown) => {
+    const entry = held.find((h) => h.id === handle);
+    if (entry !== undefined) {
+      entry.live = false;
+      return;
+    }
+    realClear(handle as ReturnType<typeof setTimeout>);
+  }) as typeof clearTimeout);
+  return {
+    pending: () => held.filter((h) => h.live).length,
+    fireAll: () => {
+      for (const h of held.filter((x) => x.live)) {
+        h.live = false;
+        h.cb();
+      }
+    },
+  };
+}
 
 const launched = async (options: BugseeLaunchOptions): Promise<Bugsee> => {
   const client = await launch('tok', options);
@@ -364,6 +401,31 @@ describe('launch — disk-pressure protection (C7)', () => {
     expect(pressure.level()).toBe('normal');
   });
 
+  it("treats Chromium's AbortError / InvalidStateError on a refused WRITE as out-of-space (the real signal on a full disk)", async () => {
+    const h = durable();
+    const client = await launched(h.options);
+    const given = idbStoreSpy.mock.calls.at(-1)?.[0] as { onWriteFailure: (e: unknown) => void };
+    const pressure = client.getService(DiskPressureToken);
+    given.onWriteFailure(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    expect(pressure.level()).toBe('none');
+    pressure.noteWriteRecovered();
+    given.onWriteFailure(Object.assign(new Error('closing'), { name: 'InvalidStateError' }));
+    expect(pressure.level()).toBe('none');
+    pressure.noteWriteRecovered();
+    given.onWriteFailure(Object.assign(new Error('clone'), { name: 'DataCloneError' }));
+    expect(pressure.level()).toBe('normal'); // an unrelated failure is not a full disk
+  });
+
+  it('reports an unreadable IndexedDB through onError (the report is served from memory)', async () => {
+    const onError = vi.fn();
+    const h = durable({ onError });
+    await launched(h.options);
+    const given = idbStoreSpy.mock.calls.at(-1)?.[0] as { onDiskReadError: (e: unknown) => void };
+    const boom = new Error('closing');
+    given.onDiskReadError(boom);
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
   it('gives the IndexedDB store neither pressure nor hooks when the protection is off', async () => {
     const h = durable({ diskProtection: false });
     await launched(h.options);
@@ -372,9 +434,10 @@ describe('launch — disk-pressure protection (C7)', () => {
     expect(given.onWriteFailure).toBeUndefined();
   });
 
-  it('restarts the replay recorder when persistence resumes (a fresh FullSnapshot after the unpersisted gap)', async () => {
+  it('restarts the replay recorder once persistence has HELD for the quiet period (a fresh FullSnapshot after the unpersisted gap)', async () => {
     const checkout = vi.fn();
     registerReplay.mockReturnValue({ checkout });
+    const timers = holdCheckoutTimers();
     const h = durable();
     const client = await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
@@ -382,28 +445,52 @@ describe('launch — disk-pressure protection (C7)', () => {
     h.state.quota = 30 * MB; // low: replay stops being persisted
     h.tick();
     await settle();
-    expect(checkout).not.toHaveBeenCalled();
-    h.state.quota = 5 * MB; // none: still gated, nothing to restart
+    h.state.quota = 5 * MB; // none: still gated
     h.tick();
     await settle();
     h.state.quota = 40 * MB; // none -> low: still gated
     h.tick();
     await settle();
-    expect(checkout).not.toHaveBeenCalled();
-    h.state.quota = 900 * MB; // normal: persistence resumes
+    expect(timers.pending()).toBe(0);
+    h.state.quota = 900 * MB; // normal: persistence resumes -> a restart is SCHEDULED, not done
     h.tick();
     await settle();
+    expect(checkout).not.toHaveBeenCalled();
+    expect(timers.pending()).toBe(1);
+    timers.fireAll();
     expect(checkout).toHaveBeenCalledTimes(1);
     h.state.quota = 800 * MB; // already normal: nothing more
     h.tick();
     await settle();
-    expect(checkout).toHaveBeenCalledTimes(1);
+    expect(timers.pending()).toBe(0);
     await client.stop(0);
+  });
+
+  it('a FLAP (normal then gated again before the quiet period ends) cancels the pending restart: no snapshot storm', async () => {
+    const checkout = vi.fn();
+    registerReplay.mockReturnValue({ checkout });
+    const timers = holdCheckoutTimers();
+    const h = durable();
+    const client = await launched(h.options);
+    await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+    await settle();
+    const pressure = client.getService(DiskPressureToken);
+    for (let i = 0; i < 6; i++) {
+      pressure.noteWriteError({ code: 'ENOSPC' }); // gated
+      pressure.noteWriteRecovered(); // the probe "succeeded": normal again
+    }
+    expect(checkout).not.toHaveBeenCalled();
+    expect(timers.pending()).toBe(1); // only the LAST release is pending: every earlier one was cancelled
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    expect(timers.pending()).toBe(0);
+    timers.fireAll();
+    expect(checkout).not.toHaveBeenCalled();
   });
 
   it('a launch that starts already under pressure restarts the recorder on its first recovery', async () => {
     const checkout = vi.fn();
     registerReplay.mockReturnValue({ checkout });
+    const timers = holdCheckoutTimers();
     const h = durable({}, { usage: 0, quota: 30 * MB });
     await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
@@ -411,30 +498,32 @@ describe('launch — disk-pressure protection (C7)', () => {
     h.state.quota = 900 * MB;
     h.tick();
     await settle();
+    timers.fireAll();
     expect(checkout).toHaveBeenCalledTimes(1);
   });
 
-  it('stop() releases the poll and the recorder hook: later ticks no longer move the state or restart anything', async () => {
+  it('stop() releases the poll, the recorder hook and a pending restart', async () => {
     const checkout = vi.fn();
     registerReplay.mockReturnValue({ checkout });
+    const timers = holdCheckoutTimers();
     const h = durable();
     const client = await launched(h.options);
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
     await settle();
-    h.state.quota = 30 * MB;
-    h.tick();
-    await settle();
-    await client.stop(0);
-    h.state.quota = 900 * MB;
-    h.tick();
-    await settle();
-    expect(checkout).not.toHaveBeenCalled();
-    expect(client.getService(DiskPressureToken).level()).toBe('low'); // the feed is released
     const pressure = client.getService(DiskPressureToken);
-    pressure.noteWriteRecovered(); // low -> still low (no pin): nothing
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    pressure.noteWriteRecovered(); // a restart is pending when the client stops
+    expect(timers.pending()).toBe(1);
+    await client.stop(0);
+    expect(timers.pending()).toBe(0); // stop() cancels it
+    h.state.quota = 5 * MB;
+    h.tick();
+    await settle();
+    expect(pressure.level()).toBe('normal'); // the feed is released: a tick no longer moves the state
     pressure.noteWriteError({ code: 'ENOSPC' });
     pressure.noteWriteRecovered();
-    pressure.observe(900 * MB);
-    expect(checkout).not.toHaveBeenCalled(); // the recorder hook is released too
+    expect(timers.pending()).toBe(0); // and the recorder hook no longer schedules anything
+    timers.fireAll();
+    expect(checkout).not.toHaveBeenCalled();
   });
 });

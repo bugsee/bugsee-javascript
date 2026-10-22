@@ -134,6 +134,8 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
 // (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
+/** How long persistence must hold before the replay recorder restarts for a fresh snapshot (see the disk-pressure hook). */
+const REPLAY_CHECKOUT_QUIET_MS = 5000;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
@@ -207,8 +209,8 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     default: true,
     ...FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   },
-  // Free-space observation (opt-in, iOS `monitorDiskSpace`): the `capture` trace's disk states and the IndexedDB capture
-  // store's stop-persisting protection. Only boolean `true` enables it.
+  // Free-space TELEMETRY (opt-in, iOS `monitorDiskSpace`): the `capture` trace's disk states. The store protection is not
+  // behind it (`diskProtection`, on by default). Only boolean `true` enables it.
   {
     friendly: 'captureDiskSpace',
     key: BugseeOption.CaptureDiskSpace,
@@ -842,8 +844,12 @@ async function buildLaunch(
             ? {
                 diskPressure,
                 onWriteFailure: (error: unknown): void => {
-                  diskPressure.noteWriteError(error);
+                  // Chromium reports a refused write on a full disk as AbortError / InvalidStateError, not Quota...
+                  // (the backend calls this only for failed WRITES, so the wider reading cannot misfire on a read).
+                  diskPressure.noteWriteError(error, { suspect: true });
                 },
+                // An unreadable durable half (a closed connection) serves the in-memory window and says so once per snapshot.
+                onDiskReadError: (error: unknown): void => reportGuarded(options.onError, error),
                 onWriteRecovered: (): void => diskPressure.noteWriteRecovered(),
               }
             : {}),
@@ -1187,11 +1193,35 @@ async function buildLaunch(
           // with a fresh FullSnapshot and a chunk-recovered replay never applies mutations to nodes it never saw.
           if (diskPressure !== undefined) {
             // `onChange` fires only on a real transition, so reaching `normal` means replay was being held back.
-            stopReplayCheckout = diskPressure.onChange((level) => {
+            // DEBOUNCED: a medium that accepts a probe but still refuses real records flaps normal/none, and a
+            // full-DOM snapshot per flap would cost more than the replay it protects. The restart happens only once
+            // persistence has held for REPLAY_CHECKOUT_QUIET_MS, and leaving `normal` cancels a pending one.
+            const timers = globalThis as unknown as {
+              setTimeout(cb: () => void, ms: number): unknown;
+              clearTimeout(handle: unknown): void;
+            };
+            let pendingCheckout: unknown;
+            let hasPendingCheckout = false;
+            const cancelCheckout = (): void => {
+              if (hasPendingCheckout) {
+                timers.clearTimeout(pendingCheckout);
+                hasPendingCheckout = false;
+              }
+            };
+            const offChange = diskPressure.onChange((level) => {
+              cancelCheckout();
               if (level === 'normal') {
-                recorder.checkout();
+                hasPendingCheckout = true;
+                pendingCheckout = timers.setTimeout(() => {
+                  hasPendingCheckout = false;
+                  recorder.checkout();
+                }, REPLAY_CHECKOUT_QUIET_MS);
               }
             });
+            stopReplayCheckout = (): void => {
+              offChange();
+              cancelCheckout();
+            };
           }
         }
       })

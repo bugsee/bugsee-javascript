@@ -32,8 +32,14 @@ import { createMemoryChunkBackend } from './memory-chunk-backend';
 // DURABLE bytes: recovery after a crash reads the durable half, and its recorded size must describe that half.
 //
 // PROBE. While the pressure is PINNED by a refused write, nothing would ever reach the medium to show it works again,
-// so each `closePart` (the store's ~1 s tick) writes and removes a throwaway part: its success is what the writers
-// report back (`noteWriteRecovered`) and what releases the pin.
+// so a `closePart` (the store's ~1 s tick) writes a throwaway DATA record into a throwaway part and removes
+// it: the writers report that record's success (`noteWriteRecovered`), which releases the pin. Only a data write counts
+// (a meta write is a few dozen bytes and lands on a medium that still refuses real records), and the probe record is as
+// large as the biggest record recently seen (up to PROBE_MAX_BYTES), because a quota that refuses a replay snapshot
+// accepts a 60-byte record. It can still succeed where a burst of real records fails, so the pin can flap; the probe
+// therefore BACKS OFF: every pin that follows a release within
+// FLAP_WINDOW ticks doubles the interval to the next probe (1 tick up to MAX_PROBE_EVERY), a pin that held longer
+// resets it, and a probe that fails is reported once per pin, not once per tick.
 
 /** The file types that stop being persisted at `low` (iOS drops video, logs and network; the JS replay is its video). */
 const GATED_AT_LOW: ReadonlySet<FileType> = new Set<FileType>([
@@ -53,6 +59,14 @@ function explainsEmptiness(record: StoredEntry): boolean {
   return record.type === 'traces.system' && record.serialized.includes('"name":"capture","value"');
 }
 
+/** A pin that follows a release within this many ticks counts as a flap and slows the probe down. */
+const FLAP_WINDOW = 10;
+const DEFAULT_READ_TIMEOUT_MS = 5000;
+const MAX_PROBE_EVERY = 60;
+/** The probe record is the largest recent record, clamped to this range. */
+const PROBE_MIN_BYTES = 1024;
+const PROBE_MAX_BYTES = 256 * 1024;
+
 /** The throwaway part the probe writes; far above any real part number. */
 const PROBE_PART = 2_000_000_000;
 
@@ -63,6 +77,18 @@ export interface DiskPressureBackendOptions {
    * error is rethrown after the record is kept.
    */
   onWriteError?: (error: unknown) => void;
+  /**
+   * Called (once per snapshot) when reading the DURABLE half fails: a closed IndexedDB connection, a medium that cannot
+   * be read. The snapshot then serves what the process still holds in memory instead of failing, so a live report is
+   * not lost with the disk. Without a callback the failure is swallowed the same way.
+   */
+  onReadError?: (error: unknown) => void;
+  /**
+   * A durable read that has not answered after this many ms counts as failed (default 5000). Measured in Chromium on a
+   * full disk: `indexedDB.open()` neither succeeded nor failed, so a snapshot (and every report built from it) waited
+   * forever. A late answer is discarded.
+   */
+  readTimeoutMs?: number;
 }
 
 interface PartState {
@@ -111,7 +137,9 @@ export function withDiskPressure(
 
   const persists = (record: StoredEntry): boolean => {
     const level = pressure.level();
-    if (level === 'none') return explainsEmptiness(record);
+    // At `none` only the state entry still goes to the medium, and not while a refused write pins it: that tiny record
+    // would succeed on a medium that refuses everything else and release the pin.
+    if (level === 'none') return explainsEmptiness(record) && !pressure.pinned();
     return level === 'normal' || !GATED_AT_LOW.has(record.type);
   };
 
@@ -148,14 +176,86 @@ export function withDiskPressure(
     parts.delete(key);
   };
 
+  // Probe scheduling (see PROBE above). `ticks` counts closePart calls, i.e. the store's ~1 s tick.
+  let ticks = 0;
+  let nextProbeAt = 0;
+  let probeEvery = 1;
+  let releasedAt: number | undefined;
+  let wasPinned = pressure.pinned();
+  let probeReported = false;
+  pressure.onChange(() => {
+    const nowPinned = pressure.pinned();
+    if (nowPinned && !wasPinned) {
+      probeEvery =
+        releasedAt !== undefined && ticks - releasedAt <= FLAP_WINDOW
+          ? Math.min(probeEvery * 2, MAX_PROBE_EVERY)
+          : 1;
+      nextProbeAt = ticks + probeEvery;
+      probeReported = false;
+    } else if (!nowPinned && wasPinned) {
+      releasedAt = ticks;
+    }
+    wasPinned = nowPinned;
+  });
+
+  // The biggest record seen recently (halved every 60 ticks): the probe's size.
+  let largestRecent = 0;
+
   const probe = (): void => {
     const ref: PartRef = { generation: durable.generation, number: PROBE_PART };
+    const size = Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), PROBE_MAX_BYTES);
     try {
       durable.openPart(ref, 0);
-      durable.removePart(ref);
+      durable.appendEntry(ref, { type: 'log', timestamp: 0, serialized: 'x'.repeat(size) });
+      durable.removePart(ref); // a buffered writer flushes the part before deleting it: that flush is its success signal
     } catch (error) {
-      options.onWriteError?.(error);
+      if (!probeReported) {
+        probeReported = true; // the medium is still refusing: say so once per pin, not once per tick
+        options.onWriteError?.(error);
+      }
     }
+  };
+
+  /** A durable read that fails serves nothing from the medium (and says so once) instead of failing the snapshot. */
+  const guardedRead = (snap: CaptureSnapshot, dead: { failed: boolean }): CaptureSnapshot => {
+    const timers = globalThis as unknown as {
+      setTimeout(cb: () => void, ms: number): { unref?: () => void };
+      clearTimeout(handle: unknown): void;
+    };
+    const drainAll = async (): Promise<Map<FileType, StoredEntry[]>> => {
+      if (dead.failed) {
+        // An earlier part of THIS snapshot already failed to read: do not wait out the timeout again for each of the
+        // other parts (a 60-part window would hold a report for minutes).
+        return new Map();
+      }
+      let timer: { unref?: () => void } | undefined;
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = timers.setTimeout(
+            () =>
+              reject(new Error('bugsee: the durable capture store did not answer a read in time')),
+            options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
+          );
+          timer.unref?.(); // never hold a process open for a read
+        });
+        return await Promise.race([snap.drainAll(), timeout]);
+      } catch (error) {
+        dead.failed = true;
+        options.onReadError?.(error);
+        return new Map();
+      } finally {
+        timers.clearTimeout(timer);
+      }
+    };
+    return {
+      async *stream(): AsyncIterableIterator<StoredEntry> {
+        for (const list of (await drainAll()).values()) {
+          yield* list;
+        }
+      },
+      drainAll,
+      release: () => snap.release(),
+    };
   };
 
   const wrapped: ChunkBackend = {
@@ -185,6 +285,7 @@ export function withDiskPressure(
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
       const state = parts.get(keyOf(ref)) as PartState;
+      largestRecent = Math.max(largestRecent, record.serialized.length);
       if (persists(record)) {
         try {
           ensureOpened(ref, state);
@@ -197,10 +298,11 @@ export function withDiskPressure(
           state.durableByType.set(record.type, (state.durableByType.get(record.type) ?? 0) + 1);
           return size;
         } catch (error) {
-          // A write the medium refused SYNCHRONOUSLY must not cost the in-memory window its record. The shipped writers
-          // (the batched fs storage, the IndexedDB queue, the ring writer) never throw here: they buffer, report later
-          // (`onWriteFailure`) and retry, which the pin and the readers' buffered tail cover. This branch is for the
-          // writers that DO throw: the plain `createFsChunkStorage`, a custom ChunkBackend, a failing meta create.
+          // A write the medium refused SYNCHRONOUSLY must not cost the in-memory window its record. The shipped
+          // writers never throw here: the batched fs storage keeps (and serves) the tail of a failed flush, and the
+          // IndexedDB backend keeps every record whose put never lands and serves it in sequence. Both report through
+          // `onWriteFailure` for the pin. This branch is for the writers that DO throw: the plain `createFsChunkStorage`,
+          // a custom ChunkBackend, a failing meta create.
           const size = toShadow(ref, state, record);
           if (options.onWriteError === undefined) {
             throw error;
@@ -226,7 +328,12 @@ export function withDiskPressure(
           options.onWriteError?.(error); // a seal refused for lack of room must not take the tick (or the probe) with it
         }
       }
-      if (pressure.pinned()) {
+      ticks += 1;
+      if (ticks % 60 === 0) {
+        largestRecent = Math.floor(largestRecent / 2);
+      }
+      if (pressure.pinned() && ticks >= nextProbeAt) {
+        nextProbeAt = ticks + probeEvery;
         probe();
       }
     },
@@ -259,7 +366,7 @@ export function withDiskPressure(
         durableParts.push({ ref, count: parts.get(keyOf(ref))?.durableCount ?? 0 });
       }
       if (shadowed === 0) {
-        return durable.snapshot(durableParts);
+        return guardedRead(durable.snapshot(durableParts), { failed: false });
       }
       // One snapshot per part and half, taken NOW (a file backend reads eagerly, so this freezes the view) but
       // DRAINED one part at a time: the IndexedDB half reads lazily, so only one part is in memory at once.
@@ -269,9 +376,13 @@ export function withDiskPressure(
         /** Per-type routes (append-only: records appended after this snapshot sit beyond what the frozen lists hold). */
         routes: Map<FileType, boolean[]>;
       }
+      const deadMedium = { failed: false }; // shared by every part of this snapshot (see guardedRead)
       const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
         const state = parts.get(keyOf(ref));
-        const fromDurable = durable.snapshot([durableParts[index] as FrozenPart]);
+        const fromDurable = guardedRead(
+          durable.snapshot([durableParts[index] as FrozenPart]),
+          deadMedium,
+        );
         if (state === undefined || state.shadowCount === 0) {
           return { fromDurable, fromShadow: undefined, routes: new Map() };
         }

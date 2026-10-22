@@ -66,9 +66,9 @@ export interface StorageEnv {
   /** Poll period in ms (default 5000; Android reads disk every 5 s). */
   intervalMs?: number;
   /**
-   * A read still pending after this many ms is ABANDONED (default 5000): a hung `statfs` (a dead network mount) would
-   * otherwise hold the in-flight flag for the whole launch and blind the tracker for good. The next tick reads again;
-   * the abandoned read's late answer, if it ever comes, is ignored. Reported once per failure streak.
+   * A read still pending after this many ms is reported as HUNG (default 5000), once per failure streak. At most ONE read
+   * is ever outstanding: a hung `statfs` holds a libuv thread, so no new read starts until it settles (its late answer
+   * is discarded as stale); the tracker simply has no reading meanwhile.
    */
   statfsTimeoutMs?: number;
   /** Wall clock for the timeout above; default `Date.now`. */
@@ -109,6 +109,8 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
   /** When the read in flight started (ms), for the abandon rule; and an id so an abandoned read's late answer is ignored. */
   #inFlightSince = 0;
   #readId = 0;
+  /** The read in flight overran its timeout (reported once); no new read starts until it settles. */
+  #hung = false;
   #failing = false;
   /** Bumped by every teardown/restart: a read or timer callback of an older run never reports or emits. */
   #gen = 0;
@@ -209,6 +211,7 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
   #end(): void {
     this.#gen += 1;
     this.#inFlight = false;
+    this.#hung = false;
     this.#failing = false;
     this.#last = undefined;
     const timer = this.#timer;
@@ -224,20 +227,29 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
   #read(gen: number): void {
     const statfs = this.#statfs();
     const dataDir = this.#env.dataDir;
-    const now = (this.#env.now ?? Date.now)();
-    const hung =
-      this.#inFlight &&
-      now - this.#inFlightSince >= (this.#env.statfsTimeoutMs ?? DEFAULT_STATFS_TIMEOUT_MS);
-    if ((this.#inFlight && !hung) || statfs === undefined || dataDir === undefined) return;
-    if (hung) {
-      // Hung: give the read up (its late answer is ignored by id) and carry on with a fresh one below.
-      this.#last = undefined;
-      if (!this.#failing)
-        this.#onError(new Error('bugsee: statfs did not answer in time; the read was abandoned'));
-      this.#failing = true;
+    /* v8 ignore next -- unreachable: #begin() arms nothing without a statfs and a data dir, and a rebind that removes either tears the timer down first */
+    if (statfs === undefined || dataDir === undefined) return;
+    if (this.#inFlight) {
+      // AT MOST ONE read is ever outstanding. A hung `statfs` (a dead network mount) holds a libuv thread for as long as
+      // it hangs; starting another every tick leaked one thread per tick and, at the pool's default four, starved the
+      // host's own file I/O. So a read pending past the timeout is reported ONCE and left alone: nothing new starts
+      // until it settles (its late answer is discarded, it is stale), and then polling resumes normally.
+      const now = (this.#env.now ?? Date.now)();
+      if (now - this.#inFlightSince >= (this.#env.statfsTimeoutMs ?? DEFAULT_STATFS_TIMEOUT_MS)) {
+        this.#hung = true;
+        this.#last = undefined;
+        if (!this.#failing)
+          this.#onError(
+            new Error(
+              'bugsee: statfs did not answer in time; no further read starts until it does',
+            ),
+          );
+        this.#failing = true;
+      }
+      return;
     }
     const id = ++this.#readId;
-    this.#inFlightSince = now;
+    this.#inFlightSince = (this.#env.now ?? Date.now)();
     this.#inFlight = true;
     let pending: Promise<StatFsResult>;
     try {
@@ -249,12 +261,20 @@ export class StorageTracker extends InterceptorBase<StorageEvents> {
       (s) => {
         if (gen !== this.#gen || id !== this.#readId) return;
         this.#inFlight = false;
+        if (this.#hung) {
+          this.#hung = false; // a stale answer from a read that overran its timeout: discard, poll again next tick
+          return;
+        }
         this.#failing = false;
         this.#publish(s);
       },
       (error: unknown) => {
         if (gen !== this.#gen || id !== this.#readId) return;
         this.#inFlight = false;
+        if (this.#hung) {
+          this.#hung = false; // already reported as hung
+          return;
+        }
         this.#last = undefined; // an unreadable volume is a gap, never the previous number
         // One report per failure streak: a removed data dir fails on every poll.
         if (!this.#failing) this.#onError(error);

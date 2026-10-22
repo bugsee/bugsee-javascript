@@ -29,6 +29,8 @@ const start = (wt, fs) => {
   const genDir = captureDir + '/' + String(generation).padStart(13,'0');
   const fds = new Map();
   let lastFail = 0;
+  let failed = false;
+  let progress = 0; // bytes of the head frame already written by a failed pass: the retry resumes there, never rewrites
   const openFor = (pid) => {
     let fd = fds.get(pid);
     if (fd === undefined) {
@@ -61,20 +63,23 @@ const start = (wt, fs) => {
       // filename became the string 'undefined', creating a junk file; and any throw here left the frame in
       // the ring to be retried forever, pinning READING so the producer could never shed. Drop the frame.
       if (fileTypes[view.getUint32(p, true) % 256] === undefined) {
+        progress = 0;
         Atomics.store(ctl, HEAD, Atomics.load(ctl, READING) + BigInt(size));
         Atomics.store(ctl, READING, NO_READ);
         continue;
       }
       try {
-        let off = 0;
+        let off = progress;
         while (off < payload.length) {
           const n = fs.writevSync(openFor(view.getUint32(p, true)), [payload.subarray(off)]);
           if (n <= 0) throw new Error('writev no progress');
           off += n;
+          progress = off;
         }
       } catch (e) {
         // Leave the frame; retry next tick (transient) or shed via drop-oldest. TELL the host: a disk that refuses
         // writes is otherwise invisible from this thread (rate-limited: the retry runs every tick).
+        failed = true;
         const now = Date.now();
         if (now - lastFail > 250) {
           lastFail = now;
@@ -82,6 +87,8 @@ const start = (wt, fs) => {
         }
         return;
       }
+      progress = 0;
+      if (failed) { failed = false; wt.parentPort.postMessage({ ok: true }); } // the first frame after failures landed
       Atomics.store(ctl, HEAD, Atomics.load(ctl, READING) + BigInt(size)); // cached size, not a re-read
       Atomics.store(ctl, READING, NO_READ);
     }
@@ -146,7 +153,13 @@ export function createWorkerThreadRingWorker(
   // health signal.
   let reported = false;
   worker.on('message', (m: unknown) => {
-    const fail = (m as { fail?: { code?: unknown; message?: unknown } } | null)?.fail;
+    const message = m as { fail?: { code?: unknown; message?: unknown }; ok?: unknown } | null;
+    if (message?.ok === true) {
+      reported = false; // a new episode may be reported again
+      args.onWriteRecovered?.();
+      return;
+    }
+    const fail = message?.fail;
     if (fail === undefined) {
       return;
     }

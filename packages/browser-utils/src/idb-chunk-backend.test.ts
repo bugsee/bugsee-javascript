@@ -8,7 +8,7 @@ import {
 } from '@bugsee/core';
 import type { FileType } from '@bugsee/protocol';
 import { IDBFactory } from 'fake-indexeddb';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type AsyncKeyedStore, createIdbKeyedStore } from './idb';
 import { createIdbChunkBackend, createIdbChunkCaptureStore } from './idb-chunk-backend';
 
@@ -884,7 +884,7 @@ describe('createIdbChunkBackend — health hooks (onWriteFailure / onWriteRecove
     expect(h.counts.recovered).toBe(1);
   });
 
-  it('a successful DELETE after failures does not report recovery (deleting works on a full quota); a write does', async () => {
+  it('neither a successful DELETE nor a META put after failures reports recovery (both work on a full quota); a DATA put does', async () => {
     const inner = keyed();
     const state = { broken: false };
     const store: AsyncKeyedStore = {
@@ -907,7 +907,10 @@ describe('createIdbChunkBackend — health hooks (onWriteFailure / onWriteRecove
     await b.flush?.();
     expect(h.counts.recovered).toBe(0);
     state.broken = false;
-    b.openPart(ref(5, 1), 2); // a meta WRITE succeeds
+    b.openPart(ref(5, 1), 2); // a META write succeeds: a few dozen bytes proves nothing about real records
+    await b.flush?.();
+    expect(h.counts.recovered).toBe(0);
+    b.appendEntry(ref(5, 1), rec('real')); // a DATA write does
     await b.flush?.();
     expect(h.counts.recovered).toBe(1);
   });
@@ -947,5 +950,161 @@ describe('createIdbChunkBackend — health hooks (onWriteFailure / onWriteRecove
     s.add(rec('a', 'log', 10_000));
     await s.flush?.();
     expect(h.failures.length).toBeGreaterThan(0);
+  });
+});
+
+describe('createIdbChunkBackend — a record whose write never lands stays in the live window', () => {
+  const quota = (): Error => Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  const refusing = () => {
+    const inner = keyed();
+    const state = { refuse: (_key: string): boolean => false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      put: (key, value) => (state.refuse(key) ? Promise.reject(quota()) : inner.put(key, value)),
+    };
+    return { store, state };
+  };
+  const seqOf = (key: string): number => Number(key.slice(key.lastIndexOf('/') + 1));
+  const texts = async (snap: CaptureSnapshot): Promise<string[]> => collect(snap);
+
+  it('a refused put is served from memory, in sequence, between the records that landed', async () => {
+    const { store, state } = refusing();
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    state.refuse = (key) => key.startsWith('d/') && seqOf(key) === 1;
+    b.appendEntry(ref(5, 0), rec('r0'));
+    b.appendEntry(ref(5, 0), rec('big-replay-snapshot')); // refused
+    b.appendEntry(ref(5, 0), rec('r2'));
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 3 }]))).toEqual([
+      'r0',
+      'big-replay-snapshot',
+      'r2',
+    ]);
+  });
+
+  it('honours the freeze by sequence: a record appended after the snapshot stays out, even with a hole before it', async () => {
+    const { store, state } = refusing();
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    state.refuse = (key) => key.startsWith('d/') && seqOf(key) === 1;
+    b.appendEntry(ref(5, 0), rec('r0'));
+    b.appendEntry(ref(5, 0), rec('r1-refused'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 2 }]);
+    b.appendEntry(ref(5, 0), rec('r2-after'));
+    expect(await texts(snap)).toEqual(['r0', 'r1-refused']);
+    snap.release();
+  });
+
+  it('a record skipped by the open circuit, and one shed by the queue bound, are kept too', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      failureThreshold: 1,
+      maxPendingWrites: 3,
+    });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 8; i++) b.appendEntry(ref(5, 0), rec(`r${i}`));
+    const got = await texts(b.snapshot([{ ref: ref(5, 0), count: 8 }]));
+    expect(got).toEqual(Array.from({ length: 8 }, (_, i) => `r${i}`));
+  });
+
+  it('a refused record is dropped with its part, and a snapshot taken before keeps its own copy', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('lost'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    b.removePart(ref(5, 0));
+    expect(await texts(snap)).toEqual(['lost']);
+    snap.release();
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+  });
+
+  it('a write that fails AFTER its part was evicted does not retain the record (nothing will ever read it)', async () => {
+    const { store, state } = refusing();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    state.refuse = () => true;
+    const slow: AsyncKeyedStore = {
+      ...store,
+      put: async (k, v) => {
+        await gate;
+        return store.put(k, v);
+      },
+    };
+    const b = createIdbChunkBackend(slow, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    b.removePart(ref(5, 0));
+    release?.();
+    await b.flush?.();
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+  });
+
+  it('removeGeneration drops the refused records of that generation only', async () => {
+    const { store, state } = refusing();
+    state.refuse = (key) => key.startsWith('d/');
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.openPart(ref(6, 0), 1);
+    b.appendEntry(ref(5, 0), rec('gen5'));
+    b.appendEntry(ref(6, 0), rec('gen6'));
+    await b.flush?.();
+    b.removeGeneration(5);
+    expect(await texts(b.snapshot([{ ref: ref(5, 0), count: 1 }]))).toEqual([]);
+    expect(await texts(b.snapshot([{ ref: ref(6, 0), count: 1 }]))).toEqual(['gen6']);
+  });
+
+  it('a failed DELETE or META write does not call onWriteFailure for the pressure pin only when it is not a write: deletes never do', async () => {
+    const inner = keyed();
+    const failures: unknown[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      deletePrefix: () => Promise.reject(new Error('delete failed')),
+    };
+    const b = createIdbChunkBackend(store, {
+      generation: 5,
+      cleanOtherGenerations: false,
+      onError: () => {},
+      onWriteFailure: (e) => void failures.push(e),
+    });
+    b.openPart(ref(5, 0), 1);
+    b.removePart(ref(5, 0));
+    await b.flush?.();
+    expect(failures).toEqual([]);
+  });
+});
+
+const MB_UNREADABLE = 1024 * 1024;
+
+describe('createIdbChunkCaptureStore — an unreadable IndexedDB serves the in-memory window (a live report survives)', () => {
+  it('a read that fails (a closed connection) falls back to memory and reports once through onDiskReadError', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: () =>
+        Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' })),
+    };
+    const pressure = createDiskPressure();
+    const onDiskReadError = vi.fn();
+    const s = createIdbChunkCaptureStore(store, {
+      clock: clockAt(10_000),
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: pressure,
+      onDiskReadError,
+    });
+    pressure.observe(30 * MB_UNREADABLE);
+    s.add(rec('in-memory', 'log', 10_000));
+    const snap = s.snapshot();
+    const all = await snap.drainAll();
+    snap.release();
+    expect(all.get('log')?.map((r) => r.serialized)).toEqual(['in-memory']);
+    expect(onDiskReadError).toHaveBeenCalledOnce();
   });
 });

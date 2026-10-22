@@ -645,7 +645,7 @@ describe('createBatchedFsChunkStorage — health hooks (onWriteFailure / onWrite
     s.dispose?.();
   });
 
-  it('a failed open, meta write and chunk removal each count, and a meta write that works recovers', () => {
+  it('a failed open, meta write and chunk removal each count; a meta write that works does NOT recover, a data flush does', () => {
     const root = mkRoot();
     const h = hooks();
     let broken = true;
@@ -655,6 +655,8 @@ describe('createBatchedFsChunkStorage — health hooks (onWriteFailure / onWrite
         if (broken) throw full();
         return 1_000_000 + path.length;
       },
+      writev: (_fd, bufs) => bufs.reduce((n, b) => n + b.length, 0),
+      close: () => {},
       writeFile: (path, data) => {
         if (broken) throw full();
         void path;
@@ -669,7 +671,10 @@ describe('createBatchedFsChunkStorage — health hooks (onWriteFailure / onWrite
     s.removeChunk(GEN, CHUNK);
     expect(h.failures).toHaveLength(3);
     broken = false;
-    s.write(GEN, CHUNK, 'meta', '{}');
+    s.write(GEN, CHUNK, 'meta', '{}'); // a small meta file lands on a volume that still refuses record data
+    expect(h.recovered).toBe(0);
+    s.append(GEN, CHUNK, 'log', 'real\n');
+    s.flushSync?.();
     expect(h.recovered).toBe(1);
   });
 

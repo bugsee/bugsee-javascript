@@ -398,6 +398,36 @@ describe('createWorkerThreadRingWorker — drain failures reach the host', () =>
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  it('an ok message from the worker (the first frame after failures landed) recovers, and re-arms the once-per-episode report', () => {
+    let recovered = 0;
+    const { data, control } = allocCaptureRing(1024);
+    const onError = vi.fn();
+    const fake = fakeWorker();
+    createWorkerThreadRingWorker(
+      {
+        data,
+        control,
+        flags: new SharedArrayBuffer(16),
+        captureDir: '/tmp/never',
+        generation: GEN,
+        fileTypes: FILE_TYPES,
+        onError,
+        onWriteRecovered: () => {
+          recovered += 1;
+        },
+      },
+      function FakeCtor() {
+        return fake.worker;
+      } as unknown as Parameters<typeof createWorkerThreadRingWorker>[1],
+    );
+    const message = fake.handlers.get('message') as (m: unknown) => void;
+    message(full);
+    message({ ok: true });
+    expect(recovered).toBe(1);
+    message(full); // a new episode is reported to onError again
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
   it('works without a health hook', () => {
     const { message, onError } = build();
     message(full);
@@ -427,5 +457,71 @@ describe('createWorkerThreadRingWorker — drain failures reach the host', () =>
     await vi.waitFor(() => expect(failures.length).toBeGreaterThan(0), { timeout: 3000 });
     expect((failures[0] as { code?: string }).code).toBe('ENOTDIR');
     worker.stop();
+  });
+});
+
+describe('the worker script — a short write then a failure never duplicates the written prefix', () => {
+  it('resumes the head frame at the written offset (the retry does not rewrite bytes already on disk)', async () => {
+    // Run the REAL worker script text against a fake fs: the first writev is SHORT (400 bytes), the second FAILS
+    // (ENOSPC), then it works: ext4/xfs behaviour on a filling disk.
+    const src = readFileSync(join(import.meta.dirname, 'worker-ring-worker.ts'), 'utf8');
+    const body = (src.split('const RING_IO_WORKER = `')[1] as string)
+      .split('\nPromise.resolve(')[0]
+      ?.replace('${WORKER_DRAIN_INTERVAL_MS}', '4') as string;
+    const start = new Function(`${body}; return start;`)() as (wt: unknown, fs: unknown) => void;
+    const { data, control } = allocCaptureRing(1 << 16);
+    const prod = new RingProducer(data, control);
+    const enc = new TextEncoder();
+    const put = (s: string): void => {
+      const b = enc.encode(s);
+      (prod.reserve(b.length) as Uint8Array).set(b);
+      prod.commit(encodePathId(0, 0), b.length);
+    };
+    const first = `{"id":1,"p":"${'x'.repeat(1000)}"}\n`;
+    const second = '{"id":2}\n';
+    put(first);
+    put(second);
+    let disk = Buffer.alloc(0);
+    let calls = 0;
+    const fs = {
+      mkdirSync() {},
+      openSync: () => 3,
+      closeSync() {},
+      writevSync(_fd: number, [buf]: Uint8Array[]) {
+        calls += 1;
+        const chunk = buf as Uint8Array;
+        if (calls === 1) {
+          disk = Buffer.concat([disk, Buffer.from(chunk.subarray(0, 400))]);
+          return 400;
+        }
+        if (calls === 2) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        disk = Buffer.concat([disk, Buffer.from(chunk)]);
+        return chunk.length;
+      },
+    };
+    const messages: unknown[] = [];
+    start(
+      {
+        workerData: {
+          data,
+          control,
+          flags: new SharedArrayBuffer(16),
+          captureDir: '/x',
+          generation: 1,
+          fileTypes: ['log'],
+        },
+        parentPort: { on() {}, postMessage: (m: unknown) => messages.push(m) },
+      },
+      fs,
+    );
+    await vi.waitFor(() => expect(disk.toString()).toBe(first + second), { timeout: 2000 });
+    expect(messages.length).toBeGreaterThan(0); // the failure was reported
+    expect(
+      disk
+        .toString()
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l).id),
+    ).toEqual([1, 2]);
   });
 });

@@ -163,7 +163,14 @@ export function createIdbChunkBackend(
   const maxPending = options.maxPendingWrites ?? 2048;
   const maxPendingBytes = options.maxPendingBytes ?? 8 * 1024 * 1024;
   const failureThreshold = options.failureThreshold ?? 16;
-  const pending: Array<{ run: () => Promise<unknown>; bytes: number; write: boolean }> = [];
+  interface PendingWrite {
+    run: () => Promise<unknown>;
+    bytes: number;
+    write: boolean;
+    /** Called when this write will NEVER land (refused by the store, skipped by the open circuit, shed by the queue bound). */
+    onLost?: () => void;
+  }
+  const pending: PendingWrite[] = [];
   let pendingBytes = 0;
   let draining = false;
   let idle: Promise<void> = Promise.resolve();
@@ -217,16 +224,13 @@ export function createIdbChunkBackend(
     // burst of captures in one turn is fully enqueued before a single write has had the chance to fail.
     let probe = true;
     while (pending.length > 0) {
-      const item = pending.shift() as {
-        run: () => Promise<unknown>;
-        bytes: number;
-        write: boolean;
-      };
+      const item = pending.shift() as PendingWrite;
       pendingBytes -= item.bytes;
       if (consecutiveFailures >= failureThreshold && !probe) {
         sinceProbe += 1;
         if (sinceProbe < PROBE_INTERVAL) {
           dropped += 1;
+          item.onLost?.();
           continue; // circuit open — do not attempt
         }
         sinceProbe = 0;
@@ -244,7 +248,12 @@ export function createIdbChunkBackend(
       } catch (error) {
         consecutiveFailures += 1;
         unhealthy = true;
-        safeCall(options.onWriteFailure, error);
+        item.onLost?.(); // a refused record stays in the in-memory window (see `refused`)
+        // Only a failed WRITE says anything about the medium accepting data: a failed delete or read must not
+        // make the disk-pressure pin out of a connection hiccup.
+        if (item.write) {
+          safeCall(options.onWriteFailure, error);
+        }
         // The FIRST failure of an episode is reported in full — that is the diagnosis. Everything after it
         // is counted and summarised, so a failing store cannot spam the host's sink (and cannot close the
         // capture→console→capture livelock a `console.error` sink would otherwise sustain).
@@ -261,18 +270,24 @@ export function createIdbChunkBackend(
     resolveIdle = undefined;
   };
 
-  const enqueue = (run: () => Promise<unknown>, bytes = 0, write = false): void => {
+  const enqueue = (
+    run: () => Promise<unknown>,
+    bytes = 0,
+    write = false,
+    onLost?: () => void,
+  ): void => {
     while (
       pending.length > 0 &&
       (pending.length >= maxPending || pendingBytes + bytes > maxPendingBytes)
     ) {
       // Give up the OLDEST waiting write, matching the ring's eviction direction: the moments before a
       // crash are the ones worth keeping.
-      const evicted = pending.shift() as { bytes: number };
+      const evicted = pending.shift() as PendingWrite;
       pendingBytes -= evicted.bytes;
       dropped += 1;
+      evicted.onLost?.();
     }
-    pending.push({ run, bytes, write });
+    pending.push({ run, bytes, write, ...(onLost !== undefined ? { onLost } : {}) });
     pendingBytes += bytes;
     if (resolveIdle === undefined) {
       idle = new Promise<void>((resolve) => {
@@ -286,6 +301,11 @@ export function createIdbChunkBackend(
   const settled = (): Promise<void> => idle;
 
   const chunkKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
+  // Records whose write NEVER landed (refused by a full quota, skipped by the open circuit, shed by the queue bound),
+  // kept in memory by sequence so a LIVE snapshot still holds them in their place: the capture store counted them as
+  // stored, and without this the largest record (a replay FullSnapshot) was the first one a full quota lost. Dropped
+  // with their part; what a crash recovers is, by definition, only what landed.
+  const refused = new Map<string, Array<{ seq: number; record: StoredEntry }>>();
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
   const seqByChunk = new Map<string, number>(); // chunkKey → next data sequence number
 
@@ -305,10 +325,11 @@ export function createIdbChunkBackend(
     end: number | null,
     byteSize: number,
   ): void => {
-    enqueue(
-      () => store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
-      0,
-      true,
+    // NOT a health signal (`write` false): a ~60-byte meta put succeeds on a medium that still refuses real records
+    // (a per-origin quota, a data-full filesystem with free metadata), so counting it released the disk-pressure pin
+    // on every tick. Only a successful DATA put (a record, or the pressure probe's record) says writes work again.
+    enqueue(() =>
+      store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
     );
   };
 
@@ -375,11 +396,22 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       const seq = seqByChunk.get(key) ?? 0;
       seqByChunk.set(key, seq + 1);
+      // Created now (not at the first failure) so a snapshot taken before any write has failed already holds the list
+      // that a later failure will fill.
+      const lost = refused.get(key) ?? [];
+      refused.set(key, lost);
       const data: StoredData = { t: record.timestamp, s: record.serialized, ty: record.type };
       const bytes = enc(data);
       // The payload is encoded here rather than inside the closure, so its size is known to the queue's
       // byte bound — a closure that encodes lazily hides exactly the memory this is meant to cap.
-      enqueue(() => store.put(dataKey(ref.generation, ref.number, seq), bytes), bytes.length, true);
+      enqueue(
+        () => store.put(dataKey(ref.generation, ref.number, seq), bytes),
+        bytes.length,
+        true,
+        () => {
+          lost.push({ seq, record });
+        },
+      );
       return utf8ByteLength(record.serialized);
     },
 
@@ -394,6 +426,7 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       openStarts.delete(key);
       seqByChunk.delete(key);
+      refused.delete(key); // a snapshot already holding the list keeps its own reference
       if ((pins.get(key) ?? 0) > 0) {
         deferredDelete.add(key); // a live snapshot still needs the data
       } else {
@@ -402,12 +435,20 @@ export function createIdbChunkBackend(
     },
 
     removeGeneration(gen: number): void {
+      for (const key of [...refused.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          refused.delete(key);
+        }
+      }
       enqueue(() => store.deletePrefix(dataGenPrefix(gen)));
       enqueue(() => store.deletePrefix(metaGenPrefix(gen)));
     },
 
     snapshot(parts: readonly FrozenPart[]): CaptureSnapshot {
       const frozen = [...parts];
+      // The refused lists are captured NOW by reference (appends only grow them; `seq < count` is the freeze), so a
+      // part evicted while this snapshot is still being read keeps its records.
+      const refusedAtFreeze = frozen.map(({ ref }) => refused.get(chunkKey(ref)));
       const frozenQueue = settled(); // every write up to now must land before the read
       for (const { ref } of frozen) {
         const key = chunkKey(ref);
@@ -417,14 +458,26 @@ export function createIdbChunkBackend(
       const readAll = async (): Promise<StoredEntry[]> => {
         await frozenQueue;
         const out: StoredEntry[] = [];
-        for (const { ref, count } of frozen) {
+        for (const [index, { ref, count }] of frozen.entries()) {
           const records = await store.readPrefix(dataPrefix(ref.generation, ref.number));
-          for (let i = 0; i < count && i < records.length; i += 1) {
-            const d = dec<StoredData>((records[i] as [string, Uint8Array])[1]);
+          // By SEQUENCE, not by position: a refused write leaves a hole in the sequence, and the freeze is `seq < count`.
+          const landed: Array<{ seq: number; record: StoredEntry }> = [];
+          for (const [recordKey, bytes] of records) {
+            const seq = Number(recordKey.slice(recordKey.lastIndexOf('/') + 1));
+            if (!(seq < count)) {
+              continue;
+            }
+            const d = dec<StoredData>(bytes);
             if (d === undefined) {
               continue; // one torn envelope loses ONE record, never the generation
             }
-            out.push({ type: d.ty, timestamp: d.t, serialized: d.s });
+            landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
+          }
+          const kept = (refusedAtFreeze[index] ?? []).filter((r) => r.seq < count);
+          const merged =
+            kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
+          for (const { record } of merged) {
+            out.push(record);
           }
         }
         return out;
@@ -533,5 +586,9 @@ export function createIdbChunkCaptureStore(
     maxDataSizeBytes: options?.maxDataSizeBytes,
     clock,
     ...(options?.diskPressure !== undefined ? { diskPressure: options.diskPressure } : {}),
+    ...(options?.onDiskWriteError !== undefined
+      ? { onDiskWriteError: options.onDiskWriteError }
+      : {}),
+    ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
   });
 }

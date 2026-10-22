@@ -176,6 +176,7 @@ export {
   type DiskPressureState,
   DiskPressureToken,
   isOutOfSpaceError,
+  isStorageFullSuspect,
 } from './disk-pressure';
 export { withDiskPressure } from './disk-pressure-backend';
 export {

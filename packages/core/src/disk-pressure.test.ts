@@ -6,6 +6,7 @@ import {
   DISK_RECOVERY_MARGIN_BYTES,
   type DiskPressureLevel,
   isOutOfSpaceError,
+  isStorageFullSuspect,
 } from './disk-pressure';
 
 const MB = 1024 * 1024;
@@ -267,5 +268,38 @@ describe('isOutOfSpaceError', () => {
       },
     };
     expect(isOutOfSpaceError(hostile)).toBe(false);
+  });
+});
+
+describe('suspect write failures (what Chromium reports for an IndexedDB write on a full disk)', () => {
+  it.each([
+    ['AbortError'],
+    ['InvalidStateError'],
+  ])('%s pins none ONLY when the caller says the failed op was a store write', (name) => {
+    const strict = createDiskPressure();
+    expect(strict.noteWriteError({ name })).toBe(false);
+    expect(strict.level()).toBe('normal');
+    const suspect = createDiskPressure();
+    expect(suspect.noteWriteError({ name }, { suspect: true })).toBe(true);
+    expect(suspect.level()).toBe('none');
+    expect(suspect.pinned()).toBe(true);
+  });
+
+  it('the suspect form still accepts the real out-of-space signals and rejects unrelated errors', () => {
+    const p = createDiskPressure();
+    expect(p.noteWriteError({ name: 'DataCloneError' }, { suspect: true })).toBe(false);
+    expect(p.noteWriteError('AbortError', { suspect: true })).toBe(false);
+    expect(p.level()).toBe('normal');
+    expect(p.noteWriteError({ name: 'QuotaExceededError' }, { suspect: true })).toBe(true);
+  });
+
+  it('isStorageFullSuspect answers false for a hostile error whose getters throw', () => {
+    const hostile = {
+      get name(): string {
+        throw new Error('no');
+      },
+    };
+    expect(isStorageFullSuspect(hostile)).toBe(false);
+    expect(isStorageFullSuspect(null)).toBe(false);
   });
 });

@@ -60,6 +60,8 @@ export interface RingWorkerArgs {
   onError: (error: unknown) => void;
   /** Every failed drain write (the worker retries a stuck frame, so this can repeat); `onError` hears the first only. */
   onWriteFailure?: (error: unknown) => void;
+  /** The first frame drained successfully after failures. */
+  onWriteRecovered?: () => void;
 }
 
 export interface CaptureRingWriterOptions {
@@ -79,7 +81,7 @@ export interface CaptureRingWriterOptions {
    * Unlike `onError` (the first failure of an episode), it is the health signal a disk-pressure pin needs.
    */
   onWriteFailure?: (error: unknown) => void;
-  /** Called on the first successful meta write (the pressure probe) after one or more failures. */
+  /** Called on the first successfully drained DATA frame after one or more failures (meta writes and deletes do not count). */
   onWriteRecovered?: () => void;
   /** Open a file for the main-thread append fallback. Default `openSync(path,'a',0o600)`; injectable for tests. */
   open?: (path: string) => number;
@@ -126,6 +128,7 @@ export function createSyncRingWorker(args: RingWorkerArgs): RingWorker {
       args.onError(error);
       args.onWriteFailure?.(error);
     },
+    onFrameWritten: () => args.onWriteRecovered?.(),
   };
   const drainer = new RingDrainer(consumer, ops);
   return {
@@ -186,6 +189,7 @@ export function createCaptureRingWriter(
     fileTypes,
     onError,
     onWriteFailure: noteFailure,
+    onWriteRecovered: noteSuccess,
   });
 
   const chunkDir = (g: number, c: number): string => join(root, pad(g, GEN_PAD), pad(c, CHUNK_PAD));
@@ -239,7 +243,7 @@ export function createCaptureRingWriter(
       try {
         ensureDir(chunkDir(g, c));
         writeFile(filePath(g, c, file), dataStr); // meta / replace — main thread
-        noteSuccess();
+        // not a success signal: only a drained data frame proves the volume accepts record data again
       } catch (error) {
         noteFailure(error);
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)

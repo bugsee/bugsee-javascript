@@ -296,7 +296,8 @@ export function createBatchedFsChunkStorage(
       try {
         ensure(chunkDir(generation, chunk));
         writeFile(path, data);
-        noteSuccess();
+        // not a success signal: a small meta file lands on a volume that still refuses record data; only a successful
+        // data flush releases the health state
       } catch (error) {
         noteFailure(error);
         onError(error); // a broken disk on a meta write must never throw into the caller (the tick)
