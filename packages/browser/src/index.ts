@@ -70,6 +70,7 @@ export {
 export {
   type Bugsee,
   type BugseeLaunchOptions,
+  CAPTURE_URL_OPTION_KEY,
   CAPTURE_USER_IDLE_OPTION_KEY,
   getStatus,
   type LaunchInternals,
@@ -110,6 +111,7 @@ export {
   type UiBreadcrumbEnv,
   type UiBreadcrumbSource,
 } from './ui-breadcrumb-source';
+export { type UrlProducerDeps, type UrlSanitizer, urlProducerDepsFor } from './url-producer';
 // The browser-family OS/browser identification, exported so the worker tier (which has the same
 // `navigator` and the same problem) derives its OS the same way rather than growing a second parser.
 export {

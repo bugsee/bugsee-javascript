@@ -3,6 +3,7 @@ import {
   bindInputBlackout,
   boundMatchMedia,
   browserTraceEnvFrom,
+  CAPTURE_URL_OPTION_KEY,
   CAPTURE_USER_IDLE_OPTION_KEY,
   createBrowserInputSource,
   createBrowserSystemEventsSource,
@@ -15,6 +16,8 @@ import {
   hostGlobal,
   hostRead,
   parseStack,
+  type UrlProducerDeps,
+  urlProducerDepsFor,
   type WindowEvents,
 } from '@bugsee/browser';
 import {
@@ -41,6 +44,7 @@ import {
   clearCarrierClient,
   createClient,
   createServiceContainer,
+  FAIL_CLOSED_BOOLEAN_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
   type FilterStore,
   FiltersToken,
@@ -108,6 +112,13 @@ const WEBVIEW_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     key: CAPTURE_USER_IDLE_OPTION_KEY,
     default: false,
     ...BOOLEAN_OPTION,
+  },
+  // The `url` trace (same switch as @bugsee/browser): ON by default, an invalid value turns it OFF (fail closed).
+  {
+    friendly: 'captureUrl',
+    key: CAPTURE_URL_OPTION_KEY,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
   },
 ];
 
@@ -206,6 +217,16 @@ export interface BugseeWebViewLaunchOptions {
    * exists only if the permission is ALREADY `granted` (the SDK never prompts). Only boolean `true` enables it.
    */
   captureUserIdle?: boolean;
+  /**
+   * Record the `url` system trace: the embedded page's own SANITIZED address, held, written at start and on every
+   * navigation (same as `@bugsee/browser`). Default true; any non-boolean value turns it off and is reported.
+   */
+  captureUrl?: boolean;
+  /**
+   * The application's own sanitizer for the `url` trace: runs after the default and its result is written as given;
+   * `null` writes nothing. A throw or a bad result is reported and writes nothing; a non-function is ignored and reported.
+   */
+  urlSanitizer?: (url: string) => string | null;
 
   /**
    * Allow the WebView to emit report TRIGGERS — an uncaught error / `logException` OPENING a native bug:
@@ -383,6 +404,9 @@ function bridgeSlotFor(
   BRIDGE_SLOTS.set(global, slot);
   return slot;
 }
+
+const withUrl = (url: UrlProducerDeps | undefined): { url?: UrlProducerDeps } =>
+  url !== undefined ? { url } : {};
 
 /** The launched WebView client — the public SDK surface. */
 export type Bugsee = BugseeClient;
@@ -736,6 +760,15 @@ export function launchWithSeams(
           // the native host writes `displays`; a WebView must not write a second one (spec host-owned table)
           hostOwnedTraces: ['displays'],
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
+          ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
+            ? withUrl(
+                urlProducerDepsFor(win, {
+                  ...(carrier !== undefined ? { carrier } : {}),
+                  urlSanitizer: options.urlSanitizer,
+                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                }),
+              )
+            : {}),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },

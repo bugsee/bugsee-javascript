@@ -17,6 +17,10 @@ What it contains:
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/webview
 - Bugsee: https://bugsee.com
 
+## The `url` trace
+
+The WebView writes the embedded page's sanitized address as the `url` trace, exactly as `@bugsee/browser` does (see its README): on by default, `captureUrl: false` turns it off, `urlSanitizer` is your own hook run after the default.
+
 ## License
 
 MIT. See the LICENSE file.

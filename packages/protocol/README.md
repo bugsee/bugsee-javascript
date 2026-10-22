@@ -15,6 +15,10 @@ This is an internal building block of the Bugsee SDK, not intended to be install
 
 It is used by `@bugsee/core`, `@bugsee/capture`, `@bugsee/browser`, `@bugsee/node`, `@bugsee/performance`, `@bugsee/electron` and other SDK packages. Its API is internal and may change between releases.
 
+## Sanitizing a page address
+
+`sanitizeUrl` redacts network URLs and is deliberately unchanged for them. `sanitizeLocationUrl(url, options?)` is for the page's own address (the `url` trace, navigation breadcrumbs, navigation transaction names). It adds scheme handling (`data:`/`javascript:`/`vbscript:` reduced to `<scheme>:%3Credacted%3E`, `blob:`/`filesystem:` to their inner origin, `file:` to `file:///.../<last segment>`, `view-source:` sanitizes what it wraps) and a bounded scan of URLs nested in a query value (two levels, raw or percent-encoded), then defers to `sanitizeUrl`. It never throws and runs in linear time; a non-string yields the placeholder.
+
 ## Links
 
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/protocol

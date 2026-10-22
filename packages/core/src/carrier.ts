@@ -277,6 +277,7 @@ export const RELAUNCH_KEPT_OPTIONS: readonly string[] = [
   // redaction hooks: forgetting one is a FAIL-OPEN privacy regression (the defaults keep the built-in
   // sanitizer, but whatever the application added on top would silently stop applying)
   'breadcrumbFilter',
+  'urlSanitizer',
   'logFilter',
   'networkFilter',
   'reportHandler',

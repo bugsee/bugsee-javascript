@@ -125,6 +125,44 @@ describe('collectNavigations', () => {
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('bugsee.name_source', 'url'); // naming
   });
 
+  describe('the transaction name of a URL-detected navigation is sanitized (C25)', () => {
+    const nameFor = (over: Partial<NavigationDetailLike>): string | undefined => {
+      const source = navSource();
+      const { api } = fakeApi();
+      collectNavigations({ source, api, env: fakeEnv().env, timer: fakeTimer().timer });
+      source.emit('navigate', detail(over));
+      return (api.startTransaction as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.name;
+    };
+    const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123_-signaturepart';
+
+    it('redacts a matrix session id in the path', () => {
+      expect(nameFor({ to: '/app;jsessionid=ABC123/orders' })).toBe(
+        '/app;jsessionid=%3Credacted%3E/orders',
+      );
+    });
+
+    it('redacts a secret-shaped token in a path segment', () => {
+      const name = nameFor({ to: `/verify/${JWT}` });
+      expect(name).not.toContain(JWT);
+      expect(name?.startsWith('/verify/')).toBe(true);
+    });
+
+    it('redacts a query that a path-only fallback may still carry', () => {
+      expect(nameFor({ to: '/cb?token=SECRET&tab=1' })).toBe('/cb?token=%3Credacted%3E&tab=1');
+    });
+
+    it('leaves an ordinary path (ids included) as it was', () => {
+      expect(nameFor({ to: '/users/42/orders' })).toBe('/users/42/orders');
+    });
+
+    it.each([
+      'route',
+      'custom',
+    ])('keeps an adapter-supplied %s name VERBATIM (a pattern is not a URL)', (source) => {
+      expect(nameFor({ to: '/orders/:id;jsessionid=x', source })).toBe('/orders/:id;jsessionid=x');
+    });
+  });
+
   it('finishes the PREVIOUS navigation when a new one starts (a view is superseded)', () => {
     const source = navSource();
     const { api, started } = fakeApi();

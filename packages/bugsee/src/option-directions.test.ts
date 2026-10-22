@@ -58,6 +58,7 @@ const DIRECTIONS: Record<string, Direction> = {
   replay: 'off', // default ON, collects the DOM: an invalid scalar is OFF; masking is fail-closed on its own
   persistUserIdentifier: 'default', // default OFF
   captureUserIdle: 'default', // default OFF (opt-in behavioural trace): only boolean true enables
+  captureUrl: 'off', // the url trace, default ON: an invalid value turns it OFF (fail closed)
   reportSummaryRequired: 'default',
   reportDescriptionRequired: 'default',
   reportEmailRequired: 'default',

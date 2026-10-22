@@ -1296,6 +1296,57 @@ describe('launch (webview)', () => {
       });
     });
 
+    describe('the url trace (captureUrl / urlSanitizer)', () => {
+      const urlRows = async (over: Partial<BugseeWebViewLaunchOptions>, href?: string) => {
+        stubSensors();
+        try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          if (href !== undefined) Object.assign(w.win, { location: { pathname: '/p', href } });
+          track('tok', baseOptions({ global: fake.global, window: w.win, ...over }));
+          await new Promise((r) => setTimeout(r, 0));
+          return entriesOfType(fake.msgs(), 'traces.system')
+            .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+            .filter((d) => d.name === 'url')
+            .map((d) => d.value);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      };
+
+      it('default: streams the sanitized location of the embedded page', async () => {
+        expect(await urlRows({}, 'https://a.com/o?token=abc&tab=1')).toEqual([
+          'https://a.com/o?token=%3Credacted%3E&tab=1',
+        ]);
+      });
+
+      it('captureUrl:false writes nothing', async () => {
+        expect(await urlRows({ captureUrl: false }, 'https://a.com/o')).toEqual([]);
+      });
+
+      it.each([
+        'false',
+        1,
+        0,
+        '',
+        null,
+      ])('captureUrl=%j (invalid) is OFF and reports', async (bad) => {
+        const onError = vi.fn();
+        expect(await urlRows({ captureUrl: bad as never, onError }, 'https://a.com/o')).toEqual([]);
+        expect(
+          onError.mock.calls.filter((c) =>
+            String((c[0] as Error).message).startsWith('captureUrl must be a boolean'),
+          ),
+        ).toHaveLength(1);
+      });
+
+      it('urlSanitizer refines the default result', async () => {
+        expect(
+          await urlRows({ urlSanitizer: (u) => u.replace('/o', '/x') }, 'https://a.com/o'),
+        ).toEqual(['https://a.com/x']);
+      });
+    });
+
     it('a window whose getters throw (including its document) never fails launch: each is omitted and reported', () => {
       stubSensors();
       try {

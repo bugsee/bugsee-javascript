@@ -43,6 +43,10 @@ The bare platform packages (`@bugsee/browser`) do not wire this extension. Use t
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/performance
 - Bugsee: https://bugsee.com
 
+## Navigation transaction names
+
+A navigation detected from the URL is named after the location, passed through the SDK's location sanitizer (matrix session ids, secret-shaped path segments and any query are redacted; ordinary path segments, ids included, are kept). A name supplied by a framework adapter (`route`/`custom`, a router pattern) is kept as given.
+
 ## License
 
 MIT. See the LICENSE file.

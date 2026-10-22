@@ -21,6 +21,12 @@ export interface NavigationDetail {
   /** The destination — the new path (built-in: `location.pathname`) or the adapter-supplied name. */
   to: string;
   navigationType: NavigationType;
+  /**
+   * The absolute, UNSANITIZED address after the navigation (`location.href` / `navigation.currentEntry.url`). Present
+   * only for built-in (`source: 'url'`) navigations whose address could be read; an adapter's programmatic navigation
+   * has no address. A consumer that stores or uploads it MUST sanitize it (the `url` trace does).
+   */
+  href?: string;
   /** Provenance for the transaction name (Sentry `source` attr): `url` (built-in, raw) vs `route`/`custom`
    *  (an adapter-supplied, parameterized/named navigation). */
   source: 'url' | 'route' | 'custom';
@@ -39,6 +45,8 @@ interface NavTarget {
 /** The current location — read for the destination path. */
 interface LocationLike {
   readonly pathname: string;
+  /** The full address; optional so a minimal environment (path only) still works. */
+  readonly href?: string;
 }
 /** The `currententrychange` event — its `navigationType` ('push'|'replace'|'reload'|'traverse') reflects how
  *  the current entry changed; `null` means a state-only `updateCurrentEntry()` (not a navigation → skip). */
@@ -65,6 +73,11 @@ export interface NavigationEnv {
   target?: NavTarget;
   location?: LocationLike;
   navigation?: NavigationApiLike;
+  /**
+   * `true` = use ONLY the surfaces given here: a missing one is absent (the source self-skips) instead of borrowing the
+   * host's global. Set when binding to an injected window, so a window without `history` never patches another's.
+   */
+  isolated?: boolean;
 }
 
 /** The navigation source: a listenable `navigate` emitter + the adapter-facing `startNavigation` seam. */
@@ -84,6 +97,20 @@ const navTypeFor = (raw: string | undefined): NavigationType => {
       return 'push';
   }
 };
+
+/** `location.href`, or undefined when absent, not a string, or a hostile getter throws (observe-only). */
+const hrefOf = (location: LocationLike | undefined): string | undefined => {
+  try {
+    const href = location?.href;
+    return typeof href === 'string' ? href : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** The address only when it is ABSOLUTE (has a scheme): a bare path is not an href. */
+const absoluteOf = (url: string | undefined): string | undefined =>
+  typeof url === 'string' && /^[A-Za-z][A-Za-z0-9+.-]*:/.test(url) ? url : undefined;
 
 const pathOf = (url: string | undefined): string | undefined => {
   if (url === undefined) return undefined;
@@ -112,11 +139,8 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
       // `currentEntry.url` getter can throw (a hostile/exotic global) — the try makes that observe-only.
       const navType = event?.navigationType;
       if (navType === undefined || navType === null) return;
-      this.#emit(
-        pathOf(this.#navigation?.currentEntry?.url ?? undefined),
-        navTypeFor(navType),
-        'url',
-      );
+      const url = this.#navigation?.currentEntry?.url ?? undefined;
+      this.#emit(pathOf(url), navTypeFor(navType), 'url', absoluteOf(url));
     } catch {
       // observe-only
     }
@@ -136,16 +160,17 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
     to: string | undefined,
     navigationType: NavigationType,
     source: NavigationDetail['source'],
+    href?: string,
   ): void {
     if (to === undefined) return;
-    this.emit('navigate', { to, navigationType, source });
+    this.emit('navigate', { to, navigationType, source, ...(href !== undefined ? { href } : {}) });
   }
 
   #emitFromLocation(navigationType: NavigationType): void {
     try {
       // The `location.pathname` read can throw (a hostile getter) — it runs AFTER the original History
       // method (the app's nav already happened), so it must never throw back out into the app.
-      this.#emit(this.#location?.pathname, navigationType, 'url');
+      this.#emit(this.#location?.pathname, navigationType, 'url', hrefOf(this.#location));
     } catch {
       // observe-only
     }
@@ -211,6 +236,9 @@ const g = globalThis as unknown as {
 
 /** Build the navigation source over the real browser globals (each overridable / absent → self-skip). */
 export function createBrowserNavigationSource(env: NavigationEnv = {}): NavigationSource {
+  if (env.isolated === true) {
+    return new BrowserNavigationSource(env);
+  }
   return new BrowserNavigationSource({
     history: env.history ?? g.history,
     target: env.target ?? g.window,

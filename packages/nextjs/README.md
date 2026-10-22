@@ -83,6 +83,10 @@ Both `register(appToken, options)` and `registerClient(appToken, options)` accep
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/nextjs
 - Bugsee: https://bugsee.com
 
+## Navigation breadcrumbs
+
+`onRouterTransitionStart` writes one `navigation` breadcrumb per soft navigation. The `href` (in the message and in `data.href`) is run through the SDK's location sanitizer first, so a `?code=...` or `#access_token=...` never reaches the bundle.
+
 ## License
 
 MIT. See the LICENSE file.

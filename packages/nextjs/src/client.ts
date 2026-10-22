@@ -11,6 +11,7 @@
 
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
 import { getCarrierClient } from '@bugsee/core';
+import { sanitizeLocationUrl } from '@bugsee/protocol';
 
 export type { Bugsee } from '@bugsee/bugsee';
 // Re-export the @bugsee/react surface so a Next app gets the React error boundary + Profiler + router
@@ -65,11 +66,14 @@ export function createOnRouterTransitionStart(
     try {
       const client = getClient();
       if (client === undefined) return;
+      // The destination can carry a token (`?code=…`, `#access_token=…`) and `addBreadcrumb` applies no sanitizer of its
+      // own, so the shared location sanitizer runs here, once, for both fields.
+      const safeHref = sanitizeLocationUrl(href);
       client.addBreadcrumb({
         type: 'navigation',
         category: 'navigation',
-        message: href,
-        data: { href, navigationType },
+        message: safeHref,
+        data: { href: safeHref, navigationType },
       });
     } catch {
       // Never disrupt Next's client router.

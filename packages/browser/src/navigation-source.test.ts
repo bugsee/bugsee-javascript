@@ -135,7 +135,12 @@ describe('createBrowserNavigationSource', () => {
     change('/back', 'traverse');
     change('/r', 'reload');
     expect(events).toEqual([
-      { to: '/dashboard', navigationType: 'replace', source: 'url' },
+      {
+        to: '/dashboard',
+        navigationType: 'replace',
+        source: 'url',
+        href: 'https://app.test/dashboard?q=1',
+      },
       { to: '/orders/42', navigationType: 'push', source: 'url' },
       { to: '/home', navigationType: 'push', source: 'url' },
       { to: '/back', navigationType: 'traverse', source: 'url' },
@@ -217,5 +222,99 @@ describe('createBrowserNavigationSource', () => {
     // The currentEntry read (a hostile getter) throws inside the handler — it must be swallowed, not thrown.
     expect(() => navHandler?.({ navigationType: 'push' })).not.toThrow();
     expect(events).toEqual([]); // nothing emitted, nothing thrown
+  });
+
+  describe('href (the absolute address, for the `url` trace)', () => {
+    it('History path: carries location.href after the app navigated', () => {
+      const { env, history, location } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      (location as { href?: string }).href = 'https://a.com/x?y=1#z';
+      location.pathname = '/x';
+      history.pushState({}, '', '/x');
+      expect(events).toEqual([
+        { to: '/x', navigationType: 'push', source: 'url', href: 'https://a.com/x?y=1#z' },
+      ]);
+    });
+
+    it('History path: popstate and hashchange carry it too', () => {
+      const { env, location, fire } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      (location as { href?: string }).href = 'https://a.com/p';
+      fire('popstate');
+      fire('hashchange');
+      expect(events.map((e) => e.href)).toEqual(['https://a.com/p', 'https://a.com/p']);
+    });
+
+    it('History path: no key at all when the location has no href (or it is not a string)', () => {
+      const { env, location, fire } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      fire('popstate');
+      (location as { href?: unknown }).href = 42;
+      fire('popstate');
+      expect(events).toHaveLength(2);
+      for (const e of events) expect('href' in e).toBe(false);
+    });
+
+    it('History path: a throwing href getter loses only the href, never the navigation', () => {
+      const { env, fire } = fakeEnv({
+        location: {
+          pathname: '/ok',
+          get href(): string {
+            throw new Error('hostile');
+          },
+        },
+      });
+      const { events } = collect(createBrowserNavigationSource(env));
+      fire('popstate');
+      expect(events).toEqual([{ to: '/ok', navigationType: 'traverse', source: 'url' }]);
+    });
+
+    it('Navigation API path: carries currentEntry.url', () => {
+      const { navigation, change } = fakeNavigation();
+      const { events } = collect(createBrowserNavigationSource({ navigation }));
+      change('https://a.com/n?q=1', 'push');
+      expect(events).toEqual([
+        { to: '/n', navigationType: 'push', source: 'url', href: 'https://a.com/n?q=1' },
+      ]);
+    });
+
+    it('an adapter-emitted navigation has no href', () => {
+      const { env } = fakeEnv();
+      const source = createBrowserNavigationSource(env);
+      const { events } = collect(source);
+      source.startNavigation({ name: '/orders/:id', source: 'route' });
+      expect('href' in (events[0] as object)).toBe(false);
+    });
+  });
+
+  it('isolated: uses only the given surfaces, never the host globals', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    try {
+      const source = createBrowserNavigationSource({
+        isolated: true,
+        location: { pathname: '/p' },
+      });
+      const { events, off } = collect(source); // activates: no history, no target, no navigation
+      expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState);
+      expect(events).toEqual([]);
+      off();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('not isolated: an omitted surface falls back to the host global', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    try {
+      const { off } = collect(createBrowserNavigationSource({ navigation: undefined }));
+      expect((globalThis as { history: { pushState: unknown } }).history.pushState).not.toBe(
+        pushState,
+      );
+      off();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
