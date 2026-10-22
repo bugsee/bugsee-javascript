@@ -292,10 +292,14 @@ contains `eyJ` because it holds a nested `{"` claim, an `ASIA` inside an AWS key
 the outer secret. A secret that is already complete in the prefix is left for redaction to match whole: a JWT cut
 inside its signature keeps all three segments and `redactShapes` replaces them, while one cut inside its header
 or payload backs off to the start of the header (a bare JWT collapses to the marker, `id_token=<jwt>` becomes
-`id_token=` plus the marker). Stripe-style keys are never "unfinished", because their patterns match a partial
-key. The shape starts and the redaction patterns are built from one table (`SHAPES` in `shapes.ts`), so a new
-shape cannot be added to one and missed by the other. The walk examines at most 16 starts per call and past that
-backs off to the current candidate (more dropped, never less). `:` is not a token character, so a long map-leaf
+`id_token=` plus the marker). A Stripe-style key counts as finished as soon as one character follows its
+prefix, because its pattern matches a partial key (a cut right after `sk_live_` or `whsec_` itself is still
+reported as unfinished). The shape starts and the redaction patterns are built from one table (`SHAPES` in `shapes.ts`), so a new
+shape cannot be added to one and missed by the other. The walk examines the first start plus at most 16 further
+starts per call and past that backs off to the current candidate (more dropped, never less). Known limitation, pinned by a test: a shape glued to a partial token of another
+shape (`sk_live_` directly followed by `gho_<30>`) lets the outer pattern complete by swallowing the inner
+token's alphanumeric prefix, so part of the inner token is not seen as unfinished; the same glue already survives
+`redactShapes` on main without any cut. `:` is not a token character, so a long map-leaf
 URL (`https://host/...` past the cap) is cut back to `https:` plus the marker by the ordinary boundary rule
 (unrelated to the back-off): accepted data loss, a scheme-and-host-keeping rule was not worth another heuristic. A TOP-LEVEL string attribute is only cut (it is
 never shape-scanned, so dropping its unfinished token would protect nothing and would lose the host of a long

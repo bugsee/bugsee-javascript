@@ -85,12 +85,19 @@ const SHAPES: readonly { start: string; rest: string }[] = [
   { start: 'gh[posu]_', rest: '[A-Za-z0-9]{36,}' }, // GitHub personal access / OAuth / user / server token
 ];
 
-const SHAPE_PATTERNS: readonly RegExp[] = SHAPES.map(
-  ({ start, rest }) => new RegExp(`${start}${rest}`, 'g'),
+/** One redaction pattern: the start is grouped so an alternation at its top level cannot split the pattern. */
+export const compileShapePattern = (start: string, rest: string): RegExp =>
+  new RegExp(`(?:${start})${rest}`, 'g');
+
+const SHAPE_PATTERNS: readonly RegExp[] = SHAPES.map(({ start, rest }) =>
+  compileShapePattern(start, rest),
 );
 
 /** Where any secret shape begins: the JWT header plus the start of every entry of {@link SHAPES}. */
-const SECRET_SHAPE_START = new RegExp(['eyJ', ...SHAPES.map(({ start }) => start)].join('|'), 'g');
+const SECRET_SHAPE_START = new RegExp(
+  ['eyJ', ...SHAPES.map(({ start }) => `(?:${start})`)].join('|'),
+  'g',
+);
 
 /**
  * How many shape starts one call examines before it gives up and backs off to the current candidate. Each

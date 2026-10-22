@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { redactShapes, unfinishedSecretStart } from './index';
+import { compileShapePattern } from './shapes';
 
 const R = '<redacted>';
 
@@ -390,10 +391,53 @@ describe('unfinishedSecretStart', () => {
     expect(unfinishedSecretStart(text.slice(0, text.length - 'AKIAIOSFOD'.length))).toBe(-1);
   });
 
+  it('does not take a COMPLETE secret that sits inside an unfinished JWT payload for the JWT being complete', () => {
+    // `id_token=<header>.<payload>` cut inside the payload, with an AWS key embedded in that payload. The AWS
+    // key is complete, but the JWT is not (two segments): the cut must still back off to the header.
+    const text = `id_token=eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjEs${'x'.repeat(20)}${SAMPLES['aws AKIA']}${'y'.repeat(30)}`;
+    expect(redactShapes(text)).toContain('eyJhbGciOiJIUzI1NiJ9'); // not matched as a JWT: only two segments
+    expect(unfinishedSecretStart(text)).toBe(9);
+  });
+
+  // The cap on starts examined: a JWT whose payload holds N inner `eyJ` starts, then a signature, then a
+  // half-written AWS key. Within the cap the walk sees the JWT finish and answers with the AWS key's start; past
+  // it the walk gives up and answers with the (earlier) current candidate. Pins 16 exactly.
+  const withInnerStarts = (inner: number): { text: string; awsAt: number } => {
+    const jwt = `eyJh.${'eyJ'.repeat(inner)}.sig`;
+    return { text: `${jwt}/AKIAxx`, awsAt: jwt.length + 1 };
+  };
+
+  it('examines the first start plus 16 more: 15 inner starts still reach the AWS key (check 16 is allowed)', () => {
+    const { text, awsAt } = withInnerStarts(15);
+    expect(unfinishedSecretStart(text)).toBe(awsAt);
+  });
+
+  it('gives up at the 17th check and answers with the current candidate (16 inner starts)', () => {
+    const { text } = withInnerStarts(16);
+    expect(unfinishedSecretStart(text)).toBe(0);
+    expect(unfinishedSecretStart(withInnerStarts(1000).text)).toBe(0);
+  });
+
+  it('known limitation, pinned: a Stripe/GitHub token glued to another token start swallows its prefix', () => {
+    // `sk_live_` matches any alnum run, so it "completes" by swallowing `gho` of the glued `gho_<30>`, and the
+    // rest of the inner token is not seen as unfinished. The same glue already survives redactShapes on main
+    // without any cut, so this is not new exposure.
+    const glued = `k=sk_live_gho_${'a'.repeat(30)}`;
+    expect(unfinishedSecretStart(glued)).toBe(-1);
+    expect(redactShapes(`sk_live_ghp_${'a'.repeat(36)}`)).toContain(`_${'a'.repeat(36)}`);
+  });
+
   it('stays bounded and safe on text dense with starts: past the candidate limit it backs off to the current one', () => {
     const dense = `x=${'eyJ'.repeat(5000)}`;
     const started = Date.now();
     expect(unfinishedSecretStart(dense)).toBe(2);
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('compileShapePattern', () => {
+  it('groups the start, so an alternation at its top level cannot swallow the rest of the pattern', () => {
+    const pattern = compileShapePattern('foo|bar', '[0-9]{3}');
+    expect('foo123 bar456 foo bar'.match(pattern)).toEqual(['foo123', 'bar456']);
   });
 });

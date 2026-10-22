@@ -577,6 +577,14 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape s
       }
     });
 
+    it('backs off an unfinished JWT even when its payload holds a complete secret of another shape', () => {
+      // The AWS key is complete, the JWT is not (two segments): finishing the check on "a secret appears
+      // somewhere" instead of "a secret BEGINS here" would keep the whole payload.
+      const payload = `eyJleHAiOjEs${'x'.repeat(100)}AKIAIOSFODNN7EXAMPLE${'y'.repeat(9000)}`;
+      const out = leaf(`id_token=${header}.${payload}`);
+      expect(out).toBe(`id_token=${TRUNCATION_MARKER}`);
+    });
+
     it('leaves a JWT cut inside its SIGNATURE to redaction, which matches the three segments whole', () => {
       const shortPayload = b64url(`{${claims}}`);
       const jwt = `${header}.${shortPayload}.${'S'.repeat(9000)}`;
