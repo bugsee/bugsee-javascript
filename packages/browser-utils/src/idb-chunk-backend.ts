@@ -573,16 +573,13 @@ export function createIdbChunkBackend(
         return out;
       };
 
-      let released = false;
-      const release = (): void => {
-        if (released) {
+      // Drops this snapshot's PINS: an evicted part may then be deleted at once. Idempotent, and shared by `release()`.
+      let unpinned = false;
+      const unpin = (): void => {
+        if (unpinned) {
           return;
         }
-        released = true;
-        cancel();
-        // Let go NOW (not when the abandoned read finally unwinds, which on a hung store may be never): the in-memory
-        // maps of the frozen parts are retained by whoever holds this snapshot.
-        heldAtFreeze.fill(undefined);
+        unpinned = true;
         for (const { ref } of frozen) {
           const key = chunkKey(ref);
           // The part was pinned at snapshot() time, so pins.get is defined here.
@@ -599,6 +596,19 @@ export function createIdbChunkBackend(
         }
       };
 
+      let released = false;
+      const release = (): void => {
+        if (released) {
+          return;
+        }
+        released = true;
+        cancel();
+        // Let go NOW (not when the abandoned read finally unwinds, which on a hung store may be never): the in-memory
+        // maps of the frozen parts are retained by whoever holds this snapshot.
+        heldAtFreeze.fill(undefined);
+        unpin();
+      };
+
       return {
         async *stream(): AsyncIterableIterator<StoredEntry> {
           for (const record of await readAll()) {
@@ -609,6 +619,8 @@ export function createIdbChunkBackend(
           return groupByType(await readAll());
         },
         release,
+        // The read goes on (its result is discarded) but must not delay evictions: pins dropped, nothing else.
+        unpin,
         // What the medium is not needed for: records still queued for it or refused by it (see `unlanded`).
         inMemory(): Map<FileType, StoredEntry[]> {
           const out: StoredEntry[] = [];

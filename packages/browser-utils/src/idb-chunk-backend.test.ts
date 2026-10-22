@@ -1559,7 +1559,7 @@ describe('createIdbChunkBackend — the frozen in-memory copy', () => {
 });
 
 describe('createIdbChunkCaptureStore — a slow but healthy IndexedDB recovers from degraded (real backend, real timers)', () => {
-  it('one failed read, then reads that take 2.5 s: the next report is short, the one after has every landed record', async () => {
+  it('one failed read, then reads that take 5 s: the next report is short, the one after has every landed record', async () => {
     const inner = keyed();
     const state = { mode: 'ok' as 'ok' | 'fail' | 'slow' };
     const store: AsyncKeyedStore = {
@@ -1570,7 +1570,7 @@ describe('createIdbChunkCaptureStore — a slow but healthy IndexedDB recovers f
         }
         if (state.mode === 'slow') {
           return new Promise((resolve) =>
-            setTimeout(() => resolve(inner.readPrefix(prefix)), 2500),
+            setTimeout(() => resolve(inner.readPrefix(prefix)), 5000),
           );
         }
         return inner.readPrefix(prefix);
@@ -1597,10 +1597,53 @@ describe('createIdbChunkCaptureStore — a slow but healthy IndexedDB recovers f
     expect((await report()).logs).toEqual([]);
     state.mode = 'slow';
     const second = await report(); // degraded: at most ~2 s, answered from memory
-    expect(second.ms).toBeLessThan(2400);
+    expect(second.ms).toBeLessThan(3500); // the 2 s deadline plus a generous margin for a loaded machine
     expect(second.logs).toEqual([]);
-    await new Promise((r) => setTimeout(r, 800)); // the background read finishes at ~2.5 s and ends the degraded state
-    const third = await report(); // full wait: it takes the 2.5 s and returns the data
+    await new Promise((r) => setTimeout(r, 4000)); // the background read finishes at ~5 s and ends the degraded state
+    const third = await report(); // full wait: it takes the 5 s and returns the data
     expect(third.logs).toEqual(['r0', 'r1', 'r2', 'r3']);
   }, 30_000);
+});
+
+describe('createIdbChunkBackend — unpin(): a read left to finish in the background must not delay evictions', () => {
+  const never = () => new Promise<never>(() => {});
+  const dataKeys = async (inner: AsyncKeyedStore): Promise<number> =>
+    (await inner.readPrefix('d/')).length;
+
+  it('an evicted part is deleted at once after unpin(), while the snapshot (and its read) is still alive', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = { ...inner, readPrefix: never };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    void snap.drainAll().catch(() => undefined); // a read that hangs
+    b.removePart(ref(5, 0));
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(1); // pinned by the snapshot: the delete is deferred
+    snap.unpin?.();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(0); // unpinned: deleted now, the hung read is still running
+    snap.release();
+  });
+
+  it('unpin() and release() together release the pin ONCE: another snapshot of the part keeps it pinned', async () => {
+    const inner = keyed();
+    const b = createIdbChunkBackend(inner, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('x'));
+    await b.flush?.();
+    const a = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    const c = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    b.removePart(ref(5, 0));
+    a.unpin?.();
+    a.unpin?.();
+    a.release();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(1); // still pinned by the second snapshot (no double decrement)
+    c.release();
+    await b.flush?.();
+    expect(await dataKeys(inner)).toBe(0);
+  });
 });

@@ -346,6 +346,7 @@ export function withDiskPressure(
           // Let the overrunning read finish in the background, up to the backstop: if it answers, the medium is fine.
           backgroundRead = true;
           backgrounded = true;
+          snap.unpin?.(); // its data is discarded anyway: an evicted part must not wait for this read
           let capped = false;
           const cap = timers.setTimeout(() => {
             capped = true;

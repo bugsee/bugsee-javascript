@@ -1432,6 +1432,7 @@ describe('withDiskPressure — a slow but HEALTHY medium is never treated as dea
       slowMs: 3000,
       reads: 0,
       releases: 0,
+      unpins: 0,
       hangingReads: new Set<number>(),
     };
     let nextId = 0;
@@ -1472,6 +1473,9 @@ describe('withDiskPressure — a slow but HEALTHY medium is never treated as dea
               });
             }
             return snap.drainAll();
+          },
+          unpin: () => {
+            state.unpins += 1;
           },
           release: () => {
             state.releases += 1;
@@ -1545,6 +1549,7 @@ describe('withDiskPressure — a slow but HEALTHY medium is never treated as dea
       await vi.advanceTimersByTimeAsync(2000);
       await second;
       expect(m.state.releases).toBe(releasesBefore); // nothing released while the background read is alive
+      expect(m.state.unpins).toBe(1); // but it is UNPINNED at once: an evicted part must not wait for this read
       await vi.advanceTimersByTimeAsync(1000); // it settles at 3 s
       expect(m.state.releases).toBe(releasesBefore + 1); // and only then is the snapshot (its pins) released
       expect(unrefs.length).toBeGreaterThan(0);
