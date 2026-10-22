@@ -83,6 +83,10 @@ Both `register(appToken, options)` and `registerClient(appToken, options)` accep
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/nextjs
 - Bugsee: https://bugsee.com
 
+## Navigation breadcrumbs
+
+`onRouterTransitionStart` writes one `navigation` breadcrumb per soft navigation. The `href` (in the message and in `data.href`) is run through the SDK's location sanitizer first, so a `?code=...`, `?state=...`, `#access_token=...` or a `;jsessionid=` never reaches the bundle (the location denylist: the shared sensitive keys plus the exact keys `code`, `state`, `session`, `sid`, `sig`, `ticket`; `key` and `t` are not redacted). Ids, emails and other values in a path segment are not redacted, only token shapes and sensitive `;key=value` matrix segments.
+
 ## License
 
 MIT. See the LICENSE file.

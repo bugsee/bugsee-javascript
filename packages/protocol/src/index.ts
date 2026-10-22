@@ -22,6 +22,7 @@ export {
   severityFromWire,
   severityToWire,
 } from './levels';
+export { sanitizeLocationName, sanitizeLocationUrl, TRUNCATED_URL_MARKER } from './location-url';
 export {
   BugseeOption,
   type BugseeOptionKey,

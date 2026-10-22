@@ -1,4 +1,5 @@
 import type { EventSubscribable } from '@bugsee/core';
+import { sanitizeLocationName } from '@bugsee/protocol';
 import { NAME_SOURCE_ATTRIBUTE, type PerformanceApi } from './controller';
 import type { NetworkSource } from './http-spans';
 import {
@@ -21,6 +22,9 @@ export interface NavigationDetailLike {
   /** The destination path / adapter name → the transaction name. */
   to: string;
   navigationType: string;
+  /** The absolute, unsanitized address of a built-in (`url`) navigation, when the source could read it. The name is
+   *  derived from it (so a `file:` page never names itself by its directory), falling back to `to`. */
+  href?: string;
   /** Provenance: `url` (built-in, raw) vs `route`/`custom` (adapter-supplied). */
   source: string;
 }
@@ -55,7 +59,12 @@ export function collectNavigations(deps: CollectNavigationsDeps): () => void {
   offs.push(
     deps.source.on('navigate', (detail) => {
       current?.finishNow(); // the previous navigation/view is superseded → finish it
-      const transaction = deps.api.startTransaction({ name: detail.to, operation: 'navigation' });
+      // A URL-detected name is the raw location, so it runs through the shared location sanitizer (path redaction, and
+      // the query a path-only fallback may still carry). An adapter-supplied `route`/`custom` name is a pattern the
+      // application chose and is kept verbatim.
+      const name =
+        detail.source === 'url' ? sanitizeLocationName(detail.href, detail.to) : detail.to;
+      const transaction = deps.api.startTransaction({ name, operation: 'navigation' });
       // Two distinct axes: `nav.source`/`nav.type` are the immutable DETECTION metadata (how the navigation
       // was detected); `bugsee.name_source` is the NAMING provenance that the naming seam
       // later mutates to 'route' on resolve — so the two-phase url→route story lives on one key.

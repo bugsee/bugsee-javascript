@@ -898,6 +898,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@bugsee/react':
         specifier: workspace:*
         version: link:../react
@@ -1135,6 +1138,9 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
+      '@bugsee/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@bugsee/rrweb':
         specifier: workspace:*
         version: link:../rrweb
@@ -1850,6 +1856,7 @@ packages:
   '@bugsee/bugsee-cli@0.7.13':
     resolution: {integrity: sha512-nx/yFZTrnJNEeD1a2Cmze7tKy/BlKnY+WFY7UmSsBveDVf1cm05xejfhSSO2KKk21VYnoc5Ew+tPe6yob1DluQ==}
     engines: {node: '>=14.14', npm: '>=6'}
+    deprecated: Exits 0 when the binary is killed by a signal. Upgrade to 0.8.2 or use @bugsee/cli.
     hasBin: true
 
   '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/ad172467b79223adc73ee0516bee64d0935f4ab9':

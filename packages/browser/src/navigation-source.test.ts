@@ -135,7 +135,12 @@ describe('createBrowserNavigationSource', () => {
     change('/back', 'traverse');
     change('/r', 'reload');
     expect(events).toEqual([
-      { to: '/dashboard', navigationType: 'replace', source: 'url' },
+      {
+        to: '/dashboard',
+        navigationType: 'replace',
+        source: 'url',
+        href: 'https://app.test/dashboard?q=1',
+      },
       { to: '/orders/42', navigationType: 'push', source: 'url' },
       { to: '/home', navigationType: 'push', source: 'url' },
       { to: '/back', navigationType: 'traverse', source: 'url' },
@@ -217,5 +222,474 @@ describe('createBrowserNavigationSource', () => {
     // The currentEntry read (a hostile getter) throws inside the handler — it must be swallowed, not thrown.
     expect(() => navHandler?.({ navigationType: 'push' })).not.toThrow();
     expect(events).toEqual([]); // nothing emitted, nothing thrown
+  });
+
+  describe('href (the absolute address, for the `url` trace)', () => {
+    it('History path: carries location.href after the app navigated', () => {
+      const { env, history, location } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      (location as { href?: string }).href = 'https://a.com/x?y=1#z';
+      location.pathname = '/x';
+      history.pushState({}, '', '/x');
+      expect(events).toEqual([
+        { to: '/x', navigationType: 'push', source: 'url', href: 'https://a.com/x?y=1#z' },
+      ]);
+    });
+
+    it('History path: popstate and hashchange carry it too', () => {
+      const { env, location, fire } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      (location as { href?: string }).href = 'https://a.com/p';
+      fire('popstate');
+      fire('hashchange');
+      expect(events.map((e) => e.href)).toEqual(['https://a.com/p', 'https://a.com/p']);
+    });
+
+    it('History path: no key at all when the location has no href (or it is not a string)', () => {
+      const { env, location, fire } = fakeEnv();
+      const { events } = collect(createBrowserNavigationSource(env));
+      fire('popstate');
+      (location as { href?: unknown }).href = 42;
+      fire('popstate');
+      expect(events).toHaveLength(2);
+      for (const e of events) expect('href' in e).toBe(false);
+    });
+
+    it('History path: a throwing href getter loses only the href, never the navigation', () => {
+      const { env, fire } = fakeEnv({
+        location: {
+          pathname: '/ok',
+          get href(): string {
+            throw new Error('hostile');
+          },
+        },
+      });
+      const { events } = collect(createBrowserNavigationSource(env));
+      fire('popstate');
+      expect(events).toEqual([{ to: '/ok', navigationType: 'traverse', source: 'url' }]);
+    });
+
+    it('Navigation API path: carries currentEntry.url', () => {
+      const { navigation, change } = fakeNavigation();
+      const { events } = collect(createBrowserNavigationSource({ navigation }));
+      change('https://a.com/n?q=1', 'push');
+      expect(events).toEqual([
+        { to: '/n', navigationType: 'push', source: 'url', href: 'https://a.com/n?q=1' },
+      ]);
+    });
+
+    it('an adapter-emitted navigation has no href', () => {
+      const { env } = fakeEnv();
+      const source = createBrowserNavigationSource(env);
+      const { events } = collect(source);
+      source.startNavigation({ name: '/orders/:id', source: 'route' });
+      expect('href' in (events[0] as object)).toBe(false);
+    });
+  });
+
+  it('isolated: uses only the given surfaces, never the host globals', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    try {
+      const source = createBrowserNavigationSource({
+        isolated: true,
+        location: { pathname: '/p' },
+      });
+      const { events, off } = collect(source); // activates: no history, no target, no navigation
+      expect((globalThis as { history: { pushState: unknown } }).history.pushState).toBe(pushState);
+      expect(events).toEqual([]);
+      off();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('not isolated: an omitted surface falls back to the host global', () => {
+    const pushState = vi.fn();
+    vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
+    try {
+      const { off } = collect(createBrowserNavigationSource({ navigation: undefined }));
+      expect((globalThis as { history: { pushState: unknown } }).history.pushState).not.toBe(
+        pushState,
+      );
+      off();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  describe('history patching is order-safe (C23)', () => {
+    // One shared fake History + location; each source wraps what it finds, as two consumers on one page would.
+    const sharedEnv = () => {
+      const where = { current: '/p' };
+      const orig = {
+        push: vi.fn((_s: unknown, _t: unknown, url: unknown) => {
+          if (typeof url === 'string') where.current = url;
+        }),
+        replace: vi.fn((_s: unknown, _t: unknown, url: unknown) => {
+          if (typeof url === 'string') where.current = url;
+        }),
+      };
+      const history = { pushState: orig.push, replaceState: orig.replace };
+      // `href` follows `pathname`, as a real Location does after a navigation.
+      const location = {
+        get pathname(): string {
+          return where.current;
+        },
+        set pathname(value: string) {
+          where.current = value;
+        },
+        get href(): string {
+          return `https://a.com${where.current}`;
+        },
+      };
+      const mk = () => createBrowserNavigationSource({ history, location, isolated: true });
+      return { history, orig, mk, location };
+    };
+    const thirdParty = (history: { pushState: unknown; replaceState: unknown }) => {
+      const inner = history.pushState as (...a: unknown[]) => unknown;
+      const calls: unknown[][] = [];
+      const wrapper = (...args: unknown[]) => {
+        calls.push(args);
+        return inner(...args);
+      };
+      history.pushState = wrapper;
+      return { wrapper, calls };
+    };
+
+    it('two sources stopped in the order they started leave history exactly as found', () => {
+      const { history, orig, mk } = sharedEnv();
+      const a = collect(mk());
+      const b = collect(mk());
+      a.off(); // not the top wrapper: becomes a pass-through
+      b.off(); // top: restores, and unwinds the dead pass-through beneath it
+      expect(history.pushState).toBe(orig.push);
+      expect(history.replaceState).toBe(orig.replace);
+    });
+
+    it('two sources stopped in reverse order leave history exactly as found', () => {
+      const { history, orig, mk } = sharedEnv();
+      const a = collect(mk());
+      const b = collect(mk());
+      b.off();
+      a.off();
+      expect(history.pushState).toBe(orig.push);
+      expect(history.replaceState).toBe(orig.replace);
+    });
+
+    it('the surviving source still emits after the other one stops (its wrapper was not dropped)', () => {
+      const { history, mk } = sharedEnv();
+      const a = collect(mk());
+      const b = collect(mk());
+      a.off();
+      history.pushState({}, '', '/next');
+      expect(b.events.map((e) => e.to)).toEqual(['/next']);
+      expect(a.events).toEqual([]); // a stopped: pass-through, no emit
+      b.off();
+    });
+
+    it("a third party's wrapper installed AFTER the source survives its stop, and navigation still works", () => {
+      const { history, orig, mk } = sharedEnv();
+      const a = collect(mk());
+      const tp = thirdParty(history);
+      a.off();
+      expect(history.pushState).toBe(tp.wrapper); // not restored over the third party
+      history.pushState({}, '', '/x');
+      expect(tp.calls).toHaveLength(1);
+      expect(orig.push).toHaveBeenCalledTimes(1); // the chain reached the real method through our pass-through
+      expect(a.events).toEqual([]); // and our dead wrapper emits nothing
+    });
+
+    it('restarting while the old wrapper is still in the chain reuses it (no double emit)', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const tp = thirdParty(history);
+      first.off();
+      const second = collect(source);
+      history.pushState({}, '', '/again');
+      expect(tp.calls).toHaveLength(1);
+      expect(second.events.map((e) => e.to)).toEqual(['/again']); // once
+      second.off();
+    });
+
+    it('restarting after a clean stop wraps afresh', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      collect(source).off();
+      expect(history.pushState).toBe(orig.push);
+      const again = collect(source);
+      expect(history.pushState).not.toBe(orig.push);
+      history.pushState({}, '', '/z');
+      expect(again.events.map((e) => e.to)).toEqual(['/z']);
+      again.off();
+      expect(history.pushState).toBe(orig.push);
+    });
+
+    it('a stopped source in the chain does no work: its pass-through never reads the location', () => {
+      const { history, orig } = sharedEnv();
+      let reads = 0;
+      const location = {
+        get pathname() {
+          reads += 1;
+          return '/p';
+        },
+        href: 'https://a.com/p',
+      };
+      const source = createBrowserNavigationSource({ history, location, isolated: true });
+      const a = collect(source);
+      thirdParty(history);
+      a.off();
+      reads = 0;
+      history.pushState({}, '', '/x');
+      expect(reads).toBe(0);
+      expect(orig.push).toHaveBeenCalledTimes(1);
+    });
+
+    it('a restart right after a clean stop wraps afresh on the restored original', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const wrapper = history.pushState;
+      first.off(); // outermost: restored
+      const second = collect(source);
+      expect(history.pushState).not.toBe(wrapper); // restored, then wrapped afresh
+      second.off();
+    });
+
+    it('a third party that RESTORED the original after our stop does not cost a restart its detection (regression)', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const tp = thirdParty(history); // wraps over us
+      first.off(); // ours stays as a pass-through under the third party
+      history.pushState = orig.push; // the third party takes everything off again
+      const second = collect(source);
+      history.pushState({}, '', '/two');
+      expect(second.events.map((e) => e.to)).toEqual(['/two']);
+      expect(tp.calls).toHaveLength(0);
+      second.off();
+    });
+
+    it('a restart under a live third-party wrapper wraps afresh and emits exactly once', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const tp = thirdParty(history);
+      first.off();
+      const second = collect(source);
+      history.pushState({}, '', '/again');
+      expect(second.events.map((e) => e.to)).toEqual(['/again']); // the retired wrapper beneath stays inert
+      expect(tp.calls).toHaveLength(1);
+      second.off();
+    });
+
+    it('a deleted own wrapper (the prototype method shows through) is wrapped afresh on restart', () => {
+      const protoPush = vi.fn();
+      const protoReplace = vi.fn();
+      const history = Object.create({ pushState: protoPush, replaceState: protoReplace }) as {
+        pushState: (...a: unknown[]) => unknown;
+        replaceState: (...a: unknown[]) => unknown;
+      };
+      const location = { pathname: '/p', href: 'https://a.com/p' };
+      const source = createBrowserNavigationSource({ history, location, isolated: true });
+      const first = collect(source);
+      first.off();
+      history.pushState = vi.fn(); // somebody replaces our slot with their own function
+      delete (history as { pushState?: unknown }).pushState; // and then deletes it again: the prototype method is back
+      const second = collect(source);
+      location.pathname = '/q';
+      history.pushState({}, '', '/q');
+      expect(second.events.map((e) => e.to)).toEqual(['/q']);
+      expect(protoPush).toHaveBeenCalledTimes(1);
+      second.off();
+    });
+
+    it('a History method that is not a function is left alone (nothing to wrap, nothing thrown)', () => {
+      const history = { pushState: undefined, replaceState: undefined } as never;
+      const source = createBrowserNavigationSource({
+        history,
+        location: { pathname: '/p' },
+        isolated: true,
+      });
+      const events = collect(source);
+      expect((history as { pushState: unknown }).pushState).toBeUndefined();
+      expect((history as { replaceState: unknown }).replaceState).toBeUndefined();
+      events.off();
+    });
+
+    it('a third party that DEFERS the saved function after a restart yields one event, with the real location', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const saved = history.pushState; // our first wrapper
+      const queue: Array<() => void> = [];
+      history.pushState = ((...args: unknown[]) => {
+        queue.push(() => (saved as (...a: unknown[]) => unknown)(...args)); // runs later, not now
+      }) as never;
+      first.off();
+      const second = collect(source); // chain: our new -> third party -> our old
+      history.pushState({}, '', '/async');
+      expect(second.events).toEqual([]); // nothing navigated yet: the location is still the old one
+      for (const run of queue) run(); // the deferred call completes the navigation (the real method moves the location)
+      expect(second.events.map((e) => e.to)).toEqual(['/async']); // exactly once, the real location
+      expect(orig.push).toHaveBeenCalledTimes(1);
+      second.off();
+    });
+
+    it('with no readable href the outermost wrapper always emits (there is nothing to compare)', () => {
+      const orig = vi.fn();
+      const history = { pushState: orig, replaceState: vi.fn() };
+      const source = createBrowserNavigationSource({
+        history,
+        location: { pathname: '/p' }, // no href
+        isolated: true,
+      });
+      const first = collect(source);
+      const saved = history.pushState;
+      history.pushState = ((...a: unknown[]) =>
+        (saved as (...x: unknown[]) => unknown)(...a)) as never;
+      first.off();
+      const second = collect(source); // two of our wrappers in the chain
+      history.pushState({}, '', '/p');
+      expect(second.events.map((e) => e.to)).toEqual(['/p']);
+      second.off();
+    });
+
+    it('a same-URL pushState on the first wrapper (no older wrapper in play) is still reported', () => {
+      const { history, mk } = sharedEnv();
+      const events = collect(mk());
+      history.pushState({}, '', '/p'); // the URL does not change (pathname is still /p)
+      expect(events.events.map((e) => e.to)).toEqual(['/p']);
+      events.off();
+    });
+
+    it('wrapper counts follow unwinding: after another source unwinds ours, a same-URL push is reported again', () => {
+      const { history, mk } = sharedEnv();
+      const sourceA = mk();
+      const a = collect(sourceA);
+      const b = collect(mk());
+      a.off(); // a's wrapper is now dead beneath b's
+      b.off(); // b unwinds b's own AND a's dead wrapper: history is the original, a has none left
+      const again = collect(sourceA);
+      history.pushState({}, '', '/p'); // location is unchanged by the fake: must still be reported
+      expect(again.events.map((e) => e.to)).toEqual(['/p']);
+      again.off();
+    });
+
+    it('a restart whose top is already one of OUR wrappers does not wrap again', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const ours = history.pushState; // our first wrapper
+      thirdParty(history);
+      first.off(); // stays in the chain under the third party
+      history.pushState = ours; // the third party puts our wrapper back on top
+      const again = collect(source);
+      expect(history.pushState).toBe(ours); // not wrapped a second time
+      history.pushState({}, '', '/x');
+      expect(again.events.map((e) => e.to)).toEqual(['/x']);
+      again.off();
+    });
+
+    it('scenario D: a third party restoring the function it saved earlier still leaves a live wrapper', () => {
+      const { history, mk } = sharedEnv();
+      const source = mk();
+      const first = collect(source);
+      const saved = history.pushState; // what a third party saves before wrapping over us
+      const tp = thirdParty(history);
+      first.off(); // cannot restore: the third party is on top, our first wrapper stays in the chain
+      const second = collect(source); // a fresh wrapper on top of the third party's
+      expect(history.pushState).not.toBe(tp.wrapper);
+      history.pushState = saved; // the third party "unwraps": puts back the function it saved (our first wrapper)
+      history.pushState({}, '', '/d');
+      expect(second.events.map((e) => e.to)).toEqual(['/d']); // exactly once, from the surviving wrapper
+      expect(tp.calls).toHaveLength(0);
+      second.off();
+    });
+
+    it('exactly one event per navigation however many of our wrappers the chain holds', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      const events = collect(source);
+      collect(source).off();
+      const tp = thirdParty(history); // wrapper over us
+      events.off();
+      const again = collect(source); // our second wrapper over the third party's: two of ours in one chain
+      history.pushState({}, '', '/once');
+      expect(again.events.map((e) => e.to)).toEqual(['/once']);
+      expect(orig.push).toHaveBeenCalledTimes(1);
+      expect(tp.calls).toHaveLength(1);
+      again.off();
+    });
+
+    it('restarting many times with nobody else wrapping never grows the chain', () => {
+      const { history, orig, mk } = sharedEnv();
+      const source = mk();
+      for (let i = 0; i < 50; i += 1) collect(source).off();
+      expect(history.pushState).toBe(orig.push);
+      expect(history.replaceState).toBe(orig.replace);
+    });
+
+    it('a navigation that THROWS emits nothing and does not wedge later ones', () => {
+      const { history, orig, mk } = sharedEnv();
+      orig.push.mockImplementationOnce(() => {
+        throw new Error('SecurityError');
+      });
+      const events = collect(mk());
+      expect(() => history.pushState({}, '', '/bad')).toThrow('SecurityError');
+      expect(events.events).toEqual([]);
+      history.pushState({}, '', '/good');
+      expect(events.events.map((e) => e.to)).toEqual(['/good']);
+      events.off();
+    });
+
+    it('a nested call of the same method (an inner library pushState) is one event', () => {
+      const { history, orig, mk } = sharedEnv();
+      orig.push.mockImplementationOnce(() => {
+        history.pushState({}, '', '/inner');
+      });
+      const events = collect(mk());
+      history.pushState({}, '', '/outer');
+      expect(events.events.map((e) => e.to)).toEqual(['/inner']);
+      events.off();
+    });
+
+    it('stopping the top source does NOT unwind a live source beneath it', () => {
+      const { history, orig, mk } = sharedEnv();
+      const a = collect(mk());
+      const b = collect(mk());
+      b.off();
+      expect(history.pushState).not.toBe(orig.push); // a is still wrapped and live
+      history.pushState({}, '', '/still-a');
+      expect(a.events.map((e) => e.to)).toEqual(['/still-a']);
+      a.off();
+      expect(history.pushState).toBe(orig.push);
+    });
+
+    it('a source that was unwound beneath another restarts with a fresh wrapper', () => {
+      const { history, orig, mk } = sharedEnv();
+      const sourceA = mk();
+      const a = collect(sourceA);
+      const b = collect(mk());
+      a.off();
+      b.off(); // unwinds a's dead wrapper: history is the original again
+      expect(history.pushState).toBe(orig.push);
+      const again = collect(sourceA);
+      history.pushState({}, '', '/again');
+      expect(again.events.map((e) => e.to)).toEqual(['/again']);
+      again.off();
+    });
+
+    it('pushState and replaceState are released independently', () => {
+      const { history, orig, mk } = sharedEnv();
+      const a = collect(mk());
+      const wrappedReplace = history.replaceState as (...a: unknown[]) => unknown;
+      const tpReplace = vi.fn((...args: unknown[]) => wrappedReplace(...args));
+      history.replaceState = tpReplace;
+      a.off();
+      expect(history.pushState).toBe(orig.push); // ours was on top: restored
+      expect(history.replaceState).toBe(tpReplace); // the third party's stays
+    });
   });
 });

@@ -2215,6 +2215,133 @@ describe('launch', () => {
         expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
       });
 
+      describe('the url trace (captureUrl / urlSanitizer)', () => {
+        // A window with a location and a real-shaped History: pushState moves the location, as a browser does.
+        const urlWindow = (href: string) => {
+          const w = fakeWindow();
+          const location = { pathname: new URL(href).pathname, href };
+          const history = {
+            pushState(_s: unknown, _t: string, next: string) {
+              const u = new URL(next, location.href);
+              location.href = u.href;
+              location.pathname = u.pathname;
+            },
+            replaceState() {},
+          };
+          Object.assign(w.win, { location, history });
+          return { ...w, history };
+        };
+
+        it('records the SANITIZED location at start and on every navigation, held, from the injected window', async () => {
+          stubSensors();
+          const w = urlWindow('https://a.com/a?token=abc&tab=1');
+          const store = memStore();
+          await launchTracked('tok', noSampler({ window: w.win, captureStore: store }));
+          w.history.pushState({}, '', '/b?api_key=zzz');
+          w.history.pushState({}, '', '/b?api_key=yyy'); // equal once sanitized: not written again
+          w.history.pushState({}, '', '/c');
+          expect(await rowsOf(store, 'url')).toEqual([
+            'https://a.com/a?token=%3Credacted%3E&tab=1',
+            'https://a.com/b?api_key=%3Credacted%3E',
+            'https://a.com/c',
+          ]);
+        });
+
+        it('survives a systemMetricsSampler (the url trace is not a sensor)', async () => {
+          stubSensors();
+          const w = urlWindow('https://a.com/x');
+          const store = memStore();
+          await launchTracked('tok', baseOptions({ window: w.win, captureStore: store }));
+          expect(await rowsOf(store, 'url')).toEqual(['https://a.com/x']);
+        });
+
+        it('captureUrl:false writes no url trace and never patches the window history', async () => {
+          stubSensors();
+          const w = urlWindow('https://a.com/x');
+          const patched = w.history.pushState;
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            noSampler({ window: w.win, captureStore: store, captureUrl: false }),
+          );
+          expect(w.history.pushState).toBe(patched);
+          expect(await rowsOf(store, 'url')).toEqual([]);
+        });
+
+        it('urlSanitizer runs after the default and its result is written as given', async () => {
+          stubSensors();
+          const w = urlWindow('https://u:pw@a.com/orders/42?token=abc');
+          const seen: string[] = [];
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            noSampler({
+              window: w.win,
+              captureStore: store,
+              urlSanitizer: (u) => {
+                seen.push(u);
+                return u.replace('/orders/42', '/orders/:id');
+              },
+            }),
+          );
+          expect(seen).toEqual(['https://u:%3Credacted%3E@a.com/orders/42?token=%3Credacted%3E']);
+          expect(await rowsOf(store, 'url')).toEqual([
+            'https://u:%3Credacted%3E@a.com/orders/:id?token=%3Credacted%3E',
+          ]);
+        });
+
+        it('a throwing urlSanitizer is reported, writes nothing, and never fails the launch', async () => {
+          stubSensors();
+          const w = urlWindow('https://a.com/x');
+          const onError = vi.fn();
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            noSampler({
+              window: w.win,
+              captureStore: store,
+              onError,
+              urlSanitizer: () => {
+                throw new Error('hook');
+              },
+            }),
+          );
+          expect(await rowsOf(store, 'url')).toEqual([]);
+          expect(onError).toHaveBeenCalledTimes(1);
+        });
+
+        it('a non-function urlSanitizer is ignored and reported; the default still writes', async () => {
+          stubSensors();
+          const w = urlWindow('https://a.com/x?token=1');
+          const onError = vi.fn();
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            noSampler({
+              window: w.win,
+              captureStore: store,
+              onError,
+              urlSanitizer: 'nope' as never,
+            }),
+          );
+          expect(await rowsOf(store, 'url')).toEqual(['https://a.com/x?token=%3Credacted%3E']);
+          expect(onError).toHaveBeenCalledTimes(1);
+          expect(String(onError.mock.calls[0]?.[0])).toMatch(/urlSanitizer must be a function/);
+        });
+
+        it('a window without a location writes no url and reports nothing', async () => {
+          stubSensors();
+          const onError = vi.fn();
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            noSampler({ window: fakeWindow().win, captureStore: store, onError }),
+          );
+          expect(await rowsOf(store, 'url')).toEqual([]);
+          expect(onError).not.toHaveBeenCalled();
+        });
+      });
+
       it('displays is omitted (not 0) when the window has no readable screen or pixel ratio', async () => {
         stubSensors(); // the stubbed screen has no width/height
         const w = fakeWindow();
@@ -2567,10 +2694,12 @@ describe('launch', () => {
     // The frame `browser-input`'s coordinates are measured in — shared on the carrier for the same
     // reason the input source is: one set of window listeners per process, not one per launch.
     expect(reg.get('browser-viewport')).toBeDefined();
-    // console + browser-input + browser-ui-breadcrumbs + browser-viewport + the 6 cross-runtime network
-    // leaves (fetch/xhr/sendBeacon/websocket/sse/webtransport) = 10. No node-http.
+    // The navigation source behind the `url` trace: shared so `history` is patched once per process.
+    expect(reg.get('browser-navigation')).toBeDefined();
+    // console + browser-input + browser-ui-breadcrumbs + browser-viewport + browser-navigation + the 6
+    // cross-runtime network leaves (fetch/xhr/sendBeacon/websocket/sse/webtransport) = 11. No node-http.
     expect(reg.get('sendbeacon')).toBeDefined();
-    expect(reg.size).toBe(10);
+    expect(reg.size).toBe(11);
   });
 
   it('is a per-process singleton: a second launch() warns, is ignored, and returns the first', async () => {

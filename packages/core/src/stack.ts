@@ -4,6 +4,8 @@
 // report-path steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
 // config-driven and belong to the report path, not this pure parser.
 
+import { sanitizeUrl } from '@bugsee/protocol';
+
 /** Source lines around a frame: the line itself, plus a bounded window either side. */
 export interface FrameContext {
   /** Lines BEFORE the throwing line, in file order. */
@@ -80,6 +82,87 @@ export function setStackAppRoot(root: string | undefined): void {
   appRoot = root.endsWith(separator) ? root : `${root}${separator}`;
 }
 
+// A page loads the same few script URLs for every frame of every stack (and `applyDebugIds` parses a chunk list per
+// error), so sanitizing each occurrence from scratch measured ~16x the parse cost (8.6 -> 141 us per 50-frame stack).
+// Results are cached by URL in a small bounded map, emptied whenever it fills (cheap, and a miss only costs one sanitize).
+const FRAME_URL_CACHE_MAX = 512;
+const frameUrlCache = new Map<string, string>();
+
+const SCHEME_START = /^(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+// The URL INSIDE a Chrome eval wrapper: `eval at f (https://x.com/app.js?token=S:1:2), <anonymous>`. It starts after a `(`
+// and runs, lazily, to the optional `:line:col` that precedes the closing `)`. A URL cannot contain whitespace, so the
+// wrapper only ends at a `)` that is followed by any further `)`s (a nested eval) and then `, ` (the next part of the
+// frame) or the end of the string. Every other `)` and `,` belongs to the URL, wherever it sits (a route group in the
+// path, `and(eq(a,1),eq(b,2))` in the query, `(b),c` in the fragment). An eval whose origin has a `sourceURL` has no
+// position at all. The closing `)` must not follow another `)`: without that, the lazy URL stops at every `)` of a run of
+// them and rescans (quadratic in the run length, bounded only by the 4096 clip). The cap on the examined text bounds the scan.
+const EVAL_WRAPPED_URL =
+  /\(((?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\/\S*?)((?::\d+:\d+)?)(?<!\))\)(?=\)*(?:,\s|$))/g;
+// A URL standing outside any wrapper (after a comma, after `async `, or cut off by the clip): everything to the next
+// whitespace is the URL. The lookbehind makes only a token START a candidate (linear on a long run of letters).
+const FREE_URL = /(?<![A-Za-z0-9+.-])(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+/g;
+const FREE_URL_START = /(?<![A-Za-z0-9+.-])(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//g;
+const EVAL_WRAPPER_MAX = 4096;
+
+function sanitizeCached(url: string): string {
+  let clean = frameUrlCache.get(url);
+  if (clean === undefined) {
+    clean = sanitizeUrl(url);
+    if (frameUrlCache.size >= FRAME_URL_CACHE_MAX) frameUrlCache.clear();
+    frameUrlCache.set(url, clean);
+  }
+  return clean;
+}
+
+/** @internal Test-only: how many sanitized frame URLs are cached (it is bounded by `FRAME_URL_CACHE_MAX`). */
+export const frameUrlCacheSize = (): number => frameUrlCache.size;
+
+/** Where the LAST `scheme://` of `text` starts when no whitespace follows it (a URL the text ends inside), else -1. */
+function openUrlStart(text: string): number {
+  let start = -1;
+  for (const match of text.matchAll(FREE_URL_START)) start = match.index;
+  if (start < 0) return -1;
+  return /\s/.test(text.slice(start)) ? -1 : start;
+}
+
+const sanitizeFreeUrls = (text: string): string => text.replace(FREE_URL, sanitizeCached);
+
+/**
+ * Sanitize the URL of a browser frame's file string.
+ *  - A string that STARTS with a scheme is a script URL, optionally followed by Firefox's ` line N > Function` suffix:
+ *    everything up to the first whitespace is the URL (a `(`, `)` or `,` inside it is part of the URL), the rest is kept.
+ *  - Otherwise the URL sits inside Chrome's `eval at f (URL:line:col), <anonymous>` wrapper: each parenthesised URL is
+ *    sanitized and its position kept. Any OTHER URL in the string (after a comma, after `async `, or left open when the
+ *    text is clipped at 4096 characters) is sanitized to the next whitespace, so nothing a wrapper pattern misses ships
+ *    raw. A string longer than 4096 characters is clipped and marked `…`; a URL that the clip cuts open (no whitespace
+ *    after its `scheme://`) is dropped from its start, because a URL cut inside its userinfo cannot be sanitized.
+ */
+function sanitizeFrameUrl(frame: string): string {
+  if (SCHEME_START.test(frame)) {
+    const space = frame.search(/\s/);
+    return space < 0
+      ? sanitizeCached(frame)
+      : sanitizeCached(frame.slice(0, space)) + frame.slice(space);
+  }
+  const clipped = frame.length > EVAL_WRAPPER_MAX;
+  let head = clipped ? frame.slice(0, EVAL_WRAPPER_MAX) : frame;
+  if (clipped) {
+    // A URL cut open by the clip (nothing but URL characters after its `scheme://` to the cut) cannot be told apart from
+    // a host:port: `https://user:SECRETPAS` would ship `SECRETPAS` as a port. Drop it from its start.
+    const open = openUrlStart(head);
+    if (open >= 0) head = head.slice(0, open);
+  }
+  let out = '';
+  let pos = 0;
+  for (const match of head.matchAll(EVAL_WRAPPED_URL)) {
+    out += sanitizeFreeUrls(head.slice(pos, match.index));
+    out += `(${sanitizeCached(match[1] as string)}${match[2] as string})`;
+    pos = match.index + match[0].length;
+  }
+  out += sanitizeFreeUrls(head.slice(pos));
+  return clipped ? `${out}…` : out;
+}
+
 function scrubFramePath(path: string): string {
   let scrubbed = path;
   if (scrubbed.startsWith('file://')) {
@@ -87,8 +170,10 @@ function scrubFramePath(path: string): string {
   } else if (scrubbed.startsWith('webpack://')) {
     return scrubbed.replace(/^webpack:\/\/+/, '');
   } else if (scrubbed.includes('://')) {
-    // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak.
-    return scrubbed;
+    // A URL, so a browser frame: its ORIGIN is the useful part and there is no filesystem to leak. A script URL can
+    // still carry credentials (`https://user:pw@host/`) or a signed query (`app.js?token=…`), so it goes through the
+    // network URL sanitizer; an ordinary `app.js?v=2` is unchanged.
+    return sanitizeFrameUrl(scrubbed);
   }
   const dependency = scrubbed.indexOf('/node_modules/');
   if (dependency >= 0) {
@@ -132,6 +217,10 @@ function parseFrame(site: string): StackFrame {
   if (open !== -1 && site.endsWith(')')) {
     fn = site.slice(0, open);
     location = site.slice(open + 2, -1);
+  } else if (site.startsWith('async ')) {
+    // An anonymous async frame is `at async <location>`: `async ` is V8's marker, not part of the file. Left glued on,
+    // the location no longer starts with its scheme (a signed URL then ships raw) nor with `file://`.
+    location = site.slice('async '.length);
   }
   const frame = parseLocation(location);
   if (fn !== undefined) {

@@ -7,6 +7,7 @@ import type { BrowserProbe } from './environment';
 import {
   type Bugsee,
   type BugseeLaunchOptions,
+  CAPTURE_URL_OPTION_KEY,
   CAPTURE_USER_IDLE_OPTION_KEY,
   launch,
 } from './launch';
@@ -72,6 +73,8 @@ const failClosed: Array<[string, string]> = [
   ['captureViewHierarchy', BugseeOption.CaptureViewHierarchy],
   // private-mode detection: opt-out (owner decision, 2026-10-20); an invalid value is OFF, never consent
   ['captureEnvironmentHints', BugseeOption.CaptureEnvironmentHints],
+  // the `url` trace: ON by default, an invalid value is OFF (fail closed)
+  ['captureUrl', CAPTURE_URL_OPTION_KEY],
 ];
 const defaultOff: Array<[string, string]> = [
   ['persistUserIdentifier', BugseeOption.PersistUserIdentifier],

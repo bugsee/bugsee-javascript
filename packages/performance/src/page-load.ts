@@ -1,3 +1,4 @@
+import { sanitizeLocationUrl } from '@bugsee/protocol';
 import { resolveTimeOrigin } from '@bugsee/util';
 import type { PerformanceApi } from './controller';
 import type { Span } from './span';
@@ -56,7 +57,8 @@ const normalizeResourceUrl = (url: string): string => {
   if (url.startsWith('data:') || url.startsWith('blob:')) {
     return `${url.slice(0, url.indexOf(':') + 1)}…`; // collapse the (huge) inline payload
   }
-  return url.replace(/[?#].*$/, ''); // strip query + fragment
+  // Strip query + fragment, then redact what is left in the path (a `;jsessionid=` matrix segment, a token shape).
+  return sanitizeLocationUrl(url.replace(/[?#].*$/, ''));
 };
 
 const resourceAttributes = (r: ResourceTimingLike): Record<string, unknown> => {

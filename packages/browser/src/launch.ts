@@ -105,6 +105,7 @@ import { parseStack } from './stack';
 import { createBrowserSystemEventsSource } from './system-events';
 import { browserTraceEnvFrom, createBrowserSystemTraceProducers } from './trace-producers';
 import { createUiBreadcrumbProvider, createUiBreadcrumbSource } from './ui-breadcrumb-source';
+import { type UrlProducerDeps, urlProducerDepsFor } from './url-producer';
 import { createUserIdentifierStore } from './user-identifier-store';
 import { createBrowserViewportSource } from './viewport-source';
 import { createViewtreeSnapshotSource } from './viewtree';
@@ -144,6 +145,12 @@ const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
  * WebView launch, which shares the producers, declares the very same option.
  */
 export const CAPTURE_USER_IDLE_OPTION_KEY = 'com.bugsee.option.browser.capture-user-idle';
+
+/**
+ * Canonical identifier of the (browser-local) `captureUrl` switch (no cross-SDK identity). Exported so the WebView
+ * launch, which shares the producers, declares the very same option.
+ */
+export const CAPTURE_URL_OPTION_KEY = 'com.bugsee.option.browser.capture-url';
 
 /** Whether the page exposes an IndexedDB object; a throwing getter (sandboxed frames) counts as absent. */
 const indexedDbPresent = (): boolean => {
@@ -280,6 +287,14 @@ const BROWSER_OPTION_DEFINITIONS: readonly OptionDefinition[] = [
     key: CAPTURE_USER_IDLE_OPTION_KEY,
     default: false,
     ...BOOLEAN_OPTION,
+  },
+  // The `url` trace records the page's own (sanitized) address and is ON by default (spec traces.md `url`): an invalid
+  // value turns it OFF and is reported (fail closed), like every default-on capture switch.
+  {
+    friendly: 'captureUrl',
+    key: CAPTURE_URL_OPTION_KEY,
+    default: true,
+    ...FAIL_CLOSED_BOOLEAN_OPTION,
   },
 ];
 
@@ -418,6 +433,22 @@ export interface BugseeLaunchOptions {
    * Only boolean `true` enables it; any other value stays off and is reported. Needs `captureSystemTraces`.
    */
   captureUserIdle?: boolean;
+  /**
+   * Record the `url` system trace: the page's own address, SANITIZED (userinfo password, sensitive query/fragment/matrix
+   * values, secret shapes, URLs nested in a query value; `data:`/`javascript:` bodies, `blob:` paths and `file:`
+   * directories are dropped), as a held step curve written at start and on every navigation. Default true. Only boolean
+   * `false` turns it off; any other non-boolean value turns it off too and is reported. Needs `captureSystemTraces`.
+   * Independent of the performance extension.
+   */
+  captureUrl?: boolean;
+  /**
+   * The application's own sanitizer for the `url` trace. Runs AFTER the default sanitizer and receives its
+   * (already sanitized) result; the string it returns is written as given, so it is the application's job not to
+   * reintroduce what the default removed. Return `null` to write nothing for that URL. It is not a network filter
+   * and does not touch breadcrumbs or transaction names. A throw, or a non-string non-null result, is reported through
+   * `onError` and writes nothing (fails closed); a non-function value is ignored and reported. Kept by `relaunch()`.
+   */
+  urlSanitizer?: (url: string) => string | null;
   /**
    * Disk-space TELEMETRY: with replay on, the `capture` trace also states `low_disk_space` / `no_disk_space`. Opt-in,
    * default FALSE; only boolean `true` enables it. It needs the protection below (a durable store) and is reported once
@@ -655,6 +686,9 @@ export async function launchCore(
 }
 
 const noop = (): void => {};
+
+const withUrl = (url: UrlProducerDeps | undefined): { url?: UrlProducerDeps } =>
+  url !== undefined ? { url } : {};
 
 async function buildLaunch(
   appToken: string,
@@ -1061,6 +1095,16 @@ async function buildLaunch(
             ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
             ...(hostOwnedTraces !== undefined ? { hostOwnedTraces } : {}),
             captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
+            // The page's own sanitized address: written from the navigation source, not from the performance extension.
+            ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
+              ? withUrl(
+                  urlProducerDepsFor(win, {
+                    ...(carrier !== undefined ? { carrier } : {}),
+                    urlSanitizer: options.urlSanitizer,
+                    ...(options.onError !== undefined ? { onError: options.onError } : {}),
+                  }),
+                )
+              : {}),
             lifecycle,
             ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           },

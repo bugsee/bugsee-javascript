@@ -76,6 +76,8 @@ export function redactSensitivePairs(
   /** Also break segments on `/`. Set when scanning a URL PATH, where `;jsessionid=…` is a matrix parameter
    *  whose value ends at the path segment — without it the redaction would swallow the rest of the path. */
   splitOnSlash = false,
+  /** An ADDITIONAL key test (on the decoded key), for callers with a larger denylist than the network one. */
+  extraKey?: (decodedKey: string) => boolean,
 ): string {
   let out: string | undefined;
   let copyFrom = 0;
@@ -100,15 +102,52 @@ export function redactSensitivePairs(
     }
 
     // Rule 2: a segment carrying no `=` is not a key/value pair, so it is left exactly as it is.
-    if (eq >= 0 && isSensitiveKey(decodeKey(input.slice(pos, eq)))) {
-      out ??= '';
-      out += `${input.slice(copyFrom, eq)}=${REDACTED_URL_ENCODED}`;
-      copyFrom = pairEnd;
+    if (eq >= 0) {
+      const key = decodeKey(input.slice(pos, eq));
+      if (isSensitiveKey(key) || extraKey?.(key) === true) {
+        out ??= '';
+        out += `${input.slice(copyFrom, eq)}=${REDACTED_URL_ENCODED}`;
+        copyFrom = pairEnd;
+      }
     }
     pos = pairEnd + 1;
   }
 
   return out === undefined ? input : out + input.slice(copyFrom);
+}
+
+/**
+ * Where a URL fragment is cut into independently scanned pieces: a `#` that is directly followed by a `key=` (vue-router's
+ * hash mode puts an implicit-flow `#access_token=…` after the route, `#/cb?x=1#access_token=…`). A `#` that is NOT followed
+ * by `key=` stays inside its value: `#password=p#ss` is one secret `p#ss` (cutting every `#` shipped `ss`). Known limit:
+ * a secret whose own text contains `#key=` is cut there, and what follows is scanned as a pair of its own.
+ */
+export const FRAGMENT_PIECE_BOUNDARY = /#(?=[^#&;=]+=)/;
+const FRAGMENT_PIECE_BOUNDARY_AT = /#(?=[^#&;=]+=)/y;
+
+/** Whether the `#` at `index` of `text` starts a new fragment piece (see {@link FRAGMENT_PIECE_BOUNDARY}). */
+export function isFragmentPieceBoundary(text: string, index: number): boolean {
+  FRAGMENT_PIECE_BOUNDARY_AT.lastIndex = index;
+  return FRAGMENT_PIECE_BOUNDARY_AT.test(text);
+}
+
+/**
+ * Redact the pairs of a URL FRAGMENT, `[start, end)` of `input`. `#` is not a pair separator for
+ * {@link redactSensitivePairs} (in a form body it is an ordinary value character); the fragment is cut only at a `#`
+ * that starts a `key=` ({@link FRAGMENT_PIECE_BOUNDARY}) and each piece is scanned on its own. A fragment with no such
+ * `#` is scanned exactly as one piece. Linear in the input length; the `#`s themselves are kept.
+ */
+export function redactSensitiveFragmentPairs(
+  input: string,
+  start: number,
+  end: number,
+  extraKey?: (decodedKey: string) => boolean,
+): string {
+  const pieces = input.slice(start, end).split(FRAGMENT_PIECE_BOUNDARY);
+  const redacted = pieces.map((piece) =>
+    redactSensitivePairs(piece, 0, piece.length, false, extraKey),
+  );
+  return input.slice(0, start) + redacted.join('#') + input.slice(end);
 }
 
 /** A urlencoded parameter NAME: the RFC 3986 unreserved/sub-delim set plus `%`, `[`/`]` (PHP arrays) and

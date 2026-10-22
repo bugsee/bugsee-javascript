@@ -104,6 +104,7 @@ function fakeEnv() {
 const navSource = () => createMultiKeyEmitter<{ navigate: NavigationDetailLike }>();
 const netSource = () => createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>();
 const detail = (over: Partial<NavigationDetailLike> = {}): NavigationDetailLike => ({
+  ...(over.href !== undefined ? { href: over.href } : {}),
   to: over.to ?? '/page',
   navigationType: over.navigationType ?? 'push',
   source: over.source ?? 'url',
@@ -123,6 +124,60 @@ describe('collectNavigations', () => {
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.source', 'url'); // detection axis
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('nav.type', 'push');
     expect(started[0]?.setAttribute).toHaveBeenCalledWith('bugsee.name_source', 'url'); // naming
+  });
+
+  describe('the transaction name of a URL-detected navigation is sanitized (C25)', () => {
+    const nameFor = (over: Partial<NavigationDetailLike>): string | undefined => {
+      const source = navSource();
+      const { api } = fakeApi();
+      collectNavigations({ source, api, env: fakeEnv().env, timer: fakeTimer().timer });
+      source.emit('navigate', detail(over));
+      return (api.startTransaction as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.name;
+    };
+    const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123_-signaturepart';
+
+    it('redacts a matrix session id in the path', () => {
+      expect(nameFor({ to: '/app;jsessionid=ABC123/orders' })).toBe(
+        '/app;jsessionid=%3Credacted%3E/orders',
+      );
+    });
+
+    it('redacts a secret-shaped token in a path segment', () => {
+      const name = nameFor({ to: `/verify/${JWT}` });
+      expect(name).not.toContain(JWT);
+      expect(name?.startsWith('/verify/')).toBe(true);
+    });
+
+    it('drops a query that a path-only fallback may still carry', () => {
+      expect(nameFor({ to: '/cb?token=SECRET&tab=1' })).toBe('/cb');
+    });
+
+    it('names a file: page by its sanitized last segment, never its directory (from the href)', () => {
+      expect(
+        nameFor({
+          to: '/Users/bob/secret/app/index.html',
+          href: 'file:///Users/bob/secret/app/index.html#/orders',
+        }),
+      ).toBe('/…/index.html');
+    });
+
+    it('uses the href when given: a blob: page is its sanitized form, a query never reaches the name', () => {
+      expect(nameFor({ to: '/uuid', href: 'blob:https://u:p@a.com/uuid' })).toBe(
+        'blob:https://a.com',
+      );
+      expect(nameFor({ to: '/cb', href: 'https://a.com/cb?token=S#x' })).toBe('/cb');
+    });
+
+    it('leaves an ordinary path (ids included) as it was', () => {
+      expect(nameFor({ to: '/users/42/orders' })).toBe('/users/42/orders');
+    });
+
+    it.each([
+      'route',
+      'custom',
+    ])('keeps an adapter-supplied %s name VERBATIM (a pattern is not a URL)', (source) => {
+      expect(nameFor({ to: '/orders/:id;jsessionid=x', source })).toBe('/orders/:id;jsessionid=x');
+    });
   });
 
   it('finishes the PREVIOUS navigation when a new one starts (a view is superseded)', () => {

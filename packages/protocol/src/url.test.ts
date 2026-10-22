@@ -1,4 +1,8 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
+import { FRAGMENT_PIECE_BOUNDARY, redactFormBody, redactSensitivePairs } from './pairs';
+import { redactShapes } from './shapes';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
 
 // Captured URLs reached disk verbatim: `?api_key=…`, `?token=…` and — node-only, because
@@ -244,6 +248,77 @@ describe('sanitizeErrorMessage', () => {
 
 // Review findings (privacy reviewer): each was reproduced against the real exports
 // before the fix, and each is pinned here.
+describe('sanitizeUrl — a second # in the fragment', () => {
+  it('redacts an implicit-flow token after a hash-router route (vue-router hash mode)', () => {
+    expect(sanitizeUrl('https://a.com/#/cb?x=1#access_token=S')).toBe(
+      'https://a.com/#/cb?x=1#access_token=%3Credacted%3E',
+    );
+    expect(sanitizeUrl('https://a.com/#a=1#b=2#token=S&c=3')).toBe(
+      'https://a.com/#a=1#b=2#token=%3Credacted%3E&c=3',
+    );
+  });
+
+  it('a secret that contains a literal # is redacted WHOLE (the # is not a boundary unless a key= follows)', () => {
+    for (const [input, expected] of [
+      ['https://a.com/p#password=p#ss&x=1', 'https://a.com/p#password=%3Credacted%3E&x=1'],
+      ['https://a.com/p#client_secret=s3#cr3t', 'https://a.com/p#client_secret=%3Credacted%3E'],
+      ['https://a.com/p#token=abc#def', 'https://a.com/p#token=%3Credacted%3E'],
+      ['https://a.com/p#token=a#b#c&y=2', 'https://a.com/p#token=%3Credacted%3E&y=2'],
+    ] as const) {
+      expect(sanitizeUrl(input)).toBe(expected);
+    }
+  });
+
+  it('a # followed by text that reaches a `;` or `&` before any `=` is NOT a boundary (the secret stays whole)', () => {
+    expect(sanitizeUrl('https://a.com/#token=a#b;c=d')).toBe(
+      'https://a.com/#token=%3Credacted%3E;c=d',
+    );
+    expect(sanitizeUrl('https://a.com/#token=a#b&c=d')).toBe(
+      'https://a.com/#token=%3Credacted%3E&c=d',
+    );
+  });
+
+  it('a # followed directly by `=` (an empty key) is NOT a boundary', () => {
+    expect(sanitizeUrl('https://a.com/#password=a#=b&c=d')).toBe(
+      'https://a.com/#password=%3Credacted%3E&c=d',
+    );
+  });
+
+  it(
+    'cutting a fragment at its boundaries is linear on a run of #',
+    () => {
+      const build = (size: number): string => `https://a.com/${'#'.repeat(size)}a=`;
+      expect(typeof sanitizeUrl(build(50_000))).toBe('string');
+      expectLinearIn(
+        build,
+        (input) => {
+          sanitizeUrl(input);
+        },
+        400_000,
+      );
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
+
+  it('a fragment with no `#key=` boundary is scanned exactly as before (differential property)', () => {
+    fc.assert(
+      fc.property(fc.stringMatching(/^[A-Za-z0-9_=&;.%#-]{0,60}$/), (fragment) => {
+        const url = `https://a.com/p#${fragment}`;
+        const oneScan = redactSensitivePairs(url, url.indexOf('#') + 1, url.length);
+        if (FRAGMENT_PIECE_BOUNDARY.test(fragment)) return; // the cut case is covered above
+        expect(sanitizeUrl(url).replace(/<redacted>/g, '')).toBe(
+          redactShapes(oneScan).replace(/<redacted>/g, ''),
+        );
+      }),
+      { numRuns: 400 },
+    );
+  });
+
+  it('a # inside a form body value is still part of the value (bodies are not fragments)', () => {
+    expect(redactFormBody('password=ab#cd&x=1')).toBe('password=%3Credacted%3E&x=1');
+  });
+});
+
 describe('sanitizeUrl — separators, nesting, and bounds', () => {
   it('redacts a `;`-separated query parameter (the legacy CGI/PHP separator)', () => {
     expect(sanitizeUrl('https://x.com/a?foo=1;api_key=SECRET;bar=2')).toBe(

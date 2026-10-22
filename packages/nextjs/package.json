@@ -46,6 +46,7 @@
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
     "@bugsee/core": "workspace:*",
+    "@bugsee/protocol": "workspace:*",
     "@bugsee/react": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
     "@bugsee/bugsee": "workspace:*"

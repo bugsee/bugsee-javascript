@@ -60,6 +60,27 @@ describe('createOnRouterTransitionStart', () => {
     );
   });
 
+  it('writes the SANITIZED href, never the raw one (message and data)', () => {
+    const client = fakeClient();
+    const handler = createOnRouterTransitionStart({ getClient: () => client as never });
+    handler('/cb?code=AUTH&token=SECRET&tab=1#access_token=SECRET2', 'push');
+    const crumb = client.addBreadcrumb.mock.calls[0]?.[0] as {
+      message: string;
+      data: { href: string; navigationType: string };
+    };
+    const clean = '/cb?code=%3Credacted%3E&token=%3Credacted%3E&tab=1#access_token=%3Credacted%3E';
+    expect(crumb.message).toBe(clean);
+    expect(crumb.data).toEqual({ href: clean, navigationType: 'push' });
+    expect(JSON.stringify(crumb)).not.toMatch(/SECRET|AUTH/);
+  });
+
+  it('sanitizes an absolute href too (userinfo, nested URL)', () => {
+    const client = fakeClient();
+    const handler = createOnRouterTransitionStart({ getClient: () => client as never });
+    handler('https://u:pw@a.com/x?next=https://b.com/?token=SECRET', 'replace');
+    expect(JSON.stringify(client.addBreadcrumb.mock.calls[0]?.[0])).not.toMatch(/pw@|SECRET/);
+  });
+
   it('is a no-op when no client is active (consults the resolver, does not throw)', () => {
     const getClient = vi.fn<() => undefined>(() => undefined);
     const handler = createOnRouterTransitionStart({ getClient });

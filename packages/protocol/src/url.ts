@@ -1,4 +1,4 @@
-import { isFormSegment, redactSensitivePairs } from './pairs';
+import { isFormSegment, redactSensitiveFragmentPairs, redactSensitivePairs } from './pairs';
 import { REDACTED_URL_ENCODED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 
@@ -51,7 +51,8 @@ function authorityStartOf(url: string): number {
   // as the authority. That pushed the path window past its own end and silently disabled the matrix-param
   // scan for `/checkout;jsessionid=…?return=https://shop/thanks`: the canonical login-flow shape, and the
   // one flow that actually carries `;jsessionid=`.
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
+  // `blob:` and `filesystem:` wrap an ordinary `scheme://authority`, so their userinfo is an authority's too.
+  const scheme = /^(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//i.exec(url);
   return scheme === null ? -1 : scheme[0].length;
 }
 
@@ -116,6 +117,19 @@ export function sanitizeErrorMessage(message: string, options?: ShapeRedactionOp
  * credential. Returns the original string when there is nothing to redact.
  */
 export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): string {
+  return sanitizeUrlCore(url, options, undefined);
+}
+
+/**
+ * {@link sanitizeUrl} with an optional ADDITIONAL key test, applied in the path (matrix), query and fragment scans.
+ * Package-internal (not exported from the index): the page-address sanitizer uses it for its larger denylist while
+ * the network sanitizer keeps exactly the shared one.
+ */
+export function sanitizeUrlCore(
+  url: string,
+  options: ShapeRedactionOptions | undefined,
+  extraKey: ((decodedKey: string) => boolean) | undefined,
+): string {
   let out = redactUserinfo(url);
 
   // The PATH, for `;`-delimited matrix parameters — `/app;jsessionid=…` is canonical Java servlet URL
@@ -136,7 +150,7 @@ export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): strin
   const pathStart = out.indexOf('/', authorityEnd(out));
   const pathEnd = firstOf(out, ['?', '#'], out.length);
   if (pathStart >= 0 && pathStart < pathEnd) {
-    out = redactSensitivePairs(out, pathStart, pathEnd, true);
+    out = redactSensitivePairs(out, pathStart, pathEnd, true, extraKey);
   }
 
   // The FIRST `?` only. A nested query (`?next=https://y/?token=SECRET`) is deliberately NOT scanned — the
@@ -144,12 +158,12 @@ export function sanitizeUrl(url: string, options?: ShapeRedactionOptions): strin
   const query = out.indexOf('?');
   if (query >= 0) {
     const hash = out.indexOf('#', query);
-    out = redactSensitivePairs(out, query + 1, hash >= 0 ? hash : out.length);
+    out = redactSensitivePairs(out, query + 1, hash >= 0 ? hash : out.length, false, extraKey);
   }
 
   const fragment = out.indexOf('#');
   if (fragment >= 0) {
-    out = redactSensitivePairs(out, fragment + 1, out.length);
+    out = redactSensitiveFragmentPairs(out, fragment + 1, out.length, extraKey);
   }
 
   return redactShapes(out, options);

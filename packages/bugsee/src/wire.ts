@@ -25,7 +25,7 @@ import {
   type TransactionWire,
   wirePerformance,
 } from '@bugsee/performance';
-import type { EnvironmentEnvelope } from '@bugsee/protocol';
+import { type EnvironmentEnvelope, sanitizeLocationName } from '@bugsee/protocol';
 import { withPerformanceFacade } from './performance-facade';
 
 /**
@@ -74,9 +74,11 @@ interface UmbrellaInternals {
 // passes — behaviour-identical to creating them inline. Types derived from what wirePerformance accepts.
 type WirePerformanceOptions = Parameters<typeof wirePerformance>[0];
 export interface UmbrellaBrowserSources {
-  createNavigationSource?: () => NonNullable<WirePerformanceOptions['navigationSource']>;
+  createNavigationSource?: () => WirePerformanceOptions['navigationSource'];
   createInteractionSource?: () => NonNullable<WirePerformanceOptions['interactionSource']>;
   readMetaTraceContinuation?: () => WirePerformanceOptions['pageloadContinuation'];
+  /** The location of the window the SDK is bound to (the pageload name). Absent: the host global. */
+  readLocation?: () => { pathname?: string; href?: string } | undefined;
 }
 
 // The runtime-agnostic umbrella wiring: given a launched client + its LaunchInternals (from EITHER the
@@ -196,10 +198,29 @@ function otlpResourceWithDeviceId(
   return { ...resource, device_id: deviceId };
 }
 
-/** The pageload transaction name: the current path where a runtime exposes one, else a stable default. */
-function defaultPageName(): string {
-  const location = (globalThis as { location?: { pathname?: string } }).location;
-  return location?.pathname ?? 'pageload';
+/**
+ * The pageload transaction name: the current path where a runtime exposes one, else a stable default. The path is the
+ * SANITIZED one (matrix session ids, token-shaped segments; a `file:` page is `/…/index.html`, never its directory):
+ * a landing URL such as `/verify/<jwt>;jsessionid=…` must not become the transaction name verbatim.
+ */
+function defaultPageName(
+  readLocation: (() => { pathname?: string; href?: string } | undefined) | undefined,
+): string {
+  let href: string | undefined;
+  let pathname: string | undefined;
+  try {
+    const location =
+      readLocation !== undefined
+        ? readLocation()
+        : (globalThis as { location?: { pathname?: string; href?: string } }).location;
+    // Every property read is guarded too: a cross-origin or torn-down Location can throw from a getter.
+    href = typeof location?.href === 'string' ? location.href : undefined;
+    pathname = location?.pathname;
+  } catch {
+    return 'pageload'; // a torn-down window: the stable default
+  }
+  if (href === undefined && pathname === undefined) return 'pageload';
+  return sanitizeLocationName(href, pathname ?? '/');
 }
 
 /** Wire the on-by-default extensions onto a launched client. Returns the same client (stop() now also
@@ -279,7 +300,7 @@ export function wireUmbrella<C extends BugseeClient>(
 
   const wired = wirePerformance({
     client,
-    pageName: options.pageName ?? defaultPageName(),
+    pageName: options.pageName ?? defaultPageName(browserSources.readLocation),
     send,
     scheduler: client.getService(SchedulerToken),
     monitoring: perf.options.get(PerformanceOption.Monitoring, true),

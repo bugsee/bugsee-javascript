@@ -47,9 +47,10 @@ describe('parseStack — SpiderMonkey / JavaScriptCore dialect (fn@location)', (
   });
 
   it('splits on the FIRST @ so a URL containing @ stays in the location', () => {
-    // A function name never contains '@'; a URL can (userinfo). The FIRST '@' is the separator.
+    // A function name never contains '@'; a URL can (userinfo). The FIRST '@' is the separator. A userinfo with no
+    // colon is redacted whole (it may be a token), so the URL stays in the location but its userinfo does not survive.
     expect(parseStack('fn@https://user@app.test/a.js:1:2')).toEqual([
-      { function: 'fn', file: 'https://user@app.test/a.js', line: 1, column: 2 },
+      { function: 'fn', file: 'https://%3Credacted%3E@app.test/a.js', line: 1, column: 2 },
     ]);
   });
 
