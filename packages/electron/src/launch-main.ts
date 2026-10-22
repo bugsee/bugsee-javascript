@@ -167,7 +167,11 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   BrowserWindow?: BrowserWindowSource;
   /**
    * Record `window_*` / `renderer_*` events (default `true`). They are ON whenever `app` is passed (and system events are
-   * captured), which adds two `app` listeners (`browser-window-created`, `web-contents-created`); pass `false` to opt out (any non-boolean value is OFF and reported).
+   * captured), which adds two `app` listeners for windows (`browser-window-created` for focus and for show/hide) and one `web-contents-created`;
+   * pass `false` to opt out of the EVENTS (any non-boolean value is OFF and reported). It does NOT opt out of key-window tracking: when `screen` is
+   * passed, the `displays` trace needs the focused/moved window, so the application tracker still arms its `windowFocus` and `windowMoved`
+   * stages, i.e. two `browser-window-created` listeners and focus/blur/moved/closed listeners on every window even with this option `false`
+   * (with window events on AND `screen` passed, `app` carries three `browser-window-created` listeners).
    */
   captureWindowEvents?: boolean;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
@@ -290,10 +294,6 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     powerMonitor !== undefined && !repeat
       ? electronPowerTrackerFor({ powerMonitor }, nodeOptions.onError)
       : undefined;
-  const display =
-    screen !== undefined && !repeat
-      ? electronDisplayTrackerFor({ screen }, nodeOptions.onError)
-      : undefined;
   // Default ON; fail closed like the other capture switches: anything but a boolean is OFF, and reported.
   const windowEvents = resolveFailClosedBoolean(captureWindowEvents, true);
   if (captureWindowEvents !== undefined && typeof captureWindowEvents !== 'boolean') {
@@ -302,10 +302,27 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       new TypeError('captureWindowEvents must be a boolean: window events are OFF'),
     );
   }
-  const application =
-    app !== undefined && !repeat && windowEvents
+  // ONE shared application tracker serves two jobs: the `window_*`/`renderer_*` EVENTS (gated by `captureWindowEvents`) and
+  // the KEY window (focused, else most recently focused, else first created) that decides which display is `displays` id 0
+  // and re-reads the list on focus/move. The key-window job needs the tracker whenever `screen` is injected, independent
+  // of `captureWindowEvents` (which only governs the events below).
+  const appTracker =
+    app !== undefined && !repeat && (windowEvents || screen !== undefined)
       ? electronApplicationTrackerFor(
           { app, ...(BrowserWindow !== undefined ? { BrowserWindow } : {}) },
+          nodeOptions.onError,
+        )
+      : undefined;
+  const application = windowEvents ? appTracker : undefined;
+  const display =
+    screen !== undefined && !repeat
+      ? electronDisplayTrackerFor(
+          {
+            screen,
+            ...(appTracker !== undefined
+              ? { keyWindowBounds: () => appTracker.keyWindowBounds() }
+              : {}),
+          },
           nodeOptions.onError,
         )
       : undefined;
@@ -329,6 +346,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       ...createElectronSystemTraceProducers({
         ...(tracker !== undefined ? { process: tracker } : {}),
         ...(display !== undefined ? { display } : {}),
+        ...(screen !== undefined && appTracker !== undefined ? { application: appTracker } : {}),
+        ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
       }),
     ];
   }

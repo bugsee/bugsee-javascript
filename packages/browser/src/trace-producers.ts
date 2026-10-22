@@ -322,42 +322,63 @@ export class FpsProducer extends TraceProducerBase {
 
 /**
  * `displays` (the MOBILE name and list shape, spec bundle/traces.md `displays`; it replaces the retired JS-specific
- * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, rotation? }]` where `width`/`height` are
- * DEVICE pixels, `round(screen.width * devicePixelRatio)` / `round(screen.height * devicePixelRatio)`, `scale` is the
- * `devicePixelRatio` used, and `rotation` is the Screen Orientation `angle` / 90 (quarter turns; the trace field means Android's
- * `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device), omitted when the engine gives no angle or one that is not a multiple of 90. The browser
- * cannot tell the display `type`, `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the
- * page is on, as iOS does (a page cannot observe power).
+ * `screen_size`): a ONE-entry list `[{ id: 0, state: 'on', width, height, scale, zoom?, rotation? }]`. `width`/`height` are
+ * DEVICE pixels, `round(screen.width * deviceScale)` / `round(screen.height * deviceScale)`, `scale` is that device scale
+ * factor, `zoom` the page zoom (`1` = 100%) and `rotation` the Screen Orientation `angle` / 90 (quarter turns; the trace field
+ * means Android's `Surface.ROTATION_*`, and the direction of the web `angle` against it is UNVERIFIED on a real rotated device),
+ * omitted when the engine gives no angle or one that is not a multiple of 90. The browser cannot tell the display `type`,
+ * `natural_*` or `max_fps`, so those keys are omitted. `state:'on'` marks the display the page is on, as iOS does (a page
+ * cannot observe power).
  *
- * KNOWN LIMITATION, approximate under page zoom on Chromium: Blink reports `screen.width/height` in device-independent
- * pixels that IGNORE page zoom, while `devicePixelRatio` INCLUDES it, so the product drifts when the user zooms (Blink
- * source; not measured in a live browser). No web API exposes a zoom-independent device ratio, so `scale` records the
- * ratio actually used for the product. iOS Safari is reported not to swap `screen.width/height` on rotation (unverified):
- * there the entry is portrait-only like native iOS.
+ * PAGE ZOOM (spec C27). On Chromium `screen.width/height` are device-independent pixels that IGNORE page zoom, while
+ * `devicePixelRatio` INCLUDES it. The UiTracker `screenSize` stage derives `zoom = outerWidth / innerWidth` and
+ * `deviceScale = devicePixelRatio / zoom` (measured in Chrome 156 at 69%-144%), but TRUSTS it only when the ratio is within
+ * 1.5% of a real browser zoom preset (it is then snapped to the preset), on a Chromium engine, in the top-level window and on
+ * a pointer-fine device. Trusted: `width/height = round(screen.* x devicePixelRatio / zoom)`, `scale = devicePixelRatio / zoom`
+ * (2 decimals) and the `zoom` key (2 decimals). NOT trusted: `zoom` is OMITTED and the product uses `devicePixelRatio` alone.
+ * A docked DevTools or side panel (the common case for developers) narrows `innerWidth`, the ratio then matches no preset
+ * and the entry keeps the `devicePixelRatio`-only size; a custom (non-preset) zoom, Firefox (its `outerWidth` scales with
+ * zoom) and Safari (older `devicePixelRatio` excludes zoom, fingerprinting protection hides `outerWidth`) behave the same.
+ * iOS Safari is reported not to swap `screen.width/height` on rotation (unverified): there the entry is portrait-only like
+ * native iOS.
  *
- * Re-read on `resize` / `orientationchange` / `screen` `change` (UiTracker `screenSize` + `orientation` stages). A step
- * curve, so it is held and de-duplicated (a resize that moved nothing is dropped); the initial value is emitted at start.
- * Omitted entirely when the screen or the pixel ratio cannot be read as finite positive numbers.
- *
- * Known staleness: moving the window to another monitor with the SAME pixel ratio but a different size fires no
- * `resize`, so the value can go stale until the next one, unless the engine fires the `screen` `change` event the
- * tracker listens for (a `(resolution: Xdppx)` media-query listener is a follow-up).
+ * Re-read on `resize` / `orientationchange` / `screen` `change`, a `(resolution: Ndppx)` change and a `(pointer: coarse)`
+ * change (UiTracker `screenSize` + `orientation` stages). The first value is emitted at start; later changes are SETTLED:
+ * published once the inputs have been quiet for {@link DISPLAYS_SETTLE_MS} (a macOS maximize/fullscreen animation fires about
+ * twenty `resize` events with `outerWidth`/`innerWidth` out of step, which must not each become a trace value). A step
+ * curve, so held and de-duplicated. Omitted entirely when the screen or the pixel ratio cannot be read as finite positive
+ * numbers.
  */
+/** How long the displays inputs must stay unchanged before a change is written (the first value is immediate). */
+export const DISPLAYS_SETTLE_MS = 250;
+
+const globalTimers = globalThis as unknown as {
+  setInterval(callback: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+};
+
 export class DisplaysProducer extends TraceProducerBase {
   readonly name = 'displays';
   readonly #tracker: UiTracker;
+  readonly #scheduler: Scheduler;
   #offs: Array<() => void> = [];
+  #timer: unknown;
+  #pending = false;
 
-  constructor(tracker: UiTracker) {
+  constructor(tracker: UiTracker, scheduler?: Scheduler) {
     super();
     this.#tracker = tracker;
+    this.#scheduler = scheduler ?? {
+      setInterval: (cb, ms) => globalTimers.setInterval(cb, ms),
+      clearInterval: (h) => globalTimers.clearInterval(h),
+    };
   }
 
   protected onStart(): void {
     // subscribing attaches the listeners; both stages re-publish the whole entry (the angle and the size can change apart)
     this.#offs = [
-      this.#tracker.on('screenSize', () => this.#publish()),
-      this.#tracker.on('orientation', () => this.#publish()),
+      this.#tracker.on('screenSize', () => this.#settle()),
+      this.#tracker.on('orientation', () => this.#settle()),
     ];
     this.#publish();
   }
@@ -365,16 +386,35 @@ export class DisplaysProducer extends TraceProducerBase {
   protected override onStop(): void {
     for (const off of this.#offs) off();
     this.#offs = [];
+    this.#cancel();
+  }
+
+  #cancel(): void {
+    if (this.#pending) this.#scheduler.clearInterval(this.#timer);
+    this.#pending = false;
+    this.#timer = undefined;
+  }
+
+  /** Trailing debounce: the value is written once no change has arrived for DISPLAYS_SETTLE_MS. */
+  #settle(): void {
+    this.#cancel();
+    this.#pending = true;
+    this.#timer = this.#scheduler.setInterval(() => {
+      this.#cancel();
+      this.#publish();
+    }, DISPLAYS_SETTLE_MS);
   }
 
   #publish(): void {
     const s = this.#tracker.current('screenSize');
     if (s === undefined) return;
-    const width = Math.round(s.width * s.dpr);
-    const height = Math.round(s.height * s.dpr);
+    // dpr / zoom when the page zoom is trusted (spec formula), else the pixel ratio alone
+    const factor = s.deviceScale ?? s.dpr;
+    const width = Math.round(s.width * factor);
+    const height = Math.round(s.height * factor);
     if (!(width > 0) || !(height > 0)) return;
     // at most 2 decimals (zoom gives 1.100000023841858), like the Electron producer; the held value is the rounded one
-    const scale = Math.round(s.dpr * 100) / 100 || s.dpr;
+    const scale = Math.round(factor * 100) / 100 || factor;
     const angle = this.#tracker.current('orientation')?.angle;
     const turns =
       angle !== undefined && angle % 90 === 0 ? (((angle / 90) % 4) + 4) % 4 : undefined;
@@ -385,6 +425,7 @@ export class DisplaysProducer extends TraceProducerBase {
         width,
         height,
         scale,
+        ...(s.zoom !== undefined ? { zoom: s.zoom } : {}),
         ...(turns !== undefined ? { rotation: turns } : {}),
       },
     ]);
@@ -771,7 +812,7 @@ export function createBrowserSystemTraceProducers(
           new AppStateProducer(env.lifecycle),
           ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes('displays')
             ? []
-            : [new DisplaysProducer(ui)]),
+            : [new DisplaysProducer(ui, env.scheduler)]),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),

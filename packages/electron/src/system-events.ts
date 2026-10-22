@@ -25,7 +25,7 @@ import { reportGuarded } from '@bugsee/util';
 //
 //   power_suspend / power_resume / power_lock / power_unlock / power_ac / power_battery    (no params)
 //   display_added / display_removed   params { id, nativeId, width, height, naturalWidth?, naturalHeight?, scale?, maxFps?, rotation?, type? }
-//                                     (a `displays` entry in camelCase: `id` is the SAME session index the trace uses, device pixels, rotation in quarter turns)
+//                                     (a `displays` entry in camelCase: `id` is the display's position in the CURRENT `displays` list (0 = the key window's display; a removed display is no longer listed and takes the next number, so correlate by `nativeId`), device pixels, rotation in quarter turns)
 //   display_metrics_changed           params { ...display, changed: string[] }   (`changed` = Electron's changedMetrics)
 //   window_focus / window_blur / window_show / window_hide      params { windowId? }
 //   renderer_unresponsive / renderer_responsive                 params { webContentsId? }   (webContents ONLY: see the
