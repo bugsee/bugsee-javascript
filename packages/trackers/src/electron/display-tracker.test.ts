@@ -401,14 +401,15 @@ describe('ElectronDisplayTracker', () => {
       ]);
       expect(onError).toHaveBeenCalledTimes(1);
     });
-    it('a relaunch hands the shared tracker the new key-window source; an absent one keeps the old', () => {
+    it('a relaunch hands the shared tracker the new key-window source; one without a source CLEARS the old (it would read a stale tracker)', () => {
       const s = keyed([1, 2]);
       const t = trackKey(s, () => ({ x: 2 }));
       expect(t.current('displays')?.displays[0]?.nativeId).toBe(2);
-      expect(electronDisplayTrackerFor({ screen: s.screen })).toBe(t);
-      expect(t.current('displays')?.displays[0]?.nativeId).toBe(2);
       electronDisplayTrackerFor({ screen: s.screen, keyWindowBounds: () => ({ x: 1 }) });
       expect(t.current('displays')?.displays[0]?.nativeId).toBe(1);
+      expect(electronDisplayTrackerFor({ screen: s.screen })).toBe(t);
+      expect(t.current('displays')?.displays[0]?.nativeId).toBe(1); // no key window now: the primary (1)
+      expect(s.screen.getDisplayMatching).toHaveBeenCalledTimes(2); // not consulted by the cleared third read
     });
     it('events carry the id the display has in the CURRENT list; a removed display takes the next number; no state', () => {
       let list: unknown[] = [display({ id: 9 }), display({ id: 4 })];

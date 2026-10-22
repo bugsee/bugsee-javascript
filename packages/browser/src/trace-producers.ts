@@ -330,34 +330,54 @@ export class FpsProducer extends TraceProducerBase {
  * cannot observe power).
  *
  * PAGE ZOOM (spec C27). On Chromium `screen.width/height` are device-independent pixels that IGNORE page zoom, while
- * `devicePixelRatio` INCLUDES it. The UiTracker `screenSize` stage derives `zoom = outerWidth / innerWidth` (measured in
- * Chrome 156 at 69%-144%, device scale 1 and 2) and `deviceScale = devicePixelRatio / zoom`, so the physical size no longer
- * drifts when the user zooms. When `zoom` is not derivable (a missing/zero width, a ratio outside 0.25-5, a touch-first
- * device), `zoom` is OMITTED and the product falls back to `devicePixelRatio` (approximate under zoom, as before).
- * KNOWN LIMITS: a docked DevTools or side panel narrows `innerWidth` and makes `zoom` over-read (undetectable from the page);
- * desktop Firefox and Safari were not measured; iOS Safari is reported not to swap `screen.width/height` on rotation
- * (unverified): there the entry is portrait-only like native iOS.
+ * `devicePixelRatio` INCLUDES it. The UiTracker `screenSize` stage derives `zoom = outerWidth / innerWidth` and
+ * `deviceScale = devicePixelRatio / zoom` (measured in Chrome 156 at 69%-144%), but TRUSTS it only when the ratio is within
+ * 1.5% of a real browser zoom preset (it is then snapped to the preset), on a Chromium engine, in the top-level window and on
+ * a pointer-fine device. Trusted: `width/height = round(screen.* x devicePixelRatio / zoom)`, `scale = devicePixelRatio / zoom`
+ * (2 decimals) and the `zoom` key (2 decimals). NOT trusted: `zoom` is OMITTED and the product uses `devicePixelRatio` alone.
+ * A docked DevTools or side panel (the common case for developers) narrows `innerWidth`, the ratio then matches no preset
+ * and the entry keeps the `devicePixelRatio`-only size; a custom (non-preset) zoom, Firefox (its `outerWidth` scales with
+ * zoom) and Safari (older `devicePixelRatio` excludes zoom, fingerprinting protection hides `outerWidth`) behave the same.
+ * iOS Safari is reported not to swap `screen.width/height` on rotation (unverified): there the entry is portrait-only like
+ * native iOS.
  *
- * Re-read on `resize` / `orientationchange` / `screen` `change` and on a `(resolution: Ndppx)` change (UiTracker `screenSize`
- * + `orientation` stages). A step curve, so it is held and de-duplicated (a resize that moved nothing is dropped); the
- * initial value is emitted at start. Omitted entirely when the screen or the pixel ratio cannot be read as finite positive
+ * Re-read on `resize` / `orientationchange` / `screen` `change`, a `(resolution: Ndppx)` change and a `(pointer: coarse)`
+ * change (UiTracker `screenSize` + `orientation` stages). The first value is emitted at start; later changes are SETTLED:
+ * published once the inputs have been quiet for {@link DISPLAYS_SETTLE_MS} (a macOS maximize/fullscreen animation fires about
+ * twenty `resize` events with `outerWidth`/`innerWidth` out of step, which must not each become a trace value). A step
+ * curve, so held and de-duplicated. Omitted entirely when the screen or the pixel ratio cannot be read as finite positive
  * numbers.
  */
+/** How long the displays inputs must stay unchanged before a change is written (the first value is immediate). */
+export const DISPLAYS_SETTLE_MS = 250;
+
+const globalTimers = globalThis as unknown as {
+  setInterval(callback: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+};
+
 export class DisplaysProducer extends TraceProducerBase {
   readonly name = 'displays';
   readonly #tracker: UiTracker;
+  readonly #scheduler: Scheduler;
   #offs: Array<() => void> = [];
+  #timer: unknown;
+  #pending = false;
 
-  constructor(tracker: UiTracker) {
+  constructor(tracker: UiTracker, scheduler?: Scheduler) {
     super();
     this.#tracker = tracker;
+    this.#scheduler = scheduler ?? {
+      setInterval: (cb, ms) => globalTimers.setInterval(cb, ms),
+      clearInterval: (h) => globalTimers.clearInterval(h),
+    };
   }
 
   protected onStart(): void {
     // subscribing attaches the listeners; both stages re-publish the whole entry (the angle and the size can change apart)
     this.#offs = [
-      this.#tracker.on('screenSize', () => this.#publish()),
-      this.#tracker.on('orientation', () => this.#publish()),
+      this.#tracker.on('screenSize', () => this.#settle()),
+      this.#tracker.on('orientation', () => this.#settle()),
     ];
     this.#publish();
   }
@@ -365,12 +385,29 @@ export class DisplaysProducer extends TraceProducerBase {
   protected override onStop(): void {
     for (const off of this.#offs) off();
     this.#offs = [];
+    this.#cancel();
+  }
+
+  #cancel(): void {
+    if (this.#pending) this.#scheduler.clearInterval(this.#timer);
+    this.#pending = false;
+    this.#timer = undefined;
+  }
+
+  /** Trailing debounce: the value is written once no change has arrived for DISPLAYS_SETTLE_MS. */
+  #settle(): void {
+    this.#cancel();
+    this.#pending = true;
+    this.#timer = this.#scheduler.setInterval(() => {
+      this.#cancel();
+      this.#publish();
+    }, DISPLAYS_SETTLE_MS);
   }
 
   #publish(): void {
     const s = this.#tracker.current('screenSize');
     if (s === undefined) return;
-    // the zoom-independent device scale when the page zoom is derivable, else the (zoom-inclusive) pixel ratio
+    // dpr / zoom when the page zoom is trusted (spec formula), else the pixel ratio alone
     const factor = s.deviceScale ?? s.dpr;
     const width = Math.round(s.width * factor);
     const height = Math.round(s.height * factor);
@@ -766,7 +803,7 @@ export function createBrowserSystemTraceProducers(
           new AppStateProducer(env.lifecycle),
           ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes('displays')
             ? []
-            : [new DisplaysProducer(ui)]),
+            : [new DisplaysProducer(ui, env.scheduler)]),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),

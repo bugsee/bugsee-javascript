@@ -165,10 +165,14 @@ export class ElectronDisplayTracker extends ElectronStageTracker<ElectronDisplay
     this.#keyWindowBounds = env.keyWindowBounds;
   }
 
-  /** Hand the latest launch's reporter and key-window source to this shared tracker (a defined one replaces, undefined keeps). */
+  /**
+   * Hand the latest launch's reporter (a defined one replaces, undefined keeps) and key-window source to this shared tracker.
+   * The key-window source is the LAUNCH's: a relaunch without one (no `app`) clears the previous launch's, which would
+   * otherwise keep reading a stale application tracker.
+   */
   rebind(onError?: (error: unknown) => unknown, keyWindowBounds?: () => unknown): void {
     this.setReporter(onError);
-    if (keyWindowBounds !== undefined) this.#keyWindowBounds = keyWindowBounds;
+    this.#keyWindowBounds = keyWindowBounds;
   }
 
   /**

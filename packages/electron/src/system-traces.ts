@@ -1,4 +1,5 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
+import type { Scheduler } from '@bugsee/core';
 import { bytesToMegabytes } from '@bugsee/protocol';
 import type {
   AppProcessMetric,
@@ -37,7 +38,7 @@ import type {
 // display when there is none), the others follow in ascending order of Electron's id; `native_id` is Electron's own id,
 // `width`/`height` DEVICE pixels in the current orientation, `rotation` quarter turns, `state:'on'` on id 0 only (see the
 // tracker). `displayId` is never written. The numbering moves with the key window, so the list is ALSO re-read when a window
-// gains/loses focus or finishes moving (the application tracker's `windowFocus` / `windowMoved` stages, armed only while
+// gains/loses focus or has moved (debounced 200 ms: macOS fires `moved` throughout a drag) (the application tracker's `windowFocus` / `windowMoved` stages, armed only while
 // this producer runs); a re-read that changes nothing is dropped by `emitIfChanged`. Windows on other displays are not recorded.
 // A key is omitted when Electron did not supply it, a display with no id/size (or id -1) is dropped, and the trace is never
 // `[]`. It is a HELD step trace (`emitIfChanged`): the list when the producer starts, then the fresh list after every display
@@ -100,13 +101,27 @@ function wireDisplay(d: DisplayInfo): Record<string, unknown> {
   };
 }
 
+/** A window drag re-reads the display list once it has been still this long (trailing debounce). */
+export const MOVE_SETTLE_MS = 200;
+const timers = globalThis as unknown as {
+  setInterval(callback: () => void, ms: number): unknown;
+  clearInterval(handle: unknown): void;
+};
+const globalScheduler: Scheduler = {
+  setInterval: (cb, ms) => timers.setInterval(cb, ms),
+  clearInterval: (h) => timers.clearInterval(h),
+};
+
 class DisplaysProducer extends TraceProducerBase {
   readonly name = 'displays';
   #off: (() => void) | undefined;
   #offKey: Array<() => void> = [];
+  #moveTimer: unknown;
+  #movePending = false;
   constructor(
     private readonly tracker: ElectronDisplayTracker,
     private readonly application?: ElectronApplicationTracker,
+    private readonly scheduler: Scheduler = globalScheduler,
   ) {
     super();
   }
@@ -119,9 +134,18 @@ class DisplaysProducer extends TraceProducerBase {
         const list = this.tracker.current('displays');
         if (list !== undefined) this.#publish(list);
       };
+      // `moved` is an alias of `move` on macOS (fires throughout a drag): re-read once the window has been still
+      const rereadSoon = (): void => {
+        this.#cancelMove();
+        this.#movePending = true;
+        this.#moveTimer = this.scheduler.setInterval(() => {
+          this.#cancelMove();
+          reread();
+        }, MOVE_SETTLE_MS);
+      };
       this.#offKey = [
         this.application.on('windowFocus', reread),
-        this.application.on('windowMoved', reread),
+        this.application.on('windowMoved', rereadSoon),
       ];
     }
     const list = this.tracker.current('displays');
@@ -132,6 +156,12 @@ class DisplaysProducer extends TraceProducerBase {
     this.#off = undefined;
     for (const off of this.#offKey) off();
     this.#offKey = [];
+    this.#cancelMove();
+  }
+  #cancelMove(): void {
+    if (this.#movePending) this.scheduler.clearInterval(this.#moveTimer);
+    this.#movePending = false;
+    this.#moveTimer = undefined;
   }
   #publish(list: { displays: DisplayInfo[] }): void {
     this.emitIfChanged('displays', list.displays.map(wireDisplay));
@@ -144,6 +174,8 @@ export interface ElectronTraceTrackers {
   display?: ElectronDisplayTracker;
   /** Resolves the key window; without it the `displays` list follows the primary display (and no focus changes). */
   application?: ElectronApplicationTracker;
+  /** Timer source for the window-move debounce (default: the global timers). */
+  scheduler?: Scheduler;
 }
 
 /** The Electron producers, each subscribed to ONE stage of a shared tracker. */
@@ -153,7 +185,7 @@ export function createElectronSystemTraceProducers(
   return [
     ...(trackers.process !== undefined ? [new AppMetricsProducer(trackers.process)] : []),
     ...(trackers.display !== undefined
-      ? [new DisplaysProducer(trackers.display, trackers.application)]
+      ? [new DisplaysProducer(trackers.display, trackers.application, trackers.scheduler)]
       : []),
   ];
 }

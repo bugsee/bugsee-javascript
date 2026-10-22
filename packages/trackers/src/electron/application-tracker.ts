@@ -7,7 +7,8 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 //
 //   windowFocus            BrowserWindow 'focus' / 'blur'              -> { focused: boolean, windowId? }
 //   windowVisibility       BrowserWindow 'show' / 'hide'               -> { visible: boolean, windowId? }
-//   windowMoved            BrowserWindow 'moved'                       -> { windowId? }   (macOS/Windows end-of-drag)
+//   windowMoved            BrowserWindow 'moved'                       -> { windowId? }   (macOS: an alias of `move`, so it fires
+//                                                                       throughout a drag; Windows: end of drag; consumers debounce)
 //   rendererResponsiveness webContents 'unresponsive' / 'responsive'   -> { responsive: boolean, webContentsId? }
 //
 // DISCOVERY. Apps typically call `launchMain` and then `createWindow()` from `whenReady()`, so a stage watches BOTH the
@@ -64,6 +65,7 @@ interface Watched extends EmitterSource {
   isDestroyed?(): unknown;
   webContents?: unknown;
   getBounds?(): unknown;
+  isVisible?(): unknown;
 }
 
 interface WatchConfig<S extends AppStage> {
@@ -133,6 +135,14 @@ const WATCH: { [S in AppStage]: WatchConfig<S> } = {
   },
 };
 
+const visible = (w: Watched): boolean => {
+  try {
+    return w.isVisible?.() === true;
+  } catch {
+    return false;
+  }
+};
+
 const destroyed = (obj: Watched): boolean => {
   try {
     return obj.isDestroyed?.() === true;
@@ -195,7 +205,10 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     const last = this.#lastFocused;
     if (last !== undefined && usable(last)) return last;
     try {
-      return windowsOf(this.#env).find(usable);
+      // `getAllWindows()` order is not documented (in practice creation order): the first VISIBLE window is preferred so a hidden
+      // background window (a tray/worker window) is not taken as the first created; with none visible, the first usable one.
+      const all = windowsOf(this.#env).filter(usable);
+      return all.find(visible) ?? all[0];
     } catch (error) {
       this.report(error);
       return undefined;
@@ -256,6 +269,8 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
       this.report(error); // the creation listener still covers everything created from now on
     }
     return () => {
+      // the most-recently-focused memory is only valid while focus is observed: a re-arm must not trust a stale window
+      if (stage === 'windowFocus') this.#lastFocused = undefined;
       releaseApp(); // bindAll's release never throws: failed removals are reported inside it
       for (const [candidate, release] of [...tracked]) {
         if (!destroyed(candidate as Watched)) release();

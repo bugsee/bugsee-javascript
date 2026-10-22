@@ -425,7 +425,7 @@ describe('ElectronApplicationTracker', () => {
     new ElectronApplicationTracker().on('windowFocus', () => {});
   });
 
-  it('windowMoved: records the end-of-drag `moved` event with the window id, released with the stage', () => {
+  it('windowMoved: records the `moved` event (not the continuous `move`) with the window id, released with the stage', () => {
     const win = new FakeWindow(4);
     const s = setup([win]);
     const t = track(s);
@@ -506,6 +506,69 @@ describe('ElectronApplicationTracker', () => {
       expect(t.keyWindowBounds()).toEqual({ x: 100, y: 0, width: 10, height: 10 });
       a.gone = true; // destroyed without a `closed` event
       expect(t.keyWindowBounds()).toBeUndefined();
+    });
+
+    it('the FOCUSED window outranks the most recently focused one when they disagree', () => {
+      const a = new BoundsWindow(1);
+      const b = new BoundsWindow(2);
+      let focused: BoundsWindow | null = a;
+      const { t } = keyOf([a, b], () => focused);
+      t.on('windowFocus', () => undefined);
+      b.emit('focus'); // remembered as most recent...
+      expect(t.keyWindowBounds()).toEqual({ x: 100, y: 0, width: 10, height: 10 }); // ...but Electron says a is focused
+      focused = null;
+      expect(t.keyWindowBounds()).toEqual({ x: 200, y: 0, width: 10, height: 10 });
+    });
+
+    it('the most-recently-focused memory is dropped when the windowFocus stage is released (a re-arm never trusts a stale window)', () => {
+      const a = new BoundsWindow(1);
+      const b = new BoundsWindow(2);
+      const { t } = keyOf([a, b], () => null);
+      const off = t.on('windowFocus', () => undefined);
+      b.emit('focus');
+      expect(t.keyWindowBounds()).toEqual({ x: 200, y: 0, width: 10, height: 10 });
+      off();
+      expect(t.keyWindowBounds()).toEqual({ x: 100, y: 0, width: 10, height: 10 });
+      // an unrelated stage's release does not drop it
+      const off2 = t.on('windowFocus', () => undefined);
+      b.emit('focus');
+      const offOther = t.on('windowMoved', () => undefined);
+      offOther();
+      expect(t.keyWindowBounds()).toEqual({ x: 200, y: 0, width: 10, height: 10 });
+      off2();
+    });
+
+    it('with nothing focused, a VISIBLE window is preferred over a hidden first one; none visible falls back to the first', () => {
+      const hidden = new BoundsWindow(1);
+      const shown = new BoundsWindow(2);
+      (hidden as unknown as { isVisible: () => boolean }).isVisible = () => false;
+      (shown as unknown as { isVisible: () => boolean }).isVisible = () => true;
+      expect(keyOf([hidden, shown], () => null).t.keyWindowBounds()).toEqual({
+        x: 200,
+        y: 0,
+        width: 10,
+        height: 10,
+      });
+      // a window that cannot say (no isVisible) is not counted as visible
+      const mute = new BoundsWindow(5);
+      expect(keyOf([mute, shown], () => null).t.keyWindowBounds()).toEqual({
+        x: 200,
+        y: 0,
+        width: 10,
+        height: 10,
+      });
+      const h2 = new BoundsWindow(3);
+      (h2 as unknown as { isVisible: () => boolean }).isVisible = () => false;
+      const throwing = new BoundsWindow(4);
+      (throwing as unknown as { isVisible: () => never }).isVisible = () => {
+        throw new Error('vis');
+      };
+      expect(keyOf([h2, throwing], () => null).t.keyWindowBounds()).toEqual({
+        x: 300,
+        y: 0,
+        width: 10,
+        height: 10,
+      });
     });
 
     it('a most-recently-focused window that closed (event only) or was destroyed (no event) is not remembered', () => {

@@ -368,12 +368,32 @@ describe('displays producer follows the key window (C26)', () => {
       screen,
       keyWindowBounds: () => application.keyWindowBounds(),
     });
-    const [producer] = createElectronSystemTraceProducers({ display, application });
+    const clock = { now: 0, next: 1, timers: new Map<number, { at: number; cb: () => void }>() };
+    const scheduler = {
+      setInterval: (cb: () => void, ms: number) => {
+        const id = clock.next++;
+        clock.timers.set(id, { at: clock.now + ms, cb });
+        return id;
+      },
+      clearInterval: (id: unknown) => void clock.timers.delete(id as number),
+    };
+    const advance = (ms: number) => {
+      clock.now += ms;
+      for (const [id, t] of [...clock.timers]) {
+        if (t.at <= clock.now) {
+          clock.timers.delete(id);
+          t.cb();
+        }
+      }
+    };
+    const [producer] = createElectronSystemTraceProducers({ display, application, scheduler });
     const emitted: Array<{ name: string; value: unknown }> = [];
     const sink: TraceSink = { emit: (name, value) => emitted.push({ name, value }) };
     const nativeIds = () =>
       (emitted.at(-1)?.value as Array<{ native_id: number }>).map((d) => d.native_id);
     return {
+      advance,
+      pendingTimers: () => clock.timers.size,
       app,
       screen,
       application,
@@ -413,8 +433,68 @@ describe('displays producer follows the key window (C26)', () => {
     expect(w.nativeIds()).toEqual([1, 2]);
     a.x = 1500;
     a.emit('moved');
+    expect(w.nativeIds()).toEqual([1, 2]); // debounced: not yet
+    w.advance(199);
+    expect(w.nativeIds()).toEqual([1, 2]);
+    w.advance(1);
     expect(w.nativeIds()).toEqual([2, 1]);
     w.producer.stop();
+  });
+
+  it('a drag (many `moved` events) is debounced to ONE re-read after the window is still for 200 ms; stop cancels a pending one', () => {
+    const a = new Win(1, 10);
+    const w = world([a]);
+    w.producer.start(w.sink);
+    const reads = vi.spyOn(w.screen, 'getAllDisplays');
+    for (let i = 0; i < 10; i++) {
+      a.x = 1500;
+      a.emit('moved');
+      w.advance(100); // each event restarts the timer
+    }
+    expect(reads).not.toHaveBeenCalled();
+    w.advance(100);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(w.nativeIds()).toEqual([2, 1]);
+    a.emit('moved');
+    expect(w.pendingTimers()).toBe(1);
+    w.producer.stop();
+    expect(w.pendingTimers()).toBe(0);
+    w.advance(1000);
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default scheduler is the global timers', () => {
+    vi.useFakeTimers();
+    try {
+      const a = new Win(1, 10);
+      const app = new Emitter();
+      const screen = Object.assign(new Emitter(), {
+        getAllDisplays: () => [mkDisplay(1), mkDisplay(2)],
+        getPrimaryDisplay: () => mkDisplay(1),
+        getDisplayMatching: (r: { x: number }) => mkDisplay(r.x < 1000 ? 1 : 2),
+      });
+      const application = new ElectronApplicationTracker({
+        app,
+        BrowserWindow: { getAllWindows: () => [a] },
+      });
+      const display = new ElectronDisplayTracker({
+        screen,
+        keyWindowBounds: () => application.keyWindowBounds(),
+      });
+      const [producer] = createElectronSystemTraceProducers({ display, application });
+      const emitted: Array<{ value: unknown }> = [];
+      producer?.start({ emit: (_n, value) => emitted.push({ value }) });
+      a.x = 1500;
+      a.emit('moved');
+      vi.advanceTimersByTime(200);
+      expect(emitted).toHaveLength(2);
+      a.emit('moved');
+      producer?.stop();
+      vi.advanceTimersByTime(1000);
+      expect(emitted).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stop() releases the window listeners too (focus and moved) and nothing re-emits afterwards', () => {

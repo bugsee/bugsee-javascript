@@ -42,12 +42,15 @@ export interface ScreenSizeState {
   height: number;
   dpr: number;
   /**
-   * The PAGE zoom (`1` = 100%), `outerWidth / innerWidth` rounded to 2 decimals. Omitted when not derivable: a missing,
-   * zero or non-finite width, a ratio outside 0.25-5, or a touch-first device (`(pointer: coarse)`: pinch zoom is not
-   * page zoom). Over-reads when docked DevTools / a side panel narrows `innerWidth` (undetectable from the page).
+   * The PAGE zoom (`1` = 100%), TRUSTED only: `outerWidth / innerWidth` must land within 1.5% of a real browser zoom preset
+   * (25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500 %) and is SNAPPED to it (so the integer
+   * `innerWidth` cannot make it flap), on a CHROMIUM engine (Firefox scales `outerWidth` with zoom; older Safari's
+   * `devicePixelRatio` excludes it), in the TOP-level window, on a pointer-fine device. Otherwise omitted: a docked
+   * DevTools / side panel, a frame border or custom zoom (Chrome's 1.2^n steps) is not a preset, and the consumer falls back
+   * to `devicePixelRatio` alone. Rounded to 2 decimals.
    */
   zoom?: number;
-  /** `devicePixelRatio / zoom` rounded to 2 decimals: the zoom-independent device scale. Present exactly when `zoom` is. */
+  /** `devicePixelRatio / zoom` (UNROUNDED, the snapped preset): the zoom-independent device scale. Present exactly when `zoom` is. */
   deviceScale?: number;
 }
 export interface ViewportState {
@@ -115,6 +118,10 @@ export interface UiEnv {
     readonly innerWidth?: unknown;
     readonly innerHeight?: unknown;
     readonly outerWidth?: unknown;
+    /** Engine tells for the zoom derivation: `chrome` (Chromium), `navigator.userAgentData.brands`, and `top` (the frame check). */
+    readonly chrome?: unknown;
+    readonly navigator?: unknown;
+    readonly top?: unknown;
     /** Where `visualViewport` defaults from when the env supplies none. */
     readonly visualViewport?: UiEnv['visualViewport'] | null;
   };
@@ -177,8 +184,33 @@ const UI_STAGES: readonly UiStage[] = [
   'displayMode',
   'frameRate',
 ];
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 5;
+/** Chrome's zoom presets as factors (33% and 67% are really 1/3 and 2/3). */
+const ZOOM_PRESETS: readonly number[] = [
+  0.25,
+  1 / 3,
+  0.5,
+  2 / 3,
+  0.75,
+  0.8,
+  0.9,
+  1,
+  1.1,
+  1.25,
+  1.5,
+  1.75,
+  2,
+  2.5,
+  3,
+  4,
+  5,
+];
+/** A derived ratio is trusted only within this relative distance of a preset (the integer `innerWidth` rounding is < 0.3% at 500%). */
+const ZOOM_TOLERANCE = 0.015;
+const CHROMIUM_BRANDS: ReadonlySet<string> = new Set([
+  'Chromium',
+  'Google Chrome',
+  'Microsoft Edge',
+]);
 const COARSE_POINTER = '(pointer: coarse)';
 const DARK = '(prefers-color-scheme: dark)';
 const REDUCED = '(prefers-reduced-motion: reduce)';
@@ -419,19 +451,54 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
     return fromWindow ?? undefined;
   }
 
-  /** The page zoom and the device scale it implies (see {@link ScreenSizeState.zoom}); `{}` when not derivable. */
+  /** Chromium (its brands, else `window.chrome`) AND the top-level window: the only place the derivation is trusted. */
+  #zoomTrusted(): boolean {
+    const report = this.#report;
+    const win = hostRead(() => this.#env.window, report);
+    // a frame sees the TOP window's `outerWidth` but its own `innerWidth`: the ratio is a layout ratio, not a zoom
+    const top = hostRead(() => win?.top, report);
+    if (top !== undefined && top !== win) return false;
+    const brands = hostRead(
+      () =>
+        (win?.navigator as { userAgentData?: { brands?: unknown } } | null | undefined)
+          ?.userAgentData?.brands,
+      report,
+    );
+    if (Array.isArray(brands)) {
+      return brands.some(
+        (b: unknown) =>
+          typeof (b as { brand?: unknown } | null)?.brand === 'string' &&
+          CHROMIUM_BRANDS.has((b as { brand: string }).brand),
+      );
+    }
+    const chrome = hostRead(() => win?.chrome, report);
+    return typeof chrome === 'object' && chrome !== null;
+  }
+
+  /**
+   * The page zoom and the device scale it implies (see {@link ScreenSizeState.zoom}); `{}` unless the derivation is
+   * trusted. The measured ratio is snapped to the nearest zoom preset within {@link ZOOM_TOLERANCE}.
+   */
   #zoomOf(dpr: number): { zoom?: number; deviceScale?: number } {
     const report = this.#report;
+    if (!this.#zoomTrusted()) return {};
     const outer = hostRead(() => this.#env.window?.outerWidth, report);
     const inner = hostRead(() => this.#env.window?.innerWidth, report);
     if (!(positive(outer) && positive(inner))) return {};
     const ratio = outer / inner;
-    if (!(ratio >= MIN_ZOOM && ratio <= MAX_ZOOM)) return {};
+    let preset: number | undefined;
+    let best = ZOOM_TOLERANCE;
+    for (const p of ZOOM_PRESETS) {
+      const off = Math.abs(ratio / p - 1);
+      if (off <= best) {
+        best = off;
+        preset = p;
+      }
+    }
+    if (preset === undefined) return {};
     // pinch zoom (`visualViewport.scale`) is not page zoom: a touch-first device does not derive one
     if (this.#matches(COARSE_POINTER) === true) return {};
-    const zoom = Math.round(ratio * 100) / 100;
-    const deviceScale = Math.round((dpr / ratio) * 100) / 100;
-    return zoom > 0 && deviceScale > 0 ? { zoom, deviceScale } : {};
+    return { zoom: Math.round(preset * 100) / 100, deviceScale: dpr / preset };
   }
 
   #matches(query: string): boolean | undefined {
@@ -550,6 +617,17 @@ export class UiTracker extends MultiKeyEmitterBase<UiStages> {
             offs,
             env().screen,
             'change',
+            this.#guarded(() => this.#refresh(['screenSize'])),
+          ),
+      },
+      {
+        // touch emulation / a pointer-type change flips whether the zoom may be derived at all
+        id: 'pointer',
+        kinds: ['screenSize'],
+        attach: (offs) =>
+          this.#watchQuery(
+            offs,
+            COARSE_POINTER,
             this.#guarded(() => this.#refresh(['screenSize'])),
           ),
       },

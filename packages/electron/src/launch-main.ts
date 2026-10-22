@@ -167,7 +167,11 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   BrowserWindow?: BrowserWindowSource;
   /**
    * Record `window_*` / `renderer_*` events (default `true`). They are ON whenever `app` is passed (and system events are
-   * captured), which adds two `app` listeners (`browser-window-created`, `web-contents-created`); pass `false` to opt out (any non-boolean value is OFF and reported).
+   * captured), which adds two `app` listeners for windows (`browser-window-created` for focus and for show/hide) and one `web-contents-created`;
+   * pass `false` to opt out of the EVENTS (any non-boolean value is OFF and reported). It does NOT opt out of key-window tracking: when `screen` is
+   * passed, the `displays` trace needs the focused/moved window, so the application tracker still arms its `windowFocus` and `windowMoved`
+   * stages, i.e. two `browser-window-created` listeners and focus/blur/moved/closed listeners on every window even with this option `false`
+   * (with window events on AND `screen` passed, `app` carries three `browser-window-created` listeners).
    */
   captureWindowEvents?: boolean;
   /** Electron's `crashReporter` — when provided, native minidumps are captured, session-correlated. */
@@ -343,6 +347,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ...(tracker !== undefined ? { process: tracker } : {}),
         ...(display !== undefined ? { display } : {}),
         ...(screen !== undefined && appTracker !== undefined ? { application: appTracker } : {}),
+        ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
       }),
     ];
   }
