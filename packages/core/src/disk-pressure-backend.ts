@@ -32,14 +32,16 @@ import { createMemoryChunkBackend } from './memory-chunk-backend';
 // DURABLE bytes: recovery after a crash reads the durable half, and its recorded size must describe that half.
 //
 // PROBE. While the pressure is PINNED by a refused write, nothing would ever reach the medium to show it works again,
-// so a `closePart` (the store's ~1 s tick) writes a throwaway DATA record into a throwaway part and removes
-// it: the writers report that record's success (`noteWriteRecovered`), which releases the pin. Only a data write counts
-// (a meta write is a few dozen bytes and lands on a medium that still refuses real records), and the probe record is as
-// large as the biggest record recently seen (up to PROBE_MAX_BYTES), because a quota that refuses a replay snapshot
-// accepts a 60-byte record. It can still succeed where a burst of real records fails, so the pin can flap; the probe
-// therefore BACKS OFF: every pin that follows a release within
-// FLAP_WINDOW ticks doubles the interval to the next probe (1 tick up to MAX_PROBE_EVERY), a pin that held longer
-// resets it, and a probe that fails is reported once per pin, not once per tick.
+// so on the store's ~1 s tick a throwaway DATA write is made: its success is what the writers report back
+// (`noteWriteRecovered`), which releases the pin. Backends that can (the file backends) write padding into the part
+// that has JUST been opened after the tick (never the one being closed: nothing would seal it) and into a file of its
+// own (`probe`) that every reader skips; the others (IndexedDB) write a record into a throwaway part and remove it.
+// Only a data write counts (a meta write is a few dozen bytes and lands on a medium that still refuses real records),
+// and the probe is as large as the biggest record recently seen (clamped), because a quota that refuses a replay
+// snapshot accepts a 60-byte record. It can still succeed where a burst of real records fails, so the pin can flap;
+// the probe therefore BACKS OFF: every pin that follows a release within FLAP_WINDOW ticks doubles the interval to the
+// next probe (1 tick up to MAX_PROBE_EVERY), a pin that held longer resets it, and a probe that fails is reported once
+// per pin, not once per tick.
 
 /** The file types that stop being persisted at `low` (iOS drops video, logs and network; the JS replay is its video). */
 const GATED_AT_LOW: ReadonlySet<FileType> = new Set<FileType>([
@@ -69,8 +71,12 @@ const PROBE_MIN_BYTES = 1024;
 const PROBE_MAX_BYTES = 256 * 1024;
 /** The padding probe lives in the buffered writer's tail while the medium refuses it: keep it small. */
 const FILE_PROBE_MAX_BYTES = 16 * 1024;
-/** After a failed or timed-out durable read, snapshots skip the medium for this many ticks (~1 s each). */
-const DEAD_MEDIUM_TTL_TICKS = 60;
+/**
+ * While the durable medium is DEGRADED (its last read failed or hung) every snapshot still tries it, but only for this
+ * long: healthy data reappears in the very next report, and a medium that is truly dead costs a report at most this.
+ * (A longer "skip it for a minute" window hid every record that landed meanwhile.)
+ */
+const DEGRADED_READ_TIMEOUT_MS = 2000;
 
 /** The throwaway part the probe writes; far above any real part number. */
 const PROBE_PART = 2_000_000_000;
@@ -207,9 +213,11 @@ export function withDiskPressure(
   // The biggest record seen recently (halved every 60 ticks): the probe's size.
   let largestRecent = 0;
 
-  // The part the store is currently writing (the probe's padding goes into it when the backend can do that).
+  // The part the store is currently writing (the probe's padding goes into it when the backend can do that: never into a
+  // part that is being closed, see `probeDue`).
   let currentRef: PartRef | undefined;
   let currentState: PartState | undefined;
+  let probeDue = false;
 
   const probe = (): void => {
     try {
@@ -218,14 +226,18 @@ export function withDiskPressure(
         currentRef !== undefined &&
         currentState !== undefined
       ) {
-        // Padding into the CURRENT part, forced out past any writer circuit breaker: no part to clean up, nothing a
-        // report or a recovery reads, and a write that only lands later (a stuck ring frame) lands harmlessly in a part
-        // that is deleted with the window.
+        // Padding into the part JUST opened (the one that will be sealed), synchronously and past any writer circuit
+        // breaker: no part to clean up, nothing a report or a recovery reads, and it is deleted with that part.
         ensureOpened(currentRef, currentState);
-        durable.probeWrite(
-          currentRef,
-          Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), FILE_PROBE_MAX_BYTES),
-        );
+        try {
+          durable.probeWrite(
+            currentRef,
+            Math.min(Math.max(largestRecent, PROBE_MIN_BYTES), FILE_PROBE_MAX_BYTES),
+          );
+        } catch (error) {
+          currentState.opened = false; // its meta never landed: the next durable write creates it again
+          throw error;
+        }
         return;
       }
       // A throwaway part: a data record, then its removal (a buffered writer flushes on the way out).
@@ -242,12 +254,14 @@ export function withDiskPressure(
     }
   };
 
-  let deadUntilTick = -1;
+  // Whether the last durable read failed (a STREAK: reported once, ended by the next read that succeeds).
+  let degraded = false;
 
   /**
    * A durable read that fails or hangs serves what the backend still holds in memory (records queued for the medium or
-   * refused by it) instead of failing the snapshot, says so once, releases the abandoned read, and keeps later snapshots
-   * from waiting out the timeout again for DEAD_MEDIUM_TTL_TICKS.
+   * refused by it) instead of failing the snapshot, releases the abandoned read, and reports once per streak of failures.
+   * While degraded each snapshot still tries the medium with a short deadline, so records that landed meanwhile show up
+   * again at once; within ONE snapshot a failed part skips the others (a 60-part window must not wait per part).
    */
   const guardedRead = (snap: CaptureSnapshot, dead: { failed: boolean }): CaptureSnapshot => {
     const timers = globalThis as unknown as {
@@ -255,9 +269,9 @@ export function withDiskPressure(
       clearTimeout(handle: unknown): void;
     };
     const drainAll = async (): Promise<Map<FileType, StoredEntry[]>> => {
-      if (dead.failed || ticks < deadUntilTick) {
-        // An earlier part of THIS snapshot (or a recent snapshot) already failed to read: do not wait out the timeout
-        // again for each part (a 60-part window would hold a report for minutes).
+      if (dead.failed) {
+        // An earlier part of THIS snapshot already failed to read: do not wait out the timeout again for each part (a
+        // 60-part window would hold a report for minutes).
         return snap.inMemory?.() ?? new Map();
       }
       let timer: { unref?: () => void } | undefined;
@@ -266,15 +280,21 @@ export function withDiskPressure(
           timer = timers.setTimeout(
             () =>
               reject(new Error('bugsee: the durable capture store did not answer a read in time')),
-            options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
+            degraded
+              ? Math.min(DEGRADED_READ_TIMEOUT_MS, options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS)
+              : (options.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS),
           );
           timer.unref?.(); // never hold a process open for a read
         });
-        return await Promise.race([snap.drainAll(), timeout]);
+        const read = await Promise.race([snap.drainAll(), timeout]);
+        degraded = false; // the medium answered: the streak is over
+        return read;
       } catch (error) {
         dead.failed = true;
-        deadUntilTick = ticks + DEAD_MEDIUM_TTL_TICKS;
-        options.onReadError?.(error);
+        if (!degraded) {
+          degraded = true;
+          options.onReadError?.(error); // once per streak, not once per snapshot
+        }
         const held = snap.inMemory?.() ?? new Map();
         snap.release(); // abandon the read: drop its pins and references (a hung one would hold them forever)
         return held;
@@ -318,6 +338,10 @@ export function withDiskPressure(
           // The part's meta could not be created (no room): it stays unopened and the first durable write retries.
           options.onWriteError?.(error);
         }
+      }
+      if (probeDue) {
+        probeDue = false;
+        probe(); // on the part that was JUST opened: it is the one that will be sealed
       }
     },
 
@@ -370,9 +394,11 @@ export function withDiskPressure(
       if (ticks % 60 === 0) {
         largestRecent = Math.floor(largestRecent / 2);
       }
+      // The probe is DUE now but runs once the NEXT part has opened (see openPart): this part is being closed, and
+      // padding it would leave a file open (and a meta saying it never ended) that nothing would ever seal.
       if (pressure.pinned() && ticks >= nextProbeAt) {
         nextProbeAt = ticks + probeEvery;
-        probe();
+        probeDue = true;
       }
     },
 

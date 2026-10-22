@@ -352,6 +352,19 @@ export function createBatchedFsChunkStorage(
       }
     },
 
+    appendNow(generation, chunk, file, data): void {
+      // The disk-pressure probe: buffered like any append, then FORCED out past the circuit breaker at once.
+      this.append(generation, chunk, file, data);
+      this.flushNow?.();
+      // A probe that did NOT land must not linger as a buffered tail (it would be retried and land, late, as padding
+      // that takes back space just freed) nor keep its file handle open on a part that is about to be closed.
+      const path = filePath(generation, chunk, file);
+      const entry = open.get(path);
+      if (entry !== undefined && entry.segments.length > 0) {
+        closePath(path); // one more attempt, then the handle is closed and the entry (with its tail) is dropped regardless
+      }
+    },
+
     flushNow(): void {
       // The disk-pressure probe's seam: the same FORCED flush, named for what it is for. Without it the probe's record
       // went out through the unforced flush of a part removal, i.e. through the circuit breaker (one attempt per 128

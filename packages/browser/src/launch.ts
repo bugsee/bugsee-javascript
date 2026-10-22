@@ -848,7 +848,8 @@ async function buildLaunch(
                   // (the backend calls this only for failed WRITES, so the wider reading cannot misfire on a read).
                   diskPressure.noteWriteError(error, { suspect: true });
                 },
-                // An unreadable durable half (a closed connection) serves the in-memory window and says so once per snapshot.
+                // An unreadable durable half (a closed connection) serves what is queued or refused in memory, and says so ONCE PER STREAK of
+                // failed reads (a read that succeeds ends the streak; while it lasts each report waits at most 2 s for the database).
                 onDiskReadError: (error: unknown): void => reportGuarded(options.onError, error),
                 onWriteRecovered: (): void => diskPressure.noteWriteRecovered(),
               }

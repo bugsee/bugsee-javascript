@@ -1393,3 +1393,131 @@ describe('createIdbChunkBackend — a snapshot tells a stalled queue from a slow
     expect(got).toEqual(['x']);
   });
 });
+
+describe('createIdbChunkCaptureStore — a transient unreadable IndexedDB never hides what landed (no dead window)', () => {
+  it('after ONE failed read the very next report has every landed record, old and new, not just the not-yet-landed ones', async () => {
+    const inner = keyed();
+    const state = { failReads: false, failures: 0 };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        if (state.failReads) {
+          state.failures += 1;
+          return Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }));
+        }
+        return inner.readPrefix(prefix);
+      },
+    };
+    const pressure = createDiskPressure();
+    const onDiskReadError = vi.fn();
+    let now = 10_000;
+    const s = createIdbChunkCaptureStore(store, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 42,
+      cleanOtherGenerations: false,
+      diskPressure: pressure,
+      onDiskReadError,
+    });
+    const logs = async (): Promise<string[]> => {
+      const snap = s.snapshot();
+      const all = await snap.drainAll();
+      snap.release();
+      return (all.get('log') ?? []).map((r) => r.serialized);
+    };
+    for (let i = 0; i < 5; i++) s.add(rec(`old-${i}`, 'log', now));
+    await s.flush?.();
+    state.failReads = true;
+    expect(await logs()).toEqual([]); // unreadable: nothing landed can be shown, nothing is invented
+    state.failReads = false; // one transient failure, then the store is healthy
+    for (let i = 0; i < 5; i++) s.add(rec(`new-${i}`, 'log', now));
+    await s.flush?.();
+    const expected = [
+      ...Array.from({ length: 5 }, (_, i) => `old-${i}`),
+      ...Array.from({ length: 5 }, (_, i) => `new-${i}`),
+    ];
+    for (let tick = 0; tick < 62; tick++) {
+      now += 1000;
+      s.tick(now);
+      if (tick === 0 || tick === 30 || tick === 59 || tick === 61) {
+        expect(await logs(), `tick ${tick}`).toEqual(expected); // was: 0 records until the 60-tick window ended
+      }
+    }
+    expect(state.failures).toBe(1);
+    expect(onDiskReadError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createIdbChunkBackend — freeze boundary and default deadlines', () => {
+  const never = () => new Promise<never>(() => {});
+
+  it('the in-memory freeze is EXCLUSIVE at count: seq == count was appended after the snapshot and stays out', () => {
+    const store: AsyncKeyedStore = {
+      put: never,
+      readPrefix: never,
+      keys: never,
+      deletePrefix: never,
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    for (let i = 0; i < 3; i++) b.appendEntry(ref(5, 0), rec(`r${i}`)); // seq 0, 1, 2
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 2 }]);
+    expect([...(snap.inMemory?.().values() ?? [])].flat().map((r) => r.serialized)).toEqual([
+      'r0',
+      'r1',
+    ]);
+  });
+
+  it('a readPrefix gets 10 s by default: 9999 ms is waited out, 10000 ms rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      const store: AsyncKeyedStore = {
+        put: async () => undefined, // plain promises: fake-indexeddb schedules with timers that fake timers would freeze
+        readPrefix: never,
+        keys: async () => [],
+        deletePrefix: async () => undefined,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      await b.flush?.();
+      let rejected: unknown;
+      const read = b.snapshot([{ ref: ref(5, 0), count: 1 }]).drainAll();
+      read.catch((e: unknown) => {
+        rejected = e;
+      });
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(rejected).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect((rejected as Error).message).toMatch(/did not answer a read in 10000 ms/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the queue stall default is 5 s: 4999 ms of silence is waited out, 5000 ms gives up', async () => {
+    vi.useFakeTimers();
+    try {
+      const store: AsyncKeyedStore = {
+        put: never,
+        readPrefix: never,
+        keys: never,
+        deletePrefix: never,
+      };
+      const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+      b.openPart(ref(5, 0), 1);
+      b.appendEntry(ref(5, 0), rec('x'));
+      let rejected: unknown;
+      b.snapshot([{ ref: ref(5, 0), count: 1 }])
+        .drainAll()
+        .catch((e: unknown) => {
+          rejected = e;
+        });
+      await vi.advanceTimersByTimeAsync(4750);
+      expect(rejected).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(250);
+      expect((rejected as Error).message).toMatch(/no progress for 5000 ms/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

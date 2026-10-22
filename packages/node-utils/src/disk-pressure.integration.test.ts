@@ -1,5 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writevSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writevSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -228,6 +239,112 @@ describe('recovery after the disk is freed is BOUNDED, however long it was full'
   });
 });
 
+/** Every chunk directory under the generation: [name, has a meta file, bytes of probe padding]. */
+function partDirs(root: string): Array<{ name: string; meta: boolean; probeBytes: number }> {
+  const gen = join(root, '0000000000001');
+  if (!existsSync(gen)) return [];
+  return readdirSync(gen).map((name) => {
+    const dir = join(gen, name);
+    const files = readdirSync(dir);
+    return {
+      name,
+      meta: files.includes('meta'),
+      probeBytes: files.includes('probe') ? statSync(join(dir, 'probe')).size : 0,
+    };
+  });
+}
+
+describe('a LONG full period leaves no probe residue (real fs)', () => {
+  const ticksFull = 150;
+  function ringRig() {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const st = { full: false };
+    const refuse = (): never => {
+      throw full();
+    };
+    const storage = createCaptureRingWriter(root, {
+      generation: 1,
+      fileTypes: ['log', 'network', 'traces.system'],
+      workerFactory: createWorkerThreadRingWorker,
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      writeFile: (p, d) => (st.full ? refuse() : writeFileSecure(p, d)),
+      open: (p) => (st.full ? refuse() : openSync(p, 'a', 0o600)),
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    const tick = (): void => {
+      now += 1000;
+      store.tick(now);
+    };
+    return { root, pressure, st, storage, store, tick };
+  }
+
+  it('worker ring writer: 150 ticks full then freed: every part dir has its meta, the padding is bounded, the pin releases', async () => {
+    const r = ringRig();
+    r.st.full = true;
+    r.pressure.noteWriteError(full());
+    for (let i = 0; i < ticksFull; i++) r.tick();
+    expect(r.pressure.pinned()).toBe(true);
+    r.st.full = false;
+    for (let i = 0; i < 70 && r.pressure.pinned(); i++) r.tick();
+    expect(r.pressure.pinned()).toBe(false);
+    for (let i = 0; i < 10; i++) r.tick();
+    const dirs = partDirs(r.root);
+    expect(dirs.filter((d) => !d.meta)).toEqual([]); // no meta-less directory (the ring probe used to leave ~144 of them)
+    expect(dirs.reduce((n, d) => n + d.probeBytes, 0)).toBeLessThanOrEqual(64 * 1024); // was ~2.4 MB of late padding
+    r.storage.dispose?.();
+  });
+
+  it('batched writer: the same period leaves the same: no meta-less dirs, bounded padding, no open handle left on a closed part', () => {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const st = { full: false };
+    const storage = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      writev: (fd, bufs) => {
+        if (st.full) throw full();
+        return writevSync(fd, bufs);
+      },
+      writeFile: (p, d) => {
+        if (st.full) throw full();
+        writeFileSecure(p, d);
+      },
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    const tick = (): void => {
+      now += 1000;
+      store.tick(now);
+    };
+    st.full = true;
+    pressure.noteWriteError(full());
+    for (let i = 0; i < ticksFull; i++) tick();
+    st.full = false;
+    for (let i = 0; i < 70 && pressure.pinned(); i++) tick();
+    expect(pressure.pinned()).toBe(false);
+    for (let i = 0; i < 10; i++) tick();
+    const dirs = partDirs(root);
+    expect(dirs.filter((d) => !d.meta)).toEqual([]);
+    expect(dirs.reduce((n, d) => n + d.probeBytes, 0)).toBeLessThanOrEqual(64 * 1024);
+    // every part the padding touched was sealed, so the only open handles belong to the part that is still open
+    expect(storage.bufferedBytes?.()).toBe(0);
+    storage.dispose?.();
+  });
+});
+
 describe('the off-thread ring writer (real worker_threads, real fs)', () => {
   const small = 'z'.repeat(100 * 1024);
   const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -368,3 +485,57 @@ describe.skipIf(!canMakeTinyDisk)(
     }, 60_000);
   },
 );
+
+describe('the probe never leaves a descriptor open on a part nobody will seal (batched writer)', () => {
+  it('40 pinned ticks (writes refused, meta writes fine) keep at most ONE data handle open, and every closed part is sealed', () => {
+    const root = mkRoot();
+    const pressure = createDiskPressure();
+    const st = { refusing: true };
+    let opened = 0;
+    let closed = 0;
+    const storage = createBatchedFsChunkStorage(root, {
+      onError: () => {},
+      onWriteFailure: (e) => void pressure.noteWriteError(e),
+      onWriteRecovered: () => pressure.noteWriteRecovered(),
+      open: (path) => {
+        opened += 1;
+        return openSync(path, 'a', 0o600);
+      },
+      close: (fd) => {
+        closed += 1;
+        closeSync(fd);
+      },
+      writev: (fd, bufs) => {
+        if (st.refusing) throw full(); // data is refused, but small meta files land
+        return writevSync(fd, bufs);
+      },
+    });
+    let now = 1000;
+    const store = createFileCaptureStore(storage, {
+      clock: { wallNow: () => now, monotonicNow: () => now },
+      generation: 1,
+      diskPressure: pressure,
+    });
+    pressure.noteWriteError(full());
+    for (let i = 0; i < 40; i++) {
+      now += 1000;
+      store.tick(now);
+    }
+    expect(opened - closed).toBeLessThanOrEqual(1); // the open part's file (was 40: one per padded, closed part)
+    const sealed = partDirs(root).filter((d) => d.meta);
+    const open = sealed.filter((d) => {
+      const meta = JSON.parse(
+        readFileSync(join(root, '0000000000001', d.name, 'meta'), 'utf8'),
+      ) as { e: number | null };
+      return meta.e === null;
+    });
+    expect(open.length).toBeLessThanOrEqual(1); // only the current part claims to be open (was 41 of 42)
+    st.refusing = false;
+    for (let i = 0; i < 70 && pressure.pinned(); i++) {
+      now += 1000;
+      store.tick(now);
+    }
+    expect(pressure.pinned()).toBe(false);
+    storage.dispose?.();
+  });
+});

@@ -873,3 +873,64 @@ describe('createBatchedFsChunkStorage — flushNow is forced past the circuit', 
     s.dispose?.();
   });
 });
+
+describe('createBatchedFsChunkStorage — appendNow (the disk-pressure probe)', () => {
+  const full = (): Error => Object.assign(new Error('no space'), { code: 'ENOSPC' });
+
+  it('writes at once, forced past the circuit, and keeps the handle until the chunk is sealed', () => {
+    const root = mkRoot();
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      failureThreshold: 1,
+      onError: () => {},
+    });
+    s.appendNow?.(GEN, CHUNK, 'probe', '###\n');
+    expect(rawLines(diskPath(root, 'probe'))).toEqual(['###']);
+    s.sealChunk?.(GEN, CHUNK);
+    s.dispose?.();
+  });
+
+  it('a probe that did NOT land is dropped from the buffer and its handle closed: it cannot land late, nor pin a descriptor', () => {
+    const root = mkRoot();
+    let broken = true;
+    let closed = 0;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      onError: () => {},
+      close: (fd) => {
+        closed += 1;
+        closeSyncReal(fd);
+      },
+      writev: (fd, bufs) => {
+        if (broken) throw full();
+        return writevSync(fd, bufs);
+      },
+    });
+    s.appendNow?.(GEN, CHUNK, 'probe', 'padding\n');
+    expect(closed).toBe(1);
+    expect(s.bufferedBytes?.()).toBe(0);
+    broken = false;
+    s.flushSync?.();
+    expect(rawLines(diskPath(root, 'probe'))).toEqual([]); // the refused padding never lands afterwards
+    s.dispose?.();
+  });
+
+  it('leaves OTHER files buffered tails alone', () => {
+    const root = mkRoot();
+    let broken = true;
+    const s = createBatchedFsChunkStorage(root, {
+      highWaterMark: 1 << 20,
+      onError: () => {},
+      writev: (fd, bufs) => {
+        if (broken) throw full();
+        return writevSync(fd, bufs);
+      },
+    });
+    s.append(GEN, CHUNK, 'log', 'real\n');
+    s.appendNow?.(GEN, CHUNK, 'probe', 'padding\n');
+    broken = false;
+    s.flushSync?.();
+    expect(rawLines(diskPath(root, 'log'))).toEqual(['real']);
+    s.dispose?.();
+  });
+});

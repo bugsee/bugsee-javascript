@@ -42,6 +42,13 @@ export interface ChunkStorage {
    */
   flushNow?(): void;
   /**
+   * Append `data` to the file RIGHT NOW on the calling thread and push it to the medium, bypassing any queue or buffer
+   * (the disk-pressure probe: a write that is only queued would pile up behind a full disk and land, late, wherever its
+   * target was). Success and failure are reported through the writer's usual health signals. Absent: the caller falls
+   * back to `append` + `flushNow`.
+   */
+  appendNow?(generation: number, chunk: number, file: string, data: string): void;
+  /**
    * Bytes currently held UNWRITTEN by a batched writer, or absent where nothing is buffered.
    *
    * This is the quantity a back-pressure bound exists to cap: a storage that defers physical writes holds

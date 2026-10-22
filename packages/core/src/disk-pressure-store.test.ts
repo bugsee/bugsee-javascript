@@ -686,7 +686,7 @@ describe('withDiskPressure — a durable half that cannot be read', () => {
     expect(onReadError.mock.calls[0]?.[0]).toMatchObject({ name: 'InvalidStateError' });
   });
 
-  it('after the FIRST part fails to read, the other parts of that snapshot are not waited on again (reported once)', async () => {
+  it('after the FIRST part fails to read, the other parts of that SNAPSHOT are not waited on again (reported once)', async () => {
     let reads = 0;
     const memory = createMemoryChunkBackend({ generation: 1 });
     const durable: ChunkBackend = {
@@ -712,18 +712,10 @@ describe('withDiskPressure — a durable half that cannot be read', () => {
     expect(reads).toBe(1);
     expect(onReadError).toHaveBeenCalledOnce();
     expect(names(all.get('log'))).toEqual(['mem-0', 'mem-1', 'mem-2', 'mem-3']); // every in-memory record is still served
-    const within = await backend.snapshot(frozen).drainAll(); // a NEW snapshot soon after does not wait again either
-    expect(reads).toBe(1);
-    expect(within.get('log')).toHaveLength(4);
-    expect(onReadError).toHaveBeenCalledOnce();
-    for (let i = 0; i < 59; i++) backend.closePart(frozen[0]!.ref, 1, 0); // 59 ticks later: still dead
-    await backend.snapshot(frozen).drainAll();
-    expect(reads).toBe(1);
-    backend.closePart(frozen[0]!.ref, 1, 0); // the 60th tick: the TTL is over, the medium is tried again
-    const after = await backend.snapshot(frozen).drainAll();
+    const again = await backend.snapshot(frozen).drainAll(); // a NEW snapshot tries the medium again, at once
     expect(reads).toBe(2);
-    expect(after.get('log')).toHaveLength(4);
-    expect(onReadError).toHaveBeenCalledTimes(2);
+    expect(again.get('log')).toHaveLength(4);
+    expect(onReadError).toHaveBeenCalledOnce(); // the same streak: reported once, not once per snapshot
   });
 
   it('the fast path (nothing shadowed) is guarded too: an unreadable disk yields an empty window, not a thrown report', async () => {
@@ -1072,17 +1064,33 @@ describe('withDiskPressure — the probe on a backend that can write padding (th
     return { storage, pressure, store, pads, flushNow };
   };
 
-  it('pads the CURRENT part (never a throwaway one), forces the write out, and clamps the size to 1..16 KiB', () => {
+  it('pads the part JUST OPENED by the tick (never the one being closed, never a throwaway one) in a file of its own, and clamps the size to 1..16 KiB', () => {
     const r = rig();
     r.pressure.noteWriteError({ code: 'ENOSPC' });
-    r.store.tick(2000);
+    r.store.tick(2000); // closes part 0, opens part 1, THEN probes: part 1 is padded
+    expect(r.pads.at(-1)).toEqual({ chunk: 1, file: 'probe', bytes: 1024 }); // the 1 KiB floor
     r.store.tick(3000);
-    expect(r.pads.at(-1)).toEqual({ chunk: 1, file: 'log', bytes: 1024 }); // the part open at that tick, the 1 KiB floor
+    expect(r.pads.at(-1)).toEqual({ chunk: 2, file: 'probe', bytes: 1024 });
+    expect(r.pads.map((p) => p.chunk)).toEqual([1, 2]); // part 0 (closed by the first tick) was never padded
     expect(r.flushNow).toHaveBeenCalled();
     expect(r.storage.chunks(1).every((c) => c < 1000)).toBe(true); // no throwaway part exists
     r.store.add(rec('log', 5, 'r'.repeat(900_000)));
     r.store.tick(4000);
     expect(r.pads.at(-1)?.bytes).toBe(16 * 1024);
+  });
+
+  it('every part that was padded is SEALED when its turn comes: no meta is left claiming a part never ended', () => {
+    const r = rig();
+    r.pressure.noteWriteError({ code: 'ENOSPC' });
+    for (let t = 2; t <= 12; t++) r.store.tick(t * 1000);
+    const chunks = r.storage.chunks(1).sort((a, b) => a - b);
+    const current = Math.max(...chunks);
+    for (const c of chunks) {
+      const meta = JSON.parse(r.storage.read(1, c, 'meta') as string) as { e: number | null };
+      if (c === current)
+        expect(meta.e).toBeNull(); // the open part is the only one still open
+      else expect(meta.e, `part ${c}`).not.toBeNull();
+    }
   });
 
   it('the padding leaves no residue: a snapshot returns the real records only, and a recovery-style read skips it', async () => {
@@ -1106,7 +1114,7 @@ describe('withDiskPressure — the probe on a backend that can write padding (th
     expect(names(all.get('log'))).toEqual(['real-1', 'real-2']);
   });
 
-  it('opens a current part the medium never saw before padding it, and works with a storage that has no flushNow', () => {
+  it('opens the part the medium never saw before padding it, and works with a storage that has neither appendNow nor flushNow', () => {
     const storage = createInMemoryChunkStorage();
     const pressure = createDiskPressure();
     const store = createFileCaptureStore(storage, {
@@ -1118,9 +1126,10 @@ describe('withDiskPressure — the probe on a backend that can write padding (th
     store.tick(2000);
     expect(storage.chunks(1)).toEqual([0]);
     pressure.noteWriteError({ code: 'ENOSPC' });
-    store.tick(3000);
-    expect(storage.chunks(1)).toContain(1);
-    expect(storage.read(1, 1, 'meta')).toBeDefined(); // the part that was opened under `none` got its meta before the padding
+    store.tick(3000); // closes part 1 (never opened on disk) and opens part 2, which is padded (and so gets its meta)
+    expect(storage.chunks(1)).toContain(2);
+    expect(storage.read(1, 2, 'meta')).toBeDefined(); // opened under a pin: meta first, then the padding
+    expect(storage.read(1, 1, 'meta')).toBeUndefined(); // the part being closed was NOT created just to be padded
   });
 
   it('a padding write that throws is reported once per pin', () => {
@@ -1242,5 +1251,172 @@ describe('withDiskPressure — an unreadable medium serves what the backend stil
     const snap = backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]);
     expect((await snap.drainAll()).size).toBe(0);
     expect(snap.inMemory).toBeUndefined();
+  });
+});
+
+describe('withDiskPressure — a transient read failure must not hide what the medium holds (no dead window)', () => {
+  /** A durable backend whose reads can be switched between failing, hanging and healthy. */
+  function flaky() {
+    const memory = createMemoryChunkBackend({ generation: 1 });
+    const state: { mode: 'ok' | 'fail' | 'hang'; reads: number } = { mode: 'ok', reads: 0 };
+    const durable: ChunkBackend = {
+      ...memory,
+      snapshot: (parts) => {
+        const snap = memory.snapshot(parts);
+        return {
+          ...snap,
+          drainAll: () => {
+            state.reads += 1;
+            if (state.mode === 'fail') {
+              return Promise.reject(
+                Object.assign(new Error('closing'), { name: 'InvalidStateError' }),
+              );
+            }
+            return state.mode === 'hang' ? new Promise(() => {}) : snap.drainAll();
+          },
+        };
+      },
+    };
+    return { durable, state };
+  }
+  const logsOf = async (b: ChunkBackend, n: number): Promise<string[]> =>
+    names(
+      (await b.snapshot([{ ref: { generation: 1, number: 0 }, count: n }]).drainAll()).get('log'),
+    );
+
+  it('serves EVERY landed record again at the very next snapshot once the medium answers (the old 60-tick skip hid them)', async () => {
+    const { durable, state } = flaky();
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(durable, createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    const ref = { generation: 1, number: 0 };
+    backend.appendEntry(ref, rec('log', 1, 'a'));
+    state.mode = 'fail';
+    expect(await logsOf(backend, 1)).toEqual([]); // the medium is unreadable: nothing from it
+    state.mode = 'ok';
+    backend.appendEntry(ref, rec('log', 2, 'b')); // lands while the medium is healthy again
+    for (let tick = 0; tick < 62; tick++) {
+      backend.closePart(ref, 1, 0);
+      if (tick === 0 || tick === 29 || tick === 58 || tick === 61) {
+        expect(await logsOf(backend, 2), `tick ${tick}`).toEqual(['a', 'b']);
+      }
+    }
+    expect(onReadError).toHaveBeenCalledOnce();
+  });
+
+  it('reports ONCE per streak of failures across snapshots, and again after a read succeeded in between', async () => {
+    const { durable, state } = flaky();
+    const onReadError = vi.fn();
+    const backend = withDiskPressure(durable, createDiskPressure(), { onReadError });
+    backend.openPart({ generation: 1, number: 0 }, 0);
+    backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+    state.mode = 'fail';
+    for (let i = 0; i < 3; i++) await logsOf(backend, 1);
+    expect(onReadError).toHaveBeenCalledTimes(1);
+    state.mode = 'ok';
+    await logsOf(backend, 1);
+    state.mode = 'fail';
+    await logsOf(backend, 1);
+    expect(onReadError).toHaveBeenCalledTimes(2);
+  });
+
+  it('while degraded each snapshot waits at most 2 s for the medium; a healthy one is given the full backstop', async () => {
+    vi.useFakeTimers();
+    try {
+      const { durable, state } = flaky();
+      const onReadError = vi.fn();
+      const backend = withDiskPressure(durable, createDiskPressure(), { onReadError });
+      backend.openPart({ generation: 1, number: 0 }, 0);
+      backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1, 'a'));
+      const snap = () =>
+        backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
+      state.mode = 'hang';
+      const first = snap();
+      await vi.advanceTimersByTimeAsync(29_999); // not yet degraded: the full 30 s backstop applies
+      expect(onReadError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await first;
+      expect(onReadError).toHaveBeenCalledOnce();
+      const second = snap(); // degraded: 2 s
+      await vi.advanceTimersByTimeAsync(1999);
+      let done = false;
+      void second.then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await second;
+      expect(onReadError).toHaveBeenCalledOnce(); // same streak
+      state.mode = 'ok'; // the medium is back: the next snapshot gets its data at once
+      expect(names((await snap()).get('log'))).toEqual(['a']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a configured readTimeoutMs below 2 s still wins while degraded', async () => {
+    vi.useFakeTimers();
+    try {
+      const { durable, state } = flaky();
+      const backend = withDiskPressure(durable, createDiskPressure(), {
+        readTimeoutMs: 100,
+        onReadError: () => {},
+      });
+      backend.openPart({ generation: 1, number: 0 }, 0);
+      backend.appendEntry({ generation: 1, number: 0 }, rec('log', 1));
+      state.mode = 'hang';
+      const snap = () =>
+        backend.snapshot([{ ref: { generation: 1, number: 0 }, count: 1 }]).drainAll();
+      const first = snap();
+      await vi.advanceTimersByTimeAsync(100);
+      await first;
+      const second = snap();
+      await vi.advanceTimersByTimeAsync(100);
+      await second; // resolved at 100 ms, not 2 s
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('withDiskPressure — a probe that cannot land its meta leaves nothing and is retried', () => {
+  it('when the meta write only REPORTS its failure, the part is not padded, its empty directory is removed, and the next durable write recreates the meta', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const onDiskWriteError = vi.fn();
+    let refuseMeta = false;
+    const write = storage.write.bind(storage);
+    // like the batched / ring writers: a failed meta write creates the directory, reports, and does not throw
+    storage.write = (g, c, f, d) => {
+      if (refuseMeta && f === 'meta') {
+        storage.append(g, c, 'zz-scaffold', '');
+        storage.removeChunk(g, c);
+        storage.append(g, c, 'scaffold', ''); // the directory exists, the meta does not
+        return;
+      }
+      write(g, c, f, d);
+    };
+    const store = createFileCaptureStore(storage, {
+      clock: clockAt(1000),
+      generation: 1,
+      diskPressure: pressure,
+      onDiskWriteError,
+    });
+    refuseMeta = true;
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    store.tick(2000); // opens part 1 under a pin (no meta), probe due: its meta write 'fails' silently
+    expect(storage.read(1, 1, 'probe')).toBeUndefined(); // never padded
+    expect(storage.chunks(1)).not.toContain(1); // the empty directory is gone
+    expect(
+      onDiskWriteError.mock.calls.some((c) =>
+        /no meta on the medium/.test(String((c[0] as Error).message)),
+      ),
+    ).toBe(true);
+    refuseMeta = false;
+    pressure.noteWriteRecovered();
+    store.add(rec('traces.system', 2500, 'real'));
+    expect(storage.read(1, 1, 'meta')).toBeDefined(); // the first durable write re-opened the part
+    expect(storage.read(1, 1, 'traces.system')).toBe('2500\treal\n');
   });
 });

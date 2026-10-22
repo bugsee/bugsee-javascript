@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileChunkBackend } from '@bugsee/core';
@@ -592,5 +600,54 @@ describe('CaptureRingWriter — a host-side failure arms the worker', () => {
       onError: () => {},
     });
     expect(() => s.write(GEN, 0, 'meta', '{}')).not.toThrow();
+  });
+});
+
+describe('CaptureRingWriter — appendNow (the disk-pressure probe)', () => {
+  it('writes synchronously on the calling thread: on disk at once, and NEVER as a ring frame', () => {
+    const root = mkRoot();
+    const frames = vi.fn();
+    const s = mk(root, {
+      fileTypes: [...FILE_TYPES, 'probe'], // even a file the RING knows is written directly by appendNow, not queued
+      workerFactory: (args) => {
+        const sync = createSyncRingWorker(args);
+        return {
+          ...sync,
+          flushAndWait: (ms: number) => {
+            frames();
+            sync.flushAndWait(ms);
+          },
+        } as RingWorker;
+      },
+    });
+    s.write(GEN, 0, 'meta', '{}');
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(readFileSync(diskPath(root, 0, 'probe'), 'utf8')).toBe('###\n'); // no flushSync needed
+    expect(frames).not.toHaveBeenCalled(); // nothing queued, nothing drained
+    s.dispose?.();
+  });
+
+  it('a successful probe write is a DATA success (it recovers after failures); a failed one is a failure', () => {
+    const failures: unknown[] = [];
+    let recovered = 0;
+    let broken = true;
+    const s = mk(mkRoot(), {
+      onWriteFailure: (e) => void failures.push(e),
+      onWriteRecovered: () => {
+        recovered += 1;
+      },
+      open: (p) => {
+        if (broken) throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        return openSync(p, 'a', 0o600);
+      },
+      onError: () => {},
+    });
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(failures).toHaveLength(1);
+    expect(recovered).toBe(0);
+    broken = false;
+    s.appendNow?.(GEN, 0, 'probe', '###\n');
+    expect(recovered).toBe(1);
+    s.dispose?.();
   });
 });

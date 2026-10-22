@@ -209,6 +209,7 @@ export function createCaptureRingWriter(
       ensureDir(chunkDir(g, c));
       fd = openFile(filePath(g, c, file));
       writeSync(fd, dataStr);
+      noteSuccess(); // a DATA write that landed: the medium accepts record data
     } catch (error) {
       // A broken/full disk must NEVER throw out of append — it is reached synchronously from interceptors
       // and the tick (the fallback path: unknown type / foreign gen / oversized). Shed + report instead.
@@ -243,6 +244,13 @@ export function createCaptureRingWriter(
       }
       const { written } = encoder.encodeInto(dataStr, view);
       producer.commit(encodePathId(c, ti), written);
+    },
+
+    // The disk-pressure probe: synchronous on the calling thread, NEVER a ring frame. A frame queued while the disk is
+    // full waits in the ring, is retried by the worker (which recreates the part directory if it was evicted meanwhile)
+    // and lands, late, as padding that takes back the space just freed.
+    appendNow(g, c, file, dataStr): void {
+      mainAppend(g, c, file, dataStr);
     },
 
     write(g, c, file, dataStr): void {
