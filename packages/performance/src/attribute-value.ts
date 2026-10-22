@@ -1,4 +1,4 @@
-import { REDACTED } from '@bugsee/protocol';
+import { lastSecretShapeStart, REDACTED } from '@bugsee/protocol';
 
 // Span attribute values: bounding, safe copying and the wire flattening of complex values.
 //
@@ -112,9 +112,13 @@ const capText = (text: string, max: number, dropPartialToken = false): string =>
   if (dropPartialToken && isTokenChar(text.charCodeAt(end))) {
     const cut = end;
     while (end > 0 && isTokenChar(text.charCodeAt(end - 1))) end--;
-    // No boundary at all: one long blob (a hash, a URL path). Keep its prefix, which carries the data that
-    // matters, unless it is JWT-shaped, where the prefix IS the readable header and claims.
-    if (end === 0 && !text.startsWith('eyJ')) end = cut;
+    // No boundary at all: one long unbroken run (a hash, a URL path, `id_token=<jwt>`). Keep its prefix, which
+    // carries the data that matters, but back off before the LAST place a secret shape begins in it: a secret
+    // the cut leaves half-written no longer matches `redactShapes`, so its readable part would ship as is.
+    if (end === 0) {
+      const start = lastSecretShapeStart(text.slice(0, cut));
+      end = start === -1 ? cut : start;
+    }
   }
   return text.slice(0, end) + TRUNCATION_MARKER;
 };
@@ -445,7 +449,10 @@ export function flattenAttributeValue(value: unknown, span?: SpanBudget): unknow
   return Array.isArray(normal) && isPassThroughArray(normal) ? normal : stringifyAnyValue(normal);
 }
 
-/** Flatten an attributes record for the wire. Returns the SAME record when nothing needed changing. */
+/**
+ * Flatten an attributes record for the wire. Returns the SAME record only when every value is already a scalar;
+ * an array value is always copied (see {@link flattenAttributeValue}), so a record with one is a new record.
+ */
 export function flattenAttributes(attributes: Record<string, unknown>): Record<string, unknown> {
   const span = createSpanBudget();
   let changed = false;

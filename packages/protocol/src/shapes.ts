@@ -80,6 +80,30 @@ const SHAPE_PATTERNS: readonly RegExp[] = [
   /gh[posu]_[A-Za-z0-9]{36,}/g, // GitHub personal access / OAuth / user / server token
 ];
 
+/**
+ * Where a secret shape BEGINS: the opening of each pattern in {@link SHAPE_PATTERNS} plus the JWT header.
+ * Kept next to those patterns (and guarded by a sample per shape in the tests) so the two cannot drift.
+ */
+const SECRET_SHAPE_START = /eyJ|A(?:KIA|SIA|GPA|IDA|ROA)|(?:sk|pk|rk)_live_|whsec_|gh[posu]_/g;
+
+/**
+ * The offset of the LAST place in `text` where a secret shape begins, or -1. A caller that must cut text
+ * before redacting it uses this to back off before a secret the cut would leave half-written: a partial
+ * secret no longer matches {@link redactShapes}, so it would reach the wire in the clear.
+ */
+export function lastSecretShapeStart(text: string): number {
+  let last = -1;
+  SECRET_SHAPE_START.lastIndex = 0;
+  for (
+    let match = SECRET_SHAPE_START.exec(text);
+    match !== null;
+    match = SECRET_SHAPE_START.exec(text)
+  ) {
+    last = match.index;
+  }
+  return last;
+}
+
 function isLuhnValid(digits: string): boolean {
   let sum = 0;
   let double = false;

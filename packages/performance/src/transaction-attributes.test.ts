@@ -27,6 +27,14 @@ const child = (attributes?: Record<string, unknown>): TransactionWire['spans'][n
 });
 
 describe('flattenTransactionAttributes', () => {
+  it('returns a NEW record (equal content) when an attribute is an array: arrays are always copied', () => {
+    const input = txn({ attributes: { tags: ['x'] }, spans: [child({ list: ['a', 'b'] })] });
+    const out = flattenTransactionAttributes(input);
+    expect(out).toEqual(input);
+    expect(out.attributes?.tags === input.attributes?.tags).toBe(false);
+    expect(out.spans[0]?.attributes?.list === input.spans[0]?.attributes?.list).toBe(false);
+  });
+
   it('returns the SAME transaction when no attribute is complex (the common path copies nothing)', () => {
     const plain = txn({ attributes: { a: 1, ok: true }, spans: [child({ b: 'y' }), child()] });
     expect(flattenTransactionAttributes(plain)).toBe(plain);

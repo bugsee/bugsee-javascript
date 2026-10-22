@@ -479,8 +479,9 @@ describe('work bounds that output alone cannot show', () => {
   });
 });
 
+const MAX_LEAF = MAX_ATTRIBUTE_JSON_LENGTH - 64;
+
 describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape scanning applies)', () => {
-  const MAX_LEAF = MAX_ATTRIBUTE_JSON_LENGTH - 64;
   const leafEnd = MAX_LEAF - TRUNCATION_MARKER.length;
   const spaced = (length: number): string => 'ab '.repeat(length).slice(0, length);
 
@@ -535,12 +536,58 @@ describe('a cut never leaves a PARTIAL secret-shaped token behind (where shape s
     expect(out.note.endsWith(`tok${TRUNCATION_MARKER}`)).toBe(true);
   });
 
-  it('keeps a long boundary-less leaf (a hash, a URL) cut, but drops one that begins like a JWT', () => {
-    const hash = safeAnyValue({ h: 'f'.repeat(9000) }) as { h: string };
-    expect(hash.h.length).toBe(MAX_LEAF);
-    expect(hash.h.startsWith('ffff')).toBe(true);
-    const jwt = safeAnyValue({ j: `eyJ${'a'.repeat(9000)}` }) as { j: string };
-    expect(jwt.j).toBe(TRUNCATION_MARKER);
+  describe('a leaf with no token boundary keeps its cut prefix, but never a half-written secret', () => {
+    const payload = (globalThis as unknown as { btoa(input: string): string })
+      .btoa('{"email":"patient@clinic.example","ssn":"123-45-6789"}')
+      .replace(/=+$/, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+    const jwt = `eyJhbGciOiJIUzI1NiJ9.${payload}.${'S'.repeat(9000)}`;
+    const leaf = (text: string): string => (safeAnyValue({ note: text }) as { note: string }).note;
+
+    it('keeps a hash or a URL-shaped prefix', () => {
+      const hash = leaf('f'.repeat(9000));
+      expect(hash.length).toBe(MAX_LEAF);
+      expect(hash.startsWith('ffff')).toBe(true);
+    });
+
+    it('drops a JWT that begins the leaf, and one placed after other token characters', () => {
+      expect(leaf(jwt)).not.toContain(payload);
+      for (const prefix of ['id_token=', '/auth/callback/', 'token.', 'a_b-c']) {
+        const out = leaf(`${prefix}${jwt}`);
+        expect(out).toContain(prefix);
+        expect(out).not.toContain(payload); // the claims are gone
+        expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+      }
+    });
+
+    it('ignores a secret that begins AFTER the cut (nothing of it is kept, the leaf stays at its cap)', () => {
+      const out = leaf(`${'a'.repeat(9000)}ghp_abcdefghijklmnopqrstuvwxyz0123456789`);
+      expect(out.length).toBe(MAX_LEAF);
+      expect(out.startsWith('aaaa')).toBe(true);
+    });
+
+    it('drops a JWT that follows a space (the space is the boundary, the JWT is the unfinished run)', () => {
+      const out = leaf(`${'word '.repeat(10)} ${jwt}`);
+      expect(out).not.toContain(payload);
+      expect(out.startsWith('word word')).toBe(true);
+      expect(leaf(` ${jwt}`)).toBe(` ${TRUNCATION_MARKER}`);
+    });
+
+    it.each([
+      ['ghp_', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
+      ['AKIA', 'AKIAIOSFODNN7EXAMPLE'],
+      ['ASIA', 'ASIAIOSFODNN7EXAMPLE'],
+      // Built from pieces so the repository's secret scanning does not take a fixture for a live key.
+      ['sk_live_', ['sk', 'live', 'abcdefghijklmnopqrstuvwx'].join('_')],
+      ['whsec_', ['whsec', 'abcdefghijklmnopqrstuvwx'].join('_')],
+    ])('drops a %s secret the cut leaves half-written', (needle, secret) => {
+      const filler = 'a'.repeat(MAX_LEAF - TRUNCATION_MARKER.length - 9); // 9 characters of the secret survive
+      const out = leaf(`${filler}${secret}${'b'.repeat(200)}`);
+      expect(out).not.toContain(needle);
+      expect(out.startsWith('aaaa')).toBe(true);
+      expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+    });
   });
 
   it('does not touch base64 of a byte array (not text)', () => {

@@ -4,7 +4,8 @@ import type { TransactionWire } from './span';
 /**
  * The wire step for attributes: after redaction has seen any nested (OpenTelemetry `AnyValue`) value as a
  * tree, flatten what remains to scalars and bounded JSON strings (see attribute-value.ts for the pipeline).
- * Returns the SAME transaction, by reference, when nothing was complex, so the default path copies nothing.
+ * Returns the SAME transaction, by reference, only when every attribute is already a scalar; any array
+ * attribute is copied (a filter may hold the array it set), so a transaction with one comes back as a new record.
  */
 export function flattenTransactionAttributes(transaction: TransactionWire): TransactionWire {
   const root =

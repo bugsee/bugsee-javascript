@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { redactShapes } from './index';
+import { lastSecretShapeStart, redactShapes } from './index';
 
 const R = '<redacted>';
 
@@ -296,5 +296,46 @@ describe('the JWT bound sits at 8 KB, where the reachable window is', () => {
   it('still redacts a JWT just under the bound', () => {
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig';
     expect(redactShapes(`${'x'.repeat(8000)} ${jwt}`)).toContain('<redacted>');
+  });
+});
+
+describe('lastSecretShapeStart', () => {
+  // One COMPLETE secret per shape redactShapes knows. The start finder must locate the beginning of each, so
+  // a caller that has to cut text can back off before a secret that the cut would leave half-written (a
+  // partial secret no longer matches redactShapes, so it would ship in the clear). A new pattern in
+  // SHAPE_PATTERNS needs a sample here: this is the drift guard.
+  const SAMPLES: Record<string, string> = {
+    jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
+    'aws AKIA': 'AKIAIOSFODNN7EXAMPLE',
+    'aws ASIA': 'ASIAIOSFODNN7EXAMPLE',
+    'aws AGPA': 'AGPAIOSFODNN7EXAMPLE',
+    'aws AIDA': 'AIDAIOSFODNN7EXAMPLE',
+    'aws AROA': 'AROAIOSFODNN7EXAMPLE',
+    'stripe sk': ['sk', 'live', 'abcdefghijklmnop'].join('_'),
+    'stripe pk': ['pk', 'live', 'abcdefghijklmnop'].join('_'),
+    'stripe rk': ['rk', 'live', 'abcdefghijklmnop'].join('_'),
+    'stripe webhook': ['whsec', 'abcdefghijklmnop'].join('_'),
+    'github ghp': `ghp_${'a'.repeat(36)}`,
+    'github gho': `gho_${'a'.repeat(36)}`,
+    'github ghu': `ghu_${'a'.repeat(36)}`,
+    'github ghs': `ghs_${'a'.repeat(36)}`,
+  };
+
+  it.each(
+    Object.entries(SAMPLES),
+  )('finds the start of a %s secret, and redactShapes agrees it is one', (_name, secret) => {
+    expect(redactShapes(secret)).not.toBe(secret);
+    // A JWT's payload segment (`{"...` base64url) also begins `eyJ`, so its LAST start is the payload's.
+    const start = secret.startsWith('eyJ') ? secret.lastIndexOf('eyJ') : 0;
+    expect(lastSecretShapeStart(secret)).toBe(start);
+    expect(lastSecretShapeStart(`prefix-${secret}`)).toBe(7 + start);
+    expect(lastSecretShapeStart(`id_token=${secret.slice(0, 8)}`)).toBe(9); // a half-written one too
+  });
+
+  it('returns the LAST start when several are present, and -1 when there is none', () => {
+    const text = `${SAMPLES.jwt}/${SAMPLES['github ghp']}/plain`;
+    expect(lastSecretShapeStart(text)).toBe((SAMPLES.jwt?.length ?? 0) + 1);
+    expect(lastSecretShapeStart('nothing secret here, just words and AKI')).toBe(-1);
+    expect(lastSecretShapeStart('')).toBe(-1);
   });
 });

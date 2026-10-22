@@ -266,7 +266,8 @@ Rejected: flattening to dotted keys (key explosion, no stable form for arrays) a
 exactly what OTEP 4485 carries). Native OTLP `kvlistValue`/`arrayValue` on produce was reconsidered and NOT done:
 the OTLP tee exports from the store, which holds the post-wire (already flattened) transactions, and the
 Bugsee wire and viewer read scalar attribute values, so a native kvlist could only be emitted by carrying trees
-through the store and upload wire. `toAnyValue` (the exported mapping) still emits `bytesValue` for a byte array
+through the store and upload wire. `toAnyValue` (the exported mapping) still emits `bytesValue` for a byte array that fits (up to 6144 bytes, exactly
+8192 base64 characters)
 and a bounded JSON `stringValue` for maps/arrays.
 
 | input | after consume | at the wire / OTLP produce |
@@ -274,7 +275,7 @@ and a bounded JSON `stringValue` for maps/arrays.
 | string / boolean / number | unchanged (a string over 32 KiB is cut, marked, and its unfinished final token dropped) | `stringValue` / `boolValue` / `intValue` or `doubleValue` |
 | homogeneous scalar array (null entries allowed) | an equal COPY (never the caller's array: a later `push` cannot reach the store) | the same copy; OTLP: JSON `stringValue` (existing behaviour) |
 | nested map, mixed/nested array | bounded tree (redactable) | one bounded JSON string |
-| byte array | base64 string | string; `toAnyValue`: `bytesValue` (base64, bounded) |
+| byte array | base64 string (cut at 8192 characters, marked) | string; `toAnyValue`: `bytesValue` (valid base64) up to 6144 bytes, a cut array is a `stringValue` carrying the marker |
 | bigint | number if exact, else decimal string | `intValue` for a safe-range value (a number by then); a beyond-safe-range bigint is already decimal text and exports as `stringValue` |
 | null, undefined, function, symbol | dropped | dropped |
 
@@ -282,13 +283,18 @@ and a bounded JSON `stringValue` for maps/arrays.
 longer recognise: a SQL statement cut inside a string literal has its open trailing literal replaced
 (`redactSqlLiterals` handles an unterminated `'`/`"`). Where secret-shape scanning applies (string leaves inside
 maps and arrays-of-maps), a leaf cut inside a token (a JWT after its payload, a `ghp_` token at 15 of 36
-characters) drops the unfinished token, because secret shapes only match when complete; a leaf with no token
-boundary at all (a hash, a URL path) keeps its cut prefix, except one that begins `eyJ` (JWT-shaped), which is
-dropped to the marker. A TOP-LEVEL string attribute is only cut (it is never shape-scanned, so dropping its
-unfinished token would protect nothing and would lose the host of a long URL). Byte arrays (base64) are not text
-and are only cut. Known limitation, pre-existing and not changed here: SQL literal redaction pairs quotes left to
-right, so comments, backslash escapes and dollar quotes can shift the pairing and leave a literal in the clear
-(bugsee/bugsee-javascript#109).
+characters) drops the unfinished token, because secret shapes only match when complete. A leaf with NO token
+boundary at all (one unbroken run, such as `id_token=<jwt>`, a long hash, or a base64url blob) keeps its cut
+prefix but backs off before the LAST place a secret shape begins in it (`lastSecretShapeStart` in
+`@bugsee/protocol`, kept next to the shape patterns and guarded by a sample per shape): a JWT that begins the
+leaf collapses to the marker, `id_token=` is kept without the token, and a JWT's header segment, which carries
+no personal data, may remain while its payload does not. `:` is not a token character, so a long map-leaf URL
+(`https://host/...` past the cap) is cut back to `https:` plus the marker: that is accepted data loss, a
+scheme-and-host-keeping rule was not worth another heuristic. A TOP-LEVEL string attribute is only cut (it is
+never shape-scanned, so dropping its unfinished token would protect nothing and would lose the host of a long
+URL). Byte arrays (base64) are not text and are only cut. Known limitation, pre-existing and not changed here:
+SQL literal redaction pairs quotes left to right, so comments, backslash escapes and dollar quotes can shift the
+pairing and leave a literal in the clear (bugsee/bugsee-javascript#109).
 
 *Bounds and totality.* Never throws, and bounded in WORK per ATTRIBUTE, and per SPAN for TREES: every string leaf and key is
 cut at 8128 characters before it is copied (a key that long is not kept, and its value is redacted, so a cut can

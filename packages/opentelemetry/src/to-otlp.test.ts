@@ -83,6 +83,15 @@ describe('toAnyValue', () => {
       bytesValue: expect.stringMatching(/^[A-Za-z0-9+/]+=*$/),
     });
   });
+  it('pins the byte boundary: 6144 bytes (exactly 8192 base64 characters) stays bytesValue, 6145 is cut', () => {
+    const fits = toAnyValue(new Uint8Array(6144)) as { bytesValue: string };
+    expect(fits.bytesValue.length).toBe(8192);
+    expect(fits.bytesValue.endsWith('...[truncated]')).toBe(false);
+    const cut = toAnyValue(new Uint8Array(6145)) as { stringValue: string };
+    expect('bytesValue' in cut).toBe(false);
+    expect(cut.stringValue.length).toBe(8192);
+    expect(cut.stringValue.endsWith('...[truncated]')).toBe(true);
+  });
   it('never throws: an unencodable object yields no value instead of an exception', () => {
     const original = JSON.stringify;
     JSON.stringify = () => {
