@@ -1521,3 +1521,39 @@ describe('createIdbChunkBackend — freeze boundary and default deadlines', () =
     }
   });
 });
+
+describe('createIdbChunkBackend — the frozen in-memory copy', () => {
+  const flat = (m: Map<FileType, StoredEntry[]> | undefined): string[] =>
+    [...(m?.values() ?? [])]
+      .flat()
+      .map((r) => r.serialized)
+      .sort();
+
+  it('a write that LANDS after the freeze but before a failing read is still served from memory', async () => {
+    const inner = keyed();
+    const state = { failReads: false };
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) =>
+        state.failReads
+          ? Promise.reject(Object.assign(new Error('closing'), { name: 'InvalidStateError' }))
+          : inner.readPrefix(prefix),
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('queued', 'log')); // not landed yet at the freeze
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]);
+    await b.flush?.(); // it lands now: it leaves the live map
+    state.failReads = true;
+    await expect(snap.drainAll()).rejects.toThrow();
+    expect(flat(snap.inMemory?.())).toEqual(['queued']); // the copy still has it
+  });
+
+  it('a record that both landed and sits in the frozen copy appears ONCE when the read succeeds', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1);
+    b.appendEntry(ref(5, 0), rec('once', 'log'));
+    const snap = b.snapshot([{ ref: ref(5, 0), count: 1 }]); // frozen while queued
+    expect(await collect(snap)).toEqual(['once']); // landed by the time it is read, still in the copy
+  });
+});

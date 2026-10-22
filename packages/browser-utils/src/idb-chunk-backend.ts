@@ -485,9 +485,14 @@ export function createIdbChunkBackend(
 
     snapshot(parts: readonly FrozenPart[]): CaptureSnapshot {
       const frozen = [...parts];
-      // The in-memory maps are captured NOW by reference (appends only grow them; `seq < count` is the freeze), so a part
-      // evicted while this snapshot is still being read keeps its records.
-      const heldAtFreeze = frozen.map(({ ref }) => unlanded.get(chunkKey(ref)));
+      // The in-memory maps are captured NOW (`seq < count` is the freeze), so a part evicted, or a write that lands, while
+      // this snapshot is still being read does not take its records away.
+      // COPIED (the maps hold only what is not on the medium yet, so the copy is small): a queued write that lands after the
+      // freeze but before a failing read leaves the live map, and the in-memory fallback must still have it.
+      const heldAtFreeze = frozen.map(({ ref }) => {
+        const held = unlanded.get(chunkKey(ref));
+        return held === undefined ? undefined : new Map(held);
+      });
       const frozenQueue = settled(); // every write up to now must land before the read
       for (const { ref } of frozen) {
         const key = chunkKey(ref);
@@ -556,7 +561,9 @@ export function createIdbChunkBackend(
             }
             landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
           }
-          const kept = heldFor(index, count);
+          // An entry can be BOTH landed (the read saw it) and in the frozen copy: by sequence it is one record.
+          const landedSeqs = new Set(landed.map(({ seq }) => seq));
+          const kept = heldFor(index, count).filter(({ seq }) => !landedSeqs.has(seq));
           const merged =
             kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
           for (const { record } of merged) {
