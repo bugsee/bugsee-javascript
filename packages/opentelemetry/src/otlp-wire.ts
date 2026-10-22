@@ -28,9 +28,12 @@ export const OtlpStatusCode = {
  */
 export type OtlpSpecialDouble = 'NaN' | 'Infinity' | '-Infinity';
 
-/** OTLP `AnyValue` — a one-of over the scalar kinds we produce (uint64 `intValue` is a decimal string). */
+/** OTLP `AnyValue` — a one-of over the kinds we produce (uint64 `intValue` is a decimal string; `bytesValue`
+ *  is base64 per the proto3 JSON mapping). Arrays and maps are emitted as a JSON `stringValue`, not as
+ *  `arrayValue`/`kvlistValue` (see attribute-value.ts for why). */
 export type OtlpAnyValue =
   | { stringValue: string }
+  | { bytesValue: string }
   | { boolValue: boolean }
   | { intValue: string }
   | { doubleValue: number | OtlpSpecialDouble };

@@ -121,6 +121,15 @@ function normalizeKey(name: string): string {
 }
 
 /**
+ * The denylist, normalised ONCE. `isSensitiveKey` used to re-normalise every entry (a lowercase plus a regex
+ * replace, ~60 times) on every call, ~4 us per key, and it now runs per NESTED key of a span attribute.
+ * Lazy, so the list is read after its declaration regardless of where this function is called from.
+ */
+let normalizedSubstrings: string[] | undefined;
+const NORMALIZED_KEY_SUBSTRINGS = (): string[] =>
+  (normalizedSubstrings ??= SENSITIVE_KEY_SUBSTRINGS.map(normalizeKey));
+
+/**
  * True if `name` is a sensitive body/query key.
  *
  * TWO rules, because they carry different risks:
@@ -134,7 +143,7 @@ function normalizeKey(name: string): string {
  */
 export function isSensitiveKey(name: string): boolean {
   const normalized = normalizeKey(name);
-  if (SENSITIVE_KEY_SUBSTRINGS.some((sub) => normalized.includes(normalizeKey(sub)))) {
+  if (NORMALIZED_KEY_SUBSTRINGS().some((sub) => normalized.includes(sub))) {
     return true;
   }
   return isSensitiveHeader(name);

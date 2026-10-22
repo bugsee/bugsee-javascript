@@ -17,7 +17,8 @@
       "outputs": ["coverage/**"]
     },
     "test:unit": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      "env": ["BUGSEE_REQUIRE_OTEL3"]
     },
     "test:e2e": {
       "dependsOn": ["^build"],

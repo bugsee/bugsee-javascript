@@ -1,6 +1,11 @@
 import { trace } from '@opentelemetry/api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { attachBugseeOtelProvider, type OtelTracerModules } from './otel-provider';
+import {
+  attachBugseeOtelProvider,
+  loadOtelModules,
+  type OtelImporters,
+  type OtelTracerModules,
+} from './otel-provider';
 
 // A structural stand-in for the Bugsee SpanProcessor (attach only forwards it into createProvider).
 const processor = {
@@ -209,5 +214,143 @@ describe('attachBugseeOtelProvider', () => {
         'error',
       );
     });
+  });
+});
+
+// OpenTelemetry JS 3.0 removed `@opentelemetry/sdk-trace-base` (and renamed `BasicTracerProvider` to
+// `TracerProvider` in its replacement `@opentelemetry/sdk-trace`). Without a fallback the zero-config
+// provider silently stays 'unavailable' for every OTel 3 install (issue #94).
+describe('loadOtelModules (which OTel SDK package provides the provider)', () => {
+  const absent = () => Promise.reject(new Error('Cannot find module'));
+  const ctor = (tag: string) =>
+    class {
+      readonly tag = tag;
+      constructor(readonly options: { spanProcessors: unknown[] }) {}
+    };
+  const api = () => Promise.resolve({ trace: { setGlobalTracerProvider: vi.fn(() => true) } });
+
+  const importers = (over: Partial<OtelImporters>): OtelImporters => ({
+    api,
+    sdkTraceBase: absent,
+    sdkTrace: absent,
+    ...over,
+  });
+
+  it('builds a BasicTracerProvider from sdk-trace-base (OTel 1.x/2.x)', async () => {
+    const mods = await loadOtelModules(
+      importers({ sdkTraceBase: () => Promise.resolve({ BasicTracerProvider: ctor('base') }) }),
+    );
+    expect(mods?.createProvider([processor])).toMatchObject({
+      tag: 'base',
+      options: { spanProcessors: [processor] },
+    });
+  });
+
+  it('falls back to a TracerProvider from sdk-trace when sdk-trace-base is not installed (OTel 3.x)', async () => {
+    const mods = await loadOtelModules(
+      importers({ sdkTrace: () => Promise.resolve({ TracerProvider: ctor('v3') }) }),
+    );
+    expect(mods?.createProvider([processor])).toMatchObject({
+      tag: 'v3',
+      options: { spanProcessors: [processor] },
+    });
+  });
+
+  it('prefers sdk-trace-base when both are installed (existing 1.x/2.x behaviour is unchanged)', async () => {
+    const mods = await loadOtelModules(
+      importers({
+        sdkTraceBase: () => Promise.resolve({ BasicTracerProvider: ctor('base') }),
+        sdkTrace: () => Promise.resolve({ TracerProvider: ctor('v3') }),
+      }),
+    );
+    expect(mods?.createProvider([processor])).toMatchObject({ tag: 'base' });
+  });
+
+  it('falls back when sdk-trace-base resolves but does not export a provider class', async () => {
+    const mods = await loadOtelModules(
+      importers({
+        sdkTraceBase: () => Promise.resolve({}),
+        sdkTrace: () => Promise.resolve({ TracerProvider: ctor('v3') }),
+      }),
+    );
+    expect(mods?.createProvider([processor])).toMatchObject({ tag: 'v3' });
+  });
+
+  it('delegates global registration to @opentelemetry/api', async () => {
+    const setGlobal = vi.fn(() => true);
+    const mods = await loadOtelModules(
+      importers({
+        api: () => Promise.resolve({ trace: { setGlobalTracerProvider: setGlobal } }),
+        sdkTrace: () => Promise.resolve({ TracerProvider: ctor('v3') }),
+      }),
+    );
+    const provider = { p: 1 };
+    expect(mods?.setGlobalTracerProvider(provider)).toBe(true);
+    expect(setGlobal).toHaveBeenCalledWith(provider);
+  });
+
+  it('is undefined (unavailable) when no SDK package is installed', async () => {
+    expect(await loadOtelModules(importers({}))).toBeUndefined();
+  });
+
+  it('is undefined when @opentelemetry/api is not installed', async () => {
+    expect(
+      await loadOtelModules(
+        importers({ api: absent, sdkTrace: () => Promise.resolve({ TracerProvider: ctor('v3') }) }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('is undefined when the SDK module exports no provider class at all', async () => {
+    expect(
+      await loadOtelModules(
+        importers({ sdkTraceBase: () => Promise.resolve({}), sdkTrace: () => Promise.resolve({}) }),
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe('attachBugseeOtelProvider default loading on an OTel 3 install (sdk-trace-base removed)', () => {
+  afterEach(() => {
+    vi.doUnmock('@opentelemetry/sdk-trace-base');
+    vi.doUnmock('@opentelemetry/sdk-trace');
+    vi.resetModules();
+    trace.disable();
+  });
+
+  it('registers a TracerProvider from sdk-trace through the real default loader', async () => {
+    vi.resetModules();
+    vi.doMock('@opentelemetry/sdk-trace-base', () => {
+      throw new Error('Cannot find module @opentelemetry/sdk-trace-base');
+    });
+    const built: unknown[][] = [];
+    vi.doMock('@opentelemetry/sdk-trace', () => ({
+      TracerProvider: class {
+        // Only the registration plumbing is under test here; the API calls are made on a global provider.
+        constructor(options: { spanProcessors: unknown[] }) {
+          built.push(options.spanProcessors);
+        }
+        getTracer() {
+          return trace.getTracer('noop');
+        }
+      },
+    }));
+    const fresh = await import('./otel-provider');
+
+    expect(await fresh.attachBugseeOtelProvider(processor)).toBe('registered');
+    expect(built).toEqual([[processor]]);
+  });
+
+  it('reports unavailable when neither SDK package can be imported', async () => {
+    vi.resetModules();
+    vi.doMock('@opentelemetry/sdk-trace-base', () => {
+      throw new Error('absent');
+    });
+    vi.doMock('@opentelemetry/sdk-trace', () => {
+      throw new Error('absent');
+    });
+    const fresh = await import('./otel-provider');
+
+    expect(await fresh.attachBugseeOtelProvider(processor)).toBe('unavailable');
   });
 });

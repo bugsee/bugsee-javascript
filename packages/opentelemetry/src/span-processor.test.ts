@@ -1,4 +1,4 @@
-import type { TransactionWire } from '@bugsee/performance';
+import { sanitizeSpan, type TransactionWire } from '@bugsee/performance';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createBugseeSpanProcessor,
@@ -58,6 +58,86 @@ describe('readableSpanToConsumed', () => {
     expect(consumed.attributes).toEqual({ s: 'x', n: 3, ok: true, tags: ['a', 'b'] });
   });
 
+  describe('complex attribute values (OTel API 1.10 AnyValue)', () => {
+    it('keeps a nested map and a mixed array as bounded copies, bytes as base64, and scalars as they are', () => {
+      const consumed = readableSpanToConsumed(
+        readable({
+          attributes: {
+            s: 'x',
+            n: 3,
+            tags: ['a', 'b'],
+            map: { a: { b: [1, 'x'] } },
+            mixed: [1, 'a', true],
+            bytes: new Uint8Array([102, 111, 111]),
+          },
+        }),
+      );
+      expect(consumed.attributes).toEqual({
+        s: 'x',
+        n: 3,
+        tags: ['a', 'b'],
+        map: { a: { b: [1, 'x'] } },
+        mixed: [1, 'a', true],
+        bytes: 'Zm9v',
+      });
+    });
+
+    it('drops the OTel empty value (null) and unrepresentable values', () => {
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { keep: 1, nul: null, und: undefined, fn: () => 1 } }),
+      );
+      expect(consumed.attributes).toEqual({ keep: 1 });
+    });
+
+    it('never throws on exotic values: a cycle, a bigint inside an object, a hostile getter', () => {
+      const cyc: Record<string, unknown> = { a: 1 };
+      cyc.self = cyc;
+      const attributes = {
+        cyc,
+        big: { n: 10n },
+        get hostile(): never {
+          throw new Error('getter');
+        },
+        after: 'still here',
+      };
+      const consumed = readableSpanToConsumed(readable({ attributes }));
+      expect(consumed.attributes).toEqual({
+        cyc: { a: 1, self: '[Circular]' },
+        big: { n: 10 },
+        after: 'still here',
+      });
+    });
+
+    it('bounds a huge nested value so one attribute cannot bloat the transaction', () => {
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { huge: { s: 'x'.repeat(1e6) } } }),
+      );
+      expect(JSON.stringify(consumed.attributes?.huge).length).toBeLessThanOrEqual(8192);
+    });
+
+    it('a statement cut by the consume cap still has its literals redacted by the default sanitizer', () => {
+      const doc = Array.from({ length: 4000 }, (_, i) => `p${i}@clinic.example;x`).join('\n');
+      const consumed = readableSpanToConsumed(
+        readable({ attributes: { 'db.statement': `INSERT INTO r (d) VALUES ('${doc}')` } }),
+      );
+      const out = sanitizeSpan({
+        spanId: 's',
+        operation: 'db',
+        status: 'OK',
+        startTimestampMs: 1,
+        ...(consumed.attributes !== undefined ? { attributes: consumed.attributes } : {}),
+      });
+      expect(JSON.stringify(out.attributes)).not.toContain('@clinic.example');
+    });
+
+    it('keeps the tree through assembly, so redaction can read nested keys (flattening is the wire step)', () => {
+      const txns: TransactionWire[] = [];
+      const processor = createBugseeSpanProcessor({ onTransaction: (t) => txns.push(t) });
+      processor.onEnd(readable({ attributes: { 'db.statement': { text: 'SELECT 1' } } }));
+      expect(txns[0]?.attributes?.['db.statement']).toEqual({ text: 'SELECT 1' });
+    });
+  });
+
   it('prefers the OTel 2.x parentSpanContext over the 1.x parentSpanId', () => {
     const consumed = readableSpanToConsumed(
       readable({
@@ -109,17 +189,23 @@ describe('createBugseeSpanProcessor', () => {
     await expect(proc.forceFlush()).resolves.toBeUndefined();
   });
 
-  it('shutdown() clears buffered (incomplete) traces', async () => {
+  it('shutdown() drops buffered (incomplete) traces and stops consuming: a late span.end() is a no-op', async () => {
     const emitted: TransactionWire[] = [];
+    const errors: unknown[] = [];
     const proc = createBugseeSpanProcessor({
       onTransaction: (t) => emitted.push(t),
+      onError: (e) => errors.push(e),
       clock: { wallNow: () => 0 },
     });
     proc.onEnd(readable({ traceId: 'T', spanId: 'c', parentSpanId: 'r' })); // buffered child
     await proc.shutdown();
-    // The buffer was cleared, so a later root for T assembles with NO child (the child was dropped).
+    // OTel's contract: a processor that was shut down receives nothing further. Keeping the assembler live
+    // would let spans that end after shutdown (provider.shutdown() is not a barrier for in-flight work)
+    // buffer forever or emit a transaction into a torn-down pipeline.
     proc.onEnd(readable({ traceId: 'T', spanId: 'r', name: 'root' }));
-    expect(emitted[0]?.spans).toEqual([]);
+    proc.onEnd(readable({ traceId: 'U', spanId: 'r2', name: 'other root' }));
+    expect(emitted).toEqual([]);
+    expect(errors).toEqual([]);
   });
 
   // Two tests lived here that promised more than they checked, and are superseded by the forwarding
