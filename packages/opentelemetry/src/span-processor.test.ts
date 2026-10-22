@@ -103,7 +103,7 @@ describe('readableSpanToConsumed', () => {
       const consumed = readableSpanToConsumed(readable({ attributes }));
       expect(consumed.attributes).toEqual({
         cyc: { a: 1, self: '[Circular]' },
-        big: { n: '10' },
+        big: { n: 10 },
         after: 'still here',
       });
     });

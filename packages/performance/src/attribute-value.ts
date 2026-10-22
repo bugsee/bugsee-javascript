@@ -65,16 +65,29 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-/** OTLP AnyValue bytes: a `Uint8Array` (a Node `Buffer` is one). Other typed arrays are not AnyValue. */
-export function isByteArray(value: unknown): value is Uint8Array {
-  return value instanceof Uint8Array;
+/** Enough bytes that their base64 form always exceeds the text cap, so an oversize array is cut and marked. */
+const MAX_BYTES_ENCODED = Math.ceil((MAX_ATTRIBUTE_JSON_LENGTH * 3) / 4) + 3;
+
+/**
+ * The bytes of an AnyValue byte array: a `Uint8Array` (a Node `Buffer` is one), plus the other ways an
+ * instrumentation hands over binary data (`ArrayBuffer`, `DataView`, and a `Uint8Array` from another realm,
+ * which fails `instanceof` but still has the slot). Other typed arrays are lists of numbers, not bytes.
+ * Wrapping is O(1) and `boundedBase64` windows the result before encoding, so the work stays bounded.
+ */
+export function asBytes(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (value instanceof DataView) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Object.prototype.toString.call(value) === '[object Uint8Array]') {
+    return value as Uint8Array; // readable by index; boundedBase64 windows it before encoding
+  }
+  return undefined;
 }
 
 const capText = (text: string, max: number): string =>
   text.length <= max ? text : text.slice(0, max - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
-
-/** Enough bytes that their base64 form always exceeds the text cap, so an oversize array is cut and marked. */
-const MAX_BYTES_ENCODED = Math.ceil((MAX_ATTRIBUTE_JSON_LENGTH * 3) / 4) + 3;
 
 /** Base64 of a byte array, bounded in work (encodes at most what could fit) and in length. */
 export function boundedBase64(bytes: Uint8Array): string {
@@ -83,6 +96,23 @@ export function boundedBase64(bytes: Uint8Array): string {
 }
 
 const SKIP = Symbol('skip');
+
+/** A bigint as JSON can carry it: a number when exact, decimal text beyond the safe range. */
+const bigintToJson = (value: bigint): number | string =>
+  value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(value)
+    : value.toString();
+
+const UrlClass = ():
+  | (new (
+      input: string,
+    ) => { href: string; username: string; password: string })
+  | undefined =>
+  (
+    globalThis as unknown as {
+      URL?: new (input: string) => { href: string; username: string; password: string };
+    }
+  ).URL;
 
 interface Budget {
   nodes: number;
@@ -121,16 +151,32 @@ function toSafe(value: unknown, depth: number, budget: Budget, ancestors: Set<ob
       if (Number.isFinite(value)) return value;
       return Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity';
     case 'bigint':
-      return value.toString();
+      return bigintToJson(value);
     case 'object':
       break;
     default:
       return SKIP; // undefined, function, symbol
   }
-  if (isByteArray(value)) return leafText(boundedBase64(value), budget);
+  const bytes = asBytes(value);
+  if (bytes !== undefined) return leafText(boundedBase64(bytes), budget);
   if (value instanceof Date) {
     const time = value.getTime();
     return Number.isNaN(time) ? null : new Date(time).toISOString();
+  }
+  // A URL used to export its href (through toJSON); keep that, minus any credentials in the authority.
+  const Url = UrlClass();
+  if (Url !== undefined && value instanceof Url) {
+    const bare = new Url(value.href);
+    bare.username = '';
+    bare.password = '';
+    return leafText(bare.href, budget);
+  }
+  // An Error has no enumerable own properties; name and message are what identify it (never the stack).
+  if (value instanceof Error) {
+    const out: Record<string, unknown> = {};
+    setOwn(out, 'name', leafText(String(value.name), budget));
+    setOwn(out, 'message', leafText(String(value.message), budget));
+    return out;
   }
   if (depth >= MAX_ATTRIBUTE_DEPTH) return '[MaxDepth]';
   if (ancestors.has(value)) return '[Circular]';
@@ -232,14 +278,16 @@ export function stringifyAnyValue(value: unknown): string | undefined {
 const isScalar = (v: unknown): v is string | number | boolean =>
   typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
-/** An array whose elements are all strings, all numbers or all booleans (the pre-1.10 shape), and small. */
+/** An array whose non-null elements are all strings, all numbers or all booleans (the pre-1.10 shape), and small. */
 function isPassThroughArray(value: unknown[]): boolean {
   if (value.length > MAX_ATTRIBUTE_ARRAY_LENGTH) return false;
-  if (value.length === 0) return true;
-  const kind = typeof value[0];
-  if (!isScalar(value[0])) return false;
+  let kind: string | undefined;
   let chars = 0;
   for (const item of value) {
+    // OTel 2/3 keep null/undefined entries in a homogeneous array (`['a', null, 'b']`); they pass through.
+    if (item === null || item === undefined) continue;
+    if (!isScalar(item)) return false;
+    kind ??= typeof item;
     if (typeof item !== kind) return false;
     if (typeof item === 'string') {
       chars += item.length;
@@ -260,14 +308,12 @@ export function normalizeAttributeValue(value: unknown): unknown {
   if (value === null || value === undefined) return undefined;
   if (typeof value === 'string') return capText(value, MAX_ATTRIBUTE_STRING_LENGTH);
   if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'bigint') {
-    return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
-      ? Number(value)
-      : value.toString();
-  }
-  if (isByteArray(value)) return boundedBase64(value);
+  if (typeof value === 'bigint') return bigintToJson(value);
+  const bytes = asBytes(value);
+  if (bytes !== undefined) return boundedBase64(bytes);
   if (Array.isArray(value) && isPassThroughArray(value)) return value;
-  return safeAnyValue(value);
+  const safe = safeAnyValue(value);
+  return safe === null ? undefined : safe; // an invalid Date: no value
 }
 
 /**

@@ -1,5 +1,6 @@
-// OpenTelemetry JS 3.x declares `engines.node >=22.15.0` on core / resources / sdk-trace. The repo's CI matrix
-// is Node 18-24, so the OTel 3 suites must stand down below that floor instead of failing the old legs.
+// OpenTelemetry JS 3.x declares `engines.node >=22.15.0` on core / resources / sdk-trace. CI runs Node 22
+// (>= 22.15 satisfies it), but a developer machine can have an older Node: the OTel 3 suites stand down below
+// that floor instead of failing, unless BUGSEE_REQUIRE_OTEL3=1 (see skipIsForbidden).
 
 /** The first Node release OpenTelemetry JS 3.x supports. */
 export const OTEL3_MIN_NODE = [22, 15, 0] as const;

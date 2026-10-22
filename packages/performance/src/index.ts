@@ -8,11 +8,11 @@
 
 export { type ActiveSpanStore, createSingleSlotActiveSpanStore } from './active-span-store';
 export {
+  asBytes,
   boundedBase64,
   bytesToBase64,
   flattenAttributes,
   flattenAttributeValue,
-  isByteArray,
   MAX_ATTRIBUTE_ARRAY_LENGTH,
   MAX_ATTRIBUTE_DEPTH,
   MAX_ATTRIBUTE_JSON_LENGTH,

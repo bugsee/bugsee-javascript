@@ -18,6 +18,14 @@ const CONTENT_KEYS = new Set([
   'gen_ai.response.messages',
   'gen_ai.content.prompt',
   'gen_ai.content.completion',
+  // The current GenAI semantic conventions: structured (array-of-message) content, the main reason
+  // complex attributes exist at all.
+  'gen_ai.input.messages',
+  'gen_ai.output.messages',
+  'gen_ai.system_instructions',
+  'gen_ai.tool.definitions',
+  'gen_ai.tool.call.arguments',
+  'gen_ai.tool.call.result',
   'http.request.body',
   'http.response.body',
   'graphql.document',

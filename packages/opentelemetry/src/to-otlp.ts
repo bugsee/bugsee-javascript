@@ -1,7 +1,8 @@
 import {
+  asBytes,
   boundedBase64,
-  isByteArray,
   type SpanStatus,
+  safeAnyValue,
   stringifyAnyValue,
   type TransactionWire,
 } from '@bugsee/performance';
@@ -69,9 +70,14 @@ export function toAnyValue(value: unknown): OtlpAnyValue | undefined {
       return Number.isSafeInteger(value) ? { intValue: String(value) } : toDoubleValue(value);
     default: {
       try {
-        if (isByteArray(value)) return { bytesValue: boundedBase64(value) };
-        // objects/arrays → bounded JSON string that cannot throw (cycles, bigint, depth); functions/symbols → dropped
-        const json = stringifyAnyValue(value);
+        const bytes = asBytes(value);
+        if (bytes !== undefined) return { bytesValue: boundedBase64(bytes) };
+        // A value that is a plain string once made safe (a Date, a URL) is that string, not JSON text.
+        const safe = safeAnyValue(value);
+        if (typeof safe === 'string') return { stringValue: safe };
+        // objects/arrays → bounded JSON string that cannot throw (cycles, bigint, depth); functions/symbols
+        // and an invalid Date → dropped
+        const json = safe === undefined || safe === null ? undefined : stringifyAnyValue(safe);
         return json !== undefined ? { stringValue: json } : undefined;
       } catch {
         // An exotic object whose type probe throws (a Proxy with a throwing getPrototypeOf trap). One

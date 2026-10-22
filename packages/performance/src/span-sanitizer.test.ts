@@ -186,3 +186,19 @@ describe('sanitizeSpan on nested (AnyValue) attributes', () => {
     expect(out.attributes?.map).toEqual({ k: 1, password: REDACTED });
   });
 });
+
+describe('sanitizeSpan: current GenAI content conventions', () => {
+  it.each([
+    'gen_ai.input.messages',
+    'gen_ai.output.messages',
+    'gen_ai.system_instructions',
+    'gen_ai.tool.definitions',
+    'gen_ai.tool.call.arguments',
+    'gen_ai.tool.call.result',
+  ])('redacts %s by default, flat and nested', (key) => {
+    const flat = sanitizeSpan(span({ [key]: [{ role: 'user', parts: [{ content: 'secret' }] }] }));
+    expect(flat.attributes?.[key]).toBe(REDACTED);
+    const nested = sanitizeSpan(span({ wrapper: { [key]: 'secret prompt' } }));
+    expect(nested.attributes?.wrapper).toEqual({ [key]: REDACTED });
+  });
+});

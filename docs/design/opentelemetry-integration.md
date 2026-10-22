@@ -190,17 +190,20 @@ Guard: `dev-packages/packaging-guard/src/otel-peers.test.ts`.
 `>=1.10.0 <1.11.0`. One workspace package cannot satisfy both, so the 2.x tests stay in
 `packages/opentelemetry` (api 1.9.x) and the 3.x tests live in the private `dev-packages/otel3-compat`
 (api 1.10.x). That is a TEST-install constraint only: the package imports no OTel code at runtime (structural
-`ReadableSpanLike` / `SpanProcessor`), so a customer is bound only by their own SDK's peer range.
+`ReadableSpanLike` / `SpanProcessor`). What binds a customer is OUR optional peer ranges (`api >=1.0.0`,
+`sdk-trace-base >=1.0.0 <3`, `sdk-trace >=2.9.0`), which accept every released OTel SDK, plus their own SDK's
+peer range on `@opentelemetry/api`.
 
 **Node floor.** `@opentelemetry/api@1.10` keeps `engines.node >=8`, but `core@3`, `resources@3` and
-`sdk-trace@3` require `>=22.15.0`. `@bugsee/opentelemetry` itself still supports Node 18+ (it never loads
-OTel); the OTel 3 suite is meant to run on the 22/24 legs of the 18-24 matrix only. It skips below 22.15 with a stated
-reason, unless `BUGSEE_REQUIRE_OTEL3=1` (set on the CI Node 22 job, passed through turbo `test:unit` env), which
+`sdk-trace@3` require `>=22.15.0`. `@bugsee/opentelemetry` itself still supports the Node
+versions the SDK supports (it never loads OTel). CI runs Node 22 only (both jobs), which satisfies the floor, so
+the OTel 3 suite runs there; on a developer machine with an older Node it skips with a stated reason, unless `BUGSEE_REQUIRE_OTEL3=1` (set on the CI Node 22 job, passed through turbo `test:unit` env), which
 turns the skip into a failure so the 3.x coverage cannot rot silently.
 
 **Registering the processor on 3.x.** `new TracerProvider({ spanProcessors: [processor] })` from
-`@opentelemetry/sdk-trace`. Same `spanProcessors` option as 2.x, but the class was renamed from
-`BasicTracerProvider` (which no longer exists), and `addSpanProcessor` has been gone since 2.0. There is no
+`@opentelemetry/sdk-trace`. Same `spanProcessors` option as `BasicTracerProvider` on `sdk-trace-base` 2.x
+(`sdk-trace` 2.9+ already exports a `TracerProvider` with that option; on 3.x it is the only provider class,
+`BasicTracerProvider` is gone), and `addSpanProcessor` has been gone since 2.0. There is no
 `register()` either: call `trace.setGlobalTracerProvider(provider)` yourself. Verified against the real
 package in `dev-packages/otel3-compat`.
 
@@ -272,15 +275,21 @@ encoded only up to what could fit, a non-byte typed array (a Float32Array embedd
 node budget, and `toJSON` or other user code is never called. A throwing getter, an element or a Proxy trap
 yields `"[Unreadable]"` for that value, an unlistable record (a Proxy with a throwing `ownKeys`) yields no
 attributes, and on the produce path (`toKeyValues`, `toOtlpExportRequest`) one bad attribute is dropped without
-costing its siblings, the span or the export batch. Known limit: `Object.keys` on a plain object with millions of
+costing its siblings, the span or the export batch. Truncated text is NOT valid JSON after the `...[truncated]` marker (a cut at a leaf keeps the JSON valid;
+a cut of the whole text does not). Non-plain values are handled deliberately: a URL becomes its href with
+credentials removed, an Error its `name` and `message` (never the stack), a Date its ISO string (an invalid Date
+drops the attribute), `ArrayBuffer`, `DataView` and a cross-realm `Uint8Array` are bytes; a `Map`, `Set` and any
+other class instance is read by own enumerable properties (so a Map or Set is `{}`). A homogeneous scalar array
+with null entries (`['a', null]`, which OTel 2/3 keep) passes through unchanged. Known limit: `Object.keys` on a plain object with millions of
 keys still allocates its key list before the node budget stops the copy.
 
 **Using the processor.** Register it on ONE provider. Registering it on two providers, or alongside
 `@bugsee/nextjs`'s zero-config provider, produces two transactions per trace (one per registration). Cost per
 ended span is one normalization of its attributes plus one assembler insert; a span whose attributes are all
 scalars copies nothing beyond the attribute record. After `shutdown()` the processor ignores further `onEnd`
-calls. The zero-config provider in `@bugsee/nextjs` registers no context manager (pre-existing), so nested
-`context.with` spans on it come out parented to the root only.
+calls. The zero-config provider in `@bugsee/nextjs` registers no context manager (pre-existing, identical on
+`BasicTracerProvider` 2.12, `sdk-trace` 2.12 and 3.0), so a nested `startActiveSpan` there produces a separate
+root transaction, not a child span.
 
 ---
 

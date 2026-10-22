@@ -32,6 +32,8 @@ describe('toUnixNanoString', () => {
   });
 });
 
+const Url = (globalThis as unknown as { URL: new (input: string) => object }).URL;
+
 describe('toAnyValue', () => {
   it('maps a string to stringValue', () => {
     expect(toAnyValue('x')).toEqual({ stringValue: 'x' });
@@ -63,7 +65,7 @@ describe('toAnyValue', () => {
     const cyc: Record<string, unknown> = { a: 1 };
     cyc.self = cyc;
     expect(toAnyValue(cyc)).toEqual({ stringValue: '{"a":1,"self":"[Circular]"}' });
-    expect(toAnyValue({ n: 10n })).toEqual({ stringValue: '{"n":"10"}' });
+    expect(toAnyValue({ n: 10n })).toEqual({ stringValue: '{"n":10}' });
     expect(toAnyValue({ b: new Uint8Array([1, 2]) })).toEqual({ stringValue: '{"b":"AQI="}' });
   });
   it('caps an oversized object at the attribute JSON length', () => {
@@ -86,6 +88,21 @@ describe('toAnyValue', () => {
     } finally {
       JSON.stringify = original;
     }
+  });
+  it('exports a Date as its ISO string (not a doubly quoted one) and survives a revoked Proxy', () => {
+    expect(toAnyValue(new Date(0))).toEqual({ stringValue: '1970-01-01T00:00:00.000Z' });
+    expect(toAnyValue(new Date(Number.NaN))).toBeUndefined();
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(toAnyValue(proxy)).toBeUndefined();
+  });
+  it('exports a URL as its credential-free href and an Error as name and message', () => {
+    expect(toAnyValue(new Url('https://u:p@example.com/a'))).toEqual({
+      stringValue: 'https://example.com/a',
+    });
+    expect(toAnyValue(new RangeError('too big'))).toEqual({
+      stringValue: '{"name":"RangeError","message":"too big"}',
+    });
   });
   it('drops (never throws on) an object whose type probe throws', () => {
     const trap = new Proxy(

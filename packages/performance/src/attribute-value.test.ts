@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   boundedBase64,
   bytesToBase64,
@@ -68,8 +68,12 @@ describe('stringifyAnyValue', () => {
     expect(stringifyAnyValue([nodeBuffer.from('hi')])).toBe('["aGk="]');
   });
 
-  it('keeps a bigint exact as a decimal string (JSON.stringify would throw)', () => {
+  it('handles a nested bigint like a top-level one: a number when exact, decimal text beyond it', () => {
     expect(stringifyAnyValue({ n: 12345678901234567890n })).toBe('{"n":"12345678901234567890"}');
+    expect(stringifyAnyValue({ n: 10n, list: [1n, -2n] })).toBe('{"n":10,"list":[1,-2]}');
+    expect(safeAnyValue({ edge: BigInt(Number.MAX_SAFE_INTEGER) + 1n })).toEqual({
+      edge: '9007199254740992',
+    });
   });
 
   it('spells non-finite numbers the way the OTLP double does (JSON would say null)', () => {
@@ -260,6 +264,51 @@ describe('stringifyAnyValue', () => {
   });
 });
 
+const Url = (globalThis as unknown as { URL: new (input: string) => object }).URL;
+
+describe('non-plain values (deliberate handling)', () => {
+  it('writes a URL as its href with any credentials removed', () => {
+    expect(safeAnyValue({ u: new Url('https://user:pw@example.com/a?b=1#c') })).toEqual({
+      u: 'https://example.com/a?b=1#c',
+    });
+    expect(normalizeAttributeValue(new Url('https://example.com/x'))).toBe('https://example.com/x');
+  });
+
+  it('writes an Error as its name and message only (never the stack)', () => {
+    const out = safeAnyValue({ e: new TypeError('bad input') }) as { e: Record<string, unknown> };
+    expect(out.e).toEqual({ name: 'TypeError', message: 'bad input' });
+    expect(JSON.stringify(out)).not.toContain('at ');
+  });
+
+  it('writes a top-level Date as a plain ISO string, not JSON text', () => {
+    expect(normalizeAttributeValue(new Date(0))).toBe('1970-01-01T00:00:00.000Z');
+    expect(normalizeAttributeValue(new Date(Number.NaN))).toBeUndefined();
+  });
+
+  it('reads ArrayBuffer, DataView and a cross-realm Uint8Array as bytes', () => {
+    const bytes = new Uint8Array([102, 111, 111]);
+    expect(normalizeAttributeValue(bytes.buffer)).toBe('Zm9v');
+    expect(normalizeAttributeValue(new DataView(bytes.buffer, 1, 2))).toBe('b28=');
+    // A typed array from another realm fails `instanceof Uint8Array` (it became an index map before).
+    const vm = (
+      globalThis as unknown as {
+        process: { getBuiltinModule(id: string): { runInNewContext(code: string): unknown } };
+      }
+    ).process.getBuiltinModule('node:vm');
+    const foreign = vm.runInNewContext('new Uint8Array([102, 111, 111])') as Uint8Array;
+    expect(foreign instanceof Uint8Array).toBe(false);
+    expect(normalizeAttributeValue(foreign)).toBe('Zm9v');
+    const huge = vm.runInNewContext('new Uint8Array(100000)') as Uint8Array;
+    const out = normalizeAttributeValue(huge) as string;
+    expect(out.length).toBe(MAX_ATTRIBUTE_JSON_LENGTH);
+    expect(out.endsWith(TRUNCATION_MARKER)).toBe(true);
+  });
+
+  it('leaves Map and Set as empty objects (documented: no own enumerable properties)', () => {
+    expect(safeAnyValue({ m: new Map([['a', 1]]), s: new Set([1]) })).toEqual({ m: {}, s: {} });
+  });
+});
+
 describe('normalizeAttributeValue', () => {
   it('leaves primitives unchanged; a bigint becomes a number when exact, decimal text otherwise', () => {
     for (const v of ['s', '', 0, -1.5, true, false, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -287,6 +336,17 @@ describe('normalizeAttributeValue', () => {
     expect(normalizeAttributeValue([1, 'a', true])).toEqual([1, 'a', true]);
     expect(normalizeAttributeValue(['a', null])).toEqual(['a', null]);
     expect(normalizeAttributeValue([[1], [2]])).toEqual([[1], [2]]);
+  });
+
+  it('passes a homogeneous scalar array that contains null/undefined entries through unchanged', () => {
+    const withNull = ['a', null, 'b'];
+    const nums = [1, undefined, 3];
+    expect(normalizeAttributeValue(withNull)).toBe(withNull);
+    expect(normalizeAttributeValue(nums)).toBe(nums);
+    expect(flattenAttributeValue(withNull)).toBe(withNull);
+    // ...but a mixed array still goes the tree route
+    expect(normalizeAttributeValue(['a', 1, null])).toEqual(['a', 1, null]);
+    expect(normalizeAttributeValue(['a', 1, null])).not.toBe(withNull);
   });
 
   it('routes a primitive array past the length cap through the bounded tree (truncated)', () => {
@@ -392,6 +452,30 @@ describe('normalizeAttributes', () => {
     const inherited = Object.create({ inherited: 'no' }) as Record<string, unknown>;
     inherited.own = 'yes';
     expect(normalizeAttributes(inherited)).toEqual({ own: 'yes' });
+  });
+});
+
+describe('work bounds that output alone cannot show', () => {
+  it('encodes at most what could fit: a huge byte array is cut BEFORE it is base64-encoded', () => {
+    const spy = vi.spyOn(Uint8Array.prototype, 'subarray');
+    try {
+      boundedBase64(new Uint8Array(1_000_000));
+      expect(spy).toHaveBeenCalledWith(0, Math.ceil((MAX_ATTRIBUTE_JSON_LENGTH * 3) / 4) + 3);
+      spy.mockClear();
+      boundedBase64(new Uint8Array(10));
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('copies exactly MAX_ATTRIBUTE_NODES - 1 members of a wide object, then flags truncation', () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: MAX_ATTRIBUTE_NODES + 50 }, (_, i) => [`k${i}`, 0]),
+    );
+    const keys = Object.keys(safeAnyValue(wide) as Record<string, unknown>);
+    expect(keys).toHaveLength(1024); // 1023 members + the flag: MAX_ATTRIBUTE_NODES is 1024
+    expect(keys.at(-1)).toBe('[Truncated]');
   });
 });
 
