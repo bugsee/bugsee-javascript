@@ -1,5 +1,5 @@
 import { neverThrow } from '@bugsee/core';
-import type { TransactionWire } from '@bugsee/performance';
+import { normalizeAttributes, type TransactionWire } from '@bugsee/performance';
 import type { ConsumedSpan } from './from-otlp';
 import { createTraceAssembler } from './trace-assembler';
 
@@ -7,8 +7,9 @@ import { createTraceAssembler } from './trace-assembler';
 // `onEnd(readableSpan)` normalizes the span and feeds the trace assembler, which emits one Bugsee
 // transaction per trace (root-end policy). STRUCTURAL types (no @opentelemetry/* import) — robust to OTel
 // SDK version churn (1.x `parentSpanId` vs 2.x `parentSpanContext`) and keeps the package install-lean;
-// @opentelemetry/api + sdk-trace-base are declared as OPTIONAL peer deps (a consumer needs them for their
-// TracerProvider; produce-only users do not). The returned object is structurally assignable to OTel's
+// @opentelemetry/api + the SDK (sdk-trace-base on OTel 1.x/2.x, sdk-trace on 3.x, which removed the former)
+// are declared as OPTIONAL peer deps (a consumer needs them for their TracerProvider; produce-only users
+// do not). The returned object is structurally assignable to OTel's
 // `SpanProcessor`.
 
 /** OTel `HrTime`: `[seconds, nanoseconds]` since the epoch. */
@@ -35,6 +36,7 @@ export interface ReadableSpanLike {
   startTime: HrTime;
   endTime: HrTime;
   status: { code: number; message?: string };
+  /** OTel `Attributes`. Since API 1.10 a value is an `AnyValue` (maps, mixed arrays, bytes): see `normalizeAttributes`. */
   attributes?: Record<string, unknown>;
 }
 
@@ -60,7 +62,7 @@ export function readableSpanToConsumed(span: ReadableSpanLike): ConsumedSpan {
       code: span.status.code,
       ...(span.status.message !== undefined ? { message: span.status.message } : {}),
     },
-    ...(span.attributes !== undefined ? { attributes: span.attributes } : {}),
+    ...(span.attributes !== undefined ? { attributes: normalizeAttributes(span.attributes) } : {}),
   };
 }
 
@@ -100,9 +102,11 @@ export function createBugseeSpanProcessor(
     ...(options.maxAgeMs !== undefined ? { maxAgeMs: options.maxAgeMs } : {}),
     ...(options.maxTraces !== undefined ? { maxTraces: options.maxTraces } : {}),
   });
+  let stopped = false;
   return {
     onStart() {}, // we assemble on span end, not start
     onEnd(span) {
+      if (stopped) return; // OTel: a shut-down processor receives nothing further
       // CONTAINED. Two independent host inputs meet here and BOTH can throw: the `span` (whatever OTel
       // version and exporter chain the app configured — every property read is a chance) and, downstream of
       // the assembler, the application's own `onTransaction` sink. Either one escaping lands inside the
@@ -113,6 +117,7 @@ export function createBugseeSpanProcessor(
       return Promise.resolve();
     },
     shutdown() {
+      stopped = true;
       assembler.clear();
       return Promise.resolve();
     },

@@ -143,3 +143,44 @@ describe('createOtlpTraceExporter', () => {
     expect(called).toBe(false);
   });
 });
+
+describe('createOtlpTraceExporter survives hostile attributes (one attribute never rejects the batch)', () => {
+  it('exports every transaction, including one carrying exotic attribute values', async () => {
+    const bodies: string[] = [];
+    const transport: HttpTransport = async (_url, opts = {}) => {
+      bodies.push(String(opts.body));
+      return ok;
+    };
+    const send = createOtlpTraceExporter({ transport, url: 'https://collector.test/v1/traces' });
+    const huge = 'x'.repeat(8 * 1024 * 1024);
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys');
+        },
+      },
+    );
+
+    await send([
+      txn({ attributes: { cyc, big: { a: huge, b: [huge, huge] }, bytes: new Uint8Array(1e6) } }),
+      txn({ spanId: '1111111111111111', attributes: hostile }),
+      txn({ spanId: '2222222222222222', attributes: { ok: 'yes' } }),
+    ]);
+
+    expect(bodies).toHaveLength(1);
+    const spans = (
+      JSON.parse(bodies[0] as string) as {
+        resourceSpans: { scopeSpans: { spans: { spanId: string }[] }[] }[];
+      }
+    ).resourceSpans[0]?.scopeSpans[0]?.spans;
+    expect(spans?.map((s) => s.spanId)).toEqual([
+      'fedcba9876543210',
+      '1111111111111111',
+      '2222222222222222',
+    ]);
+    expect(bodies[0]?.length).toBeLessThan(100_000);
+  });
+});

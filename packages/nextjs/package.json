@@ -53,7 +53,8 @@
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.0.0",
-    "@opentelemetry/sdk-trace-base": ">=1.0.0",
+    "@opentelemetry/sdk-trace-base": ">=1.0.0 <3",
+    "@opentelemetry/sdk-trace": ">=2.9.0",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
@@ -63,6 +64,9 @@
     "@opentelemetry/sdk-trace-base": {
       "optional": true
     },
+    "@opentelemetry/sdk-trace": {
+      "optional": true
+    },
     "react": {
       "optional": true
     }
@@ -70,6 +74,7 @@
   "devDependencies": {
     "@bugsee/node": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0",
     "@types/react": "^18.3.0",
     "react": "^18.3.1"

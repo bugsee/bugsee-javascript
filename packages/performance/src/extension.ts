@@ -14,6 +14,10 @@ import { createPerformanceController, type PerformanceApi } from './controller';
 import { stampDeviceIdOnWire } from './device-id-attribute';
 import type { TransactionWire } from './span';
 import { applySpanFilter } from './span-filter';
+import {
+  flattenTransactionAttributes,
+  normalizeTransactionAttributes,
+} from './transaction-attributes';
 import { createTransactionStore, type TransactionStore } from './transaction-store';
 
 // The @bugsee/performance extension shell. There is no addExtension lifecycle on the
@@ -113,13 +117,19 @@ export function createPerformanceExtension(
     options.deviceId === undefined
       ? transaction
       : stampDeviceIdOnWire(transaction, options.deviceId);
-  const filterTransaction = (transaction: TransactionWire): TransactionWire | null =>
-    applySpanFilter(
-      stampDeviceId(transaction),
+  const filterTransaction = (transaction: TransactionWire): TransactionWire | null => {
+    const filtered = applySpanFilter(
+      // Bound every attribute FIRST (raw values on the SDK's own spans too), so the redaction walk and any
+      // integrator filter only ever see a bounded, cycle-free tree.
+      stampDeviceId(normalizeTransactionAttributes(transaction)),
       filters?.span ?? null,
       (error) => filters?.onError(error),
       sanitizeSpans,
     );
+    // Redaction saw nested attributes as TREES; whatever survives is flattened to scalars / bounded JSON
+    // strings here, the wire boundary, because the attribute model downstream reads scalar values.
+    return filtered === null ? null : flattenTransactionAttributes(filtered);
+  };
   return {
     name: 'performance',
     store,

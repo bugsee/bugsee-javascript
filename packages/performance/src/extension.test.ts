@@ -270,6 +270,228 @@ describe('createPerformanceExtension — the span filter reaches CONSUMED spans'
   });
 });
 
+describe('createPerformanceExtension — nested (AnyValue) attributes: redact as a tree, then flatten', () => {
+  const external = (attributes: Record<string, unknown>) => ({
+    traceId: 't',
+    spanId: 's',
+    name: 'req',
+    operation: 'http',
+    status: 'OK' as const,
+    sampled: true,
+    startTimestampMs: 1,
+    endTimestampMs: 2,
+    isSnapshot: false,
+    attributes,
+    spans: [],
+  });
+
+  it('redacts nested sensitive keys by DEFAULT and only then stringifies, in both sinks', () => {
+    const { client, captured } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(
+      external({
+        user: { name: 'ann', password: 'hunter2', authorization: 'Bearer abc' },
+        'http.request.headers': { cookie: 'sid=1', accept: 'x' },
+      }),
+    );
+    const stored = extension.store.drain()[0]?.attributes as Record<string, unknown>;
+    expect(JSON.parse(stored.user as string)).toEqual({
+      name: 'ann',
+      password: '<redacted>',
+      authorization: '<redacted>',
+    });
+    expect(JSON.parse(stored['http.request.headers'] as string)).toEqual({
+      cookie: '<redacted>',
+      accept: 'x',
+    });
+    for (const sink of [JSON.stringify(stored), JSON.stringify(captured)]) {
+      expect(sink).not.toContain('hunter2');
+      expect(sink).not.toContain('Bearer abc');
+      expect(sink).not.toContain('sid=1');
+    }
+  });
+
+  it('hands an integrator span filter the TREE, and still flattens whatever it returns', () => {
+    const filters = createFilterStore(() => {});
+    let seen: unknown;
+    filters.span = (span) => {
+      seen = span.attributes?.ctx;
+      return span;
+    };
+    const { client } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(external({ ctx: { a: { b: 1 } } }));
+    expect(seen).toEqual({ a: { b: 1 } });
+    expect(extension.store.drain()[0]?.attributes?.ctx).toBe('{"a":{"b":1}}');
+  });
+
+  it('flattens before the sinks even when the sanitizer is switched off', () => {
+    const { client } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension({ sanitizeSpans: false });
+    extension.setup(client as unknown as BugseeClient);
+    extension.recordExternal(external({ ctx: { k: [1, 'a'] } }));
+    expect(extension.store.drain()[0]?.attributes?.ctx).toBe('{"k":[1,"a"]}');
+  });
+});
+
+describe("createPerformanceExtension — raw attribute values on the SDK's own spans are bounded too", () => {
+  const dag = (levels: number, fanout: number): unknown => {
+    let node: unknown = { leaf: 'v' };
+    for (let i = 0; i < levels; i++) {
+      const level: Record<string, unknown> = {};
+      for (let j = 0; j < fanout; j++) level[`k${j}`] = node;
+      node = level;
+    }
+    return node;
+  };
+  const hostile = () => {
+    const cyc: Record<string, unknown> = { password: 'hunter2' };
+    for (let j = 0; j < 3; j++) cyc[`k${j}`] = cyc;
+    return {
+      dag: dag(14, 3),
+      cyc,
+      thrower: {
+        ok: 1,
+        get boom(): never {
+          throw new Error('getter');
+        },
+      },
+    };
+  };
+
+  it('setAttribute with a DAG, a cycle and a throwing getter finishes fast and keeps the transaction', () => {
+    const { client, ext, captured } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const txn = ext().startTransaction({ name: 'T', operation: 'op' });
+    for (const [k, v] of Object.entries(hostile())) txn.setAttribute(k, v);
+    const started = Date.now();
+    txn.finish('OK');
+    expect(Date.now() - started).toBeLessThan(2000);
+    const stored = extension.store.drain();
+    expect(stored).toHaveLength(1);
+    const attrs = stored[0]?.attributes as Record<string, string>;
+    expect(typeof attrs.dag).toBe('string');
+    expect(attrs.cyc).toContain('[Circular]');
+    expect(attrs.cyc).not.toContain('hunter2');
+    expect(attrs.thrower).toContain('[Unreadable]');
+    expect(JSON.stringify(captured)).not.toContain('hunter2');
+  });
+
+  it('a 20 MB byte array set natively becomes a bounded base64 string, not a 3 GB walk', () => {
+    const { client, ext } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const started = Date.now();
+    ext()
+      .startTransaction({ name: 'T', operation: 'op' })
+      .setAttribute('buf', new Uint8Array(20 * 1024 * 1024))
+      .setAttribute(
+        'wide',
+        Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`k${i}`, i])),
+      )
+      .finish('OK');
+    expect(Date.now() - started).toBeLessThan(2000);
+    const attrs = extension.store.drain()[0]?.attributes as Record<string, string>;
+    expect(attrs.buf?.length).toBeLessThanOrEqual(8192);
+    expect(attrs.wide?.length).toBeLessThanOrEqual(8192);
+  });
+
+  it('recordExternal and recordChildSpan-style raw attributes get the same treatment', () => {
+    const { client } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const raw = hostile();
+    extension.recordExternal({
+      ...externalWire(),
+      attributes: raw,
+      spans: [
+        {
+          spanId: 'c',
+          operation: 'child',
+          status: 'OK',
+          startTimestampMs: 1,
+          attributes: { cyc: raw.cyc },
+        },
+      ],
+    });
+    const stored = extension.store.drain()[0];
+    expect(stored?.attributes?.thrower).toContain('[Unreadable]');
+    expect(stored?.spans[0]?.attributes?.cyc).not.toContain('hunter2');
+  });
+
+  it('hands an integrator span filter a TREE even for a raw SDK value', () => {
+    const filters = createFilterStore(() => {});
+    let seen: unknown;
+    filters.span = (span) => {
+      seen = span.attributes?.ctx;
+      return span;
+    };
+    const { client, ext } = fakeClient(filters);
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    const cyc: Record<string, unknown> = { a: 1 };
+    cyc.self = cyc;
+    ext().startTransaction({ name: 'T', operation: 'op' }).setAttribute('ctx', cyc).finish('OK');
+    expect(seen).toEqual({ a: 1, self: '[Circular]' });
+  });
+});
+
+describe('createPerformanceExtension — a statement CUT by a length cap still has its literals redacted', () => {
+  const doc = Array.from(
+    { length: 4000 },
+    (_, i) => `patient${i}@clinic.example;hypertension`,
+  ).join('\n');
+  const sql = `INSERT INTO records (doc) VALUES ('${doc}')`;
+  const leaked = (value: unknown): number =>
+    (JSON.stringify(value).match(/@clinic\.example/g) ?? []).length;
+  const run = (attributes: Record<string, unknown>, viaSdk = false) => {
+    const { client, ext } = fakeClient(createFilterStore(() => {}));
+    const extension = createPerformanceExtension();
+    extension.setup(client as unknown as BugseeClient);
+    if (viaSdk) {
+      const txn = ext().startTransaction({ name: 'T', operation: 'op' });
+      for (const [k, v] of Object.entries(attributes)) txn.setAttribute(k, v);
+      txn.finish('OK');
+    } else {
+      extension.recordExternal({
+        traceId: 't',
+        spanId: 's',
+        name: 'q',
+        operation: 'db',
+        status: 'OK',
+        sampled: true,
+        startTimestampMs: 1,
+        endTimestampMs: 2,
+        isSnapshot: false,
+        attributes,
+        spans: [],
+      });
+    }
+    return extension.store.drain()[0]?.attributes as Record<string, unknown>;
+  };
+
+  it('scalar statement, recordExternal path', () => {
+    expect(sql.length).toBeGreaterThan(100_000);
+    expect(leaked(run({ 'db.statement': sql }))).toBe(0);
+  });
+
+  it('scalar statement, SDK setAttribute path', () => {
+    expect(leaked(run({ 'db.statement': sql }, true))).toBe(0);
+  });
+
+  it('statement carried in a map, and db.query.text as an array', () => {
+    const out = run({ 'db.statement': { text: sql }, 'db.query.text': [sql, sql] });
+    expect(leaked(out)).toBe(0);
+  });
+
+  it('a nested map under a non-statement key that holds a statement-keyed member', () => {
+    expect(leaked(run({ wrapper: { 'db.statement': sql } }))).toBe(0);
+  });
+});
+
 // `sanitizeSpans?? true` let `0`, `''`, `'false'` (anything not nullish) DISABLE the built-in span
 // sanitizer. It PROTECTS, so an invalid value keeps it ON and is reported; only boolean `false` opts out.
 describe('createPerformanceExtension — sanitizeSpans is fail-on', () => {
