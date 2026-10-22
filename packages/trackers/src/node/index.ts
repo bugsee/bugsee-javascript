@@ -51,3 +51,10 @@ export {
   type StorageTrackerEnv,
   storageTrackerFor,
 } from './storage-tracker';
+export {
+  createVmStatSampler,
+  type ExecFileLike,
+  parseVmStat,
+  type VmStatOptions,
+  type VmStatSource,
+} from './vm-stat';
