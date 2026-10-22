@@ -778,6 +778,54 @@ describe('ProcessTracker', () => {
           });
         });
 
+        it.each([
+          1000, 10_000, 30_000, 120_000,
+        ])('the value read on one tick is still served on the next at tracker intervalMs=%i (cache life follows the tick)', (intervalMs) => {
+          let now = 0;
+          const x = fakeExec();
+          const { tracker, fs } = mk({
+            systemMemory: undefined,
+            platform: 'darwin',
+            vmStatExecFile: x.execFile,
+            intervalMs,
+          });
+          const realNow = performance.now;
+          performance.now = () => now;
+          try {
+            const events: ProcessEvents['systemMemory'][] = [];
+            tracker.on('systemMemory', (e) => void events.push(e));
+            fs.tick();
+            x.calls[0]?.cb(null, OUT);
+            now += intervalMs;
+            fs.tick();
+            expect(events.at(-1)?.free).toBe(60 * 4096);
+            expect(x.calls).toHaveLength(intervalMs >= 10_000 ? 2 : 1); // never spawns faster than every 10 s
+          } finally {
+            performance.now = realNow;
+          }
+        });
+
+        it('at the default 1 s tick the spawn cadence is 10 s: nine seconds of ticks spawn once, the tenth spawns again', () => {
+          let now = 0;
+          const x = fakeExec();
+          const { tracker, fs } = mk({
+            systemMemory: undefined,
+            platform: 'darwin',
+            vmStatExecFile: x.execFile,
+          });
+          const realNow = performance.now;
+          performance.now = () => now;
+          try {
+            tracker.on('systemMemory', () => {});
+            for (; now < 10_000; now += 1000) fs.tick();
+            expect(x.calls).toHaveLength(1);
+            fs.tick(); // now = 10 000
+            expect(x.calls).toHaveLength(2);
+          } finally {
+            performance.now = realNow;
+          }
+        });
+
         it('readsVmStat:false never spawns; vm_stat is not consulted off macOS', () => {
           const x = fakeExec();
           for (const over of [{ platform: 'darwin', readsVmStat: false }, { platform: 'linux' }]) {

@@ -189,6 +189,7 @@ export interface ProcessEnv {
 }
 
 const DEFAULT_INTERVAL_MS = 1000;
+const VM_STAT_MIN_INTERVAL_MS = 10_000;
 
 const defaultScheduler: ProcessTimers = {
   setInterval: (cb, ms) => {
@@ -453,6 +454,9 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
               : deno !== undefined && typeof deno.Command === 'function'
                 ? { execFile: createDenoExecFile(deno) }
                 : {}),
+            // A value read on one tick must still be fresh (<= 2 sampler intervals) on the next tick, so the cache life
+            // follows a slower tracker interval; never faster than 10 s (the spawn cadence).
+            intervalMs: Math.max(VM_STAT_MIN_INTERVAL_MS, env.intervalMs ?? DEFAULT_INTERVAL_MS),
             onError: (error) => this.#onError(error),
           }))
         : undefined;
