@@ -154,6 +154,7 @@ describe('the guard flags every indirect reference to addBreadcrumb', () => {
     'const { addBreadcrumb } = client;',
     "const names = ['addBreadcrumb'];",
     'register(client.addBreadcrumb);',
+    'register(addBreadcrumb);',
   ])('flags %s', (code) => {
     expect(indirectBreadcrumbReferences(code).length).toBeGreaterThan(0);
   });

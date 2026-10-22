@@ -204,6 +204,8 @@ function sanitizeNestedRun(
 
 /** Leading whitespace, and the `+` that `URLSearchParams` writes for a leading space. */
 const LEADING_BLANKS = /^[\s+]+/;
+/** The same blanks as they appear in an ENCODED value (`+`, a space, `%20`, `%2B`). */
+const RAW_LEADING_BLANKS = /^(?:[\s+]|%20|%2[Bb])+/;
 
 /** Encode the leading blanks of a decoded value the way they were most likely written (`+` stays `+`). */
 const encodeLead = (lead: string): string =>
@@ -245,7 +247,13 @@ function sanitizeNestedValue(
     return clean;
   }
   const lead = LEADING_BLANKS.exec(clean)?.[0] ?? '';
-  return encodeLead(lead) + encodeSafe(clean.slice(lead.length));
+  // Keep the leading blanks EXACTLY as written (`+`, `%2B` and `%20` mean different things to a form decoder): the raw
+  // prefix is reused when it decodes to the same blanks, and only a differently encoded one (double encoding) is rewritten.
+  const rawLead = RAW_LEADING_BLANKS.exec(value)?.[0] ?? '';
+  return (
+    (decodeTolerant(rawLead) === lead ? rawLead : encodeLead(lead)) +
+    encodeSafe(clean.slice(lead.length))
+  );
 }
 
 /** The nested scan over the main query and over the fragment (its `key=value` pairs, and a hash-router `?` query). */

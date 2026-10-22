@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   callSiteFrames,
   formatStack,
+  frameUrlCacheSize,
   parseLocation,
   parseV8Stack,
   type StackFrame,
@@ -80,10 +81,124 @@ describe('parseV8Stack', () => {
     ).toBe('eval at f (https://x.com/(dash)/a.js?token=%3Credacted%3E:1:2), <anonymous>');
   });
 
-  it('an eval-wrapped URL with a single position is handled too', () => {
-    expect(parseLocation('eval at f (https://x.com/a.js?token=S:5), <anonymous>').file).toBe(
-      'eval at f (https://x.com/a.js?token=%3Credacted%3E:5), <anonymous>',
+  it('an eval wrapper whose origin has a sourceURL has no position, and is still sanitized', () => {
+    const real =
+      'Error: x\n    at eval (eval at <anonymous> (https://cdn.x.com/a.js?token=S3), <anonymous>:1:1)';
+    expect(parseV8Stack(real)[0]?.file).toBe(
+      'eval at <anonymous> (https://cdn.x.com/a.js?token=%3Credacted%3E), <anonymous>',
     );
+  });
+
+  it('a blob:/filesystem: URL inside the wrapper is sanitized too', () => {
+    expect(parseLocation('eval at f (blob:https://u:pw@x.com/uuid:1:2), <anonymous>').file).toBe(
+      'eval at f (blob:https://u:%3Credacted%3E@x.com/uuid:1:2), <anonymous>',
+    );
+    expect(
+      parseLocation('eval at f (filesystem:https://u:pw@x.com/temporary/a.js:1:2), <anonymous>')
+        .file,
+    ).toBe('eval at f (filesystem:https://u:%3Credacted%3E@x.com/temporary/a.js:1:2), <anonymous>');
+  });
+
+  it('a route group followed by a signed query never closes the wrapper early (position-less form)', () => {
+    expect(parseLocation('eval at f (https://x.com/(dash)/a.js?token=S3), <anonymous>').file).toBe(
+      'eval at f (https://x.com/(dash)/a.js?token=%3Credacted%3E), <anonymous>',
+    );
+  });
+
+  it('a URL OUTSIDE any wrapper is sanitized to the next whitespace', () => {
+    const file = parseLocation(
+      'eval at a (eval at b (https://x.com/a.js:3:4), <anonymous>), https://y.com/b.js?token=T:5:6',
+    ).file;
+    expect(file).toBe(
+      'eval at a (eval at b (https://x.com/a.js:3:4), <anonymous>), https://y.com/b.js?token=%3Credacted%3E',
+    );
+  });
+
+  it('a URL BEFORE a wrapper in the same string is sanitized too', () => {
+    expect(
+      parseLocation(
+        'eval at a https://y.com/b.js?token=T (eval at b (https://x.com/a.js:3:4), <anonymous>)',
+      ).file,
+    ).toBe(
+      'eval at a https://y.com/b.js?token=%3Credacted%3E (eval at b (https://x.com/a.js:3:4), <anonymous>)',
+    );
+  });
+
+  it('a wrapper that ends the string (no trailing comma) is matched', () => {
+    expect(parseLocation('eval at f (https://x.com/a.js?token=S:1:2)').file).toBe(
+      'eval at f (https://x.com/a.js?token=%3Credacted%3E:1:2)',
+    );
+  });
+
+  describe('real V8 async frames: `at async <location>` (no function name, no parentheses)', () => {
+    it('sanitizes a signed URL and drops the password', () => {
+      const frames = parseV8Stack(
+        'Error: x\n    at async https://u:pw@cdn.x.com/_next/static/a.js?token=SECRET&v=2:4:22',
+      );
+      expect(frames[0]).toEqual({
+        file: 'https://u:%3Credacted%3E@cdn.x.com/_next/static/a.js?token=%3Credacted%3E&v=2',
+        line: 4,
+        column: 22,
+      });
+    });
+    it('strips file:// and relativizes against the app root like a synchronous frame', () => {
+      setStackAppRoot('/Users/alice/app');
+      try {
+        expect(
+          parseV8Stack('Error: x\n    at async file:///Users/alice/app/src/main.mjs:3:1')[0],
+        ).toEqual({
+          file: './src/main.mjs',
+          line: 3,
+          column: 1,
+        });
+      } finally {
+        setStackAppRoot(undefined);
+      }
+    });
+    it('a NAMED async frame keeps its function name', () => {
+      expect(parseV8Stack('Error: x\n    at async Promise.all (index 0)')[0]?.function).toBe(
+        'async Promise.all',
+      );
+    });
+  });
+
+  describe('the 4096-character clip fails closed', () => {
+    const wrapper = (total: number): string => {
+      const base = 'eval at  (https://x.com/a.js?token=SECRET:1:2), <anonymous>';
+      return `eval at ${'x'.repeat(total - base.length)} (https://x.com/a.js?token=SECRET:1:2), <anonymous>`;
+    };
+    it.each([
+      [4095, false],
+      [4096, false],
+      [4097, true],
+    ])('a wrapper of exactly %i characters (clipped: %s)', (total, clipped) => {
+      const input = wrapper(total);
+      expect(input.length).toBe(total);
+      const out = parseLocation(input).file ?? '';
+      expect(out.endsWith('…')).toBe(clipped);
+      expect(out).not.toContain('SECRET');
+    });
+    it('a URL whose end is past the clip is sanitized, never shipped raw', () => {
+      const out =
+        parseLocation(
+          `eval at f (https://cdn.x.com/app.js?token=eyJSECRET${'A'.repeat(4200)}:1:2), <anonymous>`,
+        ).file ?? '';
+      expect(out).not.toContain('eyJSECRET');
+      expect(out.endsWith('…')).toBe(true);
+      expect(out.length).toBeLessThanOrEqual(4097);
+    });
+  });
+
+  it('script URL frames with any whitespace after the URL keep it (a tab, not just a space)', () => {
+    expect(parseLocation('https://x.com/a.js?token=S\tline 2 > Function').file).toBe(
+      'https://x.com/a.js?token=%3Credacted%3E\tline 2 > Function',
+    );
+  });
+
+  it('the sanitized-URL cache stays bounded however many distinct URLs pass through', () => {
+    for (let i = 0; i < 3000; i += 1) parseLocation(`https://x.com/c${i}.js?token=S:1:1`);
+    expect(frameUrlCacheSize()).toBeLessThanOrEqual(512);
+    expect(frameUrlCacheSize()).toBeGreaterThan(0);
   });
 
   it('redacts the password of a filesystem: frame URL', () => {

@@ -279,6 +279,31 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/?next=+https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
+      'an encoded %2B before a nested URL stays %2B',
+      'https://a.com/?next=%2Bhttps%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=%2Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a lower-case %2b stays as written',
+      'https://a.com/?next=%2bhttps%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=%2bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a mixed raw prefix is reused whole',
+      'https://a.com/?next=%20+%2Bhttps%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=%20+%2Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a double-encoded leading space is rewritten as a single %20',
+      'https://a.com/?next=%2520https%253A%252F%252Fu%253Apw%2540b%252F',
+      `https://a.com/?next=%20https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a leading + after double encoding is written as +',
+      'https://a.com/?next=%252Bhttps%253A%252F%252Fu%253Apw%2540b%252F',
+      `https://a.com/?next=+https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
       'a leading + before a plain nested URL',
       'https://a.com/?next=+https://u:pw@b/',
       `https://a.com/?next=+https://u:${R}@b/`,
