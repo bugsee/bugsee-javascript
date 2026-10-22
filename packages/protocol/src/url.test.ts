@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
 import { FRAGMENT_PIECE_BOUNDARY, redactFormBody, redactSensitivePairs } from './pairs';
 import { redactShapes } from './shapes';
 import { sanitizeErrorMessage, sanitizeUrl } from './url';
@@ -267,6 +268,37 @@ describe('sanitizeUrl — a second # in the fragment', () => {
       expect(sanitizeUrl(input)).toBe(expected);
     }
   });
+
+  it('a # followed by text that reaches a `;` or `&` before any `=` is NOT a boundary (the secret stays whole)', () => {
+    expect(sanitizeUrl('https://a.com/#token=a#b;c=d')).toBe(
+      'https://a.com/#token=%3Credacted%3E;c=d',
+    );
+    expect(sanitizeUrl('https://a.com/#token=a#b&c=d')).toBe(
+      'https://a.com/#token=%3Credacted%3E&c=d',
+    );
+  });
+
+  it('a # followed directly by `=` (an empty key) is NOT a boundary', () => {
+    expect(sanitizeUrl('https://a.com/#password=a#=b&c=d')).toBe(
+      'https://a.com/#password=%3Credacted%3E&c=d',
+    );
+  });
+
+  it(
+    'cutting a fragment at its boundaries is linear on a run of #',
+    () => {
+      const build = (size: number): string => `https://a.com/${'#'.repeat(size)}a=`;
+      expect(typeof sanitizeUrl(build(50_000))).toBe('string');
+      expectLinearIn(
+        build,
+        (input) => {
+          sanitizeUrl(input);
+        },
+        400_000,
+      );
+    },
+    LINEARITY_TEST_TIMEOUT_MS,
+  );
 
   it('a fragment with no `#key=` boundary is scanned exactly as before (differential property)', () => {
     fc.assert(

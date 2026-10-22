@@ -41,9 +41,9 @@ describe('parseV8Stack', () => {
 
   it('sanitizes every URL of a nested eval chain and leaves non-URL text alone', () => {
     const file = parseLocation(
-      'eval at a (eval at b (https://u:pw@x.com/a.js?sig=1&token=S:3:4), <anonymous>), https://y.com/b.js?token=T:5:6',
+      'eval at a (eval at b (https://u:pw@x.com/a.js?sig=1&token=S:3:4), <anonymous>), <anonymous>',
     ).file;
-    expect(file).not.toMatch(/pw|=S\b|=T\b/);
+    expect(file).not.toMatch(/pw|=S\b/);
     expect(file).toContain('eval at a (eval at b (');
     expect(file).toContain(':3:4)');
   });
@@ -54,6 +54,88 @@ describe('parseV8Stack', () => {
         'Error: x\n    at eval (eval at f (https://x.com/app.js:1:2), <anonymous>:1:1)',
       )[0]?.file,
     ).toBe('eval at f (https://x.com/app.js:1:2), <anonymous>');
+  });
+
+  it('keeps a port and a route group inside an eval-wrapped URL (only the trailing position is cut)', () => {
+    expect(
+      parseV8Stack(
+        'Error: x\n    at eval (eval at f (https://x.com:8080/app/(dash)/a.js:1:2), <anonymous>:1:1)',
+      )[0]?.file,
+    ).toBe('eval at f (https://x.com:8080/app/(dash)/a.js:1:2), <anonymous>');
+  });
+
+  it('an eval-wrapped URL whose query holds :digits keeps them inside the redacted value', () => {
+    expect(
+      parseV8Stack(
+        'Error: x\n    at eval (eval at f (https://x.com/a.js?token=abc:123:4:5), <anonymous>:1:1)',
+      )[0]?.file,
+    ).toBe('eval at f (https://x.com/a.js?token=%3Credacted%3E:4:5), <anonymous>');
+  });
+
+  it('an eval-wrapped URL with a route group AND a signed query is redacted (parens belong to the URL)', () => {
+    expect(
+      parseV8Stack(
+        'Error: x\n    at eval (eval at f (https://x.com/(dash)/a.js?token=S:1:2), <anonymous>:1:1)',
+      )[0]?.file,
+    ).toBe('eval at f (https://x.com/(dash)/a.js?token=%3Credacted%3E:1:2), <anonymous>');
+  });
+
+  it('an eval-wrapped URL with a single position is handled too', () => {
+    expect(parseLocation('eval at f (https://x.com/a.js?token=S:5), <anonymous>').file).toBe(
+      'eval at f (https://x.com/a.js?token=%3Credacted%3E:5), <anonymous>',
+    );
+  });
+
+  it('redacts the password of a filesystem: frame URL', () => {
+    expect(parseLocation('filesystem:https://u:pw@x.com/temporary/a.js:1:1').file).toBe(
+      'filesystem:https://u:%3Credacted%3E@x.com/temporary/a.js',
+    );
+  });
+
+  it('a wrapper longer than 4096 characters is clipped, never scanned whole', () => {
+    const out =
+      parseLocation(
+        `eval at ${'x'.repeat(10_000)} (https://x.com/a.js?token=S:1:2), <anonymous>:1:1`,
+      ).file ?? '';
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(4097);
+  });
+
+  describe('a signed script URL is sanitized WHOLE (up to the first whitespace), whatever it contains', () => {
+    const cloudfront =
+      'https://d1.cloudfront.net/_next/static/chunks/app/(dashboard)/settings/page-4f2a.js?Expires=1&Signature=AbC123SECRET~xyz&Key-Pair-Id=K2ABC';
+    it('a CloudFront chunk in a route group (the real stack shape)', () => {
+      const frames = parseV8Stack(`Error: x\n    at Settings (${cloudfront}:1:2345)`);
+      expect(frames[0]?.file).toBe(
+        'https://d1.cloudfront.net/_next/static/chunks/app/(dashboard)/settings/page-4f2a.js?Expires=1&Signature=%3Credacted%3E&Key-Pair-Id=K2ABC',
+      );
+      expect(JSON.stringify(frames)).not.toContain('SECRET');
+    });
+    it.each([
+      [
+        'a comma in the value',
+        'https://x.com/a.js?token=abc,def',
+        'https://x.com/a.js?token=%3Credacted%3E',
+      ],
+      [
+        'a closing paren in the value',
+        'https://x.com/a.js?token=a)b',
+        'https://x.com/a.js?token=%3Credacted%3E',
+      ],
+      [
+        'parens around part of the value',
+        'https://x.com/a.js?token=abc(def)',
+        'https://x.com/a.js?token=%3Credacted%3E',
+      ],
+      [
+        'digits after a colon in the value',
+        'https://x.com/a.js?token=abc:123',
+        'https://x.com/a.js?token=%3Credacted%3E',
+      ],
+    ])('%s', (_name, url, expected) => {
+      expect(parseLocation(`${url}:1:1`).file).toBe(expected);
+      expect(parseLocation(url).file).toBe(expected);
+    });
   });
 
   it('redacts the password of a blob: frame URL', () => {

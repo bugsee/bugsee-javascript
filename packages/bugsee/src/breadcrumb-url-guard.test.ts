@@ -30,6 +30,47 @@ function isBreadcrumbCallee(callee: ts.Expression): boolean {
   return ts.isIdentifier(callee) && callee.text === 'addBreadcrumb';
 }
 
+/**
+ * Every mention of `addBreadcrumb` that is NOT a direct call and NOT a declaration of it: `x.addBreadcrumb.call(...)`,
+ * `.apply`, `.bind`, `(0, x.addBreadcrumb)(...)`, `const ab = x.addBreadcrumb`, `const { addBreadcrumb } = x`, a string
+ * that names it. Such a reference can be called later with arguments this guard never sees, so any one outside the
+ * allow-list below FAILS the guard (fail closed). Returns a short description of each.
+ */
+export function indirectBreadcrumbReferences(text: string): string[] {
+  const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found: string[] = [];
+  const isDirectCallee = (node: ts.Node): boolean => {
+    const parent = node.parent;
+    if (ts.isCallExpression(parent) && parent.expression === node) return true; // `addBreadcrumb(...)`
+    return (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      ts.isCallExpression(parent.parent) &&
+      parent.parent.expression === parent // `x.addBreadcrumb(...)`, `x['addBreadcrumb'](...)`
+    );
+  };
+  const visit = (node: ts.Node): void => {
+    const named =
+      (ts.isIdentifier(node) && node.text === 'addBreadcrumb') ||
+      (ts.isStringLiteralLike(node) && node.text === 'addBreadcrumb');
+    if (named) {
+      const parent = node.parent;
+      const declaration =
+        (ts.isMethodDeclaration(parent) ||
+          ts.isMethodSignature(parent) ||
+          ts.isPropertyAssignment(parent)) &&
+        parent.name === node;
+      if (!declaration && !isDirectCallee(node)) {
+        found.push(
+          ts.isStringLiteralLike(node) ? 'string' : `reference in ${ts.SyntaxKind[parent.kind]}`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 /** The raw-address identifiers used inside the arguments of every `.addBreadcrumb(...)` call in `text`. */
 export function rawAddressesInBreadcrumbCalls(text: string): string[] {
   const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -102,6 +143,29 @@ export function hasBreadcrumbCall(text: string): boolean {
   visit(source);
   return found;
 }
+
+describe('the guard flags every indirect reference to addBreadcrumb', () => {
+  it.each([
+    'client.addBreadcrumb.call(client, { message: href });',
+    'client.addBreadcrumb.apply(client, [{ message: href }]);',
+    'const f = client.addBreadcrumb.bind(client);',
+    '(0, client.addBreadcrumb)({ message: href });',
+    'const ab = client.addBreadcrumb; ab({ message: href });',
+    'const { addBreadcrumb } = client;',
+    "const names = ['addBreadcrumb'];",
+    'register(client.addBreadcrumb);',
+  ])('flags %s', (code) => {
+    expect(indirectBreadcrumbReferences(code).length).toBeGreaterThan(0);
+  });
+
+  it('does not flag a direct call or a declaration of the method', () => {
+    expect(
+      indirectBreadcrumbReferences(
+        "client.addBreadcrumb({});\nclient['addBreadcrumb']({});\naddBreadcrumb({});\ninterface C { addBreadcrumb(b: B): void }\nconst o = { addBreadcrumb(b: B) {}, x: 1 };\nconst p = { addBreadcrumb: noop };",
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe('the guard discovers a breadcrumb call in every syntactic form', () => {
   it.each([
@@ -182,6 +246,30 @@ describe('every SDK-internal breadcrumb writer is classified (no URL breadcrumb 
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('no source references addBreadcrumb indirectly, except the one known string (fail closed)', () => {
+    const indirect = new Map<string, string[]>();
+    const scanned = new Map<string, string>();
+    for (const pkg of readdirSync(packages)) {
+      const src = join(packages, pkg, 'src');
+      try {
+        if (!statSync(src).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      for (const file of sourceFiles(src)) {
+        const text = readFileSync(file, 'utf8');
+        if (!text.includes('addBreadcrumb')) continue;
+        scanned.set(relative(packages, file), text);
+      }
+    }
+    for (const [file, text] of scanned) {
+      const found = indirectBreadcrumbReferences(text);
+      if (found.length > 0) indirect.set(file, found);
+    }
+    // The WebView lists the names of the methods it forwards to native (a page-facing allow-list of method NAMES, not a call).
+    expect(Object.fromEntries(indirect)).toEqual({ 'webview/src/launch.ts': ['string'] });
   });
 
   it('no call site mentions a raw address in its arguments', () => {

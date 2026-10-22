@@ -274,6 +274,26 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `file:///…/index.html#token=${R}`,
     ],
     [
+      'a leading + (URLSearchParams space) before an encoded nested URL',
+      'https://a.com/?next=+https%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=+https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a leading + before a plain nested URL',
+      'https://a.com/?next=+https://u:pw@b/',
+      `https://a.com/?next=+https://u:${R}@b/`,
+    ],
+    [
+      'leading blanks of both kinds are kept',
+      'https://a.com/?next=+%20https%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next=+%20https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a leading + before harmless text is untouched',
+      'https://a.com/?q=+hello+world',
+      'https://a.com/?q=+hello+world',
+    ],
+    [
       'a leading-space encoded nested URL with a path secret',
       'https://a.com/?next=%20https%3A%2F%2Fy.com%2Fp%3Bjsessionid%3DS',
       `https://a.com/?next=%20https%3A%2F%2Fy.com%2Fp%3Bjsessionid%3D%253Credacted%253E`,

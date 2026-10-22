@@ -3,14 +3,14 @@ import { normalizeKey, REDACTED_URL_ENCODED } from './sensitive';
 import { redactShapes, type ShapeRedactionOptions } from './shapes';
 import { sanitizeUrlCore } from './url';
 
-// Sanitizer for the page's OWN address: the `url` system trace and the navigation breadcrumbs. `sanitizeUrl` is the
-// NETWORK sanitizer and is intentionally left as it is (it scans http(s)-style `scheme://authority/path?query#fragment`
-// and nothing else). A page can be at any address the browser opens, and three measured gaps of `sanitizeUrl` matter
-// there: `data:text/plain;token=abc,hello` has its payload read as `key=value` pairs and half-eaten,
-// `blob:https://u:p@a.com/x` keeps its password (a `blob:` URL has no `://` after the scheme, so the userinfo is not
-// recognised), and `file:`/`javascript:` URLs pass through whole (a local path names the user's home directory).
-// So this layer adds deliberate SCHEME HANDLING, then defers to `sanitizeUrl` for everything else, and adds a bounded
-// scan of a URL nested inside a query value (`?next=https://x/?token=…`).
+// Sanitizer for the page's OWN address: the `url` system trace and the navigation breadcrumbs. It builds on
+// `sanitizeUrlCore` (the network sanitizer's engine, which scans http(s)-style `scheme://authority/path?query#fragment`)
+// and adds what a PAGE address needs: a page can be at any address the browser opens, and `data:text/plain;token=abc,hello`
+// would have its payload read as `key=value` pairs and half-eaten, `file:`/`javascript:` URLs would pass through whole (a
+// local path names the user's home directory), and nothing nested in a query value would be scanned. So this layer adds
+// deliberate SCHEME HANDLING, the location denylist, a tolerant bounded scan of a URL nested inside a query or fragment
+// value (`?next=https://x/?token=…`), and a browser-like normalisation of raw strings. (The network `sanitizeUrl` itself
+// only gained the userinfo of `blob:`/`filesystem:` URLs and the fragment cut at `#key=`; none of the rest.)
 //
 // Never throws: a URL we merely observed must not break the host. Linear: no recursion except the bounded nested
 // scan below (constant depth, each level scanning only its own sub-string, so total work stays a small multiple of
@@ -95,7 +95,7 @@ const encodeSafe = (value: string): string =>
 const redactPairs = (value: string): string =>
   redactSensitivePairs(value, 0, value.length, false, isLocationKey);
 
-/** One `#`-free piece of a fragment: its pairs, then the pairs after a hash-router `?` (`#/nav?code=C`), whose first key
+/** One piece of a fragment (see `FRAGMENT_PIECE_BOUNDARY`): its pairs, then the pairs after a hash-router `?` (`#/nav?code=C`), whose first key
  *  would otherwise carry the route as a prefix (`/nav?code`) and miss an exact-key match. */
 function redactFragmentPiece(piece: string): string {
   const once = redactPairs(piece);
@@ -105,7 +105,8 @@ function redactFragmentPiece(piece: string): string {
     : redactSensitivePairs(once, question + 1, once.length, false, isLocationKey);
 }
 
-/** A fragment, cut at every further `#` (vue-router hash mode: `#/cb?x=1#access_token=…`), each piece scanned alone. */
+/** A fragment, cut at each `#` that starts a `key=` (vue-router hash mode: `#/cb?x=1#access_token=…`), each piece scanned
+ *  alone; a `#` that is not followed by `key=` stays inside its value (`#password=p#ss`). */
 const redactFragment = (fragment: string): string =>
   fragment.split(FRAGMENT_PIECE_BOUNDARY).map(redactFragmentPiece).join('#');
 
@@ -164,7 +165,7 @@ function sanitizeNestedRun(
   end: number,
   options: ShapeRedactionOptions | undefined,
   depth: number,
-  /** A fragment: a further `#` also ends a pair (`#/cb?x=1#access_token=…`). */
+  /** A fragment: a `#` that starts a `key=` also ends a pair (`#/cb?x=1#access_token=…`). */
   splitHash = false,
 ): string {
   const pieces: string[] = [];
@@ -201,14 +202,21 @@ function sanitizeNestedRun(
   return changed ? pieces.join('') + url.slice(copyFrom) : url;
 }
 
-/** Sanitize nested TEXT as an address, ignoring (and keeping) its leading whitespace: `%20https%3A%2F%2F…` is an address
+/** Leading whitespace, and the `+` that `URLSearchParams` writes for a leading space. */
+const LEADING_BLANKS = /^[\s+]+/;
+
+/** Encode the leading blanks of a decoded value the way they were most likely written (`+` stays `+`). */
+const encodeLead = (lead: string): string =>
+  lead.replace(/[\s+]/g, (c) => (c === '+' ? '+' : encodeURIComponent(c)));
+
+/** Sanitize nested TEXT as an address, ignoring (and keeping) its leading blanks: `%20https%3A%2F%2F…` is an address
  *  to a browser, and the normalisation inside would otherwise drop the space and make a harmless value look changed. */
 function sanitizeNestedText(
   text: string,
   options: ShapeRedactionOptions | undefined,
   depth: number,
 ): string {
-  const body = text.trimStart();
+  const body = text.replace(LEADING_BLANKS, '');
   if (!looksNested(body)) {
     return text;
   }
@@ -233,7 +241,11 @@ function sanitizeNestedValue(
     return value;
   }
   // Nothing was really decoded (only invalid escapes): the sanitized raw text is the answer, not a re-encoding of it.
-  return decoded === value ? clean : encodeSafe(clean);
+  if (decoded === value) {
+    return clean;
+  }
+  const lead = LEADING_BLANKS.exec(clean)?.[0] ?? '';
+  return encodeLead(lead) + encodeSafe(clean.slice(lead.length));
 }
 
 /** The nested scan over the main query and over the fragment (its `key=value` pairs, and a hash-router `?` query). */

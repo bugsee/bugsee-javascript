@@ -88,28 +88,43 @@ export function setStackAppRoot(root: string | undefined): void {
 const FRAME_URL_CACHE_MAX = 512;
 const frameUrlCache = new Map<string, string>();
 
-// Every URL-looking token in a frame's file string. A frame's file is not always one URL: Chrome wraps eval code as
-// `eval at f (https://x.com/app.js?token=S:1:2), <anonymous>` and Firefox suffixes ` line 2 > Function`, so the URL is
-// found INSIDE the string. The lookbehind makes only a token START a candidate (linear on a long run of letters).
-const FRAME_URL_TOKEN = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s(),]+/g;
-const TRAILING_POSITION = /(?::\d+){1,2}$/;
+const SCHEME_START = /^(?:(?:blob|filesystem):)?[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+// The URL INSIDE a Chrome eval wrapper: `eval at f (https://x.com/app.js?token=S:1:2), <anonymous>`. It starts after a `(`
+// and runs, lazily, to the `:line:col` that precedes the closing `)`, so a `)` or `,` INSIDE the URL (a route group
+// `/(dashboard)/`, a comma in a query) is part of it and `:line:col` is not. The cap bounds the lazy scan.
+const EVAL_WRAPPED_URL = /\(([A-Za-z][A-Za-z0-9+.-]*:\/\/\S*?)((?::\d+){1,2})\)/g;
+const EVAL_WRAPPER_MAX = 4096;
 
-function sanitizeFrameUrlToken(token: string): string {
-  // A token inside an eval wrapper still carries its own `:line:col`, which is not part of the URL.
-  const position = TRAILING_POSITION.exec(token);
-  const url = position === null ? token : token.slice(0, position.index);
+function sanitizeCached(url: string): string {
   let clean = frameUrlCache.get(url);
   if (clean === undefined) {
     clean = sanitizeUrl(url);
     if (frameUrlCache.size >= FRAME_URL_CACHE_MAX) frameUrlCache.clear();
     frameUrlCache.set(url, clean);
   }
-  return position === null ? clean : clean + position[0];
+  return clean;
 }
 
-/** Sanitize every URL inside a browser frame's file string (eval wrappers and Firefox's ` line N > …` suffix keep their text). */
+/**
+ * Sanitize the URL of a browser frame's file string.
+ *  - A string that STARTS with a scheme is a script URL, optionally followed by Firefox's ` line N > Function` suffix:
+ *    everything up to the first whitespace is the URL (a `(`, `)` or `,` inside it is part of the URL), the rest is kept.
+ *  - Otherwise the URL sits inside Chrome's `eval at f (URL:line:col), <anonymous>` wrapper: each parenthesised URL is
+ *    sanitized and its position kept. Only the first 4096 characters are examined (a longer wrapper is clipped).
+ */
 function sanitizeFrameUrl(frame: string): string {
-  return frame.replace(FRAME_URL_TOKEN, sanitizeFrameUrlToken);
+  if (SCHEME_START.test(frame)) {
+    const space = frame.search(/\s/);
+    return space < 0
+      ? sanitizeCached(frame)
+      : sanitizeCached(frame.slice(0, space)) + frame.slice(space);
+  }
+  const head = frame.length > EVAL_WRAPPER_MAX ? frame.slice(0, EVAL_WRAPPER_MAX) : frame;
+  const wrapped = head.replace(
+    EVAL_WRAPPED_URL,
+    (_m, url: string, position: string) => `(${sanitizeCached(url)}${position})`,
+  );
+  return head === frame ? wrapped : `${wrapped}…`;
 }
 
 function scrubFramePath(path: string): string {
