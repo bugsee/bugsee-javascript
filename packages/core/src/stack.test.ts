@@ -114,6 +114,47 @@ describe('parseV8Stack', () => {
     );
   });
 
+  it.each([
+    [
+      'a route group',
+      'https://y.com/(g)/b.js?token=T',
+      'https://y.com/(g)/b.js?token=%3Credacted%3E',
+    ],
+    [
+      'a comma in the path',
+      'https://y.com/a,b/c.js?token=T',
+      'https://y.com/a,b/c.js?token=%3Credacted%3E',
+    ],
+    [
+      'a closing paren in the query',
+      'https://y.com/b.js?a=b)&token=T',
+      'https://y.com/b.js?a=b)&token=%3Credacted%3E',
+    ],
+    [
+      'a comma in the query',
+      'https://y.com/b.js?a=1,2&token=T',
+      'https://y.com/b.js?a=1,2&token=%3Credacted%3E',
+    ],
+  ])('a free URL OUTSIDE a wrapper keeps its parens and commas (%s)', (_name, url, expected) => {
+    expect(
+      parseLocation(`eval at a (eval at b (https://x.com/a.js:3:4), <anonymous>), ${url}`).file,
+    ).toBe(`eval at a (eval at b (https://x.com/a.js:3:4), <anonymous>), ${expected}`);
+  });
+
+  it('a bare frame whose file starts with the letters `async` is not an async frame', () => {
+    expect(parseV8Stack('Error: x\n    at async.js:1:2')[0]).toEqual({
+      file: 'async.js',
+      line: 1,
+      column: 2,
+    });
+    expect(parseV8Stack('Error: x\n    at /async/x.js:1:2')[0]).toEqual({
+      file: '/async/x.js',
+      line: 1,
+      column: 2,
+    });
+    expect(parseV8Stack('Error: x\n    at asyncFn (/a.js:1:2)')[0]?.function).toBe('asyncFn');
+  });
+
   it('a URL BEFORE a wrapper in the same string is sanitized too', () => {
     expect(
       parseLocation(
@@ -128,6 +169,74 @@ describe('parseV8Stack', () => {
     expect(parseLocation('eval at f (https://x.com/a.js?token=S:1:2)').file).toBe(
       'eval at f (https://x.com/a.js?token=%3Credacted%3E:1:2)',
     );
+  });
+
+  describe('parentheses and commas inside the URL never close the eval wrapper early', () => {
+    const R = '%3Credacted%3E';
+    it.each([
+      [
+        'nested calls in the query (real Node 24)',
+        'https://x.com/app.js?q=and(eq(a,1),eq(b,2))&token=SECRETB',
+        ':5:40',
+        `https://x.com/app.js?q=and(eq(a,1),eq(b,2))&token=${R}`,
+      ],
+      [
+        'paren groups separated by a comma',
+        'https://x.com/app.js?f=(a),(b)&token=SECRETB',
+        ':1:2',
+        `https://x.com/app.js?f=(a),(b)&token=${R}`,
+      ],
+      [
+        'doubly nested parens',
+        'https://x.com/app.js?q=f(g(x))&token=SECRETB',
+        ':1:2',
+        `https://x.com/app.js?q=f(g(x))&token=${R}`,
+      ],
+      [
+        'parens and a comma in the fragment',
+        'https://x.com/app.js#a=(b),c&access_token=SECRETB',
+        ':1:2',
+        `https://x.com/app.js#a=(b),c&access_token=${R}`,
+      ],
+      [
+        'the position-less (sourceURL) form with paren groups',
+        'https://x.com/app.js?f=(a),(b)&token=SECRETB',
+        '',
+        `https://x.com/app.js?f=(a),(b)&token=${R}`,
+      ],
+      [
+        'a route group and a paren query',
+        'https://x.com/(dash)/a.js?f=(a),(b)&token=SECRETB',
+        ':3:4',
+        `https://x.com/(dash)/a.js?f=(a),(b)&token=${R}`,
+      ],
+    ])('%s', (_name, url, position, expected) => {
+      const file = parseLocation(`eval at d (${url}${position}), <anonymous>`).file ?? '';
+      expect(file).toBe(`eval at d (${expected}${position}), <anonymous>`);
+      expect(file).not.toContain('SECRETB');
+    });
+    it('the same through a real V8 stack line', () => {
+      const frames = parseV8Stack(
+        'Error: x\n    at eval (eval at d (https://x.com/app.js?q=and(eq(a,1),eq(b,2))&token=SECRETB:5:40), <anonymous>:1:1)',
+      );
+      expect(JSON.stringify(frames)).not.toContain('SECRETB');
+      expect(frames[0]?.line).toBe(1);
+    });
+    it('a nested eval chain ends the inner wrapper with a run of `)`', () => {
+      expect(
+        parseLocation(
+          'eval at <anonymous> (eval at nested (https://x.com/app.js?token=S:4:31)), <anonymous>',
+        ).file,
+      ).toBe(
+        `eval at <anonymous> (eval at nested (https://x.com/app.js?token=${R}:4:31)), <anonymous>`,
+      );
+    });
+    it('a wrapper followed by whitespace-less text is not closed by a `)` mid-URL', () => {
+      // `)` followed by `/` or `&` etc. belongs to the URL; only `)` + any `)` + `, ` or the end closes the wrapper
+      expect(parseLocation('eval at f (https://x.com/a(b)/c.js?token=S), <anonymous>').file).toBe(
+        `eval at f (https://x.com/a(b)/c.js?token=${R}), <anonymous>`,
+      );
+    });
   });
 
   describe('real V8 async frames: `at async <location>` (no function name, no parentheses)', () => {
@@ -178,6 +287,32 @@ describe('parseV8Stack', () => {
       expect(out.endsWith('…')).toBe(clipped);
       expect(out).not.toContain('SECRET');
     });
+    it('a clip that lands inside the userinfo of the LAST url, with a real 4070-character prefix', () => {
+      const pad = 'p'.repeat(4096 - 'eval at  (https://user:SECRETPAS'.length);
+      const input = `eval at ${pad} (https://user:SECRETPASSWORD@x.com/a.js:1:2), <anonymous>`;
+      const out = parseLocation(input).file ?? '';
+      expect(out).not.toMatch(/SECRETPAS/);
+      expect(out.endsWith('…')).toBe(true);
+      expect(out.startsWith('eval at ppp')).toBe(true);
+    });
+
+    it('only the LAST open URL is dropped when an earlier URL precedes it', () => {
+      const tail = '(https://user:SECRETPASSWORD@x.com/b.js:1:2)';
+      const head = 'eval at  (https://x.com/a.js:1:2), <anonymous> ';
+      const pad = 'p'.repeat(4096 - head.length - 'x'.length - '(https://user:SECRETPAS'.length);
+      const out =
+        parseLocation(`eval at ${pad} (https://x.com/a.js:1:2), <anonymous> ${tail}`).file ?? '';
+      expect(out).not.toMatch(/SECRETPAS/);
+      expect(out).toContain('(https://x.com/a.js:1:2), <anonymous> ');
+    });
+
+    it('a clip AFTER the last URL ended (whitespace follows it) keeps everything before the cut', () => {
+      const input = `eval at (https://x.com/a.js:1:2), <anonymous> ${'q'.repeat(5000)}`;
+      const out = parseLocation(input).file ?? '';
+      expect(out.startsWith('eval at (https://x.com/a.js:1:2), <anonymous> qqq')).toBe(true);
+      expect(out.endsWith('…')).toBe(true);
+    });
+
     it('a URL whose end is past the clip is sanitized, never shipped raw', () => {
       const out =
         parseLocation(

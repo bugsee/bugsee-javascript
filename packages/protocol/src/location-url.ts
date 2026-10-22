@@ -205,11 +205,7 @@ function sanitizeNestedRun(
 /** Leading whitespace, and the `+` that `URLSearchParams` writes for a leading space. */
 const LEADING_BLANKS = /^[\s+]+/;
 /** The same blanks as they appear in an ENCODED value (`+`, a space, `%20`, `%2B`). */
-const RAW_LEADING_BLANKS = /^(?:[\s+]|%20|%2[Bb])+/;
-
-/** Encode the leading blanks of a decoded value the way they were most likely written (`+` stays `+`). */
-const encodeLead = (lead: string): string =>
-  lead.replace(/[\s+]/g, (c) => (c === '+' ? '+' : encodeURIComponent(c)));
+const RAW_LEADING_BLANKS = /^(?:[\s+]|%20|%2[Bb]|%25(?:20|2[Bb]))+/;
 
 /** Sanitize nested TEXT as an address, ignoring (and keeping) its leading blanks: `%20https%3A%2F%2F…` is an address
  *  to a browser, and the normalisation inside would otherwise drop the space and make a harmless value look changed. */
@@ -248,11 +244,12 @@ function sanitizeNestedValue(
   }
   const lead = LEADING_BLANKS.exec(clean)?.[0] ?? '';
   // Keep the leading blanks EXACTLY as written (`+`, `%2B` and `%20` mean different things to a form decoder): the raw
-  // prefix is reused when it decodes to the same blanks, and only a differently encoded one (double encoding) is rewritten.
+  // prefix is reused when it decodes to the same blanks, and a double-encoded one (`%252B`, `%2520`) decodes to them in two steps and is reused too; anything else is rewritten.
   const rawLead = RAW_LEADING_BLANKS.exec(value)?.[0] ?? '';
   return (
-    (decodeTolerant(rawLead) === lead ? rawLead : encodeLead(lead)) +
-    encodeSafe(clean.slice(lead.length))
+    (decodeTolerant(rawLead) === lead || decodeTolerant(decodeTolerant(rawLead)) === lead
+      ? rawLead
+      : encodeSafe(lead)) + encodeSafe(clean.slice(lead.length))
   );
 }
 

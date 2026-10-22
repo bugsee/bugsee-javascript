@@ -294,14 +294,19 @@ describe('sanitizeLocationUrl: the rule table', () => {
       `https://a.com/?next=%20+%2Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
-      'a double-encoded leading space is rewritten as a single %20',
+      'a double-encoded leading space keeps its %2520',
       'https://a.com/?next=%2520https%253A%252F%252Fu%253Apw%2540b%252F',
-      `https://a.com/?next=%20https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+      `https://a.com/?next=%2520https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
-      'a leading + after double encoding is written as +',
+      'a leading plus after double encoding keeps its %252B',
       'https://a.com/?next=%252Bhttps%253A%252F%252Fu%253Apw%2540b%252F',
-      `https://a.com/?next=+https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+      `https://a.com/?next=%252Bhttps%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
+    ],
+    [
+      'a literal leading space (not encoded) is kept as is',
+      'https://a.com/?next= https%3A%2F%2Fu%3Apw%40b%2F',
+      `https://a.com/?next= https%3A%2F%2Fu%3A%253Credacted%253E%40b%2F`,
     ],
     [
       'a leading + before a plain nested URL',
