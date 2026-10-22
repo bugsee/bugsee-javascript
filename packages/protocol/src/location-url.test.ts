@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
-import { sanitizeLocationUrl } from './location-url';
+import { sanitizeLocationName, sanitizeLocationUrl } from './location-url';
 import { sanitizeUrl } from './url';
 
 // `sanitizeLocationUrl` is the sanitizer for the page's OWN address (the `url` trace, navigation breadcrumbs).
@@ -21,8 +21,8 @@ describe('sanitizeLocationUrl: the rule table', () => {
     ['http(s): userinfo password', 'https://u:p@a.com/x', `https://u:${R}@a.com/x`],
     [
       'http(s): fragment',
-      'https://a.com/cb#access_token=abc&state=1',
-      `https://a.com/cb#access_token=${R}&state=1`,
+      'https://a.com/cb#access_token=abc&id=1',
+      `https://a.com/cb#access_token=${R}&id=1`,
     ],
     [
       'http(s): matrix segment',
@@ -174,9 +174,126 @@ describe('sanitizeLocationUrl: the rule table', () => {
       'https://x.com/l?next=https://y.com/orders?tab=1',
     ],
     [
-      'a non-URL value containing a slash is not read as a URL',
-      'https://x.com/l?path=/a/b?token=S',
-      'https://x.com/l?path=/a/b?token=S',
+      'a relative return path with a query is sanitized too',
+      'https://x.com/l?next=/path?token=S',
+      `https://x.com/l?next=/path?token=${R}`,
+    ],
+    [
+      'a percent-encoded relative return path',
+      'https://x.com/l?returnTo=%2Freset%3Ftoken%3DSECRET8',
+      'https://x.com/l?returnTo=%2Freset%3Ftoken%3D%253Credacted%253E',
+    ],
+    [
+      'partial encoding: only the colon encoded',
+      'https://x.com/l?u=https%3A//b/%3Ftoken%3DS',
+      'https://x.com/l?u=https%3A%2F%2Fb%2F%3Ftoken%3D%253Credacted%253E',
+    ],
+    [
+      'partial encoding: only the slashes encoded',
+      'https://x.com/l?u=https:%2F%2Fb%2F%3Ftoken%3DS',
+      'https://x.com/l?u=https%3A%2F%2Fb%2F%3Ftoken%3D%253Credacted%253E',
+    ],
+    [
+      'double-encoded nested URL',
+      'https://x.com/l?u=https%253A%252F%252Fb%252F%253Ftoken%253DS',
+      'https://x.com/l?u=https%3A%2F%2Fb%2F%3Ftoken%3D%253Credacted%253E',
+    ],
+    [
+      'hash-router query after a real query',
+      'https://a.com/?x=1#/cb?next=https://b/?token=S',
+      `https://a.com/?x=1#/cb?next=https://b/?token=${R}`,
+    ],
+    [
+      'hash-router query without a real query',
+      'https://a.com/#/cb?next=https://b/?token=S',
+      `https://a.com/#/cb?next=https://b/?token=${R}`,
+    ],
+    [
+      'extended keys: code and state',
+      'https://a.com/cb?code=C1&state=S1&tab=1',
+      `https://a.com/cb?code=${R}&state=${R}&tab=1`,
+    ],
+    [
+      'extended keys: session ids, signatures, tickets',
+      'https://a.com/?session=S&sessionid=S&session_id=S&sid=S&sig=S&signature=S&ticket=S&otp=S&code_verifier=S',
+      `https://a.com/?session=${R}&sessionid=${R}&session_id=${R}&sid=${R}&sig=${R}&signature=${R}&ticket=${R}&otp=${R}&code_verifier=${R}`,
+    ],
+    [
+      'extended keys are matched exactly, not as substrings',
+      'https://a.com/?encoding=utf8&barcode=1&zipcode=9&country_code=US&states=2',
+      'https://a.com/?encoding=utf8&barcode=1&zipcode=9&country_code=US&states=2',
+    ],
+    [
+      '`key` and `t` are NOT redacted (too common; documented)',
+      'https://a.com/?key=K&t=T',
+      'https://a.com/?key=K&t=T',
+    ],
+    [
+      'extended keys in the fragment (implicit flow)',
+      'https://a.com/#code=C&state=S&id=1',
+      `https://a.com/#code=${R}&state=${R}&id=1`,
+    ],
+    [
+      'extended keys in a hash-router query',
+      'https://a.com/#/nav?code=C6&tab=1',
+      `https://a.com/#/nav?code=${R}&tab=1`,
+    ],
+    [
+      'extended keys in a hash-router query after a real query',
+      'https://a.com/?x=1#/nav?code=C6',
+      `https://a.com/?x=1#/nav?code=${R}`,
+    ],
+    [
+      'extended keys in a matrix segment',
+      'https://a.com/app;session=S/x',
+      `https://a.com/app;session=${R}/x`,
+    ],
+    [
+      'extended keys on a nested URL',
+      'https://a.com/l?next=https://b.com/?code=C',
+      `https://a.com/l?next=https://b.com/?code=${R}`,
+    ],
+    [
+      'file: hash-router query',
+      'file:///app/index.html#/reset?token=T&code=C',
+      `file:///…/index.html#/reset?token=${R}&code=${R}`,
+    ],
+    [
+      'file: fragment pairs',
+      'file:///app/index.html#code=C&tab=1',
+      `file:///…/index.html#code=${R}&tab=1`,
+    ],
+    [
+      'file: extended key in the query',
+      'file:///app/index.html?code=C',
+      `file:///…/index.html?code=${R}`,
+    ],
+    ['one slash after the scheme', 'https:/u:p@a.com/x', `https://u:${R}@a.com/x`],
+    ['no slash after the scheme', 'https:u:p@a.com/x', `https://u:${R}@a.com/x`],
+    ['backslashes for slashes', 'https:\\\\u:p@a.com\\x', `https://u:${R}@a.com/x`],
+    ['wss: one slash', 'wss:/u:p@a.com/x', `wss://u:${R}@a.com/x`],
+    ['ftp: one slash', 'ftp:/u:p@a.com/x', `ftp://u:${R}@a.com/x`],
+    ['ws: backslashes', 'ws:\\\\u:p@a.com\\x', `ws://u:${R}@a.com/x`],
+    [
+      'a quoted or padded key still matches the extended list',
+      'https://a.com/?%22code%22=S&%20state%20=S',
+      `https://a.com/?%22code%22=${R}&%20state%20=${R}`,
+    ],
+    [
+      'file: matrix extended key in the kept segment',
+      'file:///a/b;code=C',
+      `file:///…/b;code=${R}`,
+    ],
+    ['three slashes after the scheme', 'https:///a.com/x?token=1', `https://a.com/x?token=${R}`],
+    ['file: drive path without slashes', 'file:C:\\Users\\bob\\a.html', 'file:///…/a.html'],
+    ['file: UNC path with backslashes', 'file:\\\\server\\share\\bob\\x.html', 'file:///…/x.html'],
+    ['file: three slashes with backslashes', 'file:///C:\\Users\\bob\\a.html', 'file:///…/a.html'],
+    ['blob: the last @ wins in the authority', 'blob:https://a@b:p@c.com/x', 'blob:https://c.com'],
+    ['blob: a backslash ends the origin', 'blob:https://u:p@a.com\\x', 'blob:https://a.com'],
+    [
+      'file: the shape pass runs on the kept segment',
+      'file:///a/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF123_-signaturepart',
+      'file:///…/<redacted>',
     ],
   ];
 
@@ -187,6 +304,74 @@ describe('sanitizeLocationUrl: the rule table', () => {
   it('stops at two nested levels (a third is a documented gap, bounded so the scan stays linear)', () => {
     const url = 'https://x.com/l?a=https://y.com/?b=https://z.com/?c=https://w.com/?token=S';
     expect(sanitizeLocationUrl(url)).toBe(url);
+  });
+
+  describe('input cap', () => {
+    const MARK = '%3Ctruncated%3E';
+    it('clips an over-long address to 8192 characters plus a marker', () => {
+      const out = sanitizeLocationUrl(`https://a.com/${'a'.repeat(20_000)}`);
+      expect(out.length).toBe(8192 + MARK.length);
+      expect(out.startsWith('https://a.com/aaa')).toBe(true);
+      expect(out.endsWith(MARK)).toBe(true);
+    });
+    it('exactly 8192 characters is not clipped and has no marker', () => {
+      const url = `https://a.com/${'a'.repeat(8192 - 14)}`;
+      expect(url.length).toBe(8192);
+      expect(sanitizeLocationUrl(url)).toBe(url);
+    });
+    it('a secret past the cap never survives', () => {
+      const out = sanitizeLocationUrl(`https://a.com/?${'x'.repeat(9000)}&token=SECRETXYZ`);
+      expect(out).not.toContain('SECRETXYZ');
+    });
+    it('a huge data: URL is just the placeholder, with no marker', () => {
+      expect(sanitizeLocationUrl(`data:text/plain,${'a'.repeat(100_000)}`)).toBe(`data:${R}`);
+    });
+    it('a clipped file: address is still a file: address', () => {
+      const out = sanitizeLocationUrl(`file:///${'d/'.repeat(10_000)}x.html`);
+      expect(out.startsWith('file:///…/')).toBe(true);
+      expect(out.endsWith(MARK)).toBe(true);
+    });
+  });
+
+  describe('nested values: tolerant reading', () => {
+    it('a malformed escape falls back to the raw value', () => {
+      expect(sanitizeLocationUrl('https://a.com/l?u=%E0%A4%A/x?token=S')).toBe(
+        `https://a.com/l?u=%E0%A4%A/x?token=${R}`,
+      );
+      expect(sanitizeLocationUrl('https://a.com/l?u=%E0%A4%A')).toBe('https://a.com/l?u=%E0%A4%A');
+    });
+    it('plain values that are not addresses are untouched', () => {
+      for (const url of [
+        'https://a.com/l?x=10:30&y=hello%20world&z=100%25&w=a+b',
+        'https://a.com/l?x=a',
+      ]) {
+        expect(sanitizeLocationUrl(url)).toBe(url);
+      }
+    });
+  });
+
+  describe('sanitizeLocationName (transaction names)', () => {
+    const cases: Array<[string | undefined, string, string]> = [
+      ['https://a.com/orders/42?token=S#x', '/orders/42', '/orders/42'],
+      ['https://a.com', '/', '/'],
+      ['https://a.com/app;jsessionid=ABC/x', '/ignored', `/app;jsessionid=${R}/x`],
+      [
+        'file:///Users/bob/secret/app/index.html#/orders',
+        '/Users/bob/secret/app/index.html',
+        '/…/index.html',
+      ],
+      ['blob:https://u:p@a.com/uuid', '/uuid', 'blob:https://a.com'],
+      ['data:text/plain,secret', '/x', `data:${R}`],
+      [undefined, '/cb?token=S&tab=1', `/cb`],
+      [undefined, '/app;jsessionid=ABC/x', `/app;jsessionid=${R}/x`],
+      [undefined, '/a#frag', '/a'],
+    ];
+    it.each(cases)('%s + %s -> %s', (href, pathname, expected) => {
+      expect(sanitizeLocationName(href, pathname)).toBe(expected);
+    });
+    it('a multi-line fragment or query is cut as well', () => {
+      expect(sanitizeLocationName(undefined, '/a?x=1\n2#f\ng')).toBe('/a');
+    });
   });
 
   it('leaves the network sanitizer untouched', () => {
@@ -284,15 +469,33 @@ describe('sanitizeLocationUrl: properties', () => {
 
   it('a secret under a sensitive key survives neither at the top level nor nested one or two levels', () => {
     fc.assert(
-      fc.property(secret, fc.constantFrom('token', 'api_key', 'password'), (s, key) => {
-        const top = `https://a.com/p?${key}=${s}`;
-        const one = `https://a.com/p?next=https://b.com/?${key}=${s}`;
-        const two = `https://a.com/p?a=https://b.com/?b=https://c.com/?${key}=${s}`;
-        const encoded = `https://a.com/p?next=${encodeURIComponent(`https://b.com/?${key}=${s}`)}`;
-        for (const url of [top, one, two, encoded]) {
-          expect(sanitizeLocationUrl(url)).not.toContain(s);
-        }
-      }),
+      fc.property(
+        secret,
+        fc.constantFrom(
+          'token',
+          'api_key',
+          'password',
+          'code',
+          'state',
+          'session',
+          'sid',
+          'sig',
+          'ticket',
+        ),
+        (s, key) => {
+          const top = `https://a.com/p?${key}=${s}`;
+          const one = `https://a.com/p?next=https://b.com/?${key}=${s}`;
+          const two = `https://a.com/p?a=https://b.com/?b=https://c.com/?${key}=${s}`;
+          const encoded = `https://a.com/p?next=${encodeURIComponent(`https://b.com/?${key}=${s}`)}`;
+          const relative = `https://a.com/p?returnTo=${encodeURIComponent(`/r?${key}=${s}`)}`;
+          const doubly = `https://a.com/p?u=${encodeURIComponent(encodeURIComponent(`https://b.com/?${key}=${s}`))}`;
+          const hashRouter = `https://a.com/p?x=1#/r?next=https://b.com/?${key}=${s}`;
+          const file = `file:///app/index.html#/r?${key}=${s}`;
+          for (const url of [top, one, two, encoded, relative, doubly, hashRouter, file]) {
+            expect(sanitizeLocationUrl(url)).not.toContain(s);
+          }
+        },
+      ),
     );
   });
 });

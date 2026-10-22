@@ -290,6 +290,17 @@ describe('collectPageLoadVitals', () => {
       },
     ]);
     expect(collapsed[0]?.opts.description).toBe('data:…');
+    // a session id in the PATH survives the query strip, so it is redacted (the query is gone either way)
+    expect(
+      recordOn([
+        {
+          name: 'https://x.test/a;jsessionid=SECRET0/app.js?v=1',
+          startTime: 0,
+          duration: 1,
+          initiatorType: 'script',
+        },
+      ])[0]?.opts.description,
+    ).toBe('https://x.test/a;jsessionid=%3Credacted%3E/app.js');
     expect(collapsed[1]?.opts.attributes).toEqual({});
 
     // capped so a resource-heavy page can't bloat the bundle.

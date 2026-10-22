@@ -76,6 +76,8 @@ export function redactSensitivePairs(
   /** Also break segments on `/`. Set when scanning a URL PATH, where `;jsessionid=…` is a matrix parameter
    *  whose value ends at the path segment — without it the redaction would swallow the rest of the path. */
   splitOnSlash = false,
+  /** An ADDITIONAL key test (on the decoded key), for callers with a larger denylist than the network one. */
+  extraKey?: (decodedKey: string) => boolean,
 ): string {
   let out: string | undefined;
   let copyFrom = 0;
@@ -100,10 +102,13 @@ export function redactSensitivePairs(
     }
 
     // Rule 2: a segment carrying no `=` is not a key/value pair, so it is left exactly as it is.
-    if (eq >= 0 && isSensitiveKey(decodeKey(input.slice(pos, eq)))) {
-      out ??= '';
-      out += `${input.slice(copyFrom, eq)}=${REDACTED_URL_ENCODED}`;
-      copyFrom = pairEnd;
+    if (eq >= 0) {
+      const key = decodeKey(input.slice(pos, eq));
+      if (isSensitiveKey(key) || extraKey?.(key) === true) {
+        out ??= '';
+        out += `${input.slice(copyFrom, eq)}=${REDACTED_URL_ENCODED}`;
+        copyFrom = pairEnd;
+      }
     }
     pos = pairEnd + 1;
   }

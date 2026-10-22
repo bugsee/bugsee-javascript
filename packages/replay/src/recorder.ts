@@ -7,6 +7,7 @@
 // The `record` fn is INJECTED (the real one from `@bugsee/rrweb`, or a fake in tests), so this unit needs no
 // real DOM.
 import { type BlackoutGate, type CaptureProvider, CaptureProviderBase } from '@bugsee/core';
+import { sanitizeLocationUrl } from '@bugsee/protocol';
 import type { eventWithTime, listenerHandler, recordOptions } from '@bugsee/rrweb';
 import type { ResolvedReplayMasking } from './masking';
 
@@ -25,6 +26,19 @@ export interface CanvasRecordConfig {
   sampling: { canvas: 'all' | number };
   /** Snapshot image encoding, e.g. `{ type: 'image/webp', quality: 0.6 }`. */
   dataURLOptions: { type: string; quality: number };
+}
+
+/**
+ * rrweb's opening Meta event (type 4) carries the raw `location.href` (`?code=…`, `#access_token=…`, userinfo), which is
+ * not DOM and so never passes through the masking. Its `href` goes through the same location sanitizer as the `url`
+ * trace; every other event is passed through untouched (the same object).
+ */
+function withSafeHref(event: eventWithTime): eventWithTime {
+  const data = (event as { type: number; data?: { href?: unknown } }).data;
+  if ((event as { type: number }).type !== 4 || typeof data?.href !== 'string') {
+    return event;
+  }
+  return { ...event, data: { ...data, href: sanitizeLocationUrl(data.href) } } as eventWithTime;
 }
 
 export interface ReplayCaptureProviderOptions {
@@ -177,7 +191,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
       emit: (event) => {
         // Blackout suspends VISUAL capture only (see startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
-          this.capture('replay', event.timestamp, event);
+          this.capture('replay', event.timestamp, withSafeHref(event));
         }
       },
     });

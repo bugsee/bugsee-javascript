@@ -19,7 +19,7 @@ What it contains:
 
 ## The `url` trace
 
-The WebView writes the embedded page's sanitized address as the `url` trace, exactly as `@bugsee/browser` does (see its README): on by default, `captureUrl: false` turns it off, `urlSanitizer` is your own hook run after the default.
+The WebView writes the embedded page's sanitized address as the `url` trace, exactly as `@bugsee/browser` does (see its README): on by default, `captureUrl: false` turns it off, `urlSanitizer` is your own hook run after the default. The sanitizer rules, limits and the hook contract are the browser package's (see its README).
 
 ## License
 

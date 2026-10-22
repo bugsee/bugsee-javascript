@@ -2,8 +2,8 @@ import {
   type Bugsee as BrowserBugsee,
   type BugseeLaunchOptions,
   createBrowserInteractionSource,
-  createBrowserNavigationSource,
   launchCore,
+  navigationSourceFor,
   readMetaTraceContinuation,
 } from '@bugsee/browser';
 import { BlackoutToken, relaunchWith } from '@bugsee/core';
@@ -40,7 +40,12 @@ export async function launch(
         options,
         { pageload: true },
         {
-          createNavigationSource: createBrowserNavigationSource,
+          // ONE navigation source per window, shared (through the carrier) with the `url` trace, so `history` is patched once.
+          createNavigationSource: () =>
+            navigationSourceFor(options.window ?? (globalThis as { window?: object }).window, {
+              ...(options.carrier !== undefined ? { carrier: options.carrier } : {}),
+              ...(options.onError !== undefined ? { onError: options.onError } : {}),
+            }),
           createInteractionSource: () =>
             createBrowserInteractionSource({ blackout: client.getService(BlackoutToken) }),
           readMetaTraceContinuation,

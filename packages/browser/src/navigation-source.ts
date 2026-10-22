@@ -122,14 +122,25 @@ const pathOf = (url: string | undefined): string | undefined => {
   }
 };
 
+/** One History method we wrapped: what it wrapped (`orig`), whether it still emits, whether it left the chain. */
+interface HistoryHook {
+  orig: (...args: unknown[]) => unknown;
+  wrapper: (...args: unknown[]) => unknown;
+  live: boolean;
+  released: boolean;
+  emit: () => void;
+}
+// Every wrapper any source installed, by function, so a source stopping on top can unwind the dead ones under it.
+const hooks = new WeakMap<(...args: unknown[]) => unknown, HistoryHook>();
+
 class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDetail }> {
   readonly name = 'browser-navigation';
   readonly #history: HistoryLike | undefined;
   readonly #target: NavTarget | undefined;
   readonly #location: LocationLike | undefined;
   readonly #navigation: NavigationApiLike | undefined;
-  #origPush: HistoryLike['pushState'] | undefined;
-  #origReplace: HistoryLike['replaceState'] | undefined;
+  #pushHook: HistoryHook | undefined;
+  #replaceHook: HistoryHook | undefined;
 
   readonly #onPopstate = (): void => this.#emitFromLocation('traverse');
   readonly #onHashchange = (): void => this.#emitFromLocation('hash');
@@ -181,6 +192,63 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
     this.#emit(detail.name, 'programmatic', detail.source ?? 'custom');
   }
 
+  /**
+   * Wrap one History method (call the original FIRST, then emit). A wrapper that is still somewhere in the chain from an
+   * earlier activation is REUSED (flipped live again) rather than stacked, so a restart never double-emits.
+   */
+  #hook(
+    history: HistoryLike,
+    method: 'pushState' | 'replaceState',
+    type: 'push' | 'replace',
+    existing: HistoryHook | undefined,
+  ): HistoryHook {
+    if (existing !== undefined && !existing.released) {
+      existing.live = true;
+      return existing;
+    }
+    const hook: HistoryHook = {
+      orig: history[method],
+      live: true,
+      released: false,
+      wrapper: undefined as never, // assigned just below (the wrapper closes over `hook`)
+      emit: () => this.#emitFromLocation(type),
+    };
+    hook.wrapper = function (this: unknown, ...args: unknown[]): unknown {
+      const result = hook.orig.apply(this, args); // the app's navigation happens FIRST (never blocked)
+      if (hook.live) hook.emit();
+      return result;
+    };
+    hooks.set(hook.wrapper, hook);
+    history[method] = hook.wrapper;
+    return hook;
+  }
+
+  /**
+   * Stop emitting and, only if our wrapper is still the OUTERMOST one, take it out (unwinding any dead wrapper of another
+   * source beneath it). A wrapper that someone installed after us is not ours to remove: restoring the saved original
+   * would delete theirs, so ours stays in the chain as a pass-through (it no longer emits) until it can be unwound.
+   */
+  #release(
+    history: HistoryLike,
+    method: 'pushState' | 'replaceState',
+    hook: HistoryHook | undefined,
+  ): void {
+    if (hook === undefined) return;
+    hook.live = false;
+    if (history[method] !== hook.wrapper) return;
+    let target = hook.orig;
+    hook.released = true;
+    for (
+      let below = hooks.get(target);
+      below !== undefined && !below.live;
+      below = hooks.get(target)
+    ) {
+      below.released = true;
+      target = below.orig;
+    }
+    history[method] = target;
+  }
+
   protected onActivate(): void {
     // Prefer the Navigation API: one `currententrychange` listener covers every same-document navigation.
     if (this.#navigation !== undefined) {
@@ -188,21 +256,8 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
       return;
     }
     if (this.#history !== undefined) {
-      const history = this.#history;
-      this.#origPush = history.pushState;
-      this.#origReplace = history.replaceState;
-      const orig = { push: this.#origPush, replace: this.#origReplace };
-      const self = this;
-      history.pushState = function (this: unknown, ...args: unknown[]): unknown {
-        const result = orig.push.apply(this, args); // the app's navigation happens FIRST (never blocked)
-        self.#emitFromLocation('push');
-        return result;
-      };
-      history.replaceState = function (this: unknown, ...args: unknown[]): unknown {
-        const result = orig.replace.apply(this, args);
-        self.#emitFromLocation('replace');
-        return result;
-      };
+      this.#pushHook = this.#hook(this.#history, 'pushState', 'push', this.#pushHook);
+      this.#replaceHook = this.#hook(this.#history, 'replaceState', 'replace', this.#replaceHook);
     }
     this.#target?.addEventListener('popstate', this.#onPopstate);
     this.#target?.addEventListener('hashchange', this.#onHashchange);
@@ -212,15 +267,9 @@ class BrowserNavigationSource extends InterceptorBase<{ navigate: NavigationDeta
     if (this.#navigation !== undefined) {
       this.#navigation.removeEventListener('currententrychange', this.#onCurrentEntryChange);
     }
-    if (
-      this.#history !== undefined &&
-      this.#origPush !== undefined &&
-      this.#origReplace !== undefined
-    ) {
-      this.#history.pushState = this.#origPush;
-      this.#history.replaceState = this.#origReplace;
-      this.#origPush = undefined;
-      this.#origReplace = undefined;
+    if (this.#history !== undefined) {
+      this.#release(this.#history, 'pushState', this.#pushHook);
+      this.#release(this.#history, 'replaceState', this.#replaceHook);
     }
     this.#target?.removeEventListener('popstate', this.#onPopstate);
     this.#target?.removeEventListener('hashchange', this.#onHashchange);

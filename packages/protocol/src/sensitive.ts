@@ -116,7 +116,7 @@ export function isSensitiveHeader(name: string): boolean {
  * Normalising once beats adding a hyphenated twin to all 59 entries: one rule instead of a list that
  * has to be edited in pairs for ever, and it covers `.` and space spellings at the same time.
  */
-function normalizeKey(name: string): string {
+export function normalizeKey(name: string): string {
   return name.toLowerCase().replace(/[-_.\s]/g, '');
 }
 

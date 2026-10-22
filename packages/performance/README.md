@@ -43,9 +43,9 @@ The bare platform packages (`@bugsee/browser`) do not wire this extension. Use t
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/performance
 - Bugsee: https://bugsee.com
 
-## Navigation transaction names
+## Navigation and pageload transaction names
 
-A navigation detected from the URL is named after the location, passed through the SDK's location sanitizer (matrix session ids, secret-shaped path segments and any query are redacted; ordinary path segments, ids included, are kept). A name supplied by a framework adapter (`route`/`custom`, a router pattern) is kept as given.
+A pageload or navigation detected from the URL is named after the PATH of the location, never its query, fragment or host: the address goes through the SDK's location sanitizer, which redacts sensitive `;key=value` matrix segments (`/app;jsessionid=...`) and token-shaped path segments (JWTs, AWS keys, and so on), and a `file:` page is named `/.../index.html` instead of its directory. It does not redact ids, emails or other opaque values in a path segment (`/users/42`, `/reset/9f8a7b6c` keep their segments), so name routes with a pattern where you can. A name supplied by a framework adapter (`route`/`custom`, a router pattern), or by your own `pageName`, is kept as given. Resource-timing span descriptions are sanitized the same way (their query is stripped).
 
 ## License
 

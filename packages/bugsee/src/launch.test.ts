@@ -294,6 +294,55 @@ describe('bugsee umbrella launch', () => {
     expect((client.ext('performance').getActiveSpan() as Transaction).isSampled()).toBe(false);
   });
 
+  describe('one navigation source per window, shared by the url trace and the navigation transactions (C23)', () => {
+    const historyWindow = () => {
+      const w = fakeWindow();
+      const pushState = vi.fn();
+      const replaceState = vi.fn();
+      const history = { pushState, replaceState };
+      const location = { pathname: '/p', href: 'https://a.com/p' };
+      return { win: { ...w.win, history, location }, history, pushState, replaceState, location };
+    };
+
+    it('registers exactly ONE navigation source on the carrier and wraps history once', async () => {
+      const w = historyWindow();
+      const carrier = {};
+      await track(await launch('tok', base({ carrier, window: w.win as never })));
+      const { getCarrier } = await import('@bugsee/core');
+      expect(getCarrier(carrier).interceptors.get('browser-navigation')).toBeDefined();
+      w.history.pushState({}, '', '/n'); // wrapped: runs the original exactly once, however many consumers listen
+      expect(w.pushState).toHaveBeenCalledTimes(1);
+    });
+
+    it('stop() leaves history exactly as the page had it (no stale wrapper from either consumer)', async () => {
+      const w = historyWindow();
+      const client = await launch('tok', base({ carrier: {}, window: w.win as never }));
+      expect(w.history.pushState).not.toBe(w.pushState); // patched while running
+      await client.stop();
+      expect(w.history.pushState).toBe(w.pushState);
+      expect(w.history.replaceState).toBe(w.replaceState);
+    });
+
+    it('a third-party wrapper installed after launch survives stop()', async () => {
+      const w = historyWindow();
+      const client = await launch('tok', base({ carrier: {}, window: w.win as never }));
+      const inner = w.history.pushState as (...a: unknown[]) => unknown;
+      const thirdParty = vi.fn((...a: unknown[]) => inner(...a));
+      w.history.pushState = thirdParty as never;
+      await client.stop();
+      expect(w.history.pushState).toBe(thirdParty);
+      w.history.pushState({}, '', '/x');
+      expect(w.pushState).toHaveBeenCalledTimes(1);
+    });
+
+    it('a launch without a window records no navigation source (nothing to bind to)', async () => {
+      vi.stubGlobal('window', undefined);
+      const { window: _omit, ...rest } = base({ carrier: {} });
+      const client = await track(await launch('tok', rest));
+      expect(client.ext('performance')).toBeDefined();
+    });
+  });
+
   it('names the pageload transaction from options.pageName', async () => {
     const client = await track(await launch('tok', base({ carrier: {}, pageName: '/checkout' })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/checkout');
@@ -303,6 +352,39 @@ describe('bugsee umbrella launch', () => {
     vi.stubGlobal('location', { pathname: '/dashboard' });
     const client = await track(await launch('tok', base({ carrier: {} })));
     expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/dashboard');
+  });
+
+  it('sanitizes the default pageload name: a landing URL token or session id never becomes the name', async () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SIGSECRETZabcdefghij';
+    vi.stubGlobal('location', { pathname: `/verify/${jwt};jsessionid=SECRET0/reset` });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    const name = (client.ext('performance').getActiveSpan() as Transaction).getName();
+    expect(name).not.toMatch(/SIGSECRETZ|SECRET0|eyJ/);
+    expect(name.startsWith('/verify/')).toBe(true);
+    expect(name.endsWith('/reset')).toBe(true);
+  });
+
+  it('names a file: page by its sanitized last segment, from location.href', async () => {
+    vi.stubGlobal('location', {
+      pathname: '/Users/bob/secret/app/index.html',
+      href: 'file:///Users/bob/secret/app/index.html?token=S#/orders',
+    });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe(
+      '/…/index.html',
+    );
+  });
+
+  it('names the page from location.href alone when there is no pathname', async () => {
+    vi.stubGlobal('location', { href: 'https://a.com/orders/42?token=S' });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/orders/42');
+  });
+
+  it('a non-string href is ignored (pathname is used)', async () => {
+    vi.stubGlobal('location', { pathname: '/p', href: 42 });
+    const client = await track(await launch('tok', base({ carrier: {} })));
+    expect((client.ext('performance').getActiveSpan() as Transaction).getName()).toBe('/p');
   });
 
   it('defaults the pageload name to "pageload" when no location is available', async () => {
@@ -330,8 +412,16 @@ describe('bugsee umbrella launch', () => {
     vi.stubGlobal('history', { pushState, replaceState: vi.fn() });
     const location = { pathname: '/home' };
     vi.stubGlobal('location', location);
-    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
-    const client = await track(await launch('tok', base({ carrier: {} })));
+    // The navigation source binds to the window the launch is given (never to the host globals), so that window
+    // carries the History and Location, as a real one does.
+    const win = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      history: (globalThis as { history: unknown }).history,
+      location,
+    };
+    vi.stubGlobal('window', win);
+    const client = await track(await launch('tok', base({ carrier: {}, window: win as never })));
     // The launch wired + activated the navigation source, which patched history.pushState.
     location.pathname = '/users/42'; // the browser updated the URL …
     (globalThis as { history: { pushState: (...a: unknown[]) => void } }).history.pushState(

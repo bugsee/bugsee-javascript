@@ -1,6 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import { getOrCreateInterceptor } from '@bugsee/core';
-import { sanitizeLocationUrl } from '@bugsee/protocol';
+import { sanitizeLocationUrl, TRUNCATED_URL_MARKER } from '@bugsee/protocol';
 import { reportGuarded } from '@bugsee/util';
 import {
   createBrowserNavigationSource,
@@ -16,8 +16,13 @@ import {
  * The application's own sanitizer for the `url` trace. Runs AFTER the default sanitizer and receives the
  * already-sanitized URL; the string it returns is written as given (it is the application's responsibility not to
  * reintroduce what the default removed). Return `null` to write nothing for this URL. It is NOT a network filter.
- * A throw, or a non-string non-null result, is reported through `onError` and writes nothing (fails closed).
+ * A throw, or a non-string non-null result, is reported through `onError` and writes nothing (fails closed); in
+ * every case where nothing is written the PREVIOUS value stays held (a held trace cannot be retracted). A result over
+ * 2048 characters is clipped. The hook runs synchronously, so keep it cheap.
  */
+/** The longest string a `urlSanitizer` result may be; longer is clipped and marked `%3Ctruncated%3E`. */
+export const MAX_HOOK_RESULT_CHARS = 2048;
+
 export type UrlSanitizer = (url: string) => string | null;
 
 export interface UrlProducerDeps {
@@ -62,7 +67,13 @@ export class UrlProducer extends TraceProducerBase implements TraceProducer {
         if (typeof custom !== 'string') {
           throw new Error('Bugsee: urlSanitizer must return a string or null; nothing was written');
         }
-        value = custom;
+        // Bounded like the default (which clips its INPUT at 8 KiB): the hook runs synchronously inside the app's own
+        // `pushState`, and what it returns is uploaded as given, so an unbounded result is a bundle-size and
+        // main-thread hazard.
+        value =
+          custom.length > MAX_HOOK_RESULT_CHARS
+            ? custom.slice(0, MAX_HOOK_RESULT_CHARS) + TRUNCATED_URL_MARKER
+            : custom;
       }
       this.emitIfChanged('url', value);
     } catch (error) {
@@ -80,6 +91,47 @@ interface WindowLike {
   history?: unknown;
   location?: { href?: unknown };
   navigation?: unknown;
+}
+
+/**
+ * THE navigation source of one injected window, shared through the carrier under `browser-navigation`: every consumer
+ * (the `url` trace, the umbrella's navigation transactions) gets the SAME instance, so `history` is patched once per
+ * window and the consumers cannot unwind each other's wrappers (C23). It is `isolated` (only that window's surfaces, never
+ * the host's), and each surface is passed only when it has the shape the source calls. The first caller's window wins,
+ * as for every carrier-shared source. Returns undefined, reported through `onError`, when the window cannot be read;
+ * never throws.
+ */
+export function navigationSourceFor(
+  win: object | undefined,
+  options: { carrier?: object; onError?: (error: unknown) => void } = {},
+): NavigationSource | undefined {
+  if (win === undefined) return undefined;
+  try {
+    const w = win as WindowLike;
+    return getOrCreateInterceptor(
+      'browser-navigation',
+      () =>
+        createBrowserNavigationSource({
+          isolated: true,
+          // Each surface only when it has the shape the source calls: a partial window (a test double, a minimal embed)
+          // must lose that detection, never make activation throw.
+          ...(hasFns(w.history, 'pushState', 'replaceState')
+            ? { history: w.history as never }
+            : {}),
+          ...(hasFns(win, 'addEventListener', 'removeEventListener')
+            ? { target: win as never }
+            : {}),
+          ...(w.location !== undefined ? { location: w.location as never } : {}),
+          ...(hasFns(w.navigation, 'addEventListener', 'removeEventListener')
+            ? { navigation: w.navigation as never }
+            : {}),
+        }),
+      options.carrier,
+    ) as NavigationSource;
+  } catch (error) {
+    reportGuarded(options.onError, error); // a cross-origin / torn-down window: no navigation source
+    return undefined;
+  }
 }
 
 /**
@@ -106,44 +158,24 @@ export function urlProducerDepsFor(
       ),
     );
   }
-  try {
-    const w = win as WindowLike;
-    const source = getOrCreateInterceptor(
-      'browser-navigation',
-      () =>
-        createBrowserNavigationSource({
-          isolated: true,
-          // Each surface only when it has the shape the source calls: a partial window (a test double, a minimal embed)
-          // must lose that detection, never make activation throw.
-          ...(hasFns(w.history, 'pushState', 'replaceState')
-            ? { history: w.history as never }
-            : {}),
-          ...(hasFns(win, 'addEventListener', 'removeEventListener')
-            ? { target: win as never }
-            : {}),
-          ...(w.location !== undefined ? { location: w.location as never } : {}),
-          ...(hasFns(w.navigation, 'addEventListener', 'removeEventListener')
-            ? { navigation: w.navigation as never }
-            : {}),
-        }),
-      options.carrier,
-    ) as NavigationSource;
-    return {
-      source,
-      read: () => {
-        try {
-          const href = w.location?.href;
-          return typeof href === 'string' ? href : undefined;
-        } catch (error) {
-          reportGuarded(onError, error);
-          return undefined;
-        }
-      },
-      ...(urlSanitizer !== undefined ? { urlSanitizer } : {}),
-      ...(onError !== undefined ? { onError } : {}),
-    };
-  } catch (error) {
-    reportGuarded(onError, error); // a cross-origin / torn-down window: no url trace, the launch goes on
-    return undefined;
-  }
+  const w = win as WindowLike;
+  const source = navigationSourceFor(win, {
+    ...(options.carrier !== undefined ? { carrier: options.carrier } : {}),
+    ...(onError !== undefined ? { onError } : {}),
+  });
+  if (source === undefined) return undefined;
+  return {
+    source,
+    read: () => {
+      try {
+        const href = w.location?.href;
+        return typeof href === 'string' ? href : undefined;
+      } catch (error) {
+        reportGuarded(onError, error);
+        return undefined;
+      }
+    },
+    ...(urlSanitizer !== undefined ? { urlSanitizer } : {}),
+    ...(onError !== undefined ? { onError } : {}),
+  };
 }

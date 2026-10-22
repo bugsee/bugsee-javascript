@@ -38,6 +38,9 @@ function fakeInit() {
 const evt = (timestamp: number): eventWithTime =>
   ({ type: 3, data: { source: 0 }, timestamp }) as unknown as eventWithTime;
 
+const meta = (href: unknown): eventWithTime =>
+  ({ type: 4, data: { href, width: 1, height: 2 }, timestamp: 5 }) as unknown as eventWithTime;
+
 /** The captured entries minus the blackout marker custom events (asserted separately). */
 const real = (entries: CaptureDataEntry[]) =>
   entries.filter((e) => (e.data as { type: number }).type !== 5);
@@ -45,6 +48,46 @@ const real = (entries: CaptureDataEntry[]) =>
 const options = () => ({}) as never; // OptionsContainer — unused by the replay provider
 
 describe('createReplayCaptureProvider', () => {
+  it('sanitizes the href of the opening Meta event (the raw location is not DOM, so masking never saw it)', () => {
+    const { record, emit } = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    emit(meta('https://u:pw@a.com/cb?code=C&tab=1#access_token=T'));
+    expect(added[0]?.data).toEqual({
+      type: 4,
+      data: {
+        href: 'https://u:%3Credacted%3E@a.com/cb?code=%3Credacted%3E&tab=1#access_token=%3Credacted%3E',
+        width: 1,
+        height: 2,
+      },
+      timestamp: 5,
+    });
+  });
+
+  it('passes every other event, and a Meta event without a string href, through as the same object', () => {
+    const { record, emit } = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    const plain = evt(1);
+    const noHref = meta(undefined);
+    const notMeta = { type: 3, data: { href: 'https://a.com/?code=C' }, timestamp: 2 } as never;
+    emit(plain);
+    emit(noHref);
+    emit(notMeta);
+    expect(added.map((e) => e.data)).toEqual([plain, noHref, notMeta]);
+    expect(added[0]?.data).toBe(plain);
+  });
+
   it('starts rrweb record with the masking config + checkoutEveryNms + no cross-origin iframes', () => {
     const { record, getOptions } = fakeRecord();
     const masking = resolveReplayMaskingOptions();

@@ -104,6 +104,7 @@ function fakeEnv() {
 const navSource = () => createMultiKeyEmitter<{ navigate: NavigationDetailLike }>();
 const netSource = () => createMultiKeyEmitter<Record<NetworkStage, NetworkEvent>>();
 const detail = (over: Partial<NavigationDetailLike> = {}): NavigationDetailLike => ({
+  ...(over.href !== undefined ? { href: over.href } : {}),
   to: over.to ?? '/page',
   navigationType: over.navigationType ?? 'push',
   source: over.source ?? 'url',
@@ -147,8 +148,24 @@ describe('collectNavigations', () => {
       expect(name?.startsWith('/verify/')).toBe(true);
     });
 
-    it('redacts a query that a path-only fallback may still carry', () => {
-      expect(nameFor({ to: '/cb?token=SECRET&tab=1' })).toBe('/cb?token=%3Credacted%3E&tab=1');
+    it('drops a query that a path-only fallback may still carry', () => {
+      expect(nameFor({ to: '/cb?token=SECRET&tab=1' })).toBe('/cb');
+    });
+
+    it('names a file: page by its sanitized last segment, never its directory (from the href)', () => {
+      expect(
+        nameFor({
+          to: '/Users/bob/secret/app/index.html',
+          href: 'file:///Users/bob/secret/app/index.html#/orders',
+        }),
+      ).toBe('/…/index.html');
+    });
+
+    it('uses the href when given: a blob: page is its sanitized form, a query never reaches the name', () => {
+      expect(nameFor({ to: '/uuid', href: 'blob:https://u:p@a.com/uuid' })).toBe(
+        'blob:https://a.com',
+      );
+      expect(nameFor({ to: '/cb', href: 'https://a.com/cb?token=S#x' })).toBe('/cb');
     });
 
     it('leaves an ordinary path (ids included) as it was', () => {

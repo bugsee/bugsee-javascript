@@ -68,10 +68,10 @@ describe('createOnRouterTransitionStart', () => {
       message: string;
       data: { href: string; navigationType: string };
     };
-    const clean = '/cb?code=AUTH&token=%3Credacted%3E&tab=1#access_token=%3Credacted%3E';
+    const clean = '/cb?code=%3Credacted%3E&token=%3Credacted%3E&tab=1#access_token=%3Credacted%3E';
     expect(crumb.message).toBe(clean);
     expect(crumb.data).toEqual({ href: clean, navigationType: 'push' });
-    expect(JSON.stringify(crumb)).not.toContain('SECRET');
+    expect(JSON.stringify(crumb)).not.toMatch(/SECRET|AUTH/);
   });
 
   it('sanitizes an absolute href too (userinfo, nested URL)', () => {

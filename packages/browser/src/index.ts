@@ -111,7 +111,12 @@ export {
   type UiBreadcrumbEnv,
   type UiBreadcrumbSource,
 } from './ui-breadcrumb-source';
-export { type UrlProducerDeps, type UrlSanitizer, urlProducerDepsFor } from './url-producer';
+export {
+  navigationSourceFor,
+  type UrlProducerDeps,
+  type UrlSanitizer,
+  urlProducerDepsFor,
+} from './url-producer';
 // The browser-family OS/browser identification, exported so the worker tier (which has the same
 // `navigator` and the same problem) derives its OS the same way rather than growing a second parser.
 export {

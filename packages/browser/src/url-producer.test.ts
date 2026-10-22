@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NavigationDetail } from './navigation-source';
-import { UrlProducer, type UrlProducerDeps, urlProducerDepsFor } from './url-producer';
+import {
+  navigationSourceFor,
+  UrlProducer,
+  type UrlProducerDeps,
+  urlProducerDepsFor,
+} from './url-producer';
 
 type Emit = { name: string; value: unknown; hold: boolean | undefined };
 
@@ -121,6 +126,35 @@ describe('UrlProducer', () => {
       expect(emits[0]?.value).toBe('https://a.com/custom');
     });
 
+    it('clips a result over 2048 characters and marks it', () => {
+      const { producer, emits, sink } = setup({ urlSanitizer: () => 'x'.repeat(5_000_000) });
+      producer.start(sink);
+      const value = emits[0]?.value as string;
+      expect(value).toBe(`${'x'.repeat(2048)}%3Ctruncated%3E`);
+    });
+
+    it('a result of exactly 2048 characters is written whole', () => {
+      const { producer, emits, sink } = setup({ urlSanitizer: () => 'y'.repeat(2048) });
+      producer.start(sink);
+      expect(emits[0]?.value).toBe('y'.repeat(2048));
+    });
+
+    it('when the hook drops or throws, the PREVIOUS value stays (nothing new is written)', () => {
+      let mode: 'ok' | 'null' | 'throw' = 'ok';
+      const { producer, emits, sink, navigate } = setup({
+        urlSanitizer: (u) => {
+          if (mode === 'throw') throw new Error('x');
+          return mode === 'null' ? null : u;
+        },
+      });
+      producer.start(sink);
+      mode = 'null';
+      navigate('https://a.com/two');
+      mode = 'throw';
+      navigate('https://a.com/three');
+      expect(emits.map((e) => e.value)).toEqual(['https://a.com/start']);
+    });
+
     it('null drops this URL: nothing is written and nothing is reported', () => {
       const { producer, emits, sink, errors } = setup({ urlSanitizer: () => null });
       producer.start(sink);
@@ -162,6 +196,31 @@ describe('UrlProducer', () => {
       });
       expect(() => producer.start(sink)).not.toThrow();
     });
+  });
+});
+
+describe('navigationSourceFor', () => {
+  it('is undefined without a window', () => {
+    expect(navigationSourceFor(undefined)).toBeUndefined();
+  });
+
+  it('is ONE instance per carrier, however many consumers ask (and the default carrier works)', () => {
+    const carrier = {};
+    const win = { addEventListener: () => {}, removeEventListener: () => {} };
+    const a = navigationSourceFor(win, { carrier });
+    expect(a).toBeDefined();
+    expect(navigationSourceFor(win, { carrier })).toBe(a);
+  });
+
+  it('reports a window it cannot read and answers undefined', () => {
+    const onError = vi.fn();
+    const win = {
+      get history(): never {
+        throw new Error('torn down');
+      },
+    };
+    expect(navigationSourceFor(win, { carrier: {}, onError })).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 });
 
