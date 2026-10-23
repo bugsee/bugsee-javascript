@@ -40,8 +40,8 @@
   "devDependencies": {
     "@bugsee/util": "workspace:*",
     "@types/node": "^22.20.5",
-    "koa": "^2.15.0",
-    "@types/koa": "^2.15.0"
+    "koa": "^3.2.1",
+    "@types/koa": "^3.0.3"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
