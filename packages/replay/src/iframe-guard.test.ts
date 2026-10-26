@@ -381,4 +381,135 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       expect(guard(incremental({ source: SOURCE.Selection, ranges: [range] }))).toBeUndefined();
     }
   });
+
+  describe('an iframe that becomes blocked after it was recorded', () => {
+    const attach = (frameId: number, inner: unknown) =>
+      mutation({
+        isAttachIframe: true,
+        adds: [{ parentId: frameId, nextId: null, node: doc([inner]) }],
+      });
+    const classChange = (id: number, value: string | null) =>
+      mutation({ attributes: [{ id, attributes: { class: value } }] });
+
+    it('is reclassified by an attribute mutation: its content, and the content of nested iframes, is dropped from then on', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', { id: 'f' });
+      guard(snapshot(doc([frame])));
+      const inner = el('p', {}, [text('seen while allowed')]);
+      const nested = el('iframe', {});
+      const innerDoc = el('div', {}, [inner, nested]);
+      const a = attach(frame.id, innerDoc);
+      expect(guard(a)).toBe(a); // allowed so far
+      const deep = el('p', {}, [text(SECRET)]);
+      const deepAttach = attach(nested.id, deep);
+      expect(guard(deepAttach)).toBe(deepAttach);
+      const late = el('b', {}, [text('added later')]);
+      const lateAdd = mutation({ adds: [{ parentId: inner.id, nextId: null, node: late }] });
+      expect(guard(lateAdd)).toBe(lateAdd);
+      expect(onViolation).not.toHaveBeenCalled();
+
+      // the class change itself is the iframe's own attribute and passes; the content it hides is gone from now on
+      const change = classChange(frame.id, 'private');
+      expect(guard(change)).toBe(change);
+      expect(onViolation).toHaveBeenCalledTimes(1);
+      for (const id of [inner.id, late.id, deep.id, (inner.childNodes[0] as { id: number }).id]) {
+        expect(guard(mutation({ texts: [{ id, value: SECRET }] }))).toBeUndefined();
+      }
+      expect(
+        guard(incremental({ source: SOURCE.Input, id: deep.id, text: SECRET, isChecked: false })),
+      ).toBeUndefined();
+      // a later attach under the now blocked iframe is dropped too
+      expect(guard(attach(frame.id, el('p', {}, [text(SECRET)])))).toBeUndefined();
+    });
+
+    it('stays recorded when a class change does not block it, and when attributes are removed', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', { class: 'private-ish' });
+      guard(snapshot(doc([frame])));
+      const inner = el('p', {}, [text('ok')]);
+      guard(attach(frame.id, inner));
+      for (const value of ['other', null]) {
+        guard(classChange(frame.id, value));
+        const t = mutation({
+          texts: [{ id: (inner.childNodes[0] as { id: number }).id, value: 'x' }],
+        });
+        expect(guard(t)).toBe(t);
+      }
+      expect(onViolation).not.toHaveBeenCalled();
+    });
+
+    it('classifies by the merged attributes (the unblock rule wins once added, an earlier class survives)', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', { class: 'private' });
+      // blocked from the start by its class in a snapshot where the recorder (wrongly) kept the document in view
+      guard(snapshot(doc([frame])));
+      expect(guard(classChange(frame.id, 'private bugsee-show'))).toBeDefined();
+      const plain = el('iframe', {});
+      const second = doc([plain]);
+      guard(snapshot(second));
+      guard(attach(plain.id, el('p', {}, [text('ok')])));
+      guard(mutation({ attributes: [{ id: plain.id, attributes: { 'data-x': '1' } }] }));
+      const t = mutation({ texts: [{ id: 1e9, value: 'unrelated' }] });
+      expect(guard(t)).toBe(t);
+    });
+
+    it('a placeholder marker added later blocks it', () => {
+      const { guard } = make({ blockSelector: '' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = el('p', {}, [text(SECRET)]);
+      guard(attach(frame.id, inner));
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { rr_width: '1px' } }] }));
+      expect(
+        guard(mutation({ attributes: [{ id: inner.id, attributes: { a: SECRET } }] })),
+      ).toBeUndefined();
+    });
+
+    it('only taints the content of the iframe that became blocked, not of the open iframes next to it', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const a = el('iframe', {});
+      const b = el('iframe', {});
+      guard(snapshot(doc([a, b])));
+      const inA = text('a');
+      const inB = text('b');
+      guard(attach(a.id, inA));
+      guard(attach(b.id, inB));
+      guard(classChange(a.id, 'private'));
+      expect(guard(mutation({ texts: [{ id: inA.id, value: 'x' }] }))).toBeUndefined();
+      const ok = mutation({ texts: [{ id: inB.id, value: 'x' }] });
+      expect(guard(ok)).toBe(ok);
+    });
+
+    it('a removed attribute is really removed before the rules are evaluated', () => {
+      const { guard } = make({ blockSelector: 'iframe', unblockSelector: '[data-open]' });
+      const frame = el('iframe', { 'data-open': '1' });
+      guard(snapshot(doc([frame])));
+      const inner = text('x');
+      guard(attach(frame.id, inner));
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { 'data-open': null } }] }));
+      expect(guard(mutation({ texts: [{ id: inner.id, value: 'y' }] }))).toBeUndefined();
+    });
+
+    it('successive attribute mutations accumulate', () => {
+      const { guard } = make({ blockSelector: 'iframe[data-p][data-q]' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = text('x');
+      guard(attach(frame.id, inner));
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { 'data-p': '1' } }] }));
+      const still = mutation({ texts: [{ id: inner.id, value: 'y' }] });
+      expect(guard(still)).toBe(still); // one of the two attributes is not enough
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { 'data-q': '1' } }] }));
+      expect(guard(mutation({ texts: [{ id: inner.id, value: 'z' }] }))).toBeUndefined();
+    });
+
+    it('forgets the open iframes with every full snapshot', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      guard(snapshot(doc([text('fresh')]))); // the iframe is gone
+      guard(classChange(frame.id, 'private'));
+      expect(onViolation).not.toHaveBeenCalled();
+    });
+  });
 });

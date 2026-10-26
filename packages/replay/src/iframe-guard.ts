@@ -17,6 +17,9 @@
 //      is dropped; the ids of everything removed that way are remembered ("tainted");
 //   3. any later event that names a tainted id (text, attribute, add, remove, input, scroll, mouse, media,
 //      style, selection, pointer positions) is dropped or has the tainted entries filtered out;
+//   3b. an iframe that is recorded and then BECOMES blocked (an attribute mutation: a class, `rr_width`, ...) is
+//      reclassified on its merged attributes; everything attached under it (nested iframes included) is tainted
+//      from then on;
 //   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not.
 // A full snapshot starts from a clean slate. Cost: one pass over the nodes of each snapshot/added subtree and
 // set lookups per event; the sets only grow while the recorder is misbehaving.
@@ -72,6 +75,11 @@ const SELECTION = 14;
 export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const blockedIframes = new Set<number>();
   const tainted = new Set<number>();
+  // Iframes that are recorded (not blocked) as of now, with their current attributes, and the iframe each node of
+  // their attached documents belongs to. They exist so that an iframe that BECOMES blocked (an attribute
+  // mutation) can be recognised, and everything recorded under it from then on removed.
+  const openIframes = new Map<number, Record<string, unknown>>();
+  const ownerOf = new Map<number, number>();
   let reported = false;
 
   const report = (message: string): void => {
@@ -114,6 +122,29 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     return 'rr_width' in attributes || 'rr_height' in attributes || blockedByRules(attributes);
   };
 
+  /** Remember that every node of `node` lives in the document attached to the open iframe `owner`. */
+  const own = (node: SNode, owner: number): void => {
+    ownerOf.set(node.id, owner);
+    for (const child of node.childNodes ?? []) {
+      own(child, owner);
+    }
+  };
+
+  /** An open iframe turned out to be blocked: everything recorded under it (nested iframes included) is tainted. */
+  const closeIframe = (id: number): void => {
+    openIframes.delete(id);
+    blockedIframes.add(id);
+    for (const nodeId of ownerOf.keys()) {
+      let owner = ownerOf.get(nodeId);
+      while (owner !== undefined && owner !== id) {
+        owner = ownerOf.get(owner);
+      }
+      if (owner === id) {
+        tainted.add(nodeId);
+      }
+    }
+  };
+
   const taint = (node: SNode): void => {
     tainted.add(node.id);
     for (const child of node.childNodes ?? []) {
@@ -135,6 +166,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
         }
         return;
       }
+      openIframes.set(node.id, { ...(node.attributes ?? {}) });
     }
     for (const child of node.childNodes ?? []) {
       scan(child);
@@ -143,10 +175,32 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
 
   const isTainted = (id: unknown): boolean => typeof id === 'number' && tainted.has(id);
 
+  /** Apply an attribute mutation to an open iframe; a rrweb `null` value removes the attribute. */
+  const reclassify = (
+    id: number,
+    current: Record<string, unknown>,
+    changes: Record<string, unknown> | undefined,
+  ): void => {
+    const merged = { ...current };
+    for (const [name, value] of Object.entries(changes ?? {})) {
+      if (value === null || value === undefined) {
+        delete merged[name];
+      } else {
+        merged[name] = value;
+      }
+    }
+    if (isBlockedIframe({ id, type: ELEMENT_NODE, attributes: merged })) {
+      report('an iframe that was recorded became blocked; its content is removed from now on');
+      closeIframe(id);
+    } else {
+      openIframes.set(id, merged);
+    }
+  };
+
   interface Mut {
     adds?: Array<{ parentId: number; node: SNode }>;
     texts?: Array<{ id: number }>;
-    attributes?: Array<{ id: number }>;
+    attributes?: Array<{ id: number; attributes?: Record<string, unknown> }>;
     removes?: Array<{ parentId: number; id: number }>;
   }
 
@@ -164,8 +218,18 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
         return false;
       }
       scan(add.node);
+      const owner = openIframes.has(add.parentId) ? add.parentId : ownerOf.get(add.parentId);
+      if (owner !== undefined) {
+        own(add.node, owner);
+      }
       return true;
     });
+    for (const entry of attributes) {
+      const current = openIframes.get(entry.id);
+      if (current !== undefined) {
+        reclassify(entry.id, current, entry.attributes);
+      }
+    }
     const keptTexts = texts.filter((t) => !isTainted(t.id));
     const keptAttributes = attributes.filter((a) => !isTainted(a.id));
     const keptRemoves = removes.filter((r) => !isTainted(r.id) && !isTainted(r.parentId));
@@ -197,6 +261,8 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     if (raw.type === FULL_SNAPSHOT) {
       blockedIframes.clear();
       tainted.clear();
+      openIframes.clear();
+      ownerOf.clear();
       const node = (raw.data as { node?: SNode } | null | undefined)?.node;
       if (typeof node === 'object' && node !== null) {
         scan(node);

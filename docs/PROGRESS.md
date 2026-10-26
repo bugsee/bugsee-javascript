@@ -1269,7 +1269,9 @@ recorded" was false.
   `rr_height`) OR by the resolved block rules on their serialized attributes (fail closed); children of a blocked
   iframe node are stripped, an `isAttachIframe` mutation under it is dropped, and every later event naming an id
   from the removed content (text/attribute/add/remove/input/scroll/mouse/media/style/selection/pointer positions)
-  is dropped or filtered. LIMITS: relies on rrweb event shapes (an unknown shape passes unchanged, it only ever
+  is dropped or filtered. An iframe that is recorded and LATER becomes blocked (an attribute mutation on it) is
+  reclassified on its merged attributes and everything under it (nested iframes too) is tainted from then on.
+  LIMITS: relies on rrweb event shapes (an unknown shape passes unchanged, it only ever
   removes iframe content); an iframe blocked by a rule on an ANCESTOR is recognised only through the placeholder
   marker; it cannot know that a non-iframe node should have been blocked; any internal error drops the event.
 - **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
