@@ -1165,15 +1165,15 @@ importers:
   packages/rrweb:
     dependencies:
       '@rrweb/types':
-        specifier: ^2.1.7
-        version: 2.1.7
+        specifier: ^2.2.0
+        version: 2.2.0
       rrweb:
-        specifier: ^2.1.7
-        version: 2.1.7
+        specifier: ^2.2.0
+        version: 2.2.0
     devDependencies:
       '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#ad172467b79223adc73ee0516bee64d0935f4ab9
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/ad172467b79223adc73ee0516bee64d0935f4ab9(@rrweb/types@2.1.7)(rrweb@2.1.7)
+        specifier: github:bugsee/rrweb#5643229f7b9a1cb241af90f55331d39fcaa3db54
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/5643229f7b9a1cb241af90f55331d39fcaa3db54(@rrweb/types@2.2.0)(rrweb@2.2.0)
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -1859,12 +1859,12 @@ packages:
     deprecated: Exits 0 when the binary is killed by a signal. Upgrade to 0.8.2 or use @bugsee/cli.
     hasBin: true
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/ad172467b79223adc73ee0516bee64d0935f4ab9':
-    resolution: {gitHosted: true, integrity: sha512-Nbo5vmNf1DA27LjZcnkiLmo8fHs8QRcBgY/fv5FG51Hv5MmQzQRWAGNXThoAPLN6lLsQnOZNWB6na8D5A6COvg==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/ad172467b79223adc73ee0516bee64d0935f4ab9}
-    version: 2.1.7
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/5643229f7b9a1cb241af90f55331d39fcaa3db54':
+    resolution: {gitHosted: true, integrity: sha512-V1wtPQXaERVgFPBzqN99TBqCxPUt3pKlgc5qZ67XvcJhTAAcBX06POUsOmhae5s3fqXgPl01vtCoRlK+2ZJszQ==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/5643229f7b9a1cb241af90f55331d39fcaa3db54}
+    version: 2.2.0
     peerDependencies:
-      '@rrweb/types': ^2.1.0
-      rrweb: ^2.1.0
+      '@rrweb/types': ^2.2.0
+      rrweb: ^2.2.0
     peerDependenciesMeta:
       '@rrweb/types':
         optional: true
@@ -4568,11 +4568,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@rrweb/types@2.1.7':
-    resolution: {integrity: sha512-fNua4du3xvMlC5iK8lYU1CEg+9wsA7FXUzahVBBVGBKqVPSifROLVh3mfV90hhsfAcs4jAvLbl23v28hXrxZWg==}
+  '@rrweb/types@2.2.0':
+    resolution: {integrity: sha512-2gTA/pRpIbuET123oSdX5ZUDZfWCOIMYBvpSai3fr5pk9LcbccPqqaXflX+roP4oKenLjNtJPGpFK3BfYeBKnA==}
 
-  '@rrweb/utils@2.1.7':
-    resolution: {integrity: sha512-ZQpnuthKb8U2BvSDtiX6z8XkEPUUbCXhcrOY5yqqtPP2O5RP8YgPlo8HkU/tFStMd/Wn8cfy9DmkhialwUUvrA==}
+  '@rrweb/utils@2.2.0':
+    resolution: {integrity: sha512-e8FEp8wLswqgjDHpQNUUVfEXeDsrRMOVouvqIGKvnPxKYonjLlh0mU3O/17QNvCixFG5eUFR1B2jgTdiLlZxeQ==}
 
   '@rushstack/node-core-library@5.25.1':
     resolution: {integrity: sha512-ozoRDwIx3jStOYpx86rFyXH4SaUR+DVT6HubQ59avLplJkWXSm5InztYH7RrOzzq9PJXTdq9/+lKX06SfkLVsA==}
@@ -9006,8 +9006,8 @@ packages:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
 
-  rrdom@2.1.7:
-    resolution: {integrity: sha512-jm7IN2aaG6891OqFAYw/b8dw5FLiMeCTrU4HIUr40I6tTaUX2Rrhba5vjjMRARQClBFDA04vvf9HFD9WnZFpFg==}
+  rrdom@2.2.0:
+    resolution: {integrity: sha512-gxcBJWVtS/Xz+Ys8xcjPoWqr+C7wz/MS8NgmKw136I47Xygy17FYOGZqoGwEyvBn724jRDK1ljS+8w9FsZStOg==}
 
   rrweb-cssom@0.7.1:
     resolution: {integrity: sha512-TrEMa7JGdVm0UThDJSx7ddw5nVm3UJS9o9CCIZ72B1vSyEZoziDqBYP3XIoi/12lKrJR8rE3jeFHMok2F/Mnsg==}
@@ -9015,11 +9015,11 @@ packages:
   rrweb-cssom@0.8.0:
     resolution: {integrity: sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==}
 
-  rrweb-snapshot@2.1.7:
-    resolution: {integrity: sha512-exIZ4dxX498CZszs4ji0KKn8lhX9sBPBdD431t0RQOqCTStAHrmdWKK2s8tWSL32iRS+AOafbMuf6TOIZxW6ug==}
+  rrweb-snapshot@2.2.0:
+    resolution: {integrity: sha512-Tg/PiCLy+zV9C0Jfb4IAGABtt5l/UOvwW5xjFk41ZQhBfUjeqPP1rZ9HMDrFPc7cawCUEenWw54+g/4vluO5lg==}
 
-  rrweb@2.1.7:
-    resolution: {integrity: sha512-UZzK43vVmbtBt5WyEVO/CO8q9hKi38LRZDQS5C+X+FYgpVLK4vhWyUzzi1K0iXzHFb3MOVaTak5TAsdK5K6V6Q==}
+  rrweb@2.2.0:
+    resolution: {integrity: sha512-ofVzPq11/yIQ7WhVb++rJGI2LoPPrxdqu0QAvRA4KGeXJ7LH52jQ0VlRH4+VXn5PA/7pz85/rRkQyBUqT1LraQ==}
 
   run-applescript@7.1.0:
     resolution: {integrity: sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q==}
@@ -11180,10 +11180,10 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/ad172467b79223adc73ee0516bee64d0935f4ab9(@rrweb/types@2.1.7)(rrweb@2.1.7)':
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/5643229f7b9a1cb241af90f55331d39fcaa3db54(@rrweb/types@2.2.0)(rrweb@2.2.0)':
     optionalDependencies:
-      '@rrweb/types': 2.1.7
-      rrweb: 2.1.7
+      '@rrweb/types': 2.2.0
+      rrweb: 2.2.0
 
   '@capsizecss/unpack@4.0.1':
     dependencies:
@@ -13840,9 +13840,9 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.64.7':
     optional: true
 
-  '@rrweb/types@2.1.7': {}
+  '@rrweb/types@2.2.0': {}
 
-  '@rrweb/utils@2.1.7': {}
+  '@rrweb/utils@2.2.0': {}
 
   '@rushstack/node-core-library@5.25.1(@types/node@22.20.5)':
     dependencies:
@@ -19468,28 +19468,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  rrdom@2.1.7:
+  rrdom@2.2.0:
     dependencies:
-      rrweb-snapshot: 2.1.7
+      rrweb-snapshot: 2.2.0
 
   rrweb-cssom@0.7.1: {}
 
   rrweb-cssom@0.8.0: {}
 
-  rrweb-snapshot@2.1.7:
+  rrweb-snapshot@2.2.0:
     dependencies:
       postcss: 8.5.30
 
-  rrweb@2.1.7:
+  rrweb@2.2.0:
     dependencies:
-      '@rrweb/types': 2.1.7
-      '@rrweb/utils': 2.1.7
+      '@rrweb/types': 2.2.0
+      '@rrweb/utils': 2.2.0
       '@types/css-font-loading-module': 0.0.7
       '@xstate/fsm': 1.6.5
       base64-arraybuffer: 1.0.2
       mitt: 3.0.1
-      rrdom: 2.1.7
-      rrweb-snapshot: 2.1.7
+      rrdom: 2.2.0
+      rrweb-snapshot: 2.2.0
 
   run-applescript@7.1.0: {}
 

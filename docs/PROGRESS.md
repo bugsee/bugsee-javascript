@@ -1219,6 +1219,17 @@ A real-Electron run (staging uploads, SNODE-29..34) verified what the Electron t
 
 Spec: bugsee/specs#62 (`api/issues.md#appuptime_s`). The per-second `process_uptime_s` trace (node/bun/deno) is RETIRED, along with the node `ProcessTracker` `uptime` stage and its `uptime` env seam (nothing else consumed them). Process uptime is now ONE value stamped at session start in `environment.app.uptime_s` (whole seconds, floored): `buildNodeEnvironment` / `buildBrowserEnvironment` take `uptimeSeconds`, and `launch` reads the probe's optional `uptimeSeconds()` ONCE at launch (a snapshot, not re-read per report; a relaunch re-stamps). Sources: node/bun/deno/Electron main `process.uptime()` (probed on real Bun and Deno); browser `performance.now() / 1000` (document lifetime, ~0 at page load). Omitted, never `0`, when the probe has no clock. Webworker/edge have no stable clock origin so they do not write it. The browser `ProcessTracker` `uptime` stage (no trace consumer) is untouched. The appserver drops unknown `environment.app` keys until bugsee-appserver#120 lands. `EnvironmentEnvelope.app` is an open `Record`, and there is no environment key schema in `@bugsee/protocol`, so no type/schema change was needed.
 
+### 2026-10-26 — Replay moves onto upstream rrweb 2.2.0 → `chore/rrweb-2.2.0`
+
+Fork `bugsee-port-2.2.0` (4a81d36d merge of rrweb-io/rrweb 2.2.0 into `bugsee-port`, no conflicts, hardening
+intact; cdb77793 adds `masking-observer-lifecycle.test.ts`) → record-only bundle `bugsee-dist-2.2.0` 5643229f
+(vite `dist/rrweb-record.js` via `vite.config.entries.js`, then `esbuild --bundle --minify --format=esm`;
+185,496 B / 58,698 B gzip vs 184,815 / 58,604 on 2.1.7). `@bugsee/rrweb` pins it; `rrweb`/`@rrweb/types` ^2.2.0.
+2.2.0 changes how the recorder re-observes shadow roots and same-origin iframe documents (observers are released
+on removal/unload and created again), so the new test asserts the masking options (maskAllText, maskAllInputs,
+unmask selectors) still apply on each re-attached path; 6 mutations caught. `record.addAnnotation()` is available
+in the bundle but deliberately NOT exposed: no replay design here needs it, and annotation text is caller-supplied.
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.
