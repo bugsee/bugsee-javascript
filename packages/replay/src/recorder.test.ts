@@ -742,4 +742,38 @@ describe('createReplayCaptureProvider — blocked-iframe guard on the emit path'
     f.emit(frameSnapshot('LEAK'));
     expect(added).toEqual([]);
   });
+
+  it('a report during the opening snapshot (before record() returned) that starts a blackout still stops that recorder', () => {
+    const holder: { provider?: ReturnType<typeof createReplayCaptureProvider> } = {};
+    const stop = vi.fn();
+    const record: ReplayRecordFn = vi.fn((o) => {
+      // rrweb emits its opening Meta + FullSnapshot synchronously, before record() returns
+      (o.emit as (e: eventWithTime) => void)(frameSnapshot('LEAK'));
+      return stop;
+    });
+    const { init, added } = fakeInit();
+    holder.provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+      onError: () => holder.provider?.startBlackout(),
+    });
+    holder.provider.init(init);
+    holder.provider.start(options());
+    expect(stop).toHaveBeenCalledTimes(1); // the handle of the recorder whose session already ended is not lost
+    expect(JSON.stringify(added)).not.toContain('LEAK');
+  });
+
+  it('the handle of a live recorder is kept (stop() on the provider stops it)', () => {
+    const f = fakeRecord();
+    const { init } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    expect(f.stop).not.toHaveBeenCalled();
+    provider.stop();
+    expect(f.stop).toHaveBeenCalledTimes(1);
+  });
 });

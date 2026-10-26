@@ -206,7 +206,7 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
         }
       },
     });
-    this.#stop = this.#record({
+    const stop = this.#record({
       ...this.#masking,
       // Opt-in canvas options (recordCanvas / sampling.canvas / dataURLOptions); nothing when DOM-only.
       ...this.#canvasForThisStart(),
@@ -228,6 +228,13 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
         }
       },
     });
+    // rrweb emits its opening Meta + FullSnapshot before `record()` returns: if a report made by the guard on
+    // them ended this session (a blackout, stop()), nothing was holding the handle yet, so stop it here.
+    if (session === this.#session) {
+      this.#stop = stop;
+    } else {
+      stop?.();
+    }
   }
 
   #halt(): void {
