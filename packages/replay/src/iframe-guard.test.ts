@@ -511,5 +511,97 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       guard(classChange(frame.id, 'private'));
       expect(onViolation).not.toHaveBeenCalled();
     });
+
+    it('drops an attach that arrives in the SAME event as the attribute change that blocks the iframe', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = text(SECRET);
+      const both = mutation({
+        isAttachIframe: true,
+        attributes: [{ id: frame.id, attributes: { class: 'private' } }],
+        adds: [{ parentId: frame.id, nextId: null, node: doc([inner]) }],
+      });
+      const out = guard(both)!;
+      expect(JSON.stringify(out)).not.toContain(SECRET);
+      expect(
+        (out as unknown as { data: { adds: unknown[]; attributes: unknown[] } }).data.adds,
+      ).toEqual([]);
+      expect((out as unknown as { data: { attributes: unknown[] } }).data.attributes).toHaveLength(
+        1,
+      );
+      expect(guard(mutation({ texts: [{ id: inner.id, value: 'x' }] }))).toBeUndefined();
+    });
+
+    it('forgets removed subtrees: a node removed before the iframe became blocked is not carried along', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const gone = el('p', {}, [text('gone')]);
+      const kept = el('p', {}, [text('kept')]);
+      const root = el('div', {}, [gone, kept]);
+      guard(attach(frame.id, root));
+      guard(mutation({ removes: [{ parentId: root.id, id: gone.id }] }));
+      guard(classChange(frame.id, 'private'));
+      expect(
+        guard(mutation({ texts: [{ id: (kept.childNodes[0] as { id: number }).id, value: 'x' }] })),
+      ).toBeUndefined();
+      // the removed node and its child were pruned, so nothing about them is tainted
+      const stale = mutation({
+        texts: [{ id: (gone.childNodes[0] as { id: number }).id, value: 'x' }],
+      });
+      expect(guard(stale)).toBe(stale);
+    });
+
+    it('a node removed and added again in one event (a move) stays owned', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const a = el('div', {});
+      const b = el('div', {});
+      const moved = el('p', {}, [text('m')]);
+      guard(attach(frame.id, el('div', {}, [a, b, moved])));
+      guard(
+        mutation({
+          removes: [{ parentId: 1, id: moved.id }],
+          adds: [{ parentId: b.id, nextId: null, node: moved }],
+        }),
+      );
+      guard(classChange(frame.id, 'private'));
+      expect(
+        guard(
+          mutation({ texts: [{ id: (moved.childNodes[0] as { id: number }).id, value: 'x' }] }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('forgets an open iframe that was removed from the page (and its content)', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const holder = el('div', {});
+      const frame = el('iframe', {});
+      holder.childNodes.push(frame);
+      guard(snapshot(doc([holder])));
+      guard(attach(frame.id, text('x')));
+      guard(mutation({ removes: [{ parentId: holder.id, id: frame.id }] }));
+      guard(classChange(frame.id, 'private'));
+      expect(onViolation).not.toHaveBeenCalled();
+    });
+
+    it('holds only what the recorded iframes hold now: churn does not accumulate, a snapshot clears everything', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const root = el('div', {});
+      guard(attach(frame.id, root));
+      const baseline = guard.tracked();
+      for (let i = 0; i < 200; i++) {
+        const child = el('p', {}, [text(`n${i}`)]);
+        guard(mutation({ adds: [{ parentId: root.id, nextId: null, node: child }] }));
+        guard(mutation({ removes: [{ parentId: root.id, id: child.id }] }));
+      }
+      expect(guard.tracked()).toBe(baseline);
+      guard(snapshot(doc([])));
+      expect(guard.tracked()).toBe(0);
+    });
   });
 });

@@ -22,7 +22,9 @@
 //      from then on;
 //   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not.
 // A full snapshot starts from a clean slate. Cost: one pass over the nodes of each snapshot/added subtree and
-// set lookups per event; the sets only grow while the recorder is misbehaving.
+// set lookups per event. Memory: the guard remembers the attributes of each recorded iframe and the ids of the
+// nodes attached under it, and forgets removed subtrees, so it holds what those iframes hold now; the tainted
+// set only grows while the recorder is misbehaving.
 //
 // LIMITS (what this does NOT cover):
 //   - it relies on rrweb's event shapes (ids, `isAttachIframe`, node trees); an event shape it does not know
@@ -46,8 +48,14 @@ export interface IframeGuardOptions {
   onViolation: (error: unknown) => void;
 }
 
-/** Returns the event to capture (possibly a filtered copy), or `undefined` to drop it. */
-export type IframeGuard = (event: eventWithTime) => eventWithTime | undefined;
+/**
+ * Returns the event to capture (possibly a filtered copy), or `undefined` to drop it. `tracked()` is the number of
+ * entries the guard currently remembers about recorded iframes (a diagnostic, and the memory-bound test seam).
+ */
+export interface IframeGuard {
+  (event: eventWithTime): eventWithTime | undefined;
+  tracked(): number;
+}
 
 interface SNode {
   id: number;
@@ -80,6 +88,9 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   // mutation) can be recognised, and everything recorded under it from then on removed.
   const openIframes = new Map<number, Record<string, unknown>>();
   const ownerOf = new Map<number, number>();
+  // The children of every owned node (and of each open iframe), so that a removed subtree can be forgotten:
+  // the maps then hold what the recorded iframes hold NOW, not everything they ever held.
+  const kidsOf = new Map<number, Set<number>>();
   let reported = false;
 
   const report = (message: string): void => {
@@ -123,10 +134,33 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   };
 
   /** Remember that every node of `node` lives in the document attached to the open iframe `owner`. */
-  const own = (node: SNode, owner: number): void => {
+  const own = (node: SNode, owner: number, parentId: number): void => {
     ownerOf.set(node.id, owner);
+    let kids = kidsOf.get(parentId);
+    if (kids === undefined) {
+      kids = new Set();
+      kidsOf.set(parentId, kids);
+    }
+    kids.add(node.id);
     for (const child of node.childNodes ?? []) {
-      own(child, owner);
+      own(child, owner, node.id);
+    }
+  };
+
+  /** Forget a removed node, everything under it, and any open iframe among them. */
+  const forget = (id: number, parentId: number): void => {
+    const siblings = kidsOf.get(parentId);
+    if (siblings?.delete(id) && siblings.size === 0) {
+      kidsOf.delete(parentId);
+    }
+    const stack = [id];
+    for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+      ownerOf.delete(next);
+      openIframes.delete(next);
+      for (const kid of kidsOf.get(next) ?? []) {
+        stack.push(kid);
+      }
+      kidsOf.delete(next);
     }
   };
 
@@ -210,6 +244,17 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     const attributes = Array.isArray(data.attributes) ? data.attributes : [];
     const removes = Array.isArray(data.removes) ? data.removes : [];
     let changed = false;
+    // rrweb applies removals first: forget removed subtrees before anything is (re)added under them.
+    for (const removal of removes) {
+      forget(removal.id, removal.parentId);
+    }
+    // An attribute change that blocks an open iframe comes first, so an attach in the SAME event is dropped.
+    for (const entry of attributes) {
+      const current = openIframes.get(entry.id);
+      if (current !== undefined) {
+        reclassify(entry.id, current, entry.attributes);
+      }
+    }
     const keptAdds = adds.filter((add) => {
       if (blockedIframes.has(add.parentId) || tainted.has(add.parentId)) {
         report('a document was attached to a blocked iframe and was removed');
@@ -220,16 +265,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       scan(add.node);
       const owner = openIframes.has(add.parentId) ? add.parentId : ownerOf.get(add.parentId);
       if (owner !== undefined) {
-        own(add.node, owner);
+        own(add.node, owner, add.parentId);
       }
       return true;
     });
-    for (const entry of attributes) {
-      const current = openIframes.get(entry.id);
-      if (current !== undefined) {
-        reclassify(entry.id, current, entry.attributes);
-      }
-    }
     const keptTexts = texts.filter((t) => !isTainted(t.id));
     const keptAttributes = attributes.filter((a) => !isTainted(a.id));
     const keptRemoves = removes.filter((r) => !isTainted(r.id) && !isTainted(r.parentId));
@@ -263,6 +302,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       tainted.clear();
       openIframes.clear();
       ownerOf.clear();
+      kidsOf.clear();
       const node = (raw.data as { node?: SNode } | null | undefined)?.node;
       if (typeof node === 'object' && node !== null) {
         scan(node);
@@ -311,7 +351,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     return event;
   };
 
-  return (event) => {
+  const guard = (event: eventWithTime): eventWithTime | undefined => {
     try {
       return process(event);
     } catch (error) {
@@ -319,4 +359,6 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       return undefined;
     }
   };
+  guard.tracked = (): number => openIframes.size + ownerOf.size + kidsOf.size;
+  return guard;
 }
