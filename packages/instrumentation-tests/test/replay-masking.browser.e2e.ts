@@ -56,9 +56,22 @@ const INDEX = `<!doctype html><html><head><title>replay masking e2e</title></hea
 <script src="/scenario.js"></script></body></html>`;
 
 const pendingCss: ServerResponse[] = [];
+const cssWaiters: Array<() => void> = [];
 
-/** Answer every stylesheet request that is being held. */
-function releaseCss(): void {
+/** Answer the stylesheet request that is being held, waiting for it to arrive first (no fixed delay). */
+async function releaseCss(): Promise<void> {
+  if (pendingCss.length === 0) {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('the stylesheet was never requested')),
+        10_000,
+      );
+      cssWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
   for (const res of pendingCss.splice(0)) {
     res.writeHead(200, { 'content-type': 'text/css' });
     res.end('p::after{content:"LINK_SECRET_CSS"}');
@@ -78,6 +91,7 @@ async function startPageServer(
     if (url.startsWith('/slow.css')) {
       // held until the test releases it, so it finishes loading exactly when the test wants
       pendingCss.push(res);
+      for (const waiter of cssWaiters.splice(0)) waiter();
       return;
     }
     const m = /^\/f(\d)\.html/.exec(url);
@@ -470,6 +484,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         const events = await dump();
         expect(events).not.toContain('SHADOW_SECRET_LATE');
         expect(events).not.toContain('FRAME2_SECRET');
+        expect(await markers()).toBe(1);
         await page.close();
       });
 
@@ -529,8 +544,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
           link.href = '/slow.css';
           d.head.appendChild(link);
         });
-        await settle(200);
-        releaseCss();
+        await releaseCss();
         await settle(500);
         expect(await dump()).toContain('LINK_SECRET_CSS');
         await page.close();
@@ -574,7 +588,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         });
         await adopt('STYLE_SECRET_LATE_E');
         await shadowIn('SHADOW_SECRET_LATE_E');
-        releaseCss(); // the link finishes loading now, after the iframe was blocked
+        await releaseCss(); // the link finishes loading now, after the iframe was blocked
         await settle(500);
         const events = await dump();
         for (const secret of [
