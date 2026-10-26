@@ -900,5 +900,32 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       );
       expect(states).toEqual([undefined]);
     });
+
+    it('text and attribute mutations from a blocked iframe are reported too, a removal of its nodes is not', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = el('p', {}, [text('x')]);
+      guard(attach(frame.id, inner));
+      guard(classChange(frame.id, 'private'));
+      // the app tears the blocked iframe's content down: nothing to report
+      guard(mutation({ removes: [{ parentId: frame.id, id: inner.id }] }));
+      expect(onViolation).not.toHaveBeenCalled();
+      expect(guard(mutation({ texts: [{ id: inner.id, value: 'x' }] }))).toBeUndefined();
+      expect(onViolation).toHaveBeenCalledTimes(1);
+    });
+
+    it('an attribute mutation from a blocked iframe is reported as well', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = el('p', {});
+      guard(attach(frame.id, inner));
+      guard(classChange(frame.id, 'private'));
+      expect(
+        guard(mutation({ attributes: [{ id: inner.id, attributes: { a: '1' } }] })),
+      ).toBeUndefined();
+      expect(onViolation).toHaveBeenCalledTimes(1);
+    });
   });
 });

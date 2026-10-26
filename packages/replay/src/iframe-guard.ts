@@ -354,11 +354,14 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       }
       return true;
     });
-    if (violation) {
-      report('a document was attached to a blocked iframe and was removed');
-    }
     const keptTexts = texts.filter((t) => !isTainted(t.id));
     const keptAttributes = attributes.filter((a) => !isTainted(a.id));
+    if (violation) {
+      report('a document was attached to a blocked iframe and was removed');
+    } else if (keptTexts.length !== texts.length || keptAttributes.length !== attributes.length) {
+      // (a removal of a node of a blocked iframe is legitimate, the app may tear it down: not reported)
+      report('a mutation from inside a blocked iframe was removed');
+    }
     const keptRemoves = removes.filter((r) => !isTainted(r.id) && !isTainted(r.parentId));
     changed =
       changed ||

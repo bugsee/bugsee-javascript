@@ -12,7 +12,7 @@
 //
 // HEADLESS ONLY: the browser is launched with `headless: true` explicitly (no window, no focus stealing). Do not
 // change that: the harness never needs a visible browser.
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -55,6 +55,16 @@ const INDEX = `<!doctype html><html><head><title>replay masking e2e</title></hea
 <div id="mount"></div>
 <script src="/scenario.js"></script></body></html>`;
 
+const pendingCss: ServerResponse[] = [];
+
+/** Answer every stylesheet request that is being held. */
+function releaseCss(): void {
+  for (const res of pendingCss.splice(0)) {
+    res.writeHead(200, { 'content-type': 'text/css' });
+    res.end('p::after{content:"LINK_SECRET_CSS"}');
+  }
+}
+
 async function startPageServer(
   script: string,
 ): Promise<{ url: string; close: () => Promise<void> }> {
@@ -66,11 +76,8 @@ async function startPageServer(
       return;
     }
     if (url.startsWith('/slow.css')) {
-      // a stylesheet that finishes loading well after the page asked for it
-      setTimeout(() => {
-        res.writeHead(200, { 'content-type': 'text/css' });
-        res.end('p::after{content:"LINK_SECRET_CSS"}');
-      }, 800);
+      // held until the test releases it, so it finishes loading exactly when the test wants
+      pendingCss.push(res);
       return;
     }
     const m = /^\/f(\d)\.html/.exec(url);
@@ -510,6 +517,25 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         await page.close();
       });
 
+      it('control: a stylesheet link that finishes loading while the iframe is allowed IS recorded', async () => {
+        await open();
+        await mountRecorded(false, 'class="bugsee-show"');
+        await start(mode, { maskAllText: false });
+        await settle(400);
+        await page.evaluate(() => {
+          const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+          const link = d.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = '/slow.css';
+          d.head.appendChild(link);
+        });
+        await settle(200);
+        releaseCss();
+        await settle(500);
+        expect(await dump()).toContain('LINK_SECRET_CSS');
+        await page.close();
+      });
+
       it('iframe becomes blocked after recording: text, input, adopted sheet, shadow DOM and a stylesheet link', async () => {
         await open();
         await mountRecorded(false, 'class="bugsee-show"');
@@ -548,7 +574,8 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         });
         await adopt('STYLE_SECRET_LATE_E');
         await shadowIn('SHADOW_SECRET_LATE_E');
-        await settle(1500); // the link finishes loading now
+        releaseCss(); // the link finishes loading now, after the iframe was blocked
+        await settle(500);
         const events = await dump();
         for (const secret of [
           'LATE_SECRET_TEXT',
