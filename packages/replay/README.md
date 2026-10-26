@@ -33,7 +33,7 @@ The `replay` option takes `false`, `true` or an object. Masking is fail-closed: 
 
 - `maskAllText`: mask every text node, default `true`.
 - `maskAllInputs`: mask every input value, default `true`.
-- `blockAllMedia`: block all media and iframes, default `true`.
+- `blockAllMedia`: block all media and iframes, default `true`. A blocked iframe is recorded as an empty placeholder of the same size: its document, text, inputs and live changes are never recorded. Mark an iframe `.bugsee-show` to record it (its content is then masked like the rest of the page).
 - `maskTextSelector`, `blockSelector`, `ignoreSelector`: extra CSS selectors to mask, block or ignore.
 - `checkoutEveryNms`: full-snapshot interval in milliseconds, default `60000`.
 - `canvas`: opt-in canvas recording, see `@bugsee/replay-canvas`.

@@ -1238,6 +1238,50 @@ Public surface: the `.d.ts` is unchanged, but `@bugsee/rrweb` re-exports `EventT
 `@rrweb/types`, which now include `Annotation = 8` / `annotationEvent`, and the exported `record` carries an
 untyped `.addAnnotation` at runtime. Nothing in the SDK calls it; no replay design here needs it.
 
+### 2026-10-26 — Blocked same-origin iframes are placeholders only (#118) → `fix/blocked-iframe-leak`
+
+HIGH privacy bug, present since 2.1.7 (and in upstream): a blocked same-origin iframe (default `blockAllMedia`
+media selector, `.bugsee-block`, `blockSelector`, `blockClass`) was serialized and observed anyway. `snapshot.ts`
+deleted `needBlock` and then still waited for the iframe `load`, serialized its `contentDocument` and attached it
+(`onIframeLoad` -> `attachIframe` -> `observe(doc)`); live edits, typed values, placeholder/title, `.bugsee-unmask`
+text and (with `maskAllText:false`) every text node reached the recording. The documented "iframes are never
+recorded" was false.
+
+- **Fork** `bugsee-port-2.2.0-iframe-block` (off `bugsee-port-2.2.0` cdb77793; tip ca88d54d; NOT yet merged into
+  `bugsee-port`, owner decision): the snapshot never registers the load listener for a blocked iframe, re-checks
+  the block state when the document is read, and `_isBlockedElement` now fails closed (an invalid
+  `blockSelector`/`unblockSelector` used to mean "not blocked"). `IframeManager` takes the block predicate
+  (class/selector/`unblockSelector`, blocked ancestors, nesting through iframes) and refuses to register, attach or
+  route cross-origin messages for a blocked iframe. Everything an iframe document's observers (and the shadow
+  roots inside it) report goes through an emit-time gate against the LIVE DOM: an iframe that becomes blocked
+  stops at once and its recording is released; it resumes only through a new full snapshot (an iframe that LOSES
+  its block state mid-stream is not recorded until the next snapshot, like any element that loses it). Fork tests:
+  jsdom (`blocked-iframe`, `iframe-manager-blocked`, `shadow-dom-manager-blocked`, snapshot unit) and real
+  Chromium (`blocked-iframe.browser`); 30-mutation loop, all caught; full rrweb suite same results as before
+  (408/408 vs 342/342 baseline, all green). One real bug was found by the mutator loop itself: the snapshot passes
+  the TOP document to `addShadowRoot` for shadow roots of an iframe document, so the gate asks the root's own
+  `ownerDocument`.
+- **Dist** `bugsee-dist-2.2.0-iframe-block` 6a2ba728 (186,783 B / 58,995 B gzip; two clean rebuilds byte-identical;
+  the same recipe on cdb77793 reproduces 5643229f exactly). `@bugsee/rrweb` pins it.
+- **SDK guard** (`packages/replay/src/iframe-guard.ts`, on the `emit` path of `recorder.ts`, one per recording
+  session): independent of the recorder, content of a blocked iframe is removed before capture and reported once
+  through `onError`. Iframe nodes are classified blocked by the recorder's placeholder marker (`rr_width`/
+  `rr_height`) OR by the resolved block rules on their serialized attributes (fail closed); children of a blocked
+  iframe node are stripped, an `isAttachIframe` mutation under it is dropped, and every later event naming an id
+  from the removed content (text/attribute/add/remove/input/scroll/mouse/media/style/selection/pointer positions)
+  is dropped or filtered. LIMITS: relies on rrweb event shapes (an unknown shape passes unchanged, it only ever
+  removes iframe content); an iframe blocked by a rule on an ANCESTOR is recognised only through the placeholder
+  marker; it cannot know that a non-iframe node should have been blocked; any internal error drops the event.
+- **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
+  (headless Chromium, runs in `test:e2e`/CI) — iframes (default, `.bugsee-block`, `maskAllText:false`, explicitly
+  unblocked, navigate/edit/remove/re-add), shadow DOM (remove/re-add, nested, moved, attached detached),
+  stop/start/blackout, a masking-off control; each in `raw` (recorder alone) and `provider` (with the guard) mode.
+  `E2E_RRWEB_RECORD_BUNDLE=<record.js>` runs it against another bundle: on the old pin 5643229f the 4 iframe `raw`
+  scenarios fail (leaks `FRAME1_SECRET`, `FRAME2_SECRET`, `IFB_SECRET`, and the iframe `.bugsee-unmask` control
+  text), every `provider` scenario still passes (the guard alone holds), shadow DOM and stop/start pass on both.
+  Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
+  gaps on re-observed observers) is untouched.
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.

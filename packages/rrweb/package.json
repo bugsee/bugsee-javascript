@@ -32,7 +32,7 @@
     "rrweb": "^2.2.0"
   },
   "devDependencies": {
-    "@bugsee/rrweb-record": "github:bugsee/rrweb#5643229f7b9a1cb241af90f55331d39fcaa3db54",
+    "@bugsee/rrweb-record": "github:bugsee/rrweb#6a2ba728c2265a42d8837b2ac4ff51e13c883c13",
     "jsdom": "^25.0.1"
   },
   "publishConfig": {

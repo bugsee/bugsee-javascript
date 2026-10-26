@@ -30,8 +30,9 @@ was a parity divergence a web integrator would never discover. `replay: false` k
   out keeps the ≤15 KB errors-only bundle, and the replay add-on has its own **≤90 KB gzipped** budget that only
   recording apps pay (as a separate chunk fetched after launch).
 - **Privacy fail-closed** (§27#10, §92): `maskAllText` / `maskAllInputs` / `blockAllMedia` all default `true`;
-  `<input type=password>` + `autocomplete=cc-*` **always** masked (never unmaskable); iframes + shadow DOM excluded by
-  default.
+  `<input type=password>` + `autocomplete=cc-*` **always** masked (never unmaskable); iframes blocked by
+  default (a placeholder only; the recorder never enters a blocked iframe and the SDK guard `iframe-guard.ts` removes
+  anything that still reaches it, see PROGRESS 2026-10-26). Shadow DOM is recorded under the same masking rules.
 - **Two seams** (§204): a recorder **Capture provider** + a **`ReplayEncoder` Service**. `startBlackout()` pauses it.
 - **Android-canonical; Sentry is a reference, never a source.** No `@sentry-*` runtime dependency.
 - **Non-DOM runtimes** (node/edge/worker): the `replay` option is ignored with a `debug.warn` (via `integration-shims`).

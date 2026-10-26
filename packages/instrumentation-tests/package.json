@@ -25,6 +25,7 @@
     "@bugsee/performance": "workspace:*",
     "@bugsee/protocol": "workspace:*",
     "@bugsee/replay": "workspace:*",
+    "@bugsee/rrweb": "workspace:*",
     "@bugsee/util": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
     "@bugsee/vite-plugin": "workspace:*",
