@@ -42,6 +42,13 @@
 //     (rr_width/rr_height, emitted when an attached iframe or a container of it becomes blocked), never through
 //     the serialized ancestors. Against a recorder that does not emit that marker (the previous pins) the guard
 //     only protects iframes that were blocked from the start;
+//   - the caller's `unblockSelector` is tested against a DETACHED copy of the iframe (built from its serialized
+//     attributes), so a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never match:
+//     the recorder records such an iframe, the guard removes its document and reports a violation. Value selectors
+//     (`iframe[data-embed="x"]`, `.bugsee-show`) are unaffected. See bugsee-javascript#123;
+//   - a violation is reported once per session, so a false report from a legitimate flow (a nested iframe's marker
+//     after its outer frame was blocked, an iframe that is blocked, unblocked and navigated) can hide a later real
+//     one. See bugsee-javascript#124;
 //   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's job and
 //     has its own tests (see the real-browser masking e2e);
 //   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip.

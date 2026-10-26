@@ -1259,8 +1259,11 @@ recorded" was false.
     stylesheets report goes through an emit-time gate against the LIVE DOM;
   - an attribute change that blocks an attached iframe (or a container of it) releases the iframe at once and emits
     a placeholder marker (`rr_width`/`rr_height`) on the iframe element: rrweb itself drops that change, because the
-    element is blocked by then. A released iframe is only recorded again through a new full snapshot (an iframe that
-    LOSES its block state mid-stream is not recorded until the next snapshot, like any element that loses it);
+    element is blocked by then. The marker is for consumers of the stream (the SDK guard) and does NOT change a replay: the
+    replayer only reads `rr_width` when it first builds a node, so a replay keeps showing the iframe's last pre-block
+    content until the next full snapshot. An iframe that LOSES its block state mid-stream: the recorder alone records
+    it again after its next navigation (a new document attach), but the SDK guard keeps it dropped and reports a
+    false violation (#124);
   - tests: jsdom (`blocked-iframe`, `iframe-manager-blocked`, `shadow-dom-manager-blocked`,
     `stylesheet-manager-blocked`, snapshot unit) and real Chromium (`blocked-iframe.browser`, incl. reload then
     attachShadow, adopted sheets, a link finishing late, fonts); mutator loops of 30 + 30 mutations, every
@@ -1284,8 +1287,11 @@ recorded" was false.
   from then on. This is real only because the fork emits the marker: rrweb drops the class change that blocks an
   element, so the guard never sees that change itself. Evidence: with the fork's emit-time gates disabled but the
   marker kept (a scratch bundle), the 3 `raw` "released after recording" scenarios that still have live observers
-  leak and every `provider` scenario holds. LIMITS: see the header of `iframe-guard.ts` (Font/CustomElement events
-  carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
+  leak and every `provider` scenario holds. LIMITS: see the header of `iframe-guard.ts` (a CONTEXTUAL `unblockSelector`
+  such as `#trusted iframe`, `.x > iframe` or `:first-child` is tested against a detached copy of the iframe and can
+  never match, so the guard removes an iframe the recorder records and reports a violation, value selectors like
+  `iframe[data-embed="x"]` are fine: #123; the guard reports once per session, so a false report from a legitimate
+  flow can hide a later real one: #124; Font/CustomElement events carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
   released by the next full snapshot rather than by removing its container).
 - **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
   (headless Chromium, runs in `test:e2e`/CI) — iframes (default, `.bugsee-block`, `maskAllText:false`, explicitly
@@ -1295,7 +1301,7 @@ recorded" was false.
   and a masking-off control; each in `raw` (recorder alone) and `provider` (with the guard) mode.
   `E2E_RRWEB_RECORD_BUNDLE=<record.js>` runs it against another bundle: on the old pin 5643229f the 4 iframe `raw`
   scenarios and all 10 "released after recording" scenarios fail; on 6a2ba728 the 10 "released after recording"
-  scenarios fail (raw and provider); on the current pin all 23 pass.
+  scenarios fail (raw and provider); on the current pin all 25 pass.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
