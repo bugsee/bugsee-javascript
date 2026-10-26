@@ -700,5 +700,31 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       );
       expect(guard(mutation({ texts: [{ id: inner.id, value: 'y' }] }))).toBeUndefined();
     });
+
+    it('removing a container of an open iframe forgets the iframe and everything attached under it', () => {
+      const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      const inner = el('div', {}, [frame]);
+      const sibling = el('p', {}, [text('s')]);
+      const wrap = el('div', {}, [inner, sibling]); // the open iframe is NOT the last child on its way up
+      const outer = el('div', {}, [wrap]);
+      const page = doc([outer]);
+      guard(snapshot(page));
+      guard(attach(frame.id, el('div', {}, [text('attached')])));
+      expect(guard.tracked()).toBeGreaterThan(0);
+      guard(mutation({ removes: [{ parentId: page.id, id: outer.id }] }));
+      expect(guard.tracked()).toBe(0);
+      guard(classChange(frame.id, 'private')); // the iframe is gone: nothing to reclassify
+      expect(onViolation).not.toHaveBeenCalled();
+    });
+
+    it('does not link nodes that have no open iframe below them', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      guard(snapshot(doc([el('div', {}, [el('p', {}, [text('plain')])])])));
+      expect(guard.tracked()).toBe(0);
+      const blocked = el('iframe', { rr_width: '1px' });
+      guard(snapshot(doc([el('div', {}, [blocked])])));
+      expect(guard.tracked()).toBe(0); // a blocked iframe is not tracked either
+    });
   });
 });

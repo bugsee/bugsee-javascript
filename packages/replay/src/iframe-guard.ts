@@ -146,17 +146,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
 
   const own = (node: SNode, owner: number, parentId: number): void => {
     ownerOf.set(node.id, owner);
-    const previous = parentOf.get(node.id);
-    if (previous !== undefined && previous !== parentId) {
-      detach(node.id, previous);
-    }
-    parentOf.set(node.id, parentId);
-    let kids = kidsOf.get(parentId);
-    if (kids === undefined) {
-      kids = new Set();
-      kidsOf.set(parentId, kids);
-    }
-    kids.add(node.id);
+    link(node.id, parentId);
     for (const child of node.childNodes ?? []) {
       own(child, owner, node.id);
     }
@@ -199,8 +189,28 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
   };
 
-  /** Strip the children of every blocked iframe in this subtree. */
-  const scan = (node: SNode): void => {
+  /** Record `id` as a child of `parentId`, so that removing the parent can forget it. */
+  const link = (id: number, parentId: number): void => {
+    const previous = parentOf.get(id);
+    if (previous !== undefined && previous !== parentId) {
+      detach(id, previous);
+    }
+    parentOf.set(id, parentId);
+    let kids = kidsOf.get(parentId);
+    if (kids === undefined) {
+      kids = new Set();
+      kidsOf.set(parentId, kids);
+    }
+    kids.add(id);
+  };
+
+  /**
+   * Strip the children of every blocked iframe in this subtree, and register every open iframe. Returns whether
+   * the subtree holds an open iframe; the nodes on the way to one are linked to their parents (and only those),
+   * so that removing a container of an open iframe forgets the iframe and what is attached under it.
+   */
+  const scan = (node: SNode, parentId: number | undefined): boolean => {
+    let holdsOpenIframe = false;
     if (node.type === ELEMENT_NODE && node.tagName === 'iframe') {
       if (isBlockedIframe(node)) {
         blockedIframes.add(node.id);
@@ -211,13 +221,18 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
           }
           node.childNodes = [];
         }
-        return;
+        return false;
       }
       openIframes.set(node.id, { ...(node.attributes ?? {}) });
+      holdsOpenIframe = true;
     }
     for (const child of node.childNodes ?? []) {
-      scan(child);
+      holdsOpenIframe = scan(child, node.id) || holdsOpenIframe;
     }
+    if (holdsOpenIframe && parentId !== undefined) {
+      link(node.id, parentId);
+    }
+    return holdsOpenIframe;
   };
 
   const isTainted = (id: unknown): boolean => typeof id === 'number' && tainted.has(id);
@@ -275,7 +290,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
         changed = true;
         return false;
       }
-      scan(add.node);
+      scan(add.node, add.parentId);
       const owner = openIframes.has(add.parentId) ? add.parentId : ownerOf.get(add.parentId);
       if (owner !== undefined) {
         own(add.node, owner, add.parentId);
@@ -319,7 +334,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       parentOf.clear();
       const node = (raw.data as { node?: SNode } | null | undefined)?.node;
       if (typeof node === 'object' && node !== null) {
-        scan(node);
+        scan(node, undefined);
       }
       return event;
     }
