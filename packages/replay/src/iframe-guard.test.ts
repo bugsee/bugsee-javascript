@@ -438,19 +438,26 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       expect(onViolation).not.toHaveBeenCalled();
     });
 
-    it('classifies by the merged attributes (the unblock rule wins once added, an earlier class survives)', () => {
-      const { guard } = make({ blockSelector: 'iframe.private' });
-      const frame = el('iframe', { class: 'private' });
-      // blocked from the start by its class in a snapshot where the recorder (wrongly) kept the document in view
+    it('classifies by the merged attributes: an existing attribute survives, the unblock rule wins once added', () => {
+      const { guard } = make({ blockSelector: 'iframe.private', unblockSelector: '.bugsee-show' });
+      const frame = el('iframe', { class: 'x' });
       guard(snapshot(doc([frame])));
-      expect(guard(classChange(frame.id, 'private bugsee-show'))).toBeDefined();
-      const plain = el('iframe', {});
-      const second = doc([plain]);
-      guard(snapshot(second));
-      guard(attach(plain.id, el('p', {}, [text('ok')])));
-      guard(mutation({ attributes: [{ id: plain.id, attributes: { 'data-x': '1' } }] }));
-      const t = mutation({ texts: [{ id: 1e9, value: 'unrelated' }] });
-      expect(guard(t)).toBe(t);
+      const inner = text('x');
+      guard(attach(frame.id, inner));
+      const ping = () => mutation({ texts: [{ id: inner.id, value: 'y' }] });
+      // 'private' is added next to an unblocking class: the unblock rule wins, the content stays recorded
+      const both = ping();
+      guard(classChange(frame.id, 'private bugsee-show'));
+      expect(guard(both)).toBe(both);
+      // merging a data attribute keeps the class that is already there
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { 'data-a': '1' } }] }));
+      const still = ping();
+      expect(guard(still)).toBe(still);
+      // without the unblocking class the same attributes block it, and it stays blocked
+      guard(classChange(frame.id, 'private'));
+      expect(guard(ping())).toBeUndefined();
+      guard(classChange(frame.id, 'x'));
+      expect(guard(ping())).toBeUndefined();
     });
 
     it('a placeholder marker added later blocks it', () => {
@@ -602,6 +609,96 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
       expect(guard.tracked()).toBe(baseline);
       guard(snapshot(doc([])));
       expect(guard.tracked()).toBe(0);
+    });
+
+    it('a node moved to another parent (an add with no removal) is no longer forgotten with its old parent', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const x = el('p', {}, [text('x')]);
+      const p = el('div', {}, [x]);
+      const b = el('div', {});
+      guard(attach(frame.id, el('div', {}, [p, b])));
+      guard(mutation({ adds: [{ parentId: b.id, nextId: null, node: { ...x, childNodes: [] } }] })); // the move
+      guard(mutation({ removes: [{ parentId: 1, id: p.id }] })); // the old parent goes away
+      guard(classChange(frame.id, 'private'));
+      expect(guard(mutation({ texts: [{ id: x.id, value: 'secret' }] }))).toBeUndefined();
+      expect(
+        guard(mutation({ texts: [{ id: (x.childNodes[0] as { id: number }).id, value: 's' }] })),
+      ).toBeUndefined();
+    });
+
+    it('a removal naming the wrong parent still clears the real parent', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const root = el('div', {});
+      guard(attach(frame.id, root));
+      const baseline = guard.tracked();
+      const a = el('p', {});
+      guard(mutation({ adds: [{ parentId: root.id, nextId: null, node: a }] }));
+      expect(guard.tracked()).toBeGreaterThan(baseline);
+      guard(mutation({ removes: [{ parentId: 424242, id: a.id }] })); // wrong parent on purpose
+      expect(guard.tracked()).toBe(baseline);
+    });
+
+    it('removing one child keeps its siblings tracked until their own parent goes', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const before = guard.tracked();
+      const root = el('div', {});
+      const a = el('p', {});
+      const b = el('p', {});
+      guard(attach(frame.id, root));
+      guard(
+        mutation({
+          adds: [
+            { parentId: root.id, nextId: null, node: a },
+            { parentId: root.id, nextId: null, node: b },
+          ],
+        }),
+      );
+      guard(mutation({ removes: [{ parentId: root.id, id: a.id }] }));
+      guard(classChange(frame.id, 'private'));
+      expect(guard(mutation({ texts: [{ id: b.id, value: 'x' }] }))).toBeUndefined();
+      // the whole subtree goes with its parent, the sibling included
+      guard(snapshot(doc([frame])));
+      expect(guard.tracked()).toBeLessThanOrEqual(before);
+    });
+
+    it('forgetting a parent forgets all of its remaining children', () => {
+      const { guard } = make({ blockSelector: 'iframe.private' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const root = el('div', {});
+      const a = el('p', {});
+      const b = el('p', {});
+      guard(attach(frame.id, root));
+      const attached = guard.tracked();
+      guard(
+        mutation({
+          adds: [
+            { parentId: root.id, nextId: null, node: a },
+            { parentId: root.id, nextId: null, node: b },
+          ],
+        }),
+      );
+      guard(mutation({ removes: [{ parentId: root.id, id: a.id }] }));
+      guard(mutation({ removes: [{ parentId: frame.id, id: root.id }] }));
+      expect(guard.tracked()).toBe(attached - 3); // root: owner + parent + kids entry of its parent; a and b went with it
+    });
+
+    it('applies every attribute of one mutation, not just the first', () => {
+      const { guard } = make({ blockSelector: 'iframe[data-p][data-q]' });
+      const frame = el('iframe', {});
+      guard(snapshot(doc([frame])));
+      const inner = text('x');
+      guard(attach(frame.id, inner));
+      guard(
+        mutation({ attributes: [{ id: frame.id, attributes: { 'data-p': '1', 'data-q': '1' } }] }),
+      );
+      expect(guard(mutation({ texts: [{ id: inner.id, value: 'y' }] }))).toBeUndefined();
     });
   });
 });

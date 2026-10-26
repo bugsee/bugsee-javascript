@@ -91,6 +91,9 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   // The children of every owned node (and of each open iframe), so that a removed subtree can be forgotten:
   // the maps then hold what the recorded iframes hold NOW, not everything they ever held.
   const kidsOf = new Map<number, Set<number>>();
+  // The current parent of every owned node: a node that is MOVED (re-added under another parent without a
+  // removal) must leave its old parent's children, or removing the old parent would forget it.
+  const parentOf = new Map<number, number>();
   let reported = false;
 
   const report = (message: string): void => {
@@ -134,8 +137,20 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   };
 
   /** Remember that every node of `node` lives in the document attached to the open iframe `owner`. */
+  const detach = (id: number, parentId: number | undefined): void => {
+    const siblings = parentId === undefined ? undefined : kidsOf.get(parentId);
+    if (parentId !== undefined && siblings?.delete(id) && siblings.size === 0) {
+      kidsOf.delete(parentId);
+    }
+  };
+
   const own = (node: SNode, owner: number, parentId: number): void => {
     ownerOf.set(node.id, owner);
+    const previous = parentOf.get(node.id);
+    if (previous !== undefined && previous !== parentId) {
+      detach(node.id, previous);
+    }
+    parentOf.set(node.id, parentId);
     let kids = kidsOf.get(parentId);
     if (kids === undefined) {
       kids = new Set();
@@ -149,13 +164,11 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
 
   /** Forget a removed node, everything under it, and any open iframe among them. */
   const forget = (id: number, parentId: number): void => {
-    const siblings = kidsOf.get(parentId);
-    if (siblings?.delete(id) && siblings.size === 0) {
-      kidsOf.delete(parentId);
-    }
+    detach(id, parentOf.get(id) ?? parentId);
     const stack = [id];
     for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
       ownerOf.delete(next);
+      parentOf.delete(next);
       openIframes.delete(next);
       for (const kid of kidsOf.get(next) ?? []) {
         stack.push(kid);
@@ -303,6 +316,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       openIframes.clear();
       ownerOf.clear();
       kidsOf.clear();
+      parentOf.clear();
       const node = (raw.data as { node?: SNode } | null | undefined)?.node;
       if (typeof node === 'object' && node !== null) {
         scan(node);
@@ -359,6 +373,6 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       return undefined;
     }
   };
-  guard.tracked = (): number => openIframes.size + ownerOf.size + kidsOf.size;
+  guard.tracked = (): number => openIframes.size + ownerOf.size + kidsOf.size + parentOf.size;
   return guard;
 }
