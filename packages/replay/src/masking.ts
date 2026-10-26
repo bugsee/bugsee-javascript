@@ -4,7 +4,8 @@
 //
 // Defaults (all opt-OUT, never opt-in): mask ALL text, mask ALL inputs, block ALL media. Sensitive inputs
 // (password / tel / credit-card / one-time-code) are ALWAYS masked — a hard floor that no option and no DOM
-// marking can lift. Iframes are blocked (a placeholder, contents never recorded). Bugsee-namespaced DOM
+// marking can lift. Iframes are blocked: a placeholder, and the recorder never enters their document (the fork's
+// blocked-iframe fix; `iframe-guard.ts` removes anything of a blocked iframe that still reaches `emit`). Bugsee-namespaced DOM
 // conventions (`.bugsee-mask`/`[data-bugsee-mask]`, `.bugsee-block`, `.bugsee-ignore`) are additive to
 // rrweb's `rr-*` defaults.
 //
@@ -37,7 +38,9 @@ import {
 import type { recordOptions } from '@bugsee/rrweb';
 
 /** Media/embedded elements blocked (rendered as same-size placeholders, contents not recorded) when
- * `blockAllMedia`. Includes `iframe` — iframes are never recorded. */
+ * `blockAllMedia`. Includes `iframe`: a blocked iframe is a placeholder and its document is never recorded
+ * (same-origin or not; see `iframe-guard.ts`). `.bugsee-show` on an iframe opts it back in, and its content is then
+ * recorded under the normal masking rules. */
 export const MEDIA_SELECTOR = 'img,svg,image,video,audio,object,picture,embed,map,source,iframe';
 
 /** All `<canvas>` elements — blocked (placeholder, contents not recorded) when `blockAllCanvas`, so canvas

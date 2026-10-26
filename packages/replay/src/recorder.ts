@@ -9,6 +9,7 @@
 import { type BlackoutGate, type CaptureProvider, CaptureProviderBase } from '@bugsee/core';
 import { sanitizeLocationUrl } from '@bugsee/protocol';
 import type { eventWithTime, listenerHandler, recordOptions } from '@bugsee/rrweb';
+import { createIframeGuard } from './iframe-guard';
 import type { ResolvedReplayMasking } from './masking';
 
 /** The rrweb `record` function shape (from `@bugsee/rrweb`). */
@@ -100,6 +101,9 @@ export interface ReplayRecorder extends CaptureProvider {
  */
 export const MAX_CANVAS_STARTS = 4;
 
+/** rrweb's default `blockClass` (the recorder is not given another). */
+const RRWEB_DEFAULT_BLOCK_CLASS = 'rr-block';
+
 /** rrweb `EventType.Custom`. */
 const CUSTOM_EVENT_TYPE = 5;
 /**
@@ -187,21 +191,50 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
 
   #begin(): void {
     const session = this.#session;
-    this.#stop = this.#record({
+    // One guard per recording session (rrweb ids are only meaningful within one): blocked-iframe content the
+    // recorder should never have emitted is removed before capture (see iframe-guard.ts).
+    const guard = createIframeGuard({
+      blockSelector: this.#masking.blockSelector,
+      unblockSelector: this.#masking.unblockSelector,
+      blockClass: RRWEB_DEFAULT_BLOCK_CLASS,
+      onViolation: (error) => {
+        // `onError` is host code: a throw must never reach the recorder.
+        try {
+          this.#onError?.(error);
+        } catch {
+          /* a throwing sink is the host's problem, never the recording's */
+        }
+      },
+    });
+    const stop = this.#record({
       ...this.#masking,
       // Opt-in canvas options (recordCanvas / sampling.canvas / dataURLOptions); nothing when DOM-only.
       ...this.#canvasForThisStart(),
       checkoutEveryNms: this.#checkoutEveryNms,
-      // Cross-origin iframes are never recorded (privacy); same-origin iframes are blocked via the masking
-      // blockSelector (fail-closed).
+      // Cross-origin iframes are never recorded (privacy). Same-origin iframes are blocked via the masking
+      // blockSelector: the recorder serializes a blocked iframe as a placeholder and never enters its document
+      // (the Bugsee rrweb fork, `bugsee-port-2.2.0-iframe-block`), and the guard above removes anything of a
+      // blocked iframe that reaches `emit` regardless (fail-closed, independent of the recorder).
       recordCrossOriginIframes: false,
       emit: (event) => {
         // Blackout suspends VISUAL capture only (see startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
-          this.capture('replay', event.timestamp, withSafeHref(event));
+          const safe = guard(event);
+          // The guard's report goes to host code, which may have started a blackout (or stopped the recorder)
+          // in the meantime: whatever the guard let through is dropped then too.
+          if (safe !== undefined && session === this.#session && !this.#blackedOut) {
+            this.capture('replay', safe.timestamp, withSafeHref(safe));
+          }
         }
       },
     });
+    // rrweb emits its opening Meta + FullSnapshot before `record()` returns: if a report made by the guard on
+    // them ended this session (a blackout, stop()), nothing was holding the handle yet, so stop it here.
+    if (session === this.#session) {
+      this.#stop = stop;
+    } else {
+      stop?.();
+    }
   }
 
   #halt(): void {

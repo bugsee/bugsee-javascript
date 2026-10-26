@@ -36,7 +36,11 @@ function fakeInit() {
 }
 
 const evt = (timestamp: number): eventWithTime =>
-  ({ type: 3, data: { source: 0 }, timestamp }) as unknown as eventWithTime;
+  ({
+    type: 3,
+    data: { source: 0, adds: [], texts: [], attributes: [], removes: [] },
+    timestamp,
+  }) as unknown as eventWithTime;
 
 const meta = (href: unknown): eventWithTime =>
   ({ type: 4, data: { href, width: 1, height: 2 }, timestamp: 5 }) as unknown as eventWithTime;
@@ -125,7 +129,7 @@ describe('createReplayCaptureProvider', () => {
     provider.start(options());
     const plain = evt(1);
     const noHref = meta(undefined);
-    const notMeta = { type: 3, data: { href: 'https://a.com/?code=C' }, timestamp: 2 } as never;
+    const notMeta = { type: 5, data: { href: 'https://a.com/?code=C' }, timestamp: 2 } as never;
     emit(plain);
     emit(noHref);
     emit(notMeta);
@@ -392,7 +396,12 @@ describe('createReplayCaptureProvider', () => {
         let first = true;
         const record: ReplayRecordFn = vi.fn((o) => {
           // A real recorder emits its opening Meta + FullSnapshot synchronously from record().
-          if (!first) (o.emit as (e: eventWithTime) => void)({ type: 2, timestamp: 9 } as never);
+          if (!first)
+            (o.emit as (e: eventWithTime) => void)({
+              type: 2,
+              timestamp: 9,
+              data: { node: { id: 1, type: 0, childNodes: [] } },
+            } as never);
           first = false;
           return vi.fn();
         });
@@ -573,5 +582,198 @@ describe('createReplayCaptureProvider', () => {
     expect(o?.recordCanvas).toBeUndefined();
     expect(o?.sampling).toBeUndefined();
     expect(o?.dataURLOptions).toBeUndefined();
+  });
+});
+
+describe('createReplayCaptureProvider — blocked-iframe guard on the emit path', () => {
+  const frameSnapshot = (leak: string, withDoc = true) =>
+    ({
+      type: 2,
+      timestamp: 10,
+      data: {
+        node: {
+          id: 1,
+          type: 0,
+          childNodes: [
+            {
+              id: 2,
+              type: 2,
+              tagName: 'iframe',
+              attributes: { rr_width: '1px', rr_height: '1px' },
+              childNodes: withDoc ? [{ id: 3, type: 3, textContent: leak }] : [],
+            },
+          ],
+        },
+        initialOffset: { top: 0, left: 0 },
+      },
+    }) as unknown as eventWithTime;
+
+  const started = (onError?: (e: unknown) => void) => {
+    const f = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+      ...(onError !== undefined ? { onError } : {}),
+    });
+    provider.init(init);
+    provider.start(options());
+    return { f, provider, added };
+  };
+
+  it('captures a blocked iframe as a placeholder even if the recorder emitted its content, and reports once', () => {
+    const onError = vi.fn();
+    const { f, added } = started(onError);
+    f.emit(frameSnapshot('LEAK-ONE'));
+    f.emit({
+      type: 3,
+      timestamp: 11,
+      data: {
+        source: 0,
+        isAttachIframe: true,
+        adds: [{ parentId: 2, nextId: null, node: { id: 4, type: 0, childNodes: [] } }],
+        texts: [],
+        attributes: [],
+        removes: [],
+      },
+    } as unknown as eventWithTime);
+    f.emit({
+      type: 3,
+      timestamp: 12,
+      data: { source: 5, id: 4, text: 'LEAK-TWO', isChecked: false },
+    } as unknown as eventWithTime);
+    expect(JSON.stringify(added)).not.toContain('LEAK');
+    expect(added).toHaveLength(1); // the (stripped) snapshot; the attach and the input were dropped
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing onError sink does not stop the stream', () => {
+    const { f, added } = started(() => {
+      throw new Error('sink');
+    });
+    expect(() => f.emit(frameSnapshot('LEAK'))).not.toThrow();
+    expect(added).toHaveLength(1);
+  });
+
+  it('works without an onError sink', () => {
+    const { f, added } = started();
+    f.emit(frameSnapshot('LEAK'));
+    expect(JSON.stringify(added)).not.toContain('LEAK');
+  });
+
+  it('does not touch a clean stream (the captured event is the emitted one)', () => {
+    const { f, added } = started();
+    const clean = frameSnapshot('x', false);
+    f.emit(clean);
+    expect(added[0]?.data).toBe(clean);
+  });
+
+  it('starts every recording session with a fresh guard (a restart forgets the previous ids)', () => {
+    const onError = vi.fn();
+    const { f, provider } = started(onError);
+    f.emit(frameSnapshot('LEAK'));
+    provider.checkout();
+    f.emit(frameSnapshot('LEAK'));
+    expect(onError).toHaveBeenCalledTimes(2); // once per session, not once per provider
+  });
+
+  it('hands the resolved block rules (not just the placeholder marker) to the guard', () => {
+    const frame = (attributes: Record<string, unknown>) =>
+      ({
+        type: 2,
+        timestamp: 10,
+        data: {
+          node: {
+            id: 1,
+            type: 2,
+            tagName: 'iframe',
+            attributes,
+            childNodes: [{ id: 2, type: 3, textContent: 'LEAK' }],
+          },
+        },
+      }) as unknown as eventWithTime;
+    const run = (attributes: Record<string, unknown>, blockAllMedia = true) => {
+      const f = fakeRecord();
+      const { init, added } = fakeInit();
+      const provider = createReplayCaptureProvider({
+        record: f.record,
+        masking: resolveReplayMaskingOptions({ blockAllMedia }),
+      });
+      provider.init(init);
+      provider.start(options());
+      f.emit(frame(attributes));
+      return JSON.stringify(added);
+    };
+    expect(run({})).not.toContain('LEAK'); // the resolved blockSelector covers iframes
+    expect(run({ class: 'rr-block' })).not.toContain('LEAK'); // rrweb's default block class
+    expect(run({ class: 'bugsee-show' })).toContain('LEAK'); // the resolved unblockSelector opts it back in
+    // media blocking off: a plain iframe is recorded, but rrweb's default block class still blocks one
+    expect(run({}, false)).toContain('LEAK');
+    expect(run({ class: 'rr-block' }, false)).not.toContain('LEAK');
+  });
+
+  it('a report that starts a blackout also stops the event that triggered it from being captured', () => {
+    const holder: { provider?: ReturnType<typeof createReplayCaptureProvider> } = {};
+    const f = fakeRecord();
+    const { init, added } = fakeInit();
+    holder.provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+      onError: () => holder.provider?.startBlackout(),
+    });
+    holder.provider.init(init);
+    holder.provider.start(options());
+    f.emit(frameSnapshot('LEAK'));
+    expect(real(added)).toEqual([]);
+    expect(JSON.stringify(added)).not.toContain('LEAK');
+  });
+
+  it('a report that stops the recorder also stops the event that triggered it from being captured', () => {
+    const holder: { provider?: ReturnType<typeof createReplayCaptureProvider> } = {};
+    const f = fakeRecord();
+    const { init, added } = fakeInit();
+    holder.provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+      onError: () => holder.provider?.stop(),
+    });
+    holder.provider.init(init);
+    holder.provider.start(options());
+    f.emit(frameSnapshot('LEAK'));
+    expect(added).toEqual([]);
+  });
+
+  it('a report during the opening snapshot (before record() returned) that starts a blackout still stops that recorder', () => {
+    const holder: { provider?: ReturnType<typeof createReplayCaptureProvider> } = {};
+    const stop = vi.fn();
+    const record: ReplayRecordFn = vi.fn((o) => {
+      // rrweb emits its opening Meta + FullSnapshot synchronously, before record() returns
+      (o.emit as (e: eventWithTime) => void)(frameSnapshot('LEAK'));
+      return stop;
+    });
+    const { init, added } = fakeInit();
+    holder.provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+      onError: () => holder.provider?.startBlackout(),
+    });
+    holder.provider.init(init);
+    holder.provider.start(options());
+    expect(stop).toHaveBeenCalledTimes(1); // the handle of the recorder whose session already ended is not lost
+    expect(JSON.stringify(added)).not.toContain('LEAK');
+  });
+
+  it('the handle of a live recorder is kept (stop() on the provider stops it)', () => {
+    const f = fakeRecord();
+    const { init } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record: f.record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    expect(f.stop).not.toHaveBeenCalled();
+    provider.stop();
+    expect(f.stop).toHaveBeenCalledTimes(1);
   });
 });
