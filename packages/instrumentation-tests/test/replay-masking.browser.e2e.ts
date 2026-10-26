@@ -471,6 +471,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         await mountRecorded(true, '');
         await start(mode, { maskAllText: false, blockAllMedia: false });
         await settle(400);
+        expect(await dump()).toContain('FRAME1_SECRET_TEXT'); // recorded while allowed (control)
         await page.evaluate(() =>
           (document.getElementById('wrap') as HTMLElement).classList.add('bugsee-block'),
         );
