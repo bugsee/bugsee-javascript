@@ -24,7 +24,10 @@
 // A full snapshot starts from a clean slate. Cost: one pass over the nodes of each snapshot/added subtree and
 // set lookups per event. Memory: the guard remembers the attributes of each recorded iframe and the ids of the
 // nodes attached under it, and forgets removed subtrees, so it holds what those iframes hold now; the tainted
-// set only grows while the recorder is misbehaving.
+// set only grows while the recorder is misbehaving. One gap is accepted: the ancestors of an iframe that was added
+// AFTER the snapshot arrive as separate flat `adds` entries and are not tracked, so removing such a container does
+// not forget the iframe's entries; they are released by the next full snapshot (the recorder takes one every
+// `checkoutEveryNms`, 60 s by default), which bounds them by the churn of one checkout window.
 //
 // LIMITS (what this does NOT cover):
 //   - it relies on rrweb's event shapes (ids, `isAttachIframe`, node trees); an event shape it does not know
@@ -137,9 +140,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   };
 
   /** Remember that every node of `node` lives in the document attached to the open iframe `owner`. */
-  const detach = (id: number, parentId: number | undefined): void => {
-    const siblings = parentId === undefined ? undefined : kidsOf.get(parentId);
-    if (parentId !== undefined && siblings?.delete(id) && siblings.size === 0) {
+  /** Take `id` out of its parent's children. */
+  const detach = (id: number, parentId: number): void => {
+    const siblings = kidsOf.get(parentId);
+    if (siblings?.delete(id) && siblings.size === 0) {
       kidsOf.delete(parentId);
     }
   };

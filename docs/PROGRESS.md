@@ -1273,7 +1273,8 @@ recorded" was false.
   reclassified on its merged attributes and everything under it (nested iframes too) is tainted from then on.
   LIMITS: relies on rrweb event shapes (an unknown shape passes unchanged, it only ever
   removes iframe content); an iframe blocked by a rule on an ANCESTOR is recognised only through the placeholder
-  marker; it cannot know that a non-iframe node should have been blocked; any internal error drops the event.
+  marker; the iframe entries of an iframe added after the snapshot are released by the next full snapshot (not by
+  removing a container of it); it cannot know that a non-iframe node should have been blocked; any internal error drops the event.
 - **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
   (headless Chromium, runs in `test:e2e`/CI) — iframes (default, `.bugsee-block`, `maskAllText:false`, explicitly
   unblocked, navigate/edit/remove/re-add), shadow DOM (remove/re-add, nested, moved, attached detached),
