@@ -10,6 +10,8 @@ type Mode = 'raw' | 'provider';
 
 interface Controller {
   events: unknown[];
+  /** What the provider reported through `onError` (provider mode). */
+  errors: string[];
   start(mode: Mode, options: Record<string, unknown>): void;
   stop(): void;
   startBlackout(): void;
@@ -36,6 +38,7 @@ function startRaw(): void {
 
 w.__rm = {
   events: [],
+  errors: [],
   start(nextMode, nextOptions) {
     mode = nextMode;
     options = nextOptions;
@@ -46,6 +49,9 @@ w.__rm = {
     provider = createReplayCaptureProvider({
       record: record as never,
       masking: resolveReplayMaskingOptions(options),
+      onError: (error) => {
+        w.__rm.errors.push(String(error));
+      },
     });
     provider.init({
       captureAggregator: {

@@ -220,7 +220,9 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
         // Blackout suspends VISUAL capture only (see startBlackout); a stale session is dead.
         if (session === this.#session && !this.#blackedOut) {
           const safe = guard(event);
-          if (safe !== undefined) {
+          // The guard's report goes to host code, which may have started a blackout (or stopped the recorder)
+          // in the meantime: whatever the guard let through is dropped then too.
+          if (safe !== undefined && session === this.#session && !this.#blackedOut) {
             this.capture('replay', safe.timestamp, withSafeHref(safe));
           }
         }

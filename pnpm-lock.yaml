@@ -1175,8 +1175,8 @@ importers:
         version: 2.2.0
     devDependencies:
       '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#6a2ba728c2265a42d8837b2ac4ff51e13c883c13
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/6a2ba728c2265a42d8837b2ac4ff51e13c883c13(@rrweb/types@2.2.0)(rrweb@2.2.0)
+        specifier: github:bugsee/rrweb#987d0765a76607f81767b3bde2d65a8382caf7fa
+        version: https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa(@rrweb/types@2.2.0)(rrweb@2.2.0)
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -1862,8 +1862,8 @@ packages:
     deprecated: Exits 0 when the binary is killed by a signal. Upgrade to 0.8.2 or use @bugsee/cli.
     hasBin: true
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/6a2ba728c2265a42d8837b2ac4ff51e13c883c13':
-    resolution: {gitHosted: true, integrity: sha512-3LnWrRQpJClzr7xFJ4XCc8+3l0MKsJJ2TtzjolZ3aaERGNuvUiXspLqSLaUSRlTGTCBSQ28Q+OCXfI6oG3dCBw==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/6a2ba728c2265a42d8837b2ac4ff51e13c883c13}
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa':
+    resolution: {gitHosted: true, integrity: sha512-a7Z4HHZO2VwFgIHQxWC96i4fuyaSY3RZz+M6goeXeKZHiDmIrUxo29u4wdXQdOyCQcyMmPptwgZADGZbxGcWlw==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa}
     version: 2.2.0
     peerDependencies:
       '@rrweb/types': ^2.2.0
@@ -11183,7 +11183,7 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/6a2ba728c2265a42d8837b2ac4ff51e13c883c13(@rrweb/types@2.2.0)(rrweb@2.2.0)':
+  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa(@rrweb/types@2.2.0)(rrweb@2.2.0)':
     optionalDependencies:
       '@rrweb/types': 2.2.0
       rrweb: 2.2.0

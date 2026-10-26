@@ -19,7 +19,9 @@
 //      style, selection, pointer positions) is dropped or has the tainted entries filtered out;
 //   3b. an iframe that is recorded and then BECOMES blocked (an attribute mutation: a class, `rr_width`, ...) is
 //      reclassified on its merged attributes; everything attached under it (nested iframes included) is tainted
-//      from then on;
+//      from then on. The recorder announces it: when an attached iframe becomes blocked it emits a placeholder
+//      marker (`rr_width`/`rr_height`) on the iframe, which is what reaches this guard (rrweb drops the class change
+//      itself, because the iframe is blocked by then);
 //   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not.
 // A full snapshot starts from a clean slate. Cost: one pass over the nodes of each snapshot/added subtree and
 // set lookups per event. Memory: the guard remembers the attributes of each recorded iframe and the ids of the
@@ -30,14 +32,19 @@
 // `checkoutEveryNms`, 60 s by default), which bounds them by the churn of one checkout window.
 //
 // LIMITS (what this does NOT cover):
-//   - it relies on rrweb's event shapes (ids, `isAttachIframe`, node trees); an event shape it does not know
-//     passes through unchanged. It only ever REMOVES iframe content, it never adds or rewrites anything else;
-//   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's
-//     job and has its own tests (see the real-browser masking e2e);
-//   - an iframe that is blocked by a rule on an ANCESTOR (not on the iframe itself) is only recognised through
-//     the recorder's placeholder marker: serialized ancestors are not consulted;
-//   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip;
-//   - a malformed event, or any error inside the guard, DROPS the event (fail closed) and is reported.
+//   - it reads rrweb's event shapes (ids, `isAttachIframe`, node trees). An event it cannot read (a snapshot
+//     without a node tree, a mutation without its four lists, an id-carrying event without a numeric id, ...) is
+//     DROPPED and reported, as is anything that makes the guard itself throw; events that carry no node at all
+//     (meta, custom, viewport, log) pass. It only ever REMOVES iframe content, it never rewrites anything else;
+//   - Font (10) and CustomElement (16) events name no node, so the guard cannot attribute them to an iframe: for
+//     those the recorder's own emit-time gate is the only protection;
+//   - an iframe that is blocked by a rule on an ANCESTOR is recognised through the recorder's placeholder marker
+//     (rr_width/rr_height, emitted when an attached iframe or a container of it becomes blocked), never through
+//     the serialized ancestors. Against a recorder that does not emit that marker (the previous pins) the guard
+//     only protects iframes that were blocked from the start;
+//   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's job and
+//     has its own tests (see the real-browser masking e2e);
+//   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip.
 import type { eventWithTime } from '@bugsee/rrweb';
 
 export interface IframeGuardOptions {
@@ -81,7 +88,26 @@ const INCREMENTAL_SNAPSHOT = 3;
 const SINGLE_ID_SOURCES = new Set([2, 3, 5, 7, 8, 9, 13, 15]);
 const POSITION_SOURCES = new Set([1, 6, 12]); // MouseMove, TouchMove, Drag
 const MUTATION = 0;
+const STYLE_SHEET_RULE = 8;
+const STYLE_DECLARATION = 13;
 const SELECTION = 14;
+const ADOPTED_STYLE_SHEET = 15;
+
+/** The style sheet ids an adopted-style-sheet event names (`styleIds`, and the `styles` it defines). */
+function styleIdsOf(data: Record<string, unknown>): number[] {
+  const ids: number[] = [];
+  if (Array.isArray(data.styleIds)) {
+    for (const id of data.styleIds) {
+      if (typeof id === 'number') ids.push(id);
+    }
+  }
+  if (Array.isArray(data.styles)) {
+    for (const style of data.styles as Array<{ styleId?: unknown }>) {
+      if (typeof style?.styleId === 'number') ids.push(style.styleId);
+    }
+  }
+  return ids;
+}
 
 export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const blockedIframes = new Set<number>();
@@ -97,6 +123,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   // The current parent of every owned node: a node that is MOVED (re-added under another parent without a
   // removal) must leave its old parent's children, or removing the old parent would forget it.
   const parentOf = new Map<number, number>();
+  // Adopted style sheets: the iframe each belongs to (so a later block taints it), and the tainted ones. A style
+  // sheet event for an adopted sheet names it by `styleId` only.
+  const styleOwner = new Map<number, number>();
+  const taintedStyles = new Set<number>();
   let reported = false;
 
   const report = (message: string): void => {
@@ -139,7 +169,6 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     return 'rr_width' in attributes || 'rr_height' in attributes || blockedByRules(attributes);
   };
 
-  /** Remember that every node of `node` lives in the document attached to the open iframe `owner`. */
   /** Take `id` out of its parent's children. */
   const detach = (id: number, parentId: number): void => {
     const siblings = kidsOf.get(parentId);
@@ -148,6 +177,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
   };
 
+  /** Remember that `node` and everything under it lives in the document attached to the open iframe `owner`. */
   const own = (node: SNode, owner: number, parentId: number): void => {
     ownerOf.set(node.id, owner);
     link(node.id, parentId);
@@ -171,17 +201,27 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
   };
 
+  /** Whether `owner`, or something it is nested in, is the iframe `id`. */
+  const within = (owner: number | undefined, id: number): boolean => {
+    let current = owner;
+    while (current !== undefined && current !== id) {
+      current = ownerOf.get(current);
+    }
+    return current === id;
+  };
+
   /** An open iframe turned out to be blocked: everything recorded under it (nested iframes included) is tainted. */
   const closeIframe = (id: number): void => {
     openIframes.delete(id);
     blockedIframes.add(id);
-    for (const nodeId of ownerOf.keys()) {
-      let owner = ownerOf.get(nodeId);
-      while (owner !== undefined && owner !== id) {
-        owner = ownerOf.get(owner);
-      }
-      if (owner === id) {
+    for (const [nodeId, owner] of ownerOf) {
+      if (within(owner, id)) {
         tainted.add(nodeId);
+      }
+    }
+    for (const [styleId, owner] of styleOwner) {
+      if (within(owner, id)) {
+        taintedStyles.add(styleId);
       }
     }
   };
@@ -219,11 +259,11 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       if (isBlockedIframe(node)) {
         blockedIframes.add(node.id);
         if (node.childNodes !== undefined && node.childNodes.length > 0) {
-          report('content of a blocked iframe reached the recorder output and was removed');
           for (const child of node.childNodes) {
             taint(child);
           }
           node.childNodes = [];
+          report('content of a blocked iframe reached the recorder output and was removed');
         }
         return false;
       }
@@ -237,6 +277,12 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       link(node.id, parentId);
     }
     return holdsOpenIframe;
+  };
+
+  const taintStyles = (data: Record<string, unknown>): void => {
+    for (const styleId of styleIdsOf(data)) {
+      taintedStyles.add(styleId);
+    }
   };
 
   const isTainted = (id: unknown): boolean => typeof id === 'number' && tainted.has(id);
@@ -256,7 +302,8 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       }
     }
     if (isBlockedIframe({ id, type: ELEMENT_NODE, attributes: merged })) {
-      report('an iframe that was recorded became blocked; its content is removed from now on');
+      // Not a violation by itself: the recorder says so with a placeholder marker when an app blocks an iframe.
+      // Whatever still comes out of it afterwards is removed (and reported) below.
       closeIframe(id);
     } else {
       openIframes.set(id, merged);
@@ -271,11 +318,17 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   }
 
   const guardMutation = (event: eventWithTime, data: Mut): eventWithTime | undefined => {
-    const adds = Array.isArray(data.adds) ? data.adds : [];
-    const texts = Array.isArray(data.texts) ? data.texts : [];
-    const attributes = Array.isArray(data.attributes) ? data.attributes : [];
-    const removes = Array.isArray(data.removes) ? data.removes : [];
+    const { adds, texts, attributes, removes } = data;
+    if (
+      !Array.isArray(adds) ||
+      !Array.isArray(texts) ||
+      !Array.isArray(attributes) ||
+      !Array.isArray(removes)
+    ) {
+      return malformed('a mutation event without its adds/texts/attributes/removes lists');
+    }
     let changed = false;
+    let violation = false;
     // rrweb applies removals first: forget removed subtrees before anything is (re)added under them.
     for (const removal of removes) {
       forget(removal.id, removal.parentId);
@@ -289,9 +342,9 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
     const keptAdds = adds.filter((add) => {
       if (blockedIframes.has(add.parentId) || tainted.has(add.parentId)) {
-        report('a document was attached to a blocked iframe and was removed');
         taint(add.node);
         changed = true;
+        violation = true;
         return false;
       }
       scan(add.node, add.parentId);
@@ -301,6 +354,9 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       }
       return true;
     });
+    if (violation) {
+      report('a document was attached to a blocked iframe and was removed');
+    }
     const keptTexts = texts.filter((t) => !isTainted(t.id));
     const keptAttributes = attributes.filter((a) => !isTainted(a.id));
     const keptRemoves = removes.filter((r) => !isTainted(r.id) && !isTainted(r.parentId));
@@ -327,19 +383,27 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     } as unknown as eventWithTime;
   };
 
+  const malformed = (what: string): undefined => {
+    report(`the blocked-iframe guard dropped a malformed event (${what})`);
+    return undefined;
+  };
+
   const process = (event: eventWithTime): eventWithTime | undefined => {
     const raw = event as unknown as { type: number; data: Record<string, unknown> };
     if (raw.type === FULL_SNAPSHOT) {
+      const node = (raw.data as { node?: SNode } | null | undefined)?.node;
+      if (typeof node !== 'object' || node === null) {
+        return malformed('a full snapshot without a node tree');
+      }
       blockedIframes.clear();
       tainted.clear();
       openIframes.clear();
       ownerOf.clear();
       kidsOf.clear();
       parentOf.clear();
-      const node = (raw.data as { node?: SNode } | null | undefined)?.node;
-      if (typeof node === 'object' && node !== null) {
-        scan(node, undefined);
-      }
+      styleOwner.clear();
+      taintedStyles.clear();
+      scan(node, undefined);
       return event;
     }
     if (raw.type !== INCREMENTAL_SNAPSHOT) {
@@ -347,23 +411,48 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
     const data = raw.data;
     if (typeof data !== 'object' || data === null) {
-      return event; // nothing a blocked iframe could be in
+      return malformed('an incremental event without data');
     }
     const source = data.source as number;
     if (source === MUTATION) {
       return guardMutation(event, data as Mut);
     }
     if (SINGLE_ID_SOURCES.has(source)) {
-      if (isTainted(data.id)) {
+      const id = data.id;
+      if (source === STYLE_SHEET_RULE || source === STYLE_DECLARATION) {
+        // adopted sheets are named by `styleId` alone; a sheet that belongs to a document has `id` instead
+        if (typeof data.styleId === 'number' && taintedStyles.has(data.styleId)) {
+          report('a style event from inside a blocked iframe was removed');
+          return undefined;
+        }
+        if (id === undefined && typeof data.styleId === 'number') {
+          return event;
+        }
+      }
+      if (typeof id !== 'number') {
+        return malformed(`an event of source ${source} without a node id`);
+      }
+      if (isTainted(id)) {
+        if (source === ADOPTED_STYLE_SHEET) {
+          taintStyles(data);
+        }
         report('an event from inside a blocked iframe was removed');
         return undefined;
+      }
+      if (source === ADOPTED_STYLE_SHEET) {
+        const owner = openIframes.has(id) ? id : ownerOf.get(id);
+        if (owner !== undefined) {
+          for (const styleId of styleIdsOf(data)) {
+            styleOwner.set(styleId, owner);
+          }
+        }
       }
       return event;
     }
     if (POSITION_SOURCES.has(source)) {
       const positions = data.positions as Array<{ id: number }> | undefined;
       if (!Array.isArray(positions)) {
-        return event;
+        return malformed(`an event of source ${source} without positions`);
       }
       const kept = positions.filter((p) => !isTainted(p.id));
       if (kept.length === positions.length) {
@@ -376,7 +465,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     }
     if (source === SELECTION) {
       const ranges = data.ranges as Array<{ start: number; end: number }> | undefined;
-      if (Array.isArray(ranges) && ranges.some((r) => isTainted(r.start) || isTainted(r.end))) {
+      if (!Array.isArray(ranges)) {
+        return malformed('a selection event without ranges');
+      }
+      if (ranges.some((r) => isTainted(r.start) || isTainted(r.end))) {
         report('an event from inside a blocked iframe was removed');
         return undefined;
       }
@@ -392,6 +484,12 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       return undefined;
     }
   };
-  guard.tracked = (): number => openIframes.size + ownerOf.size + kidsOf.size + parentOf.size;
+  guard.tracked = (): number =>
+    openIframes.size +
+    ownerOf.size +
+    kidsOf.size +
+    parentOf.size +
+    styleOwner.size +
+    taintedStyles.size;
   return guard;
 }

@@ -65,6 +65,14 @@ async function startPageServer(
       res.end(script);
       return;
     }
+    if (url.startsWith('/slow.css')) {
+      // a stylesheet that finishes loading well after the page asked for it
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/css' });
+        res.end('p::after{content:"LINK_SECRET_CSS"}');
+      }, 800);
+      return;
+    }
     const m = /^\/f(\d)\.html/.exec(url);
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(m ? frame(Number(m[1])) : INDEX);
@@ -85,6 +93,7 @@ type Mode = 'raw' | 'provider';
 
 type Rm = {
   events: unknown[];
+  errors: string[];
   start(mode: Mode, options: Record<string, unknown>): void;
   stop(): void;
   startBlackout(): void;
@@ -155,6 +164,9 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     'TOP_SECRET',
     'SHADOW_SECRET',
     'TYPED_SECRET',
+    'LINK_SECRET',
+    'STYLE_SECRET',
+    'LATE_SECRET',
   ];
 
   const leaks = (events: string): string[] => SECRETS.filter((s) => events.includes(s));
@@ -347,6 +359,207 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         const events = await dump();
         expect(events).toContain('TOP_CONTROL');
         expect(leaks(events)).toEqual([]);
+        await page.close();
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Iframes that are recorded and then REFUSED or RELEASED: an ancestor or the iframe itself becomes blocked while
+  // recording. These are the scenarios a review of the first version of the fix found leaking (shadow roots and
+  // adopted style sheets of a document whose iframe was blocked later, in the recorder AND past the SDK guard).
+  // ---------------------------------------------------------------------------------------------------------
+  const mountRecorded = async (wrapped: boolean, attrs: string, src = '/f1.html') => {
+    await page.evaluate(
+      async ([w, a, source]) => {
+        const mount = document.getElementById('mount') as HTMLElement;
+        mount.insertAdjacentHTML(
+          'beforeend',
+          w
+            ? `<div id="wrap"><iframe id="a" ${a} src="${source}"></iframe></div>`
+            : `<iframe id="a" ${a} src="${source}"></iframe>`,
+        );
+        const f = document.getElementById('a') as HTMLIFrameElement;
+        await new Promise((resolve) => f.addEventListener('load', resolve, { once: true }));
+      },
+      [wrapped, attrs, src] as const,
+    );
+  };
+
+  const shadowIn = (value: string) =>
+    page.evaluate((v) => {
+      const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+      const host = d.getElementById('ft') as HTMLElement;
+      const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
+      const p = d.createElement('p');
+      p.textContent = v;
+      root.appendChild(p);
+    }, value);
+
+  const adopt = (value: string) =>
+    page.evaluate((v) => {
+      const f = document.getElementById('a') as HTMLIFrameElement;
+      const w = f.contentWindow as unknown as { CSSStyleSheet: typeof CSSStyleSheet };
+      const sheet = new w.CSSStyleSheet();
+      sheet.replaceSync(`#ft::after{content:"${v}"}`);
+      (f.contentDocument as Document).adoptedStyleSheets = [sheet];
+    }, value);
+
+  const markers = async (): Promise<number> =>
+    (
+      JSON.parse(await dump()) as Array<{
+        type: number;
+        data: { source?: number; attributes?: Array<{ attributes: object }> };
+      }>
+    ).filter(
+      (e) =>
+        e.type === 3 &&
+        e.data.source === 0 &&
+        e.data.attributes?.length === 1 &&
+        'rr_width' in (e.data.attributes[0]?.attributes ?? {}),
+    ).length;
+
+  for (const mode of ['raw', 'provider'] as const) {
+    describe(`mode: ${mode} — refused or released after recording`, () => {
+      it('an ancestor becomes blocked, the iframe navigates, a shadow root is attached in it', async () => {
+        await open();
+        await mountRecorded(true, 'class="bugsee-show"');
+        await start(mode, { maskAllText: false });
+        await settle(400);
+        const before = await dump();
+        expect(before).toContain('FRAME1_SECRET_TEXT'); // recorded while allowed (control)
+        await page.evaluate(() =>
+          (document.getElementById('wrap') as HTMLElement).classList.add('bugsee-block'),
+        );
+        await settle();
+        await navigate('a', 2);
+        await settle(300);
+        await shadowIn('SHADOW_SECRET_LATE_A');
+        await settle(300);
+        await shadowIn('SHADOW_SECRET_LATE_A2');
+        await settle(300);
+        const events = await dump();
+        expect(events).not.toContain('SHADOW_SECRET_LATE');
+        expect(events).not.toContain('FRAME2_SECRET');
+        expect(await markers()).toBe(1);
+        await page.close();
+      });
+
+      it('the same with blockAllMedia off and no class on the iframe at all', async () => {
+        await open();
+        await mountRecorded(true, '');
+        await start(mode, { maskAllText: false, blockAllMedia: false });
+        await settle(400);
+        await page.evaluate(() =>
+          (document.getElementById('wrap') as HTMLElement).classList.add('bugsee-block'),
+        );
+        await settle();
+        await navigate('a', 2);
+        await settle(300);
+        await shadowIn('SHADOW_SECRET_LATE_B');
+        await settle(300);
+        await shadowIn('SHADOW_SECRET_LATE_B2');
+        await settle(300);
+        const events = await dump();
+        expect(events).not.toContain('SHADOW_SECRET_LATE');
+        expect(events).not.toContain('FRAME2_SECRET');
+        await page.close();
+      });
+
+      it('an ancestor becomes blocked, then the iframe document adopts a style sheet', async () => {
+        await open();
+        await mountRecorded(true, 'class="bugsee-show"');
+        await start(mode, { maskAllText: false });
+        await settle(400);
+        await adopt('STYLE_SECRET_EARLY'); // allowed so far: recorded (control)
+        await settle(300);
+        expect(await dump()).toContain('STYLE_SECRET_EARLY');
+        await page.evaluate(() =>
+          (document.getElementById('wrap') as HTMLElement).classList.add('bugsee-block'),
+        );
+        await settle();
+        await adopt('STYLE_SECRET_LATE');
+        await settle(300);
+        expect(await dump()).not.toContain('STYLE_SECRET_LATE');
+        await page.close();
+      });
+
+      it("the iframe's own .bugsee-show is removed, then it adopts a style sheet and its text/inputs change", async () => {
+        await open();
+        await mountRecorded(false, 'class="bugsee-show"');
+        await start(mode, { maskAllText: false, maskAllInputs: false });
+        await settle(400);
+        await page.evaluate(() =>
+          (document.getElementById('a') as HTMLElement).classList.remove('bugsee-show'),
+        );
+        await settle();
+        await adopt('STYLE_SECRET_LATE_C');
+        await page.evaluate(() => {
+          const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+          (d.getElementById('ft') as HTMLElement).textContent = 'LATE_SECRET_TEXT';
+          const i = d.getElementById('fi') as HTMLInputElement;
+          i.value = 'TYPED_SECRET_LATE';
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await settle(400);
+        const events = await dump();
+        expect(events).not.toContain('STYLE_SECRET_LATE_C');
+        expect(events).not.toContain('LATE_SECRET_TEXT');
+        expect(events).not.toContain('TYPED_SECRET_LATE');
+        expect(await markers()).toBe(1);
+        await page.close();
+      });
+
+      it('iframe becomes blocked after recording: text, input, adopted sheet, shadow DOM and a stylesheet link', async () => {
+        await open();
+        await mountRecorded(false, 'class="bugsee-show"');
+        await start(mode, { maskAllText: false, maskAllInputs: false });
+        await settle(400);
+        // a stylesheet link that is still loading when the iframe becomes blocked
+        await page.evaluate(() => {
+          const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+          const link = d.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = '/slow.css';
+          d.head.appendChild(link);
+        });
+        await settle(200);
+        // while it is allowed everything is recorded (the control that makes the rest meaningful)
+        await page.evaluate(() => {
+          const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+          (d.getElementById('ft') as HTMLElement).textContent = 'EARLY_TEXT_OK';
+        });
+        await adopt('STYLE_EARLY_OK');
+        await settle(300);
+        const early = await dump();
+        expect(early).toContain('EARLY_TEXT_OK');
+        expect(early).toContain('STYLE_EARLY_OK');
+
+        await page.evaluate(() =>
+          (document.getElementById('a') as HTMLElement).classList.remove('bugsee-show'),
+        );
+        await page.evaluate(() => {
+          const d = (document.getElementById('a') as HTMLIFrameElement).contentDocument as Document;
+          (d.getElementById('ft') as HTMLElement).textContent = 'LATE_SECRET_TEXT';
+          const i = d.getElementById('fi') as HTMLInputElement;
+          i.value = 'TYPED_SECRET_LATE';
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+          d.dispatchEvent(new Event('scroll'));
+        });
+        await adopt('STYLE_SECRET_LATE_E');
+        await shadowIn('SHADOW_SECRET_LATE_E');
+        await settle(1500); // the link finishes loading now
+        const events = await dump();
+        for (const secret of [
+          'LATE_SECRET_TEXT',
+          'TYPED_SECRET_LATE',
+          'STYLE_SECRET_LATE_E',
+          'SHADOW_SECRET_LATE_E',
+          'LINK_SECRET_CSS',
+        ]) {
+          expect(events).not.toContain(secret);
+        }
+        expect(await markers()).toBe(1);
         await page.close();
       });
     });
