@@ -86,7 +86,9 @@ function fakeElectron() {
 
   class Window extends Emitter {
     gone = false;
+    contentsGone = false;
     visible = true;
+    readonly contentsListeners = new Map<string, Array<() => void>>();
     readonly webContents: {
       id: number;
       send(channel: string, raw: string): void;
@@ -104,8 +106,13 @@ function fakeElectron() {
         send: (channel, raw) => {
           for (const l of this.rendererListeners.get(channel) ?? []) l({}, raw);
         },
-        once: () => {},
-        isDestroyed: () => this.gone,
+        once: (event, listener) => {
+          this.contentsListeners.set(event, [
+            ...(this.contentsListeners.get(event) ?? []),
+            listener,
+          ]);
+        },
+        isDestroyed: () => this.contentsGone,
       };
     }
     isDestroyed = () => this.gone;
@@ -117,7 +124,13 @@ function fakeElectron() {
       focused = this;
       this.emit('focus');
     }
+    /**
+     * Real Electron 44 order when a window closes: the webContents fires `destroyed` FIRST, while the window is still
+     * listed, not destroyed and (if it was) still the focused one; only then does the window fire `closed`.
+     */
     close(): void {
+      this.contentsGone = true;
+      for (const l of this.contentsListeners.get('destroyed') ?? []) l();
       this.gone = true;
       if (focused === this) focused = null;
       this.emit('closed');
@@ -263,12 +276,28 @@ describe('per-window traces: only the key window writes them (C26)', () => {
     await client.stop();
   });
 
-  it('closing the key window hands the key to the next one, whose address is re-recorded', async () => {
+  it("closing the key window hands the key on without a spurious all-key moment: only the next window's address is re-recorded", async () => {
     const electron = fakeElectron();
     const { client, puts } = launch(electron);
     const w1 = await bootWindow(electron, 'https://app.test/one');
     await bootWindow(electron, 'https://app.test/two');
+    await bootWindow(electron, 'https://app.test/three');
+    await bootWindow(electron, 'https://app.test/four');
     w1.win.focus();
+    w1.win.close(); // destroyed fires before closed: nobody may be told "key" in between
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one', 'https://app.test/two']);
+    await client.stop();
+  });
+
+  it('a key window whose renderer process crashes (render-process-gone) hands the key on the same way', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const w1 = await bootWindow(electron, 'https://app.test/one');
+    await bootWindow(electron, 'https://app.test/two');
+    await bootWindow(electron, 'https://app.test/three');
+    w1.win.focus();
+    electron.app.emit('render-process-gone', w1.win.webContents, { reason: 'crashed' });
     w1.win.close();
     await client.logException(new Error('report'));
     expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one', 'https://app.test/two']);

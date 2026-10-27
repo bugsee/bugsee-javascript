@@ -144,36 +144,40 @@ export function createElectronMainControl(
   // instrumented window, so the key falls back to this one while it still hosts a renderer.
   let lastParticipatingKey: number | undefined;
   /**
-   * The window whose renderer is key: the real key window when it hosts a registered renderer, else the last one that did
-   * (while it still does), else null (cannot say: everyone is key). `undefined` only when there is no key window at all.
+   * ONE evaluation of "which renderer is key", from a single snapshot (the key is read once and each renderer's owner window
+   * once, so a re-evaluation costs a linear number of probe calls). Returns `isKey(sender)`.
+   *
+   * The key window is the real one when it hosts a registered renderer; else the last window that did (while it still does);
+   * else the window of the EARLIEST registered renderer, so a key window whose renderer is gone (webContents `destroyed` fires
+   * before the window's `closed`; a crash) hands the key to ONE window rather than telling everyone they are key. `undefined`:
+   * no key window at all. `null`: the probe cannot say (everyone is key). A renderer whose window cannot be resolved is
+   * never silenced (key). A failing probe is reported and fails OPEN.
    */
-  const effectiveKey = (
+  const evaluate = (
     probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
-  ): number | undefined | null => {
-    const key = probe.currentId();
-    if (key === null || key === undefined) return key;
-    const hosts = (id: number): boolean =>
-      [...renderers].some((r) => r.isDestroyed?.() !== true && probe.ownerId(r) === id);
-    if (hosts(key)) lastParticipatingKey = key;
-    else if (lastParticipatingKey === undefined || !hosts(lastParticipatingKey)) return null;
-    else return lastParticipatingKey;
-    return key;
-  };
-  /** Whether `sender`'s window is the key window now. A failing probe is reported and fails OPEN (true). */
-  const isKey = (
-    probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
-    sender: ControlSenderLike,
-  ): boolean => {
+  ): ((sender: ControlSenderLike) => boolean) => {
     try {
-      const owner = probe.ownerId(sender);
-      // a renderer whose window cannot be resolved (a view with no owner, an Electron that cannot say) is never silenced:
-      // an unplaceable renderer is key, which at worst interleaves in that rare case instead of dropping its traces all session
-      if (owner === undefined) return true;
-      const key = effectiveKey(probe);
-      return key === null || owner === key;
+      const owners = new Map<ControlSenderLike, number | undefined>();
+      for (const r of renderers) if (r.isDestroyed?.() !== true) owners.set(r, probe.ownerId(r));
+      const hosts = (id: number | undefined): boolean =>
+        id !== undefined && [...owners.values()].includes(id);
+      const current = probe.currentId();
+      let key: number | undefined | null = current;
+      if (current !== null && current !== undefined) {
+        if (hosts(current)) lastParticipatingKey = current;
+        else if (hosts(lastParticipatingKey)) key = lastParticipatingKey;
+        else {
+          lastParticipatingKey = [...owners.values()].find((id) => id !== undefined);
+          key = lastParticipatingKey ?? null;
+        }
+      }
+      return (sender) => {
+        const owner = owners.has(sender) ? owners.get(sender) : probe.ownerId(sender);
+        return owner === undefined || key === null || owner === key;
+      };
     } catch (error) {
       reportGuarded(options.onError, error);
-      return true;
+      return () => true;
     }
   };
 
@@ -243,7 +247,7 @@ export function createElectronMainControl(
     // Whether this renderer is the key window's: stated (and remembered, so a later change is diffed against it) only when
     // main can resolve windows at all.
     const probe = options.keyWindow;
-    const keyWindow = probe === undefined ? undefined : isKey(probe, sender);
+    const keyWindow = probe === undefined ? undefined : evaluate(probe)(sender);
     if (keyWindow !== undefined) sentKey.set(sender, keyWindow);
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(
@@ -266,13 +270,12 @@ export function createElectronMainControl(
   const rediffKey = (): void => {
     const probe = options.keyWindow;
     if (probe === undefined) return;
+    // forget the destroyed first: they must not count as participating
+    for (const sender of [...renderers]) if (sender.isDestroyed?.() === true) forget(sender);
+    const isKey = evaluate(probe);
     for (const sender of [...renderers]) {
-      if (sender.isDestroyed?.() === true) {
-        forget(sender);
-        continue;
-      }
       if (isCrashed(sender)) continue; // no frame to address; its reload's hello re-states the flag
-      const now = isKey(probe, sender);
+      const now = isKey(sender);
       if (sentKey.get(sender) === now) continue;
       sentKey.set(sender, now);
       sendTo(sender, encodeControl({ command: 'window-key', keyWindow: now }));

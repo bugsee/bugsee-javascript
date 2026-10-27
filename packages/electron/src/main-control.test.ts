@@ -430,6 +430,37 @@ describe('createElectronMainControl', () => {
         expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
       });
 
+      it("the key window's renderer going away while its window is still key (webContents `destroyed` fires BEFORE the window `closed`, or a crash) hands the key to the EARLIEST remaining renderer, never to everyone", () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2, 13: 3 }, key);
+        const a = w.join(11);
+        const b = w.join(12);
+        const c = w.join(13);
+        for (const r of [a, b, c]) r.sent.length = 0;
+        w.control.rendererGone(11); // window 1 is still the focused window, but its renderer is gone
+        expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+        expect(c.sent).toEqual([]); // window 3 stays non-key: no all-key moment, no re-record of its held values
+        expect(a.sent).toEqual([]);
+        key.id = 2; // the tracker's `closed` then moves the key on to window 2: nothing changes
+        w.control.keyWindowChanged();
+        expect([b.sent.length, c.sent.length]).toEqual([1, 0]);
+      });
+
+      it('an ownerless renderer is not a participating window: with the key on a window without an SDK the owned renderer is the one that stays key', () => {
+        const key = { id: 9 as number | undefined | null };
+        const w = world({ 11: undefined, 12: 2 }, key);
+        w.join(11);
+        expect(decoded(w.join(12))[0]?.keyWindow).toBe(true);
+      });
+
+      it('a destroyed renderer that has not been forgotten yet does not count as the participating key window', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        const a = w.join(11);
+        (a.sender as { isDestroyed?: () => boolean }).isDestroyed = () => true;
+        expect(decoded(w.join(12))[0]?.keyWindow).toBe(true); // window 1's renderer is dead: window 2 is the key
+      });
+
       it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {
         const key = { id: 9 as number | undefined | null };
         const w = world({ 11: 1 }, key);
@@ -447,6 +478,38 @@ describe('createElectronMainControl', () => {
         w.control.keyWindowChanged();
         expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]); // nobody left to prefer: open
       });
+    });
+
+    it('one re-evaluation costs a LINEAR number of probe calls (the key is computed once, not per renderer)', () => {
+      const ipc = fakeIpcMain();
+      let ownerCalls = 0;
+      let currentCalls = 0;
+      const key = { id: 1 as number | undefined | null };
+      const N = 50;
+      const control = createElectronMainControl({
+        ipcMain: ipc.ipcMain,
+        sessionId: 's1',
+        keyWindow: {
+          currentId: () => {
+            currentCalls += 1;
+            return key.id;
+          },
+          ownerId: (sender) => {
+            ownerCalls += 1;
+            return sender.id as number;
+          },
+        },
+      });
+      control.start();
+      for (let id = 1; id <= N; id++) {
+        ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: fakeSender(id).sender }, encodeHello());
+      }
+      ownerCalls = 0;
+      currentCalls = 0;
+      key.id = 25;
+      control.keyWindowChanged();
+      expect(ownerCalls).toBeLessThanOrEqual(N + 1); // one owner lookup per renderer
+      expect(currentCalls).toBe(1);
     });
 
     it('a failing probe is reported and fails OPEN (the renderer keeps writing; an unknown key never silences a window)', () => {
