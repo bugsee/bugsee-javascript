@@ -21,6 +21,7 @@ import {
   createNodeSystemTraceProducers,
   launchCore,
   sanitizeHardwareGpu,
+  V8_HEAP_PRODUCER_NAME,
 } from '@bugsee/node';
 import {
   type BrowserWindowSource,
@@ -359,7 +360,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // (the pattern `createNodeSystemTraceProducers()` recommends); a set without it never writes `ram_js_heap_*`
   const writesHeap =
     nodeOptions.systemTraceProducers === undefined ||
-    nodeOptions.systemTraceProducers.some((p) => p.name === 'v8-heap');
+    nodeOptions.systemTraceProducers.some((p) => p.name === V8_HEAP_PRODUCER_NAME);
   const writesTraces =
     nodeOptions.systemMetricsSampler === undefined &&
     resolveFailClosedBoolean(nodeOptions.captureSystemTraces, true);

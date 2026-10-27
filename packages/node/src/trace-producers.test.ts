@@ -1,6 +1,10 @@
 import { processTrackerFor } from '@bugsee/trackers/node';
 import { describe, expect, it, vi } from 'vitest';
-import { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+import {
+  createNodeSystemTraceProducers,
+  type NodeTraceProducerDeps,
+  V8_HEAP_PRODUCER_NAME,
+} from './trace-producers';
 
 const harnessKey: object[] = [];
 function harness(deps: NodeTraceProducerDeps) {
@@ -641,5 +645,26 @@ describe('gc is NOT a trace (C15: it is the `gc` system event)', () => {
     expect(constructed).toBe(0);
     expect(gc.start).not.toHaveBeenCalled();
     expect(gc.read).not.toHaveBeenCalled();
+  });
+});
+
+describe('V8_HEAP_PRODUCER_NAME', () => {
+  it('names the producer that writes ram_js_heap_* (Electron main finds the heap owner by it)', () => {
+    const h = harness(
+      constDeps({
+        eventLoop,
+        eventLoopUtilization: () => 50,
+        v8Heap: () => ({ limit: 900, used: 250, available: 1, malloced: 2, peakMalloced: 3 }),
+      }),
+    );
+    const heap = h.producers.find((p) => p.name === V8_HEAP_PRODUCER_NAME);
+    expect(heap).toBeDefined();
+    heap?.start({ emit: (n, v) => void h.got.set(n, v) });
+    expect([h.got.get('ram_js_heap_total'), h.got.get('ram_js_heap_used')]).toEqual([900, 250]);
+    // no OTHER producer writes the heap names
+    const others = h.producers.filter((p) => p !== heap);
+    const names: string[] = [];
+    for (const p of others) p.start({ emit: (n) => void names.push(n) });
+    expect(names.some((n) => n.startsWith('ram_js_heap_'))).toBe(false);
   });
 });
