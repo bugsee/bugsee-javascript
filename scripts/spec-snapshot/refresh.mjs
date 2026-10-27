@@ -9,7 +9,7 @@
 // be on any branch). Default ref `origin/main`; run `git fetch` in the checkout first to pick up the latest spec.
 // Default checkout: $BUGSEE_SPECS, else `../specs`, else `../../specs` (a sibling of this repo or of its worktree dir).
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSpec } from './parse.mjs';
@@ -85,7 +85,10 @@ function main() {
     console.log(`snapshot matches ${SPEC_REPO}@${commit.slice(0, 12)}`);
     return;
   }
-  writeFileSync(args.out, text);
+  // through a temporary file in the same directory: a stop mid-write must not leave a truncated snapshot behind
+  const tmp = `${args.out}.${process.pid}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, args.out);
   console.log(`wrote ${args.out} from ${SPEC_REPO}@${commit.slice(0, 12)}`);
 }
 

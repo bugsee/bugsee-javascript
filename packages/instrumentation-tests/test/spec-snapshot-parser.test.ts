@@ -5,14 +5,16 @@ import * as parser from '../../../scripts/spec-snapshot/parse.mjs';
 // The parser that turns the JavaScript platform spec's tables into the vendored snapshot. Fixtures use the spec's own
 // table shapes (including escaped pipes, multi-name cells, links in cells and pending markers).
 
-const { parseSpec, splitRow, namesIn, describeValue, paramKeysOf, SECTIONS } = parser as {
-  parseSpec(md: string): Parsed;
-  splitRow(line: string): string[];
-  namesIn(cell: string): string[];
-  describeValue(cell: string): { valueType: string | null; unit: string | null };
-  paramKeysOf(cell: string): string[];
-  SECTIONS: Record<string, unknown>;
-};
+const { parseSpec, splitRow, namesIn, describeValue, paramKeysOf, mergeParams, SECTIONS } =
+  parser as {
+    parseSpec(md: string): Parsed;
+    splitRow(line: string): string[];
+    namesIn(cell: string): string[];
+    describeValue(cell: string): { valueType: string | null; unit: string | null };
+    paramKeysOf(cell: string): string[];
+    mergeParams(a: string[], b: string[]): string[];
+    SECTIONS: Record<string, unknown>;
+  };
 
 interface Parsed {
   traces: Array<{
@@ -27,7 +29,6 @@ interface Parsed {
     name: string;
     families: string[];
     params: string[];
-    paramsByFamily: Record<string, string[]>;
     pending: string[];
   }>;
   retired: string[];
@@ -176,6 +177,20 @@ describe('paramKeysOf', () => {
   });
 });
 
+describe('mergeParams', () => {
+  it('unions and sorts', () => {
+    expect(mergeParams(['b', 'a'], ['c'])).toEqual(['a', 'b', 'c']);
+    expect(mergeParams([], [])).toEqual([]);
+  });
+
+  it('keeps one key per name, optional when ANY side marks it optional', () => {
+    expect(mergeParams(['foo'], ['foo?'])).toEqual(['foo?']);
+    expect(mergeParams(['foo?'], ['foo'])).toEqual(['foo?']);
+    expect(mergeParams(['foo', 'bar?'], ['foo', 'bar'])).toEqual(['bar?', 'foo']);
+    expect(mergeParams(['foo?'], ['foo?'])).toEqual(['foo?']);
+  });
+});
+
 describe('parseSpec', () => {
   it('reads every inventory section', () => {
     const parsed = parseSpec(FIXTURE);
@@ -254,7 +269,6 @@ describe('parseSpec', () => {
       families: ['browser', 'node'],
       pending: [],
       params: ['code', 'persisted'],
-      paramsByFamily: { browser: ['persisted'], node: ['code'] },
     });
     expect(event(FIXTURE, 'process_started')).toMatchObject({ params: [] });
     expect(event(FIXTURE, 'OrientationChanged')).toMatchObject({

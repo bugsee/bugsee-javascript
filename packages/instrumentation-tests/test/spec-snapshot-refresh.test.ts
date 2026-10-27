@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -231,6 +231,8 @@ describe('the refresh command', () => {
     expect(snap.traces.map((t: { name: string }) => t.name)).toContain('charging');
     expect(snap.retired).toEqual(['screen_size']);
     expect(r.stdout).toContain(commit2.slice(0, 12));
+    // written through a temporary file that is renamed over the target: nothing else is left in the directory
+    expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
   });
 
   it('can target an older commit', () => {

@@ -78,6 +78,20 @@ export function paramKeysOf(cell) {
   return keys;
 }
 
+/**
+ * One params list per event name: the union over the families that list it (`process_exiting` has `persisted` in the
+ * browser and `code` in Node). A key optional in ANY family (`foo?`) is optional in the union, so `foo` and `foo?` never
+ * appear as two keys. Sorted, for a stable snapshot.
+ */
+export function mergeParams(a, b) {
+  const optional = new Map();
+  for (const key of [...a, ...b]) {
+    const bare = key.replace(/\?$/, '');
+    optional.set(bare, optional.get(bare) === true || key.endsWith('?'));
+  }
+  return [...optional].map(([bare, opt]) => (opt ? `${bare}?` : bare)).sort();
+}
+
 /** Everything the markdown declares, or throws when an expected section is missing. */
 export function parseSpec(markdown) {
   const traces = new Map();
@@ -137,10 +151,7 @@ export function parseSpec(markdown) {
           const held = column('held');
           entry.held ??= held === undefined ? false : held.startsWith('held');
         } else {
-          const keys = paramKeysOf(column('params') ?? '');
-          entry.paramsByFamily ??= {};
-          entry.paramsByFamily[section.family] ??= keys;
-          entry.params = [...new Set([...(entry.params ?? []), ...keys])].sort();
+          entry.params = mergeParams(entry.params ?? [], paramKeysOf(column('params') ?? ''));
         }
         target.set(name, entry);
       }

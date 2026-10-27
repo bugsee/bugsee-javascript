@@ -491,11 +491,6 @@
         "shared"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "shared": [
-          "dark"
-        ]
-      },
       "params": [
         "dark"
       ]
@@ -506,14 +501,6 @@
         "shared"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "shared": [
-          "current",
-          "prev",
-          "type",
-          "angle"
-        ]
-      },
       "params": [
         "angle",
         "current",
@@ -527,9 +514,6 @@
         "shared"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "shared": []
-      },
       "params": []
     },
     {
@@ -538,9 +522,6 @@
         "shared"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "shared": []
-      },
       "params": []
     },
     {
@@ -549,15 +530,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "type",
-          "reason",
-          "exitCode?",
-          "name?",
-          "serviceName?"
-        ]
-      },
       "params": [
         "exitCode?",
         "name?",
@@ -572,20 +544,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "id",
-          "nativeId",
-          "width",
-          "height",
-          "naturalWidth?",
-          "naturalHeight?",
-          "scale?",
-          "maxFps?",
-          "rotation?",
-          "type?"
-        ]
-      },
       "params": [
         "height",
         "id",
@@ -605,11 +563,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "changed"
-        ]
-      },
       "params": [
         "changed"
       ]
@@ -620,12 +573,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [
-          "mode",
-          "previousMode"
-        ]
-      },
       "params": [
         "mode",
         "previousMode"
@@ -637,20 +584,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "id",
-          "nativeId",
-          "width",
-          "height",
-          "naturalWidth?",
-          "naturalHeight?",
-          "scale?",
-          "maxFps?",
-          "rotation?",
-          "type?"
-        ]
-      },
       "params": [
         "height",
         "id",
@@ -670,9 +603,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": []
-      },
       "params": []
     },
     {
@@ -681,13 +611,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "node": [
-          "count",
-          "pauseMs",
-          "maxPauseMs"
-        ]
-      },
       "params": [
         "count",
         "maxPauseMs",
@@ -700,13 +623,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [
-          "language?",
-          "languages?",
-          "previousLanguage?"
-        ]
-      },
       "params": [
         "language?",
         "languages?",
@@ -719,9 +635,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": []
-      },
       "params": []
     },
     {
@@ -730,9 +643,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": []
-      },
       "params": []
     },
     {
@@ -741,9 +651,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -752,9 +659,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -763,9 +667,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -774,9 +675,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -785,9 +683,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -796,9 +691,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": []
-      },
       "params": []
     },
     {
@@ -807,11 +699,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [
-          "method?"
-        ]
-      },
       "params": [
         "method?"
       ]
@@ -822,11 +709,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "node": [
-          "code"
-        ]
-      },
       "params": [
         "code"
       ]
@@ -838,14 +720,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [
-          "persisted"
-        ],
-        "node": [
-          "code"
-        ]
-      },
       "params": [
         "code",
         "persisted"
@@ -857,11 +731,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "node": [
-          "signal"
-        ]
-      },
       "params": [
         "signal"
       ]
@@ -873,10 +742,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [],
-        "node": []
-      },
       "params": []
     },
     {
@@ -885,12 +750,6 @@
         "node"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "node": [
-          "name?",
-          "message"
-        ]
-      },
       "params": [
         "message",
         "name?"
@@ -902,11 +761,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "webContentsId?"
-        ]
-      },
       "params": [
         "webContentsId?"
       ]
@@ -917,11 +771,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "webContentsId?"
-        ]
-      },
       "params": [
         "webContentsId?"
       ]
@@ -932,9 +781,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": []
-      },
       "params": []
     },
     {
@@ -943,14 +789,6 @@
         "browser"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "browser": [
-          "timezone?",
-          "utcOffsetMinutes?",
-          "previousTimezone?",
-          "previousUtcOffsetMinutes?"
-        ]
-      },
       "params": [
         "previousTimezone?",
         "previousUtcOffsetMinutes?",
@@ -964,11 +802,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "windowId?"
-        ]
-      },
       "params": [
         "windowId?"
       ]
@@ -979,11 +812,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "windowId?"
-        ]
-      },
       "params": [
         "windowId?"
       ]
@@ -994,11 +822,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "windowId?"
-        ]
-      },
       "params": [
         "windowId?"
       ]
@@ -1009,11 +832,6 @@
         "electron-main"
       ],
       "pending": [],
-      "paramsByFamily": {
-        "electron-main": [
-          "windowId?"
-        ]
-      },
       "params": [
         "windowId?"
       ]
