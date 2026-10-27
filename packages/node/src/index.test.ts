@@ -70,6 +70,7 @@ const EXPECTED_EXPORTS = [
   'sanitizeHardwareGpu',
   'startServerSpan',
   'storageTrackerFor',
+  'V8_HEAP_PRODUCER_NAME',
   'wrapFetchHandler',
 ] as const;
 
