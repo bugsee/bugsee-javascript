@@ -6,7 +6,7 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 // subscriber and released when the last leaves:
 //
 //   windowFocus            BrowserWindow 'focus' / 'blur'              -> { focused: boolean, windowId? }
-//   keyWindow              focus / blur / show / hide / closed         -> { windowId? }   (the KEY window changed; `{}` = none)
+//   keyWindow              focus / blur / show / hide / closed         -> { windowId? } | { unknown: true }   (the KEY window changed; `{}` = none)
 //   windowVisibility       BrowserWindow 'show' / 'hide'               -> { visible: boolean, windowId? }
 //   windowMoved            BrowserWindow 'moved'                       -> { windowId? }   (macOS: an alias of `move`, so it fires
 //                                                                       throughout a drag; Windows: end of drag; consumers debounce)
@@ -53,8 +53,8 @@ export interface BrowserWindowSource {
 
 export interface ElectronApplicationEvents {
   windowFocus: { focused: boolean; windowId?: number };
-  /** The key window changed; no `windowId` means there is none now. */
-  keyWindow: { windowId?: number };
+  /** The key window changed: `windowId` is the new one, no `windowId` means there is none now, and `unknown: true` means the tracker CANNOT SAY (re-read `keyWindowId()`). */
+  keyWindow: { windowId?: number; unknown?: true };
   windowVisibility: { visible: boolean; windowId?: number };
   windowMoved: { windowId?: number };
   rendererResponsiveness: { responsive: boolean; webContentsId?: number };
@@ -254,12 +254,15 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     return idOf(win as Watched) ?? null;
   }
 
-  /** Publish the key window id once per change (`{}` when there is none, or it cannot be said: consumers re-read). */
+  /** Publish the key window id once per change (`{}` when there is none, `{unknown: true}` when it cannot be said). */
   #publishKey(): void {
     const id = this.keyWindowId();
     if (id === this.#publishedKey) return;
     this.#publishedKey = id;
-    this.emit('keyWindow', id === undefined || id === null ? {} : { windowId: id });
+    this.emit(
+      'keyWindow',
+      id === undefined ? {} : id === null ? { unknown: true } : { windowId: id },
+    );
   }
 
   /** The key window's bounds (a rectangle), or undefined when there is no key window or it cannot say. Never throws. */

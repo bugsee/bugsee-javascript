@@ -834,7 +834,7 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
       ]);
     });
 
-    it('a failing list publishes `{}` (cannot say) and consumers re-read keyWindowId() to tell that from "none"', () => {
+    it('a failing list publishes `{unknown: true}`, distinct from `{}` (no key window)', () => {
       const a = new IdWindow(1);
       let fail = false;
       const app = new FakeEmitter();
@@ -855,7 +855,7 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
       t.on('keyWindow', seen);
       fail = true;
       a.emit('hide');
-      expect(seen).toHaveBeenCalledExactlyOnceWith({});
+      expect(seen).toHaveBeenCalledExactlyOnceWith({ unknown: true }); // distinct from `{}` (no window)
       expect(t.keyWindowId()).toBeNull();
     });
 
