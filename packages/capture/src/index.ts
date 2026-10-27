@@ -76,8 +76,6 @@ export {
 } from './trace-producer';
 export {
   createTraceSuppression,
-  ELECTRON_MAIN_HEAP_TRACES,
-  ELECTRON_RENDERER_HOST_OWNED_TRACES,
   isTraceSuppression,
   sanitizeTraceNames,
   type TraceSuppression,

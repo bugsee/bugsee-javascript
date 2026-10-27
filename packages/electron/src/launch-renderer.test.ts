@@ -1,9 +1,5 @@
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/browser';
-import {
-  ELECTRON_RENDERER_HOST_OWNED_TRACES,
-  isTraceSuppression,
-  type TraceSuppression,
-} from '@bugsee/capture';
+import { isTraceSuppression, type TraceSuppression } from '@bugsee/capture';
 import {
   BlackoutToken,
   type CaptureStore,
@@ -16,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchRenderer, resolveRendererBridge, resolveRendererPost } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { decodeStreamEntry, encodeControl, isHello } from './protocol';
+import { ELECTRON_RENDERER_HOST_OWNED_TRACES } from './trace-tables';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
@@ -134,23 +131,23 @@ describe('launchRenderer', () => {
     expect(owned.has('battery')).toBe(false);
   });
 
-  it('the session handshake REPLACES the built-in names with what main declares (and an old main that declares nothing leaves the default)', async () => {
+  it('the session handshake REPLACES main-owned names (the heap) with what main declares, but a renderer NEVER writes displays or capture', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();
     await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
     const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
     b.drive(encodeControl({ command: 'session', sessionId: 's' })); // no `ho`: keep the default
     expect(owned.has('displays')).toBe(true);
-    b.drive(
-      encodeControl({
-        command: 'session',
-        sessionId: 's',
-        hostOwnedTraces: ['connection', 'displays'],
-      }),
-    );
+    expect(owned.has('ram_js_heap_total')).toBe(true);
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['connection'] }));
     expect(owned.has('connection')).toBe(true);
-    expect(owned.has('ram_js_heap_total')).toBe(false);
-    expect(owned.has('capture')).toBe(false);
+    expect(owned.has('ram_js_heap_total')).toBe(false); // main does not write the heap: the renderer's own flows
+    expect(owned.has('displays')).toBe(true); // main declared neither, and the renderer still never writes them
+    expect(owned.has('capture')).toBe(true);
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [] }));
+    expect(owned.has('connection')).toBe(false);
+    expect(owned.has('displays')).toBe(true);
+    expect(owned.has('capture')).toBe(true);
   });
 
   it('a session reply for a client that is no longer launched does not touch the suppression', async () => {

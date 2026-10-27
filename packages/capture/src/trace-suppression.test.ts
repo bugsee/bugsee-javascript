@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createTraceSuppression,
-  ELECTRON_MAIN_HEAP_TRACES,
-  ELECTRON_RENDERER_HOST_OWNED_TRACES,
   isTraceSuppression,
   sanitizeTraceNames,
   WEBVIEW_HOST_OWNED_TRACES,
@@ -163,16 +161,6 @@ describe('sanitizeTraceNames (names that arrive over a wire)', () => {
 });
 
 describe('the per-host tables (spec platforms/javascript.md "Host-owned traces")', () => {
-  it('Electron renderer: only displays, capture and the three ram_js_heap_* are host-owned (main writes them)', () => {
-    expect([...ELECTRON_RENDERER_HOST_OWNED_TRACES].sort()).toEqual([
-      'capture',
-      'displays',
-      'ram_js_heap_free',
-      'ram_js_heap_total',
-      'ram_js_heap_used',
-    ]);
-  });
-
   it('WebView: the native host writes device state, display and capture; page-owned traces are NOT listed', () => {
     expect([...WEBVIEW_HOST_OWNED_TRACES].sort()).toEqual([
       'app_state',
@@ -199,17 +187,5 @@ describe('the per-host tables (spec platforms/javascript.md "Host-owned traces")
     ]) {
       expect(WEBVIEW_HOST_OWNED_TRACES).not.toContain(pageOwned);
     }
-  });
-});
-
-describe('ELECTRON_MAIN_HEAP_TRACES', () => {
-  it('is the three ram_js_heap_* names, all part of the renderer default table', () => {
-    expect([...ELECTRON_MAIN_HEAP_TRACES]).toEqual([
-      'ram_js_heap_total',
-      'ram_js_heap_used',
-      'ram_js_heap_free',
-    ]);
-    for (const name of ELECTRON_MAIN_HEAP_TRACES)
-      expect(ELECTRON_RENDERER_HOST_OWNED_TRACES).toContain(name);
   });
 });

@@ -9,7 +9,7 @@
 // renderer's.
 import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
 import { createMemoryCaptureStore } from '@bugsee/core';
-import { type NodeRuntime, realSystemProbe } from '@bugsee/node';
+import { createNodeSystemTraceProducers, type NodeRuntime, realSystemProbe } from '@bugsee/node';
 import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { launchMain } from './launch-main';
@@ -128,6 +128,7 @@ async function bootRenderer(
   bus: ReturnType<typeof fakeElectronBus>,
   id: number,
   batteryLevel: number,
+  extra: Record<string, unknown> = {},
 ) {
   const { ipcRenderer } = bus.renderer(id);
   let bridge: BugseeElectronBridge | undefined;
@@ -138,6 +139,15 @@ async function bootRenderer(
   // Each call stands for a SEPARATE renderer page: the one-instance-per-page slot is per JS realm.
   delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('bugsee.electron.renderer')];
   const win = rendererWindow(batteryLevel);
+  // a manual scheduler: `tick()` runs the renderer's 1 s sampling AFTER the handshake, which the launch-time baseline cannot
+  const ticks: Array<() => void> = [];
+  const scheduler = {
+    setInterval: (cb: () => void, ms: number) => {
+      if (ms === 1000) ticks.push(cb);
+      return ticks.length;
+    },
+    clearInterval: () => {},
+  };
   const client = await launchRenderer('tok', {
     bridge,
     carrier: {},
@@ -145,8 +155,16 @@ async function bootRenderer(
     replay: false,
     captureNetwork: false,
     onError: vi.fn(),
+    scheduler,
+    ...extra,
   } as never);
-  return { client, win };
+  return {
+    client,
+    win,
+    tick: () => {
+      for (const t of ticks) t();
+    },
+  };
 }
 
 const tracesOf = (zip: Uint8Array) =>
@@ -183,10 +201,9 @@ describe('host-owned traces: Electron renderers write none of the names main own
     // ... and NONE of it came from a renderer (the distinctive renderer heap ceiling is nowhere)
     expect(heap.some((t) => t.value === 987_654_321)).toBe(false);
     expect(heap.some((t) => t.value === 1_234_567)).toBe(false);
-    // main declares only what it WRITES: it has no screen and no pixel video here, so it owns neither `displays` nor
-    // `capture`, and the renderers' own `displays` entries are NOT suppressed (nobody else writes the name)
-    expect(traces.some((t) => t.name === 'capture')).toBe(false);
-    expect(traces.filter((t) => t.name === 'displays').length).toBeGreaterThan(0);
+    // a renderer NEVER writes `displays` or `capture` (spec), whatever main declares: main writes neither here (no screen, no
+    // pixel video), so the session has none, rather than each window's own entry interleaving
+    expect(traces.some((t) => t.name === 'capture' || t.name === 'displays')).toBe(false);
     // unlisted renderer traces still flow: each renderer's device battery and connection are in the session
     const battery = traces.filter((t) => t.name === 'battery').map((t) => t.value);
     expect(battery).toEqual(expect.arrayContaining([77, 55]));
@@ -225,5 +242,69 @@ describe('host-owned traces: Electron renderers write none of the names main own
     expect(JSON.stringify(displays)).toContain('1111');
     expect(JSON.stringify(displays)).not.toContain('"width":800');
     await mainClient.stop();
+  });
+
+  const mainWith = (
+    bus: ReturnType<typeof fakeElectronBus>,
+    over: Record<string, unknown> = {},
+  ) => {
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchMain('tok', {
+      ipcMain: bus.ipcMain,
+      transport,
+      captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+      captureNetwork: false,
+      capturedDataStore: 'memory',
+      detectHangs: false,
+      process: fakeProcess(),
+      systemProbe: realSystemProbe,
+      onError: vi.fn(),
+      ...over,
+    });
+    return { client, puts };
+  };
+
+  it('a renderer that samples AFTER the handshake still cannot write displays or capture, even when main declares neither', async () => {
+    const bus = fakeElectronBus();
+    const { client, puts } = mainWith(bus);
+    const r = await bootRenderer(bus, 1, 0.77, {
+      systemMetricsSampler: () => [
+        { name: 'capture', value: { state: 'active' } },
+        { name: 'displays', value: [{ id: 0, width: 800, height: 600 }] },
+        { name: 'battery', value: 42 },
+      ],
+    });
+    r.tick();
+    await client.logException(new Error('report'));
+    const traces = tracesOf(puts[0] as Uint8Array);
+    expect(traces.some((t) => t.name === 'capture' || t.name === 'displays')).toBe(false);
+    expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toContain(42); // unlisted still flows
+    await client.stop();
+  });
+
+  it('the heap: with createNodeSystemTraceProducers() main still writes it and declares it, so a renderer sampling after the handshake writes none', async () => {
+    const bus = fakeElectronBus();
+    const { client, puts } = mainWith(bus, {
+      systemTraceProducers: createNodeSystemTraceProducers(),
+    });
+    const r = await bootRenderer(bus, 1, 0.77);
+    r.tick();
+    r.tick();
+    await client.logException(new Error('report'));
+    const heap = tracesOf(puts[0] as Uint8Array).filter((t) => t.name === 'ram_js_heap_total');
+    expect(heap.length).toBeGreaterThan(0); // main's own
+    expect(heap.some((t) => t.value === 987_654_321)).toBe(false);
+    await client.stop();
+  });
+
+  it('without a heap producer main declares none, so the renderer heap flows (nothing else writes the name)', async () => {
+    const bus = fakeElectronBus();
+    const { client, puts } = mainWith(bus, { systemTraceProducers: [] });
+    const r = await bootRenderer(bus, 1, 0.77);
+    r.tick();
+    await client.logException(new Error('report'));
+    const heap = tracesOf(puts[0] as Uint8Array).filter((t) => t.name === 'ram_js_heap_total');
+    expect(heap.some((t) => t.value === 987_654_321)).toBe(true);
+    await client.stop();
   });
 });

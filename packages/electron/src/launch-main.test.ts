@@ -204,8 +204,18 @@ describe('launchMain', () => {
       );
     });
 
-    it('no ram_js_heap_* when a caller-supplied systemTraceProducers replaces the node set (the Electron ones are still appended)', () => {
+    it('ram_js_heap_* is declared from the ACTUAL producers: a caller set WITH a v8-heap producer (createNodeSystemTraceProducers()) still owns it, one without does not', () => {
+      const named = (name: string) => ({ name, start() {}, stop() {} });
       expect(declared({ systemTraceProducers: [], screen } as never)).toEqual(['displays']);
+      expect(declared({ systemTraceProducers: [named('cpu')], screen } as never)).toEqual([
+        'displays',
+      ]);
+      expect(
+        declared({
+          systemTraceProducers: [named('cpu'), named('v8-heap')],
+          screen,
+        } as never)?.sort(),
+      ).toEqual([...HEAP, 'displays'].sort());
     });
 
     it('a legacy systemMetricsSampler or captureSystemTraces:false (or a non-boolean, which is off) means main writes none of them', () => {

@@ -9,7 +9,7 @@
 //   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream;
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
-import { createTraceSuppression, ELECTRON_RENDERER_HOST_OWNED_TRACES } from '@bugsee/capture';
+import { createTraceSuppression } from '@bugsee/capture';
 import {
   asInternalClient,
   BlackoutToken,
@@ -22,6 +22,10 @@ import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
 import { createRendererControlHandler } from './renderer-control';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
+import {
+  ELECTRON_RENDERER_HOST_OWNED_TRACES,
+  ELECTRON_RENDERER_NEVER_WRITES,
+} from './trace-tables';
 
 /** The browser `launchCore` shape, injectable for tests. */
 type BrowserLaunch = typeof launchCore;
@@ -252,7 +256,8 @@ async function launchRendererOnce(
       // main's declaration of the trace names it owns (the session reply carries it): applied before the hold opens
       onHostOwned: (names: readonly string[]): void => {
         if (live()) {
-          hostOwned.setLayer('host', names);
+          // main's declaration REPLACES the heap part, but a renderer never writes displays/capture, whatever main declares
+          hostOwned.setLayer('host', [...ELECTRON_RENDERER_NEVER_WRITES, ...names]);
         }
       },
       onSession: (id: string): void => {

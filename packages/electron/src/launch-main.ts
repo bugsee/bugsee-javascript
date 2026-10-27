@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { CaptureStateProducer, ELECTRON_MAIN_HEAP_TRACES } from '@bugsee/capture';
+import { CaptureStateProducer } from '@bugsee/capture';
 import {
   type AppIdentity,
   BlackoutToken,
@@ -116,6 +116,7 @@ import { createRendererGoneHandler } from './renderer-gone';
 import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
 import { createElectronSystemEventsSource } from './system-events';
 import { createElectronSystemTraceProducers } from './system-traces';
+import { ELECTRON_MAIN_HEAP_TRACES } from './trace-tables';
 import type { VideoCaptureSource } from './video-capture';
 
 /** The node `launchCore` shape, injectable for tests. */
@@ -354,7 +355,11 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // The trace names main will actually WRITE, which the handshake tells every renderer not to write (one writer per name per
   // session): `displays` with a screen, `capture` with pixel video, and its own V8 heap unless the caller replaces the node
   // producer set. Nothing at all when the legacy sampler replaces the producers or system traces are off.
-  const callerProducers = nodeOptions.systemTraceProducers !== undefined;
+  // main writes its heap when the node set is in use (the default) or the caller's own set contains the `v8-heap` producer
+  // (the pattern `createNodeSystemTraceProducers()` recommends); a set without it never writes `ram_js_heap_*`
+  const writesHeap =
+    nodeOptions.systemTraceProducers === undefined ||
+    nodeOptions.systemTraceProducers.some((p) => p.name === 'v8-heap');
   const writesTraces =
     nodeOptions.systemMetricsSampler === undefined &&
     resolveFailClosedBoolean(nodeOptions.captureSystemTraces, true);
@@ -543,7 +548,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       : [
           ...(display !== undefined ? [TraceName.DISPLAYS] : []),
           ...(captureState !== undefined ? [TraceName.CAPTURE] : []),
-          ...(callerProducers ? [] : ELECTRON_MAIN_HEAP_TRACES),
+          ...(writesHeap ? ELECTRON_MAIN_HEAP_TRACES : []),
         ],
   });
   control.start();

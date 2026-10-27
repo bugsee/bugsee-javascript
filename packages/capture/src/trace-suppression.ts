@@ -78,27 +78,6 @@ export const sanitizeTraceNames = (value: unknown): string[] | undefined =>
     ? [...value]
     : undefined;
 
-/** The node trace set's V8 heap names: written by Electron MAIN for its own heap (never by a renderer). */
-export const ELECTRON_MAIN_HEAP_TRACES: readonly string[] = [
-  TraceName.RAM_JS_HEAP_TOTAL,
-  TraceName.RAM_JS_HEAP_USED,
-  TraceName.RAM_JS_HEAP_FREE,
-];
-
-/**
- * Electron renderer: Electron MAIN writes the full `displays` list, the `capture` state (pixel video) and its own V8 heap
- * as `ram_js_heap_*`; a renderer writing them would put a second writer on the same name into the one session.
- * Everything else a renderer writes (device-level `battery`/`connection`, per-window state, page-owned traces) flows.
- */
-export const ELECTRON_RENDERER_HOST_OWNED_TRACES: readonly string[] = [
-  TraceName.DISPLAYS,
-  TraceName.CAPTURE,
-  // (written out, not spread: a spread is not provably pure, and would keep this table in the WebView bundle)
-  TraceName.RAM_JS_HEAP_TOTAL,
-  TraceName.RAM_JS_HEAP_USED,
-  TraceName.RAM_JS_HEAP_FREE,
-];
-
 /**
  * WebView in a native app: the NATIVE host writes device battery, orientation, app state, connection, fps, view, display
  * and capture state (and Android `ram_system_advertised`), and the battery qualifiers only make sense next to the
