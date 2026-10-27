@@ -153,7 +153,8 @@ export interface LaunchMainOptions extends BugseeLaunchOptions {
   gpuInfoType?: GpuInfoType;
   /**
    * Electron's `powerMonitor` — optional. When present and system events are captured, `power_suspend`/`power_resume`/
-   * `power_lock`/`power_unlock`/`power_ac`/`power_battery` are recorded on `events.system`. Absent: that domain is off.
+   * `power_lock`/`power_unlock`/`power_ac`/`power_battery` are recorded on `events.system`, and (system traces on)
+   * `thermal_state` (macOS) and `cpu_speed_limit` (macOS, Windows) are traced. Absent: that domain is off.
    */
   powerMonitor?: PowerMonitorSource;
   /**
@@ -352,10 +353,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
-  // node set never emits (`app_metrics`, `displays`). Not built when the legacy `systemMetricsSampler` replaces
+  // node set never emits (`app_metrics`, `displays`, `thermal_state`, `cpu_speed_limit`). Not built when the legacy `systemMetricsSampler` replaces
   // the producer list (they would never start).
   if (
-    (tracker !== undefined || display !== undefined || captureState !== undefined) &&
+    (tracker !== undefined ||
+      display !== undefined ||
+      power !== undefined ||
+      captureState !== undefined) &&
     nodeOptions.systemMetricsSampler === undefined
   ) {
     nodeOptions.systemTraceProducers = [
@@ -367,6 +371,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       ...createElectronSystemTraceProducers({
         ...(tracker !== undefined ? { process: tracker } : {}),
         ...(display !== undefined ? { display } : {}),
+        ...(power !== undefined ? { power } : {}),
         ...(screen !== undefined && appTracker !== undefined ? { application: appTracker } : {}),
         ...(nodeOptions.scheduler !== undefined ? { scheduler: nodeOptions.scheduler } : {}),
       }),
