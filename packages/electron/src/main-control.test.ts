@@ -389,6 +389,47 @@ describe('createElectronMainControl', () => {
         expect(decoded(a).at(-1)).toEqual({ command: 'window-key', keyWindow: false });
       });
 
+      it('when the participating key renderer is GONE (render-process-gone) the others are re-evaluated at once, not at the next focus change', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        w.join(11);
+        const b = w.join(12);
+        key.id = 9; // a window with no SDK holds focus; window 1 stays the participating key
+        w.control.keyWindowChanged();
+        expect(decoded(b)).toHaveLength(1);
+        w.control.rendererGone(11); // window 1's renderer dies; nothing else moves
+        expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
+      });
+
+      it("the same when a renderer's webContents is destroyed", () => {
+        const key = { id: 1 as number | undefined | null };
+        const ipc = fakeIpcMain();
+        const control = createElectronMainControl({
+          ipcMain: ipc.ipcMain,
+          sessionId: 's1',
+          keyWindow: {
+            currentId: () => key.id,
+            ownerId: (s) => ({ 11: 1, 12: 2 })[s.id as 11 | 12],
+          },
+        });
+        control.start();
+        const destroyed: Array<() => void> = [];
+        const mk = (id: number) => {
+          const r = fakeSender(id);
+          (r.sender as { once?: (e: string, l: () => void) => void }).once = (_e, l) =>
+            destroyed.push(l);
+          ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+          return r;
+        };
+        mk(11);
+        const b = mk(12);
+        key.id = 9;
+        control.keyWindowChanged();
+        (b.sender as { isDestroyed?: () => boolean }).isDestroyed = () => false;
+        destroyed[0]?.(); // window 1's webContents is destroyed
+        expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
+      });
+
       it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {
         const key = { id: 9 as number | undefined | null };
         const w = world({ 11: 1 }, key);

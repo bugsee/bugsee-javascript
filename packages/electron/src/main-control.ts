@@ -230,6 +230,7 @@ export function createElectronMainControl(
         const onDestroyed = (): void => {
           subscribed.delete(sender);
           forget(sender);
+          rediffKey(); // the key window's participating renderer may be the one that just went
         };
         // Tracked ONLY when it can actually be subscribed (`once` present): otherwise `destroyed` never fires to
         // drop the entry and the map would pin the sender until stop().
@@ -316,6 +317,7 @@ export function createElectronMainControl(
           forget(sender);
         }
       }
+      rediffKey();
     },
     get rendererCount(): number {
       return renderers.size;
