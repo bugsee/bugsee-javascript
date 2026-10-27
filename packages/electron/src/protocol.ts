@@ -212,7 +212,8 @@ export type ControlCommand =
   | 'stop'
   | 'session'
   | 'blackout-start'
-  | 'blackout-end';
+  | 'blackout-end'
+  | 'window-key';
 
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'pause',
@@ -222,6 +223,7 @@ const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'session',
   'blackout-start',
   'blackout-end',
+  'window-key',
 ]);
 
 export interface ControlMessage {
@@ -240,11 +242,24 @@ export interface ControlMessage {
    * renderer keeps its built-in default.
    */
   hostOwnedTraces?: string[];
+  /**
+   * Whether the receiving renderer's window is the session's KEY window (spec "Several windows in one session"): only the
+   * key window writes the per-window traces. Set on the `session` reply (absent = main cannot resolve windows, so every
+   * renderer is key) and on every `window-key` command, which main sends when the answer CHANGES for that renderer.
+   */
+  keyWindow?: boolean;
 }
 
 /** Encode a control message to a wire string (`sessionId` omitted unless present). */
 export function encodeControl(message: ControlMessage): string {
-  const wire: { k: 'control'; c: ControlCommand; sid?: string; bo?: boolean; ho?: string[] } = {
+  const wire: {
+    k: 'control';
+    c: ControlCommand;
+    sid?: string;
+    bo?: boolean;
+    ho?: string[];
+    kw?: boolean;
+  } = {
     k: 'control',
     c: message.command,
   };
@@ -257,6 +272,9 @@ export function encodeControl(message: ControlMessage): string {
   if (message.hostOwnedTraces !== undefined) {
     wire.ho = [...message.hostOwnedTraces];
   }
+  if (message.keyWindow !== undefined) {
+    wire.kw = message.keyWindow;
+  }
   return JSON.stringify(wire);
 }
 
@@ -266,6 +284,7 @@ interface WireControl {
   sid?: unknown;
   bo?: unknown;
   ho?: unknown;
+  kw?: unknown;
 }
 
 /** Decode a control wire string into a {@link ControlMessage}, or `undefined` if it isn't a valid control. */
@@ -285,6 +304,9 @@ export function decodeControl(raw: string): ControlMessage | undefined {
   }
   if (typeof message.bo === 'boolean') {
     decoded.blackout = message.bo;
+  }
+  if (typeof message.kw === 'boolean') {
+    decoded.keyWindow = message.kw;
   }
   // validated as a unit: a malformed declaration is ignored whole, never half applied
   const hostOwned = sanitizeTraceNames(message.ho);

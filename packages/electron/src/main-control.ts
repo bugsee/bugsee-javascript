@@ -4,6 +4,7 @@
 // to every registered renderer (reusing the WebView control kinds). Sends are best-effort: a destroyed
 // webContents throws, so each send is guarded and never breaks the broadcast to the others. `electron` is
 // taken as plain args (no dependency; fully testable).
+import { reportGuarded } from '@bugsee/util';
 import { BUGSEE_CONTROL_CHANNEL, BUGSEE_HELLO_CHANNEL } from './preload-bridge';
 import { encodeControl, isHello } from './protocol';
 
@@ -58,6 +59,19 @@ export interface ElectronMainControlOptions {
    * the reply declares nothing and a renderer keeps its built-in default (an older main behaves the same).
    */
   hostOwnedTraces?: readonly string[];
+  /**
+   * Resolves the session's KEY window (spec "Several windows in one session"): `currentId` is the key window's id (undefined:
+   * none) and `ownerId` the id of the window that owns a renderer's webContents (undefined: it has none). When given, every
+   * `session` reply states whether the renderer is key (`kw`) and {@link ElectronMainControl.keyWindowChanged} tells the
+   * renderers whose answer changed. A probe that throws is reported to `onError` and fails OPEN: an unknown key never silences
+   * a window. Without it no `kw` is stated and every renderer stays key.
+   */
+  keyWindow?: {
+    currentId(): number | undefined;
+    ownerId(sender: ControlSenderLike): number | undefined;
+  };
+  /** Internal-error sink (a failing key-window probe). */
+  onError?: (error: unknown) => void;
 }
 
 export interface ElectronMainControl {
@@ -71,6 +85,11 @@ export interface ElectronMainControl {
   blackoutStart(): void;
   /** Tell every renderer the owner's blackout ended. */
   blackoutEnd(): void;
+  /**
+   * The key window may have changed: re-evaluate every registered renderer and send `window-key` to those whose answer
+   * differs from what they were last told. A no-op without the `keyWindow` option.
+   */
+  keyWindowChanged(): void;
   /**
    * A renderer process died (`render-process-gone`): forget the webContents with this id. If it reloads, its new
    * frame's `hello` re-registers it and re-sends the session reply, so a crashed-then-reloaded window rejoins.
@@ -116,6 +135,23 @@ export function createElectronMainControl(
   /** Drop a renderer that is gone. Idempotent — `destroyed` and a later `isDestroyed()` both land here. */
   const forget = (sender: ControlSenderLike): void => {
     renderers.delete(sender);
+  };
+
+  // The key-window flag each renderer was LAST told (reply or `window-key`): a change is sent only to those it changed for.
+  // (a WeakMap: a forgotten webContents is never pinned by it)
+  const sentKey = new WeakMap<ControlSenderLike, boolean>();
+  /** Whether `sender`'s window is the key window now. A failing probe is reported and fails OPEN (true). */
+  const isKey = (
+    probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
+    sender: ControlSenderLike,
+  ): boolean => {
+    try {
+      const key = probe.currentId();
+      return key !== undefined && probe.ownerId(sender) === key;
+    } catch (error) {
+      reportGuarded(options.onError, error);
+      return true;
+    }
   };
 
   const broadcast = (
@@ -180,6 +216,11 @@ export function createElectronMainControl(
         }
       }
     }
+    // Whether this renderer is the key window's: stated (and remembered, so a later change is diffed against it) only when
+    // main can resolve windows at all.
+    const probe = options.keyWindow;
+    const keyWindow = probe === undefined ? undefined : isKey(probe, sender);
+    if (keyWindow !== undefined) sentKey.set(sender, keyWindow);
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(
       sender,
@@ -189,6 +230,7 @@ export function createElectronMainControl(
         // ALWAYS stated: a probe-less owner says `false` instead of leaving the renderer to guess.
         blackout: options.isBlackout !== undefined ? readBlackout(options.isBlackout) : false,
         ...(declaredOwned !== undefined ? { hostOwnedTraces: declaredOwned } : {}),
+        ...(keyWindow !== undefined ? { keyWindow } : {}),
       }),
     );
   };
@@ -223,6 +265,21 @@ export function createElectronMainControl(
     },
     blackoutEnd(): void {
       broadcast('blackout-end');
+    },
+    keyWindowChanged(): void {
+      const probe = options.keyWindow;
+      if (probe === undefined) return;
+      for (const sender of [...renderers]) {
+        if (sender.isDestroyed?.() === true) {
+          forget(sender);
+          continue;
+        }
+        if (isCrashed(sender)) continue; // no frame to address; its reload's hello re-states the flag
+        const now = isKey(probe, sender);
+        if (sentKey.get(sender) === now) continue;
+        sentKey.set(sender, now);
+        sendTo(sender, encodeControl({ command: 'window-key', keyWindow: now }));
+      }
     },
     rendererGone(id: number): void {
       for (const sender of [...renderers]) {

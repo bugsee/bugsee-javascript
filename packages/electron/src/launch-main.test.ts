@@ -1284,6 +1284,170 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(optsOf(f).systemTraceProducers).toBeUndefined();
   });
 
+  describe('the key window (C26): which renderer writes the per-window traces', () => {
+    class KeyWin extends FakeEmitter {
+      gone = false;
+      constructor(
+        public id: unknown,
+        public webContents: unknown,
+      ) {
+        super();
+      }
+      isDestroyed = () => this.gone;
+      isVisible = () => true;
+    }
+    function keyWorld(
+      over: { fromWebContents?: unknown; withApp?: boolean; captureWindowEvents?: boolean } = {},
+    ) {
+      const contents = (id: number) => ({
+        id,
+        sent: [] as Array<{ channel: string; raw: string }>,
+        send(channel: string, raw: string) {
+          this.sent.push({ channel, raw });
+        },
+      });
+      const contentsA = contents(101);
+      const contentsB = contents(102);
+      const a = new KeyWin(1, contentsA);
+      const b = new KeyWin(2, contentsB);
+      let focused: KeyWin | null = null;
+      const BrowserWindow = {
+        getAllWindows: () => [a, b],
+        getFocusedWindow: () => focused,
+        ...('fromWebContents' in over
+          ? { fromWebContents: over.fromWebContents }
+          : {
+              fromWebContents: (c: unknown) => (c === contentsA ? a : c === contentsB ? b : null),
+            }),
+      };
+      const app = new FakeEmitter();
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      const onError = vi.fn();
+      const client = launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        ...(over.withApp === false ? {} : { app }),
+        BrowserWindow: BrowserWindow as never,
+        ...(over.captureWindowEvents !== undefined
+          ? { captureWindowEvents: over.captureWindowEvents }
+          : {}),
+        onError,
+      });
+      const join = (c: ReturnType<typeof contents>) => {
+        ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: c }, encodeHello());
+        return c; // the SAME object: Electron hands main the webContents itself
+      };
+      return {
+        a,
+        b,
+        app,
+        client,
+        onError,
+        join,
+        contentsA,
+        contentsB,
+        focus: (w: KeyWin) => {
+          focused = w;
+          w.emit('focus');
+        },
+      };
+    }
+    const msgs = (r: { sent: Array<{ raw: string }> }) => r.sent.map((m) => decodeControl(m.raw));
+
+    it('every session reply states whether the renderer is the key window (first created until a window is focused)', () => {
+      const w = keyWorld();
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true);
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false);
+    });
+
+    it('a focus change tells exactly the renderers whose answer moved (window-key), and stop() releases the window listeners', async () => {
+      const w = keyWorld();
+      const ra = w.join(w.contentsA);
+      const rb = w.join(w.contentsB);
+      ra.sent.length = 0;
+      rb.sent.length = 0;
+      w.focus(w.b);
+      expect(msgs(ra)).toEqual([{ command: 'window-key', keyWindow: false }]);
+      expect(msgs(rb)).toEqual([{ command: 'window-key', keyWindow: true }]);
+      expect(w.a.table.get('focus')?.length ?? 0).toBeGreaterThan(0);
+      await w.client.stop();
+      expect(w.a.total()).toBe(0);
+      expect(w.b.total()).toBe(0);
+      expect(w.app.total()).toBe(0);
+    });
+
+    it('arms the key-window stage even with captureWindowEvents:false and no screen (it is not a window EVENT)', () => {
+      const w = keyWorld({ captureWindowEvents: false });
+      expect(w.app.table.get('browser-window-created')?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    it('without `BrowserWindow.fromWebContents` the rule is off: no `kw` is stated and nothing is armed for it', () => {
+      const w = keyWorld({ fromWebContents: undefined });
+      expect(JSON.parse(w.join(w.contentsA).sent[0]?.raw as string)).not.toHaveProperty('kw');
+      w.focus(w.b);
+      expect(w.onError).not.toHaveBeenCalled();
+    });
+
+    it('a BrowserWindow whose fromWebContents read throws turns the rule off and reports it, never failing launch', () => {
+      const BrowserWindow = new Proxy(
+        { getAllWindows: () => [] },
+        {
+          get(target, key) {
+            if (key === 'fromWebContents') throw new Error('not ready');
+            return (target as Record<PropertyKey, unknown>)[key];
+          },
+        },
+      );
+      const onError = vi.fn();
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      expect(() =>
+        launchMain('tok', {
+          ipcMain: ipc.ipcMain,
+          launch: f.launch,
+          app: new FakeEmitter(),
+          BrowserWindow: BrowserWindow as never,
+          onError,
+        }),
+      ).not.toThrow();
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'not ready' }));
+      const r = {
+        id: 1,
+        sent: [] as Array<{ raw: string }>,
+        send(_c: string, raw: string) {
+          this.sent.push({ raw });
+        },
+      };
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      expect(JSON.parse(r.sent[0]?.raw as string)).not.toHaveProperty('kw');
+    });
+
+    it('a fromWebContents that throws when called is reported to the launch onError and fails OPEN (the renderer keeps writing)', () => {
+      const w = keyWorld({
+        fromWebContents: () => {
+          throw new Error('owner lookup');
+        },
+      });
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true);
+      expect(w.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'owner lookup' }));
+    });
+
+    it('a webContents with no owning window, or an owner with no numeric id, is not the key window', () => {
+      const w = keyWorld({
+        fromWebContents: (c: unknown) => (c === undefined ? null : { id: Number.NaN }),
+      });
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(false); // owner id is NaN
+      const w2 = keyWorld({ fromWebContents: () => null });
+      expect(msgs(w2.join(w2.contentsA))[0]?.keyWindow).toBe(false); // no owner
+    });
+
+    it('without an `app` there is no key-window rule (no tracker): no `kw`', () => {
+      const w = keyWorld({ withApp: false });
+      expect(JSON.parse(w.join(w.contentsA).sent[0]?.raw as string)).not.toHaveProperty('kw');
+    });
+  });
+
   it('NEVER forwards the Electron objects or captureWindowEvents to the node launch', () => {
     const f = fakeLaunch();
     launchMain('tok', {

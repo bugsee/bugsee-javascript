@@ -28,6 +28,12 @@ export interface RendererControlHandlerOptions {
    * `onSession`, like the blackout state. Optional; not called when the reply declares none.
    */
   onHostOwned?(names: readonly string[]): void;
+  /**
+   * Whether this renderer's window is the session's key window: delivered with the `session` reply (BEFORE `onSession`; a
+   * reply that says nothing means "key": a main that cannot resolve windows must not silence any) and on every
+   * `window-key` command (a missing flag there is "not key"). Optional.
+   */
+  onKeyWindow?(isKey: boolean): void;
 }
 
 /** Build the renderer's control dispatcher: `handle(raw)` applies one main→renderer control message. */
@@ -59,9 +65,13 @@ export function createRendererControlHandler(
         if (message.hostOwnedTraces !== undefined) {
           options.onHostOwned?.(message.hostOwnedTraces);
         }
+        options.onKeyWindow?.(message.keyWindow ?? true);
         if (message.sessionId !== undefined) {
           options.onSession?.(message.sessionId);
         }
+        break;
+      case 'window-key':
+        options.onKeyWindow?.(message.keyWindow === true);
         break;
       case 'blackout-start':
         options.onBlackout?.(true);

@@ -28,3 +28,23 @@ export const ELECTRON_RENDERER_NEVER_WRITES: readonly TraceName[] = [
 /** The renderer's fail-closed DEFAULT before the handshake: the same names (main's `ho` can only ADD to them). */
 export const ELECTRON_RENDERER_HOST_OWNED_TRACES: readonly TraceName[] =
   ELECTRON_RENDERER_NEVER_WRITES;
+
+/**
+ * Electron renderers: the rows the spec marks "per window". Only the KEY window (the focused `BrowserWindow`, else the most
+ * recently focused, else the first created) writes them, so several windows never interleave their values into main's one
+ * `traces.system`; a window that is not key has them suppressed, and a held one (`url`, `app_state`, ...) is re-recorded the
+ * moment the window becomes key. The device-level rows (`battery`, `connection`, ...) carry the same value in every window and
+ * are not listed.
+ */
+export const ELECTRON_PER_WINDOW_TRACES: readonly TraceName[] = [
+  TraceName.URL,
+  TraceName.ROUTE,
+  TraceName.VIEW,
+  TraceName.ORIENTATION,
+  TraceName.APP_STATE,
+  TraceName.FPS,
+  TraceName.STORAGE_ESTIMATE,
+  TraceName.MAIN_THREAD_LAG_MS,
+  TraceName.MAIN_THREAD_IDLE_MS,
+  TraceName.USER_IDLE_STATE,
+];

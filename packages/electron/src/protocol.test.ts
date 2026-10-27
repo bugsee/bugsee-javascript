@@ -154,6 +154,23 @@ describe('encodeControl / decodeControl', () => {
     }
   });
 
+  it('round-trips the key-window flag (`kw`): true AND false survive, on the session reply and on the window-key command', () => {
+    for (const keyWindow of [true, false]) {
+      const reply: ControlMessage = { command: 'session', sessionId: 's', keyWindow };
+      expect(decodeControl(encodeControl(reply))).toEqual(reply);
+      const change: ControlMessage = { command: 'window-key', keyWindow };
+      expect(decodeControl(encodeControl(change))).toEqual(change);
+    }
+    expect(JSON.parse(encodeControl({ command: 'session', sessionId: 's' }))).not.toHaveProperty(
+      'kw',
+    );
+  });
+
+  it('ignores a non-boolean `kw` on the wire', () => {
+    const raw = JSON.stringify({ k: 'control', c: 'session', sid: 's', kw: 'yes' });
+    expect(decodeControl(raw)).toEqual({ command: 'session', sessionId: 's' });
+  });
+
   it('omits sessionId when absent (not encoded as undefined)', () => {
     const raw = encodeControl({ command: 'pause' });
     expect(JSON.parse(raw)).not.toHaveProperty('sid');

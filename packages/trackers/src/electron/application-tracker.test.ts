@@ -693,3 +693,187 @@ describe('ElectronApplicationTracker', () => {
     });
   });
 });
+
+describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)', () => {
+  class IdWindow extends FakeWindow {
+    visible = true;
+    isVisible = () => this.visible;
+  }
+  function world(wins: IdWindow[], focused: () => unknown = () => null) {
+    const app = new FakeEmitter();
+    const BW = { getAllWindows: vi.fn(() => wins), getFocusedWindow: vi.fn(focused) };
+    keys.push(app);
+    const onError = vi.fn();
+    return {
+      app,
+      BW,
+      onError,
+      t: electronApplicationTrackerFor({ app, BrowserWindow: BW }, onError),
+    };
+  }
+
+  describe('keyWindowId()', () => {
+    it('is the focused window first, else the most recently focused, else the first visible, else the first alive', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      expect(world([a, b], () => b).t.keyWindowId()).toBe(2);
+      const w = world([a, b]);
+      expect(w.t.keyWindowId()).toBe(1); // first created
+      a.visible = false;
+      expect(w.t.keyWindowId()).toBe(2); // a hidden background window is skipped
+      b.visible = false;
+      expect(w.t.keyWindowId()).toBe(1); // none visible: the first
+      w.t.on('windowFocus', () => undefined);
+      b.emit('focus');
+      expect(w.t.keyWindowId()).toBe(2);
+    });
+    it('is undefined with no window, with only destroyed ones, and when the id is not a finite number (never a made-up id)', () => {
+      expect(world([]).t.keyWindowId()).toBeUndefined();
+      const gone = new IdWindow(1);
+      gone.gone = true;
+      expect(world([gone]).t.keyWindowId()).toBeUndefined();
+      expect(world([new IdWindow('x')]).t.keyWindowId()).toBeUndefined();
+    });
+    it('answers undefined (and reports) when the window list cannot be read', () => {
+      const app = new FakeEmitter();
+      keys.push(app);
+      const onError = vi.fn();
+      const t = electronApplicationTrackerFor(
+        {
+          app,
+          BrowserWindow: {
+            getAllWindows: () => {
+              throw new Error('windows');
+            },
+          },
+        },
+        onError,
+      );
+      expect(t.keyWindowId()).toBeUndefined();
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'windows' }));
+    });
+  });
+
+  describe('keyWindow stage', () => {
+    it('emits the new key window id when it CHANGES (focus), and nothing when it does not (blur keeps the last focused)', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      expect(seen).not.toHaveBeenCalled(); // arming says nothing: the initial key is read with keyWindowId()
+      b.emit('focus');
+      a.emit('blur'); // a blur is not a focus
+      b.emit('blur'); // the last focused stays the key window
+      b.emit('focus'); // already key: no change
+      a.emit('focus');
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([{ windowId: 2 }, { windowId: 1 }]);
+    });
+
+    it('show and hide move the key only when they change the answer (no focus has ever happened)', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      a.visible = false;
+      a.emit('hide'); // the first VISIBLE window is now b
+      b.emit('show'); // still b
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([{ windowId: 2 }]);
+    });
+
+    it('closing the key window hands the key on; closing the last one says there is none ({})', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      t.on('windowFocus', () => undefined);
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      b.emit('focus');
+      b.close(); // b was the key; a is the first alive
+      a.visible = true;
+      a.close();
+      expect(seen.mock.calls.map((c) => c[0])).toStrictEqual([
+        { windowId: 2 },
+        { windowId: 1 },
+        {},
+      ]);
+    });
+
+    it('a window created AFTER arming takes part', () => {
+      const a = new IdWindow(1);
+      const { t, app } = world([a]);
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      const late = new IdWindow(9);
+      app.emit('browser-window-created', late);
+      late.emit('focus');
+      expect(seen).toHaveBeenCalledExactlyOnceWith({ windowId: 9 });
+    });
+
+    it('is armed only while it has a listener and releases every window listener with the last one', () => {
+      const a = new IdWindow(1);
+      const { t, app } = world([a]);
+      expect(app.count('browser-window-created')).toBe(0);
+      const off = t.on('keyWindow', () => undefined);
+      expect(app.count('browser-window-created')).toBe(1);
+      expect(['focus', 'blur', 'show', 'hide', 'closed'].map((e) => a.count(e))).toEqual([
+        1, 1, 1, 1, 1,
+      ]);
+      off();
+      expect(app.total()).toBe(0);
+      expect(a.total()).toBe(0);
+    });
+
+    it('shares the most-recently-focused memory with windowFocus: releasing ONE of them keeps it, releasing both drops it', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      const offFocus = t.on('windowFocus', () => undefined);
+      const offKey = t.on('keyWindow', () => undefined);
+      b.emit('focus');
+      expect(t.keyWindowId()).toBe(2);
+      offKey();
+      expect(t.keyWindowId()).toBe(2); // windowFocus still observes focus
+      offFocus();
+      expect(t.keyWindowId()).toBe(1); // nobody observes focus: a stale memory is not trusted
+      const offKey2 = t.on('keyWindow', () => undefined);
+      b.emit('focus');
+      offKey2();
+      expect(t.keyWindowId()).toBe(1);
+    });
+
+    it('releasing windowFocus while keyWindow is still armed keeps the most-recently-focused memory too', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      const offFocus = t.on('windowFocus', () => undefined);
+      const offKey = t.on('keyWindow', () => undefined);
+      b.emit('focus');
+      offFocus();
+      expect(t.keyWindowId()).toBe(2);
+      offKey();
+      expect(t.keyWindowId()).toBe(1);
+    });
+
+    it('a re-arm starts from the CURRENT key window (no spurious first event, then a real change is reported)', () => {
+      const a = new IdWindow(1);
+      const b = new IdWindow(2);
+      const { t } = world([a, b], () => b);
+      const seen = vi.fn();
+      const off = t.on('keyWindow', seen);
+      off();
+      t.on('keyWindow', seen);
+      b.emit('focus'); // b is already the key
+      expect(seen).not.toHaveBeenCalled();
+    });
+
+    it('does not bind to a destroyed window', () => {
+      const dead = new IdWindow(1);
+      dead.gone = true;
+      const { t } = world([dead]);
+      t.on('keyWindow', () => undefined);
+      expect(dead.total()).toBe(0);
+    });
+  });
+});

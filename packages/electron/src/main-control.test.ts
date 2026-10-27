@@ -239,6 +239,171 @@ describe('createElectronMainControl', () => {
     expect(JSON.parse(r.sent[0]?.raw as string)).not.toHaveProperty('ho');
   });
 
+  describe('key window (C26)', () => {
+    /** The windows: webContents id -> owning window id; `key` is the key window's id. */
+    function world(owners: Record<number, number | undefined>, key: { id: number | undefined }) {
+      const ipc = fakeIpcMain();
+      const onError = vi.fn();
+      const control = createElectronMainControl({
+        ipcMain: ipc.ipcMain,
+        sessionId: 's1',
+        onError,
+        keyWindow: {
+          currentId: () => key.id,
+          ownerId: (sender) => owners[sender.id as number],
+        },
+      });
+      control.start();
+      const join = (id: number) => {
+        const r = fakeSender(id);
+        ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+        return r;
+      };
+      return { control, join, onError };
+    }
+    const decoded = (r: ReturnType<typeof fakeSender>) => r.sent.map((m) => decodeControl(m.raw));
+
+    it("each session reply states whether THAT renderer's window is the key window", () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: 1, 12: 2 }, key);
+      expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
+      expect(decoded(w.join(12))[0]?.keyWindow).toBe(false);
+    });
+
+    it('a renderer whose webContents has no owning window is not the key window; no key window at all means none is', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: undefined }, key);
+      expect(decoded(w.join(11))[0]?.keyWindow).toBe(false);
+      key.id = undefined;
+      const w2 = world({ 11: 1 }, key);
+      expect(decoded(w2.join(11))[0]?.keyWindow).toBe(false);
+    });
+
+    it('keyWindowChanged() tells ONLY the renderers whose state changed (window-key true/false), and nothing when nothing changed', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: 1, 12: 2, 13: 3 }, key);
+      const a = w.join(11);
+      const b = w.join(12);
+      const c = w.join(13);
+      for (const r of [a, b, c]) r.sent.length = 0;
+      w.control.keyWindowChanged(); // same key: nothing to say
+      expect([a, b, c].map((r) => r.sent.length)).toEqual([0, 0, 0]);
+      key.id = 2;
+      w.control.keyWindowChanged();
+      expect(decoded(a)).toEqual([{ command: 'window-key', keyWindow: false }]);
+      expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+      expect(c.sent).toEqual([]); // window 3 was not key and still is not
+      key.id = undefined; // the last window closed
+      w.control.keyWindowChanged();
+      expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: false });
+      expect(a.sent).toHaveLength(1);
+    });
+
+    it('no key window and no owning window is NOT a match (undefined is never equal to undefined)', () => {
+      const w = world({ 11: undefined }, { id: undefined });
+      expect(decoded(w.join(11))[0]?.keyWindow).toBe(false);
+    });
+
+    it('a CRASHED renderer is not addressed (no frame) and keeps its old state, so the change reaches it once it can hear it', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: 1 }, key);
+      const r = w.join(11);
+      let crashed = true;
+      (r.sender as { isCrashed?: () => boolean }).isCrashed = () => crashed;
+      r.sent.length = 0;
+      key.id = 2;
+      w.control.keyWindowChanged();
+      expect(r.sent).toEqual([]);
+      crashed = false;
+      w.control.keyWindowChanged();
+      expect(decoded(r)).toEqual([{ command: 'window-key', keyWindow: false }]);
+    });
+
+    it('a repeat hello (reload) re-states the CURRENT key flag, and a later change is still diffed against it', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: 1 }, key);
+      const r = w.join(11);
+      key.id = 2;
+      w.control.keyWindowChanged(); // 11 loses the key
+      const reload = w.join(11);
+      expect(decoded(reload)[0]?.keyWindow).toBe(false);
+      r.sent.length = 0;
+      key.id = 1;
+      w.control.keyWindowChanged();
+      expect(decoded(r)).toEqual([{ command: 'window-key', keyWindow: true }]);
+    });
+
+    it('a failing probe is reported and fails OPEN (the renderer keeps writing; an unknown key never silences a window)', () => {
+      const ipc = fakeIpcMain();
+      const onError = vi.fn();
+      const control = createElectronMainControl({
+        ipcMain: ipc.ipcMain,
+        sessionId: 's1',
+        onError,
+        keyWindow: {
+          currentId: () => {
+            throw new Error('windows');
+          },
+          ownerId: () => 1,
+        },
+      });
+      control.start();
+      const r = fakeSender(11);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+      expect(decoded(r)[0]?.keyWindow).toBe(true);
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'windows' }));
+      control.keyWindowChanged(); // still failing: reported, nothing sent (state unchanged)
+      expect(r.sent).toHaveLength(1);
+    });
+
+    it('a failing ownerId probe fails open too', () => {
+      const ipc = fakeIpcMain();
+      const control = createElectronMainControl({
+        ipcMain: ipc.ipcMain,
+        sessionId: 's1',
+        keyWindow: {
+          currentId: () => 1,
+          ownerId: () => {
+            throw new Error('owner');
+          },
+        },
+      });
+      control.start();
+      const r = fakeSender(11);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+      expect(decoded(r)[0]?.keyWindow).toBe(true); // no onError wired: silently fail open
+    });
+
+    it('without a keyWindow option the reply states no `kw` and keyWindowChanged() is a no-op', () => {
+      const ipc = fakeIpcMain();
+      const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+      control.start();
+      const r = fakeSender(11);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+      expect(JSON.parse(r.sent[0]?.raw as string)).not.toHaveProperty('kw');
+      control.keyWindowChanged();
+      expect(r.sent).toHaveLength(1);
+    });
+
+    it('a destroyed or gone renderer is not told, and is forgotten (a rejoin is diffed fresh)', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: 1, 12: 2 }, key);
+      const a = w.join(11);
+      const b = w.join(12);
+      (b.sender as { isDestroyed?: () => boolean }).isDestroyed = () => true;
+      a.sent.length = 0;
+      b.sent.length = 0;
+      key.id = 2;
+      w.control.keyWindowChanged();
+      expect(b.sent).toEqual([]); // destroyed: pruned, not addressed
+      expect(w.control.rendererCount).toBe(1);
+      w.control.rendererGone(11);
+      key.id = 1;
+      w.control.keyWindowChanged();
+      expect(a.sent).toHaveLength(1); // only the pre-gone message
+    });
+  });
+
   it('dedupes a repeat hello from the same renderer (reload) but re-sends the session id', () => {
     const ipc = fakeIpcMain();
     const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 'sess-1' });

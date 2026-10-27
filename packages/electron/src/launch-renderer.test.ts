@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchRenderer, resolveRendererBridge, resolveRendererPost } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { decodeStreamEntry, encodeControl, isHello } from './protocol';
-import { ELECTRON_RENDERER_HOST_OWNED_TRACES } from './trace-tables';
+import { ELECTRON_PER_WINDOW_TRACES, ELECTRON_RENDERER_HOST_OWNED_TRACES } from './trace-tables';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
@@ -148,6 +148,51 @@ describe('launchRenderer', () => {
     expect(owned.has('connection')).toBe(false);
     expect(owned.has('displays')).toBe(true);
     expect(owned.has('capture')).toBe(true);
+  });
+
+  it('a renderer is NOT the key window until its handshake says so: the per-window names are suppressed from the start', async () => {
+    const f = fakeLaunch();
+    await launchRenderer('tok', { launch: f.launch, post: () => {} });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    for (const name of ELECTRON_PER_WINDOW_TRACES) expect(owned.has(name)).toBe(true);
+    expect(owned.has('battery')).toBe(false); // device-level traces are every window's
+  });
+
+  it('the key-window flag (session reply, then window-key) releases and re-suppresses ONLY the per-window names', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    const releases = vi.fn();
+    owned.subscribe(releases);
+    b.drive(encodeControl({ command: 'session', sessionId: 's', keyWindow: true }));
+    for (const name of ELECTRON_PER_WINDOW_TRACES) expect(owned.has(name)).toBe(false);
+    expect(owned.has('displays')).toBe(true); // main's names stay owned by main
+    expect(releases).toHaveBeenCalledExactlyOnceWith(expect.arrayContaining(['url', 'fps']));
+    b.drive(encodeControl({ command: 'window-key', keyWindow: false }));
+    for (const name of ELECTRON_PER_WINDOW_TRACES) expect(owned.has(name)).toBe(true);
+    b.drive(encodeControl({ command: 'window-key', keyWindow: true }));
+    for (const name of ELECTRON_PER_WINDOW_TRACES) expect(owned.has(name)).toBe(false);
+  });
+
+  it('a session reply without `kw` (a main that cannot resolve windows) makes the renderer the key one; main-declared names are unaffected', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['displays'] }));
+    expect(owned.has('url')).toBe(false);
+    expect(owned.has('displays')).toBe(true);
+  });
+
+  it('a key-window message for a client that is no longer launched is ignored', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    (f.client as unknown as { isLaunched: () => boolean }).isLaunched = () => false;
+    b.drive(encodeControl({ command: 'window-key', keyWindow: true }));
+    expect(owned.has('url')).toBe(true);
   });
 
   it('a session reply for a client that is no longer launched does not touch the suppression', async () => {
