@@ -256,6 +256,26 @@ export function createElectronMainControl(
         ...(keyWindow !== undefined ? { keyWindow } : {}),
       }),
     );
+    // A new renderer can change who the key window's participating renderer is (a window that took focus before its SDK
+    // started): re-evaluate the others now, not at the next focus change. The sender's own flag is already recorded.
+    if (probe !== undefined) rediffKey();
+  };
+
+  /** Re-evaluate every registered renderer and tell those whose key flag differs from what they were last told. */
+  const rediffKey = (): void => {
+    const probe = options.keyWindow;
+    if (probe === undefined) return;
+    for (const sender of [...renderers]) {
+      if (sender.isDestroyed?.() === true) {
+        forget(sender);
+        continue;
+      }
+      if (isCrashed(sender)) continue; // no frame to address; its reload's hello re-states the flag
+      const now = isKey(probe, sender);
+      if (sentKey.get(sender) === now) continue;
+      sentKey.set(sender, now);
+      sendTo(sender, encodeControl({ command: 'window-key', keyWindow: now }));
+    }
   };
 
   return {
@@ -289,21 +309,7 @@ export function createElectronMainControl(
     blackoutEnd(): void {
       broadcast('blackout-end');
     },
-    keyWindowChanged(): void {
-      const probe = options.keyWindow;
-      if (probe === undefined) return;
-      for (const sender of [...renderers]) {
-        if (sender.isDestroyed?.() === true) {
-          forget(sender);
-          continue;
-        }
-        if (isCrashed(sender)) continue; // no frame to address; its reload's hello re-states the flag
-        const now = isKey(probe, sender);
-        if (sentKey.get(sender) === now) continue;
-        sentKey.set(sender, now);
-        sendTo(sender, encodeControl({ command: 'window-key', keyWindow: now }));
-      }
-    },
+    keyWindowChanged: rediffKey,
     rendererGone(id: number): void {
       for (const sender of [...renderers]) {
         if (sender.id === id) {

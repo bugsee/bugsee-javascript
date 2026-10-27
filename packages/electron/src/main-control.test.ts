@@ -377,6 +377,18 @@ describe('createElectronMainControl', () => {
         expect(b.sent).toHaveLength(1); // window 2 is now the last participating one
       });
 
+      it('a window that takes focus BEFORE its renderer says hello: when the hello arrives the previously key renderer is re-evaluated and told window-key false', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        const a = w.join(11);
+        key.id = 2; // window 2 takes focus at creation; its page has not loaded the SDK yet
+        w.control.keyWindowChanged();
+        expect(a.sent).toHaveLength(1); // only the session reply: window 1 is still the participating key window
+        const b = w.join(12); // the SDK starts
+        expect(decoded(b)[0]?.keyWindow).toBe(true);
+        expect(decoded(a).at(-1)).toEqual({ command: 'window-key', keyWindow: false });
+      });
+
       it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {
         const key = { id: 9 as number | undefined | null };
         const w = world({ 11: 1 }, key);
