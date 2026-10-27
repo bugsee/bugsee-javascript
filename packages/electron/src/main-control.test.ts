@@ -270,10 +270,10 @@ describe('createElectronMainControl', () => {
       expect(decoded(w.join(12))[0]?.keyWindow).toBe(false);
     });
 
-    it('a renderer whose webContents has no owning window is not the key window; no key window at all means none is', () => {
+    it('a renderer whose owning window CANNOT be resolved fails OPEN (key): an unresolvable window is never silenced; with no key window an owned one is not key', () => {
       const key = { id: 1 as number | undefined };
       const w = world({ 11: undefined }, key);
-      expect(decoded(w.join(11))[0]?.keyWindow).toBe(false);
+      expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
       key.id = undefined;
       const w2 = world({ 11: 1 }, key);
       expect(decoded(w2.join(11))[0]?.keyWindow).toBe(false);
@@ -299,9 +299,16 @@ describe('createElectronMainControl', () => {
       expect(a.sent).toHaveLength(1);
     });
 
-    it('no key window and no owning window is NOT a match (undefined is never equal to undefined)', () => {
-      const w = world({ 11: undefined }, { id: undefined });
-      expect(decoded(w.join(11))[0]?.keyWindow).toBe(false);
+    it('an ownerless renderer stays key through every change (it can never be silenced, whichever window is key)', () => {
+      const key = { id: 1 as number | undefined };
+      const w = world({ 11: undefined }, key);
+      const r = w.join(11);
+      r.sent.length = 0;
+      key.id = 2;
+      w.control.keyWindowChanged();
+      key.id = undefined;
+      w.control.keyWindowChanged();
+      expect(r.sent).toEqual([]);
     });
 
     it('a CRASHED renderer is not addressed (no frame) and keeps its old state, so the change reaches it once it can hear it', () => {

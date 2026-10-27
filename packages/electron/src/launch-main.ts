@@ -222,9 +222,10 @@ const chainAppIdentity =
   };
 
 /**
- * The id of the window that owns a renderer's webContents, resolved through Electron's `BrowserWindow.fromWebContents`
- * (a BrowserView / WebContentsView is owned by its window). Undefined resolver: this `BrowserWindow` cannot say, so the
- * key-window rule is off. A resolver answers undefined for a webContents with no owning window or no numeric id.
+ * The id of the window that owns a renderer's webContents: Electron's `BrowserWindow.fromWebContents`, else the contents' own
+ * `getOwnerBrowserWindow()` (a BrowserView / WebContentsView). Undefined resolver: this `BrowserWindow` cannot say, so the
+ * key-window rule is off. A resolver answers undefined for a webContents with no owning window or no numeric id; the control
+ * manager then treats that renderer as key (an unplaceable renderer is never silenced).
  */
 function ownerResolver(
   BrowserWindow: BrowserWindowSource | undefined,
@@ -239,10 +240,14 @@ function ownerResolver(
   }
   if (typeof resolve !== 'function') return undefined;
   const fromWebContents = resolve;
-  return (sender) => {
-    const id = (fromWebContents(sender) as { id?: unknown } | null | undefined)?.id;
-    return typeof id === 'number' ? id : undefined;
+  const idOf = (win: unknown): number | undefined => {
+    const id = (win as { id?: unknown } | null | undefined)?.id;
+    return typeof id === 'number' && Number.isFinite(id) ? id : undefined;
   };
+  return (sender) =>
+    idOf(fromWebContents(sender)) ??
+    // a BrowserView / WebContentsView may not resolve through the static lookup: ask the contents for its owner window
+    idOf((sender as { getOwnerBrowserWindow?: () => unknown }).getOwnerBrowserWindow?.());
 }
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */

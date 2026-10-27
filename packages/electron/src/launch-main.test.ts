@@ -1433,13 +1433,30 @@ describe('launchMain — Electron domain trackers: power, display, application w
       expect(w.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'owner lookup' }));
     });
 
-    it('a webContents with no owning window, or an owner with no numeric id, is not the key window', () => {
+    it('a webContents with no owning window, or an owner with no numeric id, cannot be placed: it fails OPEN (key)', () => {
       const w = keyWorld({
         fromWebContents: (c: unknown) => (c === undefined ? null : { id: Number.NaN }),
       });
-      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(false); // owner id is NaN
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true); // owner id is NaN
       const w2 = keyWorld({ fromWebContents: () => null });
-      expect(msgs(w2.join(w2.contentsA))[0]?.keyWindow).toBe(false); // no owner
+      expect(msgs(w2.join(w2.contentsA))[0]?.keyWindow).toBe(true); // no owner
+    });
+
+    it("falls back to the webContents' own getOwnerBrowserWindow() when fromWebContents finds no window (a view's owner)", () => {
+      const w = keyWorld({ fromWebContents: () => null });
+      (w.contentsB as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
+        () => w.b;
+      (w.contentsA as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
+        () => null;
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true); // ownerless: fails open
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false); // owned by window 2, window 1 is key
+    });
+
+    it('fromWebContents wins over getOwnerBrowserWindow when it answers', () => {
+      const w = keyWorld();
+      (w.contentsB as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
+        () => w.a; // would say "window 1": it must not be asked
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false); // fromWebContents says window 2
     });
 
     it('without an `app` there is no key-window rule (no tracker): no `kw`', () => {
