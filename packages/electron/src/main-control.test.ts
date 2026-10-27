@@ -241,7 +241,10 @@ describe('createElectronMainControl', () => {
 
   describe('key window (C26)', () => {
     /** The windows: webContents id -> owning window id; `key` is the key window's id. */
-    function world(owners: Record<number, number | undefined>, key: { id: number | undefined }) {
+    function world(
+      owners: Record<number, number | undefined>,
+      key: { id: number | undefined | null },
+    ) {
       const ipc = fakeIpcMain();
       const onError = vi.fn();
       const control = createElectronMainControl({
@@ -264,14 +267,14 @@ describe('createElectronMainControl', () => {
     const decoded = (r: ReturnType<typeof fakeSender>) => r.sent.map((m) => decodeControl(m.raw));
 
     it("each session reply states whether THAT renderer's window is the key window", () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: 1, 12: 2 }, key);
       expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
       expect(decoded(w.join(12))[0]?.keyWindow).toBe(false);
     });
 
     it('a renderer whose owning window CANNOT be resolved fails OPEN (key): an unresolvable window is never silenced; with no key window an owned one is not key', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: undefined }, key);
       expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
       key.id = undefined;
@@ -280,7 +283,7 @@ describe('createElectronMainControl', () => {
     });
 
     it('keyWindowChanged() tells ONLY the renderers whose state changed (window-key true/false), and nothing when nothing changed', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: 1, 12: 2, 13: 3 }, key);
       const a = w.join(11);
       const b = w.join(12);
@@ -299,8 +302,21 @@ describe('createElectronMainControl', () => {
       expect(a.sent).toHaveLength(1);
     });
 
+    it('a key window the probe CANNOT SAY (null: the window list failed) fails OPEN, whereas "no key window" (undefined) does not', () => {
+      const key = { id: null as number | undefined | null };
+      const w = world({ 11: 1 }, key);
+      const r = w.join(11);
+      expect(decoded(r)[0]?.keyWindow).toBe(true); // cannot say: never silenced
+      key.id = undefined;
+      w.control.keyWindowChanged();
+      expect(decoded(r).at(-1)).toEqual({ command: 'window-key', keyWindow: false }); // genuinely none
+      key.id = null;
+      w.control.keyWindowChanged();
+      expect(decoded(r).at(-1)).toEqual({ command: 'window-key', keyWindow: true }); // recovers once it cannot say
+    });
+
     it('an ownerless renderer stays key through every change (it can never be silenced, whichever window is key)', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: undefined }, key);
       const r = w.join(11);
       r.sent.length = 0;
@@ -312,7 +328,7 @@ describe('createElectronMainControl', () => {
     });
 
     it('a CRASHED renderer is not addressed (no frame) and keeps its old state, so the change reaches it once it can hear it', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: 1 }, key);
       const r = w.join(11);
       let crashed = true;
@@ -327,7 +343,7 @@ describe('createElectronMainControl', () => {
     });
 
     it('a repeat hello (reload) re-states the CURRENT key flag, and a later change is still diffed against it', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: 1 }, key);
       const r = w.join(11);
       key.id = 2;
@@ -393,7 +409,7 @@ describe('createElectronMainControl', () => {
     });
 
     it('a destroyed or gone renderer is not told, and is forgotten (a rejoin is diffed fresh)', () => {
-      const key = { id: 1 as number | undefined };
+      const key = { id: 1 as number | undefined | null };
       const w = world({ 11: 1, 12: 2 }, key);
       const a = w.join(11);
       const b = w.join(12);

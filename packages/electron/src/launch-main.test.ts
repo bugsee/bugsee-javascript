@@ -1297,7 +1297,12 @@ describe('launchMain — Electron domain trackers: power, display, application w
       isVisible = () => true;
     }
     function keyWorld(
-      over: { fromWebContents?: unknown; withApp?: boolean; captureWindowEvents?: boolean } = {},
+      over: {
+        fromWebContents?: unknown;
+        withApp?: boolean;
+        captureWindowEvents?: boolean;
+        getAllWindows?: () => unknown;
+      } = {},
     ) {
       const contents = (id: number) => ({
         id,
@@ -1312,7 +1317,7 @@ describe('launchMain — Electron domain trackers: power, display, application w
       const b = new KeyWin(2, contentsB);
       let focused: KeyWin | null = null;
       const BrowserWindow = {
-        getAllWindows: () => [a, b],
+        getAllWindows: over.getAllWindows ?? (() => [a, b]),
         getFocusedWindow: () => focused,
         ...('fromWebContents' in over
           ? { fromWebContents: over.fromWebContents }
@@ -1421,6 +1426,18 @@ describe('launchMain — Electron domain trackers: power, display, application w
       };
       ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
       expect(JSON.parse(r.sent[0]?.raw as string)).not.toHaveProperty('kw');
+    });
+
+    it('a window list that cannot be read (nothing focused) fails OPEN: no renderer is silenced because the tracker cannot say', () => {
+      const w = keyWorld({
+        getAllWindows: () => {
+          throw new Error('windows');
+        },
+      });
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true);
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(true);
+      w.focus(w.b); // a focused window can be said again: only the key one stays key
+      expect(msgs(w.join(w.contentsA)).at(-1)?.keyWindow).toBe(false);
     });
 
     it('a fromWebContents that throws when called is reported to the launch onError and fails OPEN (the renderer keeps writing)', () => {

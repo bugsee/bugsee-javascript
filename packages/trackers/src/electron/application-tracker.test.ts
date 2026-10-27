@@ -727,14 +727,48 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
       b.emit('focus');
       expect(w.t.keyWindowId()).toBe(2);
     });
-    it('is undefined with no window, with only destroyed ones, and when the id is not a finite number (never a made-up id)', () => {
+    it('is undefined with no window or only destroyed ones, and null (cannot say) when the key window has no finite id (never a made-up id)', () => {
       expect(world([]).t.keyWindowId()).toBeUndefined();
       const gone = new IdWindow(1);
       gone.gone = true;
       expect(world([gone]).t.keyWindowId()).toBeUndefined();
-      expect(world([new IdWindow('x')]).t.keyWindowId()).toBeUndefined();
+      expect(world([new IdWindow('x')]).t.keyWindowId()).toBeNull(); // a key window with no usable id: cannot say
     });
-    it('answers undefined (and reports) when the window list cannot be read', () => {
+    it('answers null (cannot say) when BrowserWindow has no getAllWindows at all, but a focused or remembered window still answers', () => {
+      const app = new FakeEmitter();
+      keys.push(app);
+      const focused = new IdWindow(4);
+      const t = electronApplicationTrackerFor({
+        app,
+        BrowserWindow: { getFocusedWindow: () => focused },
+      });
+      expect(t.keyWindowId()).toBe(4); // the focused window needs no list
+      const none = new FakeEmitter();
+      keys.push(none);
+      expect(
+        electronApplicationTrackerFor({ app: none, BrowserWindow: {} }).keyWindowId(),
+      ).toBeNull();
+      const bare = new FakeEmitter();
+      keys.push(bare);
+      expect(electronApplicationTrackerFor({ app: bare }).keyWindowId()).toBeNull(); // no BrowserWindow seam at all
+    });
+
+    it('a failing list is still overridden by a focused window (the answer only degrades to null when NOTHING can be said)', () => {
+      const app = new FakeEmitter();
+      keys.push(app);
+      const t = electronApplicationTrackerFor({
+        app,
+        BrowserWindow: {
+          getAllWindows: () => {
+            throw new Error('windows');
+          },
+          getFocusedWindow: () => new IdWindow(6),
+        },
+      });
+      expect(t.keyWindowId()).toBe(6);
+    });
+
+    it('answers null (cannot say, and reports) when the window list cannot be read; undefined stays "no key window"', () => {
       const app = new FakeEmitter();
       keys.push(app);
       const onError = vi.fn();
@@ -749,7 +783,7 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
         },
         onError,
       );
-      expect(t.keyWindowId()).toBeUndefined();
+      expect(t.keyWindowId()).toBeNull(); // CANNOT SAY: not "there is no key window"
       expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'windows' }));
     });
   });
@@ -798,6 +832,31 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
         { windowId: 1 },
         {},
       ]);
+    });
+
+    it('a failing list publishes `{}` (cannot say) and consumers re-read keyWindowId() to tell that from "none"', () => {
+      const a = new IdWindow(1);
+      let fail = false;
+      const app = new FakeEmitter();
+      keys.push(app);
+      const t = electronApplicationTrackerFor(
+        {
+          app,
+          BrowserWindow: {
+            getAllWindows: () => {
+              if (fail) throw new Error('windows');
+              return [a];
+            },
+          },
+        },
+        () => undefined,
+      );
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      fail = true;
+      a.emit('hide');
+      expect(seen).toHaveBeenCalledExactlyOnceWith({});
+      expect(t.keyWindowId()).toBeNull();
     });
 
     it('a window created AFTER arming takes part', () => {

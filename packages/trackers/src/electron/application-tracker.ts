@@ -92,10 +92,12 @@ interface WatchConfig<S extends AppStage> {
 const withId = <K extends string>(key: K, id: number | undefined): { [P in K]?: number } =>
   (id === undefined ? {} : { [key]: id }) as { [P in K]?: number };
 
-const windowsOf = (env: ElectronApplicationEnv): unknown[] => {
+/** The window list, or null when it cannot be read at all (no `getAllWindows`, or it did not return an array). */
+const readWindows = (env: ElectronApplicationEnv): unknown[] | null => {
   const all = env.BrowserWindow?.getAllWindows?.();
-  return Array.isArray(all) ? all : [];
+  return Array.isArray(all) ? all : null;
 };
+const windowsOf = (env: ElectronApplicationEnv): unknown[] => readWindows(env) ?? [];
 
 const WATCH: { [S in AppStage]: WatchConfig<S> } = {
   windowFocus: {
@@ -192,7 +194,7 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
   /** The window that last took focus (only seen while `windowFocus` or `keyWindow` is armed). */
   #lastFocused: Watched | undefined;
   /** The key window id the `keyWindow` stage last published (or saw when it armed): changes only are emitted. */
-  #publishedKey: number | undefined;
+  #publishedKey: number | undefined | null;
 
   constructor(env: ElectronApplicationEnv = {}, onError?: (error: unknown) => unknown) {
     super(onError);
@@ -215,7 +217,7 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
   }
 
   /** The key window (see the header), or undefined when there is none. Never throws. */
-  #keyWindow(): Watched | undefined {
+  #keyWindow(): Watched | undefined | null {
     const usable = (w: unknown): w is Watched =>
       typeof w === 'object' && w !== null && !destroyed(w as Watched);
     try {
@@ -229,32 +231,41 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     try {
       // `getAllWindows()` order is not documented (in practice creation order): the first VISIBLE window is preferred so a hidden
       // background window (a tray/worker window) is not taken as the first created; with none visible, the first usable one.
-      const all = windowsOf(this.#env).filter(usable);
+      const list = readWindows(this.#env);
+      if (list === null) return null; // CANNOT SAY: not the same as a list with no usable window
+      const all = list.filter(usable);
       return all.find(visible) ?? all[0];
     } catch (error) {
       this.report(error);
-      return undefined;
+      return null;
     }
   }
 
-  /** The key window's id, or undefined when there is none (or it has no finite id). Never throws. */
-  keyWindowId(): number | undefined {
+  /**
+   * The key window's id; `undefined` when there is none (an empty or all-destroyed window list); `null` when the tracker
+   * CANNOT SAY (the window list cannot be read, or the key window has no numeric id), which a consumer must not read as "no
+   * key window". Never throws.
+   */
+  keyWindowId(): number | undefined | null {
     const win = this.#keyWindow();
-    return win === undefined ? undefined : idOf(win);
+    if (win === undefined) return undefined;
+    // `win` is null when the tracker cannot say; `idOf` answers undefined for it (its read is guarded), and so does a window
+    // with no numeric id: both are "cannot say"
+    return idOf(win as Watched) ?? null;
   }
 
-  /** Publish the key window id once per change (`{}` when there is none now). */
+  /** Publish the key window id once per change (`{}` when there is none, or it cannot be said: consumers re-read). */
   #publishKey(): void {
     const id = this.keyWindowId();
     if (id === this.#publishedKey) return;
     this.#publishedKey = id;
-    this.emit('keyWindow', id === undefined ? {} : { windowId: id });
+    this.emit('keyWindow', id === undefined || id === null ? {} : { windowId: id });
   }
 
   /** The key window's bounds (a rectangle), or undefined when there is no key window or it cannot say. Never throws. */
   keyWindowBounds(): unknown {
     const win = this.#keyWindow();
-    if (win === undefined) return undefined;
+    if (win === undefined || win === null) return undefined;
     try {
       return win.getBounds?.();
     } catch (error) {

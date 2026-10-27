@@ -61,13 +61,13 @@ export interface ElectronMainControlOptions {
   hostOwnedTraces?: readonly string[];
   /**
    * Resolves the session's KEY window (spec "Several windows in one session"): `currentId` is the key window's id (undefined:
-   * none) and `ownerId` the id of the window that owns a renderer's webContents (undefined: it has none). When given, every
+   * there is none; null: it CANNOT SAY, a failed window-list read, which fails open like a failing probe) and `ownerId` the id of the window that owns a renderer's webContents (undefined: it has none). When given, every
    * `session` reply states whether the renderer is key (`kw`) and {@link ElectronMainControl.keyWindowChanged} tells the
    * renderers whose answer changed. A renderer whose window cannot be resolved (`ownerId` undefined) and a probe that
    * throws (reported to `onError`) both fail OPEN: an unknown key never silences a window. Without it no `kw` is stated and every renderer stays key.
    */
   keyWindow?: {
-    currentId(): number | undefined;
+    currentId(): number | undefined | null;
     ownerId(sender: ControlSenderLike): number | undefined;
   };
   /** Internal-error sink (a failing key-window probe). */
@@ -149,7 +149,8 @@ export function createElectronMainControl(
       const owner = probe.ownerId(sender);
       // a renderer whose window cannot be resolved (a view with no owner, an Electron that cannot say) is never silenced:
       // an unplaceable renderer is key, which at worst interleaves in that rare case instead of dropping its traces all session
-      return owner === undefined || owner === probe.currentId();
+      const key = probe.currentId();
+      return owner === undefined || key === null || owner === key;
     } catch (error) {
       reportGuarded(options.onError, error);
       return true;
