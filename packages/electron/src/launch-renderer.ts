@@ -17,7 +17,6 @@ import {
   LifecycleEvents,
   resolveFailOnBoolean,
 } from '@bugsee/core';
-import { TraceName } from '@bugsee/protocol';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';

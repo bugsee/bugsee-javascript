@@ -102,6 +102,7 @@ export interface ElectronAppLike {
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
+import { TraceName } from '@bugsee/protocol';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
@@ -540,8 +541,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     hostOwnedTraces: !writesTraces
       ? []
       : [
-          ...(display !== undefined ? ['displays'] : []),
-          ...(captureState !== undefined ? ['capture'] : []),
+          ...(display !== undefined ? [TraceName.DISPLAYS] : []),
+          ...(captureState !== undefined ? [TraceName.CAPTURE] : []),
           ...(callerProducers ? [] : ELECTRON_MAIN_HEAP_TRACES),
         ],
   });

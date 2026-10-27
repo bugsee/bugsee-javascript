@@ -11,6 +11,8 @@
 //
 // Ownership rules come from spec platforms/javascript.md "Host-owned traces in WebViews and Electron renderers".
 
+import { TraceName } from '@bugsee/protocol';
+
 /** A live, layered set of suppressed trace names. */
 export interface TraceSuppression {
   /** Whether a value for `name` must be dropped now. */
@@ -78,9 +80,9 @@ export const sanitizeTraceNames = (value: unknown): string[] | undefined =>
 
 /** The node trace set's V8 heap names: written by Electron MAIN for its own heap (never by a renderer). */
 export const ELECTRON_MAIN_HEAP_TRACES: readonly string[] = [
-  'ram_js_heap_total',
-  'ram_js_heap_used',
-  'ram_js_heap_free',
+  TraceName.RAM_JS_HEAP_TOTAL,
+  TraceName.RAM_JS_HEAP_USED,
+  TraceName.RAM_JS_HEAP_FREE,
 ];
 
 /**
@@ -89,12 +91,12 @@ export const ELECTRON_MAIN_HEAP_TRACES: readonly string[] = [
  * Everything else a renderer writes (device-level `battery`/`connection`, per-window state, page-owned traces) flows.
  */
 export const ELECTRON_RENDERER_HOST_OWNED_TRACES: readonly string[] = [
-  'displays',
-  'capture',
+  TraceName.DISPLAYS,
+  TraceName.CAPTURE,
   // (written out, not spread: a spread is not provably pure, and would keep this table in the WebView bundle)
-  'ram_js_heap_total',
-  'ram_js_heap_used',
-  'ram_js_heap_free',
+  TraceName.RAM_JS_HEAP_TOTAL,
+  TraceName.RAM_JS_HEAP_USED,
+  TraceName.RAM_JS_HEAP_FREE,
 ];
 
 /**
@@ -104,16 +106,16 @@ export const ELECTRON_RENDERER_HOST_OWNED_TRACES: readonly string[] = [
  * and the page-owned traces stay with the WebView.
  */
 export const WEBVIEW_HOST_OWNED_TRACES: readonly string[] = [
-  'battery',
-  'charging',
-  'battery_charging_time_s',
-  'battery_discharging_time_s',
-  'orientation',
-  'app_state',
-  'connection',
-  'fps',
-  'view',
-  'ram_system_advertised',
-  'displays',
-  'capture',
+  TraceName.BATTERY,
+  TraceName.CHARGING,
+  TraceName.BATTERY_CHARGING_TIME_S,
+  TraceName.BATTERY_DISCHARGING_TIME_S,
+  TraceName.ORIENTATION,
+  TraceName.APP_STATE,
+  TraceName.CONNECTION,
+  TraceName.FPS,
+  TraceName.VIEW,
+  TraceName.RAM_SYSTEM_ADVERTISED,
+  TraceName.DISPLAYS,
+  TraceName.CAPTURE,
 ];

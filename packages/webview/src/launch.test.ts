@@ -1323,6 +1323,31 @@ describe('launch (webview)', () => {
       });
     });
 
+    describe('the view trace can be handed back by native (the always-built producer is gated only by the live suppression)', () => {
+      it('hostOwnedTraces: [] releases `view`: the held view is written at the handshake and later changes follow', async () => {
+        stubSensors();
+        try {
+          const fake = fakeGlobal();
+          const carrier = {};
+          const client = track(
+            'tok',
+            baseOptions({ global: fake.global, window: fakeWin().win, carrier }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          client.setView({ name: 'Detail' });
+          sendControl(fake.global, { config: { hostOwnedTraces: [] } });
+          client.setView({ name: 'Other' });
+          const views = entriesOfType(fake.msgs(), 'traces.system')
+            .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+            .filter((d) => d.name === 'view')
+            .map((d) => d.value);
+          expect(views).toEqual([{ name: 'Detail' }, { name: 'Other' }]);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
     describe('the url trace (captureUrl / urlSanitizer)', () => {
       const urlRows = async (over: Partial<BugseeWebViewLaunchOptions>, href?: string) => {
         stubSensors();

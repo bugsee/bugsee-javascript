@@ -28,10 +28,12 @@ import { describe, expect, it } from 'vitest';
 import { bundleEdgeEntry } from './edge-bundle';
 
 const KB = 1024;
-// Current real size is ~22 KB gzip / ~60 KB raw (core+capture+browser+protocol+util). 64 KB gzip is ~3x headroom
-// — catches a gross regression (an un-minified build, a duplicate-bundled or heavy new dep) while leaving room
-// for organic growth (the viewtree / performance streams in later slices), and the artifact size stays logged.
-const GZIP_BUDGET = 64 * KB;
+// The budget is a regression catch for a bundle that ships fixed inside the native binary: an un-minified build, a
+// duplicate-bundled or heavy new dep. It tracks real growth, so it is raised on purpose, never silently: it was 64 KiB while
+// the bundle was ~22 KB gzip, and is now 68 KiB (69,632 bytes) because the bundle has grown to ~64-65 KB gzip with the route
+// and view traces, the wire-name registry and the host-owned trace suppression (the live set, its table and the handshake
+// field cost ~340 bytes gzip). The artifact size stays logged by the test below.
+const GZIP_BUDGET = 68 * KB;
 const RAW_BUDGET = 200 * KB;
 
 const IIFE_ENTRY = fileURLToPath(new URL('../../webview/src/iife.ts', import.meta.url));

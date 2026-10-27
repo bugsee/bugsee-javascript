@@ -68,7 +68,7 @@ import {
   setCarrierClient,
   setCarrierStatus,
 } from '@bugsee/core';
-import { BugseeOption, TraceName } from '@bugsee/protocol';
+import { BugseeOption } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { mintControlToken } from './control-token';
 import { createHostBridge, type HostBridgeTransport } from './host-bridge';
