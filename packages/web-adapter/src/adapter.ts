@@ -85,8 +85,19 @@ export function reportError(error: unknown, options: ReportErrorOptions = {}): v
   }, options.onError);
 }
 
-/** Refine the active navigation transaction's name via the performance naming seam. A no-op when
- *  the SDK or the performance extension is not available. */
+/** Resolve the client's `method` when it exists. A client from another copy of the SDK that predates `setRoute` /
+ *  `setView` lacks it: the adapter then simply has nothing to feed, and must not report an error on every navigation. */
+const clientMethod = <K extends 'setRoute' | 'setView'>(
+  client: Bugsee,
+  name: K,
+): Bugsee[K] | undefined => (typeof client[name] === 'function' ? client[name] : undefined);
+
+/**
+ * Report the route the user is on, as the router's PATTERN (`/users/:id`): feeds the `route` trace (`client.setRoute`) and
+ * refines the active navigation transaction's name via the performance naming seam. The two feeds are independent (either
+ * may be absent: no performance extension, or an older client without `setRoute`), and a no-op when no SDK is launched.
+ * Callers pass COMMITTED navigations only (a held `route` would otherwise record a route the user never reached).
+ */
 export function setRouteName(name: string, options: RouteNamingOptions = {}): void {
   // Contained for the same reason `reportError` is: this runs from a host callback (a router subscription,
   // a navigation hook), and `getClient` is a public option that can throw. The rule is "every
@@ -95,5 +106,31 @@ export function setRouteName(name: string, options: RouteNamingOptions = {}): vo
     const client = resolveClient(options.getClient);
     if (client === undefined) return;
     tryGetPerf(client)?.setRouteName(name);
+  }, options.onError);
+  neverThrow(() => {
+    const client = resolveClient(options.getClient);
+    if (client === undefined) return;
+    clientMethod(client, 'setRoute')?.call(client, name);
+  }, options.onError);
+}
+
+/** True when `name` is usable as a `view` name: a string that is not empty and is not one or two characters (the
+ *  mark of a minified class or function name). A heuristic, as the spec says: the application's own `setView` is the
+ *  only guaranteed source. */
+export function isObtainableViewName(name: unknown): name is string {
+  return typeof name === 'string' && name.trim().length > 2;
+}
+
+/**
+ * Report the view (component) the user is looking at, as the `view` trace: `client.setView({ name, type })`, where `type`
+ * is the adapter id. BEST EFFORT: a name that is empty or looks minified writes NOTHING (never a fabricated name, never
+ * the route in its place; the previous view then stays held). A no-op when no SDK is launched.
+ */
+export function setViewName(name: unknown, type: string, options: AdapterClientOptions = {}): void {
+  if (!isObtainableViewName(name)) return;
+  neverThrow(() => {
+    const client = resolveClient(options.getClient);
+    if (client === undefined) return;
+    clientMethod(client, 'setView')?.call(client, { name: name.trim(), type });
   }, options.onError);
 }

@@ -80,6 +80,12 @@ export interface BugseeCarrier {
   /** True while `relaunch()` is stopping the old client and building the new one (notify backlog handover). */
   relaunching?: boolean;
   /**
+   * The application's route / view state (a `ScreenTracker`, typed `unknown` here: it is created by `screenTrackerFor`
+   * in `./screen-state`). Process-level so a relaunch inherits it and the client and the platform's trace producer share
+   * one instance. Deliberately NOT in {@link interceptors}: that map is "one global patch each", and this patches nothing.
+   */
+  screenTracker?: unknown;
+  /**
    * Bumped each time a `relaunch()` attempt FAILS. A client that handed its notifications over records the
    * value when its stop() was issued; a hand-back that arrives after the value moved belongs to an attempt nobody
    * will complete, so it is dropped instead of parked on `globalThis` (user-identifying titles/e-mail).

@@ -21,6 +21,10 @@ export {
   InterceptorBase,
   type MultiKeyEmitter,
   MultiKeyEmitterBase,
+  type ScreenEvents,
+  ScreenTracker,
+  type ScreenView,
+  type ScreenViewObject,
   type TrackerRegistry,
 } from '@bugsee/trackers';
 export type { AttributeValue } from '@bugsee/types';
@@ -299,6 +303,7 @@ export {
   type RequestContext,
 } from './request-context';
 export { createRingBuffer, type RingBuffer } from './ring-buffer';
+export { screenTrackerFor } from './screen-state';
 export {
   isSensitiveInput,
   SENSITIVE_INPUT_MATCHERS,

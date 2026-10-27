@@ -11,12 +11,14 @@ export {
   type AdapterMechanism,
   getPerformanceApi,
   guarded,
+  isObtainableViewName,
   neverThrow,
   type ReportErrorOptions,
   type RouteNamingOptions,
   reportError,
   resolveClient,
   setRouteName,
+  setViewName,
 } from './adapter';
 export {
   RENDER_DURATION_ATTRIBUTE,

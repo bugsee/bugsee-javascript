@@ -1,4 +1,10 @@
-import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import {
+  guarded,
+  neverThrow,
+  type RouteNamingOptions,
+  setRouteName,
+  setViewName,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/vue ROUTER NAMING integration (and the two-phase naming seam). On a
 // navigation, vue-router knows the matched route PATTERN (`/users/:id` — the matcher rewrites a
@@ -13,12 +19,13 @@ export { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 /** The minimal vue-router route shape we read — structurally matches `RouteLocationNormalized`. */
 export interface VueRouteLike {
-  matched?: ReadonlyArray<{ path?: string }>;
+  matched?: ReadonlyArray<{ path?: string; components?: { default?: unknown } | null }>;
 }
 
 /** The minimal vue-router router shape we touch — structurally matches the `Router`'s `afterEach`. */
 export interface VueRouterLike {
-  afterEach: (guard: (to: VueRouteLike) => void) => void;
+  // `failure` (the third argument) is set for an aborted, redirected-away or duplicated navigation: `afterEach` fires for those too.
+  afterEach: (guard: (to: VueRouteLike, from?: unknown, failure?: unknown) => void) => void;
 }
 
 /** The parameterized pattern for a vue-router navigation: the deepest matched record's `path` (the full
@@ -36,6 +43,23 @@ export function routePatternFromVueRoute(route: VueRouteLike): string | undefine
   });
 }
 
+/**
+ * The component name of the route a navigation committed to (the `view` trace, best effort): the deepest matched record's
+ * resolved default component (`matched[last].components.default`, so a lazy route works once the navigation commits):
+ * its `name`, `__name` (`<script setup>`) or `displayName`. Undefined when there is none; whether a name is obtainable
+ * (not minified) is decided by `setViewName`.
+ */
+export function viewNameFromVueRoute(route: VueRouteLike): string | undefined {
+  return neverThrow(() => {
+    const matched = route.matched;
+    const component = matched?.[matched.length - 1]?.components?.default as
+      | { name?: unknown; __name?: unknown; displayName?: unknown }
+      | undefined;
+    const name = component?.name ?? component?.__name ?? component?.displayName;
+    return typeof name === 'string' && name !== '' ? name : undefined;
+  });
+}
+
 /** Instrument a vue-router instance: on each navigation, refine the active transaction to the matched route
  * PATTERN. Call once after `createRouter(...)`. A no-op for a navigation with no usable pattern. */
 export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingOptions = {}): void {
@@ -48,9 +72,13 @@ export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingO
   // `routePatternFromVueRoute` and `setRouteName` now contain themselves, so nothing inside can throw. It
   // stays because the rule is enforced by construction at every host callback rather than re-derived
   // from what the callees currently happen to do. Identical situation to @bugsee/react's `apply`.
-  const onNavigation = guarded((to: VueRouteLike): void => {
+  const onNavigation = guarded((to: VueRouteLike, _from?: unknown, failure?: unknown): void => {
+    // COMMITTED navigations only: `afterEach` also fires with a `failure` for an aborted, cancelled, redirected-away or
+    // duplicated navigation, and a held `route` would record a route the user never reached.
+    if (failure !== undefined && failure !== null) return;
     const pattern = routePatternFromVueRoute(to);
     if (pattern !== undefined) setRouteName(pattern, options);
+    setViewName(viewNameFromVueRoute(to), 'vue', options);
   }, options.onError);
   neverThrow(() => router.afterEach(onNavigation), options.onError);
 }

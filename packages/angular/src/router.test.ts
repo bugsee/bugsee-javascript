@@ -7,6 +7,7 @@ import {
   routePatternFromSnapshot,
   setRouteName,
   setRouteNameFromRouter,
+  viewNameFromSnapshot,
 } from './router';
 
 function fakeClient() {
@@ -107,5 +108,74 @@ describe('setRouteNameFromRouter', () => {
     const { client, setRouteName: spy } = fakeClient();
     setRouteNameFromRouter(routerWith(chain(undefined)), { getClient: () => client });
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('the route and view traces from the router state', () => {
+  class OrderDetailComponent {}
+  const withComponent = (component: unknown): RouteSnapshotLike => ({
+    routeConfig: null,
+    firstChild: {
+      routeConfig: { path: 'orders' },
+      component: class Shell {},
+      firstChild: { routeConfig: { path: ':id' }, component, firstChild: null },
+    },
+  });
+
+  it('viewNameFromSnapshot reads the DEEPEST snapshot component class name (also for lazy routes)', () => {
+    expect(viewNameFromSnapshot(withComponent(OrderDetailComponent))).toBe('OrderDetailComponent');
+  });
+
+  it('viewNameFromSnapshot is undefined for a deepest snapshot with no component, a non-class, or no name', () => {
+    expect(viewNameFromSnapshot(withComponent(undefined))).toBeUndefined();
+    expect(viewNameFromSnapshot(withComponent('OrderDetail'))).toBeUndefined();
+    expect(viewNameFromSnapshot(withComponent({ name: 'obj' }))).toBeUndefined();
+    expect(
+      viewNameFromSnapshot(withComponent(Object.defineProperty(class {}, 'name', { value: '' }))),
+    ).toBeUndefined();
+    expect(
+      viewNameFromSnapshot(withComponent(Object.defineProperty(class {}, 'name', { value: 7 }))),
+    ).toBeUndefined();
+    expect(viewNameFromSnapshot(null)).toBeUndefined();
+    expect(viewNameFromSnapshot(undefined)).toBeUndefined();
+  });
+
+  it('viewNameFromSnapshot is bounded on a cyclic snapshot tree', () => {
+    const cyclic: RouteSnapshotLike = { component: class Loop {} };
+    cyclic.firstChild = cyclic;
+    expect(viewNameFromSnapshot(cyclic)).toBe('Loop');
+  });
+
+  it('setRouteNameFromRouter writes the pattern (never router.url, so no query) and the view {name, type: "angular"}', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute, setView } as unknown as Bugsee;
+    const router: AngularRouterLike = {
+      routerState: { snapshot: { root: withComponent(OrderDetailComponent) } },
+    };
+    setRouteNameFromRouter(router, { getClient: () => full });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).toHaveBeenCalledExactlyOnceWith({
+      name: 'OrderDetailComponent',
+      type: 'angular',
+    });
+  });
+
+  it('writes no view for a minified class name, but still the route', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const full = {
+      setRoute,
+      setView,
+      ext: () => ({ setRouteName: () => {} }),
+    } as unknown as Bugsee;
+    class Xy {}
+    setRouteNameFromRouter(
+      { routerState: { snapshot: { root: withComponent(Xy) } } },
+      { getClient: () => full },
+    );
+    expect(setRoute).toHaveBeenCalledTimes(1);
+    expect(setView).not.toHaveBeenCalled();
   });
 });

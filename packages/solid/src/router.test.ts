@@ -6,6 +6,7 @@ import {
   type SolidRouteMatchLike,
   setRouteName,
   setRouteNameFromSolidMatches,
+  viewNameFromSolidMatches,
 } from './router';
 
 function fakeClient() {
@@ -79,5 +80,69 @@ describe('setRouteNameFromSolidMatches', () => {
     const { client, setRouteName: spy } = fakeClient();
     setRouteNameFromSolidMatches([], { getClient: () => client });
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('the route and view traces from Solid Router matches', () => {
+  function OrderDetail() {
+    return null;
+  }
+  const page = (component: unknown): SolidRouteMatchLike[] => [
+    { route: { pattern: '/orders', component: () => null } },
+    { route: { pattern: '/orders/:id', component } },
+  ];
+
+  it('viewNameFromSolidMatches reads the deepest match component: displayName, else name', () => {
+    expect(viewNameFromSolidMatches(page(OrderDetail))).toBe('OrderDetail');
+    expect(
+      viewNameFromSolidMatches(page(Object.assign(() => null, { displayName: 'Pretty' }))),
+    ).toBe('Pretty');
+  });
+
+  it('viewNameFromSolidMatches is undefined for no component, a non-function, a nameless function or no matches', () => {
+    expect(viewNameFromSolidMatches(page(undefined))).toBeUndefined();
+    expect(viewNameFromSolidMatches(page({ name: 'NotAFunction' }))).toBeUndefined();
+    expect(viewNameFromSolidMatches(page('Str'))).toBeUndefined();
+    expect(
+      viewNameFromSolidMatches(page(Object.defineProperty(() => null, 'name', { value: '' }))),
+    ).toBeUndefined();
+    expect(viewNameFromSolidMatches([])).toBeUndefined();
+    expect(viewNameFromSolidMatches(null)).toBeUndefined();
+    expect(viewNameFromSolidMatches(undefined)).toBeUndefined();
+    expect(viewNameFromSolidMatches([{}])).toBeUndefined();
+  });
+
+  it('viewNameFromSolidMatches reads only the deepest match', () => {
+    expect(
+      viewNameFromSolidMatches([
+        { route: { component: OrderDetail } },
+        { route: { pattern: '/x' } },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('setRouteNameFromSolidMatches writes the route and the view {name, type: "solid"}', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute, setView } as unknown as Bugsee;
+    setRouteNameFromSolidMatches(page(OrderDetail), { getClient: () => full });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).toHaveBeenCalledExactlyOnceWith({ name: 'OrderDetail', type: 'solid' });
+  });
+
+  it('writes no view for a minified name, but still the route', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const full = {
+      setRoute,
+      setView,
+      ext: () => ({ setRouteName: () => {} }),
+    } as unknown as Bugsee;
+    setRouteNameFromSolidMatches(page(Object.assign(() => null, { displayName: 'q' })), {
+      getClient: () => full,
+    });
+    expect(setRoute).toHaveBeenCalledTimes(1);
+    expect(setView).not.toHaveBeenCalled();
   });
 });

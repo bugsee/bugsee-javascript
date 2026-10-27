@@ -11,11 +11,18 @@ import {
   type BugseeLaunchOptionsWithPerformance,
   launch as browserLaunch,
 } from '@bugsee/bugsee';
-import { installBugseeErrorHandler, type VueAppLike } from '@bugsee/vue';
+import {
+  installBugseeErrorHandler,
+  instrumentVueRouter,
+  type VueAppLike,
+  type VueRouterLike,
+} from '@bugsee/vue';
 
 /** The Nuxt app subset we use — its `vueApp` (a Vue app) (structural; no `nuxt`/`vue` dep). */
 export interface NuxtAppLike {
   vueApp: VueAppLike;
+  /** Nuxt's vue-router instance (provided by Nuxt's router plugin). Present: its committed navigations feed the `route` and `view` traces. */
+  $router?: VueRouterLike;
 }
 
 export interface InstallBugseeClientOptions extends BugseeLaunchOptionsWithPerformance {
@@ -40,6 +47,9 @@ export async function installBugseeClient(
   const { appToken, launch = browserLaunch, ...launchOptions } = options;
   const client = await launch(appToken, launchOptions);
   installBugseeErrorHandler(nuxtApp.vueApp);
+  // The `route` / `view` traces: Nuxt runs vue-router, so its committed navigations (a failure-carrying `afterEach` is
+  // skipped) report the matched route pattern and the page component name. No router (a test double): nothing to feed.
+  if (typeof nuxtApp.$router?.afterEach === 'function') instrumentVueRouter(nuxtApp.$router);
   return client;
 }
 

@@ -160,6 +160,8 @@ describe('the host-boundary contract', () => {
     });
     expect(() => routePatternFromMatches([hostileMatch])).not.toThrow();
     expect(() => routePatternFromMatches({} as never)).not.toThrow(); // not even an array
+    expect(() => router.viewNameFromMatches([hostileMatch])).not.toThrow();
+    expect(() => router.viewNameFromMatches({} as never)).not.toThrow();
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
@@ -178,6 +180,7 @@ describe('the host-boundary contract', () => {
       // Pure helpers, asserted above — no client, no host callback, nothing to contain.
       'linkComponentStack',
       'routePatternFromMatches',
+      'viewNameFromMatches',
       // React COMPONENTS, whose containment is asserted by their own suites rendering a throwing client.
       'BugseeErrorBoundary',
       'withBugseeErrorBoundary',

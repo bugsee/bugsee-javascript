@@ -1,3 +1,5 @@
+import { ScreenProducer } from '@bugsee/capture';
+import { ScreenTracker } from '@bugsee/core';
 import { describe, expect, it } from 'vitest';
 import { createBrowserSystemTraceProducers } from './trace-producers';
 import { UrlProducer } from './url-producer';
@@ -26,5 +28,23 @@ describe('createBrowserSystemTraceProducers: url', () => {
     expect(createBrowserSystemTraceProducers({ sensors: false }).map((p) => p.name)).toEqual([
       'battery',
     ]);
+  });
+});
+
+describe('createBrowserSystemTraceProducers: route and view', () => {
+  const screenState = new ScreenTracker();
+
+  it('builds no screen producer without env.screenState', () => {
+    expect(createBrowserSystemTraceProducers({}).some((p) => p.name === 'screen')).toBe(false);
+  });
+
+  it('builds one screen producer from env.screenState, with no lifecycle needed', () => {
+    const producers = createBrowserSystemTraceProducers({ screenState });
+    expect(producers.filter((p) => p instanceof ScreenProducer)).toHaveLength(1);
+  });
+
+  it('keeps it when sensors are replaced (it is not a sensor), after battery and url', () => {
+    const producers = createBrowserSystemTraceProducers({ url: deps, screenState, sensors: false });
+    expect(producers.map((p) => p.name)).toEqual(['battery', 'url', 'screen']);
   });
 });

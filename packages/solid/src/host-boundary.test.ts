@@ -60,6 +60,7 @@ describe('the host-boundary contract', () => {
       },
     });
     expect(() => routerMod.routePatternFromSolidMatches(hostile as never)).not.toThrow();
+    expect(() => routerMod.viewNameFromSolidMatches(hostile as never)).not.toThrow();
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
@@ -70,6 +71,7 @@ describe('the host-boundary contract', () => {
       'reportSolidError',
       'setRouteNameFromSolidMatches',
       'routePatternFromSolidMatches',
+      'viewNameFromSolidMatches',
       'setRouteName',
     ]);
     expect(functions.filter((n) => !covered.has(n)).sort()).toEqual([]);

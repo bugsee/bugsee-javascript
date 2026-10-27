@@ -6,6 +6,7 @@ describe('@bugsee/trackers public surface', () => {
     expect(Object.keys(trackers).sort()).toEqual([
       'InterceptorBase',
       'MultiKeyEmitterBase',
+      'ScreenTracker',
       'createMultiKeyEmitter',
       'createTrackerRegistry',
     ]);

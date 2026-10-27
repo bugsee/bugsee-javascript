@@ -1,10 +1,12 @@
-import type { FileType } from '@bugsee/protocol';
 import {
   BugseeOption,
   type EnvironmentEnvelope,
+  type FileType,
   type LogLevel,
   logLevelToWire,
   type Mechanism,
+  normalizeView,
+  sanitizeRoutePattern,
 } from '@bugsee/protocol';
 import {
   createServiceContainer,
@@ -73,6 +75,7 @@ import {
 } from './filters';
 import { neverThrow } from './never-throw';
 import { createNotifyRelay } from './notify-relay';
+import { screenTrackerFor } from './screen-state';
 import { callSiteFrames, parseV8Stack, type StackFrame } from './stack';
 
 export type { Breadcrumb, BreadcrumbInput } from './events';
@@ -340,6 +343,26 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   log(message: string, level?: LogLevel | LogLevelName, timestamp?: number): void;
   event(name: string, params?: Record<string, unknown>): void;
   trace(name: string, value: unknown): void;
+
+  /**
+   * Record the route the user is on, as the router's PATTERN (`/orders/:id`, never the concrete URL with its ids), as
+   * the `route` system trace: a held step curve, de-duplicated, written only where the platform records one (the
+   * browser, WebView and Electron renderer; Node and the edge runtimes hold the value and write nothing). The framework
+   * adapters call this on committed navigations; an application with its own router calls it too. The string is
+   * sanitized like the page address (secret shapes, sensitive matrix segments), NEVER keeps a query or a fragment, and
+   * is clipped at 1024 characters. An unusable value (not a string, or empty once the query is gone) is ignored. Safe
+   * before `launch()`: the value is held and written at launch. A no-op once the SDK has been killed.
+   */
+  setRoute(route: string): void;
+  /**
+   * Record the screen the user is looking at as the `view` system trace (Android's `{name, type}`): a string or
+   * `{ name, type? }` (the component or view name, and the producer, e.g. the adapter id), or `null` for "no view"
+   * (written as `"$$none"`). Held and de-duplicated: repeating the current view writes nothing. Best effort on the web:
+   * a framework adapter supplies a name only when it can read a non-minified one, so this call is the only guaranteed
+   * source. Fields are sanitized and clipped at 256 characters; an unusable value is ignored. Same launch/kill rules as
+   * {@link setRoute}.
+   */
+  setView(view: string | { name: string; type?: string } | null): void;
 
   /** Capture an exception (instance-deduped + rate-limited) and trigger a report. */
   logException(error: unknown, options?: LogExceptionOptions): Promise<UploadResult>;
@@ -693,6 +716,8 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // pipeline resolve always finds it once a client exists.
   const filters = createFilterStore(onError);
   const processCarrier = options.carrier;
+  // The route/view the application reports: carrier-shared, so the platform's `route` / `view` trace producer reads the same.
+  const screenTracker = screenTrackerFor(processCarrier, onError);
   const lifecycle = createLifecycleEmitter(
     onError,
     processCarrier !== undefined ? getCarrierLifecycleSlot(processCarrier) : undefined,
@@ -1569,6 +1594,26 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       captureAggregator.addEntry(
         new CaptureDataEntryBase('traces.user', timestamp, { timestamp, name, value }),
       );
+    },
+
+    setRoute(route: string): void {
+      if (killed) {
+        return;
+      }
+      const clean = sanitizeRoutePattern(route);
+      if (clean !== undefined) {
+        screenTracker.setRoute(clean);
+      }
+    },
+
+    setView(view: string | { name: string; type?: string } | null): void {
+      if (killed) {
+        return;
+      }
+      const clean = normalizeView(view);
+      if (clean !== undefined) {
+        screenTracker.setView(clean);
+      }
     },
 
     logException: function logException(

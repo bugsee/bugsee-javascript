@@ -17,4 +17,5 @@ export {
   type SolidRouteMatchLike,
   setRouteName,
   setRouteNameFromSolidMatches,
+  viewNameFromSolidMatches,
 } from './router';

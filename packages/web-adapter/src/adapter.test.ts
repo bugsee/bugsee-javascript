@@ -1,7 +1,14 @@
 import type { Bugsee } from '@bugsee/browser';
 import { BUGSEE_SDK_VERSION } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getPerformanceApi, reportError, resolveClient, setRouteName } from './adapter';
+import {
+  getPerformanceApi,
+  isObtainableViewName,
+  reportError,
+  resolveClient,
+  setRouteName,
+  setViewName,
+} from './adapter';
 
 function fakeClient() {
   const logException = vi.fn(
@@ -150,5 +157,177 @@ describe('setRouteName', () => {
     (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } };
     setRouteName('/dash');
     expect(spy).toHaveBeenCalledWith('/dash');
+  });
+});
+
+describe('setRouteName: the route trace feed', () => {
+  const withRoute = () => {
+    const setRoute = vi.fn();
+    const base = fakeClient();
+    return {
+      ...base,
+      setRoute,
+      client: { ...(base.client as object), setRoute } as unknown as Bugsee,
+    };
+  };
+
+  it('feeds client.setRoute with the pattern, as well as the performance naming seam', () => {
+    const { client, setRoute, setRouteName: perf } = withRoute();
+    setRouteName('/users/:id', { getClient: () => client });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/users/:id');
+    expect(perf).toHaveBeenCalledWith('/users/:id');
+  });
+
+  it('feeds setRoute even without the performance extension (performanceMonitoring off)', () => {
+    const setRoute = vi.fn();
+    const onError = vi.fn();
+    const client = {
+      setRoute,
+      ext: () => {
+        throw new Error('not registered');
+      },
+    } as unknown as Bugsee;
+    setRouteName('/a', { getClient: () => client, onError });
+    expect(setRoute).toHaveBeenCalledWith('/a');
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a throwing setRoute is reported and does not stop the performance feed', () => {
+    const { client: base, setRouteName: perf } = fakeClient();
+    const boom = new Error('boom');
+    const client = {
+      ...(base as object),
+      setRoute: () => {
+        throw boom;
+      },
+    } as unknown as Bugsee;
+    const onError = vi.fn();
+    setRouteName('/a', { getClient: () => client, onError });
+    expect(onError).toHaveBeenCalledExactlyOnceWith(boom);
+    expect(perf).toHaveBeenCalledWith('/a');
+  });
+
+  it('a throwing performance feed does not stop setRoute', () => {
+    const setRoute = vi.fn();
+    const client = {
+      setRoute,
+      ext: () => ({
+        setRouteName: () => {
+          throw new Error('perf');
+        },
+      }),
+    } as unknown as Bugsee;
+    const onError = vi.fn();
+    setRouteName('/a', { getClient: () => client, onError });
+    expect(setRoute).toHaveBeenCalledWith('/a');
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('an older client without setRoute is not an error', () => {
+    const { client } = fakeClient(); // no setRoute
+    const onError = vi.fn();
+    setRouteName('/a', { getClient: () => client, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a setRoute that is not a function (a foreign client shape) is ignored, not reported', () => {
+    const client = {
+      setRoute: 'nope',
+      ext: () => {
+        throw new Error('x');
+      },
+    } as unknown as Bugsee;
+    const onError = vi.fn();
+    setRouteName('/a', { getClient: () => client, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('does nothing without a client', () => {
+    const onError = vi.fn();
+    setRouteName('/a', { getClient: () => undefined, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('calls setRoute as a method of the client (this is kept)', () => {
+    let self: unknown;
+    const client = {
+      ext: () => {
+        throw new Error('x');
+      },
+      setRoute(this: unknown) {
+        self = this;
+      },
+    } as unknown as Bugsee;
+    setRouteName('/a', { getClient: () => client });
+    expect(self).toBe(client);
+  });
+});
+
+describe('isObtainableViewName', () => {
+  it.each([
+    ['OrderDetail', true],
+    ['Cart', true],
+    ['abc', true],
+    ['  abc  ', true],
+    ['ab', false],
+    ['a', false],
+    ['', false],
+    ['   ', false],
+    [' a ', false],
+    [undefined, false],
+    [null, false],
+    [5, false],
+    [{}, false],
+  ])('%j -> %s', (name, expected) => {
+    expect(isObtainableViewName(name)).toBe(expected);
+  });
+});
+
+describe('setViewName: the best-effort view trace feed', () => {
+  it('feeds client.setView with {name, type} (the adapter id)', () => {
+    const setView = vi.fn();
+    const client = { setView } as unknown as Bugsee;
+    setViewName('  OrderDetail ', 'react', { getClient: () => client });
+    expect(setView).toHaveBeenCalledExactlyOnceWith({ name: 'OrderDetail', type: 'react' });
+  });
+
+  it('writes nothing for an unobtainable (empty, minified, non-string) name', () => {
+    const setView = vi.fn();
+    const client = { setView } as unknown as Bugsee;
+    for (const bad of ['', 'e', 'ab', undefined, null, 7, {}]) {
+      setViewName(bad, 'vue', { getClient: () => client });
+    }
+    expect(setView).not.toHaveBeenCalled();
+  });
+
+  it('a throwing setView is reported, never rethrown', () => {
+    const boom = new Error('boom');
+    const client = {
+      setView: () => {
+        throw boom;
+      },
+    } as unknown as Bugsee;
+    const onError = vi.fn();
+    expect(() => setViewName('Detail', 'vue', { getClient: () => client, onError })).not.toThrow();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(boom);
+  });
+
+  it('is silent without a client or with an older client that has no setView', () => {
+    const onError = vi.fn();
+    setViewName('Detail', 'vue', { getClient: () => undefined, onError });
+    setViewName('Detail', 'vue', { getClient: () => ({}) as unknown as Bugsee, onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('calls setView as a method of the client, and falls back to the carrier client', () => {
+    let self: unknown;
+    const client = {
+      setView(this: unknown) {
+        self = this;
+      },
+    } as unknown as Bugsee;
+    (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__ = { [BUGSEE_SDK_VERSION]: { client } };
+    setViewName('Detail', 'solid');
+    expect(self).toBe(client);
   });
 });

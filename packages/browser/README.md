@@ -68,3 +68,7 @@ The SDK protects the origin's storage quota by default whenever it persists to I
 ## License
 
 MIT. See the LICENSE file.
+
+## The `route` and `view` traces
+
+`client.setRoute('/orders/:id')` records the route the user is on as the `route` system trace, and `client.setView('OrderDetail')` (or `{ name, type }`, or `null` for "no view") records the screen as the `view` trace. Both are held step curves, de-duplicated, and written by the browser, a WebView and an Electron renderer (Node holds the value and writes nothing). Pass the router's PATTERN, not the concrete URL: a query string and a fragment are always cut, secret shapes are redacted and the value is clipped (route 1024 characters, view name and type 256). The framework adapters (`@bugsee/react`, `vue`, `solid`, `angular`, `svelte`/SvelteKit, `nuxt`) call `setRoute` on committed navigations; they call `setView` only when they can read a component name that is not minified, so `setView` is the only guaranteed source of the `view` trace. A plain page without an adapter writes no `route` (the `url` trace is its page-level record).

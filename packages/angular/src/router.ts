@@ -1,4 +1,9 @@
-import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import {
+  neverThrow,
+  type RouteNamingOptions,
+  setRouteName,
+  setViewName,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/angular ROUTER NAMING integration (the two-phase naming seam).
 // Angular's activated-route snapshot tree carries the matched route config; walk it to build the
@@ -15,6 +20,8 @@ export { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 /** The minimal `ActivatedRouteSnapshot` shape we walk — `routeConfig.path` + `firstChild`. */
 export interface RouteSnapshotLike {
   routeConfig?: { path?: string } | null;
+  /** The component class the activated route renders (set for `component` AND lazy `loadComponent` routes). */
+  component?: unknown;
   firstChild?: RouteSnapshotLike | null;
 }
 
@@ -52,6 +59,29 @@ function routePatternFromSnapshotUnsafe(
   return segments.length > 0 ? `/${segments.join('/')}` : undefined;
 }
 
+/**
+ * The component name of the page the router committed to (the `view` trace, best effort): the DEEPEST activated route
+ * snapshot's `.component` down the `firstChild` chain (`routeConfig.component` is undefined for lazy `loadComponent`
+ * routes, the snapshot's is not). A class name, which production builds mangle unless names are kept: whether it is
+ * obtainable is decided by `setViewName`. Undefined when the deepest snapshot renders no component.
+ */
+export function viewNameFromSnapshot(
+  root: RouteSnapshotLike | null | undefined,
+): string | undefined {
+  return neverThrow(() => {
+    let node: RouteSnapshotLike | null | undefined = root;
+    let deepest: RouteSnapshotLike | null | undefined;
+    for (let depth = 0; node && depth < MAX_ROUTE_DEPTH; depth++) {
+      deepest = node;
+      node = node.firstChild;
+    }
+    const component = deepest?.component;
+    if (typeof component !== 'function') return undefined;
+    const name = (component as { name?: unknown }).name;
+    return typeof name === 'string' && name !== '' ? name : undefined;
+  });
+}
+
 /** Refine the active transaction to the router's CURRENT activated route pattern. Call on each
  *  `NavigationEnd`. A no-op when the current route has no usable pattern. */
 export function setRouteNameFromRouter(
@@ -61,7 +91,9 @@ export function setRouteNameFromRouter(
   // CONTAINED. `router` is Angular's own Router instance, handed in by the app, and reaching the snapshot
   // walks three host-controlled properties before any inner guard can help.
   neverThrow(() => {
-    const pattern = routePatternFromSnapshot(router.routerState.snapshot.root);
+    const root = router.routerState.snapshot.root;
+    const pattern = routePatternFromSnapshot(root);
     if (pattern !== undefined) setRouteName(pattern, options);
+    setViewName(viewNameFromSnapshot(root), 'angular', options);
   }, options.onError);
 }

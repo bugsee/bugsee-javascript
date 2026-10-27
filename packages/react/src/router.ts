@@ -1,4 +1,10 @@
-import { guarded, neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import {
+  guarded,
+  neverThrow,
+  type RouteNamingOptions,
+  setRouteName,
+  setViewName,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/react ROUTER NAMING integration (the two-phase naming seam).
 // On a navigation, react-router knows the matched route PATTERN (`/users/:id`); read it from the
@@ -11,7 +17,45 @@ export { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 /** The minimal match shape we read — structurally matches a react-router `matchRoutes()` result element. */
 export interface RouteMatchLike {
-  route?: { path?: string };
+  route?: { path?: string; Component?: unknown; element?: unknown };
+}
+
+/** The display name of a React component TYPE: a function's `displayName` or `name`; for a `memo` / `forwardRef` /
+ *  `lazy` wrapper (an object), its `displayName`, else the wrapped function's name. Undefined for a host element
+ *  type (a string such as `'div'`), which is not a component. */
+function componentTypeName(type: unknown): string | undefined {
+  if (typeof type !== 'function' && (typeof type !== 'object' || type === null)) return undefined;
+  const t = type as {
+    displayName?: unknown;
+    name?: unknown;
+    render?: { displayName?: unknown; name?: unknown };
+    type?: { displayName?: unknown; name?: unknown };
+  };
+  const name =
+    t.displayName ??
+    t.name ??
+    t.render?.displayName ??
+    t.render?.name ??
+    t.type?.displayName ??
+    t.type?.name;
+  return typeof name === 'string' && name !== '' ? name : undefined;
+}
+
+/**
+ * The component name of the page a navigation committed to (the `view` trace, best effort): the DEEPEST match's route
+ * `Component`, or the `type` of its `element` (react-router data routes; a `lazy` route has its `Component` once resolved).
+ * A pathless layout parent does not name the page. Undefined when there is none; whether the name is obtainable
+ * (not minified) is decided by `setViewName`.
+ */
+export function viewNameFromMatches(
+  matches: readonly RouteMatchLike[] | null | undefined,
+): string | undefined {
+  return neverThrow(() => {
+    if (!matches || matches.length === 0) return undefined;
+    const route = matches[matches.length - 1]?.route;
+    const element = route?.element as { type?: unknown } | null | undefined;
+    return componentTypeName(route?.Component) ?? componentTypeName(element?.type);
+  });
 }
 
 /**
@@ -55,8 +99,8 @@ export function instrumentRouterMatches(
   options: RouteNamingOptions = {},
 ): void {
   const pattern = routePatternFromMatches(matches);
-  if (pattern === undefined) return;
-  setRouteName(pattern, options);
+  if (pattern !== undefined) setRouteName(pattern, options);
+  setViewName(viewNameFromMatches(matches), 'react', options);
 }
 
 /** The minimal react-router DATA router shape we touch — structurally matches a `createBrowserRouter(...)` /
@@ -89,6 +133,7 @@ export function instrumentReactRouter(
   const apply = guarded((state: { matches?: readonly RouteMatchLike[] }): void => {
     const pattern = routePatternFromMatches(state?.matches);
     if (pattern !== undefined) setRouteName(pattern, options);
+    setViewName(viewNameFromMatches(state?.matches), 'react', options);
   }, options.onError);
   // Always return a callable unsubscribe: React calls it as an effect cleanup, so handing back `undefined`
   // would turn an SDK failure into a "destroy is not a function" crash on the NEXT unmount.

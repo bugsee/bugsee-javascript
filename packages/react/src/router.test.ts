@@ -8,6 +8,7 @@ import {
   type RouteMatchLike,
   routePatternFromMatches,
   setRouteName,
+  viewNameFromMatches,
 } from './router';
 
 // A fake client exposing ext('performance').setRouteName; ext throws for any other extension (mirrors the
@@ -179,5 +180,118 @@ describe('instrumentReactRouter', () => {
     const { router, unsubscribe } = fakeDataRouter([match('x')]);
     const teardown = instrumentReactRouter(router, { getClient: () => client });
     expect(teardown).toBe(unsubscribe);
+  });
+});
+
+describe('viewNameFromMatches', () => {
+  const page = (route: object): RouteMatchLike[] => [match('layout'), { route }];
+
+  it('reads the Component of the deepest match: a function name or displayName', () => {
+    function OrderDetail() {
+      return null;
+    }
+    expect(viewNameFromMatches(page({ path: 'o', Component: OrderDetail }))).toBe('OrderDetail');
+    const named = Object.assign(() => null, { displayName: 'Pretty' });
+    expect(viewNameFromMatches(page({ Component: named }))).toBe('Pretty');
+  });
+
+  it('reads the element type when there is no Component', () => {
+    function Cart() {
+      return null;
+    }
+    expect(viewNameFromMatches(page({ element: { type: Cart } }))).toBe('Cart');
+    expect(viewNameFromMatches(page({ Component: undefined, element: { type: Cart } }))).toBe(
+      'Cart',
+    );
+  });
+
+  it('prefers Component over element', () => {
+    function A1() {
+      return null;
+    }
+    function B1() {
+      return null;
+    }
+    expect(viewNameFromMatches(page({ Component: A1, element: { type: B1 } }))).toBe('A1');
+  });
+
+  it('names memo / forwardRef / lazy wrappers (objects) by displayName, render or type', () => {
+    expect(viewNameFromMatches(page({ Component: { displayName: 'Wrapped' } }))).toBe('Wrapped');
+    expect(viewNameFromMatches(page({ Component: { render: { name: 'Forwarded' } } }))).toBe(
+      'Forwarded',
+    );
+    expect(viewNameFromMatches(page({ Component: { render: { displayName: 'FwdPretty' } } }))).toBe(
+      'FwdPretty',
+    );
+    expect(viewNameFromMatches(page({ Component: { type: { name: 'Memoed' } } }))).toBe('Memoed');
+    expect(viewNameFromMatches(page({ Component: { type: { displayName: 'MemoPretty' } } }))).toBe(
+      'MemoPretty',
+    );
+  });
+
+  it('is undefined for a host element (a string type), nothing, or a nameless component', () => {
+    expect(viewNameFromMatches(page({ element: { type: 'div' } }))).toBeUndefined();
+    expect(viewNameFromMatches(page({ element: null }))).toBeUndefined();
+    expect(viewNameFromMatches(page({ element: {} }))).toBeUndefined();
+    expect(viewNameFromMatches(page({}))).toBeUndefined();
+    expect(viewNameFromMatches(page({ Component: null }))).toBeUndefined();
+    expect(viewNameFromMatches(page({ Component: 'x' }))).toBeUndefined();
+    expect(viewNameFromMatches(page({ Component: { displayName: '' } }))).toBeUndefined();
+    expect(viewNameFromMatches(page({ Component: { displayName: 7 } }))).toBeUndefined();
+    expect(viewNameFromMatches([{}])).toBeUndefined();
+    expect(viewNameFromMatches([])).toBeUndefined();
+    expect(viewNameFromMatches(null)).toBeUndefined();
+    expect(viewNameFromMatches(undefined)).toBeUndefined();
+  });
+
+  it('reads only the DEEPEST match (a layout parent does not name the page)', () => {
+    function Layout() {
+      return null;
+    }
+    expect(viewNameFromMatches([{ route: { Component: Layout } }, match('leaf')])).toBeUndefined();
+  });
+});
+
+describe('the route and view traces from react-router', () => {
+  function Detail() {
+    return null;
+  }
+  const wire = () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute, setView } as unknown as Bugsee;
+    return { setRoute, setView, opts: { getClient: () => full } };
+  };
+
+  it('instrumentRouterMatches writes the route pattern and the view', () => {
+    const { setRoute, setView, opts } = wire();
+    instrumentRouterMatches([match('orders'), { route: { path: ':id', Component: Detail } }], opts);
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).toHaveBeenCalledExactlyOnceWith({ name: 'Detail', type: 'react' });
+  });
+
+  it('writes the view even for a match with no path pattern, and no view for a minified name', () => {
+    const { setRoute, setView, opts } = wire();
+    instrumentRouterMatches([{ route: { Component: Detail } }], opts);
+    expect(setRoute).not.toHaveBeenCalled();
+    expect(setView).toHaveBeenCalledTimes(1);
+    const t = () => null;
+    instrumentRouterMatches(
+      [{ route: { path: 'x', Component: Object.assign(t, { displayName: 'e' }) } }],
+      opts,
+    );
+    expect(setView).toHaveBeenCalledTimes(1);
+  });
+
+  it('a data router writes the current route at once and each committed navigation after', () => {
+    const { setRoute, setView, opts } = wire();
+    const { router, navigate } = fakeDataRouter([{ route: { path: '/', Component: Detail } }]);
+    instrumentReactRouter(router, opts);
+    expect(setRoute).toHaveBeenLastCalledWith('/');
+    expect(setView).toHaveBeenLastCalledWith({ name: 'Detail', type: 'react' });
+    navigate([match('teams'), match(':teamId')]);
+    expect(setRoute).toHaveBeenLastCalledWith('/teams/:teamId');
+    expect(setView).toHaveBeenCalledTimes(1); // no obtainable component: nothing written, the previous view stays
   });
 });

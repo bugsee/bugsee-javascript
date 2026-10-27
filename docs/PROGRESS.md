@@ -1350,6 +1350,38 @@ trace/event wire name lives in ONE module.
   unless it is a spec name; the spec's host-owned table, option table and the `traces.md` structured value schemas are not
   vendored.
 
+### 2026-10-27 — `route` and best-effort `view` traces, `client.setRoute` / `client.setView` (C12) → `feat/route-view-traces`
+
+Spec: bugsee/specs `sdk/reporting/bundle/traces.md` `route` / `view` (PR #62). **Wire:** `route` = a string (the router's
+PATTERN), `view` = `{name, type?}` or the bare string `"$$none"`; both HELD step curves (`emitIfChanged`, so de-duplicated
+and re-recorded every `refreshMs`). **Flow:** `client.setRoute(route)` / `client.setView(view)` (core, public API on
+`BugseeClient`) sanitize + bound the value (`sanitizeRoutePattern` / `normalizeView`, `@bugsee/protocol` `screen-names.ts`)
+and hand it to `ScreenTracker` (`@bugsee/trackers`, root entry, portable: it owns no host API, values are pushed in, last
+values retained, change-only) which is shared through the process carrier (`screenTrackerFor(carrier)`, interceptor name
+`screen`), so the client and the platform's `ScreenProducer` (`@bugsee/capture`) meet on one instance and a relaunch inherits
+the state. The producer is wired in the browser and WebView launches (not a sensor: kept under `systemMetricsSampler`; an
+Electron renderer gets it through the browser launch). Node/edge hold the value and write nothing (spec: not written there).
+**Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` that ends the string or precedes `/` or `)` is router
+pattern syntax, an optional param `/:id?`, and stays), then the location sanitizer (secret shapes, sensitive matrix segments),
+clipped at 1024 chars (`%3Ctruncated%3E`); view: each of name/type is sanitized and clipped at 256; an empty / non-string
+value is ignored (nothing is written, the previous value stays). **Adapters:** `setRouteName` in `@bugsee/web-adapter` now
+also feeds `client.setRoute` (independent of the performance extension; an older client without `setRoute` is not an error), so
+React (data router + `instrumentRouterMatches`), Vue, Solid, Angular and SvelteKit (`afterNavigate`) write `route` with no
+per-adapter change; Vue's `afterEach` now skips a navigation that carries a `failure` (aborted/duplicated/redirected: it also
+stops refining the transaction for those). `setViewName(name, adapterId)` writes `view` only when the name is obtainable
+(empty or 1 to 2 characters = minified = nothing written): React (`route.Component` / `element.type`), Vue
+(`matched[last].components.default` `name`/`__name`/`displayName`), Solid (`route.component`), Angular (deepest `firstChild`
+snapshot `.component`). `@bugsee/nuxt` `installBugseeClient` now calls `instrumentVueRouter(nuxtApp.$router)` when present.
+**Not done (follow-ups):** `@bugsee/remix` (re-exports `@bugsee/react`; its router instance is not reachable from the
+client entry), `@bugsee/nextjs` (`onRouterTransitionStart` fires at transition START with an href only, so it is neither a
+committed navigation nor a pattern), `@bugsee/astro` (no router hook); `view` for SvelteKit has no source. **Spec readings /
+open questions:** (1) when a committed navigation has no obtainable view name the PREVIOUS view stays held (the spec says
+"no entry is written"; a held value is re-recorded, so it can describe a page the user has left) - `setView(null)` is not
+written on the adapter's behalf; (2) the wire-name registry (C17) is not on `main`, so `'route'`/`'view'` are string literals
+like the other trace names; (3) the spec gives no length bound: 1024 (route), 256 (name/type) chosen; (4) `route`'s
+pathname fallback ("where the router gives no pattern") is not used by any adapter yet, `setRoute` accepts it. Not verified
+against a real browser / real Nuxt / real router (structural doubles and fake windows only).
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.

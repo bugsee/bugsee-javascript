@@ -1,4 +1,9 @@
-import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
+import {
+  ScreenProducer,
+  type ScreenSource,
+  type TraceProducer,
+  TraceProducerBase,
+} from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
 import { bytesToMegabytes, TraceName } from '@bugsee/protocol';
 import {
@@ -573,6 +578,13 @@ export interface BrowserTraceEnv extends BatteryEnv {
    */
   url?: UrlProducerDeps;
   /**
+   * The route / view state the application reports (`client.setRoute` / `setView`, fed by the framework adapters); present
+   * builds the `route` and `view` producer, absent = neither. Not a sensor either (kept when `sensors` is `false`) and
+   * independent of `lifecycle`. The launch passes the carrier-shared tracker (`screenTrackerFor`), which is what the client
+   * writes to.
+   */
+  screenState?: ScreenSource;
+  /**
    * `false` builds the battery producer (and `url`, when given) ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
    * connection, orientation, `app_state`, `fps`, `displays` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
    */
@@ -746,7 +758,8 @@ export function createBrowserSystemTraceProducers(
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   const url = env.url !== undefined ? [new UrlProducer(env.url)] : [];
-  if (env.sensors === false) return [battery, ...url];
+  const screen = env.screenState !== undefined ? [new ScreenProducer(env.screenState)] : [];
+  if (env.sensors === false) return [battery, ...url, ...screen];
   // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
   // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.
   const clock = safePerformanceNow(env, undefined);
@@ -796,6 +809,7 @@ export function createBrowserSystemTraceProducers(
   return [
     battery,
     ...url,
+    ...screen,
     new MemoryProducer(processTracker),
     // OPT-IN, strictly `true`: idle/locked state is behavioural data, and a host page's own `idle-detection` grant is
     // not consent to record and upload it. Even when opted in, the tracker starts a detector only if the permission
