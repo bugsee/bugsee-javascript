@@ -1196,7 +1196,7 @@ describe('launch (webview)', () => {
       return { client, n: () => w.count('online', 'offline', 'orientationchange') };
     };
 
-    it('streams heap, connection and orientation, and listens on the injected window only while capturing', async () => {
+    it('streams the page heap (not the host-owned connection/orientation), and listens on the injected window only while capturing', async () => {
       stubSensors();
       try {
         const fake = fakeGlobal();
@@ -1209,9 +1209,10 @@ describe('launch (webview)', () => {
             return [d.name, d.value];
           }),
         );
-        expect(rows.get('ram_js_heap_used')).toBe(10);
-        expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
-        expect(rows.get('orientation')).toBe(3);
+        expect(rows.get('ram_js_heap_used')).toBe(10); // the page's OWN heap: page-owned, written by the WebView
+        // `connection` and `orientation` are the native host's (spec host-owned table): the WebView writes neither
+        expect(rows.has('connection')).toBe(false);
+        expect(rows.has('orientation')).toBe(false);
         // ONE ConnectivityTracker (online + offline) and ONE UiTracker (orientationchange) serve traces AND events:
         // three listeners, none duplicated.
         expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
@@ -1579,8 +1580,7 @@ describe('launch (webview)', () => {
     });
   });
 
-  it('streams battery/charging ({state}) from the browser battery producer', async () => {
-    const fake = fakeGlobal();
+  const batteryGlobals = () => {
     const getBattery = vi.fn(() =>
       Promise.resolve({
         level: 1,
@@ -1590,17 +1590,71 @@ describe('launch (webview)', () => {
       }),
     );
     vi.stubGlobal('navigator', { getBattery });
+    return getBattery;
+  };
+  const tracesOf = (fake: ReturnType<typeof fakeGlobal>) =>
+    entriesOfType(fake.msgs(), 'traces.system').map(
+      (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+    );
+
+  it('writes NO battery/charging: the native host owns them (C22), with or without a handshake reply', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
     try {
       track('tok', baseOptions({ global: fake.global }));
       await new Promise((r) => setTimeout(r, 0));
-      expect(getBattery).toHaveBeenCalledTimes(1);
-      const traces = entriesOfType(fake.msgs(), 'traces.system').map(
-        (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+      sendControl(fake.global, { session: 'native-1', config: { reportTrigger: false } }); // a reply that declares nothing
+      await new Promise((r) => setTimeout(r, 0));
+      expect(tracesOf(fake).filter((t) => t.name === 'battery' || t.name === 'charging')).toEqual(
+        [],
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('streams battery/charging ({state}) from the browser battery producer once native declares it owns none of them', async () => {
+    const fake = fakeGlobal();
+    const getBattery = batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: [] } }); // the handshake reply hands every name back
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getBattery).toHaveBeenCalledTimes(1);
+      const traces = tracesOf(fake);
       expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 100 }));
       expect(traces).toContainEqual(
         expect.objectContaining({ name: 'charging', value: { state: 3 } }),
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('native can declare a DIFFERENT owned set: only the names it lists are dropped (live, on the next value)', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: ['charging'] } }); // native owns charging only
+      await new Promise((r) => setTimeout(r, 0));
+      const names = tracesOf(fake).map((t) => t.name);
+      expect(names).toContain('battery');
+      expect(names).not.toContain('charging');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a malformed hostOwnedTraces leaves the built-in list in force', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: 'none' } });
+      sendControl(fake.global, { config: { hostOwnedTraces: [7] } });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(tracesOf(fake).some((t) => t.name === 'battery')).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1641,6 +1695,7 @@ describe('launch (webview)', () => {
           },
         } as Partial<BugseeWebViewLaunchOptions>),
       );
+      sendControl(fake.global, { config: { hostOwnedTraces: [] } }); // battery is the host's by default
       await new Promise((r) => setTimeout(r, 0));
       const battery = () =>
         entriesOfType(fake.msgs(), 'traces.system').filter(

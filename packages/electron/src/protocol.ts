@@ -6,6 +6,8 @@
 //             fields the aggregator needs.
 //   `control` main→renderer: pause/resume/flush/stop + the `session` handshake reply (carries the session id).
 //   `hello`   renderer→main: the handshake request that prompts the main's `session` reply.
+
+import { sanitizeTraceNames } from '@bugsee/capture';
 import type { StreamingCaptureEntry } from '@bugsee/core';
 import { DEFAULT_FILENAMES, type FileType } from '@bugsee/protocol';
 
@@ -232,11 +234,17 @@ export interface ControlMessage {
    * never reached it).
    */
   blackout?: boolean;
+  /**
+   * The trace names the HOST (main) owns, set only on the `session` reply: the renderer must not write them (one writer per
+   * name per session). An empty array is a real declaration ("owns nothing"); absent means the host said nothing and the
+   * renderer keeps its built-in default.
+   */
+  hostOwnedTraces?: string[];
 }
 
 /** Encode a control message to a wire string (`sessionId` omitted unless present). */
 export function encodeControl(message: ControlMessage): string {
-  const wire: { k: 'control'; c: ControlCommand; sid?: string; bo?: boolean } = {
+  const wire: { k: 'control'; c: ControlCommand; sid?: string; bo?: boolean; ho?: string[] } = {
     k: 'control',
     c: message.command,
   };
@@ -246,6 +254,9 @@ export function encodeControl(message: ControlMessage): string {
   if (message.blackout !== undefined) {
     wire.bo = message.blackout;
   }
+  if (message.hostOwnedTraces !== undefined) {
+    wire.ho = [...message.hostOwnedTraces];
+  }
   return JSON.stringify(wire);
 }
 
@@ -254,6 +265,7 @@ interface WireControl {
   c?: string;
   sid?: string;
   bo?: unknown;
+  ho?: unknown;
 }
 
 /** Decode a control wire string into a {@link ControlMessage}, or `undefined` if it isn't a valid control. */
@@ -273,6 +285,11 @@ export function decodeControl(raw: string): ControlMessage | undefined {
   }
   if (typeof message.bo === 'boolean') {
     decoded.blackout = message.bo;
+  }
+  // validated as a unit: a malformed declaration is ignored whole, never half applied
+  const hostOwned = sanitizeTraceNames(message.ho);
+  if (hostOwned !== undefined) {
+    decoded.hostOwnedTraces = hostOwned;
   }
   return decoded;
 }

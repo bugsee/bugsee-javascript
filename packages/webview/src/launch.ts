@@ -27,9 +27,11 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  createTraceSuppression,
   deriveRefreshMs,
   installNetworkCapture,
   type TraceSample,
+  WEBVIEW_HOST_OWNED_TRACES,
 } from '@bugsee/capture';
 import {
   BlackoutToken,
@@ -543,7 +545,12 @@ export function launchWithSeams(
   // below, where the blackout state exists.
   let nativeReplied = false;
   let judgeNativeBlackout: (() => void) | undefined;
+  // The trace names the NATIVE host writes (battery, orientation, app state, connection, fps, view, display, capture, ...): a
+  // LIVE set the traces provider consults for every value. It starts as the built-in WebView table (fail closed: nothing
+  // the host owns leaks before native answers the handshake) and native's `config.hostOwnedTraces` REPLACES it.
+  const hostOwned = createTraceSuppression({ host: WEBVIEW_HOST_OWNED_TRACES });
   const control = createBridgeControl({
+    onHostOwned: (names) => hostOwned.setLayer('host', names),
     onApplied: () => {
       nativeReplied = true;
       judgeNativeBlackout?.();
@@ -748,6 +755,7 @@ export function launchWithSeams(
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
+      suppression: hostOwned,
       producers: createBrowserSystemTraceProducers(
         {
           // Every surface comes from the INJECTED window/document; the host globals only without a window.
@@ -758,8 +766,8 @@ export function launchWithSeams(
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          // the native host writes `displays` and `view`; a WebView must not write a second one (spec host-owned table)
-          hostOwnedTraces: [TraceName.DISPLAYS, TraceName.VIEW],
+          // the native host writes these names; a WebView must not write a second one (spec host-owned table)
+          hostOwnedTraces: hostOwned.names(),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
             ? withUrl(

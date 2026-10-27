@@ -9,6 +9,7 @@
 //   await launchRenderer(appToken, {});           // replay is ON by default and rides the same stream;
 //                                                // pass `replay: false` to opt out
 import { type Bugsee, type BugseeLaunchOptions, launchCore } from '@bugsee/browser';
+import { createTraceSuppression, ELECTRON_RENDERER_HOST_OWNED_TRACES } from '@bugsee/capture';
 import {
   asInternalClient,
   BlackoutToken,
@@ -146,13 +147,17 @@ async function launchRendererOnce(
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   const carriedBlackout = getCarrierBlackout(browserOptions.carrier ?? globalThis);
+  // The trace names main writes (so this renderer must not): a LIVE set the browser launch's trace provider consults for
+  // every value. It starts as the built-in table (fail closed: nothing main owns leaks before the handshake) and the
+  // handshake reply REPLACES it with what main actually declares.
+  const hostOwned = createTraceSuppression({ host: ELECTRON_RENDERER_HOST_OWNED_TRACES });
   const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
-    // Main writes the `displays` trace (the full list) and the `capture` trace (blackout is session-wide, and pixel
-    // video is main's); a renderer must not write a second one into the same session. After the caller's options: it
-    // is not the caller's to switch back on.
-    hostOwnedTraces: [TraceName.DISPLAYS, TraceName.CAPTURE],
+    // Main writes the `displays` trace (the full list), the `capture` trace (blackout is session-wide, and pixel video is
+    // main's) and its own V8 heap as `ram_js_heap_*`; a renderer must not write a second one into the same session.
+    // After the caller's options: it is not the caller's to switch back on.
+    hostOwnedTraces: hostOwned,
     // AFTER the caller's options, deliberately — see above.
     triggerPipeline,
     // Born dark, released by the handshake. Main owns the blackout: until this renderer has heard the
@@ -243,6 +248,12 @@ async function launchRendererOnce(
       flush: (): void => {
         if (live()) {
           void client.flush();
+        }
+      },
+      // main's declaration of the trace names it owns (the session reply carries it): applied before the hold opens
+      onHostOwned: (names: readonly string[]): void => {
+        if (live()) {
+          hostOwned.setLayer('host', names);
         }
       },
       onSession: (id: string): void => {

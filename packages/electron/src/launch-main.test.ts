@@ -1,4 +1,9 @@
-import type { SystemEvent, TraceProducer, TraceSink } from '@bugsee/capture';
+import {
+  ELECTRON_RENDERER_HOST_OWNED_TRACES,
+  type SystemEvent,
+  type TraceProducer,
+  type TraceSink,
+} from '@bugsee/capture';
 import {
   BlackoutToken,
   CaptureDataEntryBase,
@@ -168,6 +173,8 @@ describe('launchMain', () => {
       command: 'session',
       sessionId: 'sess-xyz',
       blackout: false, // main's blackout state rides every handshake reply
+      // the names main writes itself ride it too, so renderers do not write a second one (C22)
+      hostOwnedTraces: [...ELECTRON_RENDERER_HOST_OWNED_TRACES],
     });
   });
 

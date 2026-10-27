@@ -1,6 +1,7 @@
 import { type CaptureProvider, CaptureProviderBase, type Scheduler } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import type { TraceProducer, TraceSink } from './trace-producer';
+import type { TraceSuppression } from './trace-suppression';
 
 // Runtime-agnostic SYSTEM TRACES provider (Android traces.system parity). A trace is a
 // named value sampled over TIME. While started, it periodically calls an injected `sample()` and routes
@@ -48,6 +49,14 @@ export interface SystemTracesProviderOptions {
   refreshMs?: number;
   /** Reports an isolated producer/tick failure. Must not throw. */
   onError?: (error: unknown) => void;
+  /**
+   * Names that must NOT be written by this provider: a trace the HOST already writes (WebView native host, Electron main) or
+   * that only the key window may write. Consulted for every value (producers and the legacy `sample`), so a LIVE change
+   * (the host's handshake reply, a window gaining the key) applies to the next value. A suppressed HELD value is still
+   * remembered (never refreshed while suppressed) and is re-recorded, with a fresh timestamp, the moment its name is
+   * RELEASED, so the new owner's state appears immediately instead of after the next change.
+   */
+  suppression?: TraceSuppression;
 }
 
 const DEFAULT_INTERVAL_MS = 1000;
@@ -82,6 +91,8 @@ class SystemTracesProvider extends CaptureProviderBase {
   readonly #scheduler: Scheduler;
   readonly #now: () => number;
   readonly #onError: (error: unknown) => void;
+  readonly #suppression: TraceSuppression | undefined;
+  #offSuppression: (() => void) | undefined;
   readonly #held = new Map<string, Held>();
   #started: TraceProducer[] = [];
   #running = false;
@@ -104,11 +115,13 @@ class SystemTracesProvider extends CaptureProviderBase {
     this.#scheduler = options.scheduler ?? defaultScheduler;
     this.#now = options.now ?? (() => Date.now());
     this.#onError = options.onError ?? (() => {});
+    this.#suppression = options.suppression;
   }
 
   protected onStart(): void {
     this.#held.clear();
     this.#running = true;
+    this.#offSuppression = this.#suppression?.subscribe((released) => this.#rerecord(released));
     for (const producer of this.#producers) {
       try {
         producer.start(this.#sink);
@@ -133,6 +146,8 @@ class SystemTracesProvider extends CaptureProviderBase {
   protected override onStop(): void {
     this.#scheduler.clearInterval(this.#timer);
     this.#timer = null;
+    this.#offSuppression?.();
+    this.#offSuppression = undefined;
     this.#stopProducers();
     this.#running = false;
     this.#held.clear();
@@ -171,12 +186,7 @@ class SystemTracesProvider extends CaptureProviderBase {
     timestamp: number,
     hold: boolean,
   ): void {
-    this.capture('traces.system', timestamp, {
-      timestamp,
-      name,
-      value,
-      ...(displayId !== undefined ? { displayId } : {}),
-    });
+    if (this.#suppression?.has(name) !== true) this.#capture(name, value, displayId, timestamp);
     if (!hold) return;
     this.#held.set(displayId === undefined ? name : `${displayId}:${name}`, {
       name,
@@ -184,6 +194,26 @@ class SystemTracesProvider extends CaptureProviderBase {
       timestamp,
       displayId,
     });
+  }
+
+  #capture(name: string, value: unknown, displayId: number | undefined, timestamp: number): void {
+    this.capture('traces.system', timestamp, {
+      timestamp,
+      name,
+      value,
+      ...(displayId !== undefined ? { displayId } : {}),
+    });
+  }
+
+  /** Names just released by the suppression: record each one's held value now (a polled value has nothing to replay). */
+  #rerecord(released: readonly string[]): void {
+    // (`#held` is empty unless running: onStop clears it, so a release delivered after stop() has nothing to replay)
+    const now = this.#now();
+    for (const held of [...this.#held.values()]) {
+      if (!released.includes(held.name)) continue;
+      this.#capture(held.name, held.value, held.displayId, now);
+      held.timestamp = now;
+    }
   }
 
   #stopProducers(): void {

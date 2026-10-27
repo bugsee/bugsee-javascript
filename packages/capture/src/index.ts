@@ -75,6 +75,14 @@ export {
   type TraceSink,
 } from './trace-producer';
 export {
+  createTraceSuppression,
+  ELECTRON_RENDERER_HOST_OWNED_TRACES,
+  isTraceSuppression,
+  sanitizeTraceNames,
+  type TraceSuppression,
+  WEBVIEW_HOST_OWNED_TRACES,
+} from './trace-suppression';
+export {
   createTraceparentDecorator,
   type ParsedTraceparent,
   parseTraceparent,

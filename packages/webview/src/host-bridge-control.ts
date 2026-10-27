@@ -1,3 +1,4 @@
+import { sanitizeTraceNames } from '@bugsee/capture';
 import { neverThrow } from '@bugsee/core';
 import { type ControlMessage, parseControl } from './protocol';
 
@@ -57,6 +58,11 @@ export function createBridgeControl(opts?: {
    * The launch uses it to judge, only now, whether native declared blackout support.
    */
   onApplied?: () => void;
+  /**
+   * Called with the trace names an ADMITTED control message's `config.hostOwnedTraces` declares the native host owns (a
+   * malformed declaration is ignored whole). The launch hands it to the system-traces provider's live suppression.
+   */
+  onHostOwned?: (names: readonly string[]) => void;
   /** Reports a REJECTED control message, so a page-script hijack attempt is visible rather than silent. */
   onError?: (error: unknown) => void;
   /**
@@ -150,6 +156,10 @@ export function createBridgeControl(opts?: {
       }
       if (msg.config?.blackout !== undefined) {
         config.nativeBlackout = msg.config.blackout === true;
+      }
+      const hostOwned = sanitizeTraceNames(msg.config?.hostOwnedTraces);
+      if (hostOwned !== undefined) {
+        neverThrow(() => opts?.onHostOwned?.(hostOwned), opts?.onError);
       }
       if (msg.session !== undefined || msg.config !== undefined) {
         opts?.onApplied?.();

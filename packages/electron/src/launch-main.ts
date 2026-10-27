@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { CaptureStateProducer } from '@bugsee/capture';
+import { CaptureStateProducer, ELECTRON_RENDERER_HOST_OWNED_TRACES } from '@bugsee/capture';
 import {
   type AppIdentity,
   BlackoutToken,
@@ -528,6 +528,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     sessionId: internals.api.sessionId,
     // A renderer that says hello mid-blackout is told in its session reply and starts dark.
     isBlackout: () => blackout.isActive(),
+    // Main writes the full `displays` list, the `capture` state and its own V8 heap (`ram_js_heap_*`): every renderer is told
+    // so in its handshake reply and must not write them (one writer per name per session).
+    hostOwnedTraces: ELECTRON_RENDERER_HOST_OWNED_TRACES,
   });
   control.start();
   // Forward the main client's blackout to EVERY renderer. Without this a blackout applied in main only

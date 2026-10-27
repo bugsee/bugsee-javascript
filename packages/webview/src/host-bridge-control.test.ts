@@ -101,6 +101,68 @@ describe('createBridgeControl', () => {
     expect(bc.config).toEqual({ reportTrigger: false, nativeBlackout: false });
   });
 
+  it('hands the trace names native declares it owns (`config.hostOwnedTraces`) to onHostOwned, including an empty declaration', () => {
+    const onHostOwned = vi.fn();
+    const bc = createBridgeControl({ onHostOwned });
+    bc.control(reply({ config: { hostOwnedTraces: ['battery', 'fps'] } }));
+    expect(onHostOwned).toHaveBeenLastCalledWith(['battery', 'fps']);
+    bc.control(reply({ config: { hostOwnedTraces: [] } }));
+    expect(onHostOwned).toHaveBeenLastCalledWith([]);
+    expect(onHostOwned).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['a string', 'battery'],
+    ['a non-string element', ['battery', 1]],
+    ['an empty name', ['']],
+    ['an over-long name', ['x'.repeat(65)]],
+    ['too many names', Array.from({ length: 65 }, (_, i) => `t${i}`)],
+  ])('ignores a malformed hostOwnedTraces (%s) whole, but still applies the rest of the config', (_n, bad) => {
+    const onHostOwned = vi.fn();
+    const bc = createBridgeControl({ onHostOwned });
+    bc.control(reply({ config: { hostOwnedTraces: bad, reportTrigger: true } } as never));
+    expect(onHostOwned).not.toHaveBeenCalled();
+    expect(bc.config.reportTrigger).toBe(true);
+  });
+
+  it("a throwing onHostOwned never escapes control() (it runs inside native's evaluateJavascript); the rest of the message still applies", () => {
+    const onError = vi.fn();
+    const bc = createBridgeControl({
+      onError,
+      onHostOwned: () => {
+        throw new Error('owned boom');
+      },
+    });
+    expect(() =>
+      bc.control(
+        reply({ session: 'native-1', config: { hostOwnedTraces: ['a'], reportTrigger: true } }),
+      ),
+    ).not.toThrow();
+    expect(bc.config.session).toBe('native-1');
+    expect(bc.config.reportTrigger).toBe(true);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: 'owned boom' }),
+    );
+  });
+
+  it('a config without hostOwnedTraces leaves the declaration alone; no handler wired is fine', () => {
+    const onHostOwned = vi.fn();
+    createBridgeControl({ onHostOwned }).control(reply({ config: { reportTrigger: true } }));
+    expect(onHostOwned).not.toHaveBeenCalled();
+    expect(() =>
+      createBridgeControl().control(reply({ config: { hostOwnedTraces: ['a'] } })),
+    ).not.toThrow();
+  });
+
+  it('an UNAUTHENTICATED control message cannot change what the host owns', () => {
+    const onHostOwned = vi.fn();
+    const bc = createBridgeControl({ onHostOwned, nativeSecret: 'from-native' });
+    bc.control(reply({ config: { hostOwnedTraces: [] } }));
+    expect(onHostOwned).not.toHaveBeenCalled();
+    bc.control(reply({ config: { hostOwnedTraces: [] }, tok: 'from-native' } as never));
+    expect(onHostOwned).toHaveBeenCalledExactlyOnceWith([]);
+  });
+
   it('retains a previously-set session across a later config-only reply (no clobber)', () => {
     const bc = createBridgeControl();
     bc.control(reply({ session: 'native-1' }));

@@ -23,6 +23,11 @@ export interface RendererControlHandlerOptions {
    * reply, BEFORE `onSession`. Optional.
    */
   onBlackout?(active: boolean): void;
+  /**
+   * The trace names the host owns, carried by the `session` reply (so the renderer stops writing them). Delivered BEFORE
+   * `onSession`, like the blackout state. Optional; not called when the reply declares none.
+   */
+  onHostOwned?(names: readonly string[]): void;
 }
 
 /** Build the renderer's control dispatcher: `handle(raw)` applies one main→renderer control message. */
@@ -50,6 +55,9 @@ export function createRendererControlHandler(
       case 'session':
         if (message.blackout !== undefined) {
           options.onBlackout?.(message.blackout);
+        }
+        if (message.hostOwnedTraces !== undefined) {
+          options.onHostOwned?.(message.hostOwnedTraces);
         }
         if (message.sessionId !== undefined) {
           options.onSession?.(message.sessionId);

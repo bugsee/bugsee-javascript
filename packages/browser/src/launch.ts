@@ -14,11 +14,14 @@ import {
   createLogCaptureProvider,
   createSystemEventsProvider,
   createSystemTracesProvider,
+  createTraceSuppression,
   createVideoAuxProvider,
   deriveRefreshMs,
   installNetworkCapture,
+  isTraceSuppression,
   type NetworkCapture,
   type TraceSample,
+  type TraceSuppression,
 } from '@bugsee/capture';
 import {
   asInternalClient,
@@ -535,11 +538,14 @@ export interface BugseeLaunchOptions {
   /** DOM document for input capture (clicks/keys/…) + the report-time viewtree. Default `window.document`. */
   document?: Document;
   /**
-   * Host composition seam (set by `@bugsee/electron`'s renderer launch): system trace names the HOST of this page
-   * already writes, which this launch must not write too (one writer per name per session). Only `'displays'` is honoured
-   * today. A standalone browser leaves it unset.
+   * Host composition seam (set by `@bugsee/electron`'s renderer launch and the WebView launch): system trace names the HOST
+   * of this page already writes, which this launch must not write too (one writer per name per session; spec
+   * platforms/javascript.md "Host-owned traces"). Every listed name is dropped from `traces.system`, and a producer whose
+   * only output is an owned name (`displays`, `capture`) is not even built. Pass an array for a fixed list, or a live
+   * `TraceSuppression` (from `@bugsee/capture`) when the host declares its names in a handshake after launch. A standalone
+   * browser leaves it unset.
    */
-  hostOwnedTraces?: readonly string[];
+  hostOwnedTraces?: readonly string[] | TraceSuppression;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -646,6 +652,15 @@ const internalTagged =
       ...options,
       headers: { ...options.headers, 'x-bugsee-internal': '1' },
     });
+
+function reportInvalidHostOwned(onError: ((error: unknown) => void) | undefined): void {
+  reportGuarded(
+    onError,
+    new Error(
+      'Bugsee: hostOwnedTraces must be an array of trace-name strings; anything else is ignored',
+    ),
+  );
+}
 
 // The public composition root's lifecycle shell: publishes Launching while the (async) composition is in
 // flight, Launched once it has built a client, and falls back to Stopped if it throws. A repeat launch
@@ -1049,24 +1064,26 @@ async function buildLaunch(
     { window: win, ...(domDocument !== undefined ? { document: domDocument } : {}) },
     options.onError,
   );
-  // A public option: anything but an array of strings is IGNORED (the producers stay on) and reported, never a failed launch.
+  // A public option: an array of trace names, or a LIVE `TraceSuppression` (what `@bugsee/electron`'s renderer and the WebView
+  // launch pass, so the host's handshake reply can change the names after launch). Anything else is IGNORED (every
+  // producer stays on) and reported, never a failed launch; a non-string element of an array is dropped and reported.
   const rawHostOwned: unknown = options.hostOwnedTraces;
-  const hostOwnedTraces = Array.isArray(rawHostOwned)
-    ? rawHostOwned.filter((n): n is string => typeof n === 'string')
-    : undefined;
-  if (
-    rawHostOwned !== undefined &&
-    (hostOwnedTraces === undefined || hostOwnedTraces.length !== (rawHostOwned as unknown[]).length)
-  ) {
-    reportGuarded(
-      options.onError,
-      new Error(
-        'Bugsee: hostOwnedTraces must be an array of trace-name strings; anything else is ignored',
-      ),
-    );
+  let suppression: TraceSuppression | undefined;
+  if (isTraceSuppression(rawHostOwned)) {
+    suppression = rawHostOwned;
+  } else if (Array.isArray(rawHostOwned)) {
+    const names = rawHostOwned.filter((n): n is string => typeof n === 'string');
+    suppression = createTraceSuppression({ host: names });
+    if (names.length !== rawHostOwned.length) reportInvalidHostOwned(options.onError);
+  } else if (rawHostOwned !== undefined) {
+    reportInvalidHostOwned(options.onError);
   }
-  // The `capture` trace (C7): only where visual capture is configured (rrweb replay on) and this host owns the name
-  // (a WebView / Electron renderer leaves it to its native host / main). It writes `active`/`blackout` once the recorder
+  // A snapshot for the producers that are not BUILT at all for an owned name (`displays`); the provider's live
+  // suppression covers every name, including the ones the host declares later.
+  const hostOwnedTraces = suppression?.names();
+  // The `capture` trace (C7): only where visual capture is configured (rrweb replay on). Whether this launch may WRITE the
+  // name is the provider suppression's call, live (a WebView / Electron renderer leaves it to its native host / main, and a
+  // host can hand it back in its handshake). It writes `active`/`blackout` once the recorder
   // really started (below) and the disk states under `captureDiskSpace`; blackout and pressure are bound now, the
   // recorder's own signal later.
   let stopReplayCheckout: (() => void) | undefined;
@@ -1074,10 +1091,7 @@ async function buildLaunch(
     diskPressure !== undefined
       ? browserTraceEnvFrom(win, domDocument, options.onError).navigator
       : undefined;
-  const captureState =
-    replayEnabled && hostOwnedTraces?.includes(TraceName.CAPTURE) !== true
-      ? new CaptureStateProducer()
-      : undefined;
+  const captureState = replayEnabled ? new CaptureStateProducer() : undefined;
   captureState?.bindBlackout(blackout);
   if (diskPressure !== undefined && resolved.isEnabled(BugseeOption.CaptureDiskSpace)) {
     captureState?.bindPressure(diskPressure); // the disk STATES are telemetry: behind the opt-in, the protection is not
@@ -1088,6 +1102,7 @@ async function buildLaunch(
       ...(options.systemMetricsSampler !== undefined
         ? { sample: options.systemMetricsSampler }
         : {}),
+      ...(suppression !== undefined ? { suppression } : {}),
       producers: [
         ...createBrowserSystemTraceProducers(
           {

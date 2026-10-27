@@ -311,6 +311,16 @@
             "blackout": {
               "type": "boolean",
               "description": "Native declares that it applies `blackout` messages to its own visual capture."
+            },
+            "hostOwnedTraces": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "description": "The system trace names the NATIVE host writes itself, which the WebView must therefore NOT write (one writer per name per session). Replaces the SDK's built-in list for a WebView (battery, charging, battery_charging_time_s, battery_discharging_time_s, orientation, app_state, connection, fps, view, ram_system_advertised, displays, capture); an empty array means native owns none. Absent leaves the built-in list in force; a malformed value is ignored whole."
             }
           },
           "additionalProperties": false

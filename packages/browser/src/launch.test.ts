@@ -13,6 +13,7 @@ import {
   type LockManagerLike,
   markerDatabaseName,
 } from '@bugsee/browser-utils';
+import { createTraceSuppression } from '@bugsee/capture';
 import {
   BlackoutToken,
   type BundleStore,
@@ -2192,6 +2193,91 @@ describe('launch', () => {
           }),
         );
         expect(onError).not.toHaveBeenCalled();
+      });
+
+      it('hostOwnedTraces suppresses EVERY listed name the launch would write (not only displays), and every unlisted one still flows', async () => {
+        stubSensors();
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            captureStore: store,
+            hostOwnedTraces: [
+              'ram_js_heap_total',
+              'ram_js_heap_used',
+              'ram_js_heap_free',
+              'orientation',
+            ],
+          }),
+        );
+        const names = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        for (const owned of [
+          'ram_js_heap_total',
+          'ram_js_heap_used',
+          'ram_js_heap_free',
+          'orientation',
+        ]) {
+          expect(names).not.toContain(owned);
+        }
+        expect(names).toContain('connection');
+        expect(names).toContain('ram_system_advertised');
+      });
+
+      describe('an owned `displays` is not even BUILT (no producer, so a resize arms no settle timer)', () => {
+        const settleTimersAfterResize = async (
+          over: Partial<BugseeLaunchOptions>,
+        ): Promise<number> => {
+          stubSensors();
+          vi.stubGlobal('screen', { width: 390, height: 844 });
+          const w = fakeWindow();
+          Object.assign(w.win, { devicePixelRatio: 2 });
+          let settle = 0;
+          const scheduler = {
+            setInterval: (_cb: () => void, ms: number) => {
+              if (ms === 250) settle += 1; // the displays settle timer
+              return settle;
+            },
+            clearInterval: () => {},
+          };
+          await launchTracked(
+            'tok',
+            noSampler({ window: w.win, captureStore: memStore(), scheduler, ...over }),
+          );
+          Object.assign(w.win, { devicePixelRatio: 3 });
+          w.emit('resize', {});
+          return settle;
+        };
+        it('baseline: a resize arms the displays settle timer', async () => {
+          expect(await settleTimersAfterResize({})).toBe(1);
+        });
+        it('owned: it arms none', async () => {
+          expect(await settleTimersAfterResize({ hostOwnedTraces: ['displays'] })).toBe(0);
+        });
+      });
+
+      it('a LIVE trace suppression (hostOwnedTraces: object) applies a layer change made after launch, and its initial names skip the producers', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        const suppression = createTraceSuppression({ host: ['displays'] });
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError, hostOwnedTraces: suppression }),
+        );
+        expect(onError).not.toHaveBeenCalled(); // a live suppression is NOT an invalid option
+        suppression.setLayer('host', ['displays', 'connection']); // e.g. the host's handshake reply
+        vi.stubGlobal('navigator', { onLine: false, connection: { type: 'wifi' } });
+        w.emit('offline', {});
+        const rows = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => (e.data as { name: string; value: unknown }).name,
+        );
+        expect(rows).not.toContain('displays');
+        expect(rows.filter((n) => n === 'connection')).toHaveLength(1); // the baseline only: the offline change was dropped
       });
 
       it.each([
