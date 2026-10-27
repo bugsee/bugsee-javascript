@@ -2,16 +2,21 @@ import { createTrackerRegistry } from '../tracker-registry';
 import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-tracker';
 
 // Electron MAIN-process POWER tracker (domain tracker, design §15.2/§15.4 TR9; Android reference: BugseeTrackerPower).
-// It owns what Electron's `powerMonitor` can say, as THREE stages, each arming its own pair of `powerMonitor`
-// listeners only while it has a subscriber and releasing them when the last leaves:
+// It owns what Electron's `powerMonitor` can say, as FIVE stages, each arming its own `powerMonitor` listeners only
+// while it has a subscriber and releasing them when the last leaves:
 //
 //   suspendResume  'suspend' / 'resume'            -> { state: 'suspend' | 'resume' }
 //   lockScreen     'lock-screen' / 'unlock-screen' -> { state: 'lock' | 'unlock' }      (macOS/Windows; never fires on Linux)
 //   powerSource    'on-ac' / 'on-battery'          -> { source: 'ac' | 'battery' }
+//   thermalState   'thermal-state-change'          -> { state: ThermalState }            (macOS only; the Apple enum)
+//   speedLimit     'speed-limit-change'            -> { limit: number }                  (macOS/Windows; percent 0-100)
 //
 // `current('powerSource')` is a LIVE read of `powerMonitor.isOnBatteryPower()`; it answers undefined when the monitor has
-// no such method, it throws (reported) or returns a non-boolean: a source is never guessed. `thermal-state-change` and
-// `speed-limit-change` are deliberately NOT mapped: they are macOS-only and the thermal state is not Android's int enum.
+// no such method, it throws (reported) or returns a non-boolean: a source is never guessed. `current('thermalState')` is
+// the same for `getCurrentThermalState()` (a string Electron documents for macOS; elsewhere the method answers
+// 'unknown' or is absent). The tracker only NORMALISES: a thermal state that is not one of Electron's four named states is
+// 'unknown' (never passed through) and a speed limit that is not a finite 0-100 number is dropped. WHICH wire value a state
+// becomes is the producer's business (packages/electron/src/thermal-state-wire.ts), not this tracker's.
 // PLATFORM DEPENDENT: per Electron's typings `on-ac` is documented for macOS and Windows and `on-battery` for macOS
 // only, so on Linux (and `on-battery` on Windows) the event may simply never fire; `lock-screen`/`unlock-screen` are
 // macOS/Windows. Absence of an event is never evidence of a state: read `current('powerSource')` for the live value.
@@ -22,12 +27,22 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 /** The slice of Electron's `powerMonitor` this tracker reads. Every member is optional: an absent one means the stage is absent. */
 export interface PowerMonitorSource extends EmitterSource {
   isOnBatteryPower?(): unknown;
+  /** macOS only. */
+  getCurrentThermalState?(): unknown;
 }
+
+/** Electron's `powerMonitor` thermal states (NSProcessInfoThermalState), plus `unknown` for anything else. */
+export type ElectronThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critical';
+
+const THERMAL_STATES: ReadonlySet<unknown> = new Set(['nominal', 'fair', 'serious', 'critical']);
 
 export interface ElectronPowerEvents {
   suspendResume: { state: 'suspend' | 'resume' };
   lockScreen: { state: 'lock' | 'unlock' };
   powerSource: { source: 'ac' | 'battery' };
+  thermalState: { state: ElectronThermalState };
+  /** The operating system's advertised CPU speed limit, integer percent 0-100. */
+  speedLimit: { limit: number };
 }
 
 export interface ElectronPowerEnv {
@@ -37,7 +52,35 @@ export interface ElectronPowerEnv {
 
 type PowerStage = keyof ElectronPowerEvents;
 
-const STAGE_EVENTS: Record<PowerStage, Array<[string, ElectronPowerEvents[PowerStage]]>> = {
+/** A stage's Electron events: the payload is fixed, or computed from the event's first argument (undefined = drop it). */
+type Payload =
+  | ElectronPowerEvents[PowerStage]
+  | ((detail: unknown) => ElectronPowerEvents[PowerStage] | undefined);
+
+const normaliseThermal = (state: unknown): ElectronThermalState =>
+  THERMAL_STATES.has(state) ? (state as ElectronThermalState) : 'unknown';
+
+/**
+ * The value of a `powerMonitor` details event. Electron documents `details` objects (`{state}`, `{limit}`), but the shape
+ * was not verified on a real Electron, so a BARE value (`listener('fair')`, `listener(80)`) is read as the value itself:
+ * right whichever form Electron uses, and an unknown shape still normalises to unknown / dropped.
+ */
+const detailValue = (detail: unknown, key: 'state' | 'limit'): unknown =>
+  typeof detail === 'object' && detail !== null ? (detail as Record<string, unknown>)[key] : detail;
+
+const thermalOf = (detail: unknown): { state: ElectronThermalState } => ({
+  state: normaliseThermal(detailValue(detail, 'state')),
+});
+
+const speedLimitOf = (detail: unknown): { limit: number } | undefined => {
+  const limit = detailValue(detail, 'limit');
+  // the range test also rejects NaN and the infinities (every comparison with them is false)
+  return typeof limit === 'number' && limit >= 0 && limit <= 100
+    ? { limit: Math.round(limit) }
+    : undefined;
+};
+
+const STAGE_EVENTS: Record<PowerStage, Array<[string, Payload]>> = {
   suspendResume: [
     ['suspend', { state: 'suspend' }],
     ['resume', { state: 'resume' }],
@@ -50,11 +93,19 @@ const STAGE_EVENTS: Record<PowerStage, Array<[string, ElectronPowerEvents[PowerS
     ['on-ac', { source: 'ac' }],
     ['on-battery', { source: 'battery' }],
   ],
+  thermalState: [['thermal-state-change', thermalOf]],
+  speedLimit: [['speed-limit-change', speedLimitOf]],
 };
 
 export class ElectronPowerTracker extends ElectronStageTracker<ElectronPowerEvents> {
   readonly name = 'electron-power';
-  protected readonly stages: readonly PowerStage[] = ['suspendResume', 'lockScreen', 'powerSource'];
+  protected readonly stages: readonly PowerStage[] = [
+    'suspendResume',
+    'lockScreen',
+    'powerSource',
+    'thermalState',
+    'speedLimit',
+  ];
   readonly #monitor: PowerMonitorSource | undefined;
 
   constructor(env: ElectronPowerEnv = {}, onError?: (error: unknown) => unknown) {
@@ -68,11 +119,19 @@ export class ElectronPowerTracker extends ElectronStageTracker<ElectronPowerEven
   }
 
   /** The live power source: `battery` / `ac`, or undefined when the monitor cannot say (never guessed). */
-  current(stage: 'powerSource'): ElectronPowerEvents['powerSource'] | undefined {
+  current(stage: 'powerSource'): ElectronPowerEvents['powerSource'] | undefined;
+  /** The live thermal state (macOS), or undefined when there is no such method / it throws (reported). */
+  current(stage: 'thermalState'): ElectronPowerEvents['thermalState'] | undefined;
+  current(stage: 'powerSource' | 'thermalState'): unknown {
     const monitor = this.#monitor;
-    if (stage !== 'powerSource' || monitor === undefined) return undefined;
+    if (monitor === undefined || (stage !== 'powerSource' && stage !== 'thermalState'))
+      return undefined;
     try {
       // inside the guard: a host object that is not ready can throw on ANY property read
+      if (stage === 'thermalState') {
+        if (typeof monitor.getCurrentThermalState !== 'function') return undefined;
+        return { state: normaliseThermal(monitor.getCurrentThermalState()) };
+      }
       if (typeof monitor.isOnBatteryPower !== 'function') return undefined;
       const onBattery = monitor.isOnBatteryPower();
       if (typeof onBattery !== 'boolean') return undefined;
@@ -90,7 +149,10 @@ export class ElectronPowerTracker extends ElectronStageTracker<ElectronPowerEven
       STAGE_EVENTS[stage].map(([event, payload]) => ({
         src: monitor,
         event,
-        listener: () => this.emit(stage, { ...payload } as never),
+        listener: (detail) => {
+          const value = typeof payload === 'function' ? payload(detail) : { ...payload };
+          if (value !== undefined) this.emit(stage, value as never);
+        },
       })),
       this.report,
     );

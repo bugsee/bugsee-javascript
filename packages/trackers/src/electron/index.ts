@@ -29,6 +29,7 @@ export {
   type ElectronPowerEnv,
   type ElectronPowerEvents,
   ElectronPowerTracker,
+  type ElectronThermalState,
   electronPowerTrackerFor,
   type PowerMonitorSource,
   resetElectronPowerTracker,

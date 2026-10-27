@@ -308,6 +308,10 @@ class Emitter {
   emit(e: string, ...a: unknown[]) {
     for (const l of [...(this.table.get(e) ?? [])]) l({}, ...a);
   }
+  /** Electron's own shape for the powerMonitor details events: the FIRST argument is the details object. */
+  emitDetail(e: string, detail: unknown) {
+    for (const l of [...(this.table.get(e) ?? [])]) l(detail);
+  }
   count(e: string) {
     return this.table.get(e)?.length ?? 0;
   }
@@ -428,10 +432,33 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     await client.stop();
   });
 
+  it('thermal_state (iOS int) and cpu_speed_limit land in the uploaded traces.system, in order, none held (C13)', async () => {
+    const w = domainWorld();
+    let thermal = 'fair';
+    Object.assign(w.powerMonitor, { getCurrentThermalState: () => thermal });
+    const { client, puts } = launchDomains(w);
+    w.powerMonitor.emitDetail('thermal-state-change', { state: 'serious' });
+    w.powerMonitor.emitDetail('speed-limit-change', { limit: 80 });
+    thermal = 'unknown';
+    w.powerMonitor.emitDetail('thermal-state-change', { state: 'unknown' }); // writes nothing
+    w.powerMonitor.emitDetail('thermal-state-change', { state: 'critical' });
+    w.powerMonitor.emitDetail('speed-limit-change', { limit: 100 });
+    await client.logException(new Error('x'));
+    const traces = fileOf<{ name: string; value: unknown }>(
+      puts[0] as Uint8Array,
+      'traces.system.json',
+    );
+    const of = (n: string) => traces.filter((t) => t.name === n).map((t) => t.value);
+    expect(of('thermal_state')).toEqual([1, 2, 3]);
+    expect(of('cpu_speed_limit')).toEqual([80, 100]);
+    await client.stop();
+    expect(w.powerMonitor.total()).toBe(0);
+  });
+
   it('captureSystemEvents OFF: no power/window/display-event listeners (the displays TRACE keeps only its own); both off: none at all', async () => {
     const w = domainWorld([new Win(1)]);
     const { client } = launchDomains(w, { captureSystemEvents: false });
-    expect(w.powerMonitor.total()).toBe(0);
+    expect(w.powerMonitor.total()).toBe(2); // only the thermal_state and cpu_speed_limit TRACES keep theirs
     // no window/renderer EVENTS, but the displays trace follows the key window: windowFocus + windowMoved only
     expect(w.app.count('browser-window-created')).toBe(2);
     expect(w.app.count('web-contents-created')).toBe(0);
@@ -449,7 +476,7 @@ describe('Electron domain trackers -> real node launch -> assembled report', () 
     const win = new Win(1);
     const w = domainWorld([win]);
     const { client } = launchDomains(w);
-    expect(w.powerMonitor.total()).toBe(6);
+    expect(w.powerMonitor.total()).toBe(8); // the events (6) + thermal_state and cpu_speed_limit
     expect(w.screen.total()).toBe(6); // events (3) + the displays trace (3)
     expect(w.app.count('browser-window-created')).toBe(3); // focus, visibility, moved (the displays trace's key window)
     expect(w.app.count('web-contents-created')).toBe(1);
