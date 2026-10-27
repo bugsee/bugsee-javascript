@@ -53,14 +53,7 @@ const snapshot = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8')) as Snapshot;
  */
 const NOT_YET: Readonly<
   Record<string, { spec: string; tracking: readonly number[]; reason: string }>
-> = {
-  route: {
-    spec: 'C12',
-    tracking: [126, 134],
-    reason: 'no client.setRoute / adapter route hook yet',
-  },
-  view: { spec: 'C12', tracking: [126, 134], reason: 'no client.setView / adapter view hook yet' },
-};
+> = {};
 
 /**
  * Files that contain a spec name as a string WITHOUT writing it to a system stream (the scan reads every product file).

@@ -14,4 +14,10 @@ export {
   MultiKeyEmitterBase,
 } from './emitter';
 export { InterceptorBase } from './interceptor-base';
+export {
+  type ScreenEvents,
+  ScreenTracker,
+  type ScreenView,
+  type ScreenViewObject,
+} from './screen-tracker';
 export { createTrackerRegistry, type TrackerRegistry } from './tracker-registry';

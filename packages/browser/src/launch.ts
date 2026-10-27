@@ -70,6 +70,7 @@ import {
   resolveLaunchOptions,
   runLaunchRecovery,
   type Scheduler,
+  screenTrackerFor,
   setCarrierClient,
   setCarrierLastLaunch,
   setCarrierPendingLaunch,
@@ -1105,6 +1106,8 @@ async function buildLaunch(
                   }),
                 )
               : {}),
+            // `route` / `view`: what `client.setRoute` / `setView` (the framework adapters) report, shared through the carrier.
+            routeViewState: screenTrackerFor(carrier, options.onError),
             lifecycle,
             ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           },

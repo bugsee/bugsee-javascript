@@ -1,4 +1,9 @@
-import { neverThrow, type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
+import {
+  neverThrow,
+  type RouteNamingOptions,
+  setRouteName,
+  setViewName,
+} from '@bugsee/web-adapter';
 
 // The @bugsee/solid ROUTER NAMING integration (and the two-phase naming seam). On a
 // navigation, @solidjs/router's matched routes carry the parameterized pattern (`/users/:id`); the deepest
@@ -14,7 +19,7 @@ export { type RouteNamingOptions, setRouteName } from '@bugsee/web-adapter';
 
 /** The minimal @solidjs/router match shape we read — structurally matches a `useCurrentMatches()` element. */
 export interface SolidRouteMatchLike {
-  route?: { pattern?: string };
+  route?: { pattern?: string; component?: unknown };
 }
 
 /** The parameterized pattern for a Solid Router navigation: the deepest match's `route.pattern` (the full
@@ -32,6 +37,26 @@ export function routePatternFromSolidMatches(
   });
 }
 
+/**
+ * The component name of the page a Solid Router navigation committed to (the `view` trace, best effort): the deepest
+ * match's `route.component` (`RouteDescription.component`), by its function `name` or `displayName`. Undefined when
+ * there is none; whether the name is obtainable (not minified) is decided by `setViewName`.
+ */
+export function viewNameFromSolidMatches(
+  matches: readonly SolidRouteMatchLike[] | null | undefined,
+): string | undefined {
+  return neverThrow(() => {
+    if (!matches || matches.length === 0) return undefined;
+    const component = matches[matches.length - 1]?.route?.component;
+    if (typeof component !== 'function') return undefined;
+    const fn = component as { displayName?: unknown; name?: unknown; preload?: unknown };
+    // solid-js `lazy()` returns a function named `wrap` that carries `preload`: a wrapper, not the page
+    if (typeof fn.preload === 'function') return undefined;
+    const name = fn.displayName ?? fn.name;
+    return typeof name === 'string' && name !== '' ? name : undefined;
+  });
+}
+
 /** Refine the active transaction to the matched route PATTERN. Call (in a reactive effect) with
  *  `useCurrentMatches()`'s value on each navigation. A no-op when there is no usable pattern. */
 export function setRouteNameFromSolidMatches(
@@ -40,4 +65,5 @@ export function setRouteNameFromSolidMatches(
 ): void {
   const pattern = routePatternFromSolidMatches(matches);
   if (pattern !== undefined) setRouteName(pattern, options);
+  setViewName(viewNameFromSolidMatches(matches), 'solid', options);
 }

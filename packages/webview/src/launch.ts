@@ -61,6 +61,7 @@ import {
   type ReportHandler,
   resolveLaunchOptions,
   type Scheduler,
+  screenTrackerFor,
   sealCarrierLifecycleSlot,
   setCarrierClient,
   setCarrierStatus,
@@ -757,8 +758,8 @@ export function launchWithSeams(
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          // the native host writes `displays`; a WebView must not write a second one (spec host-owned table)
-          hostOwnedTraces: [TraceName.DISPLAYS],
+          // the native host writes `displays` and `view`; a WebView must not write a second one (spec host-owned table)
+          hostOwnedTraces: [TraceName.DISPLAYS, TraceName.VIEW],
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
             ? withUrl(
@@ -769,6 +770,8 @@ export function launchWithSeams(
                 }),
               )
             : {}),
+          // `route` / `view`: the page's own router state (`client.setRoute` / `setView`, fed by the framework adapters)
+          routeViewState: screenTrackerFor(carrier, options.onError),
           lifecycle,
           ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
         },
@@ -1078,6 +1081,8 @@ const PAGE_SAFE_CLIENT_METHODS = [
   'log',
   'event',
   'trace',
+  'setRoute',
+  'setView',
   'logException',
   'notify',
   'upload',
@@ -1234,6 +1239,8 @@ function inertClient(onError?: (error: unknown) => void, carrier?: object): Bugs
     log: noop,
     event: noop,
     trace: noop,
+    setRoute: noop,
+    setView: noop,
     addBreadcrumb: noop,
     setUserIdentifier: noop,
     getUserIdentifier: (): string | null => null,

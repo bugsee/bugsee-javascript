@@ -6,6 +6,7 @@ import {
   type SolidRouteMatchLike,
   setRouteName,
   setRouteNameFromSolidMatches,
+  viewNameFromSolidMatches,
 } from './router';
 
 function fakeClient() {
@@ -79,5 +80,106 @@ describe('setRouteNameFromSolidMatches', () => {
     const { client, setRouteName: spy } = fakeClient();
     setRouteNameFromSolidMatches([], { getClient: () => client });
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('the route and view traces from Solid Router matches', () => {
+  function OrderDetail() {
+    return null;
+  }
+  const page = (component: unknown): SolidRouteMatchLike[] => [
+    { route: { pattern: '/orders', component: () => null } },
+    { route: { pattern: '/orders/:id', component } },
+  ];
+
+  it('viewNameFromSolidMatches reads the deepest match component: displayName, else name', () => {
+    expect(viewNameFromSolidMatches(page(OrderDetail))).toBe('OrderDetail');
+    expect(
+      viewNameFromSolidMatches(page(Object.assign(() => null, { displayName: 'Pretty' }))),
+    ).toBe('Pretty');
+  });
+
+  it('viewNameFromSolidMatches is undefined for no component, a non-function, a nameless function or no matches', () => {
+    expect(viewNameFromSolidMatches(page(undefined))).toBeUndefined();
+    expect(viewNameFromSolidMatches(page({ name: 'NotAFunction' }))).toBeUndefined();
+    expect(viewNameFromSolidMatches(page('Str'))).toBeUndefined();
+    expect(
+      viewNameFromSolidMatches(page(Object.defineProperty(() => null, 'name', { value: '' }))),
+    ).toBeUndefined();
+    expect(viewNameFromSolidMatches([])).toBeUndefined();
+    expect(viewNameFromSolidMatches(null)).toBeUndefined();
+    expect(viewNameFromSolidMatches(undefined)).toBeUndefined();
+    expect(viewNameFromSolidMatches([{}])).toBeUndefined();
+  });
+
+  it('viewNameFromSolidMatches reads only the deepest match', () => {
+    expect(
+      viewNameFromSolidMatches([
+        { route: { component: OrderDetail } },
+        { route: { pattern: '/x' } },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('setRouteNameFromSolidMatches writes the route and the view {name, type: "solid"}', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute, setView } as unknown as Bugsee;
+    setRouteNameFromSolidMatches(page(OrderDetail), { getClient: () => full });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).toHaveBeenCalledExactlyOnceWith({ name: 'OrderDetail', type: 'solid' });
+  });
+
+  it('writes no view for a minified name, but still the route', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const full = {
+      setRoute,
+      setView,
+      ext: () => ({ setRouteName: () => {} }),
+    } as unknown as Bugsee;
+    setRouteNameFromSolidMatches(page(Object.assign(() => null, { displayName: 'q' })), {
+      getClient: () => full,
+    });
+    expect(setRoute).toHaveBeenCalledTimes(1);
+    expect(setView).not.toHaveBeenCalled();
+  });
+
+  it('a solid-js lazy() component is not a view (its function is the wrapper `wrap`, carrying `preload`)', () => {
+    const lazyShaped = Object.assign(
+      function wrap() {
+        return null;
+      },
+      { preload: () => Promise.resolve() },
+    );
+    expect(viewNameFromSolidMatches(page(lazyShaped))).toBeUndefined();
+    // even when a build kept a real-looking name, a function carrying `preload` is lazy()'s wrapper
+    const named = Object.assign(
+      function Dashboard() {
+        return null;
+      },
+      { preload: () => Promise.resolve() },
+    );
+    expect(viewNameFromSolidMatches(page(named))).toBeUndefined();
+  });
+
+  it('a component with a non-function `preload` is still named', () => {
+    const odd = Object.assign(function Dashboard() {}, { preload: true });
+    expect(viewNameFromSolidMatches(page(odd))).toBe('Dashboard');
+  });
+
+  it('end to end: a lazy route writes its route but no view', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const full = {
+      setRoute,
+      setView,
+      ext: () => ({ setRouteName: () => {} }),
+    } as unknown as Bugsee;
+    const lazyShaped = Object.assign(function wrap() {}, { preload: () => Promise.resolve() });
+    setRouteNameFromSolidMatches(page(lazyShaped), { getClient: () => full });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).not.toHaveBeenCalled();
   });
 });

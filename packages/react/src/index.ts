@@ -37,4 +37,5 @@ export {
   type RouteNamingOptions,
   routePatternFromMatches,
   setRouteName,
+  viewNameFromMatches,
 } from './router';

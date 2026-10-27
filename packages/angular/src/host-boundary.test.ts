@@ -165,6 +165,7 @@ describe('the host-boundary contract', () => {
       },
     );
     expect(() => routerMod.routePatternFromSnapshot(hostile as never)).not.toThrow();
+    expect(() => routerMod.viewNameFromSnapshot(hostile as never)).not.toThrow();
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
@@ -176,6 +177,7 @@ describe('the host-boundary contract', () => {
       'reportAngularError',
       'setRouteNameFromRouter',
       'routePatternFromSnapshot',
+      'viewNameFromSnapshot',
       'createBugseeRenderTracker',
       'setRouteName',
     ]);

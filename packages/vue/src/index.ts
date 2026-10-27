@@ -31,4 +31,5 @@ export {
   setRouteName,
   type VueRouteLike,
   type VueRouterLike,
+  viewNameFromVueRoute,
 } from './router';

@@ -30,6 +30,7 @@ import {
   LifecycleEvents,
   ReportMarkerStoreToken,
   type StoredEntry,
+  screenTrackerFor,
   serializeBundle,
   serviceToken,
   TransportToken,
@@ -2213,6 +2214,41 @@ describe('launch', () => {
         ]);
         expect(onError).toHaveBeenCalledTimes(1);
         expect(String(onError.mock.calls[0]?.[0])).toMatch(/hostOwnedTraces/);
+      });
+
+      describe('the route and view traces (client.setRoute / client.setView)', () => {
+        it('writes what the application reports, held and sanitized, through the carrier-shared tracker', async () => {
+          stubSensors();
+          const store = memStore();
+          const client = await launchTracked(
+            'tok',
+            noSampler({ window: fakeWindow().win, captureStore: store, carrier: {} }),
+          );
+          expect(await rowsOf(store, 'route')).toEqual([]); // never fabricated: nothing until the app reports one
+          expect(await rowsOf(store, 'view')).toEqual([]);
+          client.setRoute('/orders/:id?token=abc');
+          client.setRoute('/orders/:id'); // equal once the query is gone: not written again
+          client.setRoute('/cart');
+          client.setView({ name: 'OrderDetail', type: 'react' });
+          client.setView(null);
+          expect(await rowsOf(store, 'route')).toEqual(['/orders/:id', '/cart']);
+          expect(await rowsOf(store, 'view')).toEqual([
+            { name: 'OrderDetail', type: 'react' },
+            '$$none',
+          ]);
+        });
+
+        it('writes a route set BEFORE launch at launch (an adapter wires at app start), and survives a systemMetricsSampler', async () => {
+          stubSensors();
+          const carrier = {};
+          screenTrackerFor(carrier).setRoute('/early');
+          const store = memStore();
+          await launchTracked(
+            'tok',
+            baseOptions({ window: fakeWindow().win, captureStore: store, carrier }),
+          );
+          expect(await rowsOf(store, 'route')).toEqual(['/early']);
+        });
       });
 
       describe('the url trace (captureUrl / urlSanitizer)', () => {

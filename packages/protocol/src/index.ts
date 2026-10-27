@@ -41,6 +41,14 @@ export {
   sanitizeParams,
 } from './sanitize';
 export {
+  MAX_ROUTE_CHARS,
+  MAX_VIEW_FIELD_CHARS,
+  normalizeView,
+  sanitizeRoutePattern,
+  VIEW_NONE,
+  type ViewValue,
+} from './screen-names';
+export {
   isSensitiveHeader,
   isSensitiveKey,
   REDACTED,

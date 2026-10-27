@@ -79,3 +79,15 @@ describe('instrumentSvelteKitNavigation', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe('the route trace from SvelteKit navigations', () => {
+  it('feeds client.setRoute with the route id pattern (never the concrete URL)', () => {
+    const setRoute = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute } as unknown as Bugsee;
+    const onNavigate = instrumentSvelteKitNavigation({ getClient: () => full });
+    onNavigate(nav('/users/[id]'));
+    onNavigate(nav(null)); // a navigation with no route id writes nothing
+    expect(setRoute.mock.calls).toEqual([['/users/[id]']]);
+  });
+});

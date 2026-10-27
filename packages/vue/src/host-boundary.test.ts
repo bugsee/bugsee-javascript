@@ -137,6 +137,7 @@ describe('vue error handler is a contained host boundary', () => {
     );
     expect(() => componentName.vueComponentName(hostile)).not.toThrow();
     expect(() => routerMod.routePatternFromVueRoute(hostile as never)).not.toThrow();
+    expect(() => routerMod.viewNameFromVueRoute(hostile as never)).not.toThrow();
   });
 
   it('covers EVERY host-facing export — adding one without a containment test fails here', () => {
@@ -157,6 +158,7 @@ describe('vue error handler is a contained host boundary', () => {
       'instrumentVueRouter',
       'vueComponentName',
       'routePatternFromVueRoute',
+      'viewNameFromVueRoute',
       'setRouteName',
       // Returns a plain options object for the caller to register with Vue; holds no client and touches
       // nothing host-supplied until Vue calls the hooks, which the render-mixin case above drives.

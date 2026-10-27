@@ -13,6 +13,7 @@ import {
   LifecycleEvents,
   type Scheduler,
   type StoredEntry,
+  screenTrackerFor,
   setCarrierBlackout,
   setCarrierClient,
   setCarrierStatus,
@@ -1296,6 +1297,31 @@ describe('launch (webview)', () => {
       });
     });
 
+    describe('the route and view traces', () => {
+      it('streams the route the page reports through client.setRoute, from the carrier-shared tracker, and NEVER a view (the native host owns it)', async () => {
+        stubSensors();
+        try {
+          const fake = fakeGlobal();
+          const carrier = {};
+          screenTrackerFor(carrier).setRoute('/early/:id');
+          const client = track(
+            'tok',
+            baseOptions({ global: fake.global, window: fakeWin().win, carrier }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          client.setView({ name: 'Detail', type: 'vue' });
+          const rows = entriesOfType(fake.msgs(), 'traces.system')
+            .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+            .filter((d) => d.name === 'route' || d.name === 'view')
+            .map((d) => [d.name, d.value]);
+          // the native host owns `view` (spec host table: WebView writes no view); the page writes `route`
+          expect(rows).toEqual([['route', '/early/:id']]);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
     describe('the url trace (captureUrl / urlSanitizer)', () => {
       const urlRows = async (over: Partial<BugseeWebViewLaunchOptions>, href?: string) => {
         stubSensors();
@@ -2198,6 +2224,17 @@ describe('launch (webview)', () => {
     expect(second).not.toBe(first);
     expect(second.isLaunched()).toBe(true);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a repeat launch can still report the route and view (the page-safe live half forwards them)', () => {
+    const carrier = {};
+    const opts = baseOptions({ carrier });
+    track('tok', opts);
+    const second = launch('tok', opts);
+    second.setRoute('/r/:id');
+    second.setView({ name: 'Detail' });
+    expect(screenTrackerFor(carrier).currentRoute()).toBe('/r/:id');
+    expect(screenTrackerFor(carrier).currentView()).toEqual({ name: 'Detail' });
   });
 
   it('a repeat launch cannot reach redaction, lifetime or the container', () => {

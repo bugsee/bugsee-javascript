@@ -25,4 +25,5 @@ export {
   routePatternFromSnapshot,
   setRouteName,
   setRouteNameFromRouter,
+  viewNameFromSnapshot,
 } from './router';

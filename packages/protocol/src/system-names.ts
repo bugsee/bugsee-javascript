@@ -5,7 +5,8 @@
 // against this module by the drift test in `@bugsee/instrumentation-tests` (spec-drift.test.ts), which also fails when
 // a producer file spells a registered name as a literal. Adding a name = add it here (with its spec metadata), then use it.
 //
-// What is NOT here, on purpose: names the spec marks pending and the SDK does not emit yet (`route`, `view` — listed with reasons in the drift test, so they cannot be forgotten), retired names
+// What is NOT here, on purpose: names the spec marks pending and the SDK does not emit yet (listed with reasons in the
+// drift test, so they cannot be forgotten), retired names
 // (`screen_size`, `electron_displays`, `gc_*`, `process_uptime_s`, `ram_system_available`), and the user streams
 // (`traces.user` / `events.user` belong to the application, never to the SDK).
 
@@ -64,6 +65,7 @@ export enum TraceName {
   RAM_SYSTEM_ADVERTISED = 'ram_system_advertised',
   RAM_SYSTEM_FREE = 'ram_system_free',
   RAM_SYSTEM_TOTAL = 'ram_system_total',
+  ROUTE = 'route',
   STORAGE_ESTIMATE = 'storage_estimate',
   URL = 'url',
   THERMAL_STATE = 'thermal_state',
@@ -72,6 +74,7 @@ export enum TraceName {
   V8_HEAP_MALLOCED = 'v8_heap_malloced',
   V8_HEAP_PEAK_MALLOCED = 'v8_heap_peak_malloced',
   V8_HEAP_SIZE_LIMIT = 'v8_heap_size_limit',
+  VIEW = 'view',
 }
 
 /** The spec metadata of every registered trace (compared against the vendored spec snapshot). */
@@ -111,6 +114,7 @@ export const TRACE_SPEC: { readonly [N in TraceName]: TraceSpec } = {
   [TraceName.RAM_SYSTEM_ADVERTISED]: { valueType: 'int', unit: 'bytes', held: true },
   [TraceName.RAM_SYSTEM_FREE]: { valueType: 'int', unit: 'bytes', held: false },
   [TraceName.RAM_SYSTEM_TOTAL]: { valueType: 'int', unit: 'bytes', held: false },
+  [TraceName.ROUTE]: { valueType: 'string', unit: null, held: true },
   [TraceName.STORAGE_ESTIMATE]: { valueType: 'object', unit: null, held: true },
   [TraceName.URL]: { valueType: 'string', unit: null, held: true },
   [TraceName.THERMAL_STATE]: { valueType: 'int', unit: null, held: false },
@@ -119,6 +123,7 @@ export const TRACE_SPEC: { readonly [N in TraceName]: TraceSpec } = {
   [TraceName.V8_HEAP_MALLOCED]: { valueType: 'int', unit: 'bytes', held: false },
   [TraceName.V8_HEAP_PEAK_MALLOCED]: { valueType: 'int', unit: 'bytes', held: false },
   [TraceName.V8_HEAP_SIZE_LIMIT]: { valueType: 'int', unit: 'bytes', held: false },
+  [TraceName.VIEW]: { valueType: 'object', unit: null, held: true },
 };
 
 /** System event wire names (`events.system`). Mobile-shared names keep their mobile spelling; the rest are snake_case. */

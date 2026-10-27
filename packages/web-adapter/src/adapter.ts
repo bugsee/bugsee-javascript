@@ -85,15 +85,79 @@ export function reportError(error: unknown, options: ReportErrorOptions = {}): v
   }, options.onError);
 }
 
-/** Refine the active navigation transaction's name via the performance naming seam. A no-op when
- *  the SDK or the performance extension is not available. */
+/** Resolve the client's `method` when it exists. A client from another copy of the SDK that predates `setRoute` /
+ *  `setView` lacks it: the adapter then simply has nothing to feed, and must not report an error on every navigation. */
+const clientMethod = <K extends 'setRoute' | 'setView'>(
+  client: Bugsee,
+  name: K,
+): Bugsee[K] | undefined => (typeof client[name] === 'function' ? client[name] : undefined);
+
+/**
+ * Report the route the user is on, as the router's PATTERN (`/users/:id`): feeds the `route` trace (`client.setRoute`) and
+ * refines the active navigation transaction's name via the performance naming seam. The two feeds are independent (either
+ * may be absent: no performance extension, or an older client without `setRoute`). A no-op when no SDK is launched: a
+ * navigation reported before a client exists is DROPPED, not held. This is a public export (re-exported by every
+ * adapter), so a direct caller of `setRouteName` now writes the `route` trace too.
+ * Callers pass COMMITTED navigations only (a held `route` would otherwise record a route the user never reached).
+ */
 export function setRouteName(name: string, options: RouteNamingOptions = {}): void {
   // Contained for the same reason `reportError` is: this runs from a host callback (a router subscription,
   // a navigation hook), and `getClient` is a public option that can throw. The rule is "every
   // host-facing entry point", and this one was missed in the first pass.
+  // The client is resolved ONCE per call (a hot path: every navigation), and the two feeds are independent.
+  const client = neverThrow(() => resolveClient(options.getClient), options.onError);
+  if (client === undefined) return;
+  neverThrow(() => {
+    tryGetPerf(client)?.setRouteName(name);
+  }, options.onError);
+  neverThrow(() => {
+    clientMethod(client, 'setRoute')?.call(client, name);
+  }, options.onError);
+}
+
+/**
+ * Names that are a framework's WRAPPER, never the page: `wrap` is what solid-js `lazy()` returns,
+ * `AsyncComponentWrapper` what Vue's `defineAsyncComponent` returns, and `Navigate` / `RequireAuth` / `Outlet` /
+ * `Suspense` / `Fragment` / `ProtectedRoute` / `PrivateRoute` / `AuthGuard` / `RouteGuard` / `Layout` are the usual
+ * element types of a React route that only redirects, guards or lays out. Reporting one would be a fabricated view name.
+ * Known limit: the page behind a Vue `defineAsyncComponent` or a React `lazy` is not recovered (that needs private
+ * fields, `__asyncResolved` / `_payload._result`), so such a route writes no `view`. The list is a floor, not a guarantee: an application's own guard component has
+ * a name nothing here can know, which is why `client.setView` is the only reliable source.
+ */
+const WRAPPER_VIEW_NAMES: ReadonlySet<string> = new Set([
+  'wrap',
+  'AsyncComponentWrapper',
+  'Navigate',
+  'RequireAuth',
+  'Outlet',
+  'Suspense',
+  'Fragment',
+  'ProtectedRoute',
+  'PrivateRoute',
+  'AuthGuard',
+  'RouteGuard',
+  'Layout',
+  'anonymous',
+  'Anonymous',
+]);
+
+/** True when `name` is usable as a `view` name: a string that is not empty, not one or two characters (the mark of a
+ *  minified class or function name) and not a known framework wrapper name. A heuristic, as the spec says: the
+ *  application's own `setView` is the only guaranteed source. */
+export function isObtainableViewName(name: unknown): name is string {
+  return typeof name === 'string' && name.trim().length > 2 && !WRAPPER_VIEW_NAMES.has(name.trim());
+}
+
+/**
+ * Report the view (component) the user is looking at, as the `view` trace: `client.setView({ name, type })`, where `type`
+ * is the adapter id. BEST EFFORT: a name that is empty or looks minified writes NOTHING (never a fabricated name, never
+ * the route in its place; the previous view then stays held: a known spec question). A no-op when no SDK is launched.
+ */
+export function setViewName(name: unknown, type: string, options: AdapterClientOptions = {}): void {
+  if (!isObtainableViewName(name)) return;
   neverThrow(() => {
     const client = resolveClient(options.getClient);
     if (client === undefined) return;
-    tryGetPerf(client)?.setRouteName(name);
+    clientMethod(client, 'setView')?.call(client, { name: name.trim(), type });
   }, options.onError);
 }
