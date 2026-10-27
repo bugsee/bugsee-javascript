@@ -43,7 +43,14 @@ describe('Electron trace tables', () => {
       'user_idle_state',
       'view',
     ]);
-    for (const deviceLevel of ['battery', 'charging', 'connection', 'ram_system_advertised', 'battery_charging_time_s', 'battery_discharging_time_s']) {
+    for (const deviceLevel of [
+      'battery',
+      'charging',
+      'connection',
+      'ram_system_advertised',
+      'battery_charging_time_s',
+      'battery_discharging_time_s',
+    ]) {
       expect(ELECTRON_PER_WINDOW_TRACES).not.toContain(deviceLevel);
     }
     for (const owned of ELECTRON_RENDERER_HOST_OWNED_TRACES) {

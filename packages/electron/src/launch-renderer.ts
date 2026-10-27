@@ -23,6 +23,7 @@ import { createElectronRendererCaptureStore } from './renderer-capture-store';
 import { createRendererControlHandler } from './renderer-control';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 import {
+  ELECTRON_PER_WINDOW_TRACES,
   ELECTRON_RENDERER_HOST_OWNED_TRACES,
   ELECTRON_RENDERER_NEVER_WRITES,
 } from './trace-tables';
