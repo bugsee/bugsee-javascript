@@ -1305,6 +1305,34 @@ recorded" was false.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
+### 2026-10-27 — Spec-conformance guard for the system traces and events (spec items C17 + C24)
+
+The JavaScript platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) is now enforced by a test, and every
+trace/event wire name lives in ONE module.
+
+- **Registry (C17).** `@bugsee/protocol` `system-names.ts`: `TraceName` / `EventName` (constants; a trace key is the wire name
+  upper-cased), `TRACE_SPEC` (value type, unit, held) and `EVENT_PARAMS` (camelCase keys, `?` = optional). Every producer
+  (`browser`/`node`/`electron` trace producers and system-event sources, `capture`'s capture-state producer, the host-owned
+  trace lists in the browser/webview/electron-renderer launches) references it. `TraceProducerBase.emit`/`emitIfChanged` take a
+  `TraceName`, so an unregistered literal does not compile. The electron `power_${state}` string concatenation became a lookup
+  table over registered events.
+- **Vendored snapshot (C24).** `packages/protocol/spec/javascript-system-traces.snapshot.json` = the spec's trace and event
+  tables (names, families, value type, unit, held, event params, pending markers, retired and mobile-only names) plus the
+  `bugsee/specs` commit it was generated from. `pnpm spec:refresh [--specs <checkout>] [--ref origin/main]` rewrites it (reads
+  the ref with `git show`, so the checkout's branch and working tree are irrelevant); `pnpm spec:check` exits 1 when it is
+  stale. Parser: `scripts/spec-snapshot/parse.mjs`.
+- **Drift test.** `@bugsee/instrumentation-tests` `test/spec-drift.test.ts` (runs in the `test:unit` CI step): registry names and
+  metadata equal the snapshot; every spec name is registered or in the reasoned `NOT_YET` list (`route`, `view`,
+  `thermal_state`, `cpu_speed_limit`); `JS_ONLY_EXTENSIONS` is empty; every registered name is reached by a producer; the emit
+  style (`emit` vs `emitIfChanged`) matches the spec's held column; and an AST scan fails when a producer file spells a
+  registered or retired name as a literal (or builds one by template concatenation). Tracker stage keys, comparisons and a
+  producer's own `readonly name` id are exempt (not wire names). The scanner is itself probed with synthetic sources.
+- **Refreshing after a spec change:** `git -C <specs> fetch && pnpm spec:refresh --specs <specs>`; the diff of the snapshot is
+  the list of names/metadata to change. A newly spec'd name fails the test until it is registered (or listed in `NOT_YET`).
+- **Not covered:** the VALUES a producer writes (unit, type) are checked registry-vs-spec, not code-vs-registry (only the held
+  style is tied to the code); the spec's host-owned table, option table and the `traces.md` structured value schemas are not
+  vendored.
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.

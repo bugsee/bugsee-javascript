@@ -1,0 +1,1069 @@
+{
+  "source": {
+    "repo": "bugsee/specs",
+    "path": "sdk/reporting/platforms/javascript.md",
+    "commit": "af00cf09e6464e4f62d20bc407758e1f673112ef",
+    "committed": "2026-10-27T17:07:50+05:00"
+  },
+  "traces": [
+    {
+      "name": "app_metrics",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "valueType": "object",
+      "unit": null,
+      "held": false
+    },
+    {
+      "name": "app_state",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "string",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "battery",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "percent",
+      "held": true
+    },
+    {
+      "name": "battery_charging_time_s",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "s",
+      "held": false
+    },
+    {
+      "name": "battery_discharging_time_s",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "s",
+      "held": false
+    },
+    {
+      "name": "capture",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "object",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "charging",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "object",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "connection",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "object",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "cpu_speed_limit",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [
+        "C13"
+      ],
+      "valueType": "int",
+      "unit": "percent",
+      "held": false
+    },
+    {
+      "name": "cpu_usage_process",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "float",
+      "unit": "percent",
+      "held": false
+    },
+    {
+      "name": "cpu_usage_system",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "us",
+      "held": false
+    },
+    {
+      "name": "cpu_usage_user",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "us",
+      "held": false
+    },
+    {
+      "name": "disk_mem_free",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "mb",
+      "held": false
+    },
+    {
+      "name": "disk_mem_total",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "mb",
+      "held": false
+    },
+    {
+      "name": "displays",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "list",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "event_loop_lag_max_ms",
+      "families": [
+        "node"
+      ],
+      "pending": [
+        "C18"
+      ],
+      "valueType": "float",
+      "unit": "ms",
+      "held": false
+    },
+    {
+      "name": "event_loop_lag_ms",
+      "families": [
+        "node"
+      ],
+      "pending": [
+        "C18"
+      ],
+      "valueType": "float",
+      "unit": "ms",
+      "held": false
+    },
+    {
+      "name": "event_loop_lag_p99_ms",
+      "families": [
+        "node"
+      ],
+      "pending": [
+        "C18"
+      ],
+      "valueType": "float",
+      "unit": "ms",
+      "held": false
+    },
+    {
+      "name": "event_loop_utilization",
+      "families": [
+        "node"
+      ],
+      "pending": [
+        "C18"
+      ],
+      "valueType": "float",
+      "unit": "percent",
+      "held": false
+    },
+    {
+      "name": "fps",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "float",
+      "unit": "fps",
+      "held": false
+    },
+    {
+      "name": "main_thread_idle_ms",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "float",
+      "unit": "ms",
+      "held": false
+    },
+    {
+      "name": "main_thread_lag_ms",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "float",
+      "unit": "ms",
+      "held": false
+    },
+    {
+      "name": "orientation",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "process_memory_array_buffers",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "process_memory_external",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "process_memory_heap_total",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "process_memory_heap_used",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "process_memory_limit",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "process_memory_rss",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "ram_js_heap_free",
+      "families": [
+        "browser",
+        "node"
+      ],
+      "pending": [
+        "C22"
+      ],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "ram_js_heap_total",
+      "families": [
+        "browser",
+        "node"
+      ],
+      "pending": [
+        "C22"
+      ],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "ram_js_heap_used",
+      "families": [
+        "browser",
+        "node"
+      ],
+      "pending": [
+        "C22"
+      ],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "ram_system_advertised",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": true
+    },
+    {
+      "name": "ram_system_free",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "ram_system_total",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "route",
+      "families": [
+        "browser"
+      ],
+      "pending": [
+        "C12"
+      ],
+      "valueType": "string",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "storage_estimate",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "object",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "thermal_state",
+      "families": [
+        "shared"
+      ],
+      "pending": [
+        "C13"
+      ],
+      "valueType": "int",
+      "unit": null,
+      "held": false
+    },
+    {
+      "name": "url",
+      "families": [
+        "browser"
+      ],
+      "pending": [
+        "C26"
+      ],
+      "valueType": "string",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "user_idle_state",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "valueType": "string",
+      "unit": null,
+      "held": true
+    },
+    {
+      "name": "v8_heap_available",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "v8_heap_malloced",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "v8_heap_peak_malloced",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "v8_heap_size_limit",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "valueType": "int",
+      "unit": "bytes",
+      "held": false
+    },
+    {
+      "name": "view",
+      "families": [
+        "shared"
+      ],
+      "pending": [
+        "C12"
+      ],
+      "valueType": "object",
+      "unit": null,
+      "held": true
+    }
+  ],
+  "events": [
+    {
+      "name": "DarkModeChanged",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "shared": [
+          "dark"
+        ]
+      },
+      "params": [
+        "dark"
+      ]
+    },
+    {
+      "name": "OrientationChanged",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "shared": [
+          "current",
+          "prev",
+          "type",
+          "angle"
+        ]
+      },
+      "params": [
+        "angle",
+        "current",
+        "prev",
+        "type"
+      ]
+    },
+    {
+      "name": "UIApplicationDidBecomeActiveNotification",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "shared": []
+      },
+      "params": []
+    },
+    {
+      "name": "UIApplicationDidEnterBackgroundNotification",
+      "families": [
+        "shared"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "shared": []
+      },
+      "params": []
+    },
+    {
+      "name": "child_process_gone",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "type",
+          "reason",
+          "exitCode?",
+          "name?",
+          "serviceName?"
+        ]
+      },
+      "params": [
+        "exitCode?",
+        "name?",
+        "reason",
+        "serviceName?",
+        "type"
+      ]
+    },
+    {
+      "name": "display_added",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "id",
+          "nativeId",
+          "width",
+          "height",
+          "naturalWidth?",
+          "naturalHeight?",
+          "scale?",
+          "maxFps?",
+          "rotation?",
+          "type?"
+        ]
+      },
+      "params": [
+        "height",
+        "id",
+        "maxFps?",
+        "nativeId",
+        "naturalHeight?",
+        "naturalWidth?",
+        "rotation?",
+        "scale?",
+        "type?",
+        "width"
+      ]
+    },
+    {
+      "name": "display_metrics_changed",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "changed"
+        ]
+      },
+      "params": [
+        "changed"
+      ]
+    },
+    {
+      "name": "display_mode_changed",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [
+          "mode",
+          "previousMode"
+        ]
+      },
+      "params": [
+        "mode",
+        "previousMode"
+      ]
+    },
+    {
+      "name": "display_removed",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "id",
+          "nativeId",
+          "width",
+          "height",
+          "naturalWidth?",
+          "naturalHeight?",
+          "scale?",
+          "maxFps?",
+          "rotation?",
+          "type?"
+        ]
+      },
+      "params": [
+        "height",
+        "id",
+        "maxFps?",
+        "nativeId",
+        "naturalHeight?",
+        "naturalWidth?",
+        "rotation?",
+        "scale?",
+        "type?",
+        "width"
+      ]
+    },
+    {
+      "name": "freeze",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": []
+      },
+      "params": []
+    },
+    {
+      "name": "gc",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "node": [
+          "count",
+          "pauseMs",
+          "maxPauseMs"
+        ]
+      },
+      "params": [
+        "count",
+        "maxPauseMs",
+        "pauseMs"
+      ]
+    },
+    {
+      "name": "language_changed",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [
+          "language?",
+          "languages?",
+          "previousLanguage?"
+        ]
+      },
+      "params": [
+        "language?",
+        "languages?",
+        "previousLanguage?"
+      ]
+    },
+    {
+      "name": "offline",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": []
+      },
+      "params": []
+    },
+    {
+      "name": "online",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_ac",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_battery",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_lock",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_resume",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_suspend",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "power_unlock",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": []
+      },
+      "params": []
+    },
+    {
+      "name": "private_mode_detected",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [
+          "method?"
+        ]
+      },
+      "params": [
+        "method?"
+      ]
+    },
+    {
+      "name": "process_before_exit",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "node": [
+          "code"
+        ]
+      },
+      "params": [
+        "code"
+      ]
+    },
+    {
+      "name": "process_exiting",
+      "families": [
+        "browser",
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [
+          "persisted"
+        ],
+        "node": [
+          "code"
+        ]
+      },
+      "params": [
+        "code",
+        "persisted"
+      ]
+    },
+    {
+      "name": "process_signal",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "node": [
+          "signal"
+        ]
+      },
+      "params": [
+        "signal"
+      ]
+    },
+    {
+      "name": "process_started",
+      "families": [
+        "browser",
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [],
+        "node": []
+      },
+      "params": []
+    },
+    {
+      "name": "process_warning",
+      "families": [
+        "node"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "node": [
+          "name?",
+          "message"
+        ]
+      },
+      "params": [
+        "message",
+        "name?"
+      ]
+    },
+    {
+      "name": "renderer_responsive",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "webContentsId?"
+        ]
+      },
+      "params": [
+        "webContentsId?"
+      ]
+    },
+    {
+      "name": "renderer_unresponsive",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "webContentsId?"
+        ]
+      },
+      "params": [
+        "webContentsId?"
+      ]
+    },
+    {
+      "name": "resume",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": []
+      },
+      "params": []
+    },
+    {
+      "name": "timezone_changed",
+      "families": [
+        "browser"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "browser": [
+          "timezone?",
+          "utcOffsetMinutes?",
+          "previousTimezone?",
+          "previousUtcOffsetMinutes?"
+        ]
+      },
+      "params": [
+        "previousTimezone?",
+        "previousUtcOffsetMinutes?",
+        "timezone?",
+        "utcOffsetMinutes?"
+      ]
+    },
+    {
+      "name": "window_blur",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "windowId?"
+        ]
+      },
+      "params": [
+        "windowId?"
+      ]
+    },
+    {
+      "name": "window_focus",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "windowId?"
+        ]
+      },
+      "params": [
+        "windowId?"
+      ]
+    },
+    {
+      "name": "window_hide",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "windowId?"
+        ]
+      },
+      "params": [
+        "windowId?"
+      ]
+    },
+    {
+      "name": "window_show",
+      "families": [
+        "electron-main"
+      ],
+      "pending": [],
+      "paramsByFamily": {
+        "electron-main": [
+          "windowId?"
+        ]
+      },
+      "params": [
+        "windowId?"
+      ]
+    }
+  ],
+  "retired": [
+    "electron_displays",
+    "gc_count",
+    "gc_pause_max_ms",
+    "gc_pause_ms",
+    "process_uptime_s",
+    "ram_system_available",
+    "screen_size"
+  ],
+  "notEmitted": [
+    "Activity*",
+    "ClipboardChanged",
+    "InputDevice*",
+    "Keyboard*",
+    "LowMemory",
+    "MemoryPressure",
+    "StateChanged",
+    "Stopped",
+    "TrimMemory",
+    "UIApplicationDidReceiveMemoryWarningNotification",
+    "UIApplicationStarted",
+    "UserDidTakeScreenshot",
+    "View*",
+    "accessibility",
+    "bluetooth",
+    "cellular",
+    "contrast",
+    "cpu",
+    "device_idle",
+    "fold_state",
+    "fps_max",
+    "game_mode",
+    "hinge_angle",
+    "low_power_standby",
+    "network",
+    "nfc",
+    "queue.*",
+    "ram_low_memory",
+    "ram_mem_*",
+    "ram_native_heap_*",
+    "satellite",
+    "screen_brightness",
+    "sound_volume",
+    "thermal_headroom",
+    "ui_mode",
+    "wifi"
+  ]
+}

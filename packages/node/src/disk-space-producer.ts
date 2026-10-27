@@ -1,5 +1,5 @@
 import { TraceProducerBase } from '@bugsee/capture';
-import { bytesToMegabytes } from '@bugsee/protocol';
+import { bytesToMegabytes, TraceName } from '@bugsee/protocol';
 import {
   type DiskReading,
   type StorageTracker,
@@ -40,8 +40,8 @@ class DiskSpaceProducer extends TraceProducerBase {
     this.#off = undefined;
   }
   private publish(d: DiskReading): void {
-    this.emit('disk_mem_free', bytesToMegabytes(d.freeBytes));
-    this.emit('disk_mem_total', bytesToMegabytes(d.totalBytes));
+    this.emit(TraceName.DISK_MEM_FREE, bytesToMegabytes(d.freeBytes));
+    this.emit(TraceName.DISK_MEM_TOTAL, bytesToMegabytes(d.totalBytes));
   }
 }
 

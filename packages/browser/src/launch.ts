@@ -78,7 +78,7 @@ import {
   type TriggerPipeline,
   type UploadResult,
 } from '@bugsee/core';
-import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { BugseeOption, type EnvironmentEnvelope, TraceName } from '@bugsee/protocol';
 import { applicationTrackerFor } from '@bugsee/trackers/browser';
 import { reportGuarded } from '@bugsee/util';
 import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
@@ -1074,7 +1074,7 @@ async function buildLaunch(
       ? browserTraceEnvFrom(win, domDocument, options.onError).navigator
       : undefined;
   const captureState =
-    replayEnabled && hostOwnedTraces?.includes('capture') !== true
+    replayEnabled && hostOwnedTraces?.includes(TraceName.CAPTURE) !== true
       ? new CaptureStateProducer()
       : undefined;
   captureState?.bindBlackout(blackout);

@@ -49,6 +49,15 @@ export {
   SENSITIVE_KEY_SUBSTRINGS,
 } from './sensitive';
 export { redactShapes, type ShapeRedactionOptions, unfinishedSecretStart } from './shapes';
+export {
+  EVENT_PARAMS,
+  EventName,
+  TRACE_SPEC,
+  TraceName,
+  type TraceSpec,
+  type TraceUnit,
+  type TraceValueType,
+} from './system-names';
 export { bytesToMegabytes } from './units';
 export { sanitizeErrorMessage, sanitizeUrl } from './url';
 export type {

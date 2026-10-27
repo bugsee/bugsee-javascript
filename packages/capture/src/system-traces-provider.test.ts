@@ -10,6 +10,7 @@ import {
   type OptionsContainer,
   type Scheduler,
 } from '@bugsee/core';
+import type { TraceName } from '@bugsee/protocol';
 import { BugseeOption } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -169,8 +170,9 @@ class Fixed extends TraceProducerBase {
     this.name = name;
   }
   #out(n: string, v: unknown, d?: number): void {
-    if (this.opts.held) this.emitIfChanged(n, v, d);
-    else this.emit(n, v, d);
+    // the provider's own tests drive it with arbitrary names (it is name-agnostic); only real producers are typed
+    if (this.opts.held) this.emitIfChanged(n as TraceName, v, d);
+    else this.emit(n as TraceName, v, d);
   }
   protected onStart(): void {
     this.startedCount += 1;

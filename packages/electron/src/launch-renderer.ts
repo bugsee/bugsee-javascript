@@ -16,6 +16,7 @@ import {
   LifecycleEvents,
   resolveFailOnBoolean,
 } from '@bugsee/core';
+import { TraceName } from '@bugsee/protocol';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { encodeHello } from './protocol';
 import { createElectronRendererCaptureStore } from './renderer-capture-store';
@@ -151,7 +152,7 @@ async function launchRendererOnce(
     // Main writes the `displays` trace (the full list) and the `capture` trace (blackout is session-wide, and pixel
     // video is main's); a renderer must not write a second one into the same session. After the caller's options: it
     // is not the caller's to switch back on.
-    hostOwnedTraces: ['displays', 'capture'],
+    hostOwnedTraces: [TraceName.DISPLAYS, TraceName.CAPTURE],
     // AFTER the caller's options, deliberately — see above.
     triggerPipeline,
     // Born dark, released by the handshake. Main owns the blackout: until this renderer has heard the

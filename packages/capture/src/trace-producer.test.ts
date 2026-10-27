@@ -1,3 +1,4 @@
+import type { TraceName } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { TraceProducerBase, type TraceSink } from './trace-producer';
 
@@ -21,9 +22,11 @@ class Probe extends TraceProducerBase {
   readonly name = 'probe';
   starts = 0;
   stops = 0;
-  emitAll: (n: string, v: unknown, d?: number) => void = (n, v, d) => this.emit(n, v, d);
+  // arbitrary names on purpose: the base class is name-agnostic (only real producers are typed to the registry)
+  emitAll: (n: string, v: unknown, d?: number) => void = (n, v, d) =>
+    this.emit(n as TraceName, v, d);
   emitChanged: (n: string, v: unknown, d?: number) => void = (n, v, d) =>
-    this.emitIfChanged(n, v, d);
+    this.emitIfChanged(n as TraceName, v, d);
   protected onStart(): void {
     this.starts += 1;
   }

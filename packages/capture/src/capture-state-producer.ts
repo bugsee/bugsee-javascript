@@ -1,4 +1,5 @@
 import type { BlackoutGate, DiskPressure } from '@bugsee/core';
+import { TraceName } from '@bugsee/protocol';
 import { TraceProducerBase } from './trace-producer';
 
 // The `capture` system trace (spec `bundle/traces.md#capture`, mobile parity; JavaScript C7): whether VISUAL capture
@@ -89,6 +90,6 @@ export class CaptureStateProducer extends TraceProducerBase {
 
   #refresh(): void {
     const state = this.#state();
-    if (state !== undefined) this.emitIfChanged('capture', { state });
+    if (state !== undefined) this.emitIfChanged(TraceName.CAPTURE, { state });
   }
 }

@@ -65,7 +65,7 @@ import {
   setCarrierClient,
   setCarrierStatus,
 } from '@bugsee/core';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, TraceName } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { mintControlToken } from './control-token';
 import { createHostBridge, type HostBridgeTransport } from './host-bridge';
@@ -758,7 +758,7 @@ export function launchWithSeams(
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           // the native host writes `displays`; a WebView must not write a second one (spec host-owned table)
-          hostOwnedTraces: ['displays'],
+          hostOwnedTraces: [TraceName.DISPLAYS],
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
             ? withUrl(

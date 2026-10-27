@@ -1,6 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
-import { bytesToMegabytes } from '@bugsee/protocol';
+import { bytesToMegabytes, TraceName } from '@bugsee/protocol';
 import type {
   AppProcessMetric,
   DisplayInfo,
@@ -76,7 +76,7 @@ class AppMetricsProducer extends TraceProducerBase {
   // first CPU window has not elapsed.
   protected onStart(): void {
     this.#off = this.tracker.on('appMetrics', (m) =>
-      this.emit('app_metrics', { processes: m.processes.map(wireProcess) }),
+      this.emit(TraceName.APP_METRICS, { processes: m.processes.map(wireProcess) }),
     );
   }
   protected override onStop(): void {
@@ -164,7 +164,7 @@ class DisplaysProducer extends TraceProducerBase {
     this.#moveTimer = undefined;
   }
   #publish(list: { displays: DisplayInfo[] }): void {
-    this.emitIfChanged('displays', list.displays.map(wireDisplay));
+    this.emitIfChanged(TraceName.DISPLAYS, list.displays.map(wireDisplay));
   }
 }
 

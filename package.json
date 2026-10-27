@@ -27,7 +27,9 @@
     "version-packages": "changeset version",
     "release": "turbo run build && node scripts/publish-all.mjs",
     "test:mutation": "node scripts/mutation.mjs",
-    "ci:local": "bash scripts/ci-local.sh"
+    "ci:local": "bash scripts/ci-local.sh",
+    "spec:refresh": "node scripts/spec-snapshot/refresh.mjs",
+    "spec:check": "node scripts/spec-snapshot/refresh.mjs --check"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",

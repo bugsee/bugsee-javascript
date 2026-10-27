@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!samples", "!.local-registry"]
+    "includes": ["**", "!samples", "!.local-registry", "!packages/protocol/spec"]
   },
   "formatter": {
     "enabled": true,
