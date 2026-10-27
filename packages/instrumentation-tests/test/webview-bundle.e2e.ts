@@ -55,18 +55,12 @@ describe('@bugsee/webview injectable IIFE bundle guard', () => {
     expect(bundle.gzipBytes).toBeLessThan(GZIP_BUDGET);
   });
 
-  it('does not ship the Electron trace tables (they live in @bugsee/electron, not in the WebView bundle)', async () => {
-    const { code } = await bundleEdgeEntry(IIFE_ENTRY, 'iife', 'BugseeWebView');
-    const count = (needle: string): number => code.split(needle).length - 1;
-    // each of these names is written ONCE by the browser trace producers; an Electron ownership table would repeat them
-    for (const name of [
-      'ram_js_heap_total',
-      'ram_js_heap_used',
-      'ram_js_heap_free',
-      'main_thread_idle_ms',
-    ]) {
-      expect(count(name), name).toBeLessThanOrEqual(1);
-    }
+  it('does not bundle @bugsee/electron at all (the Electron trace tables live there, not in the WebView bundle)', async () => {
+    const { inputs } = await bundleEdgeEntry(IIFE_ENTRY, 'iife', 'BugseeWebView');
+    expect(inputs.length).toBeGreaterThan(50); // the metafile really lists the bundled sources
+    expect(
+      inputs.filter((f) => /(^|\/)electron\/src\//.test(f) || f.includes('@bugsee/electron')),
+    ).toEqual([]);
   });
 
   it('evaluates in a fresh isolate and exposes BugseeWebView.launch (loadable artifact)', async () => {
