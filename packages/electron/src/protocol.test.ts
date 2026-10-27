@@ -147,6 +147,13 @@ describe('encodeControl / decodeControl', () => {
     expect(decodeControl(raw)).toEqual({ command: 'session', sessionId: 's' });
   });
 
+  it('ignores a non-string `sid` on the wire (untrusted-shaped input)', () => {
+    for (const sid of [5, null, true, {}, ['s']]) {
+      const raw = JSON.stringify({ k: 'control', c: 'session', sid });
+      expect(decodeControl(raw)).toEqual({ command: 'session' });
+    }
+  });
+
   it('omits sessionId when absent (not encoded as undefined)', () => {
     const raw = encodeControl({ command: 'pause' });
     expect(JSON.parse(raw)).not.toHaveProperty('sid');

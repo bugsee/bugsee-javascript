@@ -263,7 +263,7 @@ export function encodeControl(message: ControlMessage): string {
 interface WireControl {
   k?: string;
   c?: string;
-  sid?: string;
+  sid?: unknown;
   bo?: unknown;
   ho?: unknown;
 }
@@ -280,7 +280,7 @@ export function decodeControl(raw: string): ControlMessage | undefined {
     return undefined;
   }
   const decoded: ControlMessage = { command: message.c as ControlCommand };
-  if (message.sid !== undefined) {
+  if (typeof message.sid === 'string') {
     decoded.sessionId = message.sid;
   }
   if (typeof message.bo === 'boolean') {
