@@ -1322,7 +1322,7 @@ trace/event wire name lives in ONE module.
   the ref with `git show`, so the checkout's branch and working tree are irrelevant); `pnpm spec:check` exits 1 when it is
   stale. Parser: `scripts/spec-snapshot/parse.mjs`.
 - **Drift test.** `@bugsee/instrumentation-tests` `test/spec-drift.test.ts` (runs in the `test:unit` CI step): registry names and
-  metadata equal the snapshot; every spec name is registered or in the `NOT_YET` list (`route`, `view`, each with the spec item that must still be its pending marker and the issue/PR tracking it);
+  metadata equal the snapshot; every spec name is registered or in the `NOT_YET` list (empty now that `route` and `view` are registered; an entry needs the spec item that must still be its pending marker and the issue/PR tracking it);
   `JS_ONLY_EXTENSIONS` is empty; every registered name is reached by a producer; the emit style (`emit` vs `emitIfChanged`)
   matches the spec's held column; and an AST scan of EVERY product file (`packages/*/src` but protocol, found by location,
   never by content) fails on any spec name (pending and retired ones too) spelled as a literal, quoted inside a longer string,

@@ -765,8 +765,8 @@ export function createBrowserSystemTraceProducers(
     env.routeViewState !== undefined
       ? [
           new ScreenProducer(env.routeViewState, {
-            route: !owned('route'),
-            view: !owned('view'),
+            route: !owned(TraceName.ROUTE),
+            view: !owned(TraceName.VIEW),
           }),
         ]
       : [];

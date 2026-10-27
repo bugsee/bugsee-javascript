@@ -1,4 +1,5 @@
 import type { ScreenTracker } from '@bugsee/core';
+import { TraceName } from '@bugsee/protocol';
 import { TraceProducerBase } from './trace-producer';
 
 // The `route` and `view` system traces (spec traces.md `route` / `view`): what the application reports through
@@ -31,15 +32,17 @@ export class ScreenProducer extends TraceProducerBase {
 
   protected onStart(): void {
     if (this.#route) {
-      this.#offs.push(this.#tracker.on('route', (e) => this.emitIfChanged('route', e.route)));
+      this.#offs.push(
+        this.#tracker.on('route', (e) => this.emitIfChanged(TraceName.ROUTE, e.route)),
+      );
       // What was set before the capture started (an adapter wires at app start, before or after launch) is the baseline.
       const route = this.#tracker.currentRoute();
-      if (route !== undefined) this.emitIfChanged('route', route);
+      if (route !== undefined) this.emitIfChanged(TraceName.ROUTE, route);
     }
     if (this.#view) {
-      this.#offs.push(this.#tracker.on('view', (e) => this.emitIfChanged('view', e.view)));
+      this.#offs.push(this.#tracker.on('view', (e) => this.emitIfChanged(TraceName.VIEW, e.view)));
       const view = this.#tracker.currentView();
-      if (view !== undefined) this.emitIfChanged('view', view);
+      if (view !== undefined) this.emitIfChanged(TraceName.VIEW, view);
     }
   }
 
