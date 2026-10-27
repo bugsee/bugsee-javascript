@@ -34,23 +34,48 @@ function clean(text: string, max: number): string | undefined {
   return sanitized.length > max ? sanitized.slice(0, max) + TRUNCATED_URL_MARKER : sanitized;
 }
 
-/** What may follow a `?` that is router syntax (an optional-parameter modifier): the end, a separator, or the next piece. */
+/** What may follow a modifier `?` (an optional-parameter marker): the end or a separator, never a word. */
 const MODIFIER_FOLLOWERS = '/)-.:_~*+?';
+/** What may follow `(?` for it to be regexp group syntax: `(?:`, `(?=`, `(?!`, `(?<`. Anything else is a query. */
+const GROUP_FOLLOWERS = ':=!<';
+/** A `?` right after one of these closes a param, group or wildcard: it is a modifier, not a query. */
+const MODIFIABLE = ')}]*';
 
 /**
- * Where the query of a route string starts, or -1. A `?` is router PATTERN syntax, not a query, when it is
- *  - inside parentheses (a regexp: `/:id(colou?r)`, `/:file(.*?\.json)`; an escaped paren does not count), or
- *  - a modifier: followed by the end or a separator (`/:id?`, `/:id?/edit`, `/:file?.json`, `/:a?-:b?`) AND with no
- *    `=` or `&` between it and the next `?` (`/a?/next=/home&email=x` is a query even though `/` follows).
- * Anything else starts a query. An unbalanced paren is not trusted: the depth rule is then dropped, so a `(` cannot hide a query.
+ * Whether the `?` at `at` is router PATTERN syntax rather than the start of a query. Decided by what comes BEFORE it:
+ *  - right after `(`: regexp group syntax only when followed by `:`, `=`, `!` or `<` (`(?:a|b)`, `(?=y)`); `/cb(?name=bob)`
+ *    is a query;
+ *  - otherwise an optional-parameter modifier only after a param token (the segment since the last `/` starts with `:`:
+ *    `/:id?`, `/:a?-:b?`) or after `)`, `}`, `]` or `*`, AND only when followed by the end or a separator and with no
+ *    `=` or `&` before the next `?`. After any plain word (`/index.php?/x`, `/s?-token`, `/?/orders/1`) it starts a query.
+ */
+function isModifier(route: string, at: number, segmentStart: number, end: number): boolean {
+  const prev = route[at - 1];
+  const next = route[at + 1];
+  if (prev === '(') return next !== undefined && GROUP_FOLLOWERS.includes(next);
+  const afterParam = route[segmentStart] === ':';
+  if (!afterParam && !(prev !== undefined && MODIFIABLE.includes(prev))) return false;
+  return (
+    (next === undefined || MODIFIER_FOLLOWERS.includes(next)) &&
+    !/[=&]/.test(route.slice(at + 1, end))
+  );
+}
+
+/**
+ * Where the query of a route string starts, or -1. A `?` that {@link isModifier} says is pattern syntax is skipped; so is
+ * any `?` inside parentheses that is not directly after the `(` (a regexp: `/:id(colou?r)`, `/:file(.*?\.json)`; an
+ * escaped paren does not count). Anything else starts a query. An unbalanced paren is not trusted: the depth rule is then
+ * dropped, so a `(` cannot hide a query.
  */
 function queryStart(route: string): number {
-  const candidates: Array<{ at: number; depth: number }> = [];
+  const candidates: Array<{ at: number; depth: number; segmentStart: number }> = [];
+  let segmentStart = 0; // where the segment holding the scan position began (after the last `/`)
   let depth = 0;
   let balanced = true;
   for (let i = 0; i < route.length; i++) {
     const c = route[i];
     if (c === '\\') i += 1;
+    else if (c === '/') segmentStart = i + 1;
     else if (c === '(') depth += 1;
     else if (c === ')') {
       depth -= 1;
@@ -58,18 +83,15 @@ function queryStart(route: string): number {
         balanced = false;
         depth = 0;
       }
-    } else if (c === '?') candidates.push({ at: i, depth });
+    } else if (c === '?') candidates.push({ at: i, depth, segmentStart });
   }
   if (depth !== 0) balanced = false;
-  const live = balanced ? candidates.filter((c) => c.depth === 0) : candidates;
+  const live = balanced
+    ? candidates.filter((c) => c.depth === 0 || route[c.at - 1] === '(')
+    : candidates;
   for (let k = 0; k < live.length; k++) {
-    const at = (live[k] as { at: number }).at;
-    const end = live[k + 1]?.at ?? route.length;
-    const next = route[at + 1];
-    const modifier =
-      (next === undefined || MODIFIER_FOLLOWERS.includes(next)) &&
-      !/[=&]/.test(route.slice(at + 1, end));
-    if (!modifier) return at;
+    const { at, segmentStart: start } = live[k] as { at: number; segmentStart: number };
+    if (!isModifier(route, at, start, live[k + 1]?.at ?? route.length)) return at;
   }
   return -1;
 }
@@ -78,8 +100,14 @@ function queryStart(route: string): number {
 const USERINFO_SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*:)[/\\]{1,2}[^/\\?#@]+@/;
 const USERINFO_SLASHES = /^[/\\]{2}[^/\\?#@]+@/;
 const USERINFO_BARE = /^[^/\\?#@:]+:[^/\\?#@]*@/;
-/** An e-mail address in a path segment (`/verify/alice@example.com`). A `/@handle` or `/:name@:domain` route has none. */
-const EMAIL = /[^\s/@:?#]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+/**
+ * An e-mail address in a path segment (`/verify/alice@example.com`): a local part, `@`, then a domain whose LAST label is
+ * alphabetic with 2+ letters, so `react@18.2.0`, `pkg@1.2.3` and `b@c.d` are not addresses. The lookbehind anchors the match to
+ * the start of a run, which keeps it linear (unanchored, every start offset rescanned the run: 170 ms at 8192 characters).
+ * Known limit: `logo@2x.png` has an alphabetic extension and is redacted. `/@handle` and `/:name@:domain` have none.
+ */
+const EMAIL =
+  /(?<![^\s/@:?#])[^\s/@:?#]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g;
 
 function withoutPersonalData(route: string): string {
   return route

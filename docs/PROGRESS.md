@@ -1363,9 +1363,10 @@ the state. The producer is wired in the browser and WebView launches (not a sens
 Electron renderer gets it through the browser launch). A WebView writes `route` but NOT `view` (the native host owns it:
 spec host table; `hostOwnedTraces: ['displays','view']`, honoured by `ScreenProducer`'s `route`/`view` options). Several
 Electron renderers interleave their `route`/`view` into one stream exactly as `url` does (C26, fixed separately). Node/edge hold the value and write nothing (spec: not written there).
-**Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` inside parentheses, or a modifier followed by the end or
-a separator with no `=`/`&` before the next `?`, is router syntax and stays: `/:id?`, `/:id(colou?r)`, `/:file?.json`,
-`/:a?-:b?`; `/a?/next=/home&email=x` is a query), userinfo (`https://u:p@h`, `u:p@h`) is dropped and an e-mail in a path
+**Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` inside parentheses, other than directly after `(` with `:=!<`
+after it, is regexp syntax; a `?` is an optional-parameter modifier only after a param token (the segment starts with `:`) or
+after `)`, `}`, `]`, `*`, AND followed by the end or a separator with no `=`/`&` before the next `?`: `/:id?`,
+`/:id(colou?r)`, `/:file?.json`, `/:a?-:b?`; after a plain word it is a query: `/index.php?/x`, `/s?-token`, `/cb(?name=bob)`), userinfo (`https://u:p@h`, `u:p@h`) is dropped and an e-mail (alphabetic TLD of 2+ letters; `react@18.2.0` stays, `logo@2x.png` is a known over-redaction) in a path
 segment redacted (the `url` trace sanitizer is unchanged and keeps the username), then the location sanitizer (secret
 shapes, sensitive matrix segments) runs on the bounded (8192) string BEFORE the clip to 1024 chars (`%3Ctruncated%3E`), so a
 token straddling the cut is redacted; view: each of name/type is sanitized the same way and clipped at 256; an empty / non-string
@@ -1375,7 +1376,7 @@ React (data router + `instrumentRouterMatches`), Vue, Solid, Angular and SvelteK
 per-adapter change; Vue's `afterEach` now skips a navigation that carries a `failure` (aborted/duplicated/redirected: it also
 stops refining the transaction for those; it also seeds the already-committed `router.currentRoute.value`, so Nuxt's landing
 page is written). `setRouteName` is a public re-export: a direct caller now writes `route` too. `setViewName(name, adapterId)`
-writes `view` only when the name is obtainable (empty or 1 to 2 characters = minified, or a framework wrapper: `wrap`, `AsyncComponentWrapper`, `Navigate`, `RequireAuth`, `Outlet`, `Suspense`, `Fragment`; Solid functions
+writes `view` only when the name is obtainable (empty or 1 to 2 characters = minified, or a framework wrapper: `wrap`, `AsyncComponentWrapper`, `Navigate`, `RequireAuth`, `Outlet`, `Suspense`, `Fragment`, `ProtectedRoute`, `PrivateRoute`, `AuthGuard`, `RouteGuard`, `Layout`; the page behind a Vue `defineAsyncComponent` / React `lazy` is not recovered (private fields); Solid functions
 carrying `preload` and Vue components carrying `__asyncLoader` are skipped = nothing written): React (`route.Component` / `element.type`), Vue
 (`matched[last].components.default` `name`/`__name`/`displayName`), Solid (`route.component`), Angular (deepest `firstChild`
 snapshot `.component`). `@bugsee/nuxt` `installBugseeClient` now calls `instrumentVueRouter(nuxtApp.$router)` when present.

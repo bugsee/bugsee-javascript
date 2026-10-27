@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { expectLinearIn, LINEARITY_TEST_TIMEOUT_MS } from './linear-time.test-helper';
 import {
   MAX_ROUTE_CHARS,
   MAX_VIEW_FIELD_CHARS,
@@ -28,7 +29,6 @@ describe('sanitizeRoutePattern', () => {
     ['/(a(b?)c)/x', '/(a(b?)c)/x'],
     ['/:id(a\\)b?c)/x', '/:id(a\\)b?c)/x'], // an escaped `)` does not close the group, so this `?` is regexp syntax
     ['/:a??', '/:a??'],
-    ['/(a?)b)', '/(a?)b)'], // unbalanced: depth is not trusted, `?` before `)` is still a modifier
     [':name@:domain', ':name@:domain'],
     ['/:id(\\(x?)/y', '/:id(\\(x?)/y'], // an escaped paren does not change the depth
     ['/', '/'],
@@ -49,6 +49,7 @@ describe('sanitizeRoutePattern', () => {
     ['/a?x=1/(b?c)', '/a'],
     ['/a?/x&y', '/a'], // `&` alone makes it a query
     ['/a?/n=1', '/a'], // `=` alone too
+    ['/(a?)b)', '/(a'], // unbalanced: the depth is not trusted, and a `?` after a plain character is a query
     ['/a)((b?c)', '/a)((b'], // a stray `)` makes the depth untrustworthy: the `?` is still a query
     ['/a)(b?c))', '/a)(b'], // parentheses after the query start do not hide it
     ['/a(?x=secret', '/a('], // an unbalanced paren: depth is not trusted, the query is cut
@@ -66,7 +67,19 @@ describe('sanitizeRoutePattern', () => {
   });
 
   it('returns undefined for a non-string, empty or whitespace-only route, or one that is only a query', () => {
-    for (const bad of [undefined, null, 5, {}, ['/x'], '', '   ', '?a=1', '#x']) {
+    for (const bad of [
+      undefined,
+      null,
+      5,
+      {},
+      ['/x'],
+      '',
+      '   ',
+      '?a=1',
+      '#x',
+      '?',
+      '?/orders/1',
+    ]) {
       expect(sanitizeRoutePattern(bad)).toBeUndefined();
     }
   });
@@ -217,4 +230,131 @@ describe('normalizeView: a hostile argument', () => {
     };
     expect(() => normalizeView(hostile)).toThrow('boom');
   });
+});
+
+describe('sanitizeRoutePattern: a `?` is a modifier only after a param token', () => {
+  it.each([
+    ['/?/orders/123', '/'],
+    ['/index.php?/controller/action', '/index.php'],
+    ['/orders?/abc123secret', '/orders'],
+    ['/s?-token9f8a', '/s'],
+    ['/s?.hidden', '/s'],
+    ['/s?:tok', '/s'],
+    ['/s?~x', '/s'],
+    ['/reset?_k9f8a7b6c5d4e3f2', '/reset'],
+    ['/s?*x', '/s'],
+    ['/s?+x', '/s'],
+    ['/s??x', '/s'],
+    ['/a/b?/c', '/a/b'],
+    ['/:id?token9', '/:id'], // after a param, but what follows is a word: a query
+  ])('cuts the query in %s', (input, expected) => {
+    expect(sanitizeRoutePattern(input)).toBe(expected);
+  });
+
+  it.each([
+    ['/:id?', '/:id?'],
+    ['/:id?/edit', '/:id?/edit'],
+    ['/a/:b?/:c?', '/a/:b?/:c?'],
+    ['/:file?.json', '/:file?.json'],
+    ['/:a?-:b?', '/:a?-:b?'],
+    ['/:a?_:b', '/:a?_:b'],
+    ['/x/:a?:b', '/x/:a?:b'],
+    ['/:a?~x', '/:a?~x'],
+    ['/:id(\\d+)?', '/:id(\\d+)?'], // after `)`
+    ['/foo{/bar}?', '/foo{/bar}?'], // after `}`
+    ['/foo[bar]?', '/foo[bar]?'], // after `]`
+    ['/files/*?', '/files/*?'], // after `*`
+    ['/:a*?/x', '/:a*?/x'],
+    ['/(a|b)?/x', '/(a|b)?/x'], // after `)` that closes a plain group, no param token
+    ['/foo(bar)?', '/foo(bar)?'],
+  ])('keeps the modifier in %s', (input, expected) => {
+    expect(sanitizeRoutePattern(input)).toBe(expected);
+  });
+
+  it('a modifier-looking `?` followed by a key=value is still a query', () => {
+    expect(sanitizeRoutePattern('/:a?/next=/home&x=1')).toBe('/:a');
+  });
+});
+
+describe('sanitizeRoutePattern: a query inside balanced parentheses', () => {
+  it.each([
+    ['/cb(?name=bob)', '/cb('],
+    ['/cb(?q=alice%20smith)', '/cb('],
+    ['/cb(?x)', '/cb('],
+    ['/a(b)(?c=d)/e', '/a(b)('],
+    ['/x(?', '/x('], // `(?` at the very end introduces nothing
+  ])('cuts %s', (input, expected) => {
+    expect(sanitizeRoutePattern(input)).toBe(expected);
+  });
+
+  it.each([
+    '/:id(?:a|b)',
+    '/x(?=y)z',
+    '/x(?!y)z',
+    '/x(?<n>y)z',
+    '/x(?<=y)z',
+    '/x(?<!y)z',
+  ])('keeps the regexp group syntax in %s', (input) => {
+    expect(sanitizeRoutePattern(input)).toBe(input);
+  });
+});
+
+describe('sanitizeRoutePattern: real pathnames that look like e-mail addresses', () => {
+  it.each([
+    '/package/react@18.2.0',
+    '/@scope/pkg@1.2.3',
+    '/@scope/pkg',
+    '/a/b@c.d/e',
+    '/profile/@me',
+    '/:user@:domain',
+    '/u/:name@:host',
+    '/[pkg]@[version]',
+    '/x/pkg@1.2.3-beta.1',
+  ])('keeps %s', (input) => {
+    expect(sanitizeRoutePattern(input)).toBe(input);
+  });
+
+  it('still redacts an address with an alphabetic top-level domain', () => {
+    expect(sanitizeRoutePattern('/verify/alice@example.com/done')).toBe(`/verify/${R}/done`);
+    expect(sanitizeRoutePattern('/u/a.b+c@x-y.co.uk')).toBe(`/u/${R}`);
+    expect(sanitizeRoutePattern('/u/a@b.io')).toBe(`/u/${R}`);
+  });
+
+  it('a name followed by more word characters after the top-level domain is not an address', () => {
+    expect(sanitizeRoutePattern('/u/a@b.com1')).toBe('/u/a@b.com1');
+  });
+
+  it('known limit: an @2x image name has an alphabetic extension and is redacted', () => {
+    expect(sanitizeRoutePattern('/img/logo@2x.png')).toBe(`/img/${R}`);
+  });
+});
+
+describe('sanitizeRoutePattern: linear time (bounded input, relative ratio)', () => {
+  const builds: Record<string, (size: number) => string> = {
+    'one long run, no @': (size) => `/${'a'.repeat(size)}`,
+    'a long run that ends in @': (size) => `/${'a'.repeat(size)}@`,
+    'repeated local@': (size) => `/${'a@'.repeat(Math.ceil(size / 2))}`,
+    'repeated e-mail-shaped tokens': (size) => `/${'a@b.co/'.repeat(Math.ceil(size / 7))}`,
+    'a long domain without a top-level domain': (size) => `/a@${'b.'.repeat(Math.ceil(size / 2))}1`,
+    'many question marks': (size) => `/${'?'.repeat(size)}`,
+    'many modifiers': (size) => `/${':a?'.repeat(Math.ceil(size / 3))}`,
+    'many open groups': (size) => `/${'(?'.repeat(Math.ceil(size / 2))}`,
+    'many unbalanced parens': (size) => `/${')?('.repeat(Math.ceil(size / 3))}`,
+  };
+  for (const [name, build] of Object.entries(builds)) {
+    it(
+      `is linear on ${name}`,
+      () => {
+        expect(typeof sanitizeRoutePattern(build(8192))).toBe('string');
+        expectLinearIn(
+          build,
+          (input) => {
+            sanitizeRoutePattern(input);
+          },
+          8192,
+        );
+      },
+      LINEARITY_TEST_TIMEOUT_MS,
+    );
+  }
 });

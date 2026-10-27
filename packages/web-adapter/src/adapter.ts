@@ -118,8 +118,10 @@ export function setRouteName(name: string, options: RouteNamingOptions = {}): vo
 /**
  * Names that are a framework's WRAPPER, never the page: `wrap` is what solid-js `lazy()` returns,
  * `AsyncComponentWrapper` what Vue's `defineAsyncComponent` returns, and `Navigate` / `RequireAuth` / `Outlet` /
- * `Suspense` / `Fragment` are the usual element types of a React route that only redirects, guards or lays out. Reporting
- * one would be a fabricated view name. The list is a floor, not a guarantee: an application's own guard component has
+ * `Suspense` / `Fragment` / `ProtectedRoute` / `PrivateRoute` / `AuthGuard` / `RouteGuard` / `Layout` are the usual
+ * element types of a React route that only redirects, guards or lays out. Reporting one would be a fabricated view name.
+ * Known limit: the page behind a Vue `defineAsyncComponent` or a React `lazy` is not recovered (that needs private
+ * fields, `__asyncResolved` / `_payload._result`), so such a route writes no `view`. The list is a floor, not a guarantee: an application's own guard component has
  * a name nothing here can know, which is why `client.setView` is the only reliable source.
  */
 const WRAPPER_VIEW_NAMES: ReadonlySet<string> = new Set([
@@ -130,6 +132,11 @@ const WRAPPER_VIEW_NAMES: ReadonlySet<string> = new Set([
   'Outlet',
   'Suspense',
   'Fragment',
+  'ProtectedRoute',
+  'PrivateRoute',
+  'AuthGuard',
+  'RouteGuard',
+  'Layout',
   'anonymous',
   'Anonymous',
 ]);

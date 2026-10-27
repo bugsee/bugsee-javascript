@@ -1604,13 +1604,12 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       if (killed) {
         return;
       }
-      // Contained: the argument is the caller's (a framework router's, or the application's), and reading it can throw.
-      neverThrow(() => {
-        const clean = sanitizeRoutePattern(route);
-        if (clean !== undefined) {
-          screenTracker.setRoute(clean);
-        }
-      }, onErrorSafe);
+      // Not wrapped, unlike `setView`: `sanitizeRoutePattern` takes `unknown` and never reads a property (a non-string is
+      // `undefined`, a string cannot throw), and the tracker isolates a throwing subscriber itself.
+      const clean = sanitizeRoutePattern(route);
+      if (clean !== undefined) {
+        screenTracker.setRoute(clean);
+      }
     },
 
     setView(view: string | { name: string; type?: string } | null): void {
