@@ -140,6 +140,25 @@ export function createElectronMainControl(
   // The key-window flag each renderer was LAST told (reply or `window-key`): a change is sent only to those it changed for.
   // (a WeakMap: a forgotten webContents is never pinned by it)
   const sentKey = new WeakMap<ControlSenderLike, boolean>();
+  // The last key window that hosted an SDK renderer: a focused window with NO Bugsee in it must not silence every
+  // instrumented window, so the key falls back to this one while it still hosts a renderer.
+  let lastParticipatingKey: number | undefined;
+  /**
+   * The window whose renderer is key: the real key window when it hosts a registered renderer, else the last one that did
+   * (while it still does), else null (cannot say: everyone is key). `undefined` only when there is no key window at all.
+   */
+  const effectiveKey = (
+    probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
+  ): number | undefined | null => {
+    const key = probe.currentId();
+    if (key === null || key === undefined) return key;
+    const hosts = (id: number): boolean =>
+      [...renderers].some((r) => r.isDestroyed?.() !== true && probe.ownerId(r) === id);
+    if (hosts(key)) lastParticipatingKey = key;
+    else if (lastParticipatingKey === undefined || !hosts(lastParticipatingKey)) return null;
+    else return lastParticipatingKey;
+    return key;
+  };
   /** Whether `sender`'s window is the key window now. A failing probe is reported and fails OPEN (true). */
   const isKey = (
     probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
@@ -149,8 +168,9 @@ export function createElectronMainControl(
       const owner = probe.ownerId(sender);
       // a renderer whose window cannot be resolved (a view with no owner, an Electron that cannot say) is never silenced:
       // an unplaceable renderer is key, which at worst interleaves in that rare case instead of dropping its traces all session
-      const key = probe.currentId();
-      return owner === undefined || key === null || owner === key;
+      if (owner === undefined) return true;
+      const key = effectiveKey(probe);
+      return key === null || owner === key;
     } catch (error) {
       reportGuarded(options.onError, error);
       return true;

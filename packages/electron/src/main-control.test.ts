@@ -329,8 +329,9 @@ describe('createElectronMainControl', () => {
 
     it('a CRASHED renderer is not addressed (no frame) and keeps its old state, so the change reaches it once it can hear it', () => {
       const key = { id: 1 as number | undefined | null };
-      const w = world({ 11: 1 }, key);
+      const w = world({ 11: 1, 12: 2 }, key);
       const r = w.join(11);
+      w.join(12);
       let crashed = true;
       (r.sender as { isCrashed?: () => boolean }).isCrashed = () => crashed;
       r.sent.length = 0;
@@ -344,8 +345,9 @@ describe('createElectronMainControl', () => {
 
     it('a repeat hello (reload) re-states the CURRENT key flag, and a later change is still diffed against it', () => {
       const key = { id: 1 as number | undefined | null };
-      const w = world({ 11: 1 }, key);
+      const w = world({ 11: 1, 12: 2 }, key);
       const r = w.join(11);
+      w.join(12);
       key.id = 2;
       w.control.keyWindowChanged(); // 11 loses the key
       const reload = w.join(11);
@@ -354,6 +356,44 @@ describe('createElectronMainControl', () => {
       key.id = 1;
       w.control.keyWindowChanged();
       expect(decoded(r)).toEqual([{ command: 'window-key', keyWindow: true }]);
+    });
+
+    describe('a key window that runs no SDK renderer (a focused window with no Bugsee in it)', () => {
+      it('keeps the LAST window that did: its renderer stays key, the others stay non-key (never all silenced)', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        const a = w.join(11);
+        const b = w.join(12);
+        a.sent.length = 0;
+        b.sent.length = 0;
+        key.id = 9; // the user focuses a window with no SDK
+        w.control.keyWindowChanged();
+        expect([a.sent, b.sent]).toEqual([[], []]); // window 1 is still the participating key window
+        key.id = 2;
+        w.control.keyWindowChanged();
+        expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+        key.id = 9;
+        w.control.keyWindowChanged();
+        expect(b.sent).toHaveLength(1); // window 2 is now the last participating one
+      });
+
+      it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {
+        const key = { id: 9 as number | undefined | null };
+        const w = world({ 11: 1 }, key);
+        expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
+      });
+
+      it('forgets a last key window that no longer hosts a renderer (it closed) and falls back to fail-open', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        const a = w.join(11);
+        const b = w.join(12);
+        (a.sender as { isDestroyed?: () => boolean }).isDestroyed = () => true; // window 1 is gone
+        key.id = 9;
+        b.sent.length = 0;
+        w.control.keyWindowChanged();
+        expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]); // nobody left to prefer: open
+      });
     });
 
     it('a failing probe is reported and fails OPEN (the renderer keeps writing; an unknown key never silences a window)', () => {
@@ -420,10 +460,11 @@ describe('createElectronMainControl', () => {
       w.control.keyWindowChanged();
       expect(b.sent).toEqual([]); // destroyed: pruned, not addressed
       expect(w.control.rendererCount).toBe(1);
+      expect(a.sent).toEqual([]); // window 2 hosts no live renderer: window 1 stays the participating key window
       w.control.rendererGone(11);
       key.id = 1;
       w.control.keyWindowChanged();
-      expect(a.sent).toHaveLength(1); // only the pre-gone message
+      expect(a.sent).toEqual([]); // forgotten: not addressed again
     });
   });
 

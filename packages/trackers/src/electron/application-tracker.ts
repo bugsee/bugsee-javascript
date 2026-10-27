@@ -265,6 +265,22 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     );
   }
 
+  /** Whether `id` is a live window of the `BrowserWindow` list. A `BaseWindow` (and its views) is not listed: false. Never throws. */
+  knowsWindow(id: number): boolean {
+    try {
+      return (readWindows(this.#env) ?? []).some(
+        (w) =>
+          typeof w === 'object' &&
+          w !== null &&
+          !destroyed(w as Watched) &&
+          idOf(w as Watched) === id,
+      );
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+
   /** The key window's bounds (a rectangle), or undefined when there is no key window or it cannot say. Never throws. */
   keyWindowBounds(): unknown {
     const win = this.#keyWindow();
@@ -282,7 +298,7 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     if (app === undefined) return undefined;
     const config = WATCH[stage] as WatchConfig<AppStage>;
     const tracked = new Map<object, () => void>();
-    const add = (candidate: unknown): void => {
+    const add = (candidate: unknown, created = false): void => {
       if (typeof candidate !== 'object' || candidate === null || tracked.has(candidate)) {
         return;
       }
@@ -316,9 +332,11 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
       });
       const release = bindAll(bindings, this.report);
       if (release !== undefined) tracked.set(candidate, release);
+      // a window created after arming can change the key at once (a visible one outranks a hidden first one)
+      if (created && config.keyChange !== undefined) this.#publishKey();
     };
     const releaseApp = bindAll(
-      [{ src: app, event: config.createdEvent, listener: (_event, created) => add(created) }],
+      [{ src: app, event: config.createdEvent, listener: (_event, created) => add(created, true) }],
       this.report,
     );
     if (releaseApp === undefined) return undefined;

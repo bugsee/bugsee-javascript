@@ -788,6 +788,37 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
     });
   });
 
+  describe('knowsWindow(id)', () => {
+    it('is true only for a live window the BrowserWindow list contains; false for others, destroyed ones and an unreadable list (a BaseWindow is not listed)', () => {
+      const a = new IdWindow(1);
+      const gone = new IdWindow(2);
+      gone.gone = true;
+      const { t } = world([a, gone]);
+      expect(t.knowsWindow(1)).toBe(true);
+      expect(t.knowsWindow(2)).toBe(false); // destroyed
+      expect(t.knowsWindow(99)).toBe(false); // e.g. a BaseWindow: not in getAllWindows()
+      const app = new FakeEmitter();
+      keys.push(app);
+      const onError = vi.fn();
+      const bad = electronApplicationTrackerFor(
+        {
+          app,
+          BrowserWindow: {
+            getAllWindows: () => {
+              throw new Error('windows');
+            },
+          },
+        },
+        onError,
+      );
+      expect(bad.knowsWindow(1)).toBe(false);
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'windows' }));
+      const none = new FakeEmitter();
+      keys.push(none);
+      expect(electronApplicationTrackerFor({ app: none }).knowsWindow(1)).toBe(false);
+    });
+  });
+
   describe('keyWindow stage', () => {
     it('emits the new key window id when it CHANGES (focus), and nothing when it does not (blur keeps the last focused)', () => {
       const a = new IdWindow(1);
@@ -868,6 +899,39 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
       app.emit('browser-window-created', late);
       late.emit('focus');
       expect(seen).toHaveBeenCalledExactlyOnceWith({ windowId: 9 });
+    });
+
+    it('a window created AFTER arming re-publishes the key at once (a visible new window outranks a hidden first one) without waiting for a focus, show or hide', () => {
+      const first = new IdWindow(1);
+      first.visible = false;
+      const wins = [first];
+      const app = new FakeEmitter();
+      keys.push(app);
+      const t = electronApplicationTrackerFor({
+        app,
+        BrowserWindow: { getAllWindows: () => wins },
+      });
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      const second = new IdWindow(2);
+      wins.push(second);
+      app.emit('browser-window-created', second);
+      expect(seen).toHaveBeenCalledExactlyOnceWith({ windowId: 2 });
+      // a window that does not change the key says nothing
+      const third = new IdWindow(3);
+      wins.push(third);
+      app.emit('browser-window-created', third);
+      expect(seen).toHaveBeenCalledTimes(1);
+    });
+
+    it('windows that already exist when the stage arms publish nothing (the arm reads the current key itself)', () => {
+      const a = new IdWindow(1);
+      a.visible = false;
+      const b = new IdWindow(2);
+      const { t } = world([a, b]);
+      const seen = vi.fn();
+      t.on('keyWindow', seen);
+      expect(seen).not.toHaveBeenCalled();
     });
 
     it('is armed only while it has a listener and releases every window listener with the last one', () => {

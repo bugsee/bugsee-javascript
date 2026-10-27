@@ -581,7 +581,16 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   const keyWindow =
     ownerOf === undefined
       ? undefined
-      : { currentId: () => appTracker?.keyWindowId(), ownerId: ownerOf };
+      : {
+          currentId: () => appTracker?.keyWindowId(),
+          // An owner the BrowserWindow list does not contain (a renderer hosted in a `BaseWindow`: `fromWebContents` and
+          // `getOwnerBrowserWindow()` answer its id, `getAllWindows()` omits it and its creation fires no
+          // `browser-window-created`) cannot be compared with the key window: unplaceable, so key.
+          ownerId: (sender: ControlSenderLike) => {
+            const id = ownerOf(sender);
+            return id !== undefined && appTracker?.knowsWindow(id) ? id : undefined;
+          },
+        };
   // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
   // and propagate pause/resume/flush/stop to every renderer.
   const control = createElectronMainControl({

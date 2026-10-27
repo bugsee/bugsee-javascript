@@ -1316,8 +1316,9 @@ describe('launchMain — Electron domain trackers: power, display, application w
       const a = new KeyWin(1, contentsA);
       const b = new KeyWin(2, contentsB);
       let focused: KeyWin | null = null;
+      const list: KeyWin[] = [a, b];
       const BrowserWindow = {
-        getAllWindows: over.getAllWindows ?? (() => [a, b]),
+        getAllWindows: over.getAllWindows ?? (() => list),
         getFocusedWindow: () => focused,
         ...('fromWebContents' in over
           ? { fromWebContents: over.fromWebContents }
@@ -1355,6 +1356,13 @@ describe('launchMain — Electron domain trackers: power, display, application w
         focus: (w: KeyWin) => {
           focused = w;
           w.emit('focus');
+        },
+        // focus a window that is not one of the two instrumented ones (it needs no listeners here)
+        focusOther: (o: KeyWin) => {
+          list.push(o);
+          app.emit('browser-window-created', o);
+          focused = o;
+          o.emit('focus');
         },
       };
     }
@@ -1436,8 +1444,8 @@ describe('launchMain — Electron domain trackers: power, display, application w
       });
       expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true);
       expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(true);
-      w.focus(w.b); // a focused window can be said again: only the key one stays key
-      expect(msgs(w.join(w.contentsA)).at(-1)?.keyWindow).toBe(false);
+      w.focus(w.b); // without the list no window can be placed, so everyone stays key (never silenced)
+      expect(msgs(w.join(w.contentsA)).at(-1)?.keyWindow).toBe(true);
     });
 
     it('a fromWebContents that throws when called is reported to the launch onError and fails OPEN (the renderer keeps writing)', () => {
@@ -1464,13 +1472,38 @@ describe('launchMain — Electron domain trackers: power, display, application w
       (w.contentsB as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
         () => w.b;
       (w.contentsA as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
-        () => null;
-      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true); // ownerless: fails open
-      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false); // owned by window 2, window 1 is key
+        () => w.a;
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true); // window 1 is the key window
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false); // owned by window 2
+    });
+
+    it('a renderer hosted in a BaseWindow (owner resolves, but the BrowserWindow list does not contain it) is unplaceable: key, never silenced', () => {
+      const w = keyWorld({
+        fromWebContents: (c: unknown) =>
+          (c as { id: number }).id === 101 ? { id: 1 } : { id: 77 }, // 77: a BaseWindow's id, not in getAllWindows()
+      });
+      expect(msgs(w.join(w.contentsA))[0]?.keyWindow).toBe(true);
+      expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(true); // before the fix: false, for the whole session
+      w.focus(w.b);
+      expect(msgs(w.contentsB).at(-1)?.keyWindow).toBe(true);
+    });
+
+    it('a focused window with no SDK renderer does not silence the instrumented ones', () => {
+      const w = keyWorld();
+      w.join(w.contentsA);
+      w.join(w.contentsB);
+      const noSdk = new KeyWin(3, { id: 103 });
+      w.focus(w.b);
+      w.contentsA.sent.length = 0;
+      w.contentsB.sent.length = 0;
+      w.focusOther(noSdk);
+      // window 2 (b) was the last participating key window: it stays key, window 1 stays non-key; nobody is told anything
+      expect([w.contentsA.sent, w.contentsB.sent]).toEqual([[], []]);
     });
 
     it('fromWebContents wins over getOwnerBrowserWindow when it answers', () => {
       const w = keyWorld();
+      w.join(w.contentsA);
       (w.contentsB as unknown as { getOwnerBrowserWindow: () => unknown }).getOwnerBrowserWindow =
         () => w.a; // would say "window 1": it must not be asked
       expect(msgs(w.join(w.contentsB))[0]?.keyWindow).toBe(false); // fromWebContents says window 2
