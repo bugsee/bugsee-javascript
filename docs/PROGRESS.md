@@ -1310,8 +1310,8 @@ recorded" was false.
 The JavaScript platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) is now enforced by a test, and every
 trace/event wire name lives in ONE module.
 
-- **Registry (C17).** `@bugsee/protocol` `system-names.ts`: `TraceName` / `EventName` (constants; a trace key is the wire name
-  upper-cased), `TRACE_SPEC` (value type, unit, held) and `EVENT_PARAMS` (camelCase keys, `?` = optional). Every producer
+- **Registry (C17).** `@bugsee/protocol` `system-names.ts`: `TraceName` / `EventName` (string enums, so a bundle that inlines every use drops the object: the WebView IIFE has a size
+  budget and a const object of ~90 names pushed it over; a trace key is the wire name upper-cased), `TRACE_SPEC` (value type, unit, held) and `EVENT_PARAMS` (camelCase keys, `?` = optional). Every producer
   (`browser`/`node`/`electron` trace producers and system-event sources, `capture`'s capture-state producer, the host-owned
   trace lists in the browser/webview/electron-renderer launches) references it. `TraceProducerBase.emit`/`emitIfChanged` take a
   `TraceName`, so an unregistered literal does not compile. The electron `power_${state}` string concatenation became a lookup
