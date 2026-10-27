@@ -49,7 +49,9 @@ export function viewNameFromSolidMatches(
     if (!matches || matches.length === 0) return undefined;
     const component = matches[matches.length - 1]?.route?.component;
     if (typeof component !== 'function') return undefined;
-    const fn = component as { displayName?: unknown; name?: unknown };
+    const fn = component as { displayName?: unknown; name?: unknown; preload?: unknown };
+    // solid-js `lazy()` returns a function named `wrap` that carries `preload`: a wrapper, not the page
+    if (typeof fn.preload === 'function') return undefined;
     const name = fn.displayName ?? fn.name;
     return typeof name === 'string' && name !== '' ? name : undefined;
   });

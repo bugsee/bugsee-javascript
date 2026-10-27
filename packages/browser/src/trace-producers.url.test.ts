@@ -32,19 +32,44 @@ describe('createBrowserSystemTraceProducers: url', () => {
 });
 
 describe('createBrowserSystemTraceProducers: route and view', () => {
-  const screenState = new ScreenTracker();
+  const routeViewState = new ScreenTracker();
 
-  it('builds no screen producer without env.screenState', () => {
+  it('builds no screen producer without env.routeViewState', () => {
     expect(createBrowserSystemTraceProducers({}).some((p) => p.name === 'screen')).toBe(false);
   });
 
-  it('builds one screen producer from env.screenState, with no lifecycle needed', () => {
-    const producers = createBrowserSystemTraceProducers({ screenState });
+  it('builds one screen producer from env.routeViewState, with no lifecycle needed', () => {
+    const producers = createBrowserSystemTraceProducers({ routeViewState });
     expect(producers.filter((p) => p instanceof ScreenProducer)).toHaveLength(1);
   });
 
   it('keeps it when sensors are replaced (it is not a sensor), after battery and url', () => {
-    const producers = createBrowserSystemTraceProducers({ url: deps, screenState, sensors: false });
+    const producers = createBrowserSystemTraceProducers({
+      url: deps,
+      routeViewState,
+      sensors: false,
+    });
     expect(producers.map((p) => p.name)).toEqual(['battery', 'url', 'screen']);
+  });
+
+  it('a host-owned name is not written: hostOwnedTraces view / route', () => {
+    const t = new ScreenTracker();
+    t.setRoute('/r');
+    t.setView({ name: 'V1' });
+    const written = (hostOwnedTraces: string[]) => {
+      const got: string[] = [];
+      for (const p of createBrowserSystemTraceProducers({
+        routeViewState: t,
+        hostOwnedTraces,
+        sensors: false,
+      })) {
+        if (p.name === 'screen') p.start({ emit: (name) => got.push(name) });
+      }
+      return got;
+    };
+    expect(written([])).toEqual(['route', 'view']);
+    expect(written(['displays', 'view'])).toEqual(['route']);
+    expect(written(['route'])).toEqual(['view']);
+    expect(written(['route', 'view'])).toEqual([]);
   });
 });

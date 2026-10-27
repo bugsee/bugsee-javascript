@@ -1107,7 +1107,7 @@ async function buildLaunch(
                 )
               : {}),
             // `route` / `view`: what `client.setRoute` / `setView` (the framework adapters) report, shared through the carrier.
-            screenState: screenTrackerFor(carrier, options.onError),
+            routeViewState: screenTrackerFor(carrier, options.onError),
             lifecycle,
             ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
           },

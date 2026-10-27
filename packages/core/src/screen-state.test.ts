@@ -120,6 +120,67 @@ describe('client.setRoute: errors', () => {
   });
 });
 
+describe('client.setView: a hostile argument never throws into the caller', () => {
+  const make2 = () => {
+    const errors: unknown[] = [];
+    const carrier = {};
+    return { carrier, errors, client: createClient({ carrier, onError: (e) => errors.push(e) }) };
+  };
+
+  it('a throwing name getter is reported to onError and the held view stays', () => {
+    const { carrier, errors, client } = make2();
+    client.setView('Before');
+    const hostile = {
+      get name(): never {
+        throw new Error('name getter');
+      },
+    };
+    expect(() => client.setView(hostile as never)).not.toThrow();
+    expect((errors[0] as Error).message).toBe('name getter');
+    expect(screenTrackerFor(carrier).currentView()).toEqual({ name: 'Before' });
+  });
+
+  it('a throwing type getter is reported too', () => {
+    const { errors, client } = make2();
+    const hostile = {
+      name: 'Fine',
+      get type(): never {
+        throw new Error('type getter');
+      },
+    };
+    expect(() => client.setView(hostile as never)).not.toThrow();
+    expect((errors[0] as Error).message).toBe('type getter');
+  });
+
+  it('a hostile Proxy is reported, not thrown', () => {
+    const { errors, client } = make2();
+    const proxy = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('proxy get');
+        },
+      },
+    );
+    expect(() => client.setView(proxy as never)).not.toThrow();
+    expect((errors[0] as Error).message).toBe('proxy get');
+  });
+
+  it('setRoute with a hostile value is contained as well', () => {
+    const { errors, client } = make2();
+    const proxy = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error('proxy proto');
+        },
+      },
+    );
+    expect(() => client.setRoute(proxy as never)).not.toThrow();
+    expect(errors).toEqual([]); // not a string: ignored, nothing to report
+  });
+});
+
 describe('client.setView', () => {
   it('accepts a string, an object and null', () => {
     const { carrier, client } = make();

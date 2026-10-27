@@ -113,4 +113,47 @@ describe('ScreenProducer: the `route` and `view` traces', () => {
     p.start(mk().sink); // restartable
     expect([tracker.activations, tracker.deactivations]).toEqual([2, 1]);
   });
+
+  describe('host-owned names', () => {
+    const seeded = () => {
+      const tracker = new ScreenTracker();
+      tracker.setRoute('/r');
+      tracker.setView({ name: 'V1' });
+      return tracker;
+    };
+
+    it('view: false writes the route and never a view (baseline or later change)', () => {
+      const tracker = seeded();
+      const { got, sink } = mk();
+      new ScreenProducer(tracker, { view: false }).start(sink);
+      tracker.setView({ name: 'V2' });
+      tracker.setRoute('/r2');
+      expect(got.map((g) => [g.name, g.value])).toEqual([
+        ['route', '/r'],
+        ['route', '/r2'],
+      ]);
+    });
+
+    it('route: false writes the view and never a route', () => {
+      const tracker = seeded();
+      const { got, sink } = mk();
+      new ScreenProducer(tracker, { route: false }).start(sink);
+      tracker.setRoute('/r2');
+      tracker.setView({ name: 'V2' });
+      expect(got.map((g) => [g.name, g.value])).toEqual([
+        ['view', { name: 'V1' }],
+        ['view', { name: 'V2' }],
+      ]);
+    });
+
+    it('both off writes nothing; explicit true is the default', () => {
+      const tracker = seeded();
+      const off = mk();
+      new ScreenProducer(tracker, { route: false, view: false }).start(off.sink);
+      expect(off.got).toEqual([]);
+      const on = mk();
+      new ScreenProducer(tracker, { route: true, view: true }).start(on.sink);
+      expect(on.got.map((g) => g.name)).toEqual(['route', 'view']);
+    });
+  });
 });

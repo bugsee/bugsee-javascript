@@ -20,6 +20,17 @@ describe('sanitizeRoutePattern', () => {
     ['/a/:b?/:c?', '/a/:b?/:c?'],
     ['/:p(\\d+?)/x', '/:p(\\d+?)/x'], // `?` before `)` is regexp syntax inside a param pattern
     ['/post/:slug+', '/post/:slug+'],
+    // real vue-router / path-to-regexp patterns whose `?` is regexp or modifier syntax
+    ['/:id(colou?r)', '/:id(colou?r)'],
+    ['/:file(.*?\\.json)', '/:file(.*?\\.json)'],
+    ['/:file?.json', '/:file?.json'],
+    ['/:a?-:b?', '/:a?-:b?'],
+    ['/(a(b?)c)/x', '/(a(b?)c)/x'],
+    ['/:id(a\\)b?c)/x', '/:id(a\\)b?c)/x'], // an escaped `)` does not close the group, so this `?` is regexp syntax
+    ['/:a??', '/:a??'],
+    ['/(a?)b)', '/(a?)b)'], // unbalanced: depth is not trusted, `?` before `)` is still a modifier
+    [':name@:domain', ':name@:domain'],
+    ['/:id(\\(x?)/y', '/:id(\\(x?)/y'], // an escaped paren does not change the depth
     ['/', '/'],
   ])('keeps the pattern %s as given', (input, expected) => {
     expect(sanitizeRoutePattern(input)).toBe(expected);
@@ -33,6 +44,14 @@ describe('sanitizeRoutePattern', () => {
     ['/x#access_token=abc', '/x'],
     ['/x?a=1#b', '/x'],
     ['/x#a?b=1', '/x'],
+    ['/x?token', '/x'], // a bare key is a query too
+    ['/a?/next=/home&email=alice@example.com', '/a'], // `?` before `/` but a real query: `=` / `&` follow
+    ['/a?x=1/(b?c)', '/a'],
+    ['/a?/x&y', '/a'], // `&` alone makes it a query
+    ['/a?/n=1', '/a'], // `=` alone too
+    ['/a)((b?c)', '/a)((b'], // a stray `)` makes the depth untrustworthy: the `?` is still a query
+    ['/a)(b?c))', '/a)(b'], // parentheses after the query start do not hide it
+    ['/a(?x=secret', '/a('], // an unbalanced paren: depth is not trusted, the query is cut
   ])('never keeps a query or fragment: %s', (input, expected) => {
     expect(sanitizeRoutePattern(input)).toBe(expected);
   });
@@ -132,5 +151,70 @@ describe('normalizeView', () => {
       name: exact + MARK,
       type: exact + MARK,
     });
+  });
+});
+
+describe('sanitizeRoutePattern: credentials and personal data', () => {
+  it.each([
+    ['https://alice:hunter2@host.com/x', 'https://host.com/x'],
+    ['https://alice@host.com/x', 'https://host.com/x'],
+    ['http://a:b@c:8080/p/:id', 'http://c:8080/p/:id'],
+    ['alice:pw@host/x', 'host/x'],
+    ['//u:p@host/x', '//host/x'],
+    ['https:/u:p@a.com/x', 'https://a.com/x'],
+  ])('strips the userinfo of %s', (input, expected) => {
+    expect(sanitizeRoutePattern(input)).toBe(expected);
+  });
+
+  it('keeps router syntax that merely contains an @ (a handle route, a param before @)', () => {
+    expect(sanitizeRoutePattern('/@:username')).toBe('/@:username');
+    expect(sanitizeRoutePattern('/users/@me')).toBe('/users/@me');
+    expect(sanitizeRoutePattern('@me/profile')).toBe('@me/profile');
+    expect(sanitizeRoutePattern('/:name@:domain')).toBe('/:name@:domain');
+  });
+
+  it('an EMPTY userinfo is left to the shared sanitizer (which redacts it), not silently dropped', () => {
+    expect(sanitizeRoutePattern('https://@host/x')).toBe(`https://${R}@host/x`);
+  });
+
+  it('redacts an e-mail address in a path segment', () => {
+    expect(sanitizeRoutePattern('/verify/alice@example.com/done')).toBe(`/verify/${R}/done`);
+    expect(sanitizeRoutePattern('/u/a.b+c@x-y.co.uk')).toBe(`/u/${R}`);
+  });
+});
+
+describe('sanitizeRoutePattern: a secret is never half-kept at the length limit', () => {
+  const token = `ghp_${'Ab3dEf6hIj9'.repeat(4).slice(0, 36)}`;
+
+  it('redacts a token that straddles the cut (the whole string is sanitized, then clipped)', () => {
+    for (const pad of [MAX_ROUTE_CHARS - 12, MAX_ROUTE_CHARS - 20, MAX_ROUTE_CHARS - 40]) {
+      const out = sanitizeRoutePattern(`/${'x'.repeat(pad)}/${token}/tail`) as string;
+      expect(out).not.toContain('ghp_');
+      expect(out).not.toContain('Ab3dEf6');
+    }
+  });
+
+  it('still clips the sanitized result to the limit and marks it', () => {
+    const out = sanitizeRoutePattern(`/${'x'.repeat(2000)}/${token}`) as string;
+    expect(out.endsWith(MARK)).toBe(true);
+    expect(out.length).toBe(MAX_ROUTE_CHARS + MARK.length);
+  });
+
+  it('a view name straddling the cut is redacted too', () => {
+    const name = `${'n'.repeat(MAX_VIEW_FIELD_CHARS - 10)} ${token}`;
+    const v = normalizeView(name) as { name: string };
+    expect(v.name).not.toContain('ghp_');
+    expect(v.name).not.toContain('Ab3dEf6');
+  });
+});
+
+describe('normalizeView: a hostile argument', () => {
+  it('lets a throwing getter propagate to the caller of the pure function (the client contains it)', () => {
+    const hostile = {
+      get name(): never {
+        throw new Error('boom');
+      },
+    };
+    expect(() => normalizeView(hostile)).toThrow('boom');
   });
 });

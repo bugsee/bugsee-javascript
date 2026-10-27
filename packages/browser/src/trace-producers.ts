@@ -583,7 +583,7 @@ export interface BrowserTraceEnv extends BatteryEnv {
    * independent of `lifecycle`. The launch passes the carrier-shared tracker (`screenTrackerFor`), which is what the client
    * writes to.
    */
-  screenState?: ScreenSource;
+  routeViewState?: ScreenSource;
   /**
    * `false` builds the battery producer (and `url`, when given) ONLY: a caller-supplied `systemMetricsSampler` replaces the heap,
    * connection, orientation, `app_state`, `fps`, `displays` and `main_thread_lag_ms` traces (as on Node), so the sensor producers must not also emit them.
@@ -758,7 +758,18 @@ export function createBrowserSystemTraceProducers(
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   const url = env.url !== undefined ? [new UrlProducer(env.url)] : [];
-  const screen = env.screenState !== undefined ? [new ScreenProducer(env.screenState)] : [];
+  // A name the HOST owns is not written here: the native host of a WebView writes `view` (spec host table).
+  const owned = (name: string): boolean =>
+    Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes(name);
+  const screen =
+    env.routeViewState !== undefined
+      ? [
+          new ScreenProducer(env.routeViewState, {
+            route: !owned('route'),
+            view: !owned('view'),
+          }),
+        ]
+      : [];
   if (env.sensors === false) return [battery, ...url, ...screen];
   // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
   // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.

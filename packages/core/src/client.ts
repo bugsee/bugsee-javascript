@@ -347,11 +347,15 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
   /**
    * Record the route the user is on, as the router's PATTERN (`/orders/:id`, never the concrete URL with its ids), as
    * the `route` system trace: a held step curve, de-duplicated, written only where the platform records one (the
-   * browser, WebView and Electron renderer; Node and the edge runtimes hold the value and write nothing). The framework
+   * browser, a WebView and an Electron renderer; Node and the edge runtimes hold the value and write nothing; several
+   * Electron renderers interleave their values into one stream, as the `url` trace does). The framework
    * adapters call this on committed navigations; an application with its own router calls it too. The string is
-   * sanitized like the page address (secret shapes, sensitive matrix segments), NEVER keeps a query or a fragment, and
-   * is clipped at 1024 characters. An unusable value (not a string, or empty once the query is gone) is ignored. Safe
-   * before `launch()`: the value is held and written at launch. A no-op once the SDK has been killed.
+   * sanitized like the page address (secret shapes, sensitive matrix segments), keeps no fragment and no query (a `?`
+   * that is router syntax, an optional parameter such as `/:id?` or a regexp such as `/:id(colou?r)`, stays; any other
+   * starts a query and is cut), drops userinfo (`user:pw@host`) and redacts an e-mail address in a path segment, and
+   * is clipped at 1024 characters. An unusable value (not a string, or empty once the query is gone) is ignored. Called
+   * before `launch()` on a client you hold, the value is held and written at launch (the framework adapters resolve the
+   * launched client first and DROP a navigation reported before one exists). A no-op once the SDK has been killed.
    */
   setRoute(route: string): void;
   /**
@@ -359,8 +363,8 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * `{ name, type? }` (the component or view name, and the producer, e.g. the adapter id), or `null` for "no view"
    * (written as `"$$none"`). Held and de-duplicated: repeating the current view writes nothing. Best effort on the web:
    * a framework adapter supplies a name only when it can read a non-minified one, so this call is the only guaranteed
-   * source. Fields are sanitized and clipped at 256 characters; an unusable value is ignored. Same launch/kill rules as
-   * {@link setRoute}.
+   * source. A native WebView host owns `view`, so a WebView page writes no `view`. Fields are sanitized and clipped at
+   * 256 characters; an unusable value is ignored. Same launch/kill rules as {@link setRoute}.
    */
   setView(view: string | { name: string; type?: string } | null): void;
 
@@ -1600,20 +1604,26 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       if (killed) {
         return;
       }
-      const clean = sanitizeRoutePattern(route);
-      if (clean !== undefined) {
-        screenTracker.setRoute(clean);
-      }
+      // Contained: the argument is the caller's (a framework router's, or the application's), and reading it can throw.
+      neverThrow(() => {
+        const clean = sanitizeRoutePattern(route);
+        if (clean !== undefined) {
+          screenTracker.setRoute(clean);
+        }
+      }, onErrorSafe);
     },
 
     setView(view: string | { name: string; type?: string } | null): void {
       if (killed) {
         return;
       }
-      const clean = normalizeView(view);
-      if (clean !== undefined) {
-        screenTracker.setView(clean);
-      }
+      // Contained: `view` may be a hostile object (a throwing getter, a Proxy).
+      neverThrow(() => {
+        const clean = normalizeView(view);
+        if (clean !== undefined) {
+          screenTracker.setView(clean);
+        }
+      }, onErrorSafe);
     },
 
     logException: function logException(

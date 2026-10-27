@@ -145,4 +145,41 @@ describe('the route and view traces from Solid Router matches', () => {
     expect(setRoute).toHaveBeenCalledTimes(1);
     expect(setView).not.toHaveBeenCalled();
   });
+
+  it('a solid-js lazy() component is not a view (its function is the wrapper `wrap`, carrying `preload`)', () => {
+    const lazyShaped = Object.assign(
+      function wrap() {
+        return null;
+      },
+      { preload: () => Promise.resolve() },
+    );
+    expect(viewNameFromSolidMatches(page(lazyShaped))).toBeUndefined();
+    // even when a build kept a real-looking name, a function carrying `preload` is lazy()'s wrapper
+    const named = Object.assign(
+      function Dashboard() {
+        return null;
+      },
+      { preload: () => Promise.resolve() },
+    );
+    expect(viewNameFromSolidMatches(page(named))).toBeUndefined();
+  });
+
+  it('a component with a non-function `preload` is still named', () => {
+    const odd = Object.assign(function Dashboard() {}, { preload: true });
+    expect(viewNameFromSolidMatches(page(odd))).toBe('Dashboard');
+  });
+
+  it('end to end: a lazy route writes its route but no view', () => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const full = {
+      setRoute,
+      setView,
+      ext: () => ({ setRouteName: () => {} }),
+    } as unknown as Bugsee;
+    const lazyShaped = Object.assign(function wrap() {}, { preload: () => Promise.resolve() });
+    setRouteNameFromSolidMatches(page(lazyShaped), { getClient: () => full });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/orders/:id');
+    expect(setView).not.toHaveBeenCalled();
+  });
 });

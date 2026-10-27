@@ -294,4 +294,23 @@ describe('the route and view traces from react-router', () => {
     expect(setRoute).toHaveBeenLastCalledWith('/teams/:teamId');
     expect(setView).toHaveBeenCalledTimes(1); // no obtainable component: nothing written, the previous view stays
   });
+
+  it('a wrapper element type or a React.lazy object writes the route and no view', () => {
+    const { setRoute, setView, opts } = wire();
+    function RequireAuth() {
+      return null;
+    }
+    function Navigate() {
+      return null;
+    }
+    instrumentRouterMatches([{ route: { path: '/a', element: { type: RequireAuth } } }], opts);
+    instrumentRouterMatches([{ route: { path: '/b', element: { type: Navigate } } }], opts);
+    // React.lazy(...) is an object ({ $$typeof, _payload, _init }) with no display name
+    instrumentRouterMatches(
+      [{ route: { path: '/c', Component: { $$typeof: Symbol('react.lazy'), _init() {} } } }],
+      opts,
+    );
+    expect(setRoute.mock.calls).toEqual([['/a'], ['/b'], ['/c']]);
+    expect(setView).not.toHaveBeenCalled();
+  });
 });

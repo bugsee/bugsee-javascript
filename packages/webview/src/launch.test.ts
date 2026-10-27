@@ -1298,7 +1298,7 @@ describe('launch (webview)', () => {
     });
 
     describe('the route and view traces', () => {
-      it('streams what the page reports through client.setRoute / setView (the framework adapters), from the carrier-shared tracker', async () => {
+      it('streams the route the page reports through client.setRoute, from the carrier-shared tracker, and NEVER a view (the native host owns it)', async () => {
         stubSensors();
         try {
           const fake = fakeGlobal();
@@ -1314,10 +1314,8 @@ describe('launch (webview)', () => {
             .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
             .filter((d) => d.name === 'route' || d.name === 'view')
             .map((d) => [d.name, d.value]);
-          expect(rows).toEqual([
-            ['route', '/early/:id'],
-            ['view', { name: 'Detail', type: 'vue' }],
-          ]);
+          // the native host owns `view` (spec host table: WebView writes no view); the page writes `route`
+          expect(rows).toEqual([['route', '/early/:id']]);
         } finally {
           vi.unstubAllGlobals();
         }

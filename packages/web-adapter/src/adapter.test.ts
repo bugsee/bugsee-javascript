@@ -331,3 +331,57 @@ describe('setViewName: the best-effort view trace feed', () => {
     expect(self).toBe(client);
   });
 });
+
+describe('setRouteName: one client resolution per call', () => {
+  it('calls getClient once for both feeds', () => {
+    const setRoute = vi.fn();
+    const { client: base, setRouteName: perf } = fakeClient();
+    const client = { ...(base as object), setRoute } as unknown as Bugsee;
+    const getClient = vi.fn(() => client);
+    setRouteName('/a', { getClient });
+    expect(getClient).toHaveBeenCalledTimes(1);
+    expect(setRoute).toHaveBeenCalledWith('/a');
+    expect(perf).toHaveBeenCalledWith('/a');
+  });
+
+  it('a throwing getClient is reported once, not once per feed', () => {
+    const boom = new Error('boom');
+    const onError = vi.fn();
+    setRouteName('/a', {
+      getClient: () => {
+        throw boom;
+      },
+      onError,
+    });
+    expect(onError).toHaveBeenCalledExactlyOnceWith(boom);
+  });
+});
+
+describe('isObtainableViewName: wrapper names are not view names', () => {
+  it.each([
+    'wrap', // solid-js lazy()
+    'AsyncComponentWrapper', // vue defineAsyncComponent
+    'Navigate',
+    'RequireAuth',
+    'Outlet',
+    'Suspense',
+    'Fragment',
+    'anonymous',
+    'Anonymous',
+    '  wrap ',
+  ])('%s is rejected', (name) => {
+    expect(isObtainableViewName(name)).toBe(false);
+  });
+
+  it('keeps a real name that merely contains one', () => {
+    expect(isObtainableViewName('RequireAuthPage')).toBe(true);
+    expect(isObtainableViewName('Wrapped')).toBe(true);
+    expect(isObtainableViewName('NavigateButton')).toBe(true);
+  });
+
+  it('setViewName writes nothing for a wrapper name', () => {
+    const setView = vi.fn();
+    setViewName('wrap', 'solid', { getClient: () => ({ setView }) as unknown as Bugsee });
+    expect(setView).not.toHaveBeenCalled();
+  });
+});

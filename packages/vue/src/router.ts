@@ -24,6 +24,8 @@ export interface VueRouteLike {
 
 /** The minimal vue-router router shape we touch — structurally matches the `Router`'s `afterEach`. */
 export interface VueRouterLike {
+  /** vue-router's `currentRoute` ref: its `value` is the committed route (`matched` is empty before the first navigation). */
+  currentRoute?: { value?: VueRouteLike } | null;
   // `failure` (the third argument) is set for an aborted, redirected-away or duplicated navigation: `afterEach` fires for those too.
   afterEach: (guard: (to: VueRouteLike, from?: unknown, failure?: unknown) => void) => void;
 }
@@ -53,8 +55,10 @@ export function viewNameFromVueRoute(route: VueRouteLike): string | undefined {
   return neverThrow(() => {
     const matched = route.matched;
     const component = matched?.[matched.length - 1]?.components?.default as
-      | { name?: unknown; __name?: unknown; displayName?: unknown }
+      | { name?: unknown; __name?: unknown; displayName?: unknown; __asyncLoader?: unknown }
       | undefined;
+    // `defineAsyncComponent` returns a wrapper (named `AsyncComponentWrapper`) carrying `__asyncLoader`: not the page
+    if (typeof component?.__asyncLoader === 'function') return undefined;
     const name = component?.name ?? component?.__name ?? component?.displayName;
     return typeof name === 'string' && name !== '' ? name : undefined;
   });
@@ -81,4 +85,12 @@ export function instrumentVueRouter(router: VueRouterLike, options: RouteNamingO
     setViewName(viewNameFromVueRoute(to), 'vue', options);
   }, options.onError);
   neverThrow(() => router.afterEach(onNavigation), options.onError);
+  // SEED with the route already committed: a router that finished its initial navigation before this ran (Nuxt: the plugin
+  // launches the SDK first, and the app does not wait for it) would never fire `afterEach` for the landing page. Before
+  // the first navigation `matched` is empty (START_LOCATION) and the handler writes nothing for it. After the subscription, so a hostile
+  // `currentRoute` cannot cost it.
+  neverThrow(() => {
+    const current = router.currentRoute?.value;
+    if (current !== undefined) onNavigation(current);
+  }, options.onError);
 }

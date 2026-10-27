@@ -196,8 +196,94 @@ describe('instrumentVueRouter: the best-effort view trace', () => {
 
   it('still writes the view when the record has a component but no usable path pattern', () => {
     const { setRoute, setView, navigate } = wire();
-    navigate(route([{ path: '', components: { default: { name: 'Anonymous' } } }]));
+    navigate(route([{ path: '', components: { default: { name: 'Account' } } }]));
     expect(setRoute).not.toHaveBeenCalled();
-    expect(setView).toHaveBeenCalledWith({ name: 'Anonymous', type: 'vue' });
+    expect(setView).toHaveBeenCalledWith({ name: 'Account', type: 'vue' });
+  });
+
+  it('a defineAsyncComponent wrapper is not a view (AsyncComponentWrapper, carrying __asyncLoader)', () => {
+    const view = (component: unknown) =>
+      viewNameFromVueRoute(route([{ path: '/p/q', components: { default: component } }]));
+    const loader = () => Promise.resolve({});
+    expect(view({ name: 'AsyncComponentWrapper', __asyncLoader: loader })).toBeUndefined();
+    expect(view({ name: 'Dashboard', __asyncLoader: loader })).toBeUndefined();
+    expect(view({ name: 'Dashboard', __asyncLoader: 'not a loader' })).toBe('Dashboard');
+  });
+});
+
+describe('instrumentVueRouter: an async wrapper writes the route and no view', () => {
+  it('writes no view for AsyncComponentWrapper by name either', () => {
+    const { setRoute, setView, navigate } = wire();
+    navigate(route([{ path: '/o', components: { default: { name: 'AsyncComponentWrapper' } } }]));
+    expect(setRoute).toHaveBeenCalledWith('/o');
+    expect(setView).not.toHaveBeenCalled();
+  });
+});
+
+describe('instrumentVueRouter: seeds the CURRENT route (the landing page is not lost)', () => {
+  const setup = (router: Partial<VueRouterLike> & { currentRoute?: unknown }) => {
+    const setRoute = vi.fn();
+    const setView = vi.fn();
+    const { client } = fakeClient();
+    const full = { ...(client as object), setRoute, setView } as unknown as Bugsee;
+    let guard: Guard | undefined;
+    const errors: unknown[] = [];
+    // descriptors, not a spread: a hostile getter must not run while the test builds its router
+    const built = Object.defineProperties(
+      { afterEach: (g: Guard) => (guard = g) },
+      Object.getOwnPropertyDescriptors(router),
+    ) as unknown as VueRouterLike;
+    instrumentVueRouter(built, {
+      getClient: () => full,
+      onError: (e) => errors.push(e),
+    });
+    return { setRoute, setView, errors, guard: () => guard };
+  };
+
+  it('writes the route and view of an already-committed currentRoute at instrument time', () => {
+    const { setRoute, setView } = setup({
+      currentRoute: {
+        value: route([{ path: '/o/:id', components: { default: { name: 'OrderDetail' } } }]),
+      },
+    });
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/o/:id');
+    expect(setView).toHaveBeenCalledExactlyOnceWith({ name: 'OrderDetail', type: 'vue' });
+  });
+
+  it('writes nothing for the initial START_LOCATION (no matched record yet), and still follows afterEach', () => {
+    const { setRoute, guard } = setup({ currentRoute: { value: { matched: [] } } });
+    expect(setRoute).not.toHaveBeenCalled();
+    guard()?.(route([{ path: '/later' }]));
+    expect(setRoute).toHaveBeenCalledExactlyOnceWith('/later');
+  });
+
+  it('a router without currentRoute (or with an empty ref) is simply not seeded', () => {
+    expect(setup({}).setRoute).not.toHaveBeenCalled();
+    expect(setup({ currentRoute: {} }).setRoute).not.toHaveBeenCalled();
+    expect(setup({ currentRoute: { value: undefined } }).setRoute).not.toHaveBeenCalled();
+    expect(setup({ currentRoute: null }).setRoute).not.toHaveBeenCalled();
+  });
+
+  it('a hostile currentRoute is contained, reported, and does not stop afterEach being registered', () => {
+    const { setRoute, errors, guard } = setup({
+      get currentRoute(): never {
+        throw new Error('hostile currentRoute');
+      },
+    });
+    expect((errors[0] as Error).message).toBe('hostile currentRoute');
+    guard()?.(route([{ path: '/later' }]));
+    expect(setRoute).toHaveBeenCalledWith('/later');
+  });
+
+  it('registers afterEach BEFORE seeding (a seed that throws cannot cost the subscription)', () => {
+    const order: string[] = [];
+    const { setRoute: _unused } = setup({
+      afterEach: () => order.push('afterEach'),
+      get currentRoute(): never {
+        order.push('currentRoute');
+        throw new Error('x');
+      },
+    });
+    expect(order).toEqual(['afterEach', 'currentRoute']);
   });
 });

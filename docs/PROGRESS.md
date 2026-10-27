@@ -1357,19 +1357,26 @@ PATTERN), `view` = `{name, type?}` or the bare string `"$$none"`; both HELD step
 and re-recorded every `refreshMs`). **Flow:** `client.setRoute(route)` / `client.setView(view)` (core, public API on
 `BugseeClient`) sanitize + bound the value (`sanitizeRoutePattern` / `normalizeView`, `@bugsee/protocol` `screen-names.ts`)
 and hand it to `ScreenTracker` (`@bugsee/trackers`, root entry, portable: it owns no host API, values are pushed in, last
-values retained, change-only) which is shared through the process carrier (`screenTrackerFor(carrier)`, interceptor name
-`screen`), so the client and the platform's `ScreenProducer` (`@bugsee/capture`) meet on one instance and a relaunch inherits
+values retained, change-only) which is shared through the process carrier (`screenTrackerFor(carrier)`, its own carrier slot `screenTracker`, deliberately NOT in
+the interceptor map, which is one global patch per entry), so the client and the platform's `ScreenProducer` (`@bugsee/capture`) meet on one instance and a relaunch inherits
 the state. The producer is wired in the browser and WebView launches (not a sensor: kept under `systemMetricsSampler`; an
-Electron renderer gets it through the browser launch). Node/edge hold the value and write nothing (spec: not written there).
-**Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` that ends the string or precedes `/` or `)` is router
-pattern syntax, an optional param `/:id?`, and stays), then the location sanitizer (secret shapes, sensitive matrix segments),
-clipped at 1024 chars (`%3Ctruncated%3E`); view: each of name/type is sanitized and clipped at 256; an empty / non-string
+Electron renderer gets it through the browser launch). A WebView writes `route` but NOT `view` (the native host owns it:
+spec host table; `hostOwnedTraces: ['displays','view']`, honoured by `ScreenProducer`'s `route`/`view` options). Several
+Electron renderers interleave their `route`/`view` into one stream exactly as `url` does (C26, fixed separately). Node/edge hold the value and write nothing (spec: not written there).
+**Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` inside parentheses, or a modifier followed by the end or
+a separator with no `=`/`&` before the next `?`, is router syntax and stays: `/:id?`, `/:id(colou?r)`, `/:file?.json`,
+`/:a?-:b?`; `/a?/next=/home&email=x` is a query), userinfo (`https://u:p@h`, `u:p@h`) is dropped and an e-mail in a path
+segment redacted (the `url` trace sanitizer is unchanged and keeps the username), then the location sanitizer (secret
+shapes, sensitive matrix segments) runs on the bounded (8192) string BEFORE the clip to 1024 chars (`%3Ctruncated%3E`), so a
+token straddling the cut is redacted; view: each of name/type is sanitized the same way and clipped at 256; an empty / non-string
 value is ignored (nothing is written, the previous value stays). **Adapters:** `setRouteName` in `@bugsee/web-adapter` now
 also feeds `client.setRoute` (independent of the performance extension; an older client without `setRoute` is not an error), so
 React (data router + `instrumentRouterMatches`), Vue, Solid, Angular and SvelteKit (`afterNavigate`) write `route` with no
 per-adapter change; Vue's `afterEach` now skips a navigation that carries a `failure` (aborted/duplicated/redirected: it also
-stops refining the transaction for those). `setViewName(name, adapterId)` writes `view` only when the name is obtainable
-(empty or 1 to 2 characters = minified = nothing written): React (`route.Component` / `element.type`), Vue
+stops refining the transaction for those; it also seeds the already-committed `router.currentRoute.value`, so Nuxt's landing
+page is written). `setRouteName` is a public re-export: a direct caller now writes `route` too. `setViewName(name, adapterId)`
+writes `view` only when the name is obtainable (empty or 1 to 2 characters = minified, or a framework wrapper: `wrap`, `AsyncComponentWrapper`, `Navigate`, `RequireAuth`, `Outlet`, `Suspense`, `Fragment`; Solid functions
+carrying `preload` and Vue components carrying `__asyncLoader` are skipped = nothing written): React (`route.Component` / `element.type`), Vue
 (`matched[last].components.default` `name`/`__name`/`displayName`), Solid (`route.component`), Angular (deepest `firstChild`
 snapshot `.component`). `@bugsee/nuxt` `installBugseeClient` now calls `instrumentVueRouter(nuxtApp.$router)` when present.
 **Not done (follow-ups):** `@bugsee/remix` (re-exports `@bugsee/react`; its router instance is not reachable from the
