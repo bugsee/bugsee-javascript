@@ -191,7 +191,7 @@ class ThermalStateProducer extends TraceProducerBase {
   }
   #publish(state: Parameters<typeof thermalStateWire>[0]): void {
     const wire = thermalStateWire(state);
-    if (wire !== undefined) this.emit('thermal_state', wire);
+    if (wire !== undefined) this.emit(TraceName.THERMAL_STATE, wire);
   }
   protected onStart(): void {
     // subscribe FIRST (arming the listener), then the baseline read: no change can fall between the two
@@ -212,7 +212,7 @@ class CpuSpeedLimitProducer extends TraceProducerBase {
     super();
   }
   protected onStart(): void {
-    this.#off = this.tracker.on('speedLimit', (e) => this.emit('cpu_speed_limit', e.limit));
+    this.#off = this.tracker.on('speedLimit', (e) => this.emit(TraceName.CPU_SPEED_LIMIT, e.limit));
   }
   protected override onStop(): void {
     this.#off?.();

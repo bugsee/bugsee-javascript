@@ -5,8 +5,7 @@
 // against this module by the drift test in `@bugsee/instrumentation-tests` (spec-drift.test.ts), which also fails when
 // a producer file spells a registered name as a literal. Adding a name = add it here (with its spec metadata), then use it.
 //
-// What is NOT here, on purpose: names the spec marks pending and the SDK does not emit yet (`route`, `view`,
-// `thermal_state`, `cpu_speed_limit` — listed with reasons in the drift test, so they cannot be forgotten), retired names
+// What is NOT here, on purpose: names the spec marks pending and the SDK does not emit yet (`route`, `view` — listed with reasons in the drift test, so they cannot be forgotten), retired names
 // (`screen_size`, `electron_displays`, `gc_*`, `process_uptime_s`, `ram_system_available`), and the user streams
 // (`traces.user` / `events.user` belong to the application, never to the SDK).
 
@@ -38,6 +37,7 @@ export enum TraceName {
   CAPTURE = 'capture',
   CHARGING = 'charging',
   CONNECTION = 'connection',
+  CPU_SPEED_LIMIT = 'cpu_speed_limit',
   CPU_USAGE_PROCESS = 'cpu_usage_process',
   CPU_USAGE_SYSTEM = 'cpu_usage_system',
   CPU_USAGE_USER = 'cpu_usage_user',
@@ -66,6 +66,7 @@ export enum TraceName {
   RAM_SYSTEM_TOTAL = 'ram_system_total',
   STORAGE_ESTIMATE = 'storage_estimate',
   URL = 'url',
+  THERMAL_STATE = 'thermal_state',
   USER_IDLE_STATE = 'user_idle_state',
   V8_HEAP_AVAILABLE = 'v8_heap_available',
   V8_HEAP_MALLOCED = 'v8_heap_malloced',
@@ -83,6 +84,7 @@ export const TRACE_SPEC: { readonly [N in TraceName]: TraceSpec } = {
   [TraceName.CAPTURE]: { valueType: 'object', unit: null, held: true },
   [TraceName.CHARGING]: { valueType: 'object', unit: null, held: true },
   [TraceName.CONNECTION]: { valueType: 'object', unit: null, held: true },
+  [TraceName.CPU_SPEED_LIMIT]: { valueType: 'int', unit: 'percent', held: false },
   [TraceName.CPU_USAGE_PROCESS]: { valueType: 'float', unit: 'percent', held: false },
   [TraceName.CPU_USAGE_SYSTEM]: { valueType: 'int', unit: 'us', held: false },
   [TraceName.CPU_USAGE_USER]: { valueType: 'int', unit: 'us', held: false },
@@ -111,6 +113,7 @@ export const TRACE_SPEC: { readonly [N in TraceName]: TraceSpec } = {
   [TraceName.RAM_SYSTEM_TOTAL]: { valueType: 'int', unit: 'bytes', held: false },
   [TraceName.STORAGE_ESTIMATE]: { valueType: 'object', unit: null, held: true },
   [TraceName.URL]: { valueType: 'string', unit: null, held: true },
+  [TraceName.THERMAL_STATE]: { valueType: 'int', unit: null, held: false },
   [TraceName.USER_IDLE_STATE]: { valueType: 'string', unit: null, held: true },
   [TraceName.V8_HEAP_AVAILABLE]: { valueType: 'int', unit: 'bytes', held: false },
   [TraceName.V8_HEAP_MALLOCED]: { valueType: 'int', unit: 'bytes', held: false },

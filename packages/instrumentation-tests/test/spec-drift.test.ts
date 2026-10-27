@@ -57,16 +57,6 @@ const NOT_YET: Readonly<
     reason: 'no client.setRoute / adapter route hook yet',
   },
   view: { spec: 'C12', tracking: [126, 134], reason: 'no client.setView / adapter view hook yet' },
-  thermal_state: {
-    spec: 'C13',
-    tracking: [127, 125],
-    reason: 'Electron main thermal state (macOS) not built',
-  },
-  cpu_speed_limit: {
-    spec: 'C13',
-    tracking: [127, 125],
-    reason: 'Electron main speed limit not built',
-  },
 };
 
 /**
