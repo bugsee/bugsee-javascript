@@ -88,7 +88,7 @@ const FIXTURE = `# Doc
 
 | event | params | trigger | runtimes | mobile counterpart |
 |---|---|---|---|---|
-| \`OrientationChanged\` | \`current\` int (the [\`orientation\`](#t) value), \`prev\` int, \`type\` string, \`angle\` number — **together** | a change | browser family | x |
+| \`OrientationChanged\` | \`current\` int (the [\`orientation\`](#t) value), \`prev\` int (omitted when unknown), \`type\` string, \`angle\` number — **together**; **no params at all** when the engine cannot read both | a change | browser family | x |
 | \`DarkModeChanged\` | \`dark\` boolean (JS-specific extra) | mq | browser family | x |
 
 ### Browser family events
@@ -97,7 +97,7 @@ const FIXTURE = `# Doc
 |---|---|---|---|
 | \`process_started\` | none | activating | |
 | \`process_exiting\` | \`persisted\` boolean | pagehide | |
-| \`display_mode_changed\` | \`mode\` ∈ \`fullscreen\`, \`standalone\`; \`previousMode\` same set | mq | |
+| \`display_mode_changed\` | \`mode\` ∈ \`fullscreen\`, \`standalone\`; \`previousMode\` same set (omitted if unreadable) | mq | |
 | \`private_mode_detected\` | \`method?\` \`storage-quota\` | yes | |
 
 ### Node family events
@@ -113,6 +113,8 @@ const FIXTURE = `# Doc
 | event | params | trigger | requires |
 |---|---|---|---|
 | \`child_process_gone\` | \`type\`, \`exitCode?\`, \`serviceName?\` (Electron strings verbatim) | app | \`app\` |
+| \`display_added\` | a [\`displays\`](x.md) entry in camelCase: \`id\`, \`nativeId\`, \`width?\` | screen | \`screen\` |
+| \`display_metrics_changed\` | the same keys, plus \`changed\` string[] and \`width\` | screen | \`screen\` |
 `;
 
 const trace = (md: string, name: string) => parseSpec(md).traces.find((t) => t.name === name);
@@ -172,22 +174,174 @@ describe('paramKeysOf', () => {
     ]);
     expect(paramKeysOf('`signal` string (default `SIGTERM`, `SIGINT`)')).toEqual(['signal']);
     expect(paramKeysOf('`a`, `a`, `b`')).toEqual(['a', 'b']);
+    expect(paramKeysOf('`a?`, `a`')).toEqual(['a?']); // optional once is optional
+    expect(paramKeysOf('`a`, `a?`')).toEqual(['a?']);
+    // "(omitted ...)" qualifies the key right before it, not the ones before that
+    expect(paramKeysOf('`a` int, `b` int (omitted when x)')).toEqual(['a', 'b?']);
+    expect(paramKeysOf('`a` int (omitted when x), `b` int')).toEqual(['a?', 'b']);
     expect(paramKeysOf('none (the `flag` is separate)')).toEqual([]);
     expect(paramKeysOf('`a`, none')).toEqual(['a']); // "none" only counts at the start
   });
 });
 
+describe('parseSpec fails closed (a spec edit must never be read as "nothing")', () => {
+  const FP = '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |';
+  const BATTERY =
+    '| `battery` | int 0–100, percent | browser family | held | `=` | From the API. |';
+  const mutate = (from: string, to: string): string => {
+    expect(FIXTURE).toContain(from); // the probe edits something that is really there
+    return FIXTURE.replace(from, to);
+  };
+
+  it('rejects a held cell that is not exactly held or no', () => {
+    for (const bad of ['**held**', 'held (re-recorded)', 'Held', 'yes', '', 'not held', 'held,']) {
+      expect(() => parseSpec(mutate(BATTERY, BATTERY.replace('| held |', `| ${bad} |`)))).toThrow(
+        /held cell is/,
+      );
+    }
+    expect(() => parseSpec(mutate(FP, FP.replace('| no |', '| no, |')))).toThrow(/held cell is/);
+  });
+
+  it('rejects a table whose value, held or params column was renamed or dropped', () => {
+    expect(() =>
+      parseSpec(
+        mutate(
+          '| trace | value | runtimes | held | mobile | notes |',
+          '| trace | values | runtimes | held | mobile | notes |',
+        ),
+      ),
+    ).toThrow(/no "value" column/);
+    expect(() =>
+      parseSpec(
+        mutate(
+          '| trace | value | runtimes | held | mobile | notes |',
+          '| trace | value | runtimes | step | mobile | notes |',
+        ),
+      ),
+    ).toThrow(/no "held" column/);
+    expect(() =>
+      parseSpec(
+        mutate('| event | params | trigger | notes |', '| event | parameters | trigger | notes |'),
+      ),
+    ).toThrow(/no "params" column/);
+  });
+
+  it('does not require a held column in the Node table (it has none)', () => {
+    expect(() => parseSpec(FIXTURE)).not.toThrow();
+  });
+
+  it('rejects a row whose first cell names nothing, or names something that is not a plain identifier', () => {
+    expect(() => parseSpec(mutate(BATTERY, BATTERY.replace('`battery`', 'battery')))).toThrow(
+      /no backticked wire name/,
+    );
+    expect(() => parseSpec(mutate(BATTERY, BATTERY.replace('`battery`', '`v8_heap_*`')))).toThrow(
+      /not a plain wire name.*v8_heap_\*/,
+    );
+    expect(() =>
+      parseSpec(mutate(BATTERY, BATTERY.replace('`battery`', '`battery` `{x}`'))),
+    ).toThrow(/not a plain wire name/);
+    expect(() =>
+      parseSpec(
+        mutate('| `gc_count`, `gc_pause_ms` | the gc event |', '| gc_count | the gc event |'),
+      ),
+    ).toThrow(/retired row names nothing/);
+    expect(() =>
+      parseSpec(mutate('| `wifi`, `cellular` | both | no API |', '| wifi | both | no API |')),
+    ).toThrow(/mobile-only row names nothing/);
+  });
+
+  it('rejects a value with no type', () => {
+    expect(() =>
+      parseSpec(mutate(BATTERY, BATTERY.replace('int 0–100, percent', 'a number'))),
+    ).toThrow(/battery: value has no type/);
+  });
+
+  it('rejects a unit word it does not know, naming the trace', () => {
+    for (const unit of [
+      'milliseconds',
+      'Milliseconds',
+      'MiB',
+      'KB',
+      'kB',
+      'mib',
+      'nanoseconds',
+      'GB',
+      'minutes',
+      'kbps',
+      'Hz',
+    ]) {
+      expect(() =>
+        parseSpec(mutate(FP, FP.replace('float, frames per second, one decimal', `float ${unit}`))),
+      ).toThrow(new RegExp(`fps: unknown unit word "${unit}"`));
+    }
+  });
+
+  it('rejects a row with more or fewer cells than the header (an unescaped pipe in a code span)', () => {
+    expect(() => parseSpec(mutate(FP, '| `fps` | float | a `x | y` | no | `=` | rAF |'))).toThrow(
+      /row has 7 cells, header has 6/,
+    );
+    expect(() => parseSpec(mutate(FP, '| `fps` | float |'))).toThrow(/row has 2 cells/);
+  });
+
+  it('reads an indented table, a trailing-space row and a header-cased column', () => {
+    const indented = FIXTURE.split('\n')
+      .map((l) => (l.startsWith('|') ? `   ${l}  ` : l))
+      .join('\n');
+    expect(parseSpec(indented)).toEqual(parseSpec(FIXTURE));
+  });
+
+  it("rejects families that disagree on a trace's type, unit or held-ness", () => {
+    expect(() =>
+      parseSpec(
+        mutate(
+          '| `ram_js_heap_total` | int bytes: `heap_size_limit` | **[pending: C22]** |',
+          '| `ram_js_heap_total` | float bytes | x |',
+        ),
+      ),
+    ).toThrow(/families disagree on valueType/);
+    expect(() =>
+      parseSpec(
+        mutate(
+          '| `ram_js_heap_total` | int bytes: `heap_size_limit` | **[pending: C22]** |',
+          '| `ram_js_heap_total` | int percent | x |',
+        ),
+      ),
+    ).toThrow(/families disagree on unit/);
+    expect(() =>
+      parseSpec(
+        mutate(
+          '| `ram_js_heap_total` | int bytes — the ceiling | no | perf | x |',
+          '| `ram_js_heap_total` | int bytes — the ceiling | held | perf | x |',
+        ),
+      ),
+    ).toThrow(/families disagree on held/);
+  });
+
+  it('rejects "the same keys" with no earlier row to copy', () => {
+    const lines = FIXTURE.split('\n').filter(
+      (l) => !l.includes('`child_process_gone`') && !l.includes('`display_added`'),
+    );
+    expect(() => parseSpec(lines.join('\n'))).toThrow(/"the same keys" with no earlier row/);
+  });
+});
+
 describe('mergeParams', () => {
-  it('unions and sorts', () => {
-    expect(mergeParams(['b', 'a'], ['c'])).toEqual(['a', 'b', 'c']);
+  it('unions and sorts; a key only one side lists is optional (no single runtime sends both)', () => {
+    expect(mergeParams(['b', 'a'], ['c'])).toEqual(['a?', 'b?', 'c?']);
     expect(mergeParams([], [])).toEqual([]);
   });
 
-  it('keeps one key per name, optional when ANY side marks it optional', () => {
+  it('keeps a key both sides list as it is, and one key per name, optional when ANY side marks it optional', () => {
+    expect(mergeParams(['foo'], ['foo'])).toEqual(['foo']);
     expect(mergeParams(['foo'], ['foo?'])).toEqual(['foo?']);
     expect(mergeParams(['foo?'], ['foo'])).toEqual(['foo?']);
     expect(mergeParams(['foo', 'bar?'], ['foo', 'bar'])).toEqual(['bar?', 'foo']);
     expect(mergeParams(['foo?'], ['foo?'])).toEqual(['foo?']);
+  });
+
+  it('is asymmetric-safe: a key in only the second list is optional too', () => {
+    expect(mergeParams(['a'], ['a', 'b'])).toEqual(['a', 'b?']);
+    expect(mergeParams(['a', 'b'], ['a'])).toEqual(['a', 'b?']);
   });
 });
 
@@ -209,6 +363,8 @@ describe('parseSpec', () => {
       'DarkModeChanged',
       'OrientationChanged',
       'child_process_gone',
+      'display_added',
+      'display_metrics_changed',
       'display_mode_changed',
       'private_mode_detected',
       'process_exiting',
@@ -268,11 +424,18 @@ describe('parseSpec', () => {
       name: 'process_exiting',
       families: ['browser', 'node'],
       pending: [],
-      params: ['code', 'persisted'],
+      params: ['code?', 'persisted?'],
     });
     expect(event(FIXTURE, 'process_started')).toMatchObject({ params: [] });
     expect(event(FIXTURE, 'OrientationChanged')).toMatchObject({
-      params: ['angle', 'current', 'prev', 'type'],
+      params: ['angle?', 'current?', 'prev?', 'type?'], // "no params at all" when the engine cannot read both
+    });
+    expect(event(FIXTURE, 'display_mode_changed')).toMatchObject({
+      params: ['mode', 'previousMode?'],
+    });
+    expect(event(FIXTURE, 'display_added')).toMatchObject({ params: ['id', 'nativeId', 'width?'] });
+    expect(event(FIXTURE, 'display_metrics_changed')).toMatchObject({
+      params: ['changed', 'id', 'nativeId', 'width?'], // "the same keys, plus `changed`"; width optional in the base row stays optional
     });
     expect(event(FIXTURE, 'child_process_gone')).toMatchObject({
       params: ['exitCode?', 'serviceName?', 'type'],
@@ -295,7 +458,7 @@ describe('parseSpec', () => {
   it('lists a family once when a name has several rows in the same table', () => {
     const md = FIXTURE.replace(
       '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n',
-      '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n| `fps` | float | browser family | no | `=` | again |\n',
+      '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n| `fps` | float, frames per second, one decimal | browser family | no | `=` | again |\n',
     );
     expect(trace(md, 'fps')?.families).toEqual(['shared']);
   });
@@ -303,7 +466,7 @@ describe('parseSpec', () => {
   it('ends a table at the first non-table line, so a later table needs its own header', () => {
     const md = FIXTURE.replace(
       '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n',
-      '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n\nprose\n\n| `ghost` | int | x | no | = | y |\n|---|---|---|---|---|---|\n| `ghost2` | int | x | no | = | y |\n',
+      '| `fps` | float, frames per second, one decimal | browser family | no | `=` | rAF |\n\nprose\n\n| `ghost` | value | x | held | = | y |\n|---|---|---|---|---|---|\n| `ghost2` | int | x | no | = | y |\n',
     );
     const names = parseSpec(md).traces.map((t) => t.name);
     expect(names).not.toContain('ghost'); // consumed as a header row

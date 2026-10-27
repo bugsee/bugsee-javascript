@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EVENT_PARAMS, EventName, TRACE_SPEC, TraceName } from './system-names';
+import { EVENT_PARAMS, EventName, eventParamProblems, TRACE_SPEC, TraceName } from './system-names';
 
 const traceValues = Object.values(TraceName);
 const eventValues = Object.values(EventName);
@@ -68,7 +68,64 @@ describe('EventName registry', () => {
     expect(EventName.APPLICATION_DID_ENTER_BACKGROUND).toBe(
       'UIApplicationDidEnterBackgroundNotification',
     );
-    expect(EVENT_PARAMS[EventName.PROCESS_EXITING]).toEqual(['code', 'persisted']);
+    expect(EVENT_PARAMS[EventName.PROCESS_EXITING]).toEqual(['code?', 'persisted?']);
     expect(EVENT_PARAMS[EventName.GC]).toEqual(['count', 'maxPauseMs', 'pauseMs']);
+  });
+});
+
+describe('eventParamProblems', () => {
+  it('accepts exactly the registered keys, optional ones present or not', () => {
+    expect(eventParamProblems(EventName.PROCESS_STARTED, undefined)).toEqual([]);
+    expect(eventParamProblems(EventName.PROCESS_STARTED, {})).toEqual([]);
+    expect(eventParamProblems(EventName.DARK_MODE_CHANGED, { dark: true })).toEqual([]);
+    expect(eventParamProblems(EventName.DISPLAY_MODE_CHANGED, { mode: 'browser' })).toEqual([]);
+    expect(
+      eventParamProblems(EventName.DISPLAY_MODE_CHANGED, { mode: 'browser', previousMode: 'x' }),
+    ).toEqual([]);
+    expect(eventParamProblems(EventName.ORIENTATION_CHANGED, undefined)).toEqual([]);
+  });
+
+  it('reports a key the registry does not list, naming the event and the key', () => {
+    expect(eventParamProblems(EventName.DARK_MODE_CHANGED, { dark: true, light: 1 })).toEqual([
+      'DarkModeChanged: unexpected param "light"',
+    ]);
+    expect(eventParamProblems(EventName.PROCESS_STARTED, { x: 1 })).toEqual([
+      'process_started: unexpected param "x"',
+    ]);
+  });
+
+  it('reports a required key that is missing, with or without any params', () => {
+    expect(eventParamProblems(EventName.DARK_MODE_CHANGED, {})).toEqual([
+      'DarkModeChanged: missing required param "dark"',
+    ]);
+    expect(eventParamProblems(EventName.DARK_MODE_CHANGED, undefined)).toEqual([
+      'DarkModeChanged: missing required param "dark"',
+    ]);
+    expect(eventParamProblems(EventName.DISPLAY_MODE_CHANGED, { previousMode: 'x' })).toEqual([
+      'display_mode_changed: missing required param "mode"',
+    ]);
+  });
+
+  it('reports a renamed key as both an unexpected and a missing one', () => {
+    expect(eventParamProblems(EventName.GC, { count: 1, pause: 2, maxPauseMs: 3 })).toEqual([
+      'gc: unexpected param "pause"',
+      'gc: missing required param "pauseMs"',
+    ]);
+  });
+
+  it('knows the display_metrics_changed keys ("the same keys, plus changed")', () => {
+    expect(EVENT_PARAMS[EventName.DISPLAY_METRICS_CHANGED]).toEqual(
+      expect.arrayContaining(['id', 'nativeId', 'width', 'height', 'changed']),
+    );
+    expect(
+      eventParamProblems(EventName.DISPLAY_METRICS_CHANGED, {
+        id: 0,
+        nativeId: 1,
+        width: 1,
+        height: 1,
+        scale: 2,
+        changed: [],
+      }),
+    ).toEqual([]);
   });
 });

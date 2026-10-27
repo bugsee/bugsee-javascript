@@ -63,7 +63,7 @@ class ElectronSystemEventsSource extends InterceptorBase<Events> {
     super(onError);
   }
 
-  #send(name: string, params?: Record<string, unknown>): void {
+  #send(name: EventName, params?: Record<string, unknown>): void {
     this.emit('event', params === undefined ? { name } : { name, params });
   }
 

@@ -9,7 +9,7 @@
 // be on any branch). Default ref `origin/main`; run `git fetch` in the checkout first to pick up the latest spec.
 // Default checkout: $BUGSEE_SPECS, else `../specs`, else `../../specs` (a sibling of this repo or of its worktree dir).
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSpec } from './parse.mjs';
@@ -35,11 +35,20 @@ function git(dir, args) {
 export function parseArgs(argv) {
   const out = { check: false, ref: 'origin/main', specs: undefined, out: SNAPSHOT_PATH };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--check') out.check = true;
-    else if (argv[i] === '--specs') out.specs = argv[++i];
-    else if (argv[i] === '--ref') out.ref = argv[++i];
-    else if (argv[i] === '--out') out.out = resolve(argv[++i]);
-    else throw new Error(`unknown argument ${argv[i]}`);
+    const flag = argv[i];
+    if (flag === '--check') {
+      out.check = true;
+    } else if (flag === '--specs' || flag === '--ref' || flag === '--out') {
+      // a missing value must be an error, never "unset" (which would fall back past the explicit choice)
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) throw new Error(`${flag} needs a value`);
+      i++;
+      if (flag === '--specs') out.specs = value;
+      else if (flag === '--ref') out.ref = value;
+      else out.out = resolve(value);
+    } else {
+      throw new Error(`unknown argument ${flag}`);
+    }
   }
   return out;
 }
@@ -87,10 +96,21 @@ function main() {
   }
   // through a temporary file in the same directory: a stop mid-write must not leave a truncated snapshot behind
   const tmp = `${args.out}.${process.pid}.tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, args.out);
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, args.out);
+  } catch (error) {
+    rmSync(tmp, { force: true }); // never leave the half-written file behind
+    throw error;
+  }
   console.log(`wrote ${args.out} from ${SPEC_REPO}@${commit.slice(0, 12)}`);
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main();
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}

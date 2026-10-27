@@ -52,6 +52,7 @@ export { redactShapes, type ShapeRedactionOptions, unfinishedSecretStart } from 
 export {
   EVENT_PARAMS,
   EventName,
+  eventParamProblems,
   TRACE_SPEC,
   TraceName,
   type TraceSpec,

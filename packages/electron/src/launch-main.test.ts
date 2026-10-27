@@ -8,6 +8,7 @@ import {
 } from '@bugsee/core';
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/node';
 import { resetProcessTracker } from '@bugsee/node';
+import { EventName } from '@bugsee/protocol';
 import {
   electronApplicationTrackerFor,
   electronDisplayTrackerFor,
@@ -1039,7 +1040,7 @@ describe('launchMain — Electron process tracker composition (TR9, part 1)', ()
     class Inner extends InterceptorBase<{ event: SystemEvent }> {
       readonly name = 'inner';
       protected onActivate(): void {
-        this.emit('event', { name: 'process_started' });
+        this.emit('event', { name: EventName.PROCESS_STARTED });
       }
     }
 
@@ -1085,7 +1086,7 @@ describe('launchMain — Electron process tracker composition (TR9, part 1)', ()
       const seen = vi.fn();
       mux.on('event', seen);
       expect(seenInner).toEqual([plain]);
-      expect(seen).toHaveBeenCalledWith({ name: 'process_started' }); // came through the caller's source
+      expect(seen).toHaveBeenCalledWith({ name: EventName.PROCESS_STARTED }); // came through the caller's source
     });
   });
 });

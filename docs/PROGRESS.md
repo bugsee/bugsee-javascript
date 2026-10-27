@@ -1322,15 +1322,28 @@ trace/event wire name lives in ONE module.
   the ref with `git show`, so the checkout's branch and working tree are irrelevant); `pnpm spec:check` exits 1 when it is
   stale. Parser: `scripts/spec-snapshot/parse.mjs`.
 - **Drift test.** `@bugsee/instrumentation-tests` `test/spec-drift.test.ts` (runs in the `test:unit` CI step): registry names and
-  metadata equal the snapshot; every spec name is registered or in the reasoned `NOT_YET` list (`route`, `view`,
-  `thermal_state`, `cpu_speed_limit`); `JS_ONLY_EXTENSIONS` is empty; every registered name is reached by a producer; the emit
-  style (`emit` vs `emitIfChanged`) matches the spec's held column; and an AST scan fails when a producer file spells a
-  registered or retired name as a literal (or builds one by template concatenation). Tracker stage keys, comparisons and a
-  producer's own `readonly name` id are exempt (not wire names). The scanner is itself probed with synthetic sources.
+  metadata equal the snapshot; every spec name is registered or in the `NOT_YET` list (`route`, `view`, `thermal_state`,
+  `cpu_speed_limit`, each with the spec item that must still be its pending marker and the issue/PR tracking it);
+  `JS_ONLY_EXTENSIONS` is empty; every registered name is reached by a producer; the emit style (`emit` vs `emitIfChanged`)
+  matches the spec's held column; and an AST scan of EVERY product file (`packages/*/src` but protocol, found by location,
+  never by content) fails on any spec name (pending and retired ones too) spelled as a literal, quoted inside a longer string,
+  or assembled by template, `+` or `join` from a prefix/suffix several names share, and on `TraceName[computed]`. Exempt, as
+  not being written wire names: tracker stage keys, comparisons/`case` labels, type positions, a producer's `readonly name`
+  id, and the files in `NOT_A_WIRE_NAME` (reasoned, and failing when stale). `SystemEvent.name` and `TraceProducerBase.emit`
+  are typed `EventName` / `TraceName`, so a literal that is not registered does not compile.
+- **Params, code vs registry.** `EVENT_PARAMS` is generated from the spec ("the same keys, plus ..." is expanded; `?` = the
+  spec says omitted, "no params at all", or no single runtime sends it) and `eventParamProblems()` checks an emitted event
+  against it. The browser, node and electron `system-events.test.ts` spy on every `event` emit of every test in the file and
+  fail on an unexpected or missing required key, and on a family event no test drove.
+- **The parser fails closed** (`scripts/spec-snapshot/parse.mjs`): a renamed/dropped `value`/`held`/`params` column, a held
+  cell that is not exactly `held`/`no`, a first cell with a non-identifier or no backticked name, a value with no type, an
+  unknown unit word, a row whose cell count differs from the header, or families that disagree on a trace's type/unit/held all
+  throw. It and the scanner run under a coverage gate in the instrumentation-tests unit config.
 - **Refreshing after a spec change:** `git -C <specs> fetch && pnpm spec:refresh --specs <specs>`; the diff of the snapshot is
   the list of names/metadata to change. A newly spec'd name fails the test until it is registered (or listed in `NOT_YET`).
 - **Not covered:** the VALUES a producer writes (unit, type) are checked registry-vs-spec, not code-vs-registry (only the held
-  style is tied to the code); the spec's host-owned table, option table and the `traces.md` structured value schemas are not
+  style is tied to the code); a brand-new name in a plain list of strings in a file (not a call, not typed) is not detected
+  unless it is a spec name; the spec's host-owned table, option table and the `traces.md` structured value schemas are not
   vendored.
 
 ## 8. Pointers

@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -176,6 +184,14 @@ describe('parseArgs', () => {
     expect(a.out.endsWith('rel.json')).toBe(true);
   });
 
+  it('rejects a flag with no value (never reading the next flag, or nothing, as its value)', () => {
+    for (const flag of ['--specs', '--ref', '--out']) {
+      expect(() => parseArgs([flag])).toThrow(new RegExp(`${flag} needs a value`));
+      expect(() => parseArgs([flag, '--check'])).toThrow(new RegExp(`${flag} needs a value`));
+    }
+    expect(() => parseArgs(['--check', '--out'])).toThrow(/--out needs a value/);
+  });
+
   it('rejects an unknown flag', () => {
     expect(() => parseArgs(['--nope'])).toThrow(/unknown argument --nope/);
   });
@@ -221,6 +237,34 @@ describe('findSpecs search order', () => {
 });
 
 describe('the refresh command', () => {
+  it('--specs with no value fails, and does NOT fall back to $BUGSEE_SPECS (an explicit choice is never overridden)', () => {
+    const out = join(dir, 'nofallback.json');
+    const r = spawnSync('node', [SCRIPT, '--out', out, '--specs'], {
+      encoding: 'utf8',
+      env: { ...process.env, BUGSEE_SPECS: specs },
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('--specs needs a value');
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('--out with no value is a clear error, not a TypeError', () => {
+    const r = run('--specs', specs, '--out');
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('--out needs a value');
+    expect(r.stderr).not.toContain('TypeError');
+  });
+
+  it('removes its temporary file when the write fails, and leaves the target as it was', () => {
+    const target = join(dir, 'is-a-directory.json');
+    mkdirSync(target); // renaming a file over a directory fails
+    writeFileSync(join(target, 'keep'), 'x');
+    const r = run('--specs', specs, '--ref', 'main', '--out', target);
+    expect(r.status).not.toBe(0);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    expect(readFileSync(join(target, 'keep'), 'utf8')).toBe('x');
+  });
+
   it('writes the snapshot of the ref (not of the working tree) with its commit', () => {
     const out = join(dir, 'out.json');
     const r = run('--specs', specs, '--ref', 'main', '--out', out);

@@ -1,10 +1,52 @@
 import process from 'node:process';
 import type { SystemEvent } from '@bugsee/capture';
+import { EventName, eventParamProblems } from '@bugsee/protocol';
+import { MultiKeyEmitterBase } from '@bugsee/trackers';
 import { ProcessTracker } from '@bugsee/trackers/node';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProcessEvents } from './detection-providers';
 import { releaseSignalToDefault } from './process-policy';
 import { createNodeSystemEventsSource } from './system-events';
+
+const EXPECTED_EVENTS: readonly string[] = [
+  EventName.PROCESS_STARTED,
+  EventName.PROCESS_EXITING,
+  EventName.PROCESS_BEFORE_EXIT,
+  EventName.PROCESS_WARNING,
+  EventName.PROCESS_SIGNAL,
+  EventName.GC,
+];
+
+// REGISTRY CONFORMANCE (code vs EVENT_PARAMS): every system event any test in this file makes the source emit is checked
+// against the registry (no unregistered param key, no missing required key), and the family's events must ALL have been
+// seen, so a renamed/dropped param or a silently dead event fails here and not in production.
+const emittedEvents: SystemEvent[] = [];
+const seenEventNames = new Set<string>();
+let emitSpy: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  const proto = MultiKeyEmitterBase.prototype as unknown as {
+    emit(stage: string, payload: unknown): void;
+  };
+  const real = proto.emit;
+  emitSpy = vi.spyOn(proto, 'emit').mockImplementation(function (
+    this: unknown,
+    stage: string,
+    payload: unknown,
+  ) {
+    if (stage === 'event') emittedEvents.push(payload as SystemEvent);
+    return real.call(this, stage, payload);
+  });
+});
+afterEach(() => {
+  emitSpy?.mockRestore();
+  const problems = emittedEvents.flatMap((e) => eventParamProblems(e.name, e.params));
+  for (const e of emittedEvents) seenEventNames.add(e.name);
+  emittedEvents.length = 0;
+  expect(problems).toEqual([]);
+});
+afterAll(() => {
+  expect(EXPECTED_EVENTS.filter((n) => !seenEventNames.has(n))).toEqual([]);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

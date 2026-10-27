@@ -502,10 +502,10 @@
       ],
       "pending": [],
       "params": [
-        "angle",
-        "current",
-        "prev",
-        "type"
+        "angle?",
+        "current?",
+        "prev?",
+        "type?"
       ]
     },
     {
@@ -564,7 +564,17 @@
       ],
       "pending": [],
       "params": [
-        "changed"
+        "changed",
+        "height",
+        "id",
+        "maxFps?",
+        "nativeId",
+        "naturalHeight?",
+        "naturalWidth?",
+        "rotation?",
+        "scale?",
+        "type?",
+        "width"
       ]
     },
     {
@@ -575,7 +585,7 @@
       "pending": [],
       "params": [
         "mode",
-        "previousMode"
+        "previousMode?"
       ]
     },
     {
@@ -721,8 +731,8 @@
       ],
       "pending": [],
       "params": [
-        "code",
-        "persisted"
+        "code?",
+        "persisted?"
       ]
     },
     {

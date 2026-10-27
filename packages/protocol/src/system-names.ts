@@ -156,10 +156,13 @@ export enum EventName {
   WINDOW_SHOW = 'window_show',
 }
 
-/** The param keys of every registered event (camelCase; a trailing `?` marks a key that may be absent). */
+/**
+ * The param keys of every registered event (camelCase). A trailing `?` marks a key that may be absent: the spec says so,
+ * or no single runtime sends it (`process_exiting` has `persisted` in the browser and `code` in Node).
+ */
 export const EVENT_PARAMS: { readonly [N in EventName]: readonly string[] } = {
   [EventName.DARK_MODE_CHANGED]: ['dark'],
-  [EventName.ORIENTATION_CHANGED]: ['angle', 'current', 'prev', 'type'],
+  [EventName.ORIENTATION_CHANGED]: ['angle?', 'current?', 'prev?', 'type?'],
   [EventName.APPLICATION_DID_BECOME_ACTIVE]: [],
   [EventName.APPLICATION_DID_ENTER_BACKGROUND]: [],
   [EventName.CHILD_PROCESS_GONE]: ['exitCode?', 'name?', 'reason', 'serviceName?', 'type'],
@@ -175,8 +178,20 @@ export const EVENT_PARAMS: { readonly [N in EventName]: readonly string[] } = {
     'type?',
     'width',
   ],
-  [EventName.DISPLAY_METRICS_CHANGED]: ['changed'],
-  [EventName.DISPLAY_MODE_CHANGED]: ['mode', 'previousMode'],
+  [EventName.DISPLAY_METRICS_CHANGED]: [
+    'changed',
+    'height',
+    'id',
+    'maxFps?',
+    'nativeId',
+    'naturalHeight?',
+    'naturalWidth?',
+    'rotation?',
+    'scale?',
+    'type?',
+    'width',
+  ],
+  [EventName.DISPLAY_MODE_CHANGED]: ['mode', 'previousMode?'],
   [EventName.DISPLAY_REMOVED]: [
     'height',
     'id',
@@ -202,7 +217,7 @@ export const EVENT_PARAMS: { readonly [N in EventName]: readonly string[] } = {
   [EventName.POWER_UNLOCK]: [],
   [EventName.PRIVATE_MODE_DETECTED]: ['method?'],
   [EventName.PROCESS_BEFORE_EXIT]: ['code'],
-  [EventName.PROCESS_EXITING]: ['code', 'persisted'],
+  [EventName.PROCESS_EXITING]: ['code?', 'persisted?'],
   [EventName.PROCESS_SIGNAL]: ['signal'],
   [EventName.PROCESS_STARTED]: [],
   [EventName.PROCESS_WARNING]: ['message', 'name?'],
@@ -220,3 +235,23 @@ export const EVENT_PARAMS: { readonly [N in EventName]: readonly string[] } = {
   [EventName.WINDOW_HIDE]: ['windowId?'],
   [EventName.WINDOW_SHOW]: ['windowId?'],
 };
+
+/**
+ * What is wrong with an event's params against the registry: a key the registry does not list, or a required key
+ * (no `?`) that is missing. Empty = conforms. Used by the platform tests that drive the real event sources, so a renamed
+ * or dropped param key fails there, not in production.
+ */
+export function eventParamProblems(
+  name: EventName,
+  params: Readonly<Record<string, unknown>> | undefined,
+): string[] {
+  const spec = EVENT_PARAMS[name];
+  const allowed = new Set(spec.map((k) => k.replace(/\?$/, '')));
+  const given = Object.keys(params ?? {});
+  return [
+    ...given.filter((k) => !allowed.has(k)).map((k) => `${name}: unexpected param "${k}"`),
+    ...spec
+      .filter((k) => !k.endsWith('?') && !given.includes(k))
+      .map((k) => `${name}: missing required param "${k}"`),
+  ];
+}
