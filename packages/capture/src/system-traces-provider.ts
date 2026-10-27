@@ -186,7 +186,14 @@ class SystemTracesProvider extends CaptureProviderBase {
     timestamp: number,
     hold: boolean,
   ): void {
-    if (this.#suppression?.has(name) !== true) this.#capture(name, value, displayId, timestamp);
+    if (!this.#suppression?.has(name)) {
+      this.capture('traces.system', timestamp, {
+        timestamp,
+        name,
+        value,
+        ...(displayId !== undefined ? { displayId } : {}),
+      });
+    }
     if (!hold) return;
     this.#held.set(displayId === undefined ? name : `${displayId}:${name}`, {
       name,
@@ -196,23 +203,13 @@ class SystemTracesProvider extends CaptureProviderBase {
     });
   }
 
-  #capture(name: string, value: unknown, displayId: number | undefined, timestamp: number): void {
-    this.capture('traces.system', timestamp, {
-      timestamp,
-      name,
-      value,
-      ...(displayId !== undefined ? { displayId } : {}),
-    });
-  }
-
   /** Names just released by the suppression: record each one's held value now (a polled value has nothing to replay). */
   #rerecord(released: readonly string[]): void {
     // (`#held` is empty unless running: onStop clears it, so a release delivered after stop() has nothing to replay)
     const now = this.#now();
     for (const held of [...this.#held.values()]) {
-      if (!released.includes(held.name)) continue;
-      this.#capture(held.name, held.value, held.displayId, now);
-      held.timestamp = now;
+      if (released.includes(held.name))
+        this.#record(held.name, held.value, held.displayId, now, true);
     }
   }
 

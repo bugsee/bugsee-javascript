@@ -15,81 +15,73 @@
 export interface TraceSuppression {
   /** Whether a value for `name` must be dropped now. */
   has(name: string): boolean;
-  /** Every suppressed name (a copy). */
-  names(): string[];
   /** Replace ONE layer's names; the other layers are untouched. */
   setLayer(layer: string, names: readonly string[]): void;
   /** Called after a change with the names it RELEASED (suppressed before, not any more). Returns the unsubscribe. */
   subscribe(listener: (released: readonly string[]) => void): () => void;
 }
 
+// Kept deliberately small: it ships inside the WebView's injectable bundle, which has a gzip budget.
 export function createTraceSuppression(
   initial: Readonly<Record<string, readonly string[]>> = {},
 ): TraceSuppression {
-  const layers = new Map<string, ReadonlySet<string>>();
-  for (const [layer, names] of Object.entries(initial)) layers.set(layer, new Set(names));
+  const layers: Record<string, readonly string[]> = { ...initial };
   const listeners = new Set<(released: readonly string[]) => void>();
-
-  const has = (name: string): boolean => {
-    for (const set of layers.values()) if (set.has(name)) return true;
-    return false;
-  };
-  const names = (): string[] => [...new Set([...layers.values()].flatMap((set) => [...set]))];
-
+  const all = (): readonly string[] => Object.values(layers).flat();
+  const has = (name: string): boolean => all().includes(name);
   return {
     has,
-    names,
     setLayer(layer, next): void {
-      const before = names();
-      layers.set(layer, new Set(next));
+      const before = all();
+      layers[layer] = [...next];
       const released = before.filter((name) => !has(name));
-      if (released.length === 0) return;
-      for (const listener of [...listeners]) {
-        try {
-          listener(released);
-        } catch {
-          /* a listener's failure must not undo the change or starve the others */
+      if (released.length) {
+        for (const listener of [...listeners]) {
+          try {
+            listener(released);
+          } catch {
+            /* a listener's failure must not undo the change or starve the others */
+          }
         }
       }
     },
-    subscribe(listener): () => void {
+    subscribe: (listener) => {
       listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      return () => void listeners.delete(listener);
     },
   };
 }
 
-/** True for an object made by {@link createTraceSuppression} (structurally: it has the four methods). */
+/** True for an object made by {@link createTraceSuppression} (structurally: it has the three methods). */
 export function isTraceSuppression(value: unknown): value is TraceSuppression {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Partial<Record<keyof TraceSuppression, unknown>>;
+  const v = value as Partial<Record<keyof TraceSuppression, unknown>> | null;
   return (
+    typeof v === 'object' &&
+    v !== null &&
     typeof v.has === 'function' &&
-    typeof v.names === 'function' &&
     typeof v.setLayer === 'function' &&
     typeof v.subscribe === 'function'
   );
 }
-
-const MAX_NAMES = 64;
-const MAX_NAME_LENGTH = 64;
 
 /**
  * Validate trace names that arrive over a wire (a host's handshake reply): an array of at most 64 non-empty strings of at
  * most 64 characters each, returned as a copy; anything else is `undefined` (the whole declaration is ignored, never half
  * applied).
  */
-export function sanitizeTraceNames(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || value.length > MAX_NAMES) return undefined;
-  for (const name of value) {
-    if (typeof name !== 'string' || name.length === 0 || name.length > MAX_NAME_LENGTH) {
-      return undefined;
-    }
-  }
-  return [...value] as string[];
-}
+export const sanitizeTraceNames = (value: unknown): string[] | undefined =>
+  Array.isArray(value) &&
+  value.length <= 64 &&
+  value.every((name) => typeof name === 'string' && name.length > 0 && name.length <= 64)
+    ? [...value]
+    : undefined;
+
+/** The node trace set's V8 heap names: written by Electron MAIN for its own heap (never by a renderer). */
+export const ELECTRON_MAIN_HEAP_TRACES: readonly string[] = [
+  'ram_js_heap_total',
+  'ram_js_heap_used',
+  'ram_js_heap_free',
+];
 
 /**
  * Electron renderer: Electron MAIN writes the full `displays` list, the `capture` state (pixel video) and its own V8 heap
@@ -99,6 +91,7 @@ export function sanitizeTraceNames(value: unknown): string[] | undefined {
 export const ELECTRON_RENDERER_HOST_OWNED_TRACES: readonly string[] = [
   'displays',
   'capture',
+  // (written out, not spread: a spread is not provably pure, and would keep this table in the WebView bundle)
   'ram_js_heap_total',
   'ram_js_heap_used',
   'ram_js_heap_free',

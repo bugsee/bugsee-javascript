@@ -183,13 +183,47 @@ describe('host-owned traces: Electron renderers write none of the names main own
     // ... and NONE of it came from a renderer (the distinctive renderer heap ceiling is nowhere)
     expect(heap.some((t) => t.value === 987_654_321)).toBe(false);
     expect(heap.some((t) => t.value === 1_234_567)).toBe(false);
-    // `displays` and `capture` are main's too, and main wrote neither here (no screen, no pixel video)
-    expect(traces.some((t) => t.name === 'displays' || t.name === 'capture')).toBe(false);
+    // main declares only what it WRITES: it has no screen and no pixel video here, so it owns neither `displays` nor
+    // `capture`, and the renderers' own `displays` entries are NOT suppressed (nobody else writes the name)
+    expect(traces.some((t) => t.name === 'capture')).toBe(false);
+    expect(traces.filter((t) => t.name === 'displays').length).toBeGreaterThan(0);
     // unlisted renderer traces still flow: each renderer's device battery and connection are in the session
     const battery = traces.filter((t) => t.name === 'battery').map((t) => t.value);
     expect(battery).toEqual(expect.arrayContaining([77, 55]));
     expect(traces.some((t) => t.name === 'connection')).toBe(true);
     expect(onError).not.toHaveBeenCalled();
+    await mainClient.stop();
+  });
+
+  it('with a screen main writes `displays` itself, so the renderers write none', async () => {
+    const bus = fakeElectronBus();
+    const { fn: transport, puts } = recordingTransport();
+    const display = { id: 7, size: { width: 1111, height: 777 }, scaleFactor: 1, internal: true };
+    const screen = {
+      on: () => {},
+      removeListener: () => {},
+      getAllDisplays: () => [display],
+      getPrimaryDisplay: () => display,
+    };
+    const mainClient = launchMain('tok', {
+      ipcMain: bus.ipcMain,
+      screen: screen as never,
+      transport,
+      captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+      captureNetwork: false,
+      capturedDataStore: 'memory',
+      detectHangs: false,
+      process: fakeProcess(),
+      systemProbe: realSystemProbe,
+      onError: vi.fn(),
+    });
+    await bootRenderer(bus, 1, 0.77);
+    await mainClient.logException(new Error('report'));
+    const displays = tracesOf(puts[0] as Uint8Array).filter((t) => t.name === 'displays');
+    // only main's list (width 1111 in device pixels), never a renderer's 800x600 window entry
+    expect(displays.length).toBeGreaterThan(0);
+    expect(JSON.stringify(displays)).toContain('1111');
+    expect(JSON.stringify(displays)).not.toContain('"width":800');
     await mainClient.stop();
   });
 });

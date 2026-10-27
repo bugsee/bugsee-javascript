@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createTraceSuppression,
+  ELECTRON_MAIN_HEAP_TRACES,
   ELECTRON_RENDERER_HOST_OWNED_TRACES,
   isTraceSuppression,
   sanitizeTraceNames,
@@ -11,7 +12,6 @@ describe('createTraceSuppression', () => {
   it('starts empty and answers has() for no name', () => {
     const s = createTraceSuppression();
     expect(s.has('battery')).toBe(false);
-    expect(s.names()).toEqual([]);
   });
 
   it('starts from the given layers', () => {
@@ -19,7 +19,7 @@ describe('createTraceSuppression', () => {
     expect(s.has('displays')).toBe(true);
     expect(s.has('url')).toBe(true);
     expect(s.has('battery')).toBe(false);
-    expect(s.names().sort()).toEqual(['capture', 'displays', 'url']);
+    expect(s.has('capture')).toBe(true);
   });
 
   it('a name is suppressed while ANY layer lists it', () => {
@@ -34,21 +34,12 @@ describe('createTraceSuppression', () => {
   it('setLayer REPLACES that layer (it can both add and remove names) and leaves the others alone', () => {
     const s = createTraceSuppression({ host: ['a', 'b'], window: ['w'] });
     s.setLayer('host', ['b', 'c']);
-    expect(s.names().sort()).toEqual(['b', 'c', 'w']);
+    for (const n of ['b', 'c', 'w']) expect(s.has(n)).toBe(true);
+    expect(s.has('a')).toBe(false);
   });
 
-  it('names() is a copy: mutating it never changes the suppression', () => {
-    const s = createTraceSuppression({ host: ['a'] });
-    s.names().push('zzz');
-    expect(s.has('zzz')).toBe(false);
-    expect(s.names()).toEqual(['a']);
-  });
-
-  it('the layer arrays handed in are copied (a later mutation of the caller array changes nothing)', () => {
-    const names = ['a'];
-    const s = createTraceSuppression({ host: names });
-    names.push('b');
-    expect(s.has('b')).toBe(false);
+  it('a layer array handed to setLayer is copied (a later mutation of the caller array changes nothing)', () => {
+    const s = createTraceSuppression();
     const next = ['x'];
     s.setLayer('host', next);
     next.push('y');
@@ -120,7 +111,6 @@ describe('isTraceSuppression', () => {
 
   it.each([
     'has',
-    'names',
     'setLayer',
     'subscribe',
   ] as const)('needs `%s` (a look-alike without it is not one)', (missing) => {
@@ -209,5 +199,17 @@ describe('the per-host tables (spec platforms/javascript.md "Host-owned traces")
     ]) {
       expect(WEBVIEW_HOST_OWNED_TRACES).not.toContain(pageOwned);
     }
+  });
+});
+
+describe('ELECTRON_MAIN_HEAP_TRACES', () => {
+  it('is the three ram_js_heap_* names, all part of the renderer default table', () => {
+    expect([...ELECTRON_MAIN_HEAP_TRACES]).toEqual([
+      'ram_js_heap_total',
+      'ram_js_heap_used',
+      'ram_js_heap_free',
+    ]);
+    for (const name of ELECTRON_MAIN_HEAP_TRACES)
+      expect(ELECTRON_RENDERER_HOST_OWNED_TRACES).toContain(name);
   });
 });

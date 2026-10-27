@@ -6,7 +6,7 @@
 //   import { launchMain } from '@bugsee/electron/main';
 //   import { ipcMain } from 'electron';
 //   launchMain(appToken, { ipcMain });
-import { CaptureStateProducer, ELECTRON_RENDERER_HOST_OWNED_TRACES } from '@bugsee/capture';
+import { CaptureStateProducer, ELECTRON_MAIN_HEAP_TRACES } from '@bugsee/capture';
 import {
   type AppIdentity,
   BlackoutToken,
@@ -350,6 +350,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     captureState.bindPressure(diskPressure);
   }
 
+  // The trace names main will actually WRITE, which the handshake tells every renderer not to write (one writer per name per
+  // session): `displays` with a screen, `capture` with pixel video, and its own V8 heap unless the caller replaces the node
+  // producer set. Nothing at all when the legacy sampler replaces the producers or system traces are off.
+  const callerProducers = nodeOptions.systemTraceProducers !== undefined;
+  const writesTraces =
+    nodeOptions.systemMetricsSampler === undefined &&
+    resolveFailClosedBoolean(nodeOptions.captureSystemTraces, true);
+
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
@@ -528,9 +536,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     sessionId: internals.api.sessionId,
     // A renderer that says hello mid-blackout is told in its session reply and starts dark.
     isBlackout: () => blackout.isActive(),
-    // Main writes the full `displays` list, the `capture` state and its own V8 heap (`ram_js_heap_*`): every renderer is told
-    // so in its handshake reply and must not write them (one writer per name per session).
-    hostOwnedTraces: ELECTRON_RENDERER_HOST_OWNED_TRACES,
+    // What main actually writes (see `writesTraces`): every renderer is told in its handshake reply and must not write it.
+    hostOwnedTraces: !writesTraces
+      ? []
+      : [
+          ...(display !== undefined ? ['displays'] : []),
+          ...(captureState !== undefined ? ['capture'] : []),
+          ...(callerProducers ? [] : ELECTRON_MAIN_HEAP_TRACES),
+        ],
   });
   control.start();
   // Forward the main client's blackout to EVERY renderer. Without this a blackout applied in main only

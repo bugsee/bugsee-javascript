@@ -130,7 +130,7 @@ describe('launchRenderer', () => {
     } as never);
     const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
     expect(isTraceSuppression(owned)).toBe(true);
-    expect(owned.names().sort()).toEqual([...ELECTRON_RENDERER_HOST_OWNED_TRACES].sort());
+    for (const name of ELECTRON_RENDERER_HOST_OWNED_TRACES) expect(owned.has(name)).toBe(true);
     expect(owned.has('battery')).toBe(false);
   });
 
@@ -148,7 +148,8 @@ describe('launchRenderer', () => {
         hostOwnedTraces: ['connection', 'displays'],
       }),
     );
-    expect(owned.names().sort()).toEqual(['connection', 'displays']);
+    expect(owned.has('connection')).toBe(true);
+    expect(owned.has('ram_js_heap_total')).toBe(false);
     expect(owned.has('capture')).toBe(false);
   });
 

@@ -1,9 +1,4 @@
-import {
-  ELECTRON_RENDERER_HOST_OWNED_TRACES,
-  type SystemEvent,
-  type TraceProducer,
-  type TraceSink,
-} from '@bugsee/capture';
+import type { SystemEvent, TraceProducer, TraceSink } from '@bugsee/capture';
 import {
   BlackoutToken,
   CaptureDataEntryBase,
@@ -173,8 +168,50 @@ describe('launchMain', () => {
       command: 'session',
       sessionId: 'sess-xyz',
       blackout: false, // main's blackout state rides every handshake reply
-      // the names main writes itself ride it too, so renderers do not write a second one (C22)
-      hostOwnedTraces: [...ELECTRON_RENDERER_HOST_OWNED_TRACES],
+      // the names main writes itself ride it too, so renderers do not write a second one (C22): only its own V8 heap here
+      hostOwnedTraces: ['ram_js_heap_total', 'ram_js_heap_used', 'ram_js_heap_free'],
+    });
+  });
+
+  describe('the handshake declares only the trace names main actually writes (C22)', () => {
+    const declared = (
+      over: Partial<Parameters<typeof launchMain>[1]> = {},
+    ): string[] | undefined => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, ...over } as never);
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      return decodeControl((r.sent[0] as { raw: string }).raw)?.hostOwnedTraces;
+    };
+    const HEAP = ['ram_js_heap_total', 'ram_js_heap_used', 'ram_js_heap_free'];
+    const screen = Object.assign(
+      new (class {
+        on() {}
+        removeListener() {}
+      })(),
+      {
+        getAllDisplays: () => [],
+      },
+    );
+    const video = { source: { start() {}, stop() {}, clear() {}, snapshot: async () => [] } };
+
+    it('displays only with a screen; capture only with pixel video; the heap by default', () => {
+      expect(declared({ screen } as never)?.sort()).toEqual([...HEAP, 'displays'].sort());
+      expect(declared({ video } as never)?.sort()).toEqual([...HEAP, 'capture'].sort());
+      expect(declared({ screen, video } as never)?.sort()).toEqual(
+        [...HEAP, 'displays', 'capture'].sort(),
+      );
+    });
+
+    it('no ram_js_heap_* when a caller-supplied systemTraceProducers replaces the node set (the Electron ones are still appended)', () => {
+      expect(declared({ systemTraceProducers: [], screen } as never)).toEqual(['displays']);
+    });
+
+    it('a legacy systemMetricsSampler or captureSystemTraces:false (or a non-boolean, which is off) means main writes none of them', () => {
+      expect(declared({ systemMetricsSampler: () => [], screen, video } as never)).toEqual([]);
+      expect(declared({ captureSystemTraces: false, screen, video } as never)).toEqual([]);
+      expect(declared({ captureSystemTraces: 'yes', screen } as never)).toEqual([]);
     });
   });
 

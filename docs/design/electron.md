@@ -119,6 +119,16 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   control. All gated on `internals` (present only on first launch), so a repeat `launchMain` returns the client
   untouched (no second receiver/control). `pause()`/`resume()` are complete broadcast primitives on the manager,
   ready for an app-background hook (the trigger, not the mechanism, is the only deferral).
+  **Control wire fields** (`protocol.ts`, JSON envelope `{k:'control', c, …}`; every optional field is validated on decode and a
+  malformed one is ignored on its own, never failing the message):
+
+  | field | on | meaning |
+  |---|---|---|
+  | `c` | all | the command: `pause`, `resume`, `flush`, `stop`, `session`, `blackout-start`, `blackout-end` |
+  | `sid` | `session` | the owner's session id |
+  | `bo` | `session` | main's blackout state at handshake time (boolean; a renderer that loads mid-blackout starts dark). Always stated by `launchMain` |
+  | `ho` | `session` | the trace names **main writes itself**, so the renderer must not write them (one writer per name per session; spec `platforms/javascript.md` "Host-owned traces"). `displays` with a `screen`, `capture` with pixel video, `ram_js_heap_{total,used,free}` unless the caller replaces the node producer set; `[]` when main writes no traces. At most 64 names of at most 64 characters; a malformed array is ignored whole. Absent: the renderer keeps its built-in default table (fail closed). It **replaces** that table; it is applied to the very next trace value |
+
 - **E7 — e2e.** ✅ BUILT (`electron-e2e.test.ts`). A fake-Electron IPC bus (fake ipcMain + per-renderer
   ipcRenderer/webContents + preload contextBridge + crashReporter) boots the REAL `@bugsee/node` main via
   `launchMain` (no launch seam) and TWO renderers via `launchRenderer` (only `@bugsee/browser`'s renderer internals
