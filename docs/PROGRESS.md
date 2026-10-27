@@ -1364,8 +1364,11 @@ Electron renderer gets it through the browser launch). A WebView writes `route` 
 spec host table; `hostOwnedTraces: ['displays','view']`, honoured by `ScreenProducer`'s `route`/`view` options). Several
 Electron renderers interleave their `route`/`view` into one stream exactly as `url` does (C26, fixed separately). Node/edge hold the value and write nothing (spec: not written there).
 **Sanitizing:** route: a `#fragment` and a query are cut FIRST (a `?` inside parentheses, other than directly after `(` with `:=!<`
-after it, is regexp syntax; a `?` is an optional-parameter modifier only after a param token (the segment starts with `:`) or
-after `)`, `}`, `]`, `*`, AND followed by the end or a separator with no `=`/`&` before the next `?`: `/:id?`,
+after it, is regexp syntax; a `?` is an optional-parameter modifier only after a bare param token (`:` at a segment start or after a
+non-word, then only word characters) or after `)`, `}`, `]`, `*`, AND followed by the end, a separator, `-`/`_`/`~` + `:` or `.` +
+an extension, with no `=`/`&` before the next `?`; inside a group a `?` is a query when `=`/`&` precede the group's `)`;
+an escaped `\?` + key=value is a query; `/ab?cd` is read as a query (fail closed); the `view` value gets no e-mail/query
+treatment (informational); a property test (seeded, ~4000 strings per property) pins idempotence and no-leak: `/:id?`,
 `/:id(colou?r)`, `/:file?.json`, `/:a?-:b?`; after a plain word it is a query: `/index.php?/x`, `/s?-token`, `/cb(?name=bob)`), userinfo (`https://u:p@h`, `u:p@h`) is dropped and an e-mail (alphabetic TLD of 2+ letters; `react@18.2.0` stays, `logo@2x.png` is a known over-redaction) in a path
 segment redacted (the `url` trace sanitizer is unchanged and keeps the username), then the location sanitizer (secret
 shapes, sensitive matrix segments) runs on the bounded (8192) string BEFORE the clip to 1024 chars (`%3Ctruncated%3E`), so a

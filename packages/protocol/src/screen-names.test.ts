@@ -186,8 +186,13 @@ describe('sanitizeRoutePattern: credentials and personal data', () => {
     expect(sanitizeRoutePattern('/:name@:domain')).toBe('/:name@:domain');
   });
 
-  it('an EMPTY userinfo is left to the shared sanitizer (which redacts it), not silently dropped', () => {
-    expect(sanitizeRoutePattern('https://@host/x')).toBe(`https://${R}@host/x`);
+  it('an EMPTY userinfo is dropped too (so the output is stable: the shared sanitizer would redact it, and a second pass would strip that)', () => {
+    expect(sanitizeRoutePattern('https://@host/x')).toBe('https://host/x');
+    expect(sanitizeRoutePattern('//@host/x')).toBe('//host/x');
+    expect(sanitizeRoutePattern('//@@host/x')).toBe('//host/x'); // every leading userinfo, so a second pass finds none
+    expect(sanitizeRoutePattern('https://a@b@host/x')).toBe('https://host/x');
+    expect(sanitizeRoutePattern('//\\@@+x')).toBe('//+x'); // a backslash is a slash to the shared sanitizer
+    expect(sanitizeRoutePattern('https:\\\\u:p@h/x')).toBe('https://h/x');
   });
 
   it('redacts an e-mail address in a path segment', () => {
@@ -221,6 +226,19 @@ describe('sanitizeRoutePattern: a secret is never half-kept at the length limit'
   });
 });
 
+describe('normalizeView: a view value is informational (no e-mail or query treatment)', () => {
+  it('keeps what the shared sanitizer keeps: a component name is not an address or a URL', () => {
+    expect(normalizeView('Profile?tab=1')).toEqual({ name: 'Profile?tab=1' });
+    expect(normalizeView('alice@example.com')).toEqual({ name: 'alice@example.com' });
+  });
+});
+
+describe('sanitizeRoutePattern: documented limits', () => {
+  it('an optional literal character is read as a query (fail closed): `/ab?cd` is `/ab`', () => {
+    expect(sanitizeRoutePattern('/ab?cd')).toBe('/ab');
+  });
+});
+
 describe('normalizeView: a hostile argument', () => {
   it('lets a throwing getter propagate to the caller of the pure function (the client contains it)', () => {
     const hostile = {
@@ -247,6 +265,37 @@ describe('sanitizeRoutePattern: a `?` is a modifier only after a param token', (
     ['/s??x', '/s'],
     ['/a/b?/c', '/a/b'],
     ['/:id?token9', '/:id'], // after a param, but what follows is a word: a query
+    // a separator after the param is a query unless it joins another param or is an extension (round 3)
+    ['/:id.json?_SECRET', '/:id.json'],
+    ['/:id-x?~SECRET', '/:id-x'],
+    ['/:a?-SECRETVALUE', '/:a'],
+    ['/:a?~x', '/:a'],
+    ['/a)?_SECRETVAL123', '/a)'],
+    ['/:a?/x&y', '/:a'],
+    ['/:a?/x=y', '/:a'],
+    ['/a:b?/x', '/a:b'], // a colon after a word character is not a param
+    ['/:a\\d?/y', '/:a\\d'], // an escape inside the name: not a bare param
+    ['/:a(b)?/y', '/:a(b)?/y'], // after `)`: a modifier of the group
+    ['/:a/b?/x', '/:a/b'], // the param ended at the `/`
+    ['/:a?.abcdefg', '/:a'], // an "extension" of seven characters is a word
+    ['/:f?.json?x=1', '/:f?.json'], // the extension may be followed by another `?` (the second is the query)
+    ['/:a?.ab?', '/:a?.ab'],
+    ['/:a?)', '/:a'],
+    ['/x#frag\nSECRET', '/x'], // a fragment runs to the end, newlines included
+    [' \t//u:p@host/x', '//host/x'], // surrounding whitespace is trimmed BEFORE the userinfo is looked for
+    ['/:a?./x', '/:a'], // a `.` with no extension after it
+    ['/:a?.', '/:a'],
+    ['/:a(b?/x', '/:a(b'], // unclosed: the param ended at the `(`
+    ['/:a)b?/x', '/:a)b'], // and at the `)`
+    ['/a(b?c', '/a(b'], // an unclosed group: the depth is not trusted
+    ['/:a:b?/x', '/:a:b'], // the second colon follows a word character
+    ['/x:a?/y', '/x:a'],
+    ['/:a-b?/x', '/:a-b'], // `-b` is not part of a param name: the `?` follows a literal
+    ['/:a?.SECRETLONGVALUE', '/:a'], // `.` and then more than an extension
+    // an escaped `\?` followed by key=value is a query too
+    ['/a\\?tok=SECRETVAL', '/a'],
+    ['/:id\\?tok=SECRETVAL', '/:id'],
+    ['/a\\?x&y', '/a'],
   ])('cuts the query in %s', (input, expected) => {
     expect(sanitizeRoutePattern(input)).toBe(expected);
   });
@@ -259,10 +308,21 @@ describe('sanitizeRoutePattern: a `?` is a modifier only after a param token', (
     ['/:a?-:b?', '/:a?-:b?'],
     ['/:a?_:b', '/:a?_:b'],
     ['/x/:a?:b', '/x/:a?:b'],
-    ['/:a?~x', '/:a?~x'],
     ['/:id(\\d+)?', '/:id(\\d+)?'], // after `)`
     ['/foo{/bar}?', '/foo{/bar}?'], // after `}`
     ['/foo[bar]?', '/foo[bar]?'], // after `]`
+    [':id?', ':id?'], // a route with no leading slash: the colon is at the start
+    [':id?/x', ':id?/x'],
+    ['/:a?-:b', '/:a?-:b'],
+    ['/:a?_:b', '/:a?_:b'],
+    ['/:a?~:b', '/:a?~:b'],
+    ['/:a?.:b', '/:a?.:b'],
+    ['/:f?.json/x', '/:f?.json/x'],
+    ['/:f?.abcdef', '/:f?.abcdef'], // an extension of six characters
+    ['/a\\?b', '/a\\?b'], // an escaped `?` with no key=value after it is a literal
+    ['/:x(a\\?b=c)', '/:x(a\\?b=c)'], // inside a group an escaped `?` is regexp
+    ['/p\\d=x', '/p\\d=x'], // only `\?` is special: other escapes are not queries
+    ['/a(b?c)=d', '/a(b?c)=d'], // an `=` after the group's `)` does not belong to the group
     ['/files/*?', '/files/*?'], // after `*`
     ['/:a*?/x', '/:a*?/x'],
     ['/(a|b)?/x', '/(a|b)?/x'], // after `)` that closes a plain group, no param token
@@ -282,6 +342,11 @@ describe('sanitizeRoutePattern: a query inside balanced parentheses', () => {
     ['/cb(?q=alice%20smith)', '/cb('],
     ['/cb(?x)', '/cb('],
     ['/a(b)(?c=d)/e', '/a(b)('],
+    ['/cb(?abc)', '/cb('],
+    ['/cb(x?name=bob)', '/cb(x'],
+    ['/wiki/Foo_(bar?user=alice&id=42)', '/wiki/Foo_(bar'],
+    ['/files/report(1?sid=SECRETVAL)', '/files/report(1'],
+    ['/cb(x?a&b)', '/cb(x'],
     ['/x(?', '/x('], // `(?` at the very end introduces nothing
   ])('cuts %s', (input, expected) => {
     expect(sanitizeRoutePattern(input)).toBe(expected);
@@ -294,8 +359,41 @@ describe('sanitizeRoutePattern: a query inside balanced parentheses', () => {
     '/x(?<n>y)z',
     '/x(?<=y)z',
     '/x(?<!y)z',
+    '/:id(colou?r)',
+    '/:file(.*?\\.json)',
+    '/a(b?c)d(e?f)',
+    '/x(?=a=b)',
   ])('keeps the regexp group syntax in %s', (input) => {
     expect(sanitizeRoutePattern(input)).toBe(input);
+  });
+});
+
+describe('sanitizeRoutePattern: encoded and non-ASCII e-mail addresses', () => {
+  it('redacts a percent-encoded address', () => {
+    expect(sanitizeRoutePattern('/u/alice%40example.com')).toBe(`/u/${R}`);
+    expect(sanitizeRoutePattern('/u/alice%40example.com/orders')).toBe(`/u/${R}/orders`);
+    expect(sanitizeRoutePattern('/u/a.b%40x-y.co.uk')).toBe(`/u/${R}`);
+  });
+
+  it('redacts an address whose local part holds an encoded character', () => {
+    expect(sanitizeRoutePattern('/u/a%2Bb@example.com')).toBe(`/u/${R}`);
+    expect(sanitizeRoutePattern('/u/a%2Bb%40example.com')).toBe(`/u/${R}`);
+  });
+
+  it('keeps an encoded @ that is not an address', () => {
+    expect(sanitizeRoutePattern('/pkg/react%4018.2.0')).toBe('/pkg/react%4018.2.0');
+    expect(sanitizeRoutePattern('/a%40b')).toBe('/a%40b');
+    expect(sanitizeRoutePattern('/:user%40:domain')).toBe('/:user%40:domain');
+  });
+
+  it('redacts a non-ASCII address (any script)', () => {
+    expect(sanitizeRoutePattern('/u/алиса@пример.рф')).toBe(`/u/${R}`);
+    expect(sanitizeRoutePattern('/u/josé@exämple.de/x')).toBe(`/u/${R}/x`);
+    expect(sanitizeRoutePattern('/u/алиса%40пример.рф')).toBe(`/u/${R}`);
+  });
+
+  it('keeps a non-ASCII name that is not an address', () => {
+    expect(sanitizeRoutePattern('/u/алиса@2.0')).toBe('/u/алиса@2.0');
   });
 });
 
@@ -340,6 +438,13 @@ describe('sanitizeRoutePattern: linear time (bounded input, relative ratio)', ()
     'many modifiers': (size) => `/${':a?'.repeat(Math.ceil(size / 3))}`,
     'many open groups': (size) => `/${'(?'.repeat(Math.ceil(size / 2))}`,
     'many unbalanced parens': (size) => `/${')?('.repeat(Math.ceil(size / 3))}`,
+    'repeated encoded @': (size) => `/${'a%40'.repeat(Math.ceil(size / 4))}`,
+    'encoded address shapes': (size) => `/${'a%40b.co/'.repeat(Math.ceil(size / 9))}`,
+    'many escaped question marks': (size) => `/${'\\\\?'.repeat(Math.ceil(size / 2))}`,
+    'many params then ?': (size) => `/${':a'.repeat(Math.ceil(size / 2))}${'?'.repeat(size / 2)}`,
+    'one param name then many ?': (size) => `/:${'a'.repeat(size / 2)}${'?'.repeat(size / 2)}`,
+    'one group with many ?': (size) => `/(${'x?'.repeat(Math.ceil(size / 2))})`,
+    'nested groups with ?': (size) => `/${'(a?'.repeat(Math.ceil(size / 3))}`,
   };
   for (const [name, build] of Object.entries(builds)) {
     it(

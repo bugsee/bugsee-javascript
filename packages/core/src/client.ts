@@ -352,7 +352,8 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * adapters call this on committed navigations; an application with its own router calls it too. The string is
    * sanitized like the page address (secret shapes, sensitive matrix segments), keeps no fragment and no query (a `?`
    * that is router syntax, an optional parameter such as `/:id?` or a regexp such as `/:id(colou?r)`, stays; any other
-   * starts a query and is cut), drops userinfo (`user:pw@host`) and redacts an e-mail address in a path segment, and
+   * starts a query and is cut: after a plain word, after a param that is not a bare name, or in a group when a `=` or `&` follows; an
+   * optional literal character such as Express's `/ab?cd` is read as a query), drops userinfo (`user:pw@host`) and redacts an e-mail address in a path segment (plain, `%40`-encoded or non-ASCII), and
    * is clipped at 1024 characters. An unusable value (not a string, or empty once the query is gone) is ignored. Called
    * before `launch()` on a client you hold, the value is held and written at launch (the framework adapters resolve the
    * launched client first and DROP a navigation reported before one exists). A no-op once the SDK has been killed.
@@ -364,7 +365,8 @@ export interface BugseeClient extends Client, ServiceResolver, ServiceRegistrar 
    * (written as `"$$none"`). Held and de-duplicated: repeating the current view writes nothing. Best effort on the web:
    * a framework adapter supplies a name only when it can read a non-minified one, so this call is the only guaranteed
    * source. A native WebView host owns `view`, so a WebView page writes no `view`. Fields are sanitized and clipped at
-   * 256 characters; an unusable value is ignored. Same launch/kill rules as {@link setRoute}.
+   * 256 characters (the `view` value is informational: a component name gets no e-mail or query treatment, only the secret-shape
+   * redaction); an unusable value is ignored. Same launch/kill rules as {@link setRoute}.
    */
   setView(view: string | { name: string; type?: string } | null): void;
 
