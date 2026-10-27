@@ -425,30 +425,6 @@ describe('createBrowserSystemTraceProducers: displays + main_thread_lag_ms', () 
     expect(errors).toEqual([]);
   });
 
-  it('a non-array hostOwnedTraces never throws and never suppresses (a string is not a substring match)', () => {
-    const lifecycle = new ApplicationTracker({ window: mkTarget() });
-    for (const bad of ['displays', 'displays-x', 7, { includes: () => true }]) {
-      expect(
-        names(createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: bad as never })),
-      ).toContain('displays');
-    }
-  });
-
-  it('hostOwnedTraces: [displays] drops ONLY the displays producer (the host writes it)', () => {
-    const win = mkTarget();
-    const lifecycle = new ApplicationTracker({ window: win });
-    const all = names(createBrowserSystemTraceProducers({ lifecycle }));
-    const owned = names(
-      createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: ['displays'] }),
-    );
-    expect(all).toContain('displays');
-    expect(owned).toEqual(all.filter((n) => n !== 'displays'));
-    // an unrelated host-owned name does not drop it
-    expect(
-      names(createBrowserSystemTraceProducers({ lifecycle, hostOwnedTraces: ['capture'] })),
-    ).toEqual(all);
-  });
-
   it('a window without a performance clock starts no timer and reports nothing (no error)', () => {
     const win = Object.assign(mkTarget(), { screen: { width: 1, height: 1 }, devicePixelRatio: 1 });
     const doc = { visibilityState: 'visible' };

@@ -766,8 +766,6 @@ export function launchWithSeams(
                 ...(domDocument !== undefined ? { document: domDocument } : {}),
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-          // the native host writes these names; a WebView must not write a second one (spec host-owned table)
-          hostOwnedTraces: hostOwned.names(),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
           ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
             ? withUrl(

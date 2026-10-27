@@ -2225,36 +2225,39 @@ describe('launch', () => {
         expect(names).toContain('ram_system_advertised');
       });
 
-      describe('an owned `displays` is not even BUILT (no producer, so a resize arms no settle timer)', () => {
-        const settleTimersAfterResize = async (
-          over: Partial<BugseeLaunchOptions>,
-        ): Promise<number> => {
-          stubSensors();
-          vi.stubGlobal('screen', { width: 390, height: 844 });
-          const w = fakeWindow();
-          Object.assign(w.win, { devicePixelRatio: 2 });
-          let settle = 0;
-          const scheduler = {
-            setInterval: (_cb: () => void, ms: number) => {
-              if (ms === 250) settle += 1; // the displays settle timer
-              return settle;
-            },
-            clearInterval: () => {},
-          };
-          await launchTracked(
-            'tok',
-            noSampler({ window: w.win, captureStore: memStore(), scheduler, ...over }),
-          );
-          Object.assign(w.win, { devicePixelRatio: 3 });
-          w.emit('resize', {});
-          return settle;
+      it('`displays` can be HANDED BACK: a live suppression that releases it makes the next display change write the list', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const settle: Array<() => void> = [];
+        const scheduler = {
+          setInterval: (cb: () => void, ms: number) => {
+            if (ms === 250) settle.push(cb);
+            return settle.length;
+          },
+          clearInterval: () => {},
         };
-        it('baseline: a resize arms the displays settle timer', async () => {
-          expect(await settleTimersAfterResize({})).toBe(1);
-        });
-        it('owned: it arms none', async () => {
-          expect(await settleTimersAfterResize({ hostOwnedTraces: ['displays'] })).toBe(0);
-        });
+        const suppression = createTraceSuppression({ host: ['displays'] });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            scheduler,
+            hostOwnedTraces: suppression,
+          }),
+        );
+        suppression.setLayer('host', []); // the host says it owns nothing
+        Object.assign(w.win, { devicePixelRatio: 3 });
+        w.emit('resize', {});
+        settle[0]?.();
+        // the owned baseline was held and is re-recorded on release, then the change follows
+        expect(await rowsOf(store, 'displays')).toEqual([
+          [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+          [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
+        ]);
       });
 
       it('a LIVE trace suppression (hostOwnedTraces: object) applies a layer change made after launch, and its initial names skip the producers', async () => {

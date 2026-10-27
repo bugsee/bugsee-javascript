@@ -540,8 +540,8 @@ export interface BugseeLaunchOptions {
   /**
    * Host composition seam (set by `@bugsee/electron`'s renderer launch and the WebView launch): system trace names the HOST
    * of this page already writes, which this launch must not write too (one writer per name per session; spec
-   * platforms/javascript.md "Host-owned traces"). Every listed name is dropped from `traces.system`, and a producer whose
-   * only output is an owned name (`displays`, `capture`) is not even built. Pass an array for a fixed list, or a live
+   * platforms/javascript.md "Host-owned traces"). Every listed name is dropped from `traces.system` (the producers still
+   * exist, so a host that hands a name back through its handshake gets it). Pass an array for a fixed list, or a live
    * `TraceSuppression` (from `@bugsee/capture`) when the host declares its names in a handshake after launch. A standalone
    * browser leaves it unset.
    */
@@ -1078,9 +1078,6 @@ async function buildLaunch(
   } else if (rawHostOwned !== undefined) {
     reportInvalidHostOwned(options.onError);
   }
-  // A snapshot for the producers that are not BUILT at all for an owned name (`displays`); the provider's live
-  // suppression covers every name, including the ones the host declares later.
-  const hostOwnedTraces = suppression?.names();
   // The `capture` trace (C7): only where visual capture is configured (rrweb replay on). Whether this launch may WRITE the
   // name is the provider suppression's call, live (a WebView / Electron renderer leaves it to its native host / main, and a
   // host can hand it back in its handshake). It writes `active`/`blackout` once the recorder
@@ -1109,7 +1106,6 @@ async function buildLaunch(
             // Every surface comes from the INJECTED window/document, never the host globals.
             ...browserTraceEnvFrom(win, domDocument, options.onError),
             ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
-            ...(hostOwnedTraces !== undefined ? { hostOwnedTraces } : {}),
             captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
             // The page's own sanitized address: written from the navigation source, not from the performance extension.
             ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)

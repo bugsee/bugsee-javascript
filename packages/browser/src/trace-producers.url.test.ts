@@ -51,25 +51,4 @@ describe('createBrowserSystemTraceProducers: route and view', () => {
     });
     expect(producers.map((p) => p.name)).toEqual(['battery', 'url', 'screen']);
   });
-
-  it('a host-owned name is not written: hostOwnedTraces view / route', () => {
-    const t = new ScreenTracker();
-    t.setRoute('/r');
-    t.setView({ name: 'V1' });
-    const written = (hostOwnedTraces: string[]) => {
-      const got: string[] = [];
-      for (const p of createBrowserSystemTraceProducers({
-        routeViewState: t,
-        hostOwnedTraces,
-        sensors: false,
-      })) {
-        if (p.name === 'screen') p.start({ emit: (name) => got.push(name) });
-      }
-      return got;
-    };
-    expect(written([])).toEqual(['route', 'view']);
-    expect(written(['displays', 'view'])).toEqual(['route']);
-    expect(written(['route'])).toEqual(['view']);
-    expect(written(['route', 'view'])).toEqual([]);
-  });
 });

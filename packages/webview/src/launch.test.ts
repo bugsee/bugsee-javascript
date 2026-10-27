@@ -541,7 +541,7 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
+    expect(thisSeen).toHaveLength(12); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9); the displays producer's resolution query (1: built even though the host owns the name, so a host that hands it back can have it)
     expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
@@ -1409,7 +1409,7 @@ describe('launch (webview)', () => {
       }
     });
 
-    describe('displays (host-owned: never written) and main_thread_lag_ms (from the injected window)', () => {
+    describe('displays (host-owned: never written, though the producer exists so the host can hand it back) and main_thread_lag_ms (from the injected window)', () => {
       const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
         entriesOfType(fake.msgs(), 'traces.system')
           .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
@@ -1479,10 +1479,30 @@ describe('launch (webview)', () => {
         }
       });
 
-      it('a hostile devicePixelRatio getter never fails launch (the host-owned displays trace is not built, so it is never read)', () => {
+      it('native can HAND `displays` BACK (hostOwnedTraces: []): the held baseline list is written at the handshake', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          Object.assign(w.win, { devicePixelRatio: 2 });
+          track('tok', baseOptions({ global: fake.global, window: w.win }));
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'displays')).toEqual([]); // the host owns it until it says otherwise
+          sendControl(fake.global, { config: { hostOwnedTraces: [] } });
+          expect(rowsOf(fake, 'displays')).toEqual([
+            [{ id: 0, state: 'on', width: 720, height: 1280, scale: 2 }],
+          ]);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch: the failure is REPORTED, and (the host owns it) no displays row is written', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
           const w = fakeWin();
           Object.defineProperty(w.win, 'devicePixelRatio', {
             get(): never {
@@ -1491,10 +1511,14 @@ describe('launch (webview)', () => {
             configurable: true,
           });
           const onError = vi.fn();
-          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
-          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
+          expect(() =>
+            track('tok', baseOptions({ global: fake.global, window: w.win, onError })),
+          ).not.toThrow();
+          await new Promise((r) => setTimeout(r, 0));
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
             'devicePixelRatio blocked',
           );
+          expect(rowsOf(fake, 'displays')).toEqual([]);
         } finally {
           vi.unstubAllGlobals();
         }
