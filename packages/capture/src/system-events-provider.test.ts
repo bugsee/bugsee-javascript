@@ -11,7 +11,7 @@ import {
   type MultiKeyEmitter,
   type OptionsContainer,
 } from '@bugsee/core';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, EventName } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import { createSystemEventsProvider, type SystemEvent } from './system-events-provider';
 
@@ -39,8 +39,11 @@ describe('createSystemEventsProvider', () => {
     const p = createSystemEventsProvider(source, { now: () => 1000 });
     p.init(buildInit(store));
     p.start(options);
-    source.emit('event', { name: 'process_started' });
-    source.emit('event', { name: 'process_warning', params: { name: 'DeprecationWarning' } });
+    source.emit('event', { name: EventName.PROCESS_STARTED });
+    source.emit('event', {
+      name: EventName.PROCESS_WARNING,
+      params: { name: 'DeprecationWarning' },
+    });
     expect((await drainEvents(store))?.map((e) => e.data)).toEqual([
       { timestamp: 1000, name: 'process_started' },
       { timestamp: 1000, name: 'process_warning', params: { name: 'DeprecationWarning' } },
@@ -54,7 +57,7 @@ describe('createSystemEventsProvider', () => {
     p.init(buildInit(store));
     p.start(options);
     p.stop();
-    source.emit('event', { name: 'after' });
+    source.emit('event', { name: 'after' as EventName });
     expect((await createCaptureExporter(store).drain()).size).toBe(0);
   });
 
@@ -64,7 +67,7 @@ describe('createSystemEventsProvider', () => {
     const p = createSystemEventsProvider(source);
     p.init(buildInit(store));
     p.start(options);
-    source.emit('event', { name: 'x' });
+    source.emit('event', { name: 'x' as EventName });
     expect((await drainEvents(store))?.[0]?.timestamp).toBeGreaterThan(0);
   });
 
@@ -74,7 +77,7 @@ describe('createSystemEventsProvider', () => {
     const coordinator = createCaptureCoordinator(buildInit(store));
     coordinator.addProvider(createSystemEventsProvider(source, { now: () => 1 }));
     coordinator.start(options, (opt) => opt === BugseeOption.CaptureSystemEvents);
-    source.emit('event', { name: 'on' });
+    source.emit('event', { name: 'on' as EventName });
     expect(await drainEvents(store)).toHaveLength(1);
 
     const offStore = mkStore();
@@ -82,7 +85,7 @@ describe('createSystemEventsProvider', () => {
     const offCoordinator = createCaptureCoordinator(buildInit(offStore));
     offCoordinator.addProvider(createSystemEventsProvider(offSource));
     offCoordinator.start(options, () => false);
-    offSource.emit('event', { name: 'off' });
+    offSource.emit('event', { name: 'off' as EventName });
     expect((await createCaptureExporter(offStore).drain()).size).toBe(0);
   });
 });

@@ -1,6 +1,7 @@
 import process from 'node:process';
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { EventName } from '@bugsee/protocol';
 import type { ProcessTracker } from '@bugsee/trackers/node';
 import { reportGuarded } from '@bugsee/util';
 import type { ProcessEvents } from './detection-providers';
@@ -57,18 +58,18 @@ class NodeSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
 
   readonly #onExit = (...args: unknown[]): void => {
     this.emit('event', {
-      name: 'process_exiting',
+      name: EventName.PROCESS_EXITING,
       params: { code: typeof args[0] === 'number' ? args[0] : 0 },
     });
   };
   readonly #onBeforeExit = (...args: unknown[]): void => {
     this.emit('event', {
-      name: 'process_before_exit',
+      name: EventName.PROCESS_BEFORE_EXIT,
       params: { code: typeof args[0] === 'number' ? args[0] : 0 },
     });
   };
   readonly #onWarning = (...args: unknown[]): void => {
-    this.emit('event', { name: 'process_warning', params: warningParams(args[0]) });
+    this.emit('event', { name: EventName.PROCESS_WARNING, params: warningParams(args[0]) });
   };
 
   constructor(proc: ProcessEvents, options: NodeSystemEventsOptions = {}) {
@@ -85,7 +86,7 @@ class NodeSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   }
 
   #onSignal(signal: string): void {
-    this.emit('event', { name: 'process_signal', params: { signal } });
+    this.emit('event', { name: EventName.PROCESS_SIGNAL, params: { signal } });
     const handler = this.#signalHandlers.get(signal);
     if (handler !== undefined) {
       releaseSignalToDefault(this.#proc, signal, handler);
@@ -93,7 +94,7 @@ class NodeSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
   }
 
   protected onActivate(): void {
-    this.emit('event', { name: 'process_started' });
+    this.emit('event', { name: EventName.PROCESS_STARTED });
     this.#proc.on('exit', this.#onExit);
     this.#proc.on('beforeExit', this.#onBeforeExit);
     this.#proc.on('warning', this.#onWarning);
@@ -105,7 +106,7 @@ class NodeSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> {
         this.#offGc = this.#tracker.on('gc', (g) => {
           if (g.count > 0) {
             this.emit('event', {
-              name: 'gc',
+              name: EventName.GC,
               params: { count: g.count, pauseMs: ms3(g.pauseMs), maxPauseMs: ms3(g.maxPauseMs) },
             });
           }

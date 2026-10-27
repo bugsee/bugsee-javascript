@@ -1,6 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
-import { bytesToMegabytes } from '@bugsee/protocol';
+import { bytesToMegabytes, TraceName } from '@bugsee/protocol';
 import {
   type ApplicationTracker,
   type BatteryEnv,
@@ -68,11 +68,14 @@ export class BatteryProducer extends TraceProducerBase {
     // Known edge: both are held, and the provider has no retract path, so a level that goes readable -> unreadable
     // mid-session leaves the last values being re-recorded (same as `battery` before). Unreachable in practice.
     if (s.level !== undefined) {
-      this.emitIfChanged('battery', Math.round(s.level * 100));
-      this.emitIfChanged('charging', chargingToWire({ charging: s.charging, level: s.level }));
+      this.emitIfChanged(TraceName.BATTERY, Math.round(s.level * 100));
+      this.emitIfChanged(
+        TraceName.CHARGING,
+        chargingToWire({ charging: s.charging, level: s.level }),
+      );
     }
-    this.#publishTime('battery_charging_time_s', s.chargingTimeS);
-    this.#publishTime('battery_discharging_time_s', s.dischargingTimeS);
+    this.#publishTime(TraceName.BATTERY_CHARGING_TIME_S, s.chargingTimeS);
+    this.#publishTime(TraceName.BATTERY_DISCHARGING_TIME_S, s.dischargingTimeS);
   }
 
   // The two time traces are deliberately NOT `emitIfChanged`: that sends `hold: true`, and the provider re-records a
@@ -80,7 +83,7 @@ export class BatteryProducer extends TraceProducerBase {
   // charger unplugged, estimate not yet available) would then be re-recorded forever as a stale, fabricated reading.
   // So they use plain `emit` (never held, never refreshed) with a change-only guard of our own: a disappearance
   // simply records nothing and forgets the last value, so the same value reappearing is emitted again.
-  #publishTime(name: string, seconds: number | undefined): void {
+  #publishTime(name: TraceName, seconds: number | undefined): void {
     if (seconds === undefined) {
       this.#lastTime.delete(name);
       return;
@@ -128,7 +131,7 @@ export class StorageProducer extends TraceProducerBase {
 
   #publish(e: StorageEstimate): void {
     if (e.usageBytes === undefined && e.quotaBytes === undefined) return; // `persisted` alone is not a trace
-    this.emitIfChanged('storage_estimate', {
+    this.emitIfChanged(TraceName.STORAGE_ESTIMATE, {
       ...(e.usageBytes !== undefined ? { usage: bytesToMegabytes(e.usageBytes) } : {}),
       ...(e.quotaBytes !== undefined ? { quota: bytesToMegabytes(e.quotaBytes) } : {}),
     });
@@ -164,9 +167,9 @@ export class MemoryProducer extends TraceProducerBase {
   }
 
   #publish(m: HeapState): void {
-    this.emit('ram_js_heap_total', m.limit);
-    this.emit('ram_js_heap_free', Math.max(m.limit - m.used, 0));
-    this.emit('ram_js_heap_used', m.used);
+    this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);
+    this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(m.limit - m.used, 0));
+    this.emit(TraceName.RAM_JS_HEAP_USED, m.used);
   }
 }
 
@@ -186,7 +189,7 @@ export class AdvertisedMemoryProducer extends TraceProducerBase {
 
   protected onStart(): void {
     const gib = this.#gib();
-    if (gib !== undefined) this.emitIfChanged('ram_system_advertised', gib * 1024 ** 3);
+    if (gib !== undefined) this.emitIfChanged(TraceName.RAM_SYSTEM_ADVERTISED, gib * 1024 ** 3);
   }
 }
 
@@ -218,7 +221,7 @@ export class ConnectionProducer extends TraceProducerBase {
     // offline or the browser reports connection type `none`: the browser keeps reporting its last measurement, which
     // would read as a live link (honesty rule: omit, never stale). `save_data` is a user preference, so it stays.
     const reachable = type !== 'not_reachable';
-    this.emitIfChanged('connection', {
+    this.emitIfChanged(TraceName.CONNECTION, {
       type,
       // Everything below is DETAIL (the viewer renders `item.data`), so it is omitted rather than sent
       // as undefined — an explicitly absent key is what the other tiers send.
@@ -263,7 +266,7 @@ export class OrientationProducer extends TraceProducerBase {
   #publish(s: OrientationState): void {
     // Both `type` and `angle`, or nothing: a bare or partial notification has nothing to report (spec).
     if (s.type === undefined || s.angle === undefined) return;
-    this.emitIfChanged('orientation', orientationToWire(s.type));
+    this.emitIfChanged(TraceName.ORIENTATION, orientationToWire(s.type));
   }
 }
 
@@ -286,11 +289,11 @@ export class AppStateProducer extends TraceProducerBase {
   protected onStart(): void {
     // Subscribe first (it activates the tracker and refreshes its retained state), then read the initial value.
     this.#off = this.#application.on('state', ({ state }) =>
-      this.emitIfChanged('app_state', state),
+      this.emitIfChanged(TraceName.APP_STATE, state),
     );
     // No known state (no/unreadable document) = no initial value; the next change still reports.
     const initial = this.#application.current();
-    if (initial !== undefined) this.emitIfChanged('app_state', initial);
+    if (initial !== undefined) this.emitIfChanged(TraceName.APP_STATE, initial);
   }
 
   protected override onStop(): void {
@@ -311,7 +314,7 @@ export class FpsProducer extends TraceProducerBase {
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('frameRate', (fps) => this.emit('fps', fps));
+    this.#off = this.#tracker.on('frameRate', (fps) => this.emit(TraceName.FPS, fps));
   }
 
   protected override onStop(): void {
@@ -418,7 +421,7 @@ export class DisplaysProducer extends TraceProducerBase {
     const angle = this.#tracker.current('orientation')?.angle;
     const turns =
       angle !== undefined && angle % 90 === 0 ? (((angle / 90) % 4) + 4) % 4 : undefined;
-    this.emitIfChanged('displays', [
+    this.emitIfChanged(TraceName.DISPLAYS, [
       {
         id: 0,
         state: 'on',
@@ -452,7 +455,7 @@ export class MainThreadLagProducer extends TraceProducerBase {
 
   protected onStart(): void {
     this.#off = this.#tracker.on('mainThreadLag', ({ lagMs }) =>
-      this.emit('main_thread_lag_ms', lagMs),
+      this.emit(TraceName.MAIN_THREAD_LAG_MS, lagMs),
     );
   }
 
@@ -479,7 +482,9 @@ export class MainThreadIdleProducer extends TraceProducerBase {
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('idle', ({ idleMs }) => this.emit('main_thread_idle_ms', idleMs));
+    this.#off = this.#tracker.on('idle', ({ idleMs }) =>
+      this.emit(TraceName.MAIN_THREAD_IDLE_MS, idleMs),
+    );
   }
 
   protected override onStop(): void {
@@ -520,7 +525,10 @@ export class UserIdleProducer extends TraceProducerBase {
   }
 
   #publish(s: UserIdleState): void {
-    this.emitIfChanged('user_idle_state', s.screenState === 'locked' ? 'locked' : s.userState);
+    this.emitIfChanged(
+      TraceName.USER_IDLE_STATE,
+      s.screenState === 'locked' ? 'locked' : s.userState,
+    );
   }
 }
 
@@ -810,7 +818,7 @@ export function createBrowserSystemTraceProducers(
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle),
-          ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes('displays')
+          ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes(TraceName.DISPLAYS)
             ? []
             : [new DisplaysProducer(ui, env.scheduler)]),
           new MainThreadLagProducer(processTracker),

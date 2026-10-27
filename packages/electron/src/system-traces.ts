@@ -1,6 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import type { Scheduler } from '@bugsee/core';
-import { bytesToMegabytes } from '@bugsee/protocol';
+import { bytesToMegabytes, TraceName } from '@bugsee/protocol';
 import type {
   AppProcessMetric,
   DisplayInfo,
@@ -78,7 +78,7 @@ class AppMetricsProducer extends TraceProducerBase {
   // first CPU window has not elapsed.
   protected onStart(): void {
     this.#off = this.tracker.on('appMetrics', (m) =>
-      this.emit('app_metrics', { processes: m.processes.map(wireProcess) }),
+      this.emit(TraceName.APP_METRICS, { processes: m.processes.map(wireProcess) }),
     );
   }
   protected override onStop(): void {
@@ -166,7 +166,7 @@ class DisplaysProducer extends TraceProducerBase {
     this.#moveTimer = undefined;
   }
   #publish(list: { displays: DisplayInfo[] }): void {
-    this.emitIfChanged('displays', list.displays.map(wireDisplay));
+    this.emitIfChanged(TraceName.DISPLAYS, list.displays.map(wireDisplay));
   }
 }
 
@@ -191,7 +191,7 @@ class ThermalStateProducer extends TraceProducerBase {
   }
   #publish(state: Parameters<typeof thermalStateWire>[0]): void {
     const wire = thermalStateWire(state);
-    if (wire !== undefined) this.emit('thermal_state', wire);
+    if (wire !== undefined) this.emit(TraceName.THERMAL_STATE, wire);
   }
   protected onStart(): void {
     // subscribe FIRST (arming the listener), then the baseline read: no change can fall between the two
@@ -212,7 +212,7 @@ class CpuSpeedLimitProducer extends TraceProducerBase {
     super();
   }
   protected onStart(): void {
-    this.#off = this.tracker.on('speedLimit', (e) => this.emit('cpu_speed_limit', e.limit));
+    this.#off = this.tracker.on('speedLimit', (e) => this.emit(TraceName.CPU_SPEED_LIMIT, e.limit));
   }
   protected override onStop(): void {
     this.#off?.();

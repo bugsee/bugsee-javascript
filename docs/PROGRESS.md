@@ -1305,6 +1305,51 @@ recorded" was false.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
+### 2026-10-27 — Spec-conformance guard for the system traces and events (spec items C17 + C24)
+
+The JavaScript platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) is now enforced by a test, and every
+trace/event wire name lives in ONE module.
+
+- **Registry (C17).** `@bugsee/protocol` `system-names.ts`: `TraceName` / `EventName` (string enums, so a bundle that inlines every use drops the object: the WebView IIFE has a size
+  budget and a const object of ~90 names pushed it over; a trace key is the wire name upper-cased), `TRACE_SPEC` (value type, unit, held) and `EVENT_PARAMS` (camelCase keys, `?` = optional). Every producer
+  (`browser`/`node`/`electron` trace producers and system-event sources, `capture`'s capture-state producer, the host-owned
+  trace lists in the browser/webview/electron-renderer launches) references it. `TraceProducerBase.emit`/`emitIfChanged` take a
+  `TraceName` (and `TraceSink.emit`, the interface a hand-written producer implements, too), so an unregistered literal passed to them does not compile. The electron `power_${state}` string concatenation became a lookup
+  table over registered events.
+- **Vendored snapshot (C24).** `packages/protocol/spec/javascript-system-traces.snapshot.json` = the spec's trace and event
+  tables (names, families, value type, unit, held, event params, pending markers, retired and mobile-only names) plus the
+  `bugsee/specs` commit it was generated from. `pnpm spec:refresh [--specs <checkout>] [--ref origin/main]` rewrites it (reads
+  the ref with `git show`, so the checkout's branch and working tree are irrelevant); `pnpm spec:check` exits 1 when it is
+  stale. Parser: `scripts/spec-snapshot/parse.mjs`.
+- **Drift test.** `@bugsee/instrumentation-tests` `test/spec-drift.test.ts` (runs in the `test:unit` CI step): registry names and
+  metadata equal the snapshot; every spec name is registered or in the `NOT_YET` list (`route`, `view`, each with the spec item that must still be its pending marker and the issue/PR tracking it);
+  `JS_ONLY_EXTENSIONS` is empty; every registered name is reached by a producer; the emit style (`emit` vs `emitIfChanged`)
+  matches the spec's held column; and an AST scan of EVERY product file (`packages/*/src` but protocol, found by location,
+  never by content) fails on any spec name (pending and retired ones too) spelled as a literal, quoted inside a longer string,
+  or assembled by template, `+` or `join` from a prefix/suffix several names share, and on `TraceName[computed]`. Exempt, as
+  not being written wire names: tracker stage keys, comparisons/`case` labels, type positions, a producer's `readonly name`
+  id, `this.emit('stage', …)` in `packages/trackers/src/**` (tracker stage events), and the files in `NOT_A_WIRE_NAME`, each
+  pinned to the EXACT strings and counts it excuses (an appended leak, an extra occurrence or a vanished one fails).
+  Compile-time coverage is exactly: `TraceProducerBase.emit/emitIfChanged`, `TraceSink.emit` (`TraceName`), `SystemEvent.name`
+  and the electron `#send` (`EventName`). It does not cover user traces/events, WebView-streamed names or any other
+  string-typed path; the scan is the net for those.
+- **Cache.** `packages/instrumentation-tests/turbo.json` gives `test:unit` the inputs `packages/*/src/**`, the vendored
+  snapshot and `scripts/spec-snapshot/**`; without them turbo served a stale drift pass after a literal was added elsewhere.
+- **Params, code vs registry.** `EVENT_PARAMS` is generated from the spec ("the same keys, plus ..." is expanded; `?` = the
+  spec says omitted, "no params at all", or no single runtime sends it) and `eventParamProblems()` checks an emitted event
+  against it. The browser, node and electron `system-events.test.ts` spy on every `event` emit of every test in the file and
+  fail on an unexpected or missing required key, and on a family event no test drove.
+- **The parser fails closed** (`scripts/spec-snapshot/parse.mjs`): a table under an unrecognised `###` heading inside an inventory (a new family), a numeric value followed by a bare unit-like word, a held claim in the held-less Node table, a renamed/dropped `value`/`held`/`params` column, a held
+  cell that is not exactly `held`/`no`, a first cell with a non-identifier or no backticked name, a value with no type, an
+  unknown unit word, a row whose cell count differs from the header, or families that disagree on a trace's type/unit/held all
+  throw. It and the scanner run under a coverage gate in the instrumentation-tests unit config.
+- **Refreshing after a spec change:** `git -C <specs> fetch && pnpm spec:refresh --specs <specs>`; the diff of the snapshot is
+  the list of names/metadata to change. A newly spec'd name fails the test until it is registered (or listed in `NOT_YET`).
+- **Not covered:** the VALUES a producer writes (unit, type) are checked registry-vs-spec, not code-vs-registry (only the held
+  style is tied to the code); a brand-new name in a plain list of strings in a file (not a call, not typed) is not detected
+  unless it is a spec name; the spec's host-owned table, option table and the `traces.md` structured value schemas are not
+  vendored.
+
 ## 8. Pointers
 
 - **Spec** — `docs/design/sdk-design.md` (Draft v3). Read alongside §2 of THIS file for the as-built deltas.

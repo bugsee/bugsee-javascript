@@ -1,5 +1,6 @@
 import type { SystemEvent, SystemEventSource } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { EventName } from '@bugsee/protocol';
 import type {
   ElectronApplicationTracker,
   ElectronDisplayTracker,
@@ -40,6 +41,16 @@ import { reportGuarded } from '@bugsee/util';
 
 type Events = { event: SystemEvent };
 
+/** The power tracker's `state` (suspend/resume, lock/unlock) and `source` (ac/battery) values -> the registered event. */
+const POWER_EVENT = {
+  suspend: EventName.POWER_SUSPEND,
+  resume: EventName.POWER_RESUME,
+  lock: EventName.POWER_LOCK,
+  unlock: EventName.POWER_UNLOCK,
+  ac: EventName.POWER_AC,
+  battery: EventName.POWER_BATTERY,
+} as const;
+
 class ElectronSystemEventsSource extends InterceptorBase<Events> {
   readonly name = 'electron-system-events';
   #offs: Array<() => void> = [];
@@ -52,7 +63,7 @@ class ElectronSystemEventsSource extends InterceptorBase<Events> {
     super(onError);
   }
 
-  #send(name: string, params?: Record<string, unknown>): void {
+  #send(name: EventName, params?: Record<string, unknown>): void {
     this.emit('event', params === undefined ? { name } : { name, params });
   }
 
@@ -76,38 +87,47 @@ class ElectronSystemEventsSource extends InterceptorBase<Events> {
     const { process, power, display, application } = this.trackers;
     if (process !== undefined) {
       this.#sub(() =>
-        process.on('childProcessGone', (gone) => this.#send('child_process_gone', { ...gone })),
+        process.on('childProcessGone', (gone) =>
+          this.#send(EventName.CHILD_PROCESS_GONE, { ...gone }),
+        ),
       );
     }
     if (power !== undefined) {
-      this.#sub(() => power.on('suspendResume', (p) => this.#send(`power_${p.state}`)));
-      this.#sub(() => power.on('lockScreen', (p) => this.#send(`power_${p.state}`)));
-      this.#sub(() => power.on('powerSource', (p) => this.#send(`power_${p.source}`)));
+      this.#sub(() => power.on('suspendResume', (p) => this.#send(POWER_EVENT[p.state])));
+      this.#sub(() => power.on('lockScreen', (p) => this.#send(POWER_EVENT[p.state])));
+      this.#sub(() => power.on('powerSource', (p) => this.#send(POWER_EVENT[p.source])));
     }
     if (display !== undefined) {
-      this.#sub(() => display.on('displayAdded', (d) => this.#send('display_added', { ...d })));
-      this.#sub(() => display.on('displayRemoved', (d) => this.#send('display_removed', { ...d })));
+      this.#sub(() =>
+        display.on('displayAdded', (d) => this.#send(EventName.DISPLAY_ADDED, { ...d })),
+      );
+      this.#sub(() =>
+        display.on('displayRemoved', (d) => this.#send(EventName.DISPLAY_REMOVED, { ...d })),
+      );
       this.#sub(() =>
         display.on('displayMetricsChanged', (m) =>
-          this.#send('display_metrics_changed', { ...m.display, changed: [...m.changed] }),
+          this.#send(EventName.DISPLAY_METRICS_CHANGED, { ...m.display, changed: [...m.changed] }),
         ),
       );
     }
     if (application !== undefined) {
       this.#sub(() =>
         application.on('windowFocus', (w) =>
-          this.#send(w.focused ? 'window_focus' : 'window_blur', ids(w, 'windowId')),
+          this.#send(
+            w.focused ? EventName.WINDOW_FOCUS : EventName.WINDOW_BLUR,
+            ids(w, 'windowId'),
+          ),
         ),
       );
       this.#sub(() =>
         application.on('windowVisibility', (w) =>
-          this.#send(w.visible ? 'window_show' : 'window_hide', ids(w, 'windowId')),
+          this.#send(w.visible ? EventName.WINDOW_SHOW : EventName.WINDOW_HIDE, ids(w, 'windowId')),
         ),
       );
       this.#sub(() =>
         application.on('rendererResponsiveness', (r) =>
           this.#send(
-            r.responsive ? 'renderer_responsive' : 'renderer_unresponsive',
+            r.responsive ? EventName.RENDERER_RESPONSIVE : EventName.RENDERER_UNRESPONSIVE,
             ids(r, 'webContentsId'),
           ),
         ),

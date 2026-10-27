@@ -1,4 +1,5 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
+import { TraceName } from '@bugsee/protocol';
 import {
   type ProcessEvents,
   type ProcessTracker,
@@ -44,11 +45,11 @@ class ProcessMemoryProducer extends StageProducer<'memory'> {
     super(tracker, 'memory');
   }
   protected publish(m: ProcessEvents['memory']): void {
-    this.emit('process_memory_rss', m.rss);
-    this.emit('process_memory_heap_total', m.heapTotal);
-    this.emit('process_memory_heap_used', m.heapUsed);
-    this.emit('process_memory_external', m.external);
-    this.emit('process_memory_array_buffers', m.arrayBuffers);
+    this.emit(TraceName.PROCESS_MEMORY_RSS, m.rss);
+    this.emit(TraceName.PROCESS_MEMORY_HEAP_TOTAL, m.heapTotal);
+    this.emit(TraceName.PROCESS_MEMORY_HEAP_USED, m.heapUsed);
+    this.emit(TraceName.PROCESS_MEMORY_EXTERNAL, m.external);
+    this.emit(TraceName.PROCESS_MEMORY_ARRAY_BUFFERS, m.arrayBuffers);
   }
 }
 
@@ -58,9 +59,9 @@ class SystemMemoryProducer extends StageProducer<'systemMemory'> {
     super(tracker, 'systemMemory');
   }
   protected publish(m: ProcessEvents['systemMemory']): void {
-    this.emit('ram_system_total', m.total);
+    this.emit(TraceName.RAM_SYSTEM_TOTAL, m.total);
     // memory available to new work (Android parity), absent when no source answers
-    if (m.free !== undefined) this.emit('ram_system_free', m.free);
+    if (m.free !== undefined) this.emit(TraceName.RAM_SYSTEM_FREE, m.free);
   }
 }
 
@@ -72,9 +73,9 @@ class CpuProducer extends StageProducer<'cpu'> {
   // No baseline: no window has elapsed at start, so any value would be invented (a zero-length window has no CPU share).
   protected override baseline(): void {}
   protected publish(c: ProcessEvents['cpu']): void {
-    this.emit('cpu_usage_user', c.userDelta);
-    this.emit('cpu_usage_system', c.systemDelta);
-    if (c.processPct !== undefined) this.emit('cpu_usage_process', c.processPct); // omitted on a zero wall window
+    this.emit(TraceName.CPU_USAGE_USER, c.userDelta);
+    this.emit(TraceName.CPU_USAGE_SYSTEM, c.systemDelta);
+    if (c.processPct !== undefined) this.emit(TraceName.CPU_USAGE_PROCESS, c.processPct); // omitted on a zero wall window
   }
 }
 
@@ -88,9 +89,9 @@ class EventLoopLagProducer extends StageProducer<'eventLoop'> {
   protected override baseline(): void {}
   protected publish(l: ProcessEvents['eventLoop']): void {
     // A field the histogram could not report is absent: omit that trace, never write a zero.
-    if (l.meanMs !== undefined) this.emit('event_loop_lag_ms', l.meanMs);
-    if (l.maxMs !== undefined) this.emit('event_loop_lag_max_ms', l.maxMs);
-    if (l.p99Ms !== undefined) this.emit('event_loop_lag_p99_ms', l.p99Ms);
+    if (l.meanMs !== undefined) this.emit(TraceName.EVENT_LOOP_LAG_MS, l.meanMs);
+    if (l.maxMs !== undefined) this.emit(TraceName.EVENT_LOOP_LAG_MAX_MS, l.maxMs);
+    if (l.p99Ms !== undefined) this.emit(TraceName.EVENT_LOOP_LAG_P99_MS, l.p99Ms);
   }
 }
 
@@ -101,7 +102,7 @@ class EventLoopUtilizationProducer extends StageProducer<'utilization'> {
   }
   protected override baseline(): void {}
   protected publish(u: ProcessEvents['utilization']): void {
-    this.emit('event_loop_utilization', u.utilizationPercent); // percent 0-100, one decimal
+    this.emit(TraceName.EVENT_LOOP_UTILIZATION, u.utilizationPercent); // percent 0-100, one decimal
   }
 }
 
@@ -113,13 +114,13 @@ class V8HeapProducer extends StageProducer<'v8Heap'> {
     super(tracker, 'v8Heap');
   }
   protected publish(h: ProcessEvents['v8Heap']): void {
-    this.emit('v8_heap_size_limit', h.limit);
-    this.emit('v8_heap_available', h.available);
-    this.emit('v8_heap_malloced', h.malloced);
-    this.emit('v8_heap_peak_malloced', h.peakMalloced);
-    this.emit('ram_js_heap_total', h.limit);
-    this.emit('ram_js_heap_used', h.used);
-    this.emit('ram_js_heap_free', Math.max(h.limit - h.used, 0));
+    this.emit(TraceName.V8_HEAP_SIZE_LIMIT, h.limit);
+    this.emit(TraceName.V8_HEAP_AVAILABLE, h.available);
+    this.emit(TraceName.V8_HEAP_MALLOCED, h.malloced);
+    this.emit(TraceName.V8_HEAP_PEAK_MALLOCED, h.peakMalloced);
+    this.emit(TraceName.RAM_JS_HEAP_TOTAL, h.limit);
+    this.emit(TraceName.RAM_JS_HEAP_USED, h.used);
+    this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(h.limit - h.used, 0));
   }
 }
 
@@ -131,7 +132,7 @@ class MemoryLimitProducer extends StageProducer<'memoryLimit'> {
     super(tracker, 'memoryLimit');
   }
   protected publish(m: ProcessEvents['memoryLimit']): void {
-    this.emit('process_memory_limit', m.bytes);
+    this.emit(TraceName.PROCESS_MEMORY_LIMIT, m.bytes);
   }
 }
 

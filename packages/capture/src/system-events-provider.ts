@@ -1,5 +1,5 @@
 import { type CaptureProvider, CaptureProviderBase, type EventSubscribable } from '@bugsee/core';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, type EventName } from '@bugsee/protocol';
 
 // Runtime-agnostic SYSTEM EVENTS provider (Android events.system parity). A system event
 // is a discrete, auto-captured occurrence (process lifecycle, memory pressure, …). While started, the
@@ -9,7 +9,8 @@ import { BugseeOption } from '@bugsee/protocol';
 
 /** A discrete system event: a name + optional params (Android events.system shape, minus displayId). */
 export interface SystemEvent {
-  name: string;
+  /** A registered wire name (`EventName`, @bugsee/protocol): an unregistered literal does not compile. */
+  name: EventName;
   params?: Record<string, unknown>;
 }
 

@@ -3,6 +3,12 @@
 // trackers in onStart() and unsubscribes in onStop(); trackers attach/release their OS resources by
 // subscriber presence, so a producer that is never started costs nothing. The provider hands every
 // producer a sink; the producer never talks to the aggregator itself.
+//
+// The names a producer may write are the registry's (`TraceName`, @bugsee/protocol): `emit`/`emitIfChanged` take a
+// `TraceName`, so an unregistered literal does not compile, and the drift test (instrumentation-tests spec-drift)
+// fails when a producer spells a registered name instead of referencing it.
+
+import type { TraceName } from '@bugsee/protocol';
 
 /** Per-emit options for {@link TraceSink.emit}. */
 export interface TraceEmitOptions {
@@ -22,7 +28,7 @@ export interface TraceSink {
    * Record one trace sample. `displayId` scopes it to a display; absent = device-wide. Only an emit with
    * `options.hold === true` is kept for the provider's last-value refresh (see {@link TraceEmitOptions}).
    */
-  emit(name: string, value: unknown, displayId?: number, options?: TraceEmitOptions): void;
+  emit(name: TraceName, value: unknown, displayId?: number, options?: TraceEmitOptions): void;
 }
 
 export interface TraceProducer {
@@ -76,7 +82,7 @@ export abstract class TraceProducerBase implements TraceProducer {
    * Always emit (polled families: cpu / memory emit every tick, like Android). Sent with `hold: false`:
    * the provider never refreshes a polled value, so a failed poll leaves a gap instead of a frozen line.
    */
-  protected emit(name: string, value: unknown, displayId?: number): void {
+  protected emit(name: TraceName, value: unknown, displayId?: number): void {
     this.#send(name, value, displayId, false);
   }
 
@@ -85,13 +91,13 @@ export abstract class TraceProducerBase implements TraceProducer {
    * Sent with `hold: true`: the provider re-records the held value every `refreshMs`, because an unchanged
    * value is deliberately not re-emitted here.
    */
-  protected emitIfChanged(name: string, value: unknown, displayId?: number): void {
+  protected emitIfChanged(name: TraceName, value: unknown, displayId?: number): void {
     const key = keyOf(name, displayId);
     if (this.#last.has(key) && sameValue(this.#last.get(key), value)) return;
     this.#send(name, value, displayId, true);
   }
 
-  #send(name: string, value: unknown, displayId: number | undefined, hold: boolean): void {
+  #send(name: TraceName, value: unknown, displayId: number | undefined, hold: boolean): void {
     if (this.#sink === undefined) return;
     this.#sink.emit(name, value, displayId, { hold });
     this.#last.set(keyOf(name, displayId), value);

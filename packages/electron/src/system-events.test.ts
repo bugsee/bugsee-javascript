@@ -1,14 +1,67 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type EventSubscribable, InterceptorBase } from '@bugsee/core';
 import { createNodeSystemEventsSource } from '@bugsee/node';
+import { EventName, eventParamProblems } from '@bugsee/protocol';
+import { MultiKeyEmitterBase } from '@bugsee/trackers';
 import {
   ElectronApplicationTracker,
   ElectronDisplayTracker,
   ElectronPowerTracker,
   ElectronProcessTracker,
 } from '@bugsee/trackers/electron';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElectronSystemEventsSource } from './system-events';
+
+// the events the MUX owns: the node source's own (process_*, gc) are driven and checked by @bugsee/node's tests
+const EXPECTED_EVENTS: readonly string[] = [
+  EventName.CHILD_PROCESS_GONE,
+  EventName.POWER_SUSPEND,
+  EventName.POWER_RESUME,
+  EventName.POWER_LOCK,
+  EventName.POWER_UNLOCK,
+  EventName.POWER_AC,
+  EventName.POWER_BATTERY,
+  EventName.DISPLAY_ADDED,
+  EventName.DISPLAY_REMOVED,
+  EventName.DISPLAY_METRICS_CHANGED,
+  EventName.WINDOW_FOCUS,
+  EventName.WINDOW_BLUR,
+  EventName.WINDOW_SHOW,
+  EventName.WINDOW_HIDE,
+  EventName.RENDERER_RESPONSIVE,
+  EventName.RENDERER_UNRESPONSIVE,
+];
+
+// REGISTRY CONFORMANCE (code vs EVENT_PARAMS): every system event any test in this file makes the source emit is checked
+// against the registry (no unregistered param key, no missing required key), and the family's events must ALL have been
+// seen, so a renamed/dropped param or a silently dead event fails here and not in production.
+const emittedEvents: SystemEvent[] = [];
+const seenEventNames = new Set<string>();
+let emitSpy: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  const proto = MultiKeyEmitterBase.prototype as unknown as {
+    emit(stage: string, payload: unknown): void;
+  };
+  const real = proto.emit;
+  emitSpy = vi.spyOn(proto, 'emit').mockImplementation(function (
+    this: unknown,
+    stage: string,
+    payload: unknown,
+  ) {
+    if (stage === 'event') emittedEvents.push(payload as SystemEvent);
+    return real.call(this, stage, payload);
+  });
+});
+afterEach(() => {
+  emitSpy?.mockRestore();
+  const problems = emittedEvents.flatMap((e) => eventParamProblems(e.name, e.params));
+  for (const e of emittedEvents) seenEventNames.add(e.name);
+  emittedEvents.length = 0;
+  expect(problems).toEqual([]);
+});
+afterAll(() => {
+  expect(EXPECTED_EVENTS.filter((n) => !seenEventNames.has(n))).toEqual([]);
+});
 
 type Events = { event: SystemEvent };
 
@@ -19,7 +72,7 @@ class FakeInner extends InterceptorBase<Events> {
   deactivations = 0;
   protected onActivate(): void {
     this.activations++;
-    this.emit('event', { name: 'process_started' });
+    this.emit('event', { name: EventName.PROCESS_STARTED });
   }
   protected override onDeactivate(): void {
     this.deactivations++;
@@ -66,7 +119,7 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
     expect(inner.activations).toBe(1);
     expect(app.on).toHaveBeenCalledExactlyOnceWith('child-process-gone', expect.any(Function));
     expect(names(seen)).toEqual(['process_started']);
-    inner.fire({ name: 'process_exiting', params: { code: 0 } });
+    inner.fire({ name: EventName.PROCESS_EXITING, params: { code: 0 } });
     expect(names(seen)).toEqual(['process_started', 'process_exiting']);
     expect(listeners).toHaveLength(1);
     tracker.reset();
@@ -76,7 +129,7 @@ describe('createElectronSystemEventsSource (lazy mux)', () => {
     const { inner, mux, tracker } = setup();
     const seen = vi.fn();
     mux.on('event', seen);
-    inner.fire({ name: 'process_signal', params: { signal: 'SIGTERM' } });
+    inner.fire({ name: EventName.PROCESS_SIGNAL, params: { signal: 'SIGTERM' } });
     expect(seen).toHaveBeenLastCalledWith({
       name: 'process_signal',
       params: { signal: 'SIGTERM' },

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test:unit": {
+      // The spec-drift guard reads every product source file and the vendored spec tooling, so its cache key must too: a
+      // hash that ignored them served a stale pass after a literal was added to another package.
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/*/src/**",
+        "$TURBO_ROOT$/packages/protocol/spec/**",
+        "$TURBO_ROOT$/scripts/spec-snapshot/**"
+      ]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { type TraceProducer, TraceProducerBase } from '@bugsee/capture';
 import { getOrCreateInterceptor } from '@bugsee/core';
-import { sanitizeLocationUrl, TRUNCATED_URL_MARKER } from '@bugsee/protocol';
+import { sanitizeLocationUrl, TRUNCATED_URL_MARKER, TraceName } from '@bugsee/protocol';
 import { reportGuarded } from '@bugsee/util';
 import {
   createBrowserNavigationSource,
@@ -75,7 +75,7 @@ export class UrlProducer extends TraceProducerBase implements TraceProducer {
             ? custom.slice(0, MAX_HOOK_RESULT_CHARS) + TRUNCATED_URL_MARKER
             : custom;
       }
-      this.emitIfChanged('url', value);
+      this.emitIfChanged(TraceName.URL, value);
     } catch (error) {
       reportGuarded(this.#deps.onError, error); // never into the host; nothing is written
     }

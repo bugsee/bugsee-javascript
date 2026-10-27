@@ -1,5 +1,6 @@
 import type { SystemEvent } from '@bugsee/capture';
 import { type Interceptor, InterceptorBase } from '@bugsee/core';
+import { EventName } from '@bugsee/protocol';
 import {
   type ApplicationTracker,
   applicationTrackerFor,
@@ -133,7 +134,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
 
   protected onActivate(): void {
     const l = this.#lifecycle;
-    this.emit('event', { name: 'process_started' });
+    this.emit('event', { name: EventName.PROCESS_STARTED });
     // The orientation this source last knew (the `prev` of the next OrientationChanged): read at subscription, then tracked.
     const known = this.#ui.current('orientation');
     let previousOrientation =
@@ -142,7 +143,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         : undefined;
     this.#unsubscribe = [
       l.on('pagehide', ({ persisted }) =>
-        this.emit('event', { name: 'process_exiting', params: { persisted } }),
+        this.emit('event', { name: EventName.PROCESS_EXITING, params: { persisted } }),
       ),
       // The de-duplicated `state` stage, NOT the raw `visibility` one: a visibilitychange that leaves the page where it
       // already was (a synthetic/duplicate event) is not a foreground/background transition.
@@ -150,19 +151,19 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         this.emit('event', {
           name:
             state === 'foreground'
-              ? 'UIApplicationDidBecomeActiveNotification'
-              : 'UIApplicationDidEnterBackgroundNotification',
+              ? EventName.APPLICATION_DID_BECOME_ACTIVE
+              : EventName.APPLICATION_DID_ENTER_BACKGROUND,
         }),
       ),
-      l.on('freeze', () => this.emit('event', { name: 'freeze' })),
-      l.on('resume', () => this.emit('event', { name: 'resume' })),
+      l.on('freeze', () => this.emit('event', { name: EventName.FREEZE })),
+      l.on('resume', () => this.emit('event', { name: EventName.RESUME })),
       // The UiTracker de-duplicates the double delivery (screen.orientation change + window orientationchange); an
       // engine without a readable orientation still announces the bare event.
       this.#ui.on('orientation', ({ type, angle }) => {
         // `current` is the Android `orientation` trace value; without both type and angle there is nothing honest to
         // report, so the bare event is announced with no params (and the previous value is left untouched).
         if (type === undefined || angle === undefined) {
-          this.emit('event', { name: 'OrientationChanged' });
+          this.emit('event', { name: EventName.ORIENTATION_CHANGED });
           return;
         }
         const current = orientationToWire(type);
@@ -172,12 +173,12 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         // (unreadable) event the same orientation can arrive again, and a 180-degree flip stays distinct (own ints).
         if (current === before) return;
         this.emit('event', {
-          name: 'OrientationChanged',
+          name: EventName.ORIENTATION_CHANGED,
           params: { current, ...(before !== undefined ? { prev: before } : {}), type, angle },
         });
       }),
       this.#ui.on('colorScheme', ({ dark }) =>
-        this.emit('event', { name: 'DarkModeChanged', params: { dark } }),
+        this.emit('event', { name: EventName.DARK_MODE_CHANGED, params: { dark } }),
       ),
     ];
     this.#subscribeDisplayMode();
@@ -189,20 +190,20 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     let privateDelivered = false;
     const deliverPrivate = (method: string | undefined): void => {
       privateDelivered = true;
-      this.emit('event', { name: 'private_mode_detected', params: defined({ method }) });
+      this.emit('event', { name: EventName.PRIVATE_MODE_DETECTED, params: defined({ method }) });
     };
     this.#unsubscribe.push(
       this.#environment.onAny((name, payload) => {
         if (name === 'language') {
           const { language, languages, previous } = payload as EnvironmentEvents['language'];
           this.emit('event', {
-            name: 'language_changed',
+            name: EventName.LANGUAGE_CHANGED,
             params: defined({ language, languages, previousLanguage: previous.language }),
           });
         } else if (name === 'timezone') {
           const { timeZone, utcOffsetMinutes, previous } = payload as EnvironmentEvents['timezone'];
           this.emit('event', {
-            name: 'timezone_changed',
+            name: EventName.TIMEZONE_CHANGED,
             params: defined({
               timezone: timeZone,
               utcOffsetMinutes,
@@ -233,7 +234,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
         if (mode === before) return; // not a change (a re-baselined tracker re-announcing what we already know)
         previous = mode;
         this.emit('event', {
-          name: 'display_mode_changed',
+          name: EventName.DISPLAY_MODE_CHANGED,
           params: { mode, ...(before !== undefined ? { previousMode: before } : {}) },
         });
       }),
@@ -250,7 +251,7 @@ class BrowserSystemEventsSource extends InterceptorBase<{ event: SystemEvent }> 
     if (connectivity === undefined) return;
     this.#unsubscribe.push(
       connectivity.on('transition', ({ online }) =>
-        this.emit('event', { name: online ? 'online' : 'offline' }),
+        this.emit('event', { name: online ? EventName.ONLINE : EventName.OFFLINE }),
       ),
     );
   }

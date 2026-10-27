@@ -1,4 +1,4 @@
-import type { FileType } from '@bugsee/protocol';
+import { type FileType, TraceName } from '@bugsee/protocol';
 import { createRecordSnapshot, groupByType } from './capture-snapshot';
 import type { ChunkBackend, FrozenPart, PartMeta, PartRef } from './chunk-backend';
 import type { CaptureSnapshot, StoredEntry } from './contracts';
@@ -56,10 +56,13 @@ const GATED_AT_LOW: ReadonlySet<FileType> = new Set<FileType>([
  * The `capture` trace entry (a few dozen bytes) states WHY a report is empty or gapped, so it is the one record that is
  * still persisted at `none` (iOS: `bypassDiskSpaceGuard`; Android keeps a reserve level for its disk-level trace): a
  * chunk-recovered report (a native crash, an incident whose process died before upload) must be able to explain itself.
- * Recognised by its trace name; the entry is a `traces.system` record `{timestamp, data: {name, value}}`.
+ * Recognised by its trace name (the registry's `capture`); the entry is a `traces.system` record `{timestamp, data: {name, value}}`.
  */
 function explainsEmptiness(record: StoredEntry): boolean {
-  return record.type === 'traces.system' && record.serialized.includes('"name":"capture","value"');
+  return (
+    record.type === 'traces.system' &&
+    record.serialized.includes(`"name":"${TraceName.CAPTURE}","value"`)
+  );
 }
 
 /** A pin that follows a release within this many ticks counts as a flap and slows the probe down. */
