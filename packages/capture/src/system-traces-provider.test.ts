@@ -391,9 +391,9 @@ describe('createSystemTracesProvider — producers', () => {
     const raw: TraceProducer = {
       name: 'raw',
       start: (sink) => {
-        sink.emit('plain', 1);
-        sink.emit('truthy', 2, undefined, { hold: 1 as unknown as boolean });
-        sink.emit('held', 3, undefined, { hold: true });
+        sink.emit('plain' as TraceName, 1);
+        sink.emit('truthy' as TraceName, 2, undefined, { hold: 1 as unknown as boolean });
+        sink.emit('held' as TraceName, 3, undefined, { hold: true });
       },
       stop: () => {},
     };
@@ -540,7 +540,7 @@ describe('createSystemTracesProvider — producers', () => {
     p.init(buildInit(store));
     p.start(options);
     p.stop();
-    kept?.emit('x', 1);
+    kept?.emit('x' as TraceName, 1);
     expect(await values(store)).toEqual([]);
   });
 

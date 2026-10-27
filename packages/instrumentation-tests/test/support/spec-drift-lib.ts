@@ -35,7 +35,11 @@ const MIN_SUFFIX = 6; // `_changed`, `_started` ... (`_ms`, `_s`, `_free` are un
  * ASSEMBLING a name that no search for a literal could find: a template (`power_${state}`, `${kind}_changed`), `+`
  * (`'power_' + state`) and `['power', s].join('_')`, when the fixed part is the start or the end of several names.
  */
-export function literalOffenders(source: string, names: ReadonlySet<string>): Offender[] {
+export function literalOffenders(
+  source: string,
+  names: ReadonlySet<string>,
+  options: { trackerFile?: boolean } = {},
+): Offender[] {
   const file = ts.createSourceFile('x.ts', source, ts.ScriptTarget.Latest, true);
   const found: Offender[] = [];
   const at = (n: ts.Node): number => file.getLineAndCharacterOfPosition(n.getStart()).line + 1;
@@ -56,7 +60,7 @@ export function literalOffenders(source: string, names: ReadonlySet<string>): Of
     found.push({ line: at(n), text, why });
   };
   const visit = (n: ts.Node): void => {
-    if (isStringish(n) && !exempt(n)) {
+    if (isStringish(n) && !exempt(n, options.trackerFile === true)) {
       if (names.has(n.text)) flag(n, n.text, 'wire name spelled as a literal');
       else if ([...names].some((name) => n.text.includes(`"${name}"`))) {
         flag(n, n.text, 'wire name quoted inside a string');
@@ -99,6 +103,42 @@ export function literalOffenders(source: string, names: ReadonlySet<string>): Of
   return found;
 }
 
+/**
+ * How many times each name-shaped string occurs in `source` (the same findings as {@link literalOffenders}, grouped by
+ * the offending text): what an exemption must pin exactly, so an extra or a vanished occurrence is noticed.
+ */
+export function literalCounts(
+  source: string,
+  names: ReadonlySet<string>,
+  options: { trackerFile?: boolean } = {},
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const o of literalOffenders(source, names, options))
+    counts[o.text] = (counts[o.text] ?? 0) + 1;
+  return counts;
+}
+
+/**
+ * What is wrong with an exempt file: its name-shaped strings must be EXACTLY the excused ones, each as often as excused.
+ * A new string (a leak appended to the file), an extra occurrence and a vanished one (a stale entry) all fail.
+ */
+export function exemptionProblems(
+  source: string,
+  names: ReadonlySet<string>,
+  excused: Readonly<Record<string, number>>,
+  options: { trackerFile?: boolean } = {},
+): string[] {
+  const actual = literalCounts(source, names, options);
+  const problems: string[] = [];
+  for (const text of new Set([...Object.keys(actual), ...Object.keys(excused)])) {
+    const have = actual[text] ?? 0;
+    const want = excused[text] ?? 0;
+    if (have !== want)
+      problems.push(`'${text}': ${have} occurrence(s), the exemption excuses ${want}`);
+  }
+  return problems;
+}
+
 /** `TraceName[key]` / `EventName[key]` with a computed key: it reaches a name the reference check never sees. */
 export function dynamicRegistryLookups(source: string): Array<{ line: number; text: string }> {
   const file = ts.createSourceFile('x.ts', source, ts.ScriptTarget.Latest, true);
@@ -119,7 +159,7 @@ export function dynamicRegistryLookups(source: string): Array<{ line: number; te
   return out;
 }
 
-function exempt(n: ts.Node): boolean {
+function exempt(n: ts.Node, trackerFile: boolean): boolean {
   const p = n.parent;
   if (ts.isLiteralTypeNode(p) || ts.isImportDeclaration(p) || ts.isExportDeclaration(p))
     return true;
@@ -128,7 +168,12 @@ function exempt(n: ts.Node): boolean {
   if (ts.isBinaryExpression(p) && COMPARISONS.has(p.operatorToken.kind)) return true;
   if (ts.isCaseClause(p)) return true;
   if (ts.isCallExpression(p) && ts.isPropertyAccessExpression(p.expression)) {
-    return TRACKER_METHODS.has(p.expression.name.text);
+    // A tracker PUBLISHES stage events with `this.emit('route', …)`; those keys are the tracker's, not wire names. Only in
+    // tracker files (a producer's `this.emit('route', …)` IS a wire-name write).
+    return (
+      TRACKER_METHODS.has(p.expression.name.text) ||
+      (trackerFile && p.expression.name.text === 'emit')
+    );
   }
   return ts.isPropertyDeclaration(p) && ts.isIdentifier(p.name) && p.name.text === 'name';
 }
@@ -147,6 +192,34 @@ export function registryReferences(source: string): { traces: Set<string>; event
   };
   visit(file);
   return { traces, events };
+}
+
+/** The `EventName.X` keys listed in a test file's `EXPECTED_EVENTS` array (the events that file's source tests must drive). */
+export function expectedEventKeys(source: string): string[] {
+  const file = ts.createSourceFile('x.ts', source, ts.ScriptTarget.Latest, true);
+  const keys: string[] = [];
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.name.text === 'EXPECTED_EVENTS'
+    ) {
+      const inner = (m: ts.Node): void => {
+        if (
+          ts.isPropertyAccessExpression(m) &&
+          ts.isIdentifier(m.expression) &&
+          m.expression.text === 'EventName'
+        ) {
+          keys.push(m.name.text);
+        }
+        ts.forEachChild(m, inner);
+      };
+      if (n.initializer !== undefined) inner(n.initializer);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(file);
+  return keys;
 }
 
 export type EmitStyle = 'emit' | 'emitIfChanged';

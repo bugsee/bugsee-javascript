@@ -20,9 +20,15 @@ export const SECTIONS = {
   'Node family events': { kind: 'event', family: 'node' },
   'Electron main events': { kind: 'event', family: 'electron-main' },
 };
+/** The two `##` sections whose every table must be read (or deliberately skipped): the trace and event inventories. */
+const INVENTORY_HEADINGS = new Set(['System trace inventory', 'System event inventory']);
+/** Tables inside an inventory section that are NOT name inventories, and are skipped on purpose. */
+const SKIPPED_TABLES = new Set(['Availability by runtime']);
 const RETIRED_HEADING = 'Retired names';
 const NOT_EMITTED_HEADING = 'Mobile traces and events the JavaScript SDK does not emit';
 
+/** "**Held.**", "**held**", or a sentence that starts with Held: a claim the held-less Node table cannot carry. */
+const HELD_NOTE = /\*\*\s*held\b|(^|[.!]\s+)Held\b/i;
 const IDENT = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /** Splits one markdown table row on unescaped pipes. */
@@ -89,6 +95,12 @@ export function describeValue(cell) {
     const unknown = UNKNOWN_UNIT.exec(clause);
     if (unknown !== null) throw new Error(`unknown unit word "${unknown[0]}" in: ${cell}`);
   }
+  if (known === undefined && (type === 'int' || type === 'float')) {
+    // a number with no known unit is followed by nothing, a range, punctuation or an explanation, never by a bare word
+    const rest = text.slice(type.length).replace(/^,?\s*/, '');
+    const word = /^[A-Za-z][A-Za-z-]*/.exec(rest);
+    if (word !== null) throw new Error(`unknown unit word "${word[0]}" in: ${cell}`);
+  }
   return { valueType: type, unit: known?.[0] ?? null };
 }
 
@@ -153,6 +165,7 @@ export function parseSpec(markdown) {
   const notEmitted = [];
   const seenSections = new Set();
   let heading = '';
+  let section2 = ''; // the nearest ## heading
   let header = null;
   let inTable = false;
   let lastKeys = null; // the previous event row's keys in this table ("the same keys, plus ...")
@@ -162,6 +175,7 @@ export function parseSpec(markdown) {
     const h = /^#{2,3} (.+)$/.exec(line);
     if (h) {
       heading = h[1].trim();
+      if (line.startsWith('## ')) section2 = heading;
       header = null;
       inTable = false;
       lastKeys = null;
@@ -187,6 +201,21 @@ export function parseSpec(markdown) {
     }
     if (cells.every((c) => /^:?-+:?$/.test(c))) continue; // the separator row
     const section = SECTIONS[heading];
+    if (
+      INVENTORY_HEADINGS.has(section2) &&
+      section === undefined &&
+      heading !== RETIRED_HEADING &&
+      heading !== NOT_EMITTED_HEADING &&
+      !SKIPPED_TABLES.has(heading)
+    ) {
+      // a new table in an inventory (a Worker family?) would otherwise be dropped without a trace
+      throw new Error(`table under "${heading}" in "${section2}" is not a known inventory table`);
+    }
+    if (section !== undefined && section.held === false && cells.some((c) => HELD_NOTE.test(c))) {
+      throw new Error(
+        `a "${heading}" row states held-ness, but the table has no held column: ${line}`,
+      );
+    }
     const column = (name) => {
       const i = header.indexOf(name);
       return i === -1 ? undefined : cells[i];

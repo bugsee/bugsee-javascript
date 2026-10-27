@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 import {
   discoverSourceFiles,
   dynamicRegistryLookups,
+  exemptionProblems,
+  expectedEventKeys,
+  literalCounts,
   literalOffenders,
   registryReferences,
   traceEmitStyles,
@@ -61,26 +64,72 @@ const NOT_YET: Readonly<
 
 /**
  * Files that contain a spec name as a string WITHOUT writing it to a system stream (the scan reads every product file).
- * Each entry needs the reason, and goes stale (and fails) when the file no longer has such a string, so the list only shrinks.
+ * Each entry pins the EXACT strings it excuses and how often (`literals`): a new string appended to the file, an extra
+ * occurrence, and a vanished one (a stale entry) all fail, so an exemption can never hide a leak and the list only shrinks.
  */
-const NOT_A_WIRE_NAME: Readonly<Record<string, string>> = {
-  'browser/src/navigation-source.ts':
-    "the navigation source KIND 'url' (vs an adapter's programmatic one)",
-  'browser-utils/src/coexistence.ts': "a directory/key segment named 'capture'",
-  'capture/src/detector-url-sanitizer.ts': "the sanitizer's 'url' kind",
-  'electron/src/main-control.ts': "the control-channel command 'resume'",
-  'electron/src/protocol.ts': "the control-channel command 'resume'",
-  'node/src/instance-layout.ts': "the on-disk subdirectory 'capture'",
-  'node/src/recover-instances.ts': "the on-disk subdirectory 'capture'",
-  'performance/src/controller.ts': "the transaction source 'route'/'url'",
-  'trackers/src/browser/application-tracker.ts':
-    'tracker stage keys (freeze/resume), not wire names',
-  'trackers/src/browser/connectivity-tracker.ts': 'tracker states (online/offline), not wire names',
-  'trackers/src/browser/ui-tracker.ts': 'tracker stage key (orientation), not a wire name',
-  'trackers/src/electron/display-tracker.ts': 'tracker stage key (displays), not a wire name',
-  'trackers/src/electron/power-tracker.ts': 'power-monitor event/source names, not wire names',
-  'trackers/src/node/gc-observer.ts': "the PerformanceObserver entry type 'gc'",
-  'trackers/src/node/process-tracker.ts': 'tracker stage key (gc), not a wire name',
+const NOT_A_WIRE_NAME: Readonly<
+  Record<string, { reason: string; literals: Readonly<Record<string, number>> }>
+> = {
+  'browser/src/navigation-source.ts': {
+    reason: "the navigation source KIND 'url' (vs an adapter's programmatic one)",
+    literals: { url: 2 },
+  },
+  'browser-utils/src/coexistence.ts': {
+    reason: "a directory/key segment named 'capture'",
+    literals: { capture: 1 },
+  },
+  'capture/src/detector-url-sanitizer.ts': {
+    reason: "the sanitizer's 'url' kind",
+    literals: { url: 1 },
+  },
+  'electron/src/main-control.ts': {
+    reason: "the control-channel command 'resume'",
+    literals: { resume: 1 },
+  },
+  'electron/src/protocol.ts': {
+    reason: "the control-channel command 'resume'",
+    literals: { resume: 1 },
+  },
+  'node/src/instance-layout.ts': {
+    reason: "the on-disk subdirectory 'capture'",
+    literals: { capture: 1 },
+  },
+  'node/src/recover-instances.ts': {
+    reason: "the on-disk subdirectory 'capture'",
+    literals: { capture: 1 },
+  },
+  'performance/src/controller.ts': {
+    reason: "the transaction source 'route'",
+    literals: { route: 1 },
+  },
+  'trackers/src/browser/application-tracker.ts': {
+    reason: 'tracker stage keys (freeze/resume), not wire names',
+    literals: { freeze: 1, resume: 1 },
+  },
+  'trackers/src/browser/connectivity-tracker.ts': {
+    reason: 'tracker states (online/offline), not wire names',
+    literals: { online: 3, offline: 1 },
+  },
+  'trackers/src/browser/ui-tracker.ts': {
+    reason: 'tracker stage key (orientation), not a wire name',
+    literals: { orientation: 6 },
+  },
+  'trackers/src/electron/display-tracker.ts': {
+    reason: 'tracker stage key (displays), not a wire name',
+    literals: { displays: 1 },
+  },
+  'trackers/src/electron/power-tracker.ts': {
+    reason: 'power-monitor event/source names (resume, battery), not wire names',
+    literals: { resume: 2, battery: 2 },
+  },
+  'trackers/src/node/gc-observer.ts': {
+    reason: "the PerformanceObserver entry type 'gc'",
+    literals: { gc: 1 },
+  },
+  'trackers/src/node/process-tracker.ts': {
+    reason: 'tracker stage key (gc), not a wire name',
+    literals: { gc: 3 },
+  },
 };
 
 /**
@@ -199,6 +248,8 @@ describe('JS-only extension allow-list', () => {
   });
 });
 
+const isTrackerFile = (file: string): boolean => file.startsWith('trackers/src/');
+
 describe('product code uses the registry, and only the registry', () => {
   const registered = new Set([...registeredTraces, ...registeredEvents]);
   // EVERY name the spec knows, pending ones included (`'route' as TraceName` must not slip through), and the retired ones
@@ -229,23 +280,47 @@ describe('product code uses the registry, and only the registry', () => {
     const offenders: string[] = [];
     for (const [file, source] of sources) {
       if (file in NOT_A_WIRE_NAME) continue;
-      for (const o of literalOffenders(source, forbidden)) {
+      for (const o of literalOffenders(source, forbidden, { trackerFile: isTrackerFile(file) })) {
         offenders.push(`${file}:${o.line} '${o.text}' (${o.why})`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('every NOT_A_WIRE_NAME entry still has a string it excuses (the list only shrinks)', () => {
-    for (const [file, reason] of Object.entries(NOT_A_WIRE_NAME)) {
-      expect(reason.length, file).toBeGreaterThan(10);
+  it('every NOT_A_WIRE_NAME file holds EXACTLY the strings its entry excuses, as often as it says', () => {
+    for (const [file, entry] of Object.entries(NOT_A_WIRE_NAME)) {
+      expect(entry.reason.length, file).toBeGreaterThan(10);
+      expect(Object.keys(entry.literals).length, file).toBeGreaterThan(0);
       const source = sources.get(file);
       expect(source, `${file} is gone: drop it from NOT_A_WIRE_NAME`).toBeDefined();
       expect(
-        literalOffenders(source ?? '', forbidden).length,
-        `${file} no longer needs its exemption`,
-      ).toBeGreaterThan(0);
+        exemptionProblems(source ?? '', forbidden, entry.literals, {
+          trackerFile: isTrackerFile(file),
+        }),
+        file,
+      ).toEqual([]);
     }
+  });
+
+  it('a leak appended to an exempt file FAILS its exemption (the whole-file hole is closed)', () => {
+    const file = 'electron/src/protocol.ts';
+    const entry = NOT_A_WIRE_NAME[file];
+    const source = sources.get(file) ?? '';
+    expect(entry).toBeDefined();
+    expect(exemptionProblems(source, forbidden, entry?.literals ?? {})).toEqual([]);
+    const leaked = `${source}\nexport const LEAK = ['power_ac', 'cpu_speed_limit', 'route'];\n`;
+    expect(exemptionProblems(leaked, forbidden, entry?.literals ?? {}).sort()).toEqual([
+      "'cpu_speed_limit': 1 occurrence(s), the exemption excuses 0",
+      "'power_ac': 1 occurrence(s), the exemption excuses 0",
+      "'route': 1 occurrence(s), the exemption excuses 0",
+    ]);
+    // one more of an excused string, and one fewer, both fail
+    expect(
+      exemptionProblems(`${source}\nconst x = 'resume';\n`, forbidden, entry?.literals ?? {}),
+    ).toEqual(["'resume': 2 occurrence(s), the exemption excuses 1"]);
+    expect(exemptionProblems('export {};', forbidden, entry?.literals ?? {})).toEqual([
+      "'resume': 0 occurrence(s), the exemption excuses 1",
+    ]);
   });
 
   it('nothing reads the registry with a computed key (TraceName[key] defeats the reference check)', () => {
@@ -269,6 +344,40 @@ describe('product code uses the registry, and only the registry', () => {
     expect(registeredTraces.filter((n) => !traces.has(keyOf(TraceName, n)))).toEqual([]);
     expect(registeredEvents.filter((n) => !events.has(keyOf(EventName, n)))).toEqual([]);
     expect(registered.size).toBe(registeredTraces.length + registeredEvents.length);
+  });
+});
+
+describe('the platform event tests cover every registered event', () => {
+  it('the EXPECTED_EVENTS lists of the browser, node and electron system-events tests together name every registered event', () => {
+    const keys = new Set<string>();
+    for (const pkg of ['browser', 'node', 'electron']) {
+      const found = expectedEventKeys(
+        readFileSync(join(PACKAGES, pkg, 'src', 'system-events.test.ts'), 'utf8'),
+      );
+      expect(found.length, pkg).toBeGreaterThan(0);
+      for (const k of found) {
+        expect(
+          Object.keys(EventName),
+          `${pkg} lists EventName.${k}, which is not registered`,
+        ).toContain(k);
+        keys.add(k);
+      }
+    }
+    // a new registered event must be driven (and listed) by one of the three tests, or this fails
+    expect(Object.keys(EventName).filter((k) => !keys.has(k))).toEqual([]);
+  });
+});
+
+describe('expectedEventKeys (the scanner itself)', () => {
+  it('reads EventName members inside the EXPECTED_EVENTS declaration only', () => {
+    expect(
+      expectedEventKeys(
+        'const OTHER = [EventName.X]; const EXPECTED_EVENTS: readonly string[] = [EventName.A, EventName.B, Other.C]; x(EventName.Y);',
+      ),
+    ).toEqual(['A', 'B']);
+    expect(expectedEventKeys('const EXPECTED_EVENTS = [];')).toEqual([]);
+    expect(expectedEventKeys('declare const EXPECTED_EVENTS: string[];')).toEqual([]);
+    expect(expectedEventKeys('const [EXPECTED_EVENTS] = [EventName.A];')).toEqual([]);
   });
 });
 
@@ -353,6 +462,11 @@ describe('literalOffenders (the scanner itself)', () => {
     expect(literalOffenders(`const p = '"name":"battery","value"';`, names)).toHaveLength(1);
     expect(literalOffenders('const p = \'"orientation"\';', names)).toHaveLength(1);
     expect(literalOffenders("const p = 'battery pack';", names)).toEqual([]); // a word, not a quoted name
+    // the quotes must hug the name: a longer name or a prefix/suffix of one is a different word
+    expect(literalOffenders(`const p = '"xbattery"';`, names)).toEqual([]);
+    expect(literalOffenders(`const p = '"batteryx"';`, names)).toEqual([]);
+    expect(literalOffenders(`const p = '"battery';`, names)).toEqual([]);
+    expect(literalOffenders(`const p = 'battery"';`, names)).toEqual([]);
     expect(literalOffenders('const p = `"name":"${x}"`;', names)).toEqual([]);
   });
 
@@ -387,6 +501,22 @@ describe('literalOffenders (the scanner itself)', () => {
     expect(literalOffenders("send('power_' - state);", names)).toEqual([]);
   });
 
+  it('exempts this.emit(...) keys in a TRACKER file only (a tracker publishes stage events; a producer writes wire names)', () => {
+    const src = "this.emit('orientation', 1); obj.emit('orientation', 2);";
+    expect(literalOffenders(src, names, { trackerFile: true })).toEqual([]);
+    expect(literalOffenders(src, names)).toHaveLength(2);
+    expect(literalOffenders(src, names, { trackerFile: false })).toHaveLength(2);
+    // only .emit: other calls in a tracker file are still scanned
+    expect(
+      literalOffenders("this.send('orientation');", names, { trackerFile: true }),
+    ).toHaveLength(1);
+    expect(literalOffenders("emit('orientation');", names, { trackerFile: true })).toHaveLength(1);
+    // a name used as a VALUE (not the key) in a tracker's emit is still a write
+    expect(
+      literalOffenders("const x = ['orientation'];", names, { trackerFile: true }),
+    ).toHaveLength(1);
+  });
+
   it('does not flag a name the registry does not know', () => {
     expect(literalOffenders("emit('unknown_thing');", names)).toEqual([]);
   });
@@ -415,6 +545,34 @@ describe('literalOffenders (the scanner itself)', () => {
     expect(literalOffenders('send(`other_${state}`);', names)).toEqual([]);
     expect(literalOffenders('send(`process_${state}`);', names)).toEqual([]); // one name only: not a family
     expect(literalOffenders('send(`${state}`);', names)).toEqual([]);
+  });
+});
+
+describe('literalCounts / exemptionProblems (the scanner itself)', () => {
+  const names = new Set(['battery', 'resume']);
+
+  it('counts each offending string', () => {
+    expect(literalCounts("a('battery'); b('battery'); c('resume'); d('other');", names)).toEqual({
+      battery: 2,
+      resume: 1,
+    });
+    expect(literalCounts('const x = 1;', names)).toEqual({});
+  });
+
+  it('reports new, extra and vanished strings, and nothing for an exact match', () => {
+    expect(exemptionProblems("a('battery');", names, { battery: 1 })).toEqual([]);
+    expect(exemptionProblems("a('battery'); b('resume');", names, { battery: 1 })).toEqual([
+      "'resume': 1 occurrence(s), the exemption excuses 0",
+    ]);
+    expect(exemptionProblems("a('battery'); b('battery');", names, { battery: 1 })).toEqual([
+      "'battery': 2 occurrence(s), the exemption excuses 1",
+    ]);
+    expect(exemptionProblems('x();', names, { battery: 1 })).toEqual([
+      "'battery': 0 occurrence(s), the exemption excuses 1",
+    ]);
+    expect(
+      exemptionProblems("this.emit('battery');", names, { battery: 1 }, { trackerFile: true }),
+    ).toEqual(["'battery': 0 occurrence(s), the exemption excuses 1"]);
   });
 });
 

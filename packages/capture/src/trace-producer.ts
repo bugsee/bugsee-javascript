@@ -28,7 +28,7 @@ export interface TraceSink {
    * Record one trace sample. `displayId` scopes it to a display; absent = device-wide. Only an emit with
    * `options.hold === true` is kept for the provider's last-value refresh (see {@link TraceEmitOptions}).
    */
-  emit(name: string, value: unknown, displayId?: number, options?: TraceEmitOptions): void;
+  emit(name: TraceName, value: unknown, displayId?: number, options?: TraceEmitOptions): void;
 }
 
 export interface TraceProducer {

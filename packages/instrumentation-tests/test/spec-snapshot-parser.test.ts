@@ -68,6 +68,12 @@ const FIXTURE = `# Doc
 |---|---|---|---|
 | \`app_metrics\` | object \`{processes:[…]}\` — [\`app_metrics\`](x.md) | no | x |
 
+### Availability by runtime
+
+| trace | browser | Node |
+|---|---|---|
+| \`battery\` | Y | — |
+
 ### Retired names
 
 | retired | replaced by |
@@ -151,6 +157,11 @@ describe('describeValue', () => {
     ['`float` ms', 'float', 'ms'],
   ])('reads %s', (cell, valueType, unit) => {
     expect(describeValue(cell)).toEqual({ valueType, unit });
+  });
+
+  it('rejects a percent sign and other unit symbols', () => {
+    expect(() => describeValue('float 50%')).toThrow(/unknown unit word "%"/);
+    expect(() => describeValue('string 50% of it')).toThrow(/unknown unit word "%"/);
   });
 
   it('takes the unit from the first clause only, never from the explanation after it', () => {
@@ -317,11 +328,97 @@ describe('parseSpec fails closed (a spec edit must never be read as "nothing")',
     ).toThrow(/families disagree on held/);
   });
 
+  it('"the same keys" never reaches across a heading, even with no blank line between table and heading', () => {
+    const lines = FIXTURE.split('\n').filter(
+      (l) => !l.includes('`child_process_gone`') && !l.includes('`display_added`'),
+    );
+    const md = lines
+      .join('\n')
+      .replace('\n\n### Electron main events\n\n', '\n### Electron main events\n');
+    expect(md).toContain('\n### Electron main events\n| event');
+    expect(() => parseSpec(md)).toThrow(/"the same keys" with no earlier row/);
+  });
+
   it('rejects "the same keys" with no earlier row to copy', () => {
     const lines = FIXTURE.split('\n').filter(
       (l) => !l.includes('`child_process_gone`') && !l.includes('`display_added`'),
     );
     expect(() => parseSpec(lines.join('\n'))).toThrow(/"the same keys" with no earlier row/);
+  });
+});
+
+describe('parseSpec rejects spec changes it cannot read (a new table must never be ignored)', () => {
+  const NODE_ROW =
+    '| `cpu_usage_user` | int **microseconds** of CPU consumed (a delta), not percent | x |';
+
+  it('throws on a table under an unrecognised ### heading inside an inventory section', () => {
+    const worker = `\n### Worker family traces\n\n| trace | value | held | notes |\n|---|---|---|---|\n| \`worker_lag\` | float ms | no | x |\n`;
+    expect(() =>
+      parseSpec(FIXTURE.replace('### Retired names', `${worker}\n### Retired names`)),
+    ).toThrow(/Worker family traces/);
+    const evt = `\n### Worker family events\n\n| event | params | trigger | notes |\n|---|---|---|---|\n| \`w\` | none | x | |\n`;
+    expect(() =>
+      parseSpec(FIXTURE.replace('### Browser family events', `${evt}\n### Browser family events`)),
+    ).toThrow(/Worker family events/);
+  });
+
+  it('allows the known non-inventory tables (Availability by runtime, Retired names) and tables outside the inventories', () => {
+    expect(() => parseSpec(FIXTURE)).not.toThrow();
+    expect(FIXTURE).toContain('### Availability by runtime');
+    const options = `${FIXTURE}\n## Options\n\n### Gates\n\n| option | default |\n|---|---|\n| \`x\` | y |\n`;
+    expect(() => parseSpec(options)).not.toThrow();
+  });
+
+  it('throws on a table placed directly under an inventory heading (no ### of its own)', () => {
+    const md = FIXTURE.replace(
+      '## System trace inventory\n',
+      '## System trace inventory\n\n| a | b |\n|---|---|\n| `c` | d |\n',
+    );
+    expect(() => parseSpec(md)).toThrow(/System trace inventory/);
+  });
+
+  it('throws on a unit word in a numeric value with no known unit (int degrees)', () => {
+    for (const bad of ['int degrees', 'float, radians', 'int meters (m)', 'float Celsius']) {
+      expect(() => parseSpec(FIXTURE.replace('int 0–100, percent', bad))).toThrow(
+        /unknown unit word/,
+      );
+    }
+    // numbers, ranges and punctuation after the type are fine, and a string/object/list may be followed by a word
+    for (const ok of [
+      'int 0–4: `0` unknown',
+      'int `0` nominal',
+      'int',
+      'float — the share',
+      'int (a count)',
+      'int, 0–10',
+    ]) {
+      expect(() => parseSpec(FIXTURE.replace('int 0–100, percent', ok))).not.toThrow();
+    }
+    expect(() => parseSpec(FIXTURE.replace('int 0–100, percent', 'string active'))).not.toThrow();
+  });
+
+  it('throws when a Node-table note states held-ness (the table has no held column to carry it)', () => {
+    expect(FIXTURE).toContain(NODE_ROW);
+    for (const note of [
+      '**Held.** re-recorded',
+      '**held** every 10 s',
+      '**  Held**',
+      'Not sampled. Held when stated',
+    ]) {
+      expect(() =>
+        parseSpec(FIXTURE.replace(NODE_ROW, NODE_ROW.replace('| x |', `| ${note} |`))),
+      ).toThrow(/states held-ness/);
+    }
+    // the word in ordinary prose is not a claim (the real spec says "does not stay held")
+    expect(() =>
+      parseSpec(
+        FIXTURE.replace(NODE_ROW, NODE_ROW.replace('| x |', '| a lifted cap does not stay held |')),
+      ),
+    ).not.toThrow();
+  });
+
+  it('does not treat the held word in a table WITH a held column as a note', () => {
+    expect(() => parseSpec(FIXTURE)).not.toThrow(); // the Browser/Shared rows carry "held" in the column
   });
 });
 
@@ -475,11 +572,23 @@ describe('parseSpec', () => {
 
   it('throws, naming them, when an expected section is missing or empty', () => {
     expect(() => parseSpec('# nothing')).toThrow(/Traces shared with mobile/);
-    expect(() => parseSpec(FIXTURE.replace('### Retired names', '### Renamed'))).toThrow(
-      /Retired names/,
-    );
-    expect(() => parseSpec(FIXTURE.replace('### Node family events', '### Other'))).toThrow(
-      /Node family events/,
-    );
+    // a renamed heading is caught twice over: its table is "not a known inventory table", and the section goes missing
+    expect(() => parseSpec(FIXTURE.replace('### Retired names', '### Renamed'))).toThrow(/Renamed/);
+    expect(() =>
+      parseSpec(
+        FIXTURE.replace('## System trace inventory', '## Other').replace(
+          '### Retired names',
+          '### Renamed',
+        ),
+      ),
+    ).toThrow(/Retired names/);
+    expect(() =>
+      parseSpec(
+        FIXTURE.replace('## System event inventory', '## Other').replace(
+          '### Node family events',
+          '### Other',
+        ),
+      ),
+    ).toThrow(/Node family events/);
   });
 });
