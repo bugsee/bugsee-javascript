@@ -214,6 +214,18 @@ describe('ElectronPowerTracker', () => {
       m.fire('thermal-state-change');
       expect(seen.mock.calls.map((c) => c[0])).toEqual(Array(6).fill({ state: 'unknown' }));
     });
+    it('a BARE state (the listener receives the string itself) is read too: right whichever shape Electron uses', () => {
+      const m = fakeMonitor();
+      const seen = vi.fn();
+      track(m).on('thermalState', seen);
+      m.fire('thermal-state-change', 'serious');
+      m.fire('thermal-state-change', 'bogus');
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([
+        { state: 'serious' },
+        { state: 'unknown' },
+      ]);
+    });
+
     it('does not arm the other stages', () => {
       const m = fakeMonitor();
       track(m).on('thermalState', () => {});
@@ -241,6 +253,16 @@ describe('ElectronPowerTracker', () => {
       off();
       expect(m.total()).toBe(0);
     });
+    it('a BARE limit (the listener receives the number itself) is read too', () => {
+      const m = fakeMonitor();
+      const seen = vi.fn();
+      track(m).on('speedLimit', seen);
+      m.fire('speed-limit-change', 75);
+      m.fire('speed-limit-change', 'fast');
+      m.fire('speed-limit-change', 250);
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([{ limit: 75 }]);
+    });
+
     it('drops a limit that cannot be real: non-number, NaN/Infinity, outside 0-100, no detail (omit, never zero)', () => {
       const m = fakeMonitor();
       const t = track(m);

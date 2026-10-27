@@ -178,6 +178,9 @@ class DisplaysProducer extends TraceProducerBase {
 //                    iOS int 0-3). Written at start (a live read of `getCurrentThermalState()`) and on every
 //                    `thermal-state-change`. macOS only: elsewhere the method is absent / answers `unknown`, which writes
 //                    nothing (omit, never zero).
+//                    A transition from a known state to `unknown` therefore leaves the previous value as the last sample (the
+//                    spec: sampled, never held, omit never zero): a consumer that draws the last point of the series should not
+//                    read it as "still that hot".
 //   cpu_speed_limit  int percent 0-100 from `speed-limit-change` ONLY (macOS and Windows): there is no initial value and no
 //                    value until the OS reports a limit. A measured 0 is a real limit and is written.
 class ThermalStateProducer extends TraceProducerBase {

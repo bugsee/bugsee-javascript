@@ -60,12 +60,20 @@ type Payload =
 const normaliseThermal = (state: unknown): ElectronThermalState =>
   THERMAL_STATES.has(state) ? (state as ElectronThermalState) : 'unknown';
 
+/**
+ * The value of a `powerMonitor` details event. Electron documents `details` objects (`{state}`, `{limit}`), but the shape
+ * was not verified on a real Electron, so a BARE value (`listener('fair')`, `listener(80)`) is read as the value itself:
+ * right whichever form Electron uses, and an unknown shape still normalises to unknown / dropped.
+ */
+const detailValue = (detail: unknown, key: 'state' | 'limit'): unknown =>
+  typeof detail === 'object' && detail !== null ? (detail as Record<string, unknown>)[key] : detail;
+
 const thermalOf = (detail: unknown): { state: ElectronThermalState } => ({
-  state: normaliseThermal((detail as { state?: unknown } | null | undefined)?.state),
+  state: normaliseThermal(detailValue(detail, 'state')),
 });
 
 const speedLimitOf = (detail: unknown): { limit: number } | undefined => {
-  const limit = (detail as { limit?: unknown } | null | undefined)?.limit;
+  const limit = detailValue(detail, 'limit');
   // the range test also rejects NaN and the infinities (every comparison with them is false)
   return typeof limit === 'number' && limit >= 0 && limit <= 100
     ? { limit: Math.round(limit) }
