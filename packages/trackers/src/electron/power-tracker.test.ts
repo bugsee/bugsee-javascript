@@ -20,12 +20,13 @@ function fakeMonitor(over: Record<string, unknown> = {}) {
       );
     }),
     isOnBatteryPower: vi.fn((): unknown => false),
+    getCurrentThermalState: vi.fn((): unknown => 'nominal'),
     ...over,
   };
   return {
     monitor: monitor as PowerMonitorSource & typeof monitor,
-    fire: (e: string) => {
-      for (const l of [...(table.get(e) ?? [])]) l();
+    fire: (e: string, ...args: unknown[]) => {
+      for (const l of [...(table.get(e) ?? [])]) l(...args);
     },
     count: (e: string) => table.get(e)?.length ?? 0,
     total: () => [...table.values()].reduce((n, l) => n + l.length, 0),
@@ -176,6 +177,124 @@ describe('ElectronPowerTracker', () => {
     it('rejects an unknown stage name', () => {
       const t = track(fakeMonitor());
       expect(t.current('other' as 'powerSource')).toBeUndefined();
+      expect(t.current('other' as 'thermalState')).toBeUndefined();
+    });
+  });
+
+  describe('thermalState stage (macOS thermal-state-change)', () => {
+    it('maps the event detail to a known state, attaching only its own event and releasing on the last unsubscribe', () => {
+      const m = fakeMonitor();
+      const t = track(m);
+      const seen = vi.fn();
+      const off = t.on('thermalState', seen);
+      expect(m.count('thermal-state-change')).toBe(1);
+      expect(m.total()).toBe(1);
+      for (const state of ['nominal', 'fair', 'serious', 'critical']) {
+        m.fire('thermal-state-change', { state });
+      }
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([
+        { state: 'nominal' },
+        { state: 'fair' },
+        { state: 'serious' },
+        { state: 'critical' },
+      ]);
+      off();
+      expect(m.total()).toBe(0);
+    });
+    it('anything that is not one of the four known states is reported as unknown (never passed through)', () => {
+      const m = fakeMonitor();
+      const t = track(m);
+      const seen = vi.fn();
+      t.on('thermalState', seen);
+      m.fire('thermal-state-change', { state: 'unknown' });
+      m.fire('thermal-state-change', { state: 'meltdown' });
+      m.fire('thermal-state-change', { state: 3 });
+      m.fire('thermal-state-change', {});
+      m.fire('thermal-state-change', null);
+      m.fire('thermal-state-change');
+      expect(seen.mock.calls.map((c) => c[0])).toEqual(Array(6).fill({ state: 'unknown' }));
+    });
+    it('does not arm the other stages', () => {
+      const m = fakeMonitor();
+      track(m).on('thermalState', () => {});
+      expect(m.count('speed-limit-change')).toBe(0);
+      expect(m.count('on-ac')).toBe(0);
+    });
+  });
+
+  describe('speedLimit stage (speed-limit-change)', () => {
+    it('maps the percent limit, attaching only its own event and releasing on the last unsubscribe', () => {
+      const m = fakeMonitor();
+      const t = track(m);
+      const seen = vi.fn();
+      const off = t.on('speedLimit', seen);
+      expect(m.count('speed-limit-change')).toBe(1);
+      expect(m.total()).toBe(1);
+      m.fire('speed-limit-change', { limit: 100 });
+      m.fire('speed-limit-change', { limit: 0 });
+      m.fire('speed-limit-change', { limit: 62.4 });
+      expect(seen.mock.calls.map((c) => c[0])).toEqual([
+        { limit: 100 },
+        { limit: 0 },
+        { limit: 62 },
+      ]);
+      off();
+      expect(m.total()).toBe(0);
+    });
+    it('drops a limit that cannot be real: non-number, NaN/Infinity, outside 0-100, no detail (omit, never zero)', () => {
+      const m = fakeMonitor();
+      const t = track(m);
+      const seen = vi.fn();
+      t.on('speedLimit', seen);
+      for (const detail of [
+        { limit: '50' },
+        { limit: Number.NaN },
+        { limit: Number.POSITIVE_INFINITY },
+        { limit: -1 },
+        { limit: 101 },
+        { limit: 100.4 },
+        {},
+        null,
+        undefined,
+      ]) {
+        m.fire('speed-limit-change', detail);
+      }
+      expect(seen).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("current('thermalState')", () => {
+    it('reads getCurrentThermalState live and validates it', () => {
+      const m = fakeMonitor();
+      const t = track(m);
+      for (const state of ['nominal', 'fair', 'serious', 'critical', 'unknown']) {
+        m.monitor.getCurrentThermalState.mockReturnValue(state);
+        expect(t.current('thermalState')).toEqual({ state });
+      }
+      m.monitor.getCurrentThermalState.mockReturnValue('nuclear');
+      expect(t.current('thermalState')).toEqual({ state: 'unknown' });
+      m.monitor.getCurrentThermalState.mockReturnValue(2);
+      expect(t.current('thermalState')).toEqual({ state: 'unknown' });
+    });
+    it('is undefined without the method (non-macOS Electron) and when it throws (reported)', () => {
+      const quiet = vi.fn();
+      expect(
+        track(fakeMonitor({ getCurrentThermalState: undefined }), quiet).current('thermalState'),
+      ).toBeUndefined();
+      expect(quiet).not.toHaveBeenCalled();
+      const onError = vi.fn();
+      const bad = fakeMonitor({
+        getCurrentThermalState: () => {
+          throw new Error('thermal');
+        },
+      });
+      expect(track(bad, onError).current('thermalState')).toBeUndefined();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ message: 'thermal' }),
+      );
+    });
+    it('is undefined for a tracker with no monitor', () => {
+      expect(new ElectronPowerTracker().current('thermalState')).toBeUndefined();
     });
   });
 

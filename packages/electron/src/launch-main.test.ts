@@ -1172,11 +1172,15 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(optsOf(f).wrapSystemEventsSource).toBeUndefined();
   });
 
-  it('a powerMonitor alone is enough for the events mux (no app needed) and adds no trace producer', () => {
+  it('a powerMonitor alone is enough for the events mux (no app needed) and adds only the power trace producers', () => {
     const powerMonitor = new FakeEmitter();
     const f = fakeLaunch();
     launchMain('tok', { ipcMain: fakeIpcMain().ipcMain, launch: f.launch, powerMonitor });
-    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+    expect(producersOf(f)).toContain('process-memory');
+    expect(producersOf(f)).toContain('thermal_state');
+    expect(producersOf(f)).toContain('cpu_speed_limit');
+    expect(producersOf(f)).not.toContain('electron-app-metrics');
+    expect(producersOf(f)).not.toContain('displays');
     const mux = wrapOf(f)(new Inner());
     expect(powerMonitor.total()).toBe(0); // lazy
     const seen = vi.fn();
@@ -1209,6 +1213,17 @@ describe('launchMain — Electron domain trackers: power, display, application w
       ipcMain: fakeIpcMain().ipcMain,
       launch: f.launch,
       screen,
+      systemMetricsSampler: () => [],
+    });
+    expect(optsOf(f).systemTraceProducers).toBeUndefined();
+  });
+
+  it('a legacy systemMetricsSampler with only a powerMonitor builds no producer list (the power producers would never start)', () => {
+    const f = fakeLaunch();
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: f.launch,
+      powerMonitor: new FakeEmitter(),
       systemMetricsSampler: () => [],
     });
     expect(optsOf(f).systemTraceProducers).toBeUndefined();

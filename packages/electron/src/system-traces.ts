@@ -6,8 +6,10 @@ import type {
   DisplayInfo,
   ElectronApplicationTracker,
   ElectronDisplayTracker,
+  ElectronPowerTracker,
   ElectronProcessTracker,
 } from '@bugsee/trackers/electron';
+import { thermalStateWire } from './thermal-state-wire';
 
 // Electron-main `traces.system` producers. COMPOSITION only: `launchMain` appends these to the node producer set (the
 // node set keeps `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; nothing here emits a
@@ -168,10 +170,59 @@ class DisplaysProducer extends TraceProducerBase {
   }
 }
 
+// `thermal_state` and `cpu_speed_limit` (C13): both come from the Power domain tracker's `powerMonitor` stages and are
+// SAMPLED / event-driven (never held, spec javascript.md "Electron main traces"): a state the OS stops reporting leaves
+// a gap rather than a frozen line.
+//
+//   thermal_state    the wire value is decided by `thermal-state-wire.ts` (OPEN OWNER QUESTION, bugsee-cocoa#288; today the
+//                    iOS int 0-3). Written at start (a live read of `getCurrentThermalState()`) and on every
+//                    `thermal-state-change`. macOS only: elsewhere the method is absent / answers `unknown`, which writes
+//                    nothing (omit, never zero).
+//   cpu_speed_limit  int percent 0-100 from `speed-limit-change` ONLY (macOS and Windows): there is no initial value and no
+//                    value until the OS reports a limit. A measured 0 is a real limit and is written.
+class ThermalStateProducer extends TraceProducerBase {
+  readonly name = 'thermal_state';
+  #off: (() => void) | undefined;
+  constructor(private readonly tracker: ElectronPowerTracker) {
+    super();
+  }
+  #publish(state: Parameters<typeof thermalStateWire>[0]): void {
+    const wire = thermalStateWire(state);
+    if (wire !== undefined) this.emit('thermal_state', wire);
+  }
+  protected onStart(): void {
+    // subscribe FIRST (arming the listener), then the baseline read: no change can fall between the two
+    this.#off = this.tracker.on('thermalState', (e) => this.#publish(e.state));
+    const current = this.tracker.current('thermalState');
+    if (current !== undefined) this.#publish(current.state);
+  }
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+}
+
+class CpuSpeedLimitProducer extends TraceProducerBase {
+  readonly name = 'cpu_speed_limit';
+  #off: (() => void) | undefined;
+  constructor(private readonly tracker: ElectronPowerTracker) {
+    super();
+  }
+  protected onStart(): void {
+    this.#off = this.tracker.on('speedLimit', (e) => this.emit('cpu_speed_limit', e.limit));
+  }
+  protected override onStop(): void {
+    this.#off?.();
+    this.#off = undefined;
+  }
+}
+
 /** The trackers the Electron producers read; a domain whose tracker is absent is simply off. */
 export interface ElectronTraceTrackers {
   process?: ElectronProcessTracker;
   display?: ElectronDisplayTracker;
+  /** Feeds `thermal_state` and `cpu_speed_limit` (the `powerMonitor` stages). */
+  power?: ElectronPowerTracker;
   /** Resolves the key window; without it the `displays` list follows the primary display (and no focus changes). */
   application?: ElectronApplicationTracker;
   /** Timer source for the window-move debounce (default: the global timers). */
@@ -186,6 +237,9 @@ export function createElectronSystemTraceProducers(
     ...(trackers.process !== undefined ? [new AppMetricsProducer(trackers.process)] : []),
     ...(trackers.display !== undefined
       ? [new DisplaysProducer(trackers.display, trackers.application, trackers.scheduler)]
+      : []),
+    ...(trackers.power !== undefined
+      ? [new ThermalStateProducer(trackers.power), new CpuSpeedLimitProducer(trackers.power)]
       : []),
   ];
 }
