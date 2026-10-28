@@ -240,24 +240,62 @@ describe('parseV8Stack', () => {
   });
 
   describe('hostile `)` runs are linear (ratio against the same input without the run)', () => {
+    // The verdict is a RATIO against the same input without the run, never a wall-clock budget (a fixed
+    // 25/50 ms floor read 25-35 ms on shared CI runners and failed healthy code). Three things keep the ratio
+    // honest on a noisy runner:
+    //  1. BATCHING: the control is a few microseconds per call, which is at timer-granularity and GC-pause
+    //     scale, so a single call (or a handful) gives a meaningless quotient. Each timed sample runs a batch
+    //     calibrated to take at least MIN_SAMPLE_MS on the control, and both sides run the same batch size.
+    //  2. WARM-UP + INTERLEAVING + MINIMUM: both sides are warmed first, then timed alternately and the best
+    //     of each is kept. Noise only ever adds time, so the minimum is the least contaminated estimate.
+    //  3. ATTEMPTS: a regression is a deterministic 100x-1000x gap, a scheduling stall is a transient one. A
+    //     noisy attempt is therefore re-measured (up to ATTEMPTS times) and the LOWEST ratio is the verdict;
+    //     a genuinely super-linear parser exceeds the threshold on every attempt, so this cannot hide it.
+    const MIN_SAMPLE_MS = 4;
+    const REPS = 15;
+    const ATTEMPTS = 4;
+    const DECISIVE = 3; // a ratio this many times past the limit, in two separate attempts, is a verdict
+    const HOSTILE_BUDGET_MS = 150; // per hostile sample: bounds the time a REAL regression spends failing
     const now = (): number =>
       (globalThis as unknown as { performance: { now(): number } }).performance.now();
-    // Both sides are timed INTERLEAVED in this process and the best of each is kept, so machine speed
-    // and scheduler noise divide out: the verdict is a RATIO, never a wall-clock budget (a fixed 25/50 ms
-    // floor read 25-35 ms on shared CI runners and failed healthy code). Noise only ever adds time, so
-    // the minimum is the least contaminated estimate.
-    const costRatio = (hostile: () => void, control: () => void): number => {
+    const timeBatch = (fn: () => void, batch: number): number => {
+      const started = now();
+      for (let i = 0; i < batch; i += 1) fn();
+      return now() - started;
+    };
+    // Per-call cost ratio. The control batch is calibrated on the control; the hostile batch is sized from a
+    // single hostile probe so that one uninterruptible hostile sample stays near HOSTILE_BUDGET_MS even when the
+    // parser is quadratic (a hostile call can cost 1000x the control). Per-call costs are compared, so the
+    // different batch sizes divide out.
+    const measureRatio = (hostile: () => void, control: () => void): number => {
+      for (let i = 0; i < 5; i += 1) control();
+      const probe = timeBatch(hostile, 1); // also the hostile warm-up
+      let controlBatch = 1;
+      while (timeBatch(control, controlBatch) < MIN_SAMPLE_MS && controlBatch < 1_000_000) {
+        controlBatch *= 2;
+      }
+      const hostileBatch = Math.max(
+        1,
+        Math.min(controlBatch, Math.floor(HOSTILE_BUDGET_MS / Math.max(probe, 0.001))),
+      );
       let bestHostile = Number.POSITIVE_INFINITY;
       let bestControl = Number.POSITIVE_INFINITY;
-      for (let rep = 0; rep < 15; rep += 1) {
-        let started = now();
-        hostile();
-        bestHostile = Math.min(bestHostile, now() - started);
-        started = now();
-        control();
-        bestControl = Math.min(bestControl, now() - started);
+      let spent = 0;
+      for (let rep = 0; rep < REPS && spent < 4 * HOSTILE_BUDGET_MS; rep += 1) {
+        const h = timeBatch(hostile, hostileBatch);
+        spent += h;
+        bestHostile = Math.min(bestHostile, h / hostileBatch);
+        bestControl = Math.min(bestControl, timeBatch(control, controlBatch) / controlBatch);
       }
       return bestHostile / bestControl;
+    };
+    const costRatio = (hostile: () => void, control: () => void, limit: number): number => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let attempt = 0; attempt < ATTEMPTS && best >= limit; attempt += 1) {
+        best = Math.min(best, measureRatio(hostile, control));
+        if (attempt >= 1 && best > limit * DECISIVE) break; // two attempts agree: fail fast
+      }
+      return best;
     };
 
     it('a run of `)` costs linear time (no quadratic rescan of the lazy URL)', () => {
@@ -268,7 +306,9 @@ describe('parseV8Stack', () => {
         );
       const hostile = frames(')');
       const benign = frames('a');
-      // healthy code measures ~2x the control; the quadratic rescan ~600x. 40 is the geometric middle.
+      // measured with this harness: healthy code ~2x the control; without the lookbehind the rescan reads ~80-150x
+      // (it varies with the batch). 40 is deliberately a noise-tolerant bound, not the geometric middle (~15): the
+      // per-attempt minimum and the retries make a spurious 40 implausible, and a real regression clears it on every attempt.
       const ratio = costRatio(
         () => {
           for (const input of hostile) parseLocation(input);
@@ -276,6 +316,7 @@ describe('parseV8Stack', () => {
         () => {
           for (const input of benign) parseLocation(input);
         },
+        40,
       );
       expect(ratio).toBeLessThan(40);
       expect(parseLocation(hostile[0] as string).file).not.toContain('token=S)');
@@ -286,10 +327,12 @@ describe('parseV8Stack', () => {
         `eval at ${'(https://'.repeat(152)}${fill.repeat(2700)} x`;
       const hostile = build(')');
       const benign = build('a');
-      // healthy code measures ~5x the control; without the `(?<!\))` lookbehind ~2000x. 100 is the geometric middle.
+      // measured with this harness: healthy code ~5x the control; without the `(?<!\))` lookbehind ~900-2400x.
+      // 100 is within a factor of ~7 of the geometric middle (~70) of the two.
       const ratio = costRatio(
         () => parseLocation(hostile),
         () => parseLocation(benign),
+        100,
       );
       expect(ratio).toBeLessThan(100);
     });
