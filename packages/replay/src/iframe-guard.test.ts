@@ -1129,6 +1129,7 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     const frame = el('iframe', { class: 'private' });
     guard(snapshot(doc([el('body', {}, [frame])])));
     guard(mutation({ adds: [{ parentId: 1, nextId: null, node: { ...frame, attributes: {} } }] }));
+    expect(onViolation).not.toHaveBeenCalled(); // the re-add itself is silent; the attach is what is reported
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
     expect(onViolation).toHaveBeenCalledTimes(1);
   });

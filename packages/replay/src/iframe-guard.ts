@@ -42,7 +42,7 @@
 //   - an iframe that is blocked by a rule on an ANCESTOR is recognised through the recorder's placeholder marker
 //     (rr_width/rr_height, emitted when an attached iframe or a container of it becomes blocked), never through
 //     the serialized ancestors. Against a recorder that does not emit that marker (the previous pins) the guard
-//     only protects iframes that were blocked from the start (and, with a contextual `unblockSelector`, only those blocked from the start);
+//     only protects iframes that were blocked from the start;
 //   - the caller's `unblockSelector` is tested against a DETACHED copy of the iframe (built from its serialized
 //     attributes), which a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never
 //     match. When the selector has a combinator or a pseudo-class, an iframe WITHOUT the recorder's placeholder
