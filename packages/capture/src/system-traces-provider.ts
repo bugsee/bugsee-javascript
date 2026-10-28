@@ -81,6 +81,17 @@ interface Held {
   displayId: number | undefined;
 }
 
+/**
+ * Which running provider owns a producer instance. Producers are stateful (`start()` is a no-op while started, held
+ * values live on the instance), so one instance driven by two providers would interleave start/stop. First owner wins;
+ * a second provider reports it and skips the producer (#58). Released on stop.
+ */
+const OWNERS_KEY = Symbol.for('com.bugsee.trace-producer-owners');
+// Kept on `globalThis` under `Symbol.for`, so two copies of this module (the ESM and CJS builds) share one registry.
+const ownerHost = globalThis as unknown as Record<symbol, WeakMap<TraceProducer, object>>;
+ownerHost[OWNERS_KEY] ??= new WeakMap<TraceProducer, object>();
+const producerOwners = ownerHost[OWNERS_KEY];
+
 class SystemTracesProvider extends CaptureProviderBase {
   readonly name = 'traces.system';
   readonly controllingOption = BugseeOption.CaptureSystemTraces;
@@ -132,12 +143,24 @@ class SystemTracesProvider extends CaptureProviderBase {
     this.#running = true;
     this.#offSuppression = this.#suppression?.subscribe((released) => this.#rerecord(released));
     for (const producer of this.#producers) {
+      const owner = producerOwners.get(producer);
+      if (owner === this) continue; // listed twice in this provider's own array: already started once
+      if (owner !== undefined) {
+        this.#onError(
+          new Error(
+            `system trace producer "${producer.name}" is already owned by another client; skipped (build a fresh producer set per client)`,
+          ),
+        );
+        continue;
+      }
+      producerOwners.set(producer, this);
       try {
         producer.start(this.#sink);
         this.#started.push(producer);
       } catch (error) {
         this.#onError(error);
         this.#safeStop(producer);
+        producerOwners.delete(producer);
       }
     }
     try {
@@ -153,13 +176,20 @@ class SystemTracesProvider extends CaptureProviderBase {
   }
 
   protected override onStop(): void {
-    this.#scheduler.clearInterval(this.#timer);
-    this.#timer = null;
-    this.#offSuppression?.();
-    this.#offSuppression = undefined;
-    this.#stopProducers();
-    this.#running = false;
-    this.#held.clear();
+    try {
+      try {
+        this.#scheduler.clearInterval(this.#timer);
+      } finally {
+        this.#timer = null;
+        this.#offSuppression?.();
+        this.#offSuppression = undefined;
+      }
+    } finally {
+      // a throwing scheduler/unsubscribe must still release the producers (and their ownership) and stop recording
+      this.#stopProducers();
+      this.#running = false;
+      this.#held.clear();
+    }
   }
 
   #tick(): void {
@@ -223,7 +253,10 @@ class SystemTracesProvider extends CaptureProviderBase {
   }
 
   #stopProducers(): void {
-    for (const producer of this.#started.splice(0)) this.#safeStop(producer);
+    for (const producer of this.#started.splice(0)) {
+      this.#safeStop(producer); // ownership is held until stop() has finished (it never throws)
+      producerOwners.delete(producer);
+    }
   }
 
   #safeStop(producer: TraceProducer): void {

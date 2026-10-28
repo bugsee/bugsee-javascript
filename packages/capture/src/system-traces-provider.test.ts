@@ -999,6 +999,236 @@ describe('createSystemTracesProvider — suppression (host-owned and non-key-win
   });
 });
 
+describe('a producer shared by two providers (#58)', () => {
+  it("the first provider owns it: the second reports, skips it, and never stops the first one's producer", async () => {
+    const shared = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const own = new Fixed('own', [['ram_js_heap_used', 2]]);
+    const storeA = mkStore();
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({ producers: [shared], now: () => 1 });
+    const b = createSystemTracesProvider({
+      producers: [shared, own],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(storeA));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toContain('shared');
+    expect(shared.startedCount).toBe(1);
+    expect(own.startedCount).toBe(1); // the rest of B's list still runs
+    b.stop();
+    expect(shared.stoppedCount).toBe(0); // B never owned it
+    expect(own.stoppedCount).toBe(1);
+    expect((await drainSystem(storeA))?.length).toBe(1);
+    a.stop();
+    expect(shared.stoppedCount).toBe(1);
+  });
+
+  it('ownership is released on stop, so a later provider may adopt the producer', () => {
+    const shared = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({ producers: [shared], now: () => 1 });
+    const b = createSystemTracesProvider({
+      producers: [shared],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    a.stop();
+    b.start(options);
+    expect(errors).toEqual([]);
+    expect(shared.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it('a producer whose start throws is not left owned', () => {
+    const bad = new Fixed('bad', [], { throwStart: true });
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({
+      producers: [bad],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    const b = createSystemTracesProvider({
+      producers: [bad],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    expect(errors).toHaveLength(2); // each provider reports only its own start failure
+    expect(errors.map((e) => (e as Error).message).filter((m) => m.includes('another'))).toEqual(
+      [],
+    );
+    a.stop();
+    b.stop();
+  });
+});
+
+describe('producer ownership edge cases (#58)', () => {
+  it('a producer listed twice in ONE provider is started once and not reported as foreign', () => {
+    const p = new Fixed('dup', [['cpu_usage_process', 1]]);
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({
+      producers: [p, p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    a.start(options);
+    expect(errors).toEqual([]);
+    expect(p.startedCount).toBe(1);
+    a.stop();
+    expect(p.stoppedCount).toBe(1);
+  });
+
+  it('a producer is released when the scheduler fails at start, so another provider can claim it', () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const failing: Scheduler = {
+      setInterval: () => {
+        throw new Error('no timer');
+      },
+      clearInterval: () => {},
+    };
+    const a = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      scheduler: failing,
+      onError: () => {},
+    });
+    const errors: unknown[] = [];
+    const b = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    expect(() => a.start(options)).toThrow('no timer');
+    b.start(options);
+    expect(errors).toEqual([]);
+    expect(p.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it("a skipped producer stays skipped for the second provider's whole session, even after the owner stops", () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    const b = createSystemTracesProvider({ producers: [p], now: () => 1, onError: () => {} });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    a.stop();
+    expect(p.startedCount).toBe(1);
+    expect(p.stoppedCount).toBe(1);
+    b.stop();
+    expect(p.stoppedCount).toBe(1);
+  });
+});
+
+describe('stop ordering and failures (#58 review)', () => {
+  it('a throwing clearInterval still stops producers and releases ownership', () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const scheduler: Scheduler = {
+      setInterval: () => 'h',
+      clearInterval: () => {
+        throw new Error('clear failed');
+      },
+    };
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1, scheduler });
+    const b = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    expect(() => a.stop()).toThrow('clear failed');
+    expect(p.stoppedCount).toBe(1);
+    b.start(options);
+    expect(p.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it('a throwing clearInterval still unsubscribes from the suppression', () => {
+    const suppression = createTraceSuppression({ window: ['url'] });
+    const off = vi.fn();
+    vi.spyOn(suppression, 'subscribe').mockReturnValue(off);
+    const scheduler: Scheduler = {
+      setInterval: () => 'h',
+      clearInterval: () => {
+        throw new Error('clear failed');
+      },
+    };
+    const a = createSystemTracesProvider({
+      producers: [new Fixed('p', [['cpu_usage_process', 1]])],
+      now: () => 1,
+      scheduler,
+      suppression,
+    });
+    a.init(buildInit(mkStore()));
+    a.start(options);
+    expect(() => a.stop()).toThrow('clear failed');
+    expect(off).toHaveBeenCalledTimes(1);
+  });
+
+  it('ownership is held while a producer is still stopping (a start from inside stop() is refused)', () => {
+    const errors: unknown[] = [];
+    let other: ReturnType<typeof createSystemTracesProvider> | undefined;
+    class Reentrant extends Fixed {
+      override stop(): void {
+        other?.start(options);
+        super.stop();
+      }
+    }
+    const p = new Reentrant('shared', [['cpu_usage_process', 1]]);
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    other = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    other.init(buildInit(mkStore()));
+    a.start(options);
+    a.stop();
+    expect(errors).toHaveLength(1);
+    expect(p.startedCount).toBe(1);
+    other.stop();
+  });
+
+  it('ownership is also held while a producer whose start() threw is being stopped', () => {
+    const errors: unknown[] = [];
+    let other: ReturnType<typeof createSystemTracesProvider> | undefined;
+    class ReentrantFailing extends Fixed {
+      override stop(): void {
+        other?.start(options);
+        super.stop();
+      }
+    }
+    const p = new ReentrantFailing('shared', [['cpu_usage_process', 1]], { throwStart: true });
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1, onError: () => {} });
+    other = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    other.init(buildInit(mkStore()));
+    a.start(options);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain('already owned');
+    expect(p.startedCount).toBe(1);
+    a.stop();
+    other.stop();
+  });
+});
+
 describe('deriveRefreshMs', () => {
   it.each([
     [600_000, 10_000], // 150 s clamped down to the 10 s ceiling

@@ -451,7 +451,7 @@ solid), in slices:
   `createNodeSystemTraceProducers` from their launches (forwarding the launch `scheduler`/`onError`; Deno adds
   `measuresEventLoopDelay: false`); **webview** adopts `createBrowserSystemTraceProducers` next to its sampler.
   New launch option **`systemTraceProducers`** (node/bun/deno) — RESET on relaunch, because producer instances
-  are stateful (a reused instance's `start()` is a no-op). **Refresh applies only to HELD values**:
+  are stateful (a reused instance's `start()` is a no-op); an instance already owned by another running client's traces provider is skipped + reported via `onError` (first owner wins, released on stop; #58). **Refresh applies only to HELD values**:
   `TraceSink.emit(…, { hold })` — `emitIfChanged` holds (battery/charging) and is re-recorded every
   `refreshMs` = `deriveRefreshMs(window)` (window/4 clamped to [2 s, 10 s]); polled values (cpu/memory/lag/ELU)
   and legacy `sample()` rows are never refreshed, so a failed poll leaves a gap instead of a frozen line. Event
