@@ -89,6 +89,11 @@ describe('TraceProducerBase.poll', () => {
     p.start(sink);
     p.run(() => p.emitAll('a', 1));
     expect(got).toHaveLength(1);
+    const stamped: Array<number | undefined> = [];
+    p.stop();
+    p.start({ emit: (_n, _v, _d, o) => void stamped.push(o?.timestamp) });
+    p.run(() => p.emitAll('a', 1));
+    expect(stamped).toEqual([undefined]);
   });
 });
 

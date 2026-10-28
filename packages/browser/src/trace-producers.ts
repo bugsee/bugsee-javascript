@@ -56,9 +56,9 @@ export class BatteryProducer extends TraceProducerBase {
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s)); // subscribing activates the tracker
+    this.#off = this.#tracker.on('state', (s) => this.poll(() => this.#publish(s))); // subscribing activates the tracker
     const cur = this.#tracker.current();
-    if (cur !== undefined) this.#publish(cur);
+    if (cur !== undefined) this.poll(() => this.#publish(cur));
   }
 
   protected override onStop(): void {

@@ -24,7 +24,7 @@ export interface TraceEmitOptions {
   timestamp?: number;
 }
 
-/** Where a producer sends its values (the provider stamps the time and keeps the last-value snapshot). */
+/** Where a producer sends its values (the provider stamps the time, unless the emit carries a poll timestamp, and keeps the last-value snapshot). */
 export interface TraceSink {
   /**
    * Record one trace sample. `displayId` scopes it to a display; absent = device-wide. Only an emit with

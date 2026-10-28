@@ -47,6 +47,24 @@ describe('BatteryProducer', () => {
     offOther();
   });
 
+  it('stamps every value of one battery reading (baseline) with one sink-clock timestamp', async () => {
+    const m = { ...mkManager(0.25, false), chargingTime: 60, dischargingTime: 120 };
+    const tracker = new PowerTracker({ getBattery: () => Promise.resolve(m) });
+    const offOther = tracker.on('state', () => {});
+    await flush();
+    const stamps: unknown[] = [];
+    const p = new BatteryProducer(tracker);
+    p.start({
+      emit: (_n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
+        void stamps.push(o?.timestamp),
+      now: () => 7,
+    });
+    expect(stamps.length).toBeGreaterThan(1);
+    expect(new Set(stamps)).toEqual(new Set([7]));
+    p.stop();
+    offOther();
+  });
+
   it('an unreadable level while charging emits NOTHING: no battery, and no fabricated charging state', async () => {
     const m = mkManager(Number.NaN, true);
     const { out } = run(
