@@ -281,19 +281,26 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     expect(guard(custom)).toBe(custom);
   });
 
-  it('passes the rrweb 2.2.0 annotation (8) and asset (7) events through unchanged, even when they carry the id of a blocked iframe', () => {
+  it('passes the rrweb 2.2.0 annotation (8) and asset (7) events through unchanged, whatever ids they mention', () => {
     const { guard, onViolation } = make();
-    const frame = el('iframe', { class: 'rr-block', rr_width: '10px', rr_height: '5px' });
+    const inner = el('p', {});
+    const frame = el('iframe', { class: 'rr-block' }, [doc([inner])]);
     guard(snapshot(doc([el('body', {}, [frame])])));
-    const events = [8, 7].map(
-      (type) =>
-        ({
-          type,
-          timestamp: 3,
-          data: { id: frame.id, annotationData: { text: 'marker', id: frame.id } },
-        }) as unknown as eventWithTime,
-    );
-    for (const e of events) expect(guard(e)).toBe(e);
+    onViolation.mockClear(); // the snapshot's stripped content was reported; the events below must not add more
+    const shapes = [
+      { annotationData: { type: 'caption', text: 'marker' } },
+      { url: 'asset://x', payload: 'p' },
+      // not rrweb's real shapes: id fields and an incremental `source` that would route them through the
+      // tainted-id / mutation checks if the guard stopped treating types 7 and 8 as node-less
+      { id: inner.id, source: SOURCE.Mutation },
+      { id: inner.id, source: SOURCE.Scroll },
+    ];
+    for (const type of [8, 7]) {
+      for (const data of shapes) {
+        const e = { type, timestamp: 3, data } as unknown as eventWithTime;
+        expect(guard(e)).toBe(e);
+      }
+    }
     expect(onViolation).not.toHaveBeenCalled();
   });
 
