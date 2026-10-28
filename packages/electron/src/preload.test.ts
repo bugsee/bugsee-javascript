@@ -17,15 +17,24 @@ describe('@bugsee/electron/preload entry', () => {
 // clearImmediate globals from sandboxed preloads, which also cannot load sibling files. The preload
 // entry must stay a pure contextBridge + ipcRenderer wrapper (#110).
 describe('@bugsee/electron/preload sandbox safety', () => {
-  const read = (f: string): string => readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8');
   // Comments mention `require` and `process` in prose; only code matters.
-  const bridge = read('./preload-bridge.ts').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  const read = (f: string): string =>
+    readFileSync(fileURLToPath(new URL(f, import.meta.url)), 'utf8').replace(
+      /\/\*[\s\S]*?\*\/|(^|\s)\/\/.*$/gm,
+      '$1',
+    );
+  const bridge = read('./preload-bridge.ts');
   const entry = read('./preload.ts');
 
   it('imports nothing but its own bridge module', () => {
-    expect(bridge).not.toMatch(/^\s*import\s/m);
-    expect(bridge).not.toMatch(/require\(/);
-    expect([...entry.matchAll(/from '([^']+)'/g)].map((m) => m[1])).toEqual(['./preload-bridge']);
+    const specifiers = (src: string): string[] =>
+      [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"]+)\1/g)].map(
+        (m) => m[2] as string,
+      );
+    expect(specifiers(bridge)).toEqual([]);
+    expect(specifiers(entry)).toEqual(['./preload-bridge']);
+    expect(bridge).not.toMatch(/\b(require|import)\s*\(/);
+    expect(entry).not.toMatch(/\b(require|import)\s*\(/);
   });
 
   it('references none of the removed polyfill globals', () => {

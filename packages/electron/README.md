@@ -61,7 +61,7 @@ Notes for Electron 45 and later:
 
 - Screen, window and tab capture requests (`getDisplayMedia`, `desktopCapturer`) reach `session.setPermissionRequestHandler` as `display-capture`, no longer `media`. If your app allows only `media`, a `getDisplayMedia`-based source will be denied. Allow `display-capture` for the window that hosts your source. The `capturePage` source needs no permission.
 - To capture a WebContents with your own `MediaRecorder` stream, use `chromeMediaSource: 'tab'` with `webContents.getMediaSourceId()`, or `session.setDisplayMediaRequestHandler`. The old `chromeMediaSource: 'desktop'` form with a WebContents source id fails with "Invalid state". The SDK never builds this stream itself; it records the one you supply.
-- Sandboxed renderers (`sandbox: true`) work with the preload entry. The CommonJS build of `@bugsee/electron/preload` is self-contained and uses only `contextBridge` and `ipcRenderer`, so it needs none of the Node polyfills (`events`, `timers`, `url`, `Buffer`, `setImmediate`) that Electron 45 removed from sandboxed preloads.
+- Sandboxed renderers (`sandbox: true`): a sandboxed preload must be CommonJS (or bundled by your app), because Electron does not run ESM preloads there. The CommonJS build of `@bugsee/electron/preload` is self-contained and uses only `contextBridge` and `ipcRenderer`, so it needs none of the Node polyfills (`events`, `timers`, `url`, `Buffer`, `setImmediate`, `clearImmediate`) that Electron 45 removed from sandboxed preloads. This is verified at source level by a test; we have not run a real `sandbox: true` window.
 
 ## Native crashes on Windows
 
