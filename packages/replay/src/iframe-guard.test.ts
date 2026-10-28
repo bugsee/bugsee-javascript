@@ -1010,6 +1010,29 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
   });
 
+  it('an iframe blocked only through its container (marker only) is not reopened by an ordinary attribute change', () => {
+    const { guard } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', {});
+    const wrap = el('div', {}, [frame]);
+    guard(snapshot(doc([wrap])));
+    guard(attach(frame.id, el('p', {}, [text('seen')])));
+    guard(classChange(wrap.id, 'private'));
+    guard(marker(frame.id));
+    for (const attributes of [{ style: 'width: 11px' }, { title: 'x' }, { class: 'other' }]) {
+      guard(mutation({ attributes: [{ id: frame.id, attributes }] }));
+    }
+    expect(guard(attach(frame.id, el('p', {}, [text(SECRET)])))).toBeUndefined();
+  });
+
+  it('an iframe the rules blocked is reopened when its block class is removed (no unblock rule involved)', () => {
+    const { guard } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', { class: 'private' });
+    guard(snapshot(doc([frame])));
+    guard(classChange(frame.id, null));
+    const a = attach(frame.id, el('p', {}));
+    expect(guard(a)).toBe(a);
+  });
+
   it('an iframe inside a blocked iframe document is never reopened', () => {
     const { guard } = make({ blockSelector: 'iframe.private' });
     const outer = el('iframe', {});
