@@ -47,6 +47,34 @@ describe('BatteryProducer', () => {
     offOther();
   });
 
+  it('stamps every value of one battery reading (baseline) with one sink-clock timestamp', async () => {
+    const m = { ...mkManager(0.25, false), chargingTime: 60, dischargingTime: 120 };
+    const tracker = new PowerTracker({ getBattery: () => Promise.resolve(m) });
+    const offOther = tracker.on('state', () => {});
+    await flush();
+    const stamps: unknown[] = [];
+    let clock = 6;
+    const p = new BatteryProducer(tracker);
+    p.start({
+      emit: (_n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
+        void stamps.push(o?.timestamp),
+      now: () => (clock += 1),
+    });
+    expect(stamps.length).toBeGreaterThan(1);
+    expect(new Set(stamps)).toEqual(new Set([7]));
+    // the live path: a state change is its own poll with a fresh shared timestamp
+    stamps.length = 0;
+    m.level = 0.5;
+    m.chargingTime = 90;
+    m.fire('levelchange');
+    m.fire('chargingtimechange');
+    expect(stamps.length).toBeGreaterThan(1);
+    expect(new Set(stamps)).toEqual(new Set([8])); // one poll = one stamp (levelchange emits two values; chargingtimechange nothing)
+    expect(stamps.every((t) => typeof t === 'number' && t > 7)).toBe(true);
+    p.stop();
+    offOther();
+  });
+
   it('an unreadable level while charging emits NOTHING: no battery, and no fabricated charging state', async () => {
     const m = mkManager(Number.NaN, true);
     const { out } = run(

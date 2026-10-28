@@ -424,6 +424,16 @@ describe('createBrowserSystemTraceProducers: process traces', () => {
         'ram_js_heap_free',
         'ram_js_heap_used',
       ]);
+      // the three heap values of one reading carry ONE sink-clock timestamp
+      memory.stop();
+      const stamps: Array<number | undefined> = [];
+      let clock = 10;
+      memory.start({
+        emit: (_n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
+          void stamps.push(o?.timestamp),
+        now: () => (clock += 1),
+      });
+      expect(stamps).toEqual([11, 11, 11]);
       // ONE tracker serves both producers: the window's registry instance saw the user-idle subscription (it retained
       // the state) AND carries the heap seam, and a second lookup returns that same object.
       const shared = processTrackerFor({ window: win });

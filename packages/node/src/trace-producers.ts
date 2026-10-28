@@ -25,13 +25,13 @@ abstract class StageProducer<S extends Stage> extends TraceProducerBase {
   }
   protected abstract publish(payload: ProcessEvents[S]): void;
   protected onStart(): void {
-    this.#off = this.tracker.on(this.stage, (p) => this.publish(p)); // subscribing arms the stage
+    this.#off = this.tracker.on(this.stage, (p) => this.poll(() => this.publish(p))); // subscribing arms the stage
     this.baseline();
   }
   /** The value emitted at start. Most families publish the current reading; windowed ones override (no baseline). */
   protected baseline(): void {
     const current = this.tracker.current(this.stage);
-    if (current !== undefined) this.publish(current);
+    if (current !== undefined) this.poll(() => this.publish(current));
   }
   protected override onStop(): void {
     this.#off?.();

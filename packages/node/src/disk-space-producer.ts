@@ -33,7 +33,7 @@ class DiskSpaceProducer extends TraceProducerBase {
   }
   // Subscribing arms the tracker's stage (an immediate read, then its own timer): no baseline to emit here.
   protected onStart(): void {
-    this.#off = this.tracker.on('disk', (d) => this.publish(d));
+    this.#off = this.tracker.on('disk', (d) => this.poll(() => this.publish(d)));
   }
   protected override onStop(): void {
     this.#off?.();

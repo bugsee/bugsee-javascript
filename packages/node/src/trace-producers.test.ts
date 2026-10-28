@@ -681,4 +681,23 @@ describe('V8_HEAP_PRODUCER_NAME', () => {
     for (const p of others) p.start({ emit: (n) => void names.push(n) });
     expect(names.some((n) => n.startsWith('ram_js_heap_'))).toBe(false);
   });
+
+  it('stamps all values of one poll (and of the baseline) with one sink-clock timestamp', () => {
+    const h = harness(constDeps());
+    const stamps = new Map<string, number | undefined>();
+    let clock = 0;
+    const sink = {
+      emit: (n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
+        void stamps.set(n, o?.timestamp),
+      now: () => (clock += 1),
+    };
+    const mem = h.producers.find((p) => p.name === 'process-memory');
+    mem?.start(sink);
+    const names = [...stamps.keys()];
+    expect(names.length).toBeGreaterThan(1);
+    expect(new Set(stamps.values())).toEqual(new Set([1])); // one baseline poll = one timestamp
+    h.tick();
+    expect(new Set(stamps.values())).toEqual(new Set([2])); // next poll = a fresh one, shared by every value
+    mem?.stop();
+  });
 });

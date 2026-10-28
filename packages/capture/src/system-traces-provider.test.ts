@@ -193,7 +193,40 @@ const values = async (store: CaptureStore) =>
     (e) => e.data as { name: string; value: unknown; timestamp: number; displayId?: number },
   ) ?? [];
 
+class PollProducer extends TraceProducerBase {
+  readonly name = 'poll';
+  protected onStart(): void {}
+  readPair(): void {
+    this.poll(() => {
+      this.emit('x' as TraceName, 1);
+      this.emit('y' as TraceName, 2);
+    });
+  }
+}
+
 describe('createSystemTracesProvider — producers', () => {
+  it('one poll stamps all its values with a single provider-clock timestamp', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const prod = new PollProducer();
+    const p = createSystemTracesProvider({
+      producers: [prod],
+      scheduler: fs.scheduler,
+      now: () => (t += 1),
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    prod.readPair();
+    prod.readPair();
+    expect((await values(store)).map((e) => [e.name, e.timestamp])).toEqual([
+      ['x', 2], // (the clock's first tick went to the provider's start)
+      ['y', 2],
+      ['x', 3],
+      ['y', 3],
+    ]);
+  });
+
   it('starts every producer, routing their emits to traces.system with the provider timestamp', async () => {
     const store = mkStore();
     const fs = fakeScheduler();

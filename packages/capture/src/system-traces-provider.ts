@@ -99,8 +99,17 @@ class SystemTracesProvider extends CaptureProviderBase {
   #timer: unknown = null;
   readonly #sink: TraceSink = {
     emit: (name, value, displayId, options) => {
-      if (this.#running) this.#record(name, value, displayId, this.#now(), options?.hold === true);
+      if (this.#running) {
+        this.#record(
+          name,
+          value,
+          displayId,
+          options?.timestamp ?? this.#now(),
+          options?.hold === true,
+        );
+      }
     },
+    now: () => this.#now(),
   };
 
   constructor(options: SystemTracesProviderOptions) {

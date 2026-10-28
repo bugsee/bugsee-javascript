@@ -54,6 +54,19 @@ describe('createDiskSpaceProducer (composition over the StorageTracker)', () => 
     ]);
   });
 
+  it('stamps free and total of one reading with one sink-clock timestamp', async () => {
+    const s = setup(async () => ({ bsize: 4096, bavail: 10 * 256, blocks: 100 * 256 }));
+    let clock = 0;
+    const stamps: unknown[] = [];
+    s.producer.start({
+      emit: (_n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
+        void stamps.push(o?.timestamp),
+      now: () => (clock += 1),
+    });
+    await flush();
+    expect(stamps).toEqual([1, 1]);
+  });
+
   it('is POLLED, not held: every poll emits with hold:false', async () => {
     let free = 10 * 256;
     const s = setup(async () => ({ bsize: 4096, bavail: free, blocks: 100 * 256 }));

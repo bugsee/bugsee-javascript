@@ -56,9 +56,9 @@ export class BatteryProducer extends TraceProducerBase {
   }
 
   protected onStart(): void {
-    this.#off = this.#tracker.on('state', (s) => this.#publish(s)); // subscribing activates the tracker
+    this.#off = this.#tracker.on('state', (s) => this.poll(() => this.#publish(s))); // subscribing activates the tracker
     const cur = this.#tracker.current();
-    if (cur !== undefined) this.#publish(cur);
+    if (cur !== undefined) this.poll(() => this.#publish(cur));
   }
 
   protected override onStop(): void {
@@ -172,9 +172,11 @@ export class MemoryProducer extends TraceProducerBase {
   }
 
   #publish(m: HeapState): void {
-    this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);
-    this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(m.limit - m.used, 0));
-    this.emit(TraceName.RAM_JS_HEAP_USED, m.used);
+    this.poll(() => {
+      this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);
+      this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(m.limit - m.used, 0));
+      this.emit(TraceName.RAM_JS_HEAP_USED, m.used);
+    });
   }
 }
 
