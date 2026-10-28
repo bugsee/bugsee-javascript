@@ -986,56 +986,15 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
-  it('an iframe blocked by the rules in the snapshot, then unblocked and navigated: the new document is kept', () => {
-    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+  it('LIMIT: a blocked iframe is never reopened, even when it is unblocked and navigated', () => {
+    const { guard } = make({ blockSelector: 'iframe.private' });
     const frame = el('iframe', { class: 'private' });
     guard(snapshot(doc([frame])));
-    guard(marker(frame.id)); // a repeated marker never reopens it
-    expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-    guard(classChange(frame.id, null)); // unblocked: a recorded change the rules no longer match
-    const fresh = el('p', {}, [text('new doc')]);
-    const a = attach(frame.id, fresh);
-    expect(guard(a)).toBe(a);
-    const t = mutation({ texts: [{ id: (fresh.childNodes[0] as { id: number }).id, value: 'x' }] });
-    expect(guard(t)).toBe(t);
-    expect(onViolation).toHaveBeenCalledTimes(1); // only the attach into the still-blocked frame
-    // blocking it again (marker only, as the recorder emits it) closes it again
-    guard(classChange(frame.id, 'private'));
+    guard(classChange(frame.id, null)); // unblocked
     guard(marker(frame.id));
-    expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-  });
-
-  it('LIMIT: an iframe blocked mid-stream (marker only) stays closed even when it is unblocked again', () => {
-    const { guard } = make({ blockSelector: 'iframe', unblockSelector: '.bugsee-show' });
-    const frame = el('iframe', { class: 'bugsee-show' });
-    guard(snapshot(doc([frame])));
-    guard(marker(frame.id));
-    guard(classChange(frame.id, 'bugsee-show'));
     // the guard cannot tell an own block from an ancestor's: it fails closed until the next full snapshot
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-  });
-
-  it('an iframe blocked only through its container (marker only) is not reopened by an ordinary attribute change', () => {
-    const { guard } = make({ blockSelector: 'iframe.private' });
-    const frame = el('iframe', {});
-    const wrap = el('div', {}, [frame]);
-    guard(snapshot(doc([wrap])));
-    guard(attach(frame.id, el('p', {}, [text('seen')])));
-    guard(classChange(wrap.id, 'private'));
-    guard(marker(frame.id));
-    for (const attributes of [{ style: 'width: 11px' }, { title: 'x' }, { class: 'other' }]) {
-      guard(mutation({ attributes: [{ id: frame.id, attributes }] }));
-    }
-    expect(guard(attach(frame.id, el('p', {}, [text(SECRET)])))).toBeUndefined();
-  });
-
-  it('an iframe the rules blocked is reopened when its block class is removed (no unblock rule involved)', () => {
-    const { guard } = make({ blockSelector: 'iframe.private' });
-    const frame = el('iframe', { class: 'private' });
-    guard(snapshot(doc([frame])));
-    guard(classChange(frame.id, null));
-    const a = attach(frame.id, el('p', {}));
-    expect(guard(a)).toBe(a);
+    guard(snapshot(doc([el('iframe', {})])));
   });
 
   it('an iframe inside a blocked iframe document is never reopened', () => {
@@ -1050,33 +1009,6 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     expect(guard(attach(nested.id, el('p', {})))).toBeUndefined();
   });
 
-  it('a rules-blocked iframe stays closed while its attributes still match, and a reopened one drops its stale marker', () => {
-    const { guard, onViolation } = make({
-      blockSelector: 'iframe',
-      unblockSelector: '.bugsee-show',
-    });
-    const frame = el('iframe', { class: 'bugsee-show' });
-    guard(snapshot(doc([frame])));
-    guard(classChange(frame.id, null));
-    guard(marker(frame.id));
-    guard(mutation({ attributes: [{ id: frame.id, attributes: { title: 'still blocked' } }] }));
-    expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-    // an attribute change and an attach in ONE event: the attributes still match the rules, so the attach is dropped
-    const same = guard(
-      mutation({
-        attributes: [{ id: frame.id, attributes: { title: 'same event' } }],
-        adds: [{ parentId: frame.id, nextId: null, node: doc([el('p', {})]) }],
-      }),
-    );
-    expect((same as unknown as { data: { adds: unknown[] } }).data.adds).toEqual([]);
-    guard(classChange(frame.id, 'bugsee-show'));
-    // reopened; an unrelated attribute change must not re-close it through the stale marker
-    guard(mutation({ attributes: [{ id: frame.id, attributes: { title: 'open' } }] }));
-    const a = attach(frame.id, el('p', {}));
-    expect(guard(a)).toBe(a);
-    expect(onViolation).toHaveBeenCalledTimes(1); // only the attach into the still-blocked frame
-  });
-
   it('an empty attribute entry from a blocked iframe is content, not a marker', () => {
     const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
     const frame = el('iframe', {});
@@ -1086,14 +1018,5 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     guard(classChange(frame.id, 'private'));
     guard(mutation({ attributes: [{ id: inner.id }] }));
     expect(onViolation).toHaveBeenCalledTimes(1);
-  });
-
-  it('a snapshot-time iframe blocked by rules can be unblocked', () => {
-    const { guard } = make({ blockSelector: 'iframe', unblockSelector: '.bugsee-show' });
-    const frame = el('iframe', {});
-    guard(snapshot(doc([frame])));
-    guard(classChange(frame.id, 'bugsee-show'));
-    const a = attach(frame.id, el('p', {}));
-    expect(guard(a)).toBe(a);
   });
 });
