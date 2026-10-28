@@ -103,13 +103,13 @@
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
-    "@bugsee/bugsee": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",
-    "@bugsee/vercel-edge": "workspace:*"
+    "@bugsee/vercel-edge": "workspace:*",
+    "@bugsee/bugsee": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",
-    "astro": "^7.4.2"
+    "astro": "^5.0.0"
   }
 }
