@@ -99,7 +99,7 @@ const DIALECTS: readonly Dialect[] = [
     dollarQuotes: true,
     backslashEscapes: 'e',
   },
-  // standard SQL, SQLite, SQL Server, Oracle
+  // standard SQL and SQLite. SQL Server `[..]` identifiers and Oracle `q'..'` quoting are NOT modelled (known gap)
   {
     hashComment: false,
     lineEnd: LF,

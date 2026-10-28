@@ -307,6 +307,10 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     );
   });
 
+  it('fails closed on a double quote inside a backtick run', () => {
+    expect(clean('SELECT `a"b` FROM t WHERE x = "secretD"')).toBe('SELECT ?');
+  });
+
   it('fails closed on an unterminated backtick identifier', () => {
     expect(clean("SELECT `it's 'secret")).toBe('SELECT ?');
   });
@@ -391,8 +395,17 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
   });
 
   it('ends # and -- comments at LF only for MySQL and SQLite, so a CR cannot hide a literal', () => {
-    expect(clean("SELECT c FROM t -- see\r it's\n WHERE a = 'k' AND p = 'secret'")).not.toContain(
-      'secret',
+    expect(clean("SELECT c FROM t -- see\r it's\n WHERE a = 'k' AND p = 'secret'")).toBe(
+      'SELECT c FROM t  ?',
+    );
+  });
+
+  it('documents the unmodelled dialect gaps: bracket identifiers and q-quotes are not tokenised', () => {
+    // Known, pre-existing (the old regex leaked these too) and out of scope for #109: an apostrophe inside
+    // `[..]` or `q'[..]'` shifts the pairing identically in every reading, so nothing is cut. Pinned so a
+    // future fix has to change this test on purpose.
+    expect(clean("SELECT [it's] FROM t WHERE a = 'secret1' AND b = 'x'")).toBe(
+      'SELECT [it?secret1?x?',
     );
   });
 
@@ -418,6 +431,22 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     ["SELECT ` # secret `\n FROM t WHERE a = 'x'", 'secret'],
   ])('fails closed on a comment or dollar opener inside a backtick run: %j', (sql, secret) => {
     expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('pins the known shape losses of the cross-dialect cut (safe side: no literal survives)', () => {
+    expect(clean("SELECT data #> '{a}' FROM t WHERE id = 5")).toBe('SELECT data ?');
+    expect(clean("SELECT * FROM #tmp WHERE id = 5 AND n = 'x'")).toBe('SELECT * FROM ?');
+    expect(clean("SELECT 1 /*+ IndexScan(t) */ FROM t WHERE a = 'x'")).toBe('SELECT ?   ?');
+  });
+
+  it('cuts at the first differing OUTPUT position; what is kept is a prefix of every reading own output', () => {
+    // MySQL: `'a\'secretZ'` is one literal and `tail` an alias; Postgres/standard: `'a\'`, code `secretZ`, then an
+    // unterminated literal. The readings print `?tail` and `?secretZ?`, so the cut is after the first `?`.
+    expect(clean("SELECT 'a\\'secretZ'tail")).toBe('SELECT ??');
+    // Text that every reading prints as code stays, even though the readings map it to different input ranges
+    // (MySQL: the trailing word; Postgres: the one inside the quotes). Each kept character is part of each
+    // reading's own redacted output, so it discloses nothing any single reading would not.
+    expect(clean("SELECT 'a\\'PASSWORD'PASSWORD")).toBe('SELECT ?PASSWORD?');
   });
 
   it('redacts an exponent with underscore separators', () => {
