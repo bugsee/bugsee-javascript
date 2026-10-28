@@ -286,7 +286,7 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     const inner = el('p', {});
     const frame = el('iframe', { class: 'rr-block' }, [doc([inner])]);
     guard(snapshot(doc([el('body', {}, [frame])])));
-    onViolation.mockClear(); // the snapshot's stripped content was reported; the events below must not add more
+    expect(onViolation).toHaveBeenCalledTimes(1); // the snapshot's stripped content (the once-per-session report)
     const shapes = [
       { annotationData: { type: 'caption', text: 'marker' } },
       { url: 'asset://x', payload: 'p' },
@@ -298,10 +298,9 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     for (const type of [8, 7]) {
       for (const data of shapes) {
         const e = { type, timestamp: 3, data } as unknown as eventWithTime;
-        expect(guard(e)).toBe(e);
+        expect(guard(e)).toBe(e); // the report latch is spent, so identity is the assertion that matters
       }
     }
-    expect(onViolation).not.toHaveBeenCalled();
   });
 
   it('scans nodes added while recording: an added blocked iframe is stripped, its later attach dropped', () => {
