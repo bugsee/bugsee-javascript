@@ -198,6 +198,20 @@ describe('createNodeSystemTraceProducers', () => {
       for (const k of h.got.keys()) expect(k).not.toMatch(/^(v8_heap_|ram_js_heap_)/);
     });
 
+    it('measuresConstrainedMemory:false wires NO cap reader: no process_memory_limit even where the runtime would answer', () => {
+      const spy = vi
+        .spyOn(process as unknown as { constrainedMemory: () => number }, 'constrainedMemory')
+        .mockReturnValue(1);
+      try {
+        const { memoryLimit: _off, ...base } = constDeps({ eventLoop });
+        const h = harness({ ...base, measuresConstrainedMemory: false });
+        h.startAll();
+        expect(h.got.has('process_memory_limit')).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('ram_system_free: os.freemem() (not on macOS), MemAvailable first for readsProcMeminfo, native first of all; total stays total', () => {
       const { systemMemory: _s, ...base } = constDeps({ eventLoop });
       const run1 = (over: NodeTraceProducerDeps) => {

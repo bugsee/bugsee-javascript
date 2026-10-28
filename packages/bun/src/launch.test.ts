@@ -140,6 +140,29 @@ describe('@bugsee/bun launch', () => {
     );
   });
 
+  it.each([
+    ['linux', true],
+    ['darwin', false],
+    ['win32', false],
+  ])('measuresConstrainedMemory on %s is %s (the cgroup cap exists only on Linux)', (platform, expected) => {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    try {
+      track(launchCore('tok', base()).client);
+    } finally {
+      if (real) Object.defineProperty(process, 'platform', real);
+    }
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
+      expect.objectContaining({ measuresConstrainedMemory: expected }),
+    );
+  });
+
+  it('builds no default producer set when the caller supplies systemTraceProducers (it would rebind their shared tracker gates)', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    track(launchCore('tok', base({ systemTraceProducers: [] })).client);
+    expect(createNodeSystemTraceProducers).not.toHaveBeenCalled();
+  });
+
   it('does not opt out of event-loop delay (Bun measures it)', () => {
     track(launchCore('tok', base()).client);
     expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);

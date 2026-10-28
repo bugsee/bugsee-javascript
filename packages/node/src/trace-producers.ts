@@ -140,9 +140,9 @@ class MemoryLimitProducer extends StageProducer<'memoryLimit'> {
 }
 
 /**
- * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`,
+ * The tracker seams plus the platform GATES (`measuresEventLoopDelay`, `measuresV8Heap`, `measuresConstrainedMemory`,
  * `measuresGc` (gates the `gc` EVENT source, not a trace); see {@link ProcessTrackerEnv}) — runtime-identity facts the platform packages pass in: Deno gates the
- * event-loop histogram, Bun the V8 heap, both the GC reader (Bun also sets `readsProcMeminfo`).
+ * event-loop histogram, Bun the V8 heap, Bun and Deno the cgroup cap off Linux, both the GC reader (Bun also sets `readsProcMeminfo`).
  */
 export interface NodeTraceProducerDeps extends ProcessTrackerEnv {
   onError?: (error: unknown) => void;

@@ -504,6 +504,11 @@ describe('ProcessTracker', () => {
         { measuresEventLoopDelay: false },
       ],
       ['v8Heap (Bun: measuresV8Heap:false)', 'v8Heap', { measuresV8Heap: false }],
+      [
+        'memoryLimit (measuresConstrainedMemory:false)',
+        'memoryLimit',
+        { measuresConstrainedMemory: false, memoryLimit: undefined },
+      ],
     ] as const)('%s: a gated stage alone arms no timer', (_label, stage, over) => {
       const { tracker, fs } = mk(over as ProcessEnv);
       const off = tracker.on(stage, () => {});
@@ -564,6 +569,22 @@ describe('ProcessTracker', () => {
         v8Heap: () => ({ limit: 1, used: 1, available: 1, malloced: 1, peakMalloced: 1 }),
       });
       expect(injected.tracker.current('v8Heap')?.limit).toBe(1);
+    });
+
+    it('measuresConstrainedMemory:false wires no cap reader even where the runtime answers a real cap; the default reads it; an injected reader wins', () => {
+      const spy = vi
+        .spyOn(nodeProcessForTest as { constrainedMemory: () => number }, 'constrainedMemory')
+        .mockReturnValue(1);
+      try {
+        const gated = mk({ memoryLimit: undefined, measuresConstrainedMemory: false });
+        expect(gated.tracker.current('memoryLimit')).toBeUndefined();
+        const open = mk({ memoryLimit: undefined, measuresConstrainedMemory: undefined });
+        expect(open.tracker.current('memoryLimit')).toEqual({ bytes: 1 });
+        const injected = mk({ measuresConstrainedMemory: false, memoryLimit: () => 7 });
+        expect(injected.tracker.current('memoryLimit')).toEqual({ bytes: 7 });
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     describe('systemMemory.free: memory available to new work', () => {
@@ -1261,6 +1282,20 @@ describe('ProcessTracker', () => {
       expect(disconnected).toBe(1);
       fs.tick();
       expect(gc).toEqual([]);
+    });
+
+    it('a flipped measuresConstrainedMemory gate re-resolves the cap reader on rebind', () => {
+      const spy = vi
+        .spyOn(nodeProcessForTest as { constrainedMemory: () => number }, 'constrainedMemory')
+        .mockReturnValue(1);
+      try {
+        const { tracker } = mk({ memoryLimit: undefined });
+        expect(tracker.current('memoryLimit')).toEqual({ bytes: 1 });
+        tracker.rebind({ memoryLimit: undefined, measuresConstrainedMemory: false });
+        expect(tracker.current('memoryLimit')).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('rebinding an idle tracker only swaps the seams', () => {
