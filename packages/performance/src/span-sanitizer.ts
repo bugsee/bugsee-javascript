@@ -199,7 +199,7 @@ function scan(statement: string, dialect: Dialect): string {
       // Only MySQL and SQLite read a backtick as a quote; elsewhere it is a stray character and a quote inside
       // the run is a real delimiter. A quote in the run is therefore ambiguous: fail closed.
       const run = end === -1 ? undefined : statement.slice(i, end);
-      if (run === undefined || /['"$]/.test(run)) {
+      if (run === undefined || /['"$#]|--|\/\*/.test(run)) {
         out += '?';
         break;
       }
@@ -241,6 +241,8 @@ function scan(statement: string, dialect: Dialect): string {
  * where the readings first disagree: the agreed prefix is kept, the rest is redacted. Anything that never
  * closes (including a statement cut by a length cap) likewise fails CLOSED to the end. The price is shape:
  * a statement using a dialect-specific construct may lose its tail, which is the safe side of the trade.
+ * Examples that cut: `#` (MySQL comment, Postgres JSON operator `#>`, SQL Server `#tmp`), `$$` bodies,
+ * a backslash-escaped quote, and MySQL-style `/*!` / `/*+` comments (so Oracle-style hints cut too).
  */
 export function redactSqlLiterals(statement: string): string {
   const [first, ...rest] = DIALECTS.map((dialect) => scan(statement, dialect)) as [
@@ -256,7 +258,7 @@ export function redactSqlLiterals(statement: string): string {
   }
   // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
   return out.replace(
-    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:e[+-]?\d+)?)\b/gi,
+    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:e[+-]?\d[\d_]*)?)\b/gi,
     '?',
   );
 }

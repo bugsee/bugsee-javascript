@@ -411,6 +411,19 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean(sql)).not.toContain(secret);
   });
 
+  it.each([
+    ['SELECT `a $$ secret ` $$', 'secret'],
+    ["SELECT ` -- secret `\n FROM t WHERE a = 'x'", 'secret'],
+    ['SELECT ` /* secret */ ` FROM t', 'secret'],
+    ["SELECT ` # secret `\n FROM t WHERE a = 'x'", 'secret'],
+  ])('fails closed on a comment or dollar opener inside a backtick run: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('redacts an exponent with underscore separators', () => {
+    expect(clean('SELECT 1e1_000')).toBe('SELECT ?');
+  });
+
   it('pins the exact output of truncated and minimal executable comments', () => {
     expect(clean('/*!')).toBe(' ');
     expect(clean('/*M')).toBe(' ');
