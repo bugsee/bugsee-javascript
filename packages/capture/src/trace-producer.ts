@@ -112,7 +112,7 @@ export abstract class TraceProducerBase implements TraceProducer {
 
   /**
    * Run `fn` as ONE poll: every emit inside it carries the same timestamp (taken once, from the sink's clock),
-   * so the values of one reading correlate exactly. A sink without a clock leaves per-emit stamping. Re-entrant.
+   * so the values of one reading correlate exactly. A sink without a clock leaves per-emit stamping. A nested poll joins the outer one when the sink has a clock; without one it is a plain call.
    */
   protected poll(fn: () => void): void {
     if (this.#pollAt !== undefined || this.#sink === undefined) {
