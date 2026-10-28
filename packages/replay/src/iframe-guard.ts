@@ -22,7 +22,8 @@
 //      from then on. The recorder announces it: when an attached iframe becomes blocked it emits a placeholder
 //      marker (`rr_width`/`rr_height`) on the iframe, which is what reaches this guard (rrweb drops the class change
 //      itself, because the iframe is blocked by then);
-//   3c. a blocked iframe whose attributes stop matching the block rules is reopened, so a document it attaches
+//   3c. a blocked iframe that the recorder reports a (non-marker) attribute change for, and whose attributes do not
+//      match the block rules, is reopened, so a document it attaches
 //      afterwards (block, unblock, navigate) is kept;
 //   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not. The
 //      recorder's marker on an already-gated nested iframe is removed silently, so it cannot use that one report up.
@@ -49,9 +50,10 @@
 //     attributes), so a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never match:
 //     the recorder records such an iframe, the guard removes its document and reports a violation. Value selectors
 //     (`iframe[data-embed="x"]`, `.bugsee-show`) are unaffected. See bugsee-javascript#123;
-//   - a blocked iframe is reopened (its next document recorded again) only when the block RULES held it closed and
-//     its attributes stop matching them; the placeholder marker has no inverse, so an iframe held closed only by
-//     the marker (an ancestor's block) stays closed until the next full snapshot;
+//   - a blocked iframe is reopened on a recorded attribute change that no longer matches the block rules; the
+//     placeholder marker has no inverse, so a marker alone never reopens one (a nested iframe's
+//     document stays dropped until the next full snapshot). This trusts the recorder, which drops attribute changes of
+//     blocked nodes: a recorder that emitted one for an ancestor-blocked iframe would get its next document kept;
 //   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's job and
 //     has its own tests (see the real-browser masking e2e);
 //   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip.
@@ -139,10 +141,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const taintedStyles = new Set<number>();
   // Iframes that are blocked as of now, with their attributes and whether the block RULES (not only the recorder's
   // placeholder marker) block them: only those can be unblocked again, by an attribute change that stops matching.
-  const closedIframes = new Map<
-    number,
-    { attributes: Record<string, unknown>; byRules: boolean }
-  >();
+  const closedIframes = new Map<number, Record<string, unknown>>();
   let reported = false;
 
   const report = (message: string): void => {
@@ -210,6 +209,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
       ownerOf.delete(next);
       parentOf.delete(next);
       openIframes.delete(next);
+      closedIframes.delete(next);
       for (const kid of kidsOf.get(next) ?? []) {
         stack.push(kid);
       }
@@ -230,7 +230,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const closeIframe = (id: number, attributes: Record<string, unknown>): void => {
     openIframes.delete(id);
     blockedIframes.add(id);
-    closedIframes.set(id, { attributes, byRules: blockedByRules(attributes) });
+    closedIframes.set(id, attributes);
     for (const [nodeId, owner] of ownerOf) {
       if (within(owner, id)) {
         tainted.add(nodeId);
@@ -275,10 +275,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     if (node.type === ELEMENT_NODE && node.tagName === 'iframe') {
       if (isBlockedIframe(node)) {
         blockedIframes.add(node.id);
-        closedIframes.set(node.id, {
-          attributes: { ...(node.attributes ?? {}) },
-          byRules: blockedByRules(node.attributes ?? {}),
-        });
+        closedIframes.set(node.id, { ...(node.attributes ?? {}) });
         if (node.childNodes !== undefined && node.childNodes.length > 0) {
           for (const child of node.childNodes) {
             taint(child);
@@ -340,23 +337,25 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   };
 
   /**
-   * An attribute mutation on a blocked iframe. One the block RULES held closed is reopened once its attributes stop
-   * matching them (the recorder's placeholder marker has no inverse, so it is ignored here): the recorder records
-   * its next document again. One held only by the marker (an ancestor's block) stays closed.
+   * An attribute mutation on a blocked iframe. The recorder drops the change that blocks an iframe and emits only
+   * its placeholder marker, so the attributes held here may be stale; a later change that the recorder DID record
+   * means it no longer considers the iframe blocked. It is reopened when the merged attributes do not match the
+   * block rules either (the marker itself has no inverse and never reopens): the recorder records its next document
+   * again. (A nested iframe stays tainted, so an attach under it is still dropped.)
    */
   const reconsider = (
     id: number,
-    closed: { attributes: Record<string, unknown>; byRules: boolean },
+    held: Record<string, unknown>,
     changes: Record<string, unknown> | undefined,
   ): void => {
-    const merged = mergeAttributes(closed.attributes, changes);
-    if (closed.byRules && !blockedByRules(merged)) {
+    const merged = mergeAttributes(held, changes);
+    if (!isMarkerOnly(changes) && !blockedByRules(merged)) {
       blockedIframes.delete(id);
       closedIframes.delete(id);
       const { rr_width: _w, rr_height: _h, ...rest } = merged;
       openIframes.set(id, rest);
     } else {
-      closed.attributes = merged;
+      closedIframes.set(id, merged);
     }
   };
 
