@@ -172,9 +172,11 @@ export class MemoryProducer extends TraceProducerBase {
   }
 
   #publish(m: HeapState): void {
-    this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);
-    this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(m.limit - m.used, 0));
-    this.emit(TraceName.RAM_JS_HEAP_USED, m.used);
+    this.poll(() => {
+      this.emit(TraceName.RAM_JS_HEAP_TOTAL, m.limit);
+      this.emit(TraceName.RAM_JS_HEAP_FREE, Math.max(m.limit - m.used, 0));
+      this.emit(TraceName.RAM_JS_HEAP_USED, m.used);
+    });
   }
 }
 

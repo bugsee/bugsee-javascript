@@ -20,6 +20,8 @@ export interface TraceEmitOptions {
    * the provider fabricating a flat line at the last good reading.
    */
   hold?: boolean;
+  /** Sample time (ms, the sink's clock). Absent = the sink stamps the time of the emit itself. */
+  timestamp?: number;
 }
 
 /** Where a producer sends its values (the provider stamps the time and keeps the last-value snapshot). */
@@ -29,6 +31,8 @@ export interface TraceSink {
    * `options.hold === true` is kept for the provider's last-value refresh (see {@link TraceEmitOptions}).
    */
   emit(name: TraceName, value: unknown, displayId?: number, options?: TraceEmitOptions): void;
+  /** The sink's clock, so a producer can take ONE timestamp per poll (see TraceProducerBase.poll). Optional for hand-written sinks. */
+  now?(): number;
 }
 
 export interface TraceProducer {
@@ -63,6 +67,7 @@ export abstract class TraceProducerBase implements TraceProducer {
   abstract readonly name: string;
   #sink: TraceSink | undefined;
   readonly #last = new Map<string, unknown>();
+  #pollAt: number | undefined;
 
   start(sink: TraceSink): void {
     if (this.#sink !== undefined) return;
@@ -105,9 +110,31 @@ export abstract class TraceProducerBase implements TraceProducer {
     this.#send(name, value, displayId, true);
   }
 
+  /**
+   * Run `fn` as ONE poll: every emit inside it carries the same timestamp (taken once, from the sink's clock),
+   * so the values of one reading correlate exactly. A sink without a clock leaves per-emit stamping. Re-entrant.
+   */
+  protected poll(fn: () => void): void {
+    if (this.#pollAt !== undefined || this.#sink === undefined) {
+      fn();
+      return;
+    }
+    this.#pollAt = this.#sink.now?.();
+    try {
+      fn();
+    } finally {
+      this.#pollAt = undefined;
+    }
+  }
+
   #send(name: TraceName, value: unknown, displayId: number | undefined, hold: boolean): void {
     if (this.#sink === undefined) return;
-    this.#sink.emit(name, value, displayId, { hold });
+    this.#sink.emit(
+      name,
+      value,
+      displayId,
+      this.#pollAt === undefined ? { hold } : { hold, timestamp: this.#pollAt },
+    );
     this.#last.set(keyOf(name, displayId), value);
   }
 }

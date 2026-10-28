@@ -35,6 +35,63 @@ class Probe extends TraceProducerBase {
   }
 }
 
+describe('TraceProducerBase.poll', () => {
+  class Poller extends Probe {
+    run(fn: () => void): void {
+      this.poll(fn);
+    }
+  }
+  const clockSink = (): { sink: TraceSink; stamps: Array<number | undefined> } => {
+    const stamps: Array<number | undefined> = [];
+    let t = 100;
+    return {
+      stamps,
+      sink: {
+        emit: (_n, _v, _d, o) => void stamps.push(o?.timestamp),
+        now: () => (t += 1),
+      },
+    };
+  };
+
+  it('stamps every emit of one poll with a single sink-clock timestamp, then clears it', () => {
+    const p = new Poller();
+    const { sink, stamps } = clockSink();
+    p.start(sink);
+    p.run(() => {
+      p.emitAll('a', 1);
+      p.emitAll('b', 2);
+      p.run(() => p.emitAll('c', 3)); // nested: same poll
+    });
+    p.emitAll('d', 4); // outside a poll: left to the sink
+    p.run(() => p.emitAll('e', 5)); // a new poll takes a new timestamp
+    expect(stamps).toEqual([101, 101, 101, undefined, 102]);
+  });
+
+  it('clears the poll timestamp when fn throws', () => {
+    const p = new Poller();
+    const { sink, stamps } = clockSink();
+    p.start(sink);
+    expect(() =>
+      p.run(() => {
+        throw new Error('x');
+      }),
+    ).toThrow('x');
+    p.emitAll('a', 1);
+    expect(stamps).toEqual([undefined]);
+  });
+
+  it('a sink without a clock leaves per-emit stamping; before start() it just runs fn', () => {
+    const p = new Poller();
+    const { sink, got } = mkSink();
+    let ran = false;
+    p.run(() => (ran = true));
+    expect(ran).toBe(true);
+    p.start(sink);
+    p.run(() => p.emitAll('a', 1));
+    expect(got).toHaveLength(1);
+  });
+});
+
 describe('TraceProducerBase', () => {
   it('start() is idempotent and calls onStart once', () => {
     const p = new Probe();
