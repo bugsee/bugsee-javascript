@@ -281,15 +281,19 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     expect(guard(custom)).toBe(custom);
   });
 
-  it('passes the rrweb 2.2.0 annotation event (EventType 7) through unchanged, even with a masked-looking payload', () => {
+  it('passes the rrweb 2.2.0 annotation (8) and asset (7) events through unchanged, even when they carry the id of a blocked iframe', () => {
     const { guard, onViolation } = make();
-    guard(snapshot(doc([el('body', {})])));
-    const annotation = {
-      type: 7,
-      timestamp: 3,
-      data: { annotationData: { text: 'marker', id: 1 } },
-    } as unknown as eventWithTime;
-    expect(guard(annotation)).toBe(annotation);
+    const frame = el('iframe', { class: 'rr-block', rr_width: '10px', rr_height: '5px' });
+    guard(snapshot(doc([el('body', {}, [frame])])));
+    const events = [8, 7].map(
+      (type) =>
+        ({
+          type,
+          timestamp: 3,
+          data: { id: frame.id, annotationData: { text: 'marker', id: frame.id } },
+        }) as unknown as eventWithTime,
+    );
+    for (const e of events) expect(guard(e)).toBe(e);
     expect(onViolation).not.toHaveBeenCalled();
   });
 
