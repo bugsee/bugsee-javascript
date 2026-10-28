@@ -89,13 +89,13 @@
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
+    "@bugsee/bugsee": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/svelte": "workspace:*",
-    "@bugsee/vercel-edge": "workspace:*",
-    "@bugsee/bugsee": "workspace:*"
+    "@bugsee/vercel-edge": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",
-    "@sveltejs/kit": "^2.70.3"
+    "@sveltejs/kit": "^3.1.0"
   }
 }

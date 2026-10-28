@@ -16,7 +16,7 @@ pnpm add @bugsee/sveltekit
 yarn add @bugsee/sveltekit
 ```
 
-Server code requires Node.js 18 or newer.
+The Bugsee server adapter requires Node.js 18 or newer; SvelteKit 3 applications require Node.js 22.17 or newer.
 
 ## Usage
 
@@ -63,13 +63,16 @@ npm install --save-dev @bugsee/svelte-plugin-component-annotate
 ```
 
 ```js
-// svelte.config.js
+// vite.config.ts (Kit 3: pass options to the plugin; Kit 3 errors if a svelte.config.js exists)
 import { componentAnnotatePreprocessor } from "@bugsee/svelte-plugin-component-annotate";
+import { sveltekit } from "@sveltejs/kit/vite";
 
 export default {
-  preprocess: [componentAnnotatePreprocessor()],
+  plugins: [sveltekit({ preprocess: [componentAnnotatePreprocessor()] })],
 };
 ```
+
+On Kit 2, put `preprocess: [componentAnnotatePreprocessor()]` in `svelte.config.js` instead.
 
 ### Edge deployments
 
