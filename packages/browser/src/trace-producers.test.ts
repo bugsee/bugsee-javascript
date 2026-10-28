@@ -53,14 +53,24 @@ describe('BatteryProducer', () => {
     const offOther = tracker.on('state', () => {});
     await flush();
     const stamps: unknown[] = [];
+    let clock = 6;
     const p = new BatteryProducer(tracker);
     p.start({
       emit: (_n: string, _v: unknown, _d?: number, o?: { timestamp?: number }) =>
         void stamps.push(o?.timestamp),
-      now: () => 7,
+      now: () => (clock += 1),
     });
     expect(stamps.length).toBeGreaterThan(1);
     expect(new Set(stamps)).toEqual(new Set([7]));
+    // the live path: a state change is its own poll with a fresh shared timestamp
+    stamps.length = 0;
+    m.level = 0.5;
+    m.chargingTime = 90;
+    m.fire('levelchange');
+    m.fire('chargingtimechange');
+    expect(stamps.length).toBeGreaterThan(1);
+    expect(new Set(stamps).size).toBeLessThanOrEqual(2);
+    expect(stamps.every((t) => typeof t === 'number' && t > 7)).toBe(true);
     p.stop();
     offOther();
   });
