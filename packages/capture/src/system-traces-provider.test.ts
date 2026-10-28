@@ -1155,6 +1155,28 @@ describe('stop ordering and failures (#58 review)', () => {
     b.stop();
   });
 
+  it('a throwing clearInterval still unsubscribes from the suppression', () => {
+    const suppression = createTraceSuppression({ window: ['url'] });
+    const off = vi.fn();
+    vi.spyOn(suppression, 'subscribe').mockReturnValue(off);
+    const scheduler: Scheduler = {
+      setInterval: () => 'h',
+      clearInterval: () => {
+        throw new Error('clear failed');
+      },
+    };
+    const a = createSystemTracesProvider({
+      producers: [new Fixed('p', [['cpu_usage_process', 1]])],
+      now: () => 1,
+      scheduler,
+      suppression,
+    });
+    a.init(buildInit(mkStore()));
+    a.start(options);
+    expect(() => a.stop()).toThrow('clear failed');
+    expect(off).toHaveBeenCalledTimes(1);
+  });
+
   it('ownership is held while a producer is still stopping (a start from inside stop() is refused)', () => {
     const errors: unknown[] = [];
     let other: ReturnType<typeof createSystemTracesProvider> | undefined;

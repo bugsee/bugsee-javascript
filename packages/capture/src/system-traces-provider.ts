@@ -177,10 +177,13 @@ class SystemTracesProvider extends CaptureProviderBase {
 
   protected override onStop(): void {
     try {
-      this.#scheduler.clearInterval(this.#timer);
-      this.#timer = null;
-      this.#offSuppression?.();
-      this.#offSuppression = undefined;
+      try {
+        this.#scheduler.clearInterval(this.#timer);
+      } finally {
+        this.#timer = null;
+        this.#offSuppression?.();
+        this.#offSuppression = undefined;
+      }
     } finally {
       // a throwing scheduler/unsubscribe must still release the producers (and their ownership) and stop recording
       this.#stopProducers();
