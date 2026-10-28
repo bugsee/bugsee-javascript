@@ -86,7 +86,11 @@ interface Held {
  * values live on the instance), so one instance driven by two providers would interleave start/stop. First owner wins;
  * a second provider reports it and skips the producer (#58). Released on stop.
  */
-const producerOwners = new WeakMap<TraceProducer, object>();
+const OWNERS_KEY = Symbol.for('com.bugsee.trace-producer-owners');
+// Kept on `globalThis` under `Symbol.for`, so two copies of this module (the ESM and CJS builds) share one registry.
+const ownerHost = globalThis as unknown as Record<symbol, WeakMap<TraceProducer, object>>;
+ownerHost[OWNERS_KEY] ??= new WeakMap<TraceProducer, object>();
+const producerOwners = ownerHost[OWNERS_KEY];
 
 class SystemTracesProvider extends CaptureProviderBase {
   readonly name = 'traces.system';

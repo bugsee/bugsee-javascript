@@ -1063,9 +1063,12 @@ describe('a producer shared by two providers (#58)', () => {
     b.init(buildInit(mkStore()));
     a.start(options);
     b.start(options);
+    expect(errors).toHaveLength(2); // each provider reports only its own start failure
     expect(errors.map((e) => (e as Error).message).filter((m) => m.includes('another'))).toEqual(
       [],
     );
+    a.stop();
+    b.stop();
   });
 });
 
