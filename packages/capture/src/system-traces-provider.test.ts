@@ -1201,6 +1201,32 @@ describe('stop ordering and failures (#58 review)', () => {
     expect(p.startedCount).toBe(1);
     other.stop();
   });
+
+  it('ownership is also held while a producer whose start() threw is being stopped', () => {
+    const errors: unknown[] = [];
+    let other: ReturnType<typeof createSystemTracesProvider> | undefined;
+    class ReentrantFailing extends Fixed {
+      override stop(): void {
+        other?.start(options);
+        super.stop();
+      }
+    }
+    const p = new ReentrantFailing('shared', [['cpu_usage_process', 1]], { throwStart: true });
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1, onError: () => {} });
+    other = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    other.init(buildInit(mkStore()));
+    a.start(options);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain('already owned');
+    expect(p.startedCount).toBe(1);
+    a.stop();
+    other.stop();
+  });
 });
 
 describe('deriveRefreshMs', () => {
