@@ -1290,12 +1290,13 @@ recorded" was false.
   element, so the guard never sees that change itself. Evidence: with the fork's emit-time gates disabled but the
   marker kept (a scratch bundle), the 3 `raw` "released after recording" scenarios that still have live observers
   leak and every `provider` scenario holds. LIMITS: see the header of `iframe-guard.ts` (a CONTEXTUAL `unblockSelector`
-  such as `#trusted iframe`, `.x > iframe` or `:first-child` is tested against a detached copy of the iframe and can
-  never match, so the guard removes an iframe the recorder records and reports a violation, value selectors like
-  `iframe[data-embed="x"]` are fine: #123; the guard still reports once per session, but the recorder's marker on a
+  such as `#trusted iframe`, `.x > iframe` or `:first-child` cannot be tested on the guard's detached copy of the iframe, so
+  for such a selector (combinator or pseudo-class) an iframe without the recorder's `rr_width`/`rr_height` marker is trusted
+  to the recorder and the guard's own block rules are not applied to it; value selectors like
+  `iframe#x` keep the full fail-closed check: #123 fixed; the guard still reports once per session, but the recorder's marker on a
   nested iframe whose outer frame was already blocked is removed silently so those flows no longer use the report up (#124;
   an iframe blocked, unblocked and navigated is still dropped and reported until the next full snapshot: the fork has to
-  emit an unblock signal); Font/CustomElement events carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
+  emit an unblock signal, #147); Font/CustomElement events carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
   released by the next full snapshot rather than by removing its container).
 - **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
   (headless Chromium, runs in `test:e2e`/CI) — iframes (default, `.bugsee-block`, `maskAllText:false`, explicitly
