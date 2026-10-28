@@ -22,7 +22,8 @@
 //      from then on. The recorder announces it: when an attached iframe becomes blocked it emits a placeholder
 //      marker (`rr_width`/`rr_height`) on the iframe, which is what reaches this guard (rrweb drops the class change
 //      itself, because the iframe is blocked by then);
-//   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not.
+//   4. the first removal is reported once (through `onViolation`): the recorder emitted something it must not. The
+//      recorder's marker on an already-gated nested iframe is removed silently, so it cannot use that one report up.
 // A full snapshot starts from a clean slate. Cost: one pass over the nodes of each snapshot/added subtree and
 // set lookups per event. Memory: the guard remembers the attributes of each recorded iframe and the ids of the
 // nodes attached under it, and forgets removed subtrees, so it holds what those iframes hold now; the tainted
@@ -46,9 +47,12 @@
 //     attributes), so a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never match:
 //     the recorder records such an iframe, the guard removes its document and reports a violation. Value selectors
 //     (`iframe[data-embed="x"]`, `.bugsee-show`) are unaffected. See bugsee-javascript#123;
-//   - a violation is reported once per session, so a false report from a legitimate flow (a nested iframe's marker
-//     after its outer frame was blocked, an iframe that is blocked, unblocked and navigated) can hide a later real
-//     one. See bugsee-javascript#124;
+//   - a blocked iframe is never reopened by the guard: once it is blocked, whatever it attaches stays dropped (and is
+//     reported) until the next full snapshot. The recorder drops the change that blocks an iframe, and every
+//     attribute change while `iframe` is in `blockSelector` (the default), and emits only the placeholder marker, so
+//     the guard cannot see an unblock, nor tell an iframe's own block from an ancestor's. An iframe that is blocked,
+//     unblocked and navigated therefore still produces one (false) report. That needs an "unblocked" signal from the
+//     fork; see bugsee-javascript#124;
 //   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's job and
 //     has its own tests (see the real-browser masking e2e);
 //   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip.
@@ -294,12 +298,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
 
   const isTainted = (id: unknown): boolean => typeof id === 'number' && tainted.has(id);
 
-  /** Apply an attribute mutation to an open iframe; a rrweb `null` value removes the attribute. */
-  const reclassify = (
-    id: number,
+  const mergeAttributes = (
     current: Record<string, unknown>,
     changes: Record<string, unknown> | undefined,
-  ): void => {
+  ): Record<string, unknown> => {
     const merged = { ...current };
     for (const [name, value] of Object.entries(changes ?? {})) {
       if (value === null || value === undefined) {
@@ -308,6 +310,16 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
         merged[name] = value;
       }
     }
+    return merged;
+  };
+
+  /** Apply an attribute mutation to an open iframe; a rrweb `null` value removes the attribute. */
+  const reclassify = (
+    id: number,
+    current: Record<string, unknown>,
+    changes: Record<string, unknown> | undefined,
+  ): void => {
+    const merged = mergeAttributes(current, changes);
     if (isBlockedIframe({ id, type: ELEMENT_NODE, attributes: merged })) {
       // Not a violation by itself: the recorder says so with a placeholder marker when an app blocks an iframe.
       // Whatever still comes out of it afterwards is removed (and reported) below.
@@ -315,6 +327,11 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     } else {
       openIframes.set(id, merged);
     }
+  };
+
+  const isMarkerOnly = (attrs: Record<string, unknown> | undefined): boolean => {
+    const names = Object.keys(attrs ?? {});
+    return names.length > 0 && names.every((n) => n === 'rr_width' || n === 'rr_height');
   };
 
   interface Mut {
@@ -363,9 +380,17 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     });
     const keptTexts = texts.filter((t) => !isTainted(t.id));
     const keptAttributes = attributes.filter((a) => !isTainted(a.id));
+    // The recorder's own placeholder marker on an iframe whose document is already gated (a nested iframe after its
+    // outer frame was blocked) carries no content: it is removed, not reported.
+    const contentRemoved =
+      keptTexts.length !== texts.length ||
+      attributes.some(
+        (a) =>
+          isTainted(a.id) && !(blockedIframes.has(a.id as number) && isMarkerOnly(a.attributes)),
+      );
     if (violation) {
       report('a document was attached to a blocked iframe and was removed');
-    } else if (keptTexts.length !== texts.length || keptAttributes.length !== attributes.length) {
+    } else if (contentRemoved) {
       // (a removal of a node of a blocked iframe is legitimate, the app may tear it down: not reported)
       report('a mutation from inside a blocked iframe was removed');
     }
