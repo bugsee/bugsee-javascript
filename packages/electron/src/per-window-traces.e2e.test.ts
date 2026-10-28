@@ -331,6 +331,17 @@ describe('per-window traces: only the key window writes them (C26)', () => {
     }
   });
 
+  it('STARTUP with the SDKs loading in another order than the window ids: no stray value from a window that is not the lowest id', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three'].map((n) => `https://app.test/${n}`);
+    for (const i of [2, 1, 0]) await bootWindow(electron, hrefs[i] as string, opened[i]);
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one']);
+    await client.stop();
+  });
+
   it("closing the key window: the next key is the TRACKER's (lowest id), not the earliest renderer to say hello, and no other value appears in between", async () => {
     const electron = fakeElectron();
     const { client, puts } = launch(electron);

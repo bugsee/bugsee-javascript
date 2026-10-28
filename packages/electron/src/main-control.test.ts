@@ -525,11 +525,19 @@ describe('createElectronMainControl', () => {
         expect(b.sent).toEqual([]); // window 2 was never told key
       });
 
-      it('an ownerless renderer is not a participating window: with the key on a window without an SDK the owned renderer is the one that stays key', () => {
-        const key = { id: 9 as number | undefined | null };
-        const w = world({ 11: undefined, 12: 2 }, key);
-        w.join(11);
-        expect(decoded(w.join(12))[0]?.keyWindow).toBe(true);
+      it('an ownerless renderer is not a participating window: with the key on a window without an SDK the owned renderer is held, then (after the startup grace) the one that takes the key', () => {
+        vi.useFakeTimers();
+        try {
+          const key = { id: 9 as number | undefined | null };
+          const w = world({ 11: undefined, 12: 2 }, key);
+          w.join(11);
+          const b = w.join(12);
+          expect(decoded(b)[0]?.keyWindow).toBe(false); // startup grace: the key window's SDK may still be loading
+          vi.advanceTimersByTime(3100);
+          expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('a destroyed renderer that has not been forgotten yet does not count as hosting the key window (the key is held, not handed to its window)', () => {
@@ -540,10 +548,29 @@ describe('createElectronMainControl', () => {
         expect(decoded(w.join(12))[0]?.keyWindow).toBe(false); // held on window 1, whose renderer is dead
       });
 
-      it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {
-        const key = { id: 9 as number | undefined | null };
-        const w = world({ 11: 1 }, key);
-        expect(decoded(w.join(11))[0]?.keyWindow).toBe(true);
+      it("STARTUP: while the tracker's key window has not said hello yet the first renderer to arrive is held (no stray value from another window); when the key window's renderer joins it takes the key", () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 3 }, key);
+        const third = w.join(12); // window 3\'s page loads first
+        expect(decoded(third)[0]?.keyWindow).toBe(false);
+        const first = w.join(11);
+        expect(decoded(first)[0]?.keyWindow).toBe(true);
+        expect(decoded(third).at(-1)?.keyWindow).toBe(false); // never told key: no stray write
+        expect(third.sent).toHaveLength(1);
+      });
+
+      it('with no participating window and no key window ever hosting one, the renderer is key after the startup grace', () => {
+        vi.useFakeTimers();
+        try {
+          const key = { id: 9 as number | undefined | null };
+          const w = world({ 11: 1 }, key);
+          const r = w.join(11);
+          expect(decoded(r)[0]?.keyWindow).toBe(false);
+          vi.advanceTimersByTime(3100);
+          expect(decoded(r).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('forgets a last key window that no longer hosts a renderer (it closed) and falls back to fail-open', () => {

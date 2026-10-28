@@ -161,7 +161,8 @@ export function createElectronMainControl(
    *
    * The key window is the tracker's when it hosts a registered renderer; else the last window that did (while it still does);
    * else, when the tracker's key is still the window whose renderer just left (a closing window's webContents `destroyed`
-   * fires before its `closed`; a crash), the key is HELD there for a short while so nobody flashes in and the tracker's own
+   * fires before its `closed`; a crash), or no window has hosted a renderer yet (startup: the key window's SDK is still
+   * loading), the key is HELD there for a short while so nobody flashes in and the tracker's own
    * next choice wins when it publishes it; else the window of the EARLIEST registered renderer. `undefined`: no key window
    * at all. `null`: the probe cannot say (everyone is key). A renderer whose window cannot be resolved is never silenced
    * (key). A failing probe is reported and fails OPEN.
@@ -188,7 +189,7 @@ export function createElectronMainControl(
           heldSince = undefined;
         } else if (hosts(lastParticipatingKey)) {
           key = lastParticipatingKey;
-        } else if (current === lastParticipatingKey) {
+        } else if (lastParticipatingKey === undefined || current === lastParticipatingKey) {
           const now = Date.now();
           heldSince ??= now;
           if (now - heldSince < HOLD_MS) {
