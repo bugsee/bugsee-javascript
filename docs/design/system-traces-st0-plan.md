@@ -1135,7 +1135,7 @@ export function createBrowserSystemTraceProducers(env: BatteryEnv = realBatteryE
 | ST0′-B | Browser trackers for the rest of the legacy sampler: memory (`performance.memory`), connection (`online`/`offline` + `connection.change`, `onLine`-first mapper kept), orientation, device memory — then delete the legacy browser sampler |
 | ST0′-C | Shared `PageLifecycleTracker` (visibility / `pagehide` / `freeze` / `resume`) bound to the injected window+document, subscribed by BOTH the system-events source and the traces producers (`app_state`, later `fps`/`main_thread_lag_ms` gating) — removes the duplicated `visibilitychange` wiring |
 | ST0′-D | Delete the legacy `createNodeSystemMetricsSampler` / `createGuardedSystemMetricsSampler` (DONE); the `sample` / `systemMetricsSampler` option is kept as a caller-supplied override because tests and callers still inject it |
-| ST1+ | New traces from the design doc as producers on these trackers (V8 heap, GC observer, disk, `process_memory_limit`, …) with their `measures*` flags on `NodeTraceProducerDeps` |
+| ST1+ | **Built** (see `docs/PROGRESS.md`): V8 heap, GC (now the `gc` event), disk, `process_memory_limit` as producers on these trackers, with their `measures*` flags (`measuresConstrainedMemory` last, C19) on `NodeTraceProducerDeps` |
 | ST6 | Electron trackers (`app`, `powerMonitor`, `screen`) subscribed by Electron producers and the events source — no wrapping of the node sampler |
 
 ## Self-Review

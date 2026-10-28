@@ -175,6 +175,13 @@ export interface ProcessEnv {
    */
   measuresV8Heap?: boolean;
   /**
+   * Can this runtime truthfully answer `process.constrainedMemory()`? Default `true`. `@bugsee/bun` / `@bugsee/deno`
+   * pass `false` off Linux, the only platform where a cgroup cap exists and where their answer was measured real
+   * (Bun 1.4.4 and Deno 2.8.3 in `docker -m`: the cap; unconstrained: Bun total RAM, Deno `0`, Node the 2^64 sentinel).
+   * The value filter alone decided before; this makes the platform answer explicit, so the trace is omitted, not guessed.
+   */
+  measuresConstrainedMemory?: boolean;
+  /**
    * Read `/proc/meminfo` MemAvailable before `os.freemem()` on Linux? Default `false`. Only `@bugsee/bun` sets it
    * (Bun < 1.3.13's `os.freemem()` is not MemAvailable). Deno must NOT: its `os.freemem()` already is, and the extra
    * read triggers an interactive permission prompt under a scoped `--allow-read`.
@@ -222,6 +229,7 @@ const SEAM_KEYS = [
   'performanceObserver',
   'measuresEventLoopDelay',
   'measuresV8Heap',
+  'measuresConstrainedMemory',
   'readsProcMeminfo',
   'measuresGc',
   'scheduler',
@@ -239,7 +247,7 @@ interface Resolved {
   eventLoop: EventLoopSource | undefined;
   gc: GcSource | undefined;
   v8Heap: (() => V8HeapStats | undefined) | undefined;
-  memoryLimit: () => number | undefined;
+  memoryLimit: (() => number | undefined) | undefined;
   systemFree: () => number | undefined;
   /** macOS only: the `vm_stat` sampler behind `systemFree` (stopped with the systemMemory stage). */
   vmStat: VmStatSource | undefined;
@@ -482,7 +490,11 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
       v8Heap:
         env.v8Heap ??
         (env.measuresV8Heap !== false ? createV8HeapReader(getHeapStatistics) : undefined),
-      memoryLimit: env.memoryLimit ?? createMemoryLimitReader(nodeProcess, totalmem),
+      memoryLimit:
+        env.memoryLimit ??
+        (env.measuresConstrainedMemory !== false
+          ? createMemoryLimitReader(nodeProcess, totalmem)
+          : undefined),
       systemFree: createSystemFreeReader({
         platform,
         native:

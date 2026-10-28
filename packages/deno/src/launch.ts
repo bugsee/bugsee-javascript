@@ -28,6 +28,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // its own tell (a zero `idle`), so it needs no flag.
     systemTraceProducers: createNodeSystemTraceProducers({
       measuresEventLoopDelay: false,
+      // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
+      // while elsewhere there is no cap to report (Deno answers 0), so the trace is gated to Linux.
+      measuresConstrainedMemory: process.platform === 'linux',
       // `ram_system_free` on Deno: `os.freemem()` (MemAvailable on Linux since 2023, avail_phys on Windows) and
       // the macOS figure is the async vm_stat read (the SAME definition as Node/Bun/Electron) when the `run`
       // permission for /usr/bin/vm_stat is already granted (checked with the never-prompting `permissions.querySync`;

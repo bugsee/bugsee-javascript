@@ -312,6 +312,23 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     );
   });
 
+  it.each([
+    ['linux', true],
+    ['darwin', false],
+    ['win32', false],
+  ])('measuresConstrainedMemory on %s is %s (the cgroup cap exists only on Linux)', (platform, expected) => {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+    try {
+      track(launchCore('tok', base()).client);
+    } finally {
+      if (real) Object.defineProperty(process, 'platform', real);
+    }
+    expect(createNodeSystemTraceProducers).toHaveBeenCalledWith(
+      expect.objectContaining({ measuresConstrainedMemory: expected }),
+    );
+  });
+
   it('never reads /proc/meminfo for ram_system_free (a scoped --allow-read would prompt), opts out of gc (blind observer) and keeps the V8 heap (real V8)', () => {
     track(launchCore('tok', base()).client);
     const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];

@@ -53,9 +53,9 @@ v3 unifies the public API with the **Bugsee Android SDK** (`/Users/alexeykarimov
 **Backend questions resolved (§18):**
 
 8. **`app_token` moved to an HTTP header** (`X-App-Token` — *confirm exact name with backend*). No longer in the query string. **Done.** Resolves §18.1#4 / **[R:sec C1]**.
-9. **`x-client-type: web`** for v1 (the HTTP header). Runtime-specific client types come later as sub-packages stabilize. Distinct from `sdk.type`.
+9. **`x-client-type: javascript`** (the HTTP header; as built, `packages/core/src/bugsee-api.ts`). `web` is the legacy Chrome-extension application type and the dashboard's client type, never an SDK value (`javascript-application-type.md`). Distinct from `sdk.type`.
 10. **`environment.sdk.type: "javascript"`** (was `"JS"`).
-11. **`platform.type` ships the full granular taxonomy** in v1 (`web`/`node`/`bun`/`deno`/`workers`/`edge-light`/`service-worker`/`web-worker`/`electron-main`/`electron-renderer`) — backend must accept all values. This is where runtime granularity lives, while `x-client-type` stays coarse (`web`).
+11. **`platform.type` ships the full granular taxonomy** in v1 (`web`/`node`/`bun`/`deno`/`workers`/`edge-light`/`service-worker`/`web-worker`/`electron-main`/`electron-renderer`) — backend must accept all values. This is where runtime granularity lives, while `x-client-type` stays the single value `javascript`.
 12. **`x-amz-checksum-sha256` is optional for MVP/BETA.** Omittable; not a launch blocker.
 13. **Replay visual representation: dashboard renders rrweb natively.** SDK uploads `replay.bin` (gzipped rrweb stream) as the new `replay` file type; the web dashboard integrates an rrweb player. No server-side MP4 transcode; mobile's `video` path is unchanged. §18.1#5 becomes a **frontend** (rrweb player) + **backend** (`replay` file type) task, not a wire change.
 
@@ -667,7 +667,7 @@ Single source of truth. Owns: types, serializers, sanitizer lists, option transl
 | `Content-Type` | `application/json` | |
 | `accept` | `*/*` | |
 | `accept-encoding` | (transport default) | Browser: not user-settable. Node/Bun/Deno: `gzip, deflate` set by transport. |
-| `x-client-type` | **`web`** (v3 decision) | Coarse client-type for auth-path routing. Runtime granularity lives in `environment.platform.type`, not here. Per-runtime client-types come later. *(v2 proposed `javascript`; reversed in v3 — confirm `web` does not take the dashboard cookie-auth path **[R:wire C3]**.)* |
+| `x-client-type` | **`javascript`** | Client type for auth-path routing; the application must be of type `javascript`. Runtime granularity lives in `environment.platform.type`, not here. `web` collides with the dashboard cookie-auth path. *(The v3 `web` decision was reversed back to `javascript`.)* |
 | `user-agent` | `BugseeJS/<sdk-version>` | Mirrors mobile shape (`BugseeAndroid` / `iPhone-OS`). |
 | `authorization` | `Bearer <access_token>` (after session) | |
 | `X-Bugsee-Internal` | `1` | **Sentinel header on every SDK outbound** so the network-capture integration can skip it **[R:sec MAJOR-12]**. |
@@ -1714,7 +1714,7 @@ When the extension isn't loaded: zero hub subscribers, zero provider, zero `perf
 ### 18.1 MUST resolve with backend before code
 
 > **v3 resolutions (2026-05-25, §0.5):**
-> - **#1 `x-client-type` → decided `web`** (not `javascript`). Still verify `web` does **not** take the dashboard cookie-auth path for SDK calls.
+> - **#1 `x-client-type` → `javascript`** (the v3 `web` decision was reversed: `web` takes the dashboard cookie-auth path).
 > - **#2 `sdk.type` → decided `javascript`** (was `JS`).
 > - **#3 `platform.type` → decided to ship the full taxonomy now**; backend must accept all 10 values.
 > - **#4 `app_token` → moved to `X-App-Token` header. Done** (confirm exact header name).
@@ -1722,7 +1722,7 @@ When the extension isn't loaded: zero hub subscribers, zero provider, zero `perf
 > - **#10 `x-amz-checksum-sha256` → optional for MVP/BETA.**
 > Items below still need backend confirmation.
 
-1. **`x-client-type` allowlist.** Confirm **`web`** (v3 decision) is accepted for the JS SDK and does NOT take the cookie-auth path **[R:wire C3]**. (Runtime-specific client-types deferred.)
+1. **`x-client-type` allowlist.** `javascript` is the SDK's value (see the #1 resolution above).
 2. **`sdk.type` value.** Confirm `JS` accepted by dashboards / analytics.
 3. **`platform.type` taxonomy.** Confirm `web`/`node`/`bun`/`deno`/`workers`/`edge-light`/`service-worker`/`web-worker`/`electron-main`/`electron-renderer` recognized.
 4. **Move `app_token` out of URL query string** to an HTTP header (e.g. `X-App-Token`). Security imperative **[R:sec C1]**.
@@ -1860,7 +1860,7 @@ Driven by user review against the Bugsee Android SDK. Full rationale in §0.5.
 ### Wire protocol / backend
 
 - **`app_token` moved to `X-App-Token` header** (done; out of the query string).
-- **`x-client-type: web`** for v1 (was proposed `javascript`).
+- **`x-client-type: javascript`** (the v3 `web` decision was reversed).
 - **`environment.sdk.type: "javascript"`** (was `"JS"`).
 - **`platform.type` ships the full granular taxonomy** in v1.
 - **`x-amz-checksum-sha256` is optional** for MVP/BETA.

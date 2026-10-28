@@ -23,6 +23,9 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
       // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call),
       // so the V8 heap traces are omitted here.
       measuresV8Heap: false,
+      // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
+      // while elsewhere there is no cap to report (Bun answers total RAM on macOS), so the trace is gated to Linux.
+      measuresConstrainedMemory: process.platform === 'linux',
       // Bun < 1.3.13's `os.freemem()` is not MemAvailable on Linux, so `ram_system_free` reads /proc/meminfo
       // MemAvailable first there, then os.freemem(). On macOS it comes from a rare async `/usr/bin/vm_stat` read
       // (the tracker default; os.freemem() there is free pages only).
