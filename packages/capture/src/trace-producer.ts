@@ -40,7 +40,8 @@ export interface TraceProducer {
   stop(): void;
 }
 
-// BigInt has no JSON form: tag it so it compares by value and cannot collide with a string.
+// BigInt has no JSON form: tag it so it compares by value and is distinct from a string
+// (a literal `{ $bigint }` object of that exact shape would still compare equal; accepted).
 const bigintSafe = (_key: string, v: unknown): unknown =>
   typeof v === 'bigint' ? { $bigint: v.toString() } : v;
 

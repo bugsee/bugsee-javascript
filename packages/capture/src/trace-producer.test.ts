@@ -106,6 +106,22 @@ describe('TraceProducerBase', () => {
     expect(got.map((g) => g.value)).toEqual([a, b]);
   });
 
+  it('emitIfChanged() never throws when toJSON throws; counts as changed', () => {
+    const p = new Probe();
+    const { sink, got } = mkSink();
+    p.start(sink);
+    const mk = (): object => ({
+      toJSON: () => {
+        throw new Error('boom');
+      },
+    });
+    expect(() => {
+      p.emitChanged('c', mk());
+      p.emitChanged('c', mk());
+    }).not.toThrow();
+    expect(got).toHaveLength(2);
+  });
+
   it('emitIfChanged() handles BigInt inside objects structurally and never throws', () => {
     const p = new Probe();
     const { sink, got } = mkSink();
