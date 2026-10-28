@@ -42,7 +42,7 @@
 //   - an iframe that is blocked by a rule on an ANCESTOR is recognised through the recorder's placeholder marker
 //     (rr_width/rr_height, emitted when an attached iframe or a container of it becomes blocked), never through
 //     the serialized ancestors. Against a recorder that does not emit that marker (the previous pins) the guard
-//     only protects iframes that were blocked from the start (and, with a contextual `unblockSelector`, none);
+//     only protects iframes that were blocked from the start (and, with a contextual `unblockSelector`, only those blocked from the start);
 //   - the caller's `unblockSelector` is tested against a DETACHED copy of the iframe (built from its serialized
 //     attributes), which a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never
 //     match. When the selector has a combinator or a pseudo-class, an iframe WITHOUT the recorder's placeholder
@@ -54,7 +54,8 @@
 //     attribute change while `iframe` is in `blockSelector` (the default), and emits only the placeholder marker, so
 //     the guard cannot see an unblock, nor tell an iframe's own block from an ancestor's. An iframe that is blocked,
 //     unblocked and navigated therefore still produces one (false) report. That needs an "unblocked" signal from the
-//     fork; see bugsee-javascript#124;
+//     fork; see bugsee-javascript#147 (case 2 of #124). The same goes for a blocked iframe that is MOVED into its
+//     unblock context: it is re-added without the marker, but stays closed (and its next attach is reported);
 //   - it cannot tell that a node that is not an iframe should have been blocked: that is the recorder's job and
 //     has its own tests (see the real-browser masking e2e);
 //   - cross-origin iframes are never recorded (`recordCrossOriginIframes: false`) so there is nothing to strip.
@@ -295,7 +296,9 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     let holdsOpenIframe = false;
     if (node.type === ELEMENT_NODE && node.tagName === 'iframe') {
       if (isBlockedIframe(node)) {
-        blockedIframes.add(node.id);
+        // an iframe that was open and is re-added blocked (a moved node is re-serialized with the same id) is closed
+        // like any other: what it already attached is tainted
+        closeIframe(node.id);
         if (node.childNodes !== undefined && node.childNodes.length > 0) {
           for (const child of node.childNodes) {
             taint(child);

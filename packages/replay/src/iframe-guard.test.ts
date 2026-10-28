@@ -1113,4 +1113,23 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     guard(mutation({ attributes: [{ id: inner.id }] }));
     expect(onViolation).toHaveBeenCalledTimes(1);
   });
+  it('an open iframe that is re-added blocked (a moved node) is closed: what it attached is tainted', () => {
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', {});
+    guard(snapshot(doc([el('body', {}, [frame])])));
+    const t = text('inside');
+    guard(attach(frame.id, el('p', {}, [t])));
+    const moved = { ...frame, attributes: { class: 'private' } };
+    guard(mutation({ adds: [{ parentId: 1, nextId: null, node: moved }] }));
+    expect(guard(mutation({ texts: [{ id: t.id, value: SECRET }] }))).toBeUndefined();
+    expect(onViolation).toHaveBeenCalledTimes(1);
+  });
+  it('LIMIT: a blocked iframe re-added without the marker (moved into its unblock context) stays closed', () => {
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', { class: 'private' });
+    guard(snapshot(doc([el('body', {}, [frame])])));
+    guard(mutation({ adds: [{ parentId: 1, nextId: null, node: { ...frame, attributes: {} } }] }));
+    expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
+    expect(onViolation).toHaveBeenCalledTimes(1);
+  });
 });
