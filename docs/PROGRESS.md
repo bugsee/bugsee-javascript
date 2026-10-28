@@ -1262,8 +1262,8 @@ recorded" was false.
     element is blocked by then. The marker is for consumers of the stream (the SDK guard) and does NOT change a replay: the
     replayer only reads `rr_width` when it first builds a node, so a replay keeps showing the iframe's last pre-block
     content until the next full snapshot. An iframe that LOSES its block state mid-stream: the recorder alone records
-    it again after its next navigation (a new document attach), but the SDK guard keeps it dropped and reports a
-    false violation (#124);
+    it again after its next navigation (a new document attach); the SDK guard reopens an iframe the block RULES held
+    closed once its attributes stop matching them, so that document is kept (#124);
   - tests: jsdom (`blocked-iframe`, `iframe-manager-blocked`, `shadow-dom-manager-blocked`,
     `stylesheet-manager-blocked`, snapshot unit) and real Chromium (`blocked-iframe.browser`, incl. reload then
     attachShadow, adopted sheets, a link finishing late, fonts); mutator loops of 30 + 30 mutations, every
@@ -1290,8 +1290,10 @@ recorded" was false.
   leak and every `provider` scenario holds. LIMITS: see the header of `iframe-guard.ts` (a CONTEXTUAL `unblockSelector`
   such as `#trusted iframe`, `.x > iframe` or `:first-child` is tested against a detached copy of the iframe and can
   never match, so the guard removes an iframe the recorder records and reports a violation, value selectors like
-  `iframe[data-embed="x"]` are fine: #123; the guard reports once per session, so a false report from a legitimate
-  flow can hide a later real one: #124; Font/CustomElement events carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
+  `iframe[data-embed="x"]` are fine: #123; the guard still reports once per session, but the recorder's marker on a
+  nested iframe whose outer frame was already blocked is removed silently and a rules-blocked iframe is reopened when
+  unblocked, so those legitimate flows no longer use the report up (#124; an iframe held closed only by the marker,
+  i.e. an ancestor's block, stays closed until the next full snapshot); Font/CustomElement events carry no node id, the marker is the only ancestor signal, entries of an iframe added after the snapshot are
   released by the next full snapshot rather than by removing its container).
 - **Real-browser masking e2e** (#120, partially): `packages/instrumentation-tests/test/replay-masking.browser.e2e.ts`
   (headless Chromium, runs in `test:e2e`/CI) — iframes (default, `.bugsee-block`, `maskAllText:false`, explicitly
