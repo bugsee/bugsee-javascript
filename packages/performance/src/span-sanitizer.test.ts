@@ -271,9 +271,8 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
   });
 
   it('honours backslash-escaped quotes', () => {
-    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe(
-      'INSERT INTO t VALUES (?,?)',
-    );
+    // A backslash-escaped quote makes the literal's end dialect-dependent: fail closed, nothing survives.
+    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe('INSERT INTO t VALUES (?');
     expect(clean('SELECT "a\\"b secret"')).toBe('SELECT ?');
   });
 
@@ -307,5 +306,40 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
 
   it('does not treat a lone dash or slash as a comment', () => {
     expect(clean('SELECT a-b, c/d FROM t')).toBe('SELECT a-b, c/d FROM t');
+  });
+
+  it('fails closed on a literal ending in a backslash (standard SQL: complete; MySQL: escape)', () => {
+    expect(clean("SELECT * FROM t WHERE a = 'C:\\' AND b = 'secretP'")).toBe(
+      'SELECT * FROM t WHERE a = ?',
+    );
+    expect(clean("a = 'C:\\temp\\' AND b = 'secretQ' AND c = 1")).toBe('a = ?');
+  });
+
+  it('does not read a backslash in a backtick identifier as an escape', () => {
+    expect(clean("SELECT `a\\` = 'secretB' AND `x` FROM t")).toBe(
+      'SELECT `a\\` = ? AND `x` FROM t',
+    );
+  });
+
+  it('drops a MySQL # comment', () => {
+    expect(clean("SELECT 1 # it's\nFROM t WHERE x = 'secretH'")).toBe(
+      'SELECT ?  \nFROM t WHERE x = ?',
+    );
+  });
+
+  it('honours nested block comments', () => {
+    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe(
+      '  SELECT * FROM t WHERE x = ?',
+    );
+    expect(clean("SELECT 1 /* a /* b */ 'secret")).toBe('SELECT ?  ');
+  });
+
+  it('recognises a dollar-quote tag of any length', () => {
+    const tag = `$${'a'.repeat(140)}$`;
+    expect(clean(`SELECT ${tag}it's${tag}, 'secretT'`)).toBe('SELECT ?, ?');
+  });
+
+  it('redacts exponent and hex numeric literals', () => {
+    expect(clean('SELECT 1e10, 2.5E-3, 0xDEADBEEF, c1 FROM t1')).toBe('SELECT ?, ?, ?, c1 FROM t1');
   });
 });

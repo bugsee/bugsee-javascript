@@ -40,19 +40,51 @@ const STATEMENT_KEYS = new Set(['db.statement', 'db.query.text']);
 const isWordChar = (ch: string | undefined): boolean =>
   ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
 
-/** End index (exclusive) of a quoted run opening at `start`; `-1` when it never closes. Backslash escapes too. */
-function quotedEnd(sql: string, start: number): number {
+const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+
+/** End (exclusive) of the block comment opening at `start`, honouring nesting; `-1` when it never closes. */
+function blockCommentEnd(sql: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < sql.length - 1; i++) {
+    const pair = sql.slice(i, i + 2);
+    if (pair === '/*') {
+      depth++;
+      i++;
+    } else if (pair === '*/') {
+      depth--;
+      i++;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** End of a quoted run opening at `start`, reading a backslash as an escape or as a plain character. */
+function runEnd(sql: string, start: number, backslashEscapes: boolean): number {
   const quote = sql[start];
   for (let i = start + 1; i < sql.length; i++) {
     const ch = sql[i];
-    if (ch === '\\') {
-      i++; // a backslash escape (MySQL, or Postgres with standard_conforming_strings = off)
+    if (backslashEscapes && ch === '\\') {
+      i++;
     } else if (ch === quote) {
       if (sql[i + 1] !== quote) return i + 1;
       i++; // doubled quote: SQL's own escape
     }
   }
   return -1;
+}
+
+/**
+ * End index (exclusive) of a quoted run opening at `start`; `-1` when it never closes OR when it is AMBIGUOUS.
+ *
+ * Whether a backslash escapes the next character depends on the dialect (MySQL, Postgres with
+ * `standard_conforming_strings = off`: yes; standard SQL, SQLite, SQL Server, Oracle: no) and the statement
+ * does not say which. When the two readings disagree about where the literal ends, any guess can mis-pair the
+ * quotes that follow and leave a later literal in the clear, so the run fails closed (redacted to the end).
+ */
+function quotedEnd(sql: string, start: number): number {
+  const escaped = runEnd(sql, start, true);
+  return escaped === runEnd(sql, start, false) ? escaped : -1;
 }
 
 /**
@@ -63,11 +95,11 @@ function quotedEnd(sql: string, start: number): number {
  * and it carries no customer data.
  *
  * It TOKENISES rather than pairing quotes, because a quote that is not a string delimiter shifts the pairing
- * and leaves the next literal in the clear. Line and block comments are dropped (they can carry data and
+ * and leaves the next literal in the clear. Line (`--`, MySQL `#`) and block (nested, as Postgres) comments are dropped (they can carry data and
  * their apostrophes are not delimiters); `'..'` and `".."` strings honour both doubled quotes and backslash
- * escapes; backtick identifiers are kept whole; `$tag$..$tag$` bodies are one literal. Anything that never
- * closes (including a statement cut by a length cap) fails CLOSED: it is redacted to the end. A backslash is
- * always treated as an escape, which over-redacts in dialects where it is not one: that is the safe side.
+ * escapes (a literal whose end depends on the dialect's backslash rule is ambiguous); backtick identifiers
+ * are kept whole; `$tag$..$tag$` bodies are one literal. Anything that never closes or cannot be classified
+ * (including a statement cut by a length cap) fails CLOSED: it is redacted to the end.
  */
 export function redactSqlLiterals(statement: string): string {
   let out = '';
@@ -75,23 +107,23 @@ export function redactSqlLiterals(statement: string): string {
   while (i < statement.length) {
     const ch = statement[i] as string;
     const next = statement[i + 1];
-    if (ch === '-' && next === '-') {
+    if ((ch === '-' && next === '-') || ch === '#') {
       const eol = statement.indexOf('\n', i);
       out += ' ';
       if (eol === -1) break;
       i = eol; // keep the newline itself
     } else if (ch === '/' && next === '*') {
-      const close = statement.indexOf('*/', i + 2);
       out += ' ';
+      const close = blockCommentEnd(statement, i);
       if (close === -1) break;
-      i = close + 2;
+      i = close;
     } else if (ch === "'" || ch === '"') {
       const end = quotedEnd(statement, i);
       out += '?';
       if (end === -1) break;
       i = end;
     } else if (ch === '`') {
-      const end = quotedEnd(statement, i);
+      const end = runEnd(statement, i, false); // backticks never take a backslash escape
       if (end === -1) {
         out += '?';
         break;
@@ -99,7 +131,8 @@ export function redactSqlLiterals(statement: string): string {
       out += statement.slice(i, end);
       i = end;
     } else if (ch === '$' && !isWordChar(statement[i - 1])) {
-      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(statement.slice(i, i + 130))?.[0];
+      DOLLAR_TAG.lastIndex = i;
+      const tag = DOLLAR_TAG.exec(statement)?.[0];
       if (tag === undefined) {
         out += ch;
         i++;
@@ -114,8 +147,8 @@ export function redactSqlLiterals(statement: string): string {
       i++;
     }
   }
-  // numeric literals, but never the digits inside an identifier like `column2`
-  return out.replace(/\b\d+(?:\.\d+)?\b/g, '?');
+  // numeric literals (decimal, exponent, hex), but never the digits inside an identifier like `column2`
+  return out.replace(/\b(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b/gi, '?');
 }
 
 /**
