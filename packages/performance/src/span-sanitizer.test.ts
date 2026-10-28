@@ -240,11 +240,72 @@ describe('redactSqlLiterals on a statement that was CUT inside a literal', () =>
 
   it('handles closed literals followed by an unterminated one, and a doubled quote before the cut', () => {
     expect(redactSqlLiterals("a = 'x' AND b = 'cd")).toBe('a = ? AND b = ?');
-    // `'it'` closes at the first quote and `'s a sec` is the open tail: both are data, both go.
-    expect(redactSqlLiterals("a = 'it''s a sec")).toBe('a = ??');
+    // `it''s a sec` is ONE literal (doubled quote = escape) that never closes: all of it goes.
+    expect(redactSqlLiterals("a = 'it''s a sec")).toBe('a = ?');
   });
 
   it('leaves a statement without any quote alone', () => {
     expect(redactSqlLiterals('SELECT x FROM t')).toBe('SELECT x FROM t');
+  });
+});
+
+describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () => {
+  const clean = (sql: string): string => redactSqlLiterals(sql);
+
+  it('ignores an apostrophe in a block comment and drops the comment', () => {
+    expect(clean("/* don't */ SELECT * FROM t WHERE a = 'secretA'")).toBe(
+      '  SELECT * FROM t WHERE a = ?',
+    );
+    expect(clean('SELECT/* x */1')).toBe('SELECT ?');
+  });
+
+  it('fails closed on an unterminated block comment', () => {
+    expect(clean("SELECT 1 /* it's 'secret")).toBe('SELECT ?  ');
+  });
+
+  it('ignores an apostrophe in a line comment, keeping the newline', () => {
+    expect(clean("-- it's\nSELECT * FROM t WHERE a = 'secretB'")).toBe(
+      ' \nSELECT * FROM t WHERE a = ?',
+    );
+    expect(clean("SELECT 1 -- it's")).toBe('SELECT ?  ');
+  });
+
+  it('honours backslash-escaped quotes', () => {
+    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe(
+      'INSERT INTO t VALUES (?,?)',
+    );
+    expect(clean('SELECT "a\\"b secret"')).toBe('SELECT ?');
+  });
+
+  it('treats dollar-quoted bodies as one literal, tagged or not', () => {
+    expect(clean("SELECT $$it's$$, 'secretD'")).toBe('SELECT ?, ?');
+    expect(clean("SELECT $q$it's $$ x$q$, 'secretE'")).toBe('SELECT ?, ?');
+  });
+
+  it('fails closed on an unterminated dollar quote', () => {
+    expect(clean("SELECT $$it's secret")).toBe('SELECT ?');
+  });
+
+  it('does not open a dollar quote on a positional parameter or inside an identifier', () => {
+    // (the digit after `$` is still a numeric literal, as before: harmless, and it groups)
+    expect(clean('SELECT * FROM t WHERE a = $1 AND b = $2')).toBe(
+      'SELECT * FROM t WHERE a = $? AND b = $?',
+    );
+    expect(clean('SELECT a$b$ FROM t')).toBe('SELECT a$b$ FROM t');
+    expect(clean('SELECT $ FROM t')).toBe('SELECT $ FROM t');
+  });
+
+  it('keeps a backtick identifier whole, even with a quote inside it', () => {
+    expect(clean("SELECT `it's` FROM t WHERE a = 'secretF'")).toBe(
+      "SELECT `it's` FROM t WHERE a = ?",
+    );
+  });
+
+  it('fails closed on an unterminated backtick identifier', () => {
+    expect(clean("SELECT `it's 'secret")).toBe('SELECT ?');
+  });
+
+  it('does not treat a lone dash or slash as a comment', () => {
+    expect(clean('SELECT a-b, c/d FROM t')).toBe('SELECT a-b, c/d FROM t');
   });
 });
