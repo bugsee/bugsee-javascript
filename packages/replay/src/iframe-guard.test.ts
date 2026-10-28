@@ -993,9 +993,11 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     guard(snapshot(doc([frame])));
     guard(classChange(frame.id, null)); // unblocked
     guard(marker(frame.id));
+    expect(onViolation).not.toHaveBeenCalled(); // neither the unblock nor the marker is the report
     // the guard cannot tell an own block from an ancestor's: it fails closed (and reports) until the next snapshot
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
     expect(onViolation).toHaveBeenCalledTimes(1);
+    expect(String(onViolation.mock.calls[0]?.[0])).toMatch(/blocked iframe/);
     const fresh = el('iframe', {});
     guard(snapshot(doc([fresh])));
     const a = attach(fresh.id, el('p', {}));
@@ -1003,15 +1005,28 @@ describe('legitimate iframe flows are not violations (#124)', () => {
   });
 
   it('an iframe inside a blocked iframe document is never reopened', () => {
-    const { guard } = make({ blockSelector: 'iframe.private' });
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
     const outer = el('iframe', {});
     guard(snapshot(doc([outer])));
     const nested = el('iframe', {});
     guard(attach(outer.id, el('div', {}, [nested])));
     guard(classChange(outer.id, 'private'));
     guard(marker(nested.id));
+    expect(onViolation).not.toHaveBeenCalled();
     guard(mutation({ attributes: [{ id: nested.id, attributes: { title: 'x' } }] }));
+    expect(onViolation).toHaveBeenCalledTimes(1);
     expect(guard(attach(nested.id, el('p', {})))).toBeUndefined();
+  });
+
+  it('a marker-only entry on a tainted node that is not a blocked iframe is reported', () => {
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', {});
+    guard(snapshot(doc([frame])));
+    const inner = el('p', {});
+    guard(attach(frame.id, inner));
+    guard(classChange(frame.id, 'private'));
+    expect(guard(marker(inner.id))).toBeUndefined();
+    expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
   it('an empty attribute entry from a blocked iframe is content, not a marker', () => {

@@ -384,7 +384,10 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
     // outer frame was blocked) carries no content: it is removed, not reported.
     const contentRemoved =
       keptTexts.length !== texts.length ||
-      attributes.some((a) => isTainted(a.id) && !isMarkerOnly(a.attributes));
+      attributes.some(
+        (a) =>
+          isTainted(a.id) && !(blockedIframes.has(a.id as number) && isMarkerOnly(a.attributes)),
+      );
     if (violation) {
       report('a document was attached to a blocked iframe and was removed');
     } else if (contentRemoved) {
