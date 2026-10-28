@@ -239,46 +239,60 @@ describe('parseV8Stack', () => {
     });
   });
 
-  it('a run of `)` costs linear time (no quadratic rescan of the lazy URL)', () => {
-    const frames = (fill: string): string[] =>
-      Array.from(
-        { length: 50 },
-        () => `eval at f (https://x.com/a.js?token=S${fill.repeat(4000)}x`,
-      );
-    const time = (inputs: string[]): number => {
-      let best = Number.POSITIVE_INFINITY;
-      for (let rep = 0; rep < 5; rep += 1) {
-        const started = Date.now();
-        for (const input of inputs) parseLocation(input);
-        best = Math.min(best, Date.now() - started);
-      }
-      return best;
-    };
-    const parens = time(frames(')'));
-    const control = time(frames('a'));
-    // quadratic measured ~500x the control; linear is within a small factor of it
-    expect(parens).toBeLessThan(Math.max(control * 25, 50));
-    expect(parseLocation(frames(')')[0] as string).file).not.toContain('token=S)');
-  });
-
-  it('many URL starts followed by a long run of `)` cost about the same as the same input without the run (the reviewer repro)', () => {
+  describe('hostile `)` runs are linear (ratio against the same input without the run)', () => {
     const now = (): number =>
       (globalThis as unknown as { performance: { now(): number } }).performance.now();
-    const best = (fill: string): number => {
-      const input = `eval at ${'(https://'.repeat(152)}${fill.repeat(2700)} x`;
-      let min = Number.POSITIVE_INFINITY;
-      for (let rep = 0; rep < 7; rep += 1) {
-        const started = now();
-        parseLocation(input);
-        min = Math.min(min, now() - started);
+    // Both sides are timed INTERLEAVED in this process and the best of each is kept, so machine speed
+    // and scheduler noise divide out: the verdict is a RATIO, never a wall-clock budget (a fixed 25/50 ms
+    // floor read 25-35 ms on shared CI runners and failed healthy code). Noise only ever adds time, so
+    // the minimum is the least contaminated estimate.
+    const costRatio = (hostile: () => void, control: () => void): number => {
+      let bestHostile = Number.POSITIVE_INFINITY;
+      let bestControl = Number.POSITIVE_INFINITY;
+      for (let rep = 0; rep < 15; rep += 1) {
+        let started = now();
+        hostile();
+        bestHostile = Math.min(bestHostile, now() - started);
+        started = now();
+        control();
+        bestControl = Math.min(bestControl, now() - started);
       }
-      return min;
+      return bestHostile / bestControl;
     };
-    const control = best('a');
-    const parens = best(')');
-    // fixed: ~2 ms, the same order as the control; without the `(?<!\))` lookbehind: ~675 ms per call (a few hundred times)
-    expect(parens).toBeLessThan(Math.max(control * 20, 25));
-    expect(parens).toBeLessThan(3000);
+
+    it('a run of `)` costs linear time (no quadratic rescan of the lazy URL)', () => {
+      const frames = (fill: string): string[] =>
+        Array.from(
+          { length: 50 },
+          () => `eval at f (https://x.com/a.js?token=S${fill.repeat(4000)}x`,
+        );
+      const hostile = frames(')');
+      const benign = frames('a');
+      // healthy code measures ~2x the control; the quadratic rescan ~600x. 40 is the geometric middle.
+      const ratio = costRatio(
+        () => {
+          for (const input of hostile) parseLocation(input);
+        },
+        () => {
+          for (const input of benign) parseLocation(input);
+        },
+      );
+      expect(ratio).toBeLessThan(40);
+      expect(parseLocation(hostile[0] as string).file).not.toContain('token=S)');
+    });
+
+    it('many URL starts followed by a long run of `)` cost about the same as the same input without the run (the reviewer repro)', () => {
+      const build = (fill: string): string =>
+        `eval at ${'(https://'.repeat(152)}${fill.repeat(2700)} x`;
+      const hostile = build(')');
+      const benign = build('a');
+      // healthy code measures ~5x the control; without the `(?<!\))` lookbehind ~2000x. 100 is the geometric middle.
+      const ratio = costRatio(
+        () => parseLocation(hostile),
+        () => parseLocation(benign),
+      );
+      expect(ratio).toBeLessThan(100);
+    });
   });
 
   it('an unusual-but-valid wrapper whose URL ends in `)` is still sanitized', () => {
