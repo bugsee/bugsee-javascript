@@ -42,13 +42,18 @@ const isWordChar = (ch: string | undefined): boolean =>
 
 const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*)?\$/y;
 
-/** A line comment ends at either line terminator (Postgres ends it at a lone CR too). */
-const LINE_END = /[\r\n]/g;
+/** Where a line comment ends: Postgres at CR or LF, MySQL and SQLite at LF only. */
+const LF = /\n/g;
+const CR_OR_LF = /[\r\n]/g;
 
 /** How a SQL dialect reads the constructs whose extent decides where the string literals are. */
 interface Dialect {
   /** `#` starts a line comment (MySQL; in Postgres it is an operator). */
   hashComment: boolean;
+  /** The line terminators that end a line comment. */
+  lineEnd: RegExp;
+  /** Version-conditional and hint comments (`/*!`, `/*M!`, `/*+`) are executed as SQL, so quotes inside them delimit strings (MySQL). */
+  executableComments: boolean;
   /** `--` is a comment only when followed by whitespace (MySQL; elsewhere it always is). */
   dashNeedsSpace: boolean;
   /** Block comments nest (Postgres). */
@@ -71,6 +76,8 @@ const DIALECTS: readonly Dialect[] = [
   // MySQL / MariaDB
   {
     hashComment: true,
+    lineEnd: LF,
+    executableComments: true,
     dashNeedsSpace: true,
     nestedComments: false,
     dollarQuotes: false,
@@ -79,6 +86,8 @@ const DIALECTS: readonly Dialect[] = [
   // Postgres, standard_conforming_strings on
   {
     hashComment: false,
+    lineEnd: CR_OR_LF,
+    executableComments: false,
     dashNeedsSpace: false,
     nestedComments: true,
     dollarQuotes: true,
@@ -87,6 +96,8 @@ const DIALECTS: readonly Dialect[] = [
   // Postgres, standard_conforming_strings off
   {
     hashComment: false,
+    lineEnd: CR_OR_LF,
+    executableComments: false,
     dashNeedsSpace: false,
     nestedComments: true,
     dollarQuotes: true,
@@ -95,6 +106,8 @@ const DIALECTS: readonly Dialect[] = [
   // standard SQL, SQLite, SQL Server, Oracle
   {
     hashComment: false,
+    lineEnd: LF,
+    executableComments: false,
     dashNeedsSpace: false,
     nestedComments: false,
     dollarQuotes: false,
@@ -138,6 +151,7 @@ function runEnd(sql: string, start: number, backslashEscapes: boolean): number {
 function scan(statement: string, dialect: Dialect): string {
   let out = '';
   let i = 0;
+  let executableDepth = 0;
   while (i < statement.length) {
     const ch = statement[i] as string;
     const next = statement[i + 1];
@@ -148,11 +162,26 @@ function scan(statement: string, dialect: Dialect): string {
         (!dialect.dashNeedsSpace || afterDash === undefined || afterDash <= ' ')) ||
       (ch === '#' && dialect.hashComment)
     ) {
-      LINE_END.lastIndex = i;
-      const eol = LINE_END.exec(statement)?.index ?? -1;
+      dialect.lineEnd.lastIndex = i;
+      const eol = dialect.lineEnd.exec(statement)?.index ?? -1;
       out += ' ';
       if (eol === -1) break;
       i = eol; // keep the terminator itself
+    } else if (
+      dialect.executableComments &&
+      ch === '/' &&
+      next === '*' &&
+      /^\/\*(?:M?!|\+)/.test(statement.slice(i, i + 4))
+    ) {
+      // Lex the body as code: skip only the opener (and the version digits) and remember to swallow its `*/`.
+      i += statement[i + 2] === 'M' ? 4 : 3;
+      while (statement[i] !== undefined && statement[i]! >= '0' && statement[i]! <= '9') i++;
+      executableDepth++;
+      out += ' ';
+    } else if (ch === '*' && next === '/' && executableDepth > 0) {
+      executableDepth--;
+      i += 2;
+      out += ' ';
     } else if (ch === '/' && next === '*') {
       out += ' ';
       const close = blockCommentEnd(statement, i, dialect.nestedComments);
@@ -227,8 +256,11 @@ export function redactSqlLiterals(statement: string): string {
     while (k < out.length && k < other.length && out[k] === other[k]) k++;
     out = `${out.slice(0, k)}?`;
   }
-  // numeric literals (decimal, exponent, hex), but never the digits inside an identifier like `column2`
-  return out.replace(/\b(?:0x[0-9a-f]+|\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b/gi, '?');
+  // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
+  return out.replace(
+    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:e[+-]?\d+)?)\b/gi,
+    '?',
+  );
 }
 
 /**

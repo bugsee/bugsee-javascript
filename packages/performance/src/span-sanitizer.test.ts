@@ -371,7 +371,27 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean(sql)).not.toContain(secret);
   });
 
-  it('ends a -- comment at a lone carriage return', () => {
-    expect(clean("SELECT 1 -- it's\r, 'secret'")).toBe('SELECT ?  \r, ?');
+  it('cuts at a lone carriage return after a -- comment (Postgres ends it there, MySQL does not)', () => {
+    expect(clean("SELECT 1 -- it's\r, 'secret'")).toBe('SELECT ?  ?');
+  });
+
+  it('lexes a MySQL executable comment body as code, so a `*/` inside its string cannot hide a literal', () => {
+    expect(clean("SELECT /*!50000 'a*/b' */ x FROM t WHERE p = 'secret'")).not.toContain('secret');
+    expect(clean("SELECT 1 /*M!100000 + LENGTH('*/z') */ AS y, 'secret2'")).not.toContain(
+      'secret2',
+    );
+    expect(clean("SELECT /*+ SET_VAR(x='*/y') */ 1, 'secret3'")).not.toContain('secret3');
+  });
+
+  it('ends # and -- comments at LF only for MySQL and SQLite, so a CR cannot hide a literal', () => {
+    expect(clean("SELECT c FROM t -- see\r it's\n WHERE a = 'k' AND p = 'secret'")).not.toContain(
+      'secret',
+    );
+  });
+
+  it('redacts underscore-separated, binary and octal numeric literals', () => {
+    expect(clean('SELECT 1 WHERE a = 4111_1111_1111_1111 OR b = 0b1010 OR c = 0o777')).toBe(
+      'SELECT ? WHERE a = ? OR b = ? OR c = ?',
+    );
   });
 });
