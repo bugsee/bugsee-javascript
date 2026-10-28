@@ -119,6 +119,18 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   control. All gated on `internals` (present only on first launch), so a repeat `launchMain` returns the client
   untouched (no second receiver/control). `pause()`/`resume()` are complete broadcast primitives on the manager,
   ready for an app-background hook (the trigger, not the mechanism, is the only deferral).
+  **Control wire fields** (`protocol.ts`, JSON envelope `{k:'control', c, …}`; every optional field is validated on decode and a
+  malformed one is ignored on its own, never failing the message):
+
+  | field | on | meaning |
+  |---|---|---|
+  | `c` | all | the command: `pause`, `resume`, `flush`, `stop`, `session`, `blackout-start`, `blackout-end` |
+  | `sid` | `session` | the owner's session id |
+  | `bo` | `session` | main's blackout state at handshake time (boolean; a renderer that loads mid-blackout starts dark). Always stated by `launchMain` |
+  | `ho` | `session` | the trace names **main writes itself**, so the renderer must not write them (one writer per name per session; spec `platforms/javascript.md` "Host-owned traces"): `displays` with a `screen`, `capture` with pixel video, `ram_js_heap_{total,used,free}` while a producer named `v8-heap` (`V8_HEAP_PRODUCER_NAME`) is in main's set (the default node set, or a caller set from `createNodeSystemTraceProducers()`); `[]` when main writes no traces. At most 64 names of at most 64 characters; a malformed array is ignored whole. A renderer **never** writes `displays`, `capture` or `ram_js_heap_*`, whatever `ho` says (`ho` can only add names; with no screen, no pixel video or no heap producer the session has none). The heap is detected by the producer name `v8-heap` (`V8_HEAP_PRODUCER_NAME`): that name is the contract, and a custom producer that borrows it without writing the heap makes main declare a heap nobody writes. Absent: the renderer keeps its built-in default (fail closed). Applied to the very next trace value |
+
+  **System-trace status (spec `platforms/javascript.md`, as built):** C13 (Electron `thermal_state` and `cpu_speed_limit` from `powerMonitor`) shipped in #125; C22 (host-owned trace suppression driven by the session handshake, `ho`) ships in #132; C26 (only the key window's renderer writes the per-window traces, `kw` / `window-key`) in #133, which is stacked on #132. Remaining limits: one launch per window is assumed (a `BrowserWindow` with several `WebContentsView`s gives each instrumented contents `kw:true`, so their `url` values interleave; open spec question, a cheap rule is described under the key-window rule below and is not implemented); `BaseWindow` windows are not tracked and are always key; `thermal_state` uses the iOS int form pending bugsee-cocoa#288; Electron `displays` is written by main only when a `screen` is injected; renderers never write it, so without a `screen` there is no `displays` trace.
+
 - **E7 — e2e.** ✅ BUILT (`electron-e2e.test.ts`). A fake-Electron IPC bus (fake ipcMain + per-renderer
   ipcRenderer/webContents + preload contextBridge + crashReporter) boots the REAL `@bugsee/node` main via
   `launchMain` (no launch seam) and TWO renderers via `launchRenderer` (only `@bugsee/browser`'s renderer internals

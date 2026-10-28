@@ -13,6 +13,7 @@ import {
   type LockManagerLike,
   markerDatabaseName,
 } from '@bugsee/browser-utils';
+import { createTraceSuppression } from '@bugsee/capture';
 import {
   BlackoutToken,
   type BundleStore,
@@ -2192,6 +2193,94 @@ describe('launch', () => {
           }),
         );
         expect(onError).not.toHaveBeenCalled();
+      });
+
+      it('hostOwnedTraces suppresses EVERY listed name the launch would write (not only displays), and every unlisted one still flows', async () => {
+        stubSensors();
+        const store = memStore();
+        await launchTracked(
+          'tok',
+          noSampler({
+            captureStore: store,
+            hostOwnedTraces: [
+              'ram_js_heap_total',
+              'ram_js_heap_used',
+              'ram_js_heap_free',
+              'orientation',
+            ],
+          }),
+        );
+        const names = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => (e.data as { name: string }).name,
+        );
+        for (const owned of [
+          'ram_js_heap_total',
+          'ram_js_heap_used',
+          'ram_js_heap_free',
+          'orientation',
+        ]) {
+          expect(names).not.toContain(owned);
+        }
+        expect(names).toContain('connection');
+        expect(names).toContain('ram_system_advertised');
+      });
+
+      it('`displays` can be HANDED BACK: a live suppression that releases it makes the next display change write the list', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const settle: Array<() => void> = [];
+        const scheduler = {
+          setInterval: (cb: () => void, ms: number) => {
+            if (ms === 250) settle.push(cb);
+            return settle.length;
+          },
+          clearInterval: () => {},
+        };
+        const suppression = createTraceSuppression({ host: ['displays'] });
+        await launchTracked(
+          'tok',
+          noSampler({
+            window: w.win,
+            captureStore: store,
+            scheduler,
+            hostOwnedTraces: suppression,
+          }),
+        );
+        suppression.setLayer('host', []); // the host says it owns nothing
+        Object.assign(w.win, { devicePixelRatio: 3 });
+        w.emit('resize', {});
+        settle[0]?.();
+        // the owned baseline was held and is re-recorded on release, then the change follows
+        expect(await rowsOf(store, 'displays')).toEqual([
+          [{ id: 0, state: 'on', width: 780, height: 1688, scale: 2 }],
+          [{ id: 0, state: 'on', width: 1170, height: 2532, scale: 3 }],
+        ]);
+      });
+
+      it('a LIVE trace suppression (hostOwnedTraces: object) applies a layer change made after launch, and its initial names skip the producers', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 390, height: 844 });
+        const w = fakeWindow();
+        Object.assign(w.win, { devicePixelRatio: 2 });
+        const store = memStore();
+        const onError = vi.fn();
+        const suppression = createTraceSuppression({ host: ['displays'] });
+        await launchTracked(
+          'tok',
+          noSampler({ window: w.win, captureStore: store, onError, hostOwnedTraces: suppression }),
+        );
+        expect(onError).not.toHaveBeenCalled(); // a live suppression is NOT an invalid option
+        suppression.setLayer('host', ['displays', 'connection']); // e.g. the host's handshake reply
+        vi.stubGlobal('navigator', { onLine: false, connection: { type: 'wifi' } });
+        w.emit('offline', {});
+        const rows = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => (e.data as { name: string; value: unknown }).name,
+        );
+        expect(rows).not.toContain('displays');
+        expect(rows.filter((n) => n === 'connection')).toHaveLength(1); // the baseline only: the offline change was dropped
       });
 
       it.each([

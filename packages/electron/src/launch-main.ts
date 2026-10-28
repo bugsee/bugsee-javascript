@@ -21,6 +21,7 @@ import {
   createNodeSystemTraceProducers,
   launchCore,
   sanitizeHardwareGpu,
+  V8_HEAP_PRODUCER_NAME,
 } from '@bugsee/node';
 import {
   type BrowserWindowSource,
@@ -102,6 +103,7 @@ export interface ElectronAppLike {
 }
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
+import { TraceName } from '@bugsee/protocol';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import { createElectronMainControl, type IpcMainControlLike } from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
@@ -115,6 +117,7 @@ import { createRendererGoneHandler } from './renderer-gone';
 import { type RendererGoneIncident, RendererIncidentProvider } from './renderer-incident-provider';
 import { createElectronSystemEventsSource } from './system-events';
 import { createElectronSystemTraceProducers } from './system-traces';
+import { ELECTRON_MAIN_HEAP_TRACES } from './trace-tables';
 import type { VideoCaptureSource } from './video-capture';
 
 /** The node `launchCore` shape, injectable for tests. */
@@ -350,6 +353,18 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     captureState.bindPressure(diskPressure);
   }
 
+  // The trace names main will actually WRITE, which the handshake tells every renderer not to write (one writer per name per
+  // session): `displays` with a screen, `capture` with pixel video, and its own V8 heap unless the caller replaces the node
+  // producer set. Nothing at all when the legacy sampler replaces the producers or system traces are off.
+  // main writes its heap when the node set is in use (the default) or the caller's own set contains the `v8-heap` producer
+  // (the pattern `createNodeSystemTraceProducers()` recommends); a set without it never writes `ram_js_heap_*`
+  const writesHeap =
+    nodeOptions.systemTraceProducers === undefined ||
+    nodeOptions.systemTraceProducers.some((p) => p.name === V8_HEAP_PRODUCER_NAME);
+  const writesTraces =
+    nodeOptions.systemMetricsSampler === undefined &&
+    resolveFailClosedBoolean(nodeOptions.captureSystemTraces, true);
+
   // Trace producers: `systemTraceProducers` REPLACES the node defaults when supplied, so pass the node set (the caller's,
   // else the default one wired to this launch's scheduler/onError) PLUS the Electron producers. The node producers keep
   // `process_memory_*`/`cpu_*`/`event_loop_*` for the process that owns the session; the Electron ones only add names the
@@ -528,6 +543,15 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     sessionId: internals.api.sessionId,
     // A renderer that says hello mid-blackout is told in its session reply and starts dark.
     isBlackout: () => blackout.isActive(),
+    // What main actually writes (see `writesTraces`): every renderer is told in its handshake reply and must not write it.
+    hostOwnedTraces: !writesTraces
+      ? []
+      : [
+          ...(display !== undefined ? [TraceName.DISPLAYS] : []),
+          ...(captureState !== undefined ? [TraceName.CAPTURE] : []),
+          // information for other hosts: an Electron renderer ignores the heap part (it never writes `ram_js_heap_*`)
+          ...(writesHeap ? ELECTRON_MAIN_HEAP_TRACES : []),
+        ],
   });
   control.start();
   // Forward the main client's blackout to EVERY renderer. Without this a blackout applied in main only

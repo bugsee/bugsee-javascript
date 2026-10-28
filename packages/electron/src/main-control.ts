@@ -53,6 +53,11 @@ export interface ElectronMainControlOptions {
    * Without a probe every reply says `bo:false` (nothing to report), so a renderer never waits on it.
    */
   isBlackout?: () => boolean;
+  /**
+   * The trace names this main process writes itself (so a renderer must not): sent with every `session` reply. Without it
+   * the reply declares nothing and a renderer keeps its built-in default (an older main behaves the same).
+   */
+  hostOwnedTraces?: readonly string[];
 }
 
 export interface ElectronMainControl {
@@ -82,6 +87,9 @@ export function createElectronMainControl(
 ): ElectronMainControl {
   const helloChannel = options.helloChannel ?? BUGSEE_HELLO_CHANNEL;
   const controlChannel = options.controlChannel ?? BUGSEE_CONTROL_CHANNEL;
+  // The declaration is fixed when the control is built: a later change to the caller's array is not a protocol change.
+  const declaredOwned =
+    options.hostOwnedTraces === undefined ? undefined : [...options.hostOwnedTraces];
   // Registered renderers, deduped by sender identity (a reload reuses the same webContents object).
   const renderers = new Set<ControlSenderLike>();
 
@@ -180,6 +188,7 @@ export function createElectronMainControl(
         sessionId: options.sessionId,
         // ALWAYS stated: a probe-less owner says `false` instead of leaving the renderer to guess.
         blackout: options.isBlackout !== undefined ? readBlackout(options.isBlackout) : false,
+        ...(declaredOwned !== undefined ? { hostOwnedTraces: declaredOwned } : {}),
       }),
     );
   };

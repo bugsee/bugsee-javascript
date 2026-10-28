@@ -119,6 +119,41 @@ describe('encodeControl / decodeControl', () => {
     expect(decodeControl(raw)).toEqual({ command: 'session', sessionId: 's' });
   });
 
+  it('the session reply can carry the trace names the host owns (`ho`); omitted when not provided', () => {
+    const msg: ControlMessage = {
+      command: 'session',
+      sessionId: 's',
+      hostOwnedTraces: ['displays', 'ram_js_heap_total'],
+    };
+    expect(JSON.parse(encodeControl(msg))).toMatchObject({ ho: ['displays', 'ram_js_heap_total'] });
+    expect(decodeControl(encodeControl(msg))).toEqual(msg);
+    expect(JSON.parse(encodeControl({ command: 'session', sessionId: 's' }))).not.toHaveProperty(
+      'ho',
+    );
+    // an EMPTY declaration is meaningful (the host owns nothing) and survives
+    const none: ControlMessage = { command: 'session', sessionId: 's', hostOwnedTraces: [] };
+    expect(decodeControl(encodeControl(none))).toEqual(none);
+  });
+
+  it.each([
+    ['a string', 'displays'],
+    ['an object', { displays: true }],
+    ['a non-string element', ['displays', 3]],
+    ['an empty name', ['']],
+    ['an over-long name', ['x'.repeat(65)]],
+    ['too many names', Array.from({ length: 65 }, (_, i) => `t${i}`)],
+  ])('ignores a malformed `ho` (%s) on the wire without losing the rest of the message', (_n, ho) => {
+    const raw = JSON.stringify({ k: 'control', c: 'session', sid: 's', ho });
+    expect(decodeControl(raw)).toEqual({ command: 'session', sessionId: 's' });
+  });
+
+  it('ignores a non-string `sid` on the wire (untrusted-shaped input)', () => {
+    for (const sid of [5, null, true, {}, ['s']]) {
+      const raw = JSON.stringify({ k: 'control', c: 'session', sid });
+      expect(decodeControl(raw)).toEqual({ command: 'session' });
+    }
+  });
+
   it('omits sessionId when absent (not encoded as undefined)', () => {
     const raw = encodeControl({ command: 'pause' });
     expect(JSON.parse(raw)).not.toHaveProperty('sid');

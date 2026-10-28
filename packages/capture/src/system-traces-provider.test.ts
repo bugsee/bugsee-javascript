@@ -19,6 +19,7 @@ import {
   type TraceSample,
 } from './system-traces-provider';
 import { type TraceProducer, TraceProducerBase, type TraceSink } from './trace-producer';
+import { createTraceSuppression } from './trace-suppression';
 
 const mkStore = (): CaptureStore =>
   createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY });
@@ -736,6 +737,232 @@ describe('createSystemTracesProvider — hardening', () => {
     expect([sets, cleared]).toEqual([2, 1]);
     p.stop();
     expect([sets, cleared]).toEqual([2, 2]);
+  });
+});
+
+describe('createSystemTracesProvider — suppression (host-owned and non-key-window traces)', () => {
+  it('drops a suppressed name from producers AND the legacy sampler; every other name still flows', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const a = new Fixed('a', [
+      ['battery', 50],
+      ['displays', [1]],
+      ['fps', 60, 0],
+    ]);
+    const p = createSystemTracesProvider({
+      producers: [a],
+      sample: () => [
+        { name: 'ram_js_heap_used', value: 1 },
+        { name: 'cpu', value: 2 },
+      ],
+      suppression: createTraceSuppression({ host: ['displays', 'ram_js_heap_used'] }),
+      scheduler: fs.scheduler,
+      now: () => 5,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    expect((await values(store)).map((v) => v.name)).toEqual(['battery', 'fps', 'cpu']);
+  });
+
+  it('applies a LIVE change on the very next value (a handshake that arrives after start)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const suppression = createTraceSuppression();
+    const a = new Fixed('a', []);
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 5,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    a.push('battery', 1);
+    suppression.setLayer('host', ['battery']);
+    a.push('battery', 2);
+    a.push('charging', 3);
+    expect((await values(store)).map((v) => [v.name, v.value])).toEqual([
+      ['battery', 1],
+      ['charging', 3],
+    ]);
+  });
+
+  it('a suppressed HELD value is remembered but not recorded, never refreshed while suppressed, and is re-recorded when RELEASED', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const suppression = createTraceSuppression({ window: ['url'] });
+    const a = new Fixed(
+      'a',
+      [
+        ['url', 'https://a/'],
+        ['other', 1],
+      ],
+      { held: true },
+    );
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10_000,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    t = 10_000;
+    fs.tick(); // the refresh re-records `other` only
+    t = 12_345;
+    suppression.setLayer('window', []); // the window becomes the key window
+    expect((await values(store)).map((v) => [v.name, v.value, v.timestamp])).toEqual([
+      ['other', 1, 0],
+      ['other', 1, 10_000],
+      ['url', 'https://a/', 12_345],
+    ]);
+  });
+
+  it('a held value that CHANGES while suppressed is the one re-recorded on release (the latest, not the first)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const suppression = createTraceSuppression({ window: ['url'] });
+    const a = new Fixed('a', [['url', 'one']], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 7,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    a.push('url', 'two');
+    suppression.setLayer('window', []);
+    expect((await values(store)).map((v) => v.value)).toEqual(['two']);
+  });
+
+  it('release re-records ONLY held values: a polled value has nothing to replay', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const suppression = createTraceSuppression({ window: ['fps'] });
+    const a = new Fixed('a', [['fps', 60]]);
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 7,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    suppression.setLayer('window', []);
+    expect(await values(store)).toEqual([]);
+  });
+
+  it('a name released while ANOTHER layer still lists it stays silent', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const suppression = createTraceSuppression({ host: ['url'], window: ['url'] });
+    const a = new Fixed('a', [['url', 'x']], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 7,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    suppression.setLayer('window', []);
+    expect(await values(store)).toEqual([]);
+  });
+
+  it('a release that arrives after stop() records nothing, and the provider unsubscribes on stop', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const suppression = createTraceSuppression({ window: ['url'] });
+    const listeners = vi.spyOn(suppression, 'subscribe');
+    const a = new Fixed('a', [['url', 'x']], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 7,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    expect(listeners).toHaveBeenCalledOnce();
+    p.stop();
+    suppression.setLayer('window', []);
+    expect(await values(store)).toEqual([]);
+    // a restart subscribes again and starts from a clean held snapshot
+    p.start(options);
+    expect(listeners).toHaveBeenCalledTimes(2);
+    expect((await values(store)).map((v) => v.value)).toEqual(['x']);
+  });
+
+  it("stop() calls the subscription's unsubscribe, and a release the (misbehaving) suppression still delivers after stop() records nothing", async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const real = createTraceSuppression({ window: ['url'] });
+    let deliver: ((released: readonly string[]) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const suppression = {
+      ...real,
+      subscribe: (listener: (released: readonly string[]) => void) => {
+        deliver = listener;
+        return unsubscribe; // never really unsubscribes: the provider's own guard must hold
+      },
+    };
+    const a = new Fixed('a', [['url', 'x']], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => 7,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    expect(unsubscribe).not.toHaveBeenCalled();
+    p.stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    deliver?.(['url']);
+    expect(await values(store)).toEqual([]);
+  });
+
+  it('a re-recorded held value gets a FRESH timestamp (so it is not refreshed again at once) and keeps its displayId', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    let t = 0;
+    const suppression = createTraceSuppression({ window: ['fps'] });
+    const a = new Fixed('a', [['fps', 60, 3]], { held: true });
+    const p = createSystemTracesProvider({
+      producers: [a],
+      suppression,
+      scheduler: fs.scheduler,
+      now: () => t,
+      refreshMs: 10_000,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    t = 12_000;
+    suppression.setLayer('window', []);
+    t = 20_000; // 8 s after the re-record (< refreshMs): NOT refreshed; 20 s after the first sighting would be
+    fs.tick();
+    t = 22_000; // 10 s after the re-record: refreshed
+    fs.tick();
+    expect((await values(store)).map((v) => [v.name, v.timestamp, v.displayId])).toEqual([
+      ['fps', 12_000, 3],
+      ['fps', 22_000, 3],
+    ]);
+  });
+
+  it('without a suppression nothing is dropped (the default)', async () => {
+    const store = mkStore();
+    const fs = fakeScheduler();
+    const p = createSystemTracesProvider({
+      producers: [new Fixed('a', [['displays', [1]]])],
+      scheduler: fs.scheduler,
+      now: () => 1,
+    });
+    p.init(buildInit(store));
+    p.start(options);
+    expect((await values(store)).map((v) => v.name)).toEqual(['displays']);
   });
 });
 

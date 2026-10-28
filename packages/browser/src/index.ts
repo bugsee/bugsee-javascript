@@ -2,6 +2,8 @@
 // Browser platform: fetch transport, IndexedDB storage, window error handlers, stack-trace parser,
 // and the launch() composition root.
 
+// the type of the public `hostOwnedTraces` launch option (a live suppression), so a host composes it without a second dependency
+export type { TraceSuppression } from '@bugsee/capture';
 // The built-in network redaction, for composing with a custom `setNetworkEventFilter` (the
 // directly imported platform package exposes the same value surface as the umbrella entries).
 export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';

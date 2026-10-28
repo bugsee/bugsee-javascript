@@ -46,7 +46,7 @@ export {
   type RequestDecorator,
   type RequestDecoratorRegistry,
 } from './request-decorator';
-export { ScreenProducer, type ScreenProducerOptions, type ScreenSource } from './screen-producer';
+export { ScreenProducer, type ScreenSource } from './screen-producer';
 // `createSendBeaconInterceptor`/`SendBeaconInterceptorOptions`/`SendBeaconTarget` (./send-beacon-interceptor)
 // are wired internally by install-network-capture.ts (imported directly, not via this barrel) — every
 // platform reaches sendBeacon capture only through `installNetworkCapture()`, never by constructing the
@@ -74,6 +74,13 @@ export {
   TraceProducerBase,
   type TraceSink,
 } from './trace-producer';
+export {
+  createTraceSuppression,
+  isTraceSuppression,
+  sanitizeTraceNames,
+  type TraceSuppression,
+  WEBVIEW_HOST_OWNED_TRACES,
+} from './trace-suppression';
 export {
   createTraceparentDecorator,
   type ParsedTraceparent,

@@ -33,6 +33,8 @@ export interface EdgeBundle {
    * static, dynamic or require — means the artifact cannot run.
    */
   externalImports: string[];
+  /** Every source file esbuild bundled (the metafile's inputs), so a guard can assert what is, or is not, in the bundle. */
+  inputs: string[];
   /** Raw byte length. */
   bytes: number;
   /** gzipped byte length (what counts against the Workers compressed limit). */
@@ -43,9 +45,11 @@ function measure(
   code: string,
   nodeImports: string[] = [],
   externalImports: string[] = [],
+  inputs: string[] = [],
 ): EdgeBundle {
   return {
     code,
+    inputs,
     nodeImports,
     externalImports,
     bytes: Buffer.byteLength(code, 'utf8'),
@@ -150,6 +154,7 @@ export async function bundleEdgeSource(contents: string): Promise<EdgeBundle> {
     result.outputFiles[0]?.text ?? '',
     nodeImportsOf(result.metafile),
     externalImportsOf(result.metafile),
+    Object.keys(result.metafile.inputs),
   );
 }
 
@@ -183,6 +188,7 @@ export async function bundleEdgeEntry(
     result.outputFiles[0]?.text ?? '',
     nodeImportsOf(result.metafile),
     externalImportsOf(result.metafile),
+    Object.keys(result.metafile.inputs),
   );
 }
 

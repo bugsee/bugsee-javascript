@@ -183,6 +183,14 @@ export interface ControlConfig {
   readonly reportTrigger?: boolean;
   /** Native declares that it applies `blackout` messages to its own visual capture. */
   readonly blackout?: boolean;
+  /**
+   * The system trace names the NATIVE host writes itself, which this WebView must therefore NOT write (one writer per name
+   * per session). It REPLACES the SDK's built-in list for a WebView (battery, orientation, app state, connection, fps, view,
+   * display, capture, ...), so a host that does not write one of them can hand it back; an empty array means "owns none".
+   * Absent leaves the built-in list in force; a malformed value (not an array of at most 64 non-empty strings of at most 64
+   * characters) is ignored whole. Applies to the very next trace value.
+   */
+  readonly hostOwnedTraces?: readonly string[];
 }
 
 /** native→JS: the handshake reply + ongoing control commands. */

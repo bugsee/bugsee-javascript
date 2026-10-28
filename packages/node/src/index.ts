@@ -134,4 +134,8 @@ export {
   startServerSpan,
 } from './server-instrument';
 export { createNodeSystemEventsSource } from './system-events';
-export { createNodeSystemTraceProducers, type NodeTraceProducerDeps } from './trace-producers';
+export {
+  createNodeSystemTraceProducers,
+  type NodeTraceProducerDeps,
+  V8_HEAP_PRODUCER_NAME,
+} from './trace-producers';

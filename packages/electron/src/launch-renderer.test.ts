@@ -1,4 +1,5 @@
 import type { Bugsee, BugseeLaunchOptions } from '@bugsee/browser';
+import { isTraceSuppression, type TraceSuppression } from '@bugsee/capture';
 import {
   BlackoutToken,
   type CaptureStore,
@@ -11,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launchRenderer, resolveRendererBridge, resolveRendererPost } from './launch-renderer';
 import type { BugseeElectronBridge } from './preload-bridge';
 import { decodeStreamEntry, encodeControl, isHello } from './protocol';
+import { ELECTRON_RENDERER_HOST_OWNED_TRACES } from './trace-tables';
 
 /** A fake browser launchCore that records the options it was called with + returns a stub client. */
 function fakeLaunch() {
@@ -116,14 +118,46 @@ describe('launchRenderer', () => {
     expect('launch' in (f.received?.options ?? {})).toBe(false);
   });
 
-  it('tells the browser launch the host owns `displays` and `capture` (main writes them), and a caller cannot switch that back off', async () => {
+  it('tells the browser launch which names the host owns (displays, capture, ram_js_heap_*: main writes them) as a LIVE suppression, and a caller cannot switch that back off', async () => {
     const f = fakeLaunch();
     await launchRenderer('tok', {
       launch: f.launch,
       post: () => {},
       hostOwnedTraces: [],
     } as never);
-    expect(f.received?.options.hostOwnedTraces).toEqual(['displays', 'capture']);
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    expect(isTraceSuppression(owned)).toBe(true);
+    for (const name of ELECTRON_RENDERER_HOST_OWNED_TRACES) expect(owned.has(name)).toBe(true);
+    expect(owned.has('battery')).toBe(false);
+  });
+
+  it('the session handshake REPLACES main-owned names (the heap) with what main declares, but a renderer NEVER writes displays or capture', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    b.drive(encodeControl({ command: 'session', sessionId: 's' })); // no `ho`: keep the default
+    expect(owned.has('displays')).toBe(true);
+    expect(owned.has('ram_js_heap_total')).toBe(true);
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['connection'] }));
+    expect(owned.has('connection')).toBe(true);
+    expect(owned.has('ram_js_heap_total')).toBe(true); // a renderer never writes the heap, whatever main declares
+    expect(owned.has('displays')).toBe(true); // main declared neither, and the renderer still never writes them
+    expect(owned.has('capture')).toBe(true);
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [] }));
+    expect(owned.has('connection')).toBe(false);
+    expect(owned.has('displays')).toBe(true);
+    expect(owned.has('capture')).toBe(true);
+  });
+
+  it('a session reply for a client that is no longer launched does not touch the suppression', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const owned = f.received?.options.hostOwnedTraces as unknown as TraceSuppression;
+    (f.client as unknown as { isLaunched: () => boolean }).isLaunched = () => false;
+    b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [] }));
+    expect(owned.has('displays')).toBe(true);
   });
 
   it("the injected store streams capture to the caller's post (encoded)", async () => {

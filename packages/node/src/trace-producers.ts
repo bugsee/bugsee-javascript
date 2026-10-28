@@ -106,10 +106,13 @@ class EventLoopUtilizationProducer extends StageProducer<'utilization'> {
   }
 }
 
+/** The name of the producer that writes `ram_js_heap_*` (a host that must know who writes the heap, like Electron main, looks for it). */
+export const V8_HEAP_PRODUCER_NAME = 'v8-heap';
+
 // `ram_js_heap_*` is the CEILING-based view shared with the browser and Android (`total` = the heap limit),
 // so it is NOT an alias of `process_memory_heap_*` (committed heap). Only `used` is the same number.
 class V8HeapProducer extends StageProducer<'v8Heap'> {
-  readonly name = 'v8-heap';
+  readonly name = V8_HEAP_PRODUCER_NAME;
   constructor(tracker: ProcessTracker) {
     super(tracker, 'v8Heap');
   }

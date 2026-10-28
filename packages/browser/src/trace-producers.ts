@@ -566,12 +566,6 @@ export interface BrowserTraceEnv extends BatteryEnv {
   /** `window.matchMedia` bound to that window: colour scheme / reduced motion / display mode (UiTracker). */
   matchMedia?: UiEnv['matchMedia'];
   /**
-   * Trace names the HOST of this page already writes, which this producer list must therefore NOT write (one writer per
-   * name per session; spec platforms/javascript.md host-owned table). Only `displays` is honoured today: an Electron
-   * renderer (main writes the full list) and a native WebView (the host writes it) pass `['displays']`.
-   */
-  hostOwnedTraces?: readonly string[];
-  /**
    * Build the `url` producer (the page's sanitized address, held) from these dependencies; absent = no `url` trace.
    * It is not a sensor: it is kept when `sensors` is `false`, and it is built from the page itself, so it needs no
    * `lifecycle`. Build it with `urlProducerDepsFor`.
@@ -758,18 +752,9 @@ export function createBrowserSystemTraceProducers(
   const nav = env.navigator;
   const battery = new BatteryProducer(powerTrackerFor(env, onError));
   const url = env.url !== undefined ? [new UrlProducer(env.url)] : [];
-  // A name the HOST owns is not written here: the native host of a WebView writes `view` (spec host table).
-  const owned = (name: string): boolean =>
-    Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes(name);
-  const screen =
-    env.routeViewState !== undefined
-      ? [
-          new ScreenProducer(env.routeViewState, {
-            route: !owned(TraceName.ROUTE),
-            view: !owned(TraceName.VIEW),
-          }),
-        ]
-      : [];
+  // `route` and `view` are always built: whether this launch may WRITE a name is the provider's live suppression (a native
+  // WebView host owns `view`; a non-key Electron window writes neither).
+  const screen = env.routeViewState !== undefined ? [new ScreenProducer(env.routeViewState)] : [];
   if (env.sensors === false) return [battery, ...url, ...screen];
   // Read ONCE and SILENTLY (only to decide whether the UiTracker's frame-rate gets a clock): the ProcessTracker owns
   // reporting an unreadable `performance.now` when its lag/uptime stage activates, so a hostile getter is reported once.
@@ -843,9 +828,7 @@ export function createBrowserSystemTraceProducers(
     ...(env.lifecycle !== undefined
       ? [
           new AppStateProducer(env.lifecycle),
-          ...(Array.isArray(env.hostOwnedTraces) && env.hostOwnedTraces.includes(TraceName.DISPLAYS)
-            ? []
-            : [new DisplaysProducer(ui, env.scheduler)]),
+          new DisplaysProducer(ui, env.scheduler),
           new MainThreadLagProducer(processTracker),
           new MainThreadIdleProducer(processTracker),
           new FpsProducer(ui),

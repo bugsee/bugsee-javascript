@@ -9,6 +9,7 @@ function harness(over: Partial<Parameters<typeof createRendererControlHandler>[0
     onSession: vi.fn(),
     flush: vi.fn(),
     onBlackout: vi.fn(),
+    onHostOwned: vi.fn(),
   };
   const handle = createRendererControlHandler({ ...calls, ...over });
   return { ...calls, handle };
@@ -45,6 +46,38 @@ describe('createRendererControlHandler', () => {
     const h = harness();
     h.handle(encodeControl({ command: 'session', sessionId: 'sess-9' }));
     expect(h.onSession).toHaveBeenCalledWith('sess-9');
+  });
+
+  it('session with `ho` → onHostOwned(names) BEFORE onSession (the host declares what it owns before the hold opens)', () => {
+    const order: string[] = [];
+    const h = harness({
+      onHostOwned: (names) => order.push(`ho:${names.join(',')}`),
+      onSession: () => order.push('session'),
+    });
+    h.handle(
+      encodeControl({
+        command: 'session',
+        sessionId: 's',
+        hostOwnedTraces: ['displays', 'capture'],
+      }),
+    );
+    expect(order).toEqual(['ho:displays,capture', 'session']);
+  });
+
+  it('an empty `ho` is still delivered (the host owns nothing); an absent one is not', () => {
+    const h = harness();
+    h.handle(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [] }));
+    expect(h.onHostOwned).toHaveBeenCalledExactlyOnceWith([]);
+    h.onHostOwned.mockClear();
+    h.handle(encodeControl({ command: 'session', sessionId: 's' }));
+    expect(h.onHostOwned).not.toHaveBeenCalled();
+  });
+
+  it('`ho` on a session reply with no onHostOwned handler is simply ignored', () => {
+    const handle = createRendererControlHandler({ setPaused: vi.fn(), stop: vi.fn() });
+    expect(() =>
+      handle(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['a'] })),
+    ).not.toThrow();
   });
 
   it('session without a sessionId does not call onSession', () => {

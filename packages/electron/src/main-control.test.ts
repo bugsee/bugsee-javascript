@@ -198,6 +198,47 @@ describe('createElectronMainControl', () => {
     expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // listener removed
   });
 
+  it('declares the trace names the host owns in every session reply (`ho`), including a reload’s repeat hello', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      hostOwnedTraces: ['displays', 'ram_js_heap_total'],
+    });
+    control.start();
+    const r = fakeSender(7);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(r.sent.map((m) => decodeControl(m.raw)?.hostOwnedTraces)).toEqual([
+      ['displays', 'ram_js_heap_total'],
+      ['displays', 'ram_js_heap_total'],
+    ]);
+  });
+
+  it('a reply carries a COPY of the declared names (a later mutation of the option array changes nothing)', () => {
+    const ipc = fakeIpcMain();
+    const owned = ['displays'];
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      hostOwnedTraces: owned,
+    });
+    control.start();
+    owned.push('battery');
+    const r = fakeSender(7);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(decodeControl(r.sent[0]?.raw as string)?.hostOwnedTraces).toEqual(['displays']);
+  });
+
+  it('states no `ho` at all without an option (the renderer keeps its built-in default)', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const r = fakeSender(7);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(JSON.parse(r.sent[0]?.raw as string)).not.toHaveProperty('ho');
+  });
+
   it('dedupes a repeat hello from the same renderer (reload) but re-sends the session id', () => {
     const ipc = fakeIpcMain();
     const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 'sess-1' });

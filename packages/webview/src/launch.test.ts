@@ -541,7 +541,7 @@ describe('launch (webview)', () => {
       'tok',
       baseOptions({ global: fake.global, window: win.target as unknown as WindowEvents }),
     );
-    expect(thisSeen).toHaveLength(11); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9)
+    expect(thisSeen).toHaveLength(12); // dark: baseline read + watch (2); display mode: 3 queries x (baseline read + watch + previous-mode read) (9); the displays producer's resolution query (1: built even though the host owns the name, so a host that hands it back can have it)
     expect(thisSeen.every((t) => t === win.target)).toBe(true);
     for (const f of [...listeners]) f({ matches: true });
     const has = (msgs: ReturnType<typeof fakeGlobal>) =>
@@ -1196,7 +1196,7 @@ describe('launch (webview)', () => {
       return { client, n: () => w.count('online', 'offline', 'orientationchange') };
     };
 
-    it('streams heap, connection and orientation, and listens on the injected window only while capturing', async () => {
+    it('streams the page heap (not the host-owned connection/orientation), and listens on the injected window only while capturing', async () => {
       stubSensors();
       try {
         const fake = fakeGlobal();
@@ -1209,9 +1209,10 @@ describe('launch (webview)', () => {
             return [d.name, d.value];
           }),
         );
-        expect(rows.get('ram_js_heap_used')).toBe(10);
-        expect(rows.get('connection')).toMatchObject({ type: 'cellular' });
-        expect(rows.get('orientation')).toBe(3);
+        expect(rows.get('ram_js_heap_used')).toBe(10); // the page's OWN heap: page-owned, written by the WebView
+        // `connection` and `orientation` are the native host's (spec host-owned table): the WebView writes neither
+        expect(rows.has('connection')).toBe(false);
+        expect(rows.has('orientation')).toBe(false);
         // ONE ConnectivityTracker (online + offline) and ONE UiTracker (orientationchange) serve traces AND events:
         // three listeners, none duplicated.
         expect(w.count('online', 'offline', 'orientationchange')).toBe(3);
@@ -1322,6 +1323,31 @@ describe('launch (webview)', () => {
       });
     });
 
+    describe('the view trace can be handed back by native (the always-built producer is gated only by the live suppression)', () => {
+      it('hostOwnedTraces: [] releases `view`: the held view is written at the handshake and later changes follow', async () => {
+        stubSensors();
+        try {
+          const fake = fakeGlobal();
+          const carrier = {};
+          const client = track(
+            'tok',
+            baseOptions({ global: fake.global, window: fakeWin().win, carrier }),
+          );
+          await new Promise((r) => setTimeout(r, 0));
+          client.setView({ name: 'Detail' });
+          sendControl(fake.global, { config: { hostOwnedTraces: [] } });
+          client.setView({ name: 'Other' });
+          const views = entriesOfType(fake.msgs(), 'traces.system')
+            .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
+            .filter((d) => d.name === 'view')
+            .map((d) => d.value);
+          expect(views).toEqual([{ name: 'Detail' }, { name: 'Other' }]);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+    });
+
     describe('the url trace (captureUrl / urlSanitizer)', () => {
       const urlRows = async (over: Partial<BugseeWebViewLaunchOptions>, href?: string) => {
         stubSensors();
@@ -1408,7 +1434,7 @@ describe('launch (webview)', () => {
       }
     });
 
-    describe('displays (host-owned: never written) and main_thread_lag_ms (from the injected window)', () => {
+    describe('displays (host-owned: never written, though the producer exists so the host can hand it back) and main_thread_lag_ms (from the injected window)', () => {
       const rowsOf = (fake: ReturnType<typeof fakeGlobal>, name: string): unknown[] =>
         entriesOfType(fake.msgs(), 'traces.system')
           .map((e) => (e.p as unknown as { data: { name: string; value: unknown } }).data)
@@ -1478,10 +1504,30 @@ describe('launch (webview)', () => {
         }
       });
 
-      it('a hostile devicePixelRatio getter never fails launch (the host-owned displays trace is not built, so it is never read)', () => {
+      it('native can HAND `displays` BACK (hostOwnedTraces: []): the held baseline list is written at the handshake', async () => {
         stubSensors();
         vi.stubGlobal('screen', { width: 360, height: 640 });
         try {
+          const fake = fakeGlobal();
+          const w = fakeWin();
+          Object.assign(w.win, { devicePixelRatio: 2 });
+          track('tok', baseOptions({ global: fake.global, window: w.win }));
+          await new Promise((r) => setTimeout(r, 0));
+          expect(rowsOf(fake, 'displays')).toEqual([]); // the host owns it until it says otherwise
+          sendControl(fake.global, { config: { hostOwnedTraces: [] } });
+          expect(rowsOf(fake, 'displays')).toEqual([
+            [{ id: 0, state: 'on', width: 720, height: 1280, scale: 2 }],
+          ]);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('a hostile devicePixelRatio getter never fails launch: the failure is REPORTED, and (the host owns it) no displays row is written', async () => {
+        stubSensors();
+        vi.stubGlobal('screen', { width: 360, height: 640 });
+        try {
+          const fake = fakeGlobal();
           const w = fakeWin();
           Object.defineProperty(w.win, 'devicePixelRatio', {
             get(): never {
@@ -1490,10 +1536,14 @@ describe('launch (webview)', () => {
             configurable: true,
           });
           const onError = vi.fn();
-          expect(() => track('tok', baseOptions({ window: w.win, onError }))).not.toThrow();
-          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).not.toContain(
+          expect(() =>
+            track('tok', baseOptions({ global: fake.global, window: w.win, onError })),
+          ).not.toThrow();
+          await new Promise((r) => setTimeout(r, 0));
+          expect(onError.mock.calls.map((c) => (c[0] as Error).message)).toContain(
             'devicePixelRatio blocked',
           );
+          expect(rowsOf(fake, 'displays')).toEqual([]);
         } finally {
           vi.unstubAllGlobals();
         }
@@ -1579,8 +1629,7 @@ describe('launch (webview)', () => {
     });
   });
 
-  it('streams battery/charging ({state}) from the browser battery producer', async () => {
-    const fake = fakeGlobal();
+  const batteryGlobals = () => {
     const getBattery = vi.fn(() =>
       Promise.resolve({
         level: 1,
@@ -1590,17 +1639,71 @@ describe('launch (webview)', () => {
       }),
     );
     vi.stubGlobal('navigator', { getBattery });
+    return getBattery;
+  };
+  const tracesOf = (fake: ReturnType<typeof fakeGlobal>) =>
+    entriesOfType(fake.msgs(), 'traces.system').map(
+      (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+    );
+
+  it('writes NO battery/charging: the native host owns them (C22), with or without a handshake reply', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
     try {
       track('tok', baseOptions({ global: fake.global }));
       await new Promise((r) => setTimeout(r, 0));
-      expect(getBattery).toHaveBeenCalledTimes(1);
-      const traces = entriesOfType(fake.msgs(), 'traces.system').map(
-        (e) => (e.p as unknown as { data: { name: string; value: unknown } }).data,
+      sendControl(fake.global, { session: 'native-1', config: { reportTrigger: false } }); // a reply that declares nothing
+      await new Promise((r) => setTimeout(r, 0));
+      expect(tracesOf(fake).filter((t) => t.name === 'battery' || t.name === 'charging')).toEqual(
+        [],
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('streams battery/charging ({state}) from the browser battery producer once native declares it owns none of them', async () => {
+    const fake = fakeGlobal();
+    const getBattery = batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: [] } }); // the handshake reply hands every name back
+      await new Promise((r) => setTimeout(r, 0));
+      expect(getBattery).toHaveBeenCalledTimes(1);
+      const traces = tracesOf(fake);
       expect(traces).toContainEqual(expect.objectContaining({ name: 'battery', value: 100 }));
       expect(traces).toContainEqual(
         expect.objectContaining({ name: 'charging', value: { state: 3 } }),
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('native can declare a DIFFERENT owned set: only the names it lists are dropped (live, on the next value)', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: ['charging'] } }); // native owns charging only
+      await new Promise((r) => setTimeout(r, 0));
+      const names = tracesOf(fake).map((t) => t.name);
+      expect(names).toContain('battery');
+      expect(names).not.toContain('charging');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a malformed hostOwnedTraces leaves the built-in list in force', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
+    try {
+      track('tok', baseOptions({ global: fake.global }));
+      sendControl(fake.global, { config: { hostOwnedTraces: 'none' } });
+      sendControl(fake.global, { config: { hostOwnedTraces: [7] } });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(tracesOf(fake).some((t) => t.name === 'battery')).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1641,6 +1744,7 @@ describe('launch (webview)', () => {
           },
         } as Partial<BugseeWebViewLaunchOptions>),
       );
+      sendControl(fake.global, { config: { hostOwnedTraces: [] } }); // battery is the host's by default
       await new Promise((r) => setTimeout(r, 0));
       const battery = () =>
         entriesOfType(fake.msgs(), 'traces.system').filter(
