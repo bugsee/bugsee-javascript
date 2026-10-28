@@ -272,13 +272,13 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
 
   it('honours backslash-escaped quotes', () => {
     // A backslash-escaped quote makes the literal's end dialect-dependent: fail closed, nothing survives.
-    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe('INSERT INTO t VALUES (?');
-    expect(clean('SELECT "a\\"b secret"')).toBe('SELECT ?');
+    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe('INSERT INTO t VALUES (??');
+    expect(clean('SELECT "a\\"b secret"')).toBe('SELECT ??');
   });
 
-  it('treats dollar-quoted bodies as one literal, tagged or not', () => {
-    expect(clean("SELECT $$it's$$, 'secretD'")).toBe('SELECT ?, ?');
-    expect(clean("SELECT $q$it's $$ x$q$, 'secretE'")).toBe('SELECT ?, ?');
+  it('fails closed on dollar-quoted bodies (only some dialects have them), keeping the agreed prefix', () => {
+    expect(clean("SELECT $$it's$$, 'secretD'")).toBe('SELECT ?');
+    expect(clean("SELECT $q$it's $$ x$q$, 'secretE'")).toBe('SELECT ?');
   });
 
   it('fails closed on an unterminated dollar quote', () => {
@@ -310,9 +310,9 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
 
   it('fails closed on a literal ending in a backslash (standard SQL: complete; MySQL: escape)', () => {
     expect(clean("SELECT * FROM t WHERE a = 'C:\\' AND b = 'secretP'")).toBe(
-      'SELECT * FROM t WHERE a = ?',
+      'SELECT * FROM t WHERE a = ??',
     );
-    expect(clean("a = 'C:\\temp\\' AND b = 'secretQ' AND c = 1")).toBe('a = ?');
+    expect(clean("a = 'C:\\temp\\' AND b = 'secretQ' AND c = 1")).toBe('a = ??');
   });
 
   it('does not read a backslash in a backtick identifier as an escape', () => {
@@ -321,25 +321,42 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     );
   });
 
-  it('drops a MySQL # comment', () => {
-    expect(clean("SELECT 1 # it's\nFROM t WHERE x = 'secretH'")).toBe(
-      'SELECT ?  \nFROM t WHERE x = ?',
-    );
+  it('fails closed on a # (a MySQL comment, a Postgres operator)', () => {
+    expect(clean("SELECT 1 # it's\nFROM t WHERE x = 'secretH'")).toBe('SELECT ? ?');
   });
 
-  it('honours nested block comments', () => {
-    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe(
-      '  SELECT * FROM t WHERE x = ?',
-    );
-    expect(clean("SELECT 1 /* a /* b */ 'secret")).toBe('SELECT ?  ');
+  it('handles nested block comments', () => {
+    // MySQL ends the comment at the first `*/`, Postgres at the second: the readings disagree, so cut.
+    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe('  ?');
+    // ...and when nesting makes no difference the comment is simply dropped.
+    expect(clean("/* a */ SELECT 'secretM' /* b */")).toBe('  SELECT ?  ');
+    expect(clean("SELECT 1 /* a /* b */ 'secret")).toBe('SELECT ?  ?');
   });
 
-  it('recognises a dollar-quote tag of any length', () => {
+  it('does not let a dollar-quote tag of any length slip through', () => {
     const tag = `$${'a'.repeat(140)}$`;
-    expect(clean(`SELECT ${tag}it's${tag}, 'secretT'`)).toBe('SELECT ?, ?');
+    expect(clean(`SELECT ${tag}it's${tag}, 'secretT'`)).toBe('SELECT ?');
   });
 
   it('redacts exponent and hex numeric literals', () => {
     expect(clean('SELECT 1e10, 2.5E-3, 0xDEADBEEF, c1 FROM t1')).toBe('SELECT ?, ?, ?, c1 FROM t1');
+  });
+
+  it.each([
+    // each leaked under a one-dialect reading of `#`, `--`, nested comments or dollar quotes
+    ["SELECT data #>> '{a}' FROM t WHERE note = 'line1\nsecretline2'", 'secretline2'],
+    ["UPDATE t SET flags = flags # 4, note = 'Dear J,\nSSN hunter'", 'hunter'],
+    ["SELECT 1--'abc\nsecret'", 'secret'],
+    ["SELECT /* a /* b */ x = 'p */ secret'", 'secret'],
+    ["SELECT $a$ FROM t WHERE x = 'p$a$ ' AND y = 'secret'", 'secret'],
+  ])('never lets literal data through under any dialect reading: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('keeps `--` followed by whitespace as an ordinary comment in every dialect', () => {
+    expect(clean("SELECT 1 -- it's\nFROM t WHERE x = 'secret'")).toBe(
+      'SELECT ?  \nFROM t WHERE x = ?',
+    );
+    expect(clean('SELECT 1 --\nFROM t')).toBe('SELECT ?  \nFROM t');
   });
 });
