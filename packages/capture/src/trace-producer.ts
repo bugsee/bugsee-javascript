@@ -40,13 +40,20 @@ export interface TraceProducer {
   stop(): void;
 }
 
-const sameValue = (a: unknown, b: unknown): boolean =>
-  Object.is(a, b) ||
-  (typeof a === 'object' &&
-    a !== null &&
-    typeof b === 'object' &&
-    b !== null &&
-    JSON.stringify(a) === JSON.stringify(b));
+// BigInt has no JSON form: tag it so it compares by value and cannot collide with a string.
+const bigintSafe = (_key: string, v: unknown): unknown =>
+  typeof v === 'bigint' ? { $bigint: v.toString() } : v;
+
+/** Total: never throws. An uncomparable value (circular, throwing toJSON) counts as CHANGED. */
+const sameValue = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
+  try {
+    return JSON.stringify(a, bigintSafe) === JSON.stringify(b, bigintSafe);
+  } catch {
+    return false;
+  }
+};
 
 const keyOf = (name: string, displayId: number | undefined): string =>
   displayId === undefined ? name : `${displayId}:${name}`;

@@ -90,6 +90,43 @@ describe('TraceProducerBase', () => {
     expect(got.map((g) => g.value)).toEqual([{ state: 2 }, { state: 3 }]);
   });
 
+  it('emitIfChanged() never throws on circular values: distinct circulars count as changed, same ref as unchanged', () => {
+    const p = new Probe();
+    const { sink, got } = mkSink();
+    p.start(sink);
+    const a: Record<string, unknown> = { n: 1 };
+    a.self = a;
+    const b: Record<string, unknown> = { n: 1 };
+    b.self = b;
+    expect(() => {
+      p.emitChanged('c', a);
+      p.emitChanged('c', a);
+      p.emitChanged('c', b);
+    }).not.toThrow();
+    expect(got.map((g) => g.value)).toEqual([a, b]);
+  });
+
+  it('emitIfChanged() handles BigInt inside objects structurally and never throws', () => {
+    const p = new Probe();
+    const { sink, got } = mkSink();
+    p.start(sink);
+    expect(() => {
+      p.emitChanged('c', { v: 1n });
+      p.emitChanged('c', { v: 1n });
+      p.emitChanged('c', { v: 2n });
+    }).not.toThrow();
+    expect(got.map((g) => g.value)).toEqual([{ v: 1n }, { v: 2n }]);
+  });
+
+  it('emitIfChanged() distinguishes a BigInt from the same-looking string inside objects', () => {
+    const p = new Probe();
+    const { sink, got } = mkSink();
+    p.start(sink);
+    p.emitChanged('c', { v: 1n });
+    p.emitChanged('c', { v: '1' });
+    expect(got).toHaveLength(2);
+  });
+
   it('emitIfChanged() tracks each name and displayId separately', () => {
     const p = new Probe();
     const { sink, got } = mkSink();
