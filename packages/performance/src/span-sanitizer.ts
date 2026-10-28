@@ -36,7 +36,11 @@ const CONTENT_KEYS = new Set([
 /** Keys carrying a database statement, across the OTel conventions that have named it differently. */
 const STATEMENT_KEYS = new Set(['db.statement', 'db.query.text']);
 
-/** Can this character be part of an identifier (so a `$` right after it is not a dollar-quote opener)? */
+/** Could a `$` right after this character be part of an identifier? A DIGIT does not count (`1$$x$$` opens a quote). */
+const isIdentifierTail = (ch: string | undefined): boolean =>
+  ch !== undefined && /[A-Za-z_$\u0080-￿]/.test(ch);
+
+/** Is this an identifier character, digits included (for the `E` string prefix check)? */
 const isWordChar = (ch: string | undefined): boolean =>
   ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
 
@@ -195,13 +199,13 @@ function scan(statement: string, dialect: Dialect): string {
       // Only MySQL and SQLite read a backtick as a quote; elsewhere it is a stray character and a quote inside
       // the run is a real delimiter. A quote in the run is therefore ambiguous: fail closed.
       const run = end === -1 ? undefined : statement.slice(i, end);
-      if (run === undefined || /['"]/.test(run)) {
+      if (run === undefined || /['"$]/.test(run)) {
         out += '?';
         break;
       }
       out += run;
       i = end;
-    } else if (ch === '$' && dialect.dollarQuotes && !isWordChar(statement[i - 1])) {
+    } else if (ch === '$' && dialect.dollarQuotes && !isIdentifierTail(statement[i - 1])) {
       DOLLAR_TAG.lastIndex = i;
       const tag = DOLLAR_TAG.exec(statement)?.[0];
       if (tag === undefined) {

@@ -402,6 +402,15 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     );
   });
 
+  it.each([
+    ['SELECT `$$`, secret, `$$` FROM t', 'secret'],
+    ['SELECT a `$$secret$$` b FROM t', 'secret'],
+    ['SELECT 1$$secret$$', 'secret'],
+    ['SELECT * FROM t WHERE a = $1$$secret$$', 'secret'],
+  ])('fails closed on a dollar quote after a backtick or a digit: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
   it('pins the exact output of truncated and minimal executable comments', () => {
     expect(clean('/*!')).toBe(' ');
     expect(clean('/*M')).toBe(' ');
