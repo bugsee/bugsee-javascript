@@ -16,7 +16,7 @@ pnpm add @bugsee/bugsee @bugsee/nestjs
 yarn add @bugsee/bugsee @bugsee/nestjs
 ```
 
-Requires Node.js 18 or newer. Peer dependencies: `@nestjs/common` and `@nestjs/core` (`^9 || ^10 || ^11 || ^12`), and `rxjs` (`^7`).
+Requires Node.js 18 or newer (Nest 12 itself requires Node.js 20 or newer). Peer dependencies: `@nestjs/common` and `@nestjs/core` (`^9 || ^10 || ^11 || ^12`), and `rxjs` (`^7`).
 
 ## Usage
 

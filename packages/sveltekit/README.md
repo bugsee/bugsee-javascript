@@ -16,7 +16,7 @@ pnpm add @bugsee/sveltekit
 yarn add @bugsee/sveltekit
 ```
 
-Server code requires Node.js 18 or newer.
+The Bugsee server adapter requires Node.js 18 or newer; SvelteKit 3 applications require Node.js 22.17 or newer.
 
 ## Usage
 
