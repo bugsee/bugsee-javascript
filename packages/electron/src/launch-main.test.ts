@@ -1458,6 +1458,59 @@ describe('launchMain — Electron domain trackers: power, display, application w
       expect(w.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'owner lookup' }));
     });
 
+    it('a focus change costs a CONSTANT number of getAllWindows() calls and one fromWebContents per renderer, however many windows (50 here)', () => {
+      const N = 50;
+      const wins: KeyWin[] = [];
+      const contents: Array<{
+        id: number;
+        sent: Array<{ raw: string }>;
+        send(c: string, raw: string): void;
+      }> = [];
+      for (let i = 1; i <= N; i++) {
+        const c = {
+          id: 100 + i,
+          sent: [] as Array<{ raw: string }>,
+          send(_c: string, raw: string) {
+            this.sent.push({ raw });
+          },
+        };
+        contents.push(c);
+        wins.push(new KeyWin(i, c));
+      }
+      let focused: KeyWin | null = null;
+      let listCalls = 0;
+      let fromCalls = 0;
+      const BrowserWindow = {
+        getAllWindows: () => {
+          listCalls += 1;
+          return [...wins].reverse(); // real Electron: newest first
+        },
+        getFocusedWindow: () => focused,
+        fromWebContents: (c: unknown) => {
+          fromCalls += 1;
+          return wins.find((w) => w.webContents === c) ?? null;
+        },
+      };
+      const app = new FakeEmitter();
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        app,
+        BrowserWindow: BrowserWindow as never,
+        onError: vi.fn(),
+      });
+      for (const c of contents) ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: c }, encodeHello());
+      listCalls = 0;
+      fromCalls = 0;
+      focused = wins[24] as KeyWin;
+      (wins[24] as KeyWin).emit('focus');
+      expect(listCalls).toBeLessThanOrEqual(4); // not one per renderer
+      expect(fromCalls).toBeLessThanOrEqual(N * 2); // one owner lookup per renderer per evaluation (the tracker publish + control re-diff)
+      expect(contents[24]?.sent.length).toBeGreaterThan(0); // and the focus did move the key
+    });
+
     it('a webContents with no owning window, or an owner with no numeric id, cannot be placed: it fails OPEN (key)', () => {
       const w = keyWorld({
         fromWebContents: (c: unknown) => (c === undefined ? null : { id: Number.NaN }),

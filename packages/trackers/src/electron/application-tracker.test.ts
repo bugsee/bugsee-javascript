@@ -727,6 +727,22 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
       b.emit('focus');
       expect(w.t.keyWindowId()).toBe(2);
     });
+    it('with nothing focused the key is the LOWEST id (Electron ids only increase), whatever order getAllWindows() lists them in (real Electron lists newest-first, then unordered after a close)', () => {
+      const mk = (ids: number[]) => ids.map((id) => new IdWindow(id));
+      expect(world(mk([5, 4, 3, 2, 1])).t.keyWindowId()).toBe(1);
+      expect(world(mk([5, 4, 2, 6, 1])).t.keyWindowId()).toBe(1);
+      expect(world(mk([6, 5, 4, 2])).t.keyWindowId()).toBe(2);
+      // a visible window still outranks a hidden lower id
+      const list = mk([5, 4, 2, 6, 1]);
+      (list[4] as IdWindow).visible = false;
+      (list[2] as IdWindow).visible = false;
+      expect(world(list).t.keyWindowId()).toBe(4);
+      // a window whose id cannot be read sorts last
+      const odd = mk([3, 2]);
+      odd.push(new IdWindow('x') as never);
+      expect(world(odd).t.keyWindowId()).toBe(2);
+    });
+
     it('is undefined with no window or only destroyed ones, and null (cannot say) when the key window has no finite id (never a made-up id)', () => {
       expect(world([]).t.keyWindowId()).toBeUndefined();
       const gone = new IdWindow(1);
@@ -788,15 +804,15 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
     });
   });
 
-  describe('knowsWindow(id)', () => {
-    it('is true only for a live window the BrowserWindow list contains; false for others, destroyed ones and an unreadable list (a BaseWindow is not listed)', () => {
+  describe('windowIds()', () => {
+    it('is the ids of the live listed windows from ONE getAllWindows() call; null for an unreadable or missing list (a BaseWindow is not listed)', () => {
       const a = new IdWindow(1);
       const gone = new IdWindow(2);
       gone.gone = true;
-      const { t } = world([a, gone]);
-      expect(t.knowsWindow(1)).toBe(true);
-      expect(t.knowsWindow(2)).toBe(false); // destroyed
-      expect(t.knowsWindow(99)).toBe(false); // e.g. a BaseWindow: not in getAllWindows()
+      const idless = new IdWindow('x');
+      const { t, BW } = world([a, gone, idless]);
+      expect([...(t.windowIds() ?? [])]).toEqual([1]);
+      expect(BW.getAllWindows).toHaveBeenCalledTimes(1);
       const app = new FakeEmitter();
       keys.push(app);
       const onError = vi.fn();
@@ -811,11 +827,11 @@ describe('ElectronApplicationTracker key window id and the keyWindow stage (C26)
         },
         onError,
       );
-      expect(bad.knowsWindow(1)).toBe(false);
+      expect(bad.windowIds()).toBeNull();
       expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'windows' }));
       const none = new FakeEmitter();
       keys.push(none);
-      expect(electronApplicationTrackerFor({ app: none }).knowsWindow(1)).toBe(false);
+      expect(electronApplicationTrackerFor({ app: none }).windowIds()).toBeNull();
     });
   });
 

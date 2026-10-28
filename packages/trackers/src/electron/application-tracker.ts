@@ -28,8 +28,8 @@ import { bindAll, ElectronStageTracker, type EmitterSource } from './stage-track
 //
 // KEY WINDOW (spec platforms/javascript.md "Several windows in one session"): `keyWindowBounds()` resolves the ONE window
 // the session records per-window state for: the focused `BrowserWindow` (`getFocusedWindow`), else the most recently
-// focused one (remembered while the `windowFocus` stage is armed; forgotten on its `closed`), else the first window
-// `getAllWindows()` lists (creation order). Every read is guarded and reported; a destroyed window is never the key window.
+// focused one (remembered while the `windowFocus` stage is armed; forgotten on its `closed`), else the first created window: the
+// LOWEST `id` among the live ones (Electron ids only increase; `getAllWindows()` is not in creation order: newest first on 44.9.3). Every read is guarded and reported; a destroyed window is never the key window.
 //
 // The `keyWindow` stage reports WHEN that answer changes (a focus, a blur, a show/hide or a close that moves it), so the
 // session can tell each renderer whether it is the key window's (`keyWindowId()` is the live read). It shares the
@@ -229,11 +229,13 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     const last = this.#lastFocused;
     if (last !== undefined && usable(last)) return last;
     try {
-      // `getAllWindows()` order is not documented (in practice creation order): the first VISIBLE window is preferred so a hidden
+      // `getAllWindows()` order is NOT creation order (see below): the first VISIBLE window by id is preferred so a hidden
       // background window (a tray/worker window) is not taken as the first created; with none visible, the first usable one.
       const list = readWindows(this.#env);
       if (list === null) return null; // CANNOT SAY: not the same as a list with no usable window
-      const all = list.filter(usable);
+      // Electron's `getAllWindows()` is NOT in creation order (measured on 44.9.3: newest first, then unordered after a close),
+      // but ids only increase: sort by id so "first created" is the lowest id
+      const all = list.filter(usable).sort((a, b) => (idOf(a) ?? Infinity) - (idOf(b) ?? Infinity));
       return all.find(visible) ?? all[0];
     } catch (error) {
       this.report(error);
@@ -265,19 +267,24 @@ export class ElectronApplicationTracker extends ElectronStageTracker<ElectronApp
     );
   }
 
-  /** Whether `id` is a live window of the `BrowserWindow` list. A `BaseWindow` (and its views) is not listed: false. Never throws. */
-  knowsWindow(id: number): boolean {
+  /**
+   * The ids of the live windows of the `BrowserWindow` list, read with ONE `getAllWindows()` call; `null` when the list cannot
+   * be read. A `BaseWindow` (and its views) is not listed. Never throws.
+   */
+  windowIds(): ReadonlySet<number> | null {
     try {
-      return (readWindows(this.#env) ?? []).some(
-        (w) =>
-          typeof w === 'object' &&
-          w !== null &&
-          !destroyed(w as Watched) &&
-          idOf(w as Watched) === id,
-      );
+      const list = readWindows(this.#env);
+      if (list === null) return null;
+      const ids = new Set<number>();
+      for (const w of list) {
+        if (typeof w !== 'object' || w === null || destroyed(w as Watched)) continue;
+        const id = idOf(w as Watched);
+        if (id !== undefined) ids.add(id);
+      }
+      return ids;
     } catch (error) {
       this.report(error);
-      return false;
+      return null;
     }
   }
 

@@ -430,7 +430,7 @@ describe('createElectronMainControl', () => {
         expect(decoded(b).at(-1)).toEqual({ command: 'window-key', keyWindow: true });
       });
 
-      it("the key window's renderer going away while its window is still key (webContents `destroyed` fires BEFORE the window `closed`, or a crash) hands the key to the EARLIEST remaining renderer, never to everyone", () => {
+      it("the key window's renderer going away while its window is still the tracker's key (webContents `destroyed` BEFORE the window `closed`, or a crash) HOLDS the key: nobody is told key, nobody flashes in; the tracker's next key then wins", () => {
         const key = { id: 1 as number | undefined | null };
         const w = world({ 11: 1, 12: 2, 13: 3 }, key);
         const a = w.join(11);
@@ -438,12 +438,91 @@ describe('createElectronMainControl', () => {
         const c = w.join(13);
         for (const r of [a, b, c]) r.sent.length = 0;
         w.control.rendererGone(11); // window 1 is still the focused window, but its renderer is gone
-        expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
-        expect(c.sent).toEqual([]); // window 3 stays non-key: no all-key moment, no re-record of its held values
-        expect(a.sent).toEqual([]);
-        key.id = 2; // the tracker's `closed` then moves the key on to window 2: nothing changes
+        expect([a.sent, b.sent, c.sent]).toEqual([[], [], []]); // held: no all-key moment, no re-record anywhere
+        key.id = 3; // the tracker's `closed` handling moves the key to ITS choice (window 3, not the earliest renderer, 2)
         w.control.keyWindowChanged();
-        expect([b.sent.length, c.sent.length]).toEqual([1, 0]);
+        expect(decoded(c)).toEqual([{ command: 'window-key', keyWindow: true }]);
+        expect(b.sent).toEqual([]);
+      });
+
+      it('the hold EXPIRES (a crash with no reload never gets a `closed`): the earliest remaining renderer then takes the key, and no timer survives stop()', () => {
+        vi.useFakeTimers();
+        try {
+          const key = { id: 1 as number | undefined | null };
+          const w = world({ 11: 1, 12: 2, 13: 3 }, key);
+          w.join(11);
+          const b = w.join(12);
+          const c = w.join(13);
+          b.sent.length = 0;
+          c.sent.length = 0;
+          w.control.rendererGone(11);
+          vi.advanceTimersByTime(2999);
+          expect(b.sent).toEqual([]);
+          vi.advanceTimersByTime(2); // the hold is over: the timer re-evaluates by itself
+          expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+          expect(c.sent).toEqual([]);
+          const w2 = world({ 21: 1, 22: 2 }, { id: 1 });
+          w2.join(21);
+          w2.join(22);
+          w2.control.rendererGone(21);
+          expect(vi.getTimerCount()).toBeGreaterThan(0);
+          w2.control.stop();
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('a new hold starts from ZERO: the clock of an earlier hold does not carry over after the window hosted a renderer again', () => {
+        vi.useFakeTimers();
+        try {
+          const key = { id: 1 as number | undefined | null };
+          const w = world({ 11: 1, 12: 2 }, key);
+          w.join(11);
+          const b = w.join(12);
+          w.control.rendererGone(11);
+          vi.advanceTimersByTime(2000);
+          w.join(11); // the window reloads: it hosts a renderer again
+          b.sent.length = 0;
+          w.control.rendererGone(11); // and crashes again
+          vi.advanceTimersByTime(2000); // 2 s into the NEW hold, 4 s after the first one started
+          expect(b.sent).toEqual([]);
+          vi.advanceTimersByTime(1100);
+          expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('a re-evaluation in the middle of a hold does not push its expiry later (the timer stays aimed at the hold start + 3 s)', () => {
+        vi.useFakeTimers();
+        try {
+          const key = { id: 1 as number | undefined | null };
+          const w = world({ 11: 1, 12: 2 }, key);
+          w.join(11);
+          const b = w.join(12);
+          w.control.rendererGone(11);
+          vi.advanceTimersByTime(1000);
+          w.control.keyWindowChanged(); // nothing changed, still held
+          b.sent.length = 0;
+          vi.advanceTimersByTime(2100); // 3.1 s after the hold began
+          expect(decoded(b)).toEqual([{ command: 'window-key', keyWindow: true }]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('crash then reload: while held nobody writes; the reloaded renderer (same window) is key again at once', () => {
+        const key = { id: 1 as number | undefined | null };
+        const w = world({ 11: 1, 12: 2 }, key);
+        w.join(11);
+        const b = w.join(12);
+        b.sent.length = 0;
+        w.control.rendererGone(11);
+        expect(b.sent).toEqual([]);
+        const reloaded = w.join(11);
+        expect(decoded(reloaded)[0]?.keyWindow).toBe(true);
+        expect(b.sent).toEqual([]); // window 2 was never told key
       });
 
       it('an ownerless renderer is not a participating window: with the key on a window without an SDK the owned renderer is the one that stays key', () => {
@@ -453,12 +532,12 @@ describe('createElectronMainControl', () => {
         expect(decoded(w.join(12))[0]?.keyWindow).toBe(true);
       });
 
-      it('a destroyed renderer that has not been forgotten yet does not count as the participating key window', () => {
+      it('a destroyed renderer that has not been forgotten yet does not count as hosting the key window (the key is held, not handed to its window)', () => {
         const key = { id: 1 as number | undefined | null };
         const w = world({ 11: 1, 12: 2 }, key);
         const a = w.join(11);
         (a.sender as { isDestroyed?: () => boolean }).isDestroyed = () => true;
-        expect(decoded(w.join(12))[0]?.keyWindow).toBe(true); // window 1's renderer is dead: window 2 is the key
+        expect(decoded(w.join(12))[0]?.keyWindow).toBe(false); // held on window 1, whose renderer is dead
       });
 
       it('with no participating window to fall back to, the renderer fails OPEN (key)', () => {

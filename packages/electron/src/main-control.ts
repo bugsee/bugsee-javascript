@@ -68,8 +68,12 @@ export interface ElectronMainControlOptions {
    */
   keyWindow?: {
     currentId(): number | undefined | null;
+    /** Called once at the start of every evaluation (a probe may read its window list once for all the owner lookups). */
+    beginEvaluation?(): void;
     ownerId(sender: ControlSenderLike): number | undefined;
   };
+  /** How long the key is held on a window whose renderer left while the tracker still calls it key (default 3000 ms). */
+  holdMs?: number;
   /** Internal-error sink (a failing key-window probe). */
   onError?: (error: unknown) => void;
 }
@@ -143,20 +147,30 @@ export function createElectronMainControl(
   // The last key window that hosted an SDK renderer: a focused window with NO Bugsee in it must not silence every
   // instrumented window, so the key falls back to this one while it still hosts a renderer.
   let lastParticipatingKey: number | undefined;
+  // When the tracker's key window is the one whose renderer just left, the key is HELD there (nobody writes) until the tracker
+  // moves it (its `closed` follows the webContents `destroyed` by a tick) or this expires: a crash with no reload never gets
+  // a `closed`, and must not silence every other window for ever.
+  const HOLD_MS = options.holdMs ?? 3000;
+  let heldSince: number | undefined;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** No window id equals this: a held key makes every placed renderer non-key. */
+  const HELD = -1;
   /**
-   * ONE evaluation of "which renderer is key", from a single snapshot (the key is read once and each renderer's owner window
-   * once, so a re-evaluation costs a linear number of probe calls). Returns `isKey(sender)`.
+   * ONE evaluation of "which renderer is key", from a single snapshot (the key is read once, each renderer's owner window
+   * once, and the probe may read the window list once for all of them). Returns `isKey(sender)`.
    *
-   * The key window is the real one when it hosts a registered renderer; else the last window that did (while it still does);
-   * else the window of the EARLIEST registered renderer, so a key window whose renderer is gone (webContents `destroyed` fires
-   * before the window's `closed`; a crash) hands the key to ONE window rather than telling everyone they are key. `undefined`:
-   * no key window at all. `null`: the probe cannot say (everyone is key). A renderer whose window cannot be resolved is
-   * never silenced (key). A failing probe is reported and fails OPEN.
+   * The key window is the tracker's when it hosts a registered renderer; else the last window that did (while it still does);
+   * else, when the tracker's key is still the window whose renderer just left (a closing window's webContents `destroyed`
+   * fires before its `closed`; a crash), the key is HELD there for a short while so nobody flashes in and the tracker's own
+   * next choice wins when it publishes it; else the window of the EARLIEST registered renderer. `undefined`: no key window
+   * at all. `null`: the probe cannot say (everyone is key). A renderer whose window cannot be resolved is never silenced
+   * (key). A failing probe is reported and fails OPEN.
    */
   const evaluate = (
     probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
   ): ((sender: ControlSenderLike) => boolean) => {
     try {
+      probe.beginEvaluation?.();
       const owners = new Map<ControlSenderLike, number | undefined>();
       for (const r of renderers) if (r.isDestroyed?.() !== true) owners.set(r, probe.ownerId(r));
       const hosts = (id: number | undefined): boolean =>
@@ -164,11 +178,36 @@ export function createElectronMainControl(
       const current = probe.currentId();
       let key: number | undefined | null = current;
       if (current !== null && current !== undefined) {
-        if (hosts(current)) lastParticipatingKey = current;
-        else if (hosts(lastParticipatingKey)) key = lastParticipatingKey;
-        else {
+        const earliest = (): number | null => {
+          heldSince = undefined;
           lastParticipatingKey = [...owners.values()].find((id) => id !== undefined);
-          key = lastParticipatingKey ?? null;
+          return lastParticipatingKey ?? null;
+        };
+        if (hosts(current)) {
+          lastParticipatingKey = current;
+          heldSince = undefined;
+        } else if (hosts(lastParticipatingKey)) {
+          key = lastParticipatingKey;
+        } else if (current === lastParticipatingKey) {
+          const now = Date.now();
+          heldSince ??= now;
+          if (now - heldSince < HOLD_MS) {
+            key = HELD;
+            // one timer, always aimed at THIS hold's expiry (an earlier hold's timer must not decide for a later one)
+            if (holdTimer !== undefined) clearTimeout(holdTimer);
+            holdTimer = setTimeout(
+              () => {
+                holdTimer = undefined;
+                rediffKey();
+              },
+              HOLD_MS - (now - heldSince) + 1,
+            );
+            (holdTimer as { unref?: () => void }).unref?.();
+          } else {
+            key = earliest();
+          }
+        } else {
+          key = earliest();
         }
       }
       return (sender) => {
@@ -287,6 +326,8 @@ export function createElectronMainControl(
       options.ipcMain.on(helloChannel, onHello);
     },
     stop(): void {
+      if (holdTimer !== undefined) clearTimeout(holdTimer);
+      holdTimer = undefined;
       broadcast('stop');
       options.ipcMain.removeListener(helloChannel, onHello);
       for (const [sender, onDestroyed] of subscribed) {

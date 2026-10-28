@@ -138,12 +138,15 @@ function fakeElectron() {
   }
 
   const BrowserWindow = {
-    getAllWindows: () => windows.filter((w) => !w.gone),
+    // REAL Electron 44.9.3 does not list windows in creation order: newest first (5,4,3,2,1), and unordered once a window
+    // has been closed and another created (5,4,2,6,1). `listing.order` lets a test pick the shape.
+    getAllWindows: () => listing.order(windows.filter((w) => !w.gone)),
     getFocusedWindow: () => focused,
     fromWebContents: (contents: unknown) =>
       windows.find((w) => (w.webContents as unknown) === contents) ?? null,
   };
 
+  const listing = { order: (ws: Window[]): Window[] => [...ws].reverse() };
   function openWindow() {
     const win = new Window(windows.length + 1);
     windows.push(win);
@@ -162,7 +165,7 @@ function fakeElectron() {
     };
     return { win, ipcRenderer };
   }
-  return { ipcMain, app, BrowserWindow, openWindow };
+  return { ipcMain, app, BrowserWindow, openWindow, listing };
 }
 
 /** A page's window: a working location + history.pushState, so the real `url` producer sees real navigations. */
@@ -194,8 +197,12 @@ function pageWindow(href: string) {
   return { win, navigate: (to: string) => history.pushState({}, '', to) };
 }
 
-async function bootWindow(electron: ReturnType<typeof fakeElectron>, href: string) {
-  const { win, ipcRenderer } = electron.openWindow();
+async function bootWindow(
+  electron: ReturnType<typeof fakeElectron>,
+  href: string,
+  opened = electron.openWindow(),
+) {
+  const { win, ipcRenderer } = opened;
   let bridge: BugseeElectronBridge | undefined;
   registerBugseePreload({
     contextBridge: { exposeInMainWorld: (_k, api) => (bridge = api as BugseeElectronBridge) },
@@ -300,7 +307,85 @@ describe('per-window traces: only the key window writes them (C26)', () => {
     electron.app.emit('render-process-gone', w1.win.webContents, { reason: 'crashed' });
     w1.win.close();
     await client.logException(new Error('report'));
+    expect(urlsIn(puts[puts.length - 1] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/two',
+    ]);
+    await client.stop();
+  });
+
+  it('with nothing focused, windows are keyed by LOWEST id whatever order Electron lists them in (newest-first, and unordered after a close)', async () => {
+    for (const order of [
+      (ws: Array<{ id: number }>) => [...ws].reverse(),
+      (ws: Array<{ id: number }>) => [...ws].sort((a, b) => (b.id % 3) - (a.id % 3) || b.id - a.id), // some scrambled order
+    ]) {
+      const electron = fakeElectron();
+      electron.listing.order = order as never;
+      const { client, puts } = launch(electron);
+      for (const n of ['one', 'two', 'three', 'four', 'five']) {
+        await bootWindow(electron, `https://app.test/${n}`);
+      }
+      await client.logException(new Error('report'));
+      expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one']);
+      await client.stop();
+    }
+  });
+
+  it("closing the key window: the next key is the TRACKER's (lowest id), not the earliest renderer to say hello, and no other value appears in between", async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3, 4].map(() => electron.openWindow()); // ids 1..4
+    // the SDKs start in a different order than the window ids (window 1 first, then 4, 3, 2): the earliest renderer left after
+    // window 1 goes is window 4's, but the tracker's next key is window 2
+    const hrefs = ['one', 'two', 'three', 'four'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 3, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    (booted[0] as { win: { focus(): void } }).win.focus();
+    (booted[0] as { win: { close(): void } }).win.close();
+    await client.logException(new Error('report'));
     expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one', 'https://app.test/two']);
+    await client.stop();
+  });
+
+  it('closing the key window and then focusing another window: still no value from a window that was never key', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3, 4].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three', 'four'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 3, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    (booted[0] as { win: { focus(): void } }).win.focus();
+    (booted[0] as { win: { close(): void } }).win.close();
+    (booted[3] as { win: { focus(): void } }).win.focus();
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/two',
+      'https://app.test/four',
+    ]);
+    await client.stop();
+  });
+
+  it('a key window whose renderer crashes and then reloads: the others never flash in, and the reloaded window writes again', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    const w1 = booted[0] as { win: { focus(): void; webContents: unknown } };
+    w1.win.focus();
+    electron.app.emit('render-process-gone', w1.win.webContents, { reason: 'crashed' });
+    // the window reloads: a NEW renderer page says hello through the same webContents
+    await bootWindow(electron, 'https://app.test/one-reloaded', opened[0]);
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[puts.length - 1] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/one-reloaded',
+    ]);
     await client.stop();
   });
 });

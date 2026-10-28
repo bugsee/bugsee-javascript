@@ -578,21 +578,24 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // without either every renderer stays key, as before.
   const ownerOf =
     appTracker !== undefined ? ownerResolver(BrowserWindow, nodeOptions.onError) : undefined;
+  let known: ReadonlySet<number> | null = null;
   const keyWindow =
     ownerOf === undefined
       ? undefined
       : {
           currentId: () => appTracker?.keyWindowId(),
+          // The window list is read ONCE per evaluation (not once per renderer): `known` is that snapshot.
+          beginEvaluation: () => {
+            known = appTracker?.windowIds() ?? null;
+          },
           // An owner the BrowserWindow list does not contain (a renderer hosted in a `BaseWindow`: `fromWebContents` and
           // `getOwnerBrowserWindow()` answer its id, `getAllWindows()` omits it and its creation fires no
           // `browser-window-created`) cannot be compared with the key window: unplaceable, so key.
           ownerId: (sender: ControlSenderLike) => {
             const id = ownerOf(sender);
-            return id !== undefined && appTracker?.knowsWindow(id) ? id : undefined;
+            return id !== undefined && known?.has(id) ? id : undefined;
           },
         };
-  // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
-  // and propagate pause/resume/flush/stop to every renderer.
   const control = createElectronMainControl({
     ipcMain,
     sessionId: internals.api.sessionId,
