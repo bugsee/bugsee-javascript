@@ -57,6 +57,16 @@ launchRenderer('YOUR_APP_TOKEN');
 
 `video` (main process, opt-in) adds pixel video capture next to the default DOM replay. You supply the capture source (`video: { source }`).
 
+Notes for Electron 45 and later:
+
+- Screen, window and tab capture requests (`getDisplayMedia`, `desktopCapturer`) reach `session.setPermissionRequestHandler` as `display-capture`, no longer `media`. If your app allows only `media`, a `getDisplayMedia`-based source will be denied. Allow `display-capture` for the window that hosts your source. The `capturePage` source needs no permission.
+- To capture a WebContents with your own `MediaRecorder` stream, use `chromeMediaSource: 'tab'` with `webContents.getMediaSourceId()`, or `session.setDisplayMediaRequestHandler`. The old `chromeMediaSource: 'desktop'` form with a WebContents source id fails with "Invalid state". The SDK never builds this stream itself; it records the one you supply.
+- Sandboxed renderers (`sandbox: true`) work with the preload entry. The CommonJS build of `@bugsee/electron/preload` is self-contained and uses only `contextBridge` and `ipcRenderer`, so it needs none of the Node polyfills (`events`, `timers`, `url`, `Buffer`, `setImmediate`) that Electron 45 removed from sandboxed preloads.
+
+## Native crashes on Windows
+
+Pass Electron's `crashReporter` to `launchMain` as shown above. Electron 45 adds a Windows Error Reporting helper (`<app>_wer.dll`, next to the executable) so that `crashReporter` also sees crashes such as `__fastfail` that used to bypass it. This is part of Electron's packaging, not ours: make sure your packager keeps that file in the install directory, and expect more minidumps from Windows than before.
+
 ## App version and build
 
 If you pass `app` to `launchMain`, the SDK reports `app.getVersion()` as your app version, so a packaged app shows the version from its `package.json` without any extra setup. The order is:
