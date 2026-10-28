@@ -240,24 +240,51 @@ describe('parseV8Stack', () => {
   });
 
   describe('hostile `)` runs are linear (ratio against the same input without the run)', () => {
+    // The verdict is a RATIO against the same input without the run, never a wall-clock budget (a fixed
+    // 25/50 ms floor read 25-35 ms on shared CI runners and failed healthy code). Three things keep the ratio
+    // honest on a noisy runner:
+    //  1. BATCHING: the control is a few microseconds per call, which is at timer-granularity and GC-pause
+    //     scale, so a single call (or a handful) gives a meaningless quotient. Each timed sample runs a batch
+    //     calibrated to take at least MIN_SAMPLE_MS on the control, and both sides run the same batch size.
+    //  2. WARM-UP + INTERLEAVING + MINIMUM: both sides are warmed first, then timed alternately and the best
+    //     of each is kept. Noise only ever adds time, so the minimum is the least contaminated estimate.
+    //  3. ATTEMPTS: a regression is a deterministic 100x-1000x gap, a scheduling stall is a transient one. A
+    //     noisy attempt is therefore re-measured (up to ATTEMPTS times) and the LOWEST ratio is the verdict;
+    //     a genuinely super-linear parser exceeds the threshold on every attempt, so this cannot hide it.
+    const MIN_SAMPLE_MS = 4;
+    const REPS = 15;
+    const ATTEMPTS = 4;
+    const DECISIVE = 3;
+    const ABORT_SAMPLE_MS = 250; // a single hostile sample this slow is already a verdict; stop spending time
     const now = (): number =>
       (globalThis as unknown as { performance: { now(): number } }).performance.now();
-    // Both sides are timed INTERLEAVED in this process and the best of each is kept, so machine speed
-    // and scheduler noise divide out: the verdict is a RATIO, never a wall-clock budget (a fixed 25/50 ms
-    // floor read 25-35 ms on shared CI runners and failed healthy code). Noise only ever adds time, so
-    // the minimum is the least contaminated estimate.
-    const costRatio = (hostile: () => void, control: () => void): number => {
+    const timeBatch = (fn: () => void, batch: number): number => {
+      const started = now();
+      for (let i = 0; i < batch; i += 1) fn();
+      return now() - started;
+    };
+    const measureRatio = (hostile: () => void, control: () => void): number => {
+      hostile();
+      for (let i = 0; i < 5; i += 1) control();
+      let batch = 1;
+      while (timeBatch(control, batch) < MIN_SAMPLE_MS && batch < 1_000_000) batch *= 2;
       let bestHostile = Number.POSITIVE_INFINITY;
       let bestControl = Number.POSITIVE_INFINITY;
-      for (let rep = 0; rep < 15; rep += 1) {
-        let started = now();
-        hostile();
-        bestHostile = Math.min(bestHostile, now() - started);
-        started = now();
-        control();
-        bestControl = Math.min(bestControl, now() - started);
+      for (let rep = 0; rep < REPS; rep += 1) {
+        const h = timeBatch(hostile, batch);
+        bestHostile = Math.min(bestHostile, h);
+        bestControl = Math.min(bestControl, timeBatch(control, batch));
+        if (h > ABORT_SAMPLE_MS) break;
       }
       return bestHostile / bestControl;
+    };
+    const costRatio = (hostile: () => void, control: () => void, limit: number): number => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let attempt = 0; attempt < ATTEMPTS && best >= limit; attempt += 1) {
+        best = Math.min(best, measureRatio(hostile, control));
+        if (best > limit * DECISIVE) break; // 3x past the threshold is a verdict, not noise: fail fast
+      }
+      return best;
     };
 
     it('a run of `)` costs linear time (no quadratic rescan of the lazy URL)', () => {
@@ -276,6 +303,7 @@ describe('parseV8Stack', () => {
         () => {
           for (const input of benign) parseLocation(input);
         },
+        40,
       );
       expect(ratio).toBeLessThan(40);
       expect(parseLocation(hostile[0] as string).file).not.toContain('token=S)');
@@ -290,6 +318,7 @@ describe('parseV8Stack', () => {
       const ratio = costRatio(
         () => parseLocation(hostile),
         () => parseLocation(benign),
+        100,
       );
       expect(ratio).toBeLessThan(100);
     });
