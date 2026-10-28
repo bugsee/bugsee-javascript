@@ -281,6 +281,18 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     expect(guard(custom)).toBe(custom);
   });
 
+  it('passes the rrweb 2.2.0 annotation event (EventType 7) through unchanged, even with a masked-looking payload', () => {
+    const { guard, onViolation } = make();
+    guard(snapshot(doc([el('body', {})])));
+    const annotation = {
+      type: 7,
+      timestamp: 3,
+      data: { annotationData: { text: 'marker', id: 1 } },
+    } as unknown as eventWithTime;
+    expect(guard(annotation)).toBe(annotation);
+    expect(onViolation).not.toHaveBeenCalled();
+  });
+
   it('scans nodes added while recording: an added blocked iframe is stripped, its later attach dropped', () => {
     const { guard, onViolation } = make();
     guard(snapshot(doc([el('body', {})])));
