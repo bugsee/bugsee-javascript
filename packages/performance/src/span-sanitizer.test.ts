@@ -359,4 +359,19 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     );
     expect(clean('SELECT 1 --\nFROM t')).toBe('SELECT ?  \nFROM t');
   });
+
+  it.each([
+    ["SELECT 1 -- c\r, 'x\nsecret1', 'secret2'", 'secret'],
+    [
+      "INSERT INTO u (note, dir, email) VALUES (E'x\\', ', 'alice\\', 'alice@example.com')",
+      'alice',
+    ],
+    ['SELECT $é$secret data$é$, $tag$ok$tag$', 'secret'],
+  ])('never lets literal data through: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('ends a -- comment at a lone carriage return', () => {
+    expect(clean("SELECT 1 -- it's\r, 'secret'")).toBe('SELECT ?  \r, ?');
+  });
 });

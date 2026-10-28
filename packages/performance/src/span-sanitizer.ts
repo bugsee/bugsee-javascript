@@ -40,7 +40,10 @@ const STATEMENT_KEYS = new Set(['db.statement', 'db.query.text']);
 const isWordChar = (ch: string | undefined): boolean =>
   ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
 
-const DOLLAR_TAG = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*)?\$/y;
+
+/** A line comment ends at either line terminator (Postgres ends it at a lone CR too). */
+const LINE_END = /[\r\n]/g;
 
 /** How a SQL dialect reads the constructs whose extent decides where the string literals are. */
 interface Dialect {
@@ -52,8 +55,11 @@ interface Dialect {
   nestedComments: boolean;
   /** `$tag$ .. $tag$` is a quoted body (Postgres). */
   dollarQuotes: boolean;
-  /** A backslash escapes the next character inside a string (MySQL, Postgres with standard_conforming_strings off). */
-  backslashEscapes: boolean;
+  /**
+   * Which strings a backslash escapes the next character in: every one (MySQL), only `E'..'` ones (Postgres,
+   * standard_conforming_strings on), every single-quoted one (Postgres, it off), or none (standard SQL, SQLite..).
+   */
+  backslashEscapes: 'all' | 'e' | 'single' | 'none';
 }
 
 /**
@@ -68,7 +74,7 @@ const DIALECTS: readonly Dialect[] = [
     dashNeedsSpace: true,
     nestedComments: false,
     dollarQuotes: false,
-    backslashEscapes: true,
+    backslashEscapes: 'all',
   },
   // Postgres, standard_conforming_strings on
   {
@@ -76,7 +82,7 @@ const DIALECTS: readonly Dialect[] = [
     dashNeedsSpace: false,
     nestedComments: true,
     dollarQuotes: true,
-    backslashEscapes: false,
+    backslashEscapes: 'e',
   },
   // Postgres, standard_conforming_strings off
   {
@@ -84,7 +90,7 @@ const DIALECTS: readonly Dialect[] = [
     dashNeedsSpace: false,
     nestedComments: true,
     dollarQuotes: true,
-    backslashEscapes: true,
+    backslashEscapes: 'single',
   },
   // standard SQL, SQLite, SQL Server, Oracle
   {
@@ -92,7 +98,7 @@ const DIALECTS: readonly Dialect[] = [
     dashNeedsSpace: false,
     nestedComments: false,
     dollarQuotes: false,
-    backslashEscapes: false,
+    backslashEscapes: 'none',
   },
 ];
 
@@ -142,17 +148,25 @@ function scan(statement: string, dialect: Dialect): string {
         (!dialect.dashNeedsSpace || afterDash === undefined || afterDash <= ' ')) ||
       (ch === '#' && dialect.hashComment)
     ) {
-      const eol = statement.indexOf('\n', i);
+      LINE_END.lastIndex = i;
+      const eol = LINE_END.exec(statement)?.index ?? -1;
       out += ' ';
       if (eol === -1) break;
-      i = eol; // keep the newline itself
+      i = eol; // keep the terminator itself
     } else if (ch === '/' && next === '*') {
       out += ' ';
       const close = blockCommentEnd(statement, i, dialect.nestedComments);
       if (close === -1) break;
       i = close;
     } else if (ch === "'" || ch === '"') {
-      const end = runEnd(statement, i, dialect.backslashEscapes);
+      const escapes =
+        dialect.backslashEscapes === 'all' ||
+        (ch === "'" &&
+          (dialect.backslashEscapes === 'single' ||
+            (dialect.backslashEscapes === 'e' &&
+              /[eE]/.test(statement[i - 1] ?? '') &&
+              !isWordChar(statement[i - 2]))));
+      const end = runEnd(statement, i, escapes);
       out += '?';
       if (end === -1) break;
       i = end;
