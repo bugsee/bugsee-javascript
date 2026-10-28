@@ -36,27 +36,252 @@ const CONTENT_KEYS = new Set([
 /** Keys carrying a database statement, across the OTel conventions that have named it differently. */
 const STATEMENT_KEYS = new Set(['db.statement', 'db.query.text']);
 
+/** Could a `$` right after this character be part of an identifier? A DIGIT does not count (`1$$x$$` opens a quote). */
+const isIdentifierTail = (ch: string | undefined): boolean =>
+  ch !== undefined && /[A-Za-z_$\u0080-￿]/.test(ch);
+
+/** Is this an identifier character, digits included (for the `E` string prefix check)? */
+const isWordChar = (ch: string | undefined): boolean =>
+  ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
+
+const DOLLAR_TAG = /\$(?:[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*)?\$/y;
+
+/** Where a line comment ends: Postgres at CR or LF, MySQL and SQLite at LF only. */
+const LF = /\n/g;
+const CR_OR_LF = /[\r\n]/g;
+
+/** How a SQL dialect reads the constructs whose extent decides where the string literals are. */
+interface Dialect {
+  /** `#` starts a line comment (MySQL; in Postgres it is an operator). */
+  hashComment: boolean;
+  /** The line terminators that end a line comment. */
+  lineEnd: RegExp;
+  /** Version-conditional and hint comments (`/*!`, `/*M!`, `/*+`) are executed as SQL, so quotes inside them delimit strings (MySQL). */
+  executableComments: boolean;
+  /** `--` is a comment only when followed by whitespace (MySQL; elsewhere it always is). */
+  dashNeedsSpace: boolean;
+  /** Block comments nest (Postgres). */
+  nestedComments: boolean;
+  /** `$tag$ .. $tag$` is a quoted body (Postgres). */
+  dollarQuotes: boolean;
+  /**
+   * Which strings a backslash escapes the next character in: every one (MySQL), only `E'..'` ones (Postgres,
+   * standard_conforming_strings on), or none (standard SQL, SQLite..). Postgres with the setting off would be
+   * 'every single-quoted one', but wherever that differs from the readings below, MySQL and Postgres-on already
+   * disagree at the same point, so it adds nothing and is not scanned.
+   */
+  backslashEscapes: 'all' | 'e' | 'none';
+}
+
+/**
+ * The dialects a statement could be in. The statement does not say which, and a wrong guess shifts the quote
+ * pairing and leaves a later literal in the clear, so the statement is read under EACH of these and anything
+ * the readings disagree about fails closed (see `redactSqlLiterals`).
+ */
+const DIALECTS: readonly Dialect[] = [
+  // MySQL / MariaDB
+  {
+    hashComment: true,
+    lineEnd: LF,
+    executableComments: true,
+    dashNeedsSpace: true,
+    nestedComments: false,
+    dollarQuotes: false,
+    backslashEscapes: 'all',
+  },
+  // Postgres, standard_conforming_strings on
+  {
+    hashComment: false,
+    lineEnd: CR_OR_LF,
+    executableComments: false,
+    dashNeedsSpace: false,
+    nestedComments: true,
+    dollarQuotes: true,
+    backslashEscapes: 'e',
+  },
+  // standard SQL and SQLite. SQL Server `[..]` identifiers and Oracle `q'..'` quoting are NOT modelled (known gap)
+  {
+    hashComment: false,
+    lineEnd: LF,
+    executableComments: false,
+    dashNeedsSpace: false,
+    nestedComments: false,
+    dollarQuotes: false,
+    backslashEscapes: 'none',
+  },
+];
+
+/** End (exclusive) of the block comment opening at `start`; `-1` when it never closes. */
+function blockCommentEnd(sql: string, start: number, nested: boolean): number {
+  let depth = 0;
+  for (let i = start; i < sql.length - 1; i++) {
+    const pair = sql.slice(i, i + 2);
+    if (pair === '/*' && (nested || depth === 0)) {
+      depth++;
+      i++;
+    } else if (pair === '*/') {
+      depth--;
+      i++;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/** End (exclusive) of a quoted run opening at `start`; `-1` when it never closes. */
+function runEnd(sql: string, start: number, backslashEscapes: boolean): number {
+  const quote = sql[start];
+  for (let i = start + 1; i < sql.length; i++) {
+    const ch = sql[i];
+    if (backslashEscapes && ch === '\\') {
+      i++;
+    } else if (ch === quote) {
+      if (sql[i + 1] !== quote) return i + 1;
+      i++; // doubled quote: SQL's own escape
+    }
+  }
+  return -1;
+}
+
+/** One reading's output and, per output character, the source offset it came from. */
+interface Scan {
+  out: string;
+  pos: number[];
+}
+
+/** One pass over the statement under one dialect: comments dropped, literals replaced by `?`. */
+function scan(statement: string, dialect: Dialect): Scan {
+  let out = '';
+  const pos: number[] = [];
+  // `pos` records the SOURCE offset every output character came from (for the space an executable-comment
+  // opener or closer prints, the offset just past it; only MySQL reads those, so it never matches), so readings are compared by where in the
+  // input a character came from, not just by what it prints (see redactSqlLiterals).
+  const put = (text: string, at: number): void => {
+    out += text;
+    for (let j = 0; j < text.length; j++) pos.push(at + j);
+  };
+  let i = 0;
+  let executableDepth = 0;
+  while (i < statement.length) {
+    const ch = statement[i] as string;
+    const next = statement[i + 1];
+    const afterDash = statement[i + 2];
+    if (
+      (ch === '-' &&
+        next === '-' &&
+        (!dialect.dashNeedsSpace || afterDash === undefined || afterDash <= ' ')) ||
+      (ch === '#' && dialect.hashComment)
+    ) {
+      dialect.lineEnd.lastIndex = i;
+      const eol = dialect.lineEnd.exec(statement)?.index ?? -1;
+      put(' ', i);
+      if (eol === -1) break;
+      i = eol; // keep the terminator itself
+    } else if (
+      dialect.executableComments &&
+      ch === '/' &&
+      next === '*' &&
+      /^\/\*(?:M?!|\+)/.test(statement.slice(i, i + 4))
+    ) {
+      // Lex the body as code: skip only the opener (and the version digits) and remember to swallow its `*/`.
+      i += statement[i + 2] === 'M' ? 4 : 3;
+      while (statement[i] !== undefined && statement[i]! >= '0' && statement[i]! <= '9') i++;
+      executableDepth++;
+      put(' ', i);
+    } else if (ch === '*' && next === '/' && executableDepth > 0) {
+      executableDepth--;
+      i += 2;
+      put(' ', i);
+    } else if (ch === '/' && next === '*') {
+      put(' ', i);
+      const close = blockCommentEnd(statement, i, dialect.nestedComments);
+      if (close === -1) break;
+      i = close;
+    } else if (ch === "'" || ch === '"') {
+      const escapes =
+        dialect.backslashEscapes === 'all' ||
+        (ch === "'" &&
+          dialect.backslashEscapes === 'e' &&
+          /[eE]/.test(statement[i - 1] ?? '') &&
+          !isWordChar(statement[i - 2]));
+      const end = runEnd(statement, i, escapes);
+      put('?', i);
+      if (end === -1) break;
+      i = end;
+    } else if (ch === '`') {
+      const end = runEnd(statement, i, false); // backticks never take a backslash escape
+      // Only MySQL and SQLite read a backtick as a quote; elsewhere it is a stray character and a quote inside
+      // the run is a real delimiter. A quote in the run is therefore ambiguous: fail closed.
+      const run = end === -1 ? undefined : statement.slice(i, end);
+      if (run === undefined || /['"$#]|--|\/\*/.test(run)) {
+        put('?', i);
+        break;
+      }
+      put(run, i);
+      i = end;
+    } else if (ch === '$' && dialect.dollarQuotes && !isIdentifierTail(statement[i - 1])) {
+      DOLLAR_TAG.lastIndex = i;
+      const tag = DOLLAR_TAG.exec(statement)?.[0];
+      if (tag === undefined) {
+        put(ch, i);
+        i++;
+        continue;
+      }
+      const close = statement.indexOf(tag, i + tag.length);
+      put('?', i);
+      if (close === -1) break;
+      i = close + tag.length;
+    } else {
+      put(ch, i);
+      i++;
+    }
+  }
+  return { out, pos };
+}
+
 /**
  * Replace the LITERALS in a SQL statement with placeholders, keeping its shape.
  *
  * `SELECT * FROM users WHERE email = 'a@b.com'` becomes `SELECT * FROM users WHERE email = ?`, which is
  * the form that is actually useful in a report: it groups (every execution of one query looks the same)
- * and it carries no customer data. Quoted strings go first so a number inside a string is not treated as
- * a number, and doubled quotes — SQL's own escape — are consumed as part of the string they sit in.
+ * and it carries no customer data.
+ *
+ * It TOKENISES rather than pairing quotes, because a quote that is not a string delimiter shifts the pairing
+ * and leaves the next literal in the clear. Comments are dropped (they can carry data and their apostrophes
+ * are not delimiters), `'..'` / `".."` strings honour doubled quotes, backtick identifiers are kept whole and
+ * `$tag$..$tag$` bodies are one literal. Which of these constructs a statement uses depends on its dialect
+ * (`#` comments, `--` spacing, nested comments, dollar quotes and backslash escapes all differ) and the
+ * statement does not say which, so it is scanned under every dialect in `DIALECTS` and the result is cut
+ * where the readings first disagree: the agreed prefix is kept, the rest is redacted. Anything that never
+ * closes (including a statement cut by a length cap) likewise fails CLOSED to the end. The price is shape:
+ * a statement using a dialect-specific construct may lose its tail, which is the safe side of the trade.
+ * Examples that cut: `#` (MySQL comment, Postgres JSON operator `#>`, SQL Server `#tmp`), `$$` bodies,
+ * a backslash-escaped quote, and MySQL-style `/*!` / `/*+` comments (so Oracle-style hints cut too).
  */
 export function redactSqlLiterals(statement: string): string {
-  return (
-    statement
-      // '...' with '' escapes, and "..." with "" escapes
-      .replace(/'(?:[^']|'')*'/g, '?')
-      .replace(/"(?:[^"]|"")*"/g, '?')
-      // A literal still OPEN at the end: the statement was cut by a length cap (which runs before this), and
-      // everything after the opening quote is literal data. (After the closed passes at most one lone quote is
-      // left, so no doubled-quote alternative is needed here.)
-      .replace(/'[^']*$/, '?')
-      .replace(/"[^"]*$/, '?')
-      // numeric literals, but never the digits inside an identifier like `column2`
-      .replace(/\b\d+(?:\.\d+)?\b/g, '?')
+  const [first, ...rest] = DIALECTS.map((dialect) => scan(statement, dialect)) as [Scan, ...Scan[]];
+  let out = first.out;
+  let outPos = first.pos;
+  for (const other of rest) {
+    // Compare by SOURCE position as well as by character: a suffix that prints the same but comes from a
+    // different part of the input is literal content in one reading and code in another (`'a\'X'X`).
+    let k = 0;
+    while (
+      k < out.length &&
+      k < other.out.length &&
+      out[k] === other.out[k] &&
+      outPos[k] === other.pos[k]
+    ) {
+      k++;
+    }
+    if (k === out.length && k === other.out.length) continue;
+    out = `${out.slice(0, k)}?`;
+    outPos = [...outPos.slice(0, k), -1];
+  }
+  // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
+  return out.replace(
+    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.(?:\d[\d_]*)?)?(?:e[+-]?\d[\d_]*)?)\b/gi,
+    '?',
   );
 }
 

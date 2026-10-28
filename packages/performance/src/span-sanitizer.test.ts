@@ -240,11 +240,232 @@ describe('redactSqlLiterals on a statement that was CUT inside a literal', () =>
 
   it('handles closed literals followed by an unterminated one, and a doubled quote before the cut', () => {
     expect(redactSqlLiterals("a = 'x' AND b = 'cd")).toBe('a = ? AND b = ?');
-    // `'it'` closes at the first quote and `'s a sec` is the open tail: both are data, both go.
-    expect(redactSqlLiterals("a = 'it''s a sec")).toBe('a = ??');
+    // `it''s a sec` is ONE literal (doubled quote = escape) that never closes: all of it goes.
+    expect(redactSqlLiterals("a = 'it''s a sec")).toBe('a = ?');
   });
 
   it('leaves a statement without any quote alone', () => {
     expect(redactSqlLiterals('SELECT x FROM t')).toBe('SELECT x FROM t');
+  });
+});
+
+describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () => {
+  const clean = (sql: string): string => redactSqlLiterals(sql);
+
+  it('ignores an apostrophe in a block comment and drops the comment', () => {
+    expect(clean("/* don't */ SELECT * FROM t WHERE a = 'secretA'")).toBe(
+      '  SELECT * FROM t WHERE a = ?',
+    );
+    expect(clean('SELECT/* x */1')).toBe('SELECT ?');
+  });
+
+  it('fails closed on an unterminated block comment', () => {
+    expect(clean("SELECT 1 /* it's 'secret")).toBe('SELECT ?  ');
+  });
+
+  it('ignores an apostrophe in a line comment, keeping the newline', () => {
+    expect(clean("-- it's\nSELECT * FROM t WHERE a = 'secretB'")).toBe(
+      ' \nSELECT * FROM t WHERE a = ?',
+    );
+    expect(clean("SELECT 1 -- it's")).toBe('SELECT ?  ');
+  });
+
+  it('honours backslash-escaped quotes', () => {
+    // A backslash-escaped quote makes the literal's end dialect-dependent: fail closed, nothing survives.
+    expect(clean("INSERT INTO t VALUES ('O\\'Brien','secretC')")).toBe('INSERT INTO t VALUES (??');
+    expect(clean('SELECT "a\\"b secret"')).toBe('SELECT ??');
+  });
+
+  it('fails closed on dollar-quoted bodies (only some dialects have them), keeping the agreed prefix', () => {
+    expect(clean("SELECT $$it's$$, 'secretD'")).toBe('SELECT ?');
+    expect(clean("SELECT $q$it's $$ x$q$, 'secretE'")).toBe('SELECT ?');
+  });
+
+  it('fails closed on an unterminated dollar quote', () => {
+    expect(clean("SELECT $$it's secret")).toBe('SELECT ?');
+  });
+
+  it('does not open a dollar quote on a positional parameter or inside an identifier', () => {
+    // (the digit after `$` is still a numeric literal, as before: harmless, and it groups)
+    expect(clean('SELECT * FROM t WHERE a = $1 AND b = $2')).toBe(
+      'SELECT * FROM t WHERE a = $? AND b = $?',
+    );
+    expect(clean('SELECT a$b$ FROM t')).toBe('SELECT a$b$ FROM t');
+    expect(clean('SELECT $ FROM t')).toBe('SELECT $ FROM t');
+  });
+
+  it('keeps a backtick identifier whole', () => {
+    expect(clean("SELECT `a b` FROM t WHERE a = 'secretF'")).toBe(
+      'SELECT `a b` FROM t WHERE a = ?',
+    );
+  });
+
+  it('fails closed on a backtick run containing a quote (a quote delimiter in other dialects)', () => {
+    expect(clean("SELECT `it's` FROM t WHERE a = 'secretF'")).toBe('SELECT ?');
+    expect(clean("SELECT * FROM t WHERE a = `x AND b = 'secret' AND c = `")).toBe(
+      'SELECT * FROM t WHERE a = ?',
+    );
+  });
+
+  it('fails closed on a double quote inside a backtick run', () => {
+    expect(clean('SELECT `a"b` FROM t WHERE x = "secretD"')).toBe('SELECT ?');
+  });
+
+  it('fails closed on an unterminated backtick identifier', () => {
+    expect(clean("SELECT `it's 'secret")).toBe('SELECT ?');
+  });
+
+  it('does not treat a lone dash or slash as a comment', () => {
+    expect(clean('SELECT a-b, c/d FROM t')).toBe('SELECT a-b, c/d FROM t');
+  });
+
+  it('fails closed on a literal ending in a backslash (standard SQL: complete; MySQL: escape)', () => {
+    expect(clean("SELECT * FROM t WHERE a = 'C:\\' AND b = 'secretP'")).toBe(
+      'SELECT * FROM t WHERE a = ??',
+    );
+    expect(clean("a = 'C:\\temp\\' AND b = 'secretQ' AND c = 1")).toBe('a = ??');
+  });
+
+  it('does not read a backslash in a backtick identifier as an escape', () => {
+    expect(clean("SELECT `a\\` = 'secretB' AND `x` FROM t")).toBe(
+      'SELECT `a\\` = ? AND `x` FROM t',
+    );
+  });
+
+  it('fails closed on a # (a MySQL comment, a Postgres operator)', () => {
+    expect(clean("SELECT 1 # it's\nFROM t WHERE x = 'secretH'")).toBe('SELECT ? ?');
+  });
+
+  it('handles nested block comments', () => {
+    // MySQL ends the comment at the first `*/`, Postgres at the second: the readings disagree, so cut.
+    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe(' ?');
+    // ...and when nesting makes no difference the comment is simply dropped.
+    expect(clean("/* a */ SELECT 'secretM' /* b */")).toBe('  SELECT ?  ');
+    expect(clean("SELECT 1 /* a /* b */ 'secret")).toBe('SELECT ?  ?');
+  });
+
+  it('does not let a dollar-quote tag of any length slip through', () => {
+    const tag = `$${'a'.repeat(140)}$`;
+    expect(clean(`SELECT ${tag}it's${tag}, 'secretT'`)).toBe('SELECT ?');
+  });
+
+  it('redacts exponent and hex numeric literals', () => {
+    expect(clean('SELECT 1e10, 2.5E-3, 0xDEADBEEF, c1 FROM t1')).toBe('SELECT ?, ?, ?, c1 FROM t1');
+  });
+
+  it.each([
+    // each leaked under a one-dialect reading of `#`, `--`, nested comments or dollar quotes
+    ["SELECT data #>> '{a}' FROM t WHERE note = 'line1\nsecretline2'", 'secretline2'],
+    ["UPDATE t SET flags = flags # 4, note = 'Dear J,\nSSN hunter'", 'hunter'],
+    ["SELECT 1--'abc\nsecret'", 'secret'],
+    ["SELECT /* a /* b */ x = 'p */ secret'", 'secret'],
+    ["SELECT $a$ FROM t WHERE x = 'p$a$ ' AND y = 'secret'", 'secret'],
+  ])('never lets literal data through under any dialect reading: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('keeps `--` followed by whitespace as an ordinary comment in every dialect', () => {
+    expect(clean("SELECT 1 -- it's\nFROM t WHERE x = 'secret'")).toBe(
+      'SELECT ?  \nFROM t WHERE x = ?',
+    );
+    expect(clean('SELECT 1 --\nFROM t')).toBe('SELECT ?  \nFROM t');
+  });
+
+  it.each([
+    ["SELECT 1 -- c\r, 'x\nsecret1', 'secret2'", 'secret'],
+    [
+      "INSERT INTO u (note, dir, email) VALUES (E'x\\', ', 'alice\\', 'alice@example.com')",
+      'alice',
+    ],
+    ['SELECT $é$secret data$é$, $tag$ok$tag$', 'secret'],
+  ])('never lets literal data through: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('cuts at a lone carriage return after a -- comment (Postgres ends it there, MySQL does not)', () => {
+    expect(clean("SELECT 1 -- it's\r, 'secret'")).toBe('SELECT ?  ?');
+  });
+
+  it('lexes a MySQL executable comment body as code, so a `*/` inside its string cannot hide a literal', () => {
+    expect(clean("SELECT /*!50000 'a*/b' */ x FROM t WHERE p = 'secret'")).not.toContain('secret');
+    expect(clean("SELECT 1 /*M!100000 + LENGTH('*/z') */ AS y, 'secret2'")).not.toContain(
+      'secret2',
+    );
+    expect(clean("SELECT /*+ SET_VAR(x='*/y') */ 1, 'secret3'")).not.toContain('secret3');
+  });
+
+  it('ends # and -- comments at LF only for MySQL and SQLite, so a CR cannot hide a literal', () => {
+    expect(clean("SELECT c FROM t -- see\r it's\n WHERE a = 'k' AND p = 'secret'")).toBe(
+      'SELECT c FROM t  ?',
+    );
+  });
+
+  it('documents the unmodelled dialect gaps: bracket identifiers and q-quotes are not tokenised', () => {
+    // Known, pre-existing (the old regex leaked these too) and out of scope for #109: an apostrophe inside
+    // `[..]` or `q'[..]'` shifts the pairing identically in every reading, so nothing is cut. Pinned so a
+    // future fix has to change this test on purpose.
+    expect(clean("SELECT [it's] FROM t WHERE a = 'secret1' AND b = 'x'")).toBe(
+      'SELECT [it?secret1?x?',
+    );
+  });
+
+  it('redacts underscore-separated, binary and octal numeric literals', () => {
+    expect(clean('SELECT 1 WHERE a = 4111_1111_1111_1111 OR b = 0b1010 OR c = 0o777')).toBe(
+      'SELECT ? WHERE a = ? OR b = ? OR c = ?',
+    );
+  });
+
+  it.each([
+    ['SELECT `$$`, secret, `$$` FROM t', 'secret'],
+    ['SELECT a `$$secret$$` b FROM t', 'secret'],
+    ['SELECT 1$$secret$$', 'secret'],
+    ['SELECT * FROM t WHERE a = $1$$secret$$', 'secret'],
+  ])('fails closed on a dollar quote after a backtick or a digit: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it.each([
+    ['SELECT `a $$ secret ` $$', 'secret'],
+    ["SELECT ` -- secret `\n FROM t WHERE a = 'x'", 'secret'],
+    ['SELECT ` /* secret */ ` FROM t', 'secret'],
+    ["SELECT ` # secret `\n FROM t WHERE a = 'x'", 'secret'],
+  ])('fails closed on a comment or dollar opener inside a backtick run: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('pins the known shape losses of the cross-dialect cut (safe side: no literal survives)', () => {
+    expect(clean("SELECT data #> '{a}' FROM t WHERE id = 5")).toBe('SELECT data ?');
+    expect(clean("SELECT * FROM #tmp WHERE id = 5 AND n = 'x'")).toBe('SELECT * FROM ?');
+    expect(clean("SELECT 1 /*+ IndexScan(t) */ FROM t WHERE a = 'x'")).toBe('SELECT ? ?');
+  });
+
+  it('compares the readings by SOURCE position, so a suffix that only prints the same is cut', () => {
+    // MySQL: `'a\'secretZ'` is one literal and `tail` an alias; Postgres/standard: `'a\'`, code `secretZ`, then an
+    // unterminated literal. The readings print `?tail` and `?secretZ?`, so the cut is after the first `?`.
+    expect(clean("SELECT 'a\\'secretZ'tail")).toBe('SELECT ??');
+    // Here the readings print the SAME word, but it comes from different parts of the input (MySQL: the trailing
+    // word, where the first is literal content; Postgres: the first). Comparing printed text alone kept it.
+    expect(clean("SELECT 'a\\'PASSWORD'PASSWORD")).toBe('SELECT ??');
+    expect(clean("SELECT 'x\\'SECRET'SECRET FROM t")).toBe('SELECT ??');
+    expect(clean("SELECT 'a\\'hunter2'hunter2 FROM t WHERE id = 5")).toBe('SELECT ??');
+  });
+
+  it('redacts an exponent after a decimal point with no fraction digits', () => {
+    expect(clean('SELECT 1.e5 FROM t')).toBe('SELECT ? FROM t');
+    expect(clean('SELECT 123.e45, .5e3, 1.5e+3 FROM t')).toBe('SELECT ?, .?, ? FROM t');
+    expect(clean('SELECT 12.E-7')).toBe('SELECT ?');
+    expect(clean('SELECT 1..2, a1.e FROM t')).toBe('SELECT ?..?, a1.e FROM t');
+  });
+
+  it('redacts an exponent with underscore separators', () => {
+    expect(clean('SELECT 1e1_000')).toBe('SELECT ?');
+  });
+
+  it('pins the exact output of truncated and minimal executable comments', () => {
+    expect(clean('/*!')).toBe('?');
+    expect(clean('/*M')).toBe(' ');
+    expect(clean('/*M!')).toBe('?');
+    expect(clean('/*!12')).toBe('?');
+    expect(clean('a$$$')).toBe('a$$$');
   });
 });
