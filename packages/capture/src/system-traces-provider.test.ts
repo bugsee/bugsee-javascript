@@ -999,6 +999,76 @@ describe('createSystemTracesProvider — suppression (host-owned and non-key-win
   });
 });
 
+describe('a producer shared by two providers (#58)', () => {
+  it("the first provider owns it: the second reports, skips it, and never stops the first one's producer", async () => {
+    const shared = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const own = new Fixed('own', [['ram_js_heap_used', 2]]);
+    const storeA = mkStore();
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({ producers: [shared], now: () => 1 });
+    const b = createSystemTracesProvider({
+      producers: [shared, own],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(storeA));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toContain('shared');
+    expect(shared.startedCount).toBe(1);
+    expect(own.startedCount).toBe(1); // the rest of B's list still runs
+    b.stop();
+    expect(shared.stoppedCount).toBe(0); // B never owned it
+    expect(own.stoppedCount).toBe(1);
+    expect((await drainSystem(storeA))?.length).toBe(1);
+    a.stop();
+    expect(shared.stoppedCount).toBe(1);
+  });
+
+  it('ownership is released on stop, so a later provider may adopt the producer', () => {
+    const shared = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({ producers: [shared], now: () => 1 });
+    const b = createSystemTracesProvider({
+      producers: [shared],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    a.stop();
+    b.start(options);
+    expect(errors).toEqual([]);
+    expect(shared.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it('a producer whose start throws is not left owned', () => {
+    const bad = new Fixed('bad', [], { throwStart: true });
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({
+      producers: [bad],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    const b = createSystemTracesProvider({
+      producers: [bad],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    expect(errors.map((e) => (e as Error).message).filter((m) => m.includes('another'))).toEqual(
+      [],
+    );
+  });
+});
+
 describe('deriveRefreshMs', () => {
   it.each([
     [600_000, 10_000], // 150 s clamped down to the 10 s ceiling

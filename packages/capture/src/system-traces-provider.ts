@@ -81,6 +81,13 @@ interface Held {
   displayId: number | undefined;
 }
 
+/**
+ * Which running provider owns a producer instance. Producers are stateful (`start()` is a no-op while started, held
+ * values live on the instance), so one instance driven by two providers would interleave start/stop. First owner wins;
+ * a second provider reports it and skips the producer (#58). Released on stop.
+ */
+const producerOwners = new WeakMap<TraceProducer, object>();
+
 class SystemTracesProvider extends CaptureProviderBase {
   readonly name = 'traces.system';
   readonly controllingOption = BugseeOption.CaptureSystemTraces;
@@ -132,11 +139,21 @@ class SystemTracesProvider extends CaptureProviderBase {
     this.#running = true;
     this.#offSuppression = this.#suppression?.subscribe((released) => this.#rerecord(released));
     for (const producer of this.#producers) {
+      if (producerOwners.has(producer)) {
+        this.#onError(
+          new Error(
+            `system trace producer "${producer.name}" is already owned by another client; skipped (build a fresh producer set per client)`,
+          ),
+        );
+        continue;
+      }
+      producerOwners.set(producer, this);
       try {
         producer.start(this.#sink);
         this.#started.push(producer);
       } catch (error) {
         this.#onError(error);
+        producerOwners.delete(producer);
         this.#safeStop(producer);
       }
     }
@@ -223,7 +240,10 @@ class SystemTracesProvider extends CaptureProviderBase {
   }
 
   #stopProducers(): void {
-    for (const producer of this.#started.splice(0)) this.#safeStop(producer);
+    for (const producer of this.#started.splice(0)) {
+      producerOwners.delete(producer);
+      this.#safeStop(producer);
+    }
   }
 
   #safeStop(producer: TraceProducer): void {
