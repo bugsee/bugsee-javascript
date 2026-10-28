@@ -986,27 +986,32 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
-  it('block, unblock, navigate: the new document is kept and nothing is reported', () => {
-    const { guard, onViolation } = make({
-      blockSelector: 'iframe',
-      unblockSelector: '.bugsee-show',
-    });
-    const frame = el('iframe', { class: 'bugsee-show' });
+  it('an iframe blocked by the rules in the snapshot, then unblocked and navigated: the new document is kept', () => {
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
+    const frame = el('iframe', { class: 'private' });
     guard(snapshot(doc([frame])));
-    guard(attach(frame.id, el('p', {}, [text('old')])));
-    // blocked by the default rules: the recorder drops the class change and emits ONLY its placeholder marker
-    guard(marker(frame.id));
-    guard(marker(frame.id)); // the marker has no inverse, and repeating it never reopens
+    guard(marker(frame.id)); // a repeated marker never reopens it
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-    guard(classChange(frame.id, 'bugsee-show')); // unblocked again (a recorded change)
+    guard(classChange(frame.id, null)); // unblocked: a recorded change the rules no longer match
     const fresh = el('p', {}, [text('new doc')]);
     const a = attach(frame.id, fresh);
     expect(guard(a)).toBe(a);
     const t = mutation({ texts: [{ id: (fresh.childNodes[0] as { id: number }).id, value: 'x' }] });
     expect(guard(t)).toBe(t);
-    expect(onViolation).toHaveBeenCalledTimes(1); // only the attach into the blocked frame
-    // blocking it again (marker only, again) closes it again
+    expect(onViolation).toHaveBeenCalledTimes(1); // only the attach into the still-blocked frame
+    // blocking it again (marker only, as the recorder emits it) closes it again
+    guard(classChange(frame.id, 'private'));
     guard(marker(frame.id));
+    expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
+  });
+
+  it('LIMIT: an iframe blocked mid-stream (marker only) stays closed even when it is unblocked again', () => {
+    const { guard } = make({ blockSelector: 'iframe', unblockSelector: '.bugsee-show' });
+    const frame = el('iframe', { class: 'bugsee-show' });
+    guard(snapshot(doc([frame])));
+    guard(marker(frame.id));
+    guard(classChange(frame.id, 'bugsee-show'));
+    // the guard cannot tell an own block from an ancestor's: it fails closed until the next full snapshot
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
   });
 
