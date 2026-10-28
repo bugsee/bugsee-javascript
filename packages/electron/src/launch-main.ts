@@ -460,8 +460,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // relaunch option, so a relaunch keeps THIS wrapper (closing over the tracker) and `hardware.gpu` keeps being served
   // (stop() does not clear it; a GPU that had not yet resolved is not re-requested). `systemTraceProducers` and
   // `wrapSystemEventsSource` are RESET options, so a relaunched client has the plain node producers and events source:
-  // every Electron trace and event (`app_metrics`, `displays`, `child_process_gone`, `power_*`, `display_*`,
-  // `window_*`, `renderer_*`) stops until `launchMain` is called again (the carrier client must be cleared by a stop for
+  // every Electron trace and event (`app_metrics`, `displays`, `thermal_state`, `cpu_speed_limit`, `child_process_gone`,
+  // `power_*`, `display_*`, `window_*`, `renderer_*`) stops until `launchMain` is called again (the carrier client must be cleared by a stop for
   // that, as for any launch).
   const callerExtras = nodeOptions.hardwareExtras;
   const reportExtrasOnce = reportOncePerMessage(nodeOptions.onError);

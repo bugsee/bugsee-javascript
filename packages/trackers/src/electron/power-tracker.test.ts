@@ -253,6 +253,15 @@ describe('ElectronPowerTracker', () => {
       off();
       expect(m.total()).toBe(0);
     });
+    it('rounds to the NEAREST integer (not floor, not ceil) at the .5 and .6 / .4 boundaries', () => {
+      const m = fakeMonitor();
+      const seen = vi.fn();
+      track(m).on('speedLimit', seen);
+      for (const limit of [62.5, 99.6, 99.4, 0.4, 0.5, 37.49]) {
+        m.fire('speed-limit-change', { limit });
+      }
+      expect(seen.mock.calls.map((c) => c[0].limit)).toEqual([63, 100, 99, 0, 1, 37]);
+    });
     it('a BARE limit (the listener receives the number itself) is read too', () => {
       const m = fakeMonitor();
       const seen = vi.fn();

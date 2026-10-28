@@ -194,7 +194,8 @@ class ThermalStateProducer extends TraceProducerBase {
     if (wire !== undefined) this.emit(TraceName.THERMAL_STATE, wire);
   }
   protected onStart(): void {
-    // subscribe FIRST (arming the listener), then the baseline read: no change can fall between the two
+    // subscribe before the baseline read so the listener is armed first; both run synchronously on the one JS thread, so
+    // no change event can fire between them (the order only matters if the read ever becomes asynchronous)
     this.#off = this.tracker.on('thermalState', (e) => this.#publish(e.state));
     const current = this.tracker.current('thermalState');
     if (current !== undefined) this.#publish(current.state);
