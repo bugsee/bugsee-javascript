@@ -62,9 +62,11 @@ interface Dialect {
   dollarQuotes: boolean;
   /**
    * Which strings a backslash escapes the next character in: every one (MySQL), only `E'..'` ones (Postgres,
-   * standard_conforming_strings on), every single-quoted one (Postgres, it off), or none (standard SQL, SQLite..).
+   * standard_conforming_strings on), or none (standard SQL, SQLite..). Postgres with the setting off would be
+   * 'every single-quoted one', but wherever that differs from the readings below, MySQL and Postgres-on already
+   * disagree at the same point, so it adds nothing and is not scanned.
    */
-  backslashEscapes: 'all' | 'e' | 'single' | 'none';
+  backslashEscapes: 'all' | 'e' | 'none';
 }
 
 /**
@@ -92,16 +94,6 @@ const DIALECTS: readonly Dialect[] = [
     nestedComments: true,
     dollarQuotes: true,
     backslashEscapes: 'e',
-  },
-  // Postgres, standard_conforming_strings off
-  {
-    hashComment: false,
-    lineEnd: CR_OR_LF,
-    executableComments: false,
-    dashNeedsSpace: false,
-    nestedComments: true,
-    dollarQuotes: true,
-    backslashEscapes: 'single',
   },
   // standard SQL, SQLite, SQL Server, Oracle
   {
@@ -191,21 +183,23 @@ function scan(statement: string, dialect: Dialect): string {
       const escapes =
         dialect.backslashEscapes === 'all' ||
         (ch === "'" &&
-          (dialect.backslashEscapes === 'single' ||
-            (dialect.backslashEscapes === 'e' &&
-              /[eE]/.test(statement[i - 1] ?? '') &&
-              !isWordChar(statement[i - 2]))));
+          dialect.backslashEscapes === 'e' &&
+          /[eE]/.test(statement[i - 1] ?? '') &&
+          !isWordChar(statement[i - 2]));
       const end = runEnd(statement, i, escapes);
       out += '?';
       if (end === -1) break;
       i = end;
     } else if (ch === '`') {
       const end = runEnd(statement, i, false); // backticks never take a backslash escape
-      if (end === -1) {
+      // Only MySQL and SQLite read a backtick as a quote; elsewhere it is a stray character and a quote inside
+      // the run is a real delimiter. A quote in the run is therefore ambiguous: fail closed.
+      const run = end === -1 ? undefined : statement.slice(i, end);
+      if (run === undefined || /['"]/.test(run)) {
         out += '?';
         break;
       }
-      out += statement.slice(i, end);
+      out += run;
       i = end;
     } else if (ch === '$' && dialect.dollarQuotes && !isWordChar(statement[i - 1])) {
       DOLLAR_TAG.lastIndex = i;

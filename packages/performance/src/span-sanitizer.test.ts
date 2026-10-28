@@ -294,9 +294,16 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean('SELECT $ FROM t')).toBe('SELECT $ FROM t');
   });
 
-  it('keeps a backtick identifier whole, even with a quote inside it', () => {
-    expect(clean("SELECT `it's` FROM t WHERE a = 'secretF'")).toBe(
-      "SELECT `it's` FROM t WHERE a = ?",
+  it('keeps a backtick identifier whole', () => {
+    expect(clean("SELECT `a b` FROM t WHERE a = 'secretF'")).toBe(
+      'SELECT `a b` FROM t WHERE a = ?',
+    );
+  });
+
+  it('fails closed on a backtick run containing a quote (a quote delimiter in other dialects)', () => {
+    expect(clean("SELECT `it's` FROM t WHERE a = 'secretF'")).toBe('SELECT ?');
+    expect(clean("SELECT * FROM t WHERE a = `x AND b = 'secret' AND c = `")).toBe(
+      'SELECT * FROM t WHERE a = ?',
     );
   });
 
@@ -393,5 +400,13 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean('SELECT 1 WHERE a = 4111_1111_1111_1111 OR b = 0b1010 OR c = 0o777')).toBe(
       'SELECT ? WHERE a = ? OR b = ? OR c = ?',
     );
+  });
+
+  it('pins the exact output of truncated and minimal executable comments', () => {
+    expect(clean('/*!')).toBe(' ');
+    expect(clean('/*M')).toBe(' ');
+    expect(clean('/*M!')).toBe(' ');
+    expect(clean('/*!12')).toBe(' ');
+    expect(clean('a$$$')).toBe('a$$$');
   });
 });
