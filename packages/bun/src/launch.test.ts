@@ -157,6 +157,12 @@ describe('@bugsee/bun launch', () => {
     );
   });
 
+  it('builds no default producer set when the caller supplies systemTraceProducers (it would rebind their shared tracker gates)', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    track(launchCore('tok', base({ systemTraceProducers: [] })).client);
+    expect(createNodeSystemTraceProducers).not.toHaveBeenCalled();
+  });
+
   it('does not opt out of event-loop delay (Bun measures it)', () => {
     track(launchCore('tok', base()).client);
     expect(createNodeSystemTraceProducers).toHaveBeenCalledTimes(1);

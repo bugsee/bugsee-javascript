@@ -19,25 +19,27 @@ import { bunSystemProbe } from './environment';
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
   return nodeLaunchCore(appToken, {
     systemProbe: bunSystemProbe,
-    systemTraceProducers: createNodeSystemTraceProducers({
-      // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call),
-      // so the V8 heap traces are omitted here.
-      measuresV8Heap: false,
-      // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
-      // while elsewhere there is no cap to report (Bun answers total RAM on macOS), so the trace is gated to Linux.
-      measuresConstrainedMemory: process.platform === 'linux',
-      // Bun < 1.3.13's `os.freemem()` is not MemAvailable on Linux, so `ram_system_free` reads /proc/meminfo
-      // MemAvailable first there, then os.freemem(). On macOS it comes from a rare async `/usr/bin/vm_stat` read
-      // (the tracker default; os.freemem() there is free pages only).
-      // `process.availableMemory()` is never used.
-      readsProcMeminfo: true,
-      // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
-      // zero would be a lie, so no observer is constructed and the `gc` system event is never emitted.
-      measuresGc: false,
-      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
-      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-      ...(options.onError !== undefined ? { onError: options.onError } : {}),
-    }),
+    systemTraceProducers:
+      options.systemTraceProducers ??
+      createNodeSystemTraceProducers({
+        // JSC's heap statistics are not a V8 ceiling (`limit - used` is meaningless; ~1000x Node's cost per call),
+        // so the V8 heap traces are omitted here.
+        measuresV8Heap: false,
+        // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
+        // while elsewhere there is no cap to report (Bun answers total RAM on macOS), so the trace is gated to Linux.
+        measuresConstrainedMemory: process.platform === 'linux',
+        // Bun < 1.3.13's `os.freemem()` is not MemAvailable on Linux, so `ram_system_free` reads /proc/meminfo
+        // MemAvailable first there, then os.freemem(). On macOS it comes from a rare async `/usr/bin/vm_stat` read
+        // (the tracker default; os.freemem() there is free pages only).
+        // `process.availableMemory()` is never used.
+        readsProcMeminfo: true,
+        // `PerformanceObserver('gc')` is BLIND on Bun (0 entries after heavy churn — measured): a quiet-looking
+        // zero would be a lie, so no observer is constructed and the `gc` system event is never emitted.
+        measuresGc: false,
+        // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, after `...options` so a caller cannot switch them on. Measured on
     // Bun 1.4.0: `Debugger.enable` is REFUSED — `Inspector method "Debugger.enable" requires an active

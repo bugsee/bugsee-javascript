@@ -329,6 +329,12 @@ describe('@bugsee/deno — the event-loop metrics Deno cannot measure', () => {
     );
   });
 
+  it('builds no default producer set when the caller supplies systemTraceProducers (it would rebind their shared tracker gates)', () => {
+    vi.mocked(createNodeSystemTraceProducers).mockClear();
+    track(launchCore('tok', base({ systemTraceProducers: [] })).client);
+    expect(createNodeSystemTraceProducers).not.toHaveBeenCalled();
+  });
+
   it('never reads /proc/meminfo for ram_system_free (a scoped --allow-read would prompt), opts out of gc (blind observer) and keeps the V8 heap (real V8)', () => {
     track(launchCore('tok', base()).client);
     const arg = vi.mocked(createNodeSystemTraceProducers).mock.calls[0]?.[0];

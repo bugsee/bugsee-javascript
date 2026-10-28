@@ -26,23 +26,25 @@ export function launchCore(appToken: string, options: BugseeLaunchOptions = {}):
     // 160.956ms, bun 146.634ms, deno 0.065ms. Reporting 0.065ms through a 150ms freeze reads as a
     // healthy process, so the lag traces are omitted here rather than fabricated. ELU self-disables on
     // its own tell (a zero `idle`), so it needs no flag.
-    systemTraceProducers: createNodeSystemTraceProducers({
-      measuresEventLoopDelay: false,
-      // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
-      // while elsewhere there is no cap to report (Deno answers 0), so the trace is gated to Linux.
-      measuresConstrainedMemory: process.platform === 'linux',
-      // `ram_system_free` on Deno: `os.freemem()` (MemAvailable on Linux since 2023, avail_phys on Windows) and
-      // the macOS figure is the async vm_stat read (the SAME definition as Node/Bun/Electron) when the `run`
-      // permission for /usr/bin/vm_stat is already granted (checked with the never-prompting `permissions.querySync`;
-      // spawned via `Deno.Command`, so `--allow-run=/usr/bin/vm_stat` suffices), else `Deno.systemMemoryInfo().available`
-      // (free + inactive pages: a LARGER estimate than the vm_stat definition). It must NOT read /proc/meminfo (no `readsProcMeminfo`): the
-      // read triggers an interactive permission prompt under a scoped `--allow-read`.
-      // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
-      measuresGc: false,
-      // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
-      ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-      ...(options.onError !== undefined ? { onError: options.onError } : {}),
-    }),
+    systemTraceProducers:
+      options.systemTraceProducers ??
+      createNodeSystemTraceProducers({
+        measuresEventLoopDelay: false,
+        // `process.constrainedMemory()` is a cgroup cap: measured real on Linux (Bun 1.4.4 / Deno 2.8.3 under `docker -m`),
+        // while elsewhere there is no cap to report (Deno answers 0), so the trace is gated to Linux.
+        measuresConstrainedMemory: process.platform === 'linux',
+        // `ram_system_free` on Deno: `os.freemem()` (MemAvailable on Linux since 2023, avail_phys on Windows) and
+        // the macOS figure is the async vm_stat read (the SAME definition as Node/Bun/Electron) when the `run`
+        // permission for /usr/bin/vm_stat is already granted (checked with the never-prompting `permissions.querySync`;
+        // spawned via `Deno.Command`, so `--allow-run=/usr/bin/vm_stat` suffices), else `Deno.systemMemoryInfo().available`
+        // (free + inactive pages: a LARGER estimate than the vm_stat definition). It must NOT read /proc/meminfo (no `readsProcMeminfo`): the
+        // read triggers an interactive permission prompt under a scoped `--allow-read`.
+        // `PerformanceObserver('gc')` is BLIND on Deno too (0 entries, also with --v8-flags=--expose-gc): omit.
+        measuresGc: false,
+        // the shared tracker's sampling timer honors an injected scheduler, and its poll errors are reported
+        ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      }),
     ...options,
     // LOCAL VARIABLES ARE OFF HERE, and deliberately AFTER `...options` so a caller cannot switch them
     // back on. This is not a preference: with `includeCaught` Deno FREEZES. Measured with the real SDK
