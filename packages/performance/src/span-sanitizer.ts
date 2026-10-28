@@ -153,7 +153,8 @@ interface Scan {
 function scan(statement: string, dialect: Dialect): Scan {
   let out = '';
   const pos: number[] = [];
-  // `pos` records the SOURCE offset every output character came from, so readings are compared by where in the
+  // `pos` records the SOURCE offset every output character came from (for the space an executable-comment
+  // opener or closer prints, the offset just past it; only MySQL reads those, so it never matches), so readings are compared by where in the
   // input a character came from, not just by what it prints (see redactSqlLiterals).
   const put = (text: string, at: number): void => {
     out += text;
