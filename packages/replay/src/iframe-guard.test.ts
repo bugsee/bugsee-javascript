@@ -64,6 +64,8 @@ const make = (overrides: Partial<Parameters<typeof createIframeGuard>[0]> = {}) 
 };
 
 const SECRET = 'GUARD-SECRET';
+// U+00A0 is not CSS whitespace: in a selector it is a name character (JS `\s` would call it whitespace)
+const NBSP = String.fromCharCode(0xa0);
 
 describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder emitted', () => {
   it('passes events that have nothing to do with iframes through untouched (same object)', () => {
@@ -129,6 +131,78 @@ describe('iframe guard: a blocked iframe is a placeholder, whatever the recorder
     const shown = el('iframe', { class: 'bugsee-show' }, [text('visible')]);
     g2(snapshot(doc([shown])));
     expect(shown.childNodes).toHaveLength(1); // unblockSelector beats the iframe block selector
+  });
+
+  describe('a contextual unblockSelector cannot be evaluated on a detached copy: the recorder is trusted', () => {
+    const contextual = [
+      '#trusted iframe',
+      '.x > iframe',
+      '.x + iframe',
+      '.x ~ iframe',
+      '.x>iframe',
+      '.x+iframe',
+      '.x~iframe',
+      'iframe:first-child',
+      'iframe:nth-child(2)',
+      'body iframe',
+      '.bugsee-show, #trusted iframe',
+      'iframe:not([data-a="b c"]):last-child',
+      "iframe[data-x=']a b']:first-child",
+    ];
+    for (const unblockSelector of contextual) {
+      it(`keeps an unmarked iframe recorded: ${unblockSelector}`, () => {
+        const { guard, onViolation } = make({ unblockSelector });
+        const frame = el('iframe', { src: '/same.html' }, [text('ok')]);
+        guard(snapshot(doc([frame])));
+        expect(frame.childNodes).toHaveLength(1);
+        const added = el('iframe', { src: '/b.html' });
+        guard(mutation({ adds: [{ parentId: 1, nextId: null, node: added }] }));
+        const kept = guard(attach(added.id, text('inner')));
+        expect(kept).toBeDefined();
+        expect(onViolation).not.toHaveBeenCalled();
+      });
+    }
+
+    it('still blocks an iframe the recorder marked as a placeholder', () => {
+      const { guard, onViolation } = make({ unblockSelector: '#trusted iframe' });
+      const frame = el('iframe', { rr_width: '10px', rr_height: '10px' }, [text(SECRET)]);
+      guard(snapshot(doc([frame])));
+      expect(frame.childNodes).toEqual([]);
+      expect(onViolation).toHaveBeenCalledTimes(1);
+      expect(guard(attach(frame.id, text(SECRET)))).toBeUndefined();
+    });
+
+    it('a value selector stays fail-closed: no unblock match, the block rules apply', () => {
+      for (const unblockSelector of [
+        '.bugsee-show',
+        'iframe[data-embed="x y"]',
+        'iframe[data-x="]a b"]',
+        "iframe[data-x=']a b']",
+        '.bugsee-show, iframe.x',
+        `.a${NBSP}b`,
+        `.a\\${NBSP}b`,
+        `.a\\31${NBSP}b`,
+        '.md\\:embed',
+        '#a\\ b',
+        '.\\31 0',
+        'iframe[data-a~="b"]',
+        '',
+      ]) {
+        const { guard } = make({ unblockSelector });
+        const frame = el('iframe', { src: '/same.html' }, [text(SECRET)]);
+        guard(snapshot(doc([frame])));
+        expect(frame.childNodes).toEqual([]);
+      }
+    });
+
+    it('an iframe that becomes marked after being recorded is closed', () => {
+      const { guard } = make({ unblockSelector: '#trusted iframe' });
+      const frame = el('iframe', { src: '/x' });
+      guard(snapshot(doc([frame])));
+      expect(guard(attach(frame.id, text('a')))).toBeDefined();
+      guard(mutation({ attributes: [{ id: frame.id, attributes: { rr_width: '5px' } }] }));
+      expect(guard(attach(frame.id, text(SECRET)))).toBeUndefined();
+    });
   });
 
   it('a regexless/odd blockClass option is fine (no blockClass: only the selectors decide)', () => {

@@ -12,7 +12,7 @@
 //   1. every iframe element node the guard sees (full snapshot, or added by a mutation) is classified BLOCKED
 //      if the recorder marked it a placeholder (`rr_width`/`rr_height`) or if the block rules say so for its
 //      serialized attributes (`blockSelector`/`blockClass`, unless `unblockSelector` opts it back in; a rule that
-//      cannot be evaluated counts as blocked);
+//      cannot be evaluated counts as blocked; a CONTEXTUAL `unblockSelector` skips the block rules, see LIMITS);
 //   2. children of a blocked iframe node are stripped, and an attach mutation whose parent is a blocked iframe
 //      is dropped; the ids of everything removed that way are remembered ("tainted");
 //   3. any later event that names a tainted id (text, attribute, add, remove, input, scroll, mouse, media,
@@ -42,11 +42,13 @@
 //   - an iframe that is blocked by a rule on an ANCESTOR is recognised through the recorder's placeholder marker
 //     (rr_width/rr_height, emitted when an attached iframe or a container of it becomes blocked), never through
 //     the serialized ancestors. Against a recorder that does not emit that marker (the previous pins) the guard
-//     only protects iframes that were blocked from the start;
+//     only protects iframes that were blocked from the start (and, with a contextual `unblockSelector`, none);
 //   - the caller's `unblockSelector` is tested against a DETACHED copy of the iframe (built from its serialized
-//     attributes), so a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never match:
-//     the recorder records such an iframe, the guard removes its document and reports a violation. Value selectors
-//     (`iframe[data-embed="x"]`, `.bugsee-show`) are unaffected. See bugsee-javascript#123;
+//     attributes), which a contextual selector (`#trusted iframe`, `.x > iframe`, `:first-child`, ...) can never
+//     match. When the selector has a combinator or a pseudo-class, an iframe WITHOUT the recorder's placeholder
+//     marker is trusted to the recorder (it evaluates the selector on the live element), so the guard does not
+//     drop what the app opted in; the guard's own block rules are then not applied to unmarked iframes. Value
+//     selectors (`iframe#x`, `.bugsee-show`) keep the full fail-closed check;
 //   - a blocked iframe is never reopened by the guard: once it is blocked, whatever it attaches stays dropped (and is
 //     reported) until the next full snapshot. The recorder drops the change that blocks an iframe, and every
 //     attribute change while `iframe` is in `blockSelector` (the default), and emits only the placeholder marker, so
@@ -120,6 +122,24 @@ function styleIdsOf(data: Record<string, unknown>): number[] {
   return ids;
 }
 
+/**
+ * Whether any alternative of a selector list needs more than the element's own attributes to match: a combinator
+ * (descendant, `>`, `+`, `~`) or any pseudo-class (`:first-child`, `:nth-child()`, `:not()`, `:has()`, ...).
+ * Attribute selectors and quoted strings are ignored; such a selector cannot be tested on a detached copy.
+ */
+function isContextual(selector: string): boolean {
+  const flat = selector
+    .replace(/\\[0-9a-fA-F]{1,6}[ \t\n\f\r]?|\\./g, 'x') // CSS escapes (`.md\:embed`, `#a\ b`) are name characters
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""')
+    .replace(/\[[^\]]*\]/g, '[]');
+  // CSS whitespace only: JS `\s` also matches U+00A0 and friends, which are name characters in a selector
+  return flat
+    .split(',')
+    .some((alternative) =>
+      /[ \t\n\f\r>+~:]/.test(alternative.replace(/^[ \t\n\f\r]+|[ \t\n\f\r]+$/g, '')),
+    );
+}
+
 export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const blockedIframes = new Set<number>();
   const tainted = new Set<number>();
@@ -139,6 +159,7 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
   const styleOwner = new Map<number, number>();
   const taintedStyles = new Set<number>();
   let reported = false;
+  const contextualUnblock = isContextual(options.unblockSelector);
 
   const report = (message: string): void => {
     if (reported) {
@@ -164,6 +185,12 @@ export function createIframeGuard(options: IframeGuardOptions): IframeGuard {
         }
       }
       if (options.unblockSelector !== '' && probe.matches(options.unblockSelector)) {
+        return false;
+      }
+      if (contextualUnblock) {
+        // The unblock rule may match the LIVE iframe through its context, which a detached copy cannot show. The
+        // recorder evaluates it on the live element and marks a blocked iframe as a placeholder, which
+        // isBlockedIframe checks before getting here. So trust the recorder.
         return false;
       }
       if (options.blockClass !== undefined && probe.classList.contains(options.blockClass)) {

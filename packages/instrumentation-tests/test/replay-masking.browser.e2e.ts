@@ -298,6 +298,22 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         await page.close();
       });
 
+      it('a contextual unblockSelector keeps the iframe recorded, with no guard violation (#123)', async () => {
+        await open();
+        await mountFrames({ id: 'a', n: 1 }, { id: 'b', n: 3 });
+        await start(mode, { unblockSelector: '#mount > iframe#a' }); // matches only the first frame
+        await settle(400);
+        await pokeFrame('a', 'CTX');
+        await settle();
+        const events = await dump();
+        expect(events).toContain('CONTROL_FRAME1'); // the iframe's document IS recorded
+        expect(events).not.toContain('CONTROL_FRAME3'); // the non-matching neighbour stays blocked
+        expect(leaks(events)).toEqual([]); // and still masked by the rules
+        const errors = await page.evaluate(() => (window as unknown as { __rm: Rm }).__rm.errors);
+        expect(errors).toEqual([]);
+        await page.close();
+      });
+
       it('shadow DOM: host removed and re-added, nested roots, host moved, shadow attached while detached', async () => {
         await open();
         await page.evaluate(() => {
