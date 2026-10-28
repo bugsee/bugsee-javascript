@@ -2,6 +2,7 @@ import { TraceName } from '@bugsee/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   ELECTRON_MAIN_HEAP_TRACES,
+  ELECTRON_PER_WINDOW_TRACES,
   ELECTRON_RENDERER_HOST_OWNED_TRACES,
   ELECTRON_RENDERER_NEVER_WRITES,
 } from './trace-tables';
@@ -27,5 +28,33 @@ describe('Electron trace tables', () => {
   });
   it('the pre-handshake default is the same set', () => {
     expect([...ELECTRON_RENDERER_HOST_OWNED_TRACES]).toEqual([...ELECTRON_RENDERER_NEVER_WRITES]);
+  });
+
+  it('the per-window rows (spec "Several windows in one session"), none of them device-level or main-owned', () => {
+    expect([...ELECTRON_PER_WINDOW_TRACES].sort()).toEqual([
+      'app_state',
+      'fps',
+      'main_thread_idle_ms',
+      'main_thread_lag_ms',
+      'orientation',
+      'route',
+      'storage_estimate',
+      'url',
+      'user_idle_state',
+      'view',
+    ]);
+    for (const deviceLevel of [
+      'battery',
+      'charging',
+      'connection',
+      'ram_system_advertised',
+      'battery_charging_time_s',
+      'battery_discharging_time_s',
+    ]) {
+      expect(ELECTRON_PER_WINDOW_TRACES).not.toContain(deviceLevel);
+    }
+    for (const owned of ELECTRON_RENDERER_HOST_OWNED_TRACES) {
+      expect(ELECTRON_PER_WINDOW_TRACES).not.toContain(owned);
+    }
   });
 });

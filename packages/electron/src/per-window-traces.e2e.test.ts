@@ -1,0 +1,402 @@
+// Acceptance test for the per-window rule (spec platforms/javascript.md "Several windows in one session", C26): one session,
+// SEVERAL Electron windows, and only the KEY window writes the per-window traces (`url`, `orientation`, `app_state`, `fps`, ...).
+// Before the rule every window wrote its own `url`, so the windows' addresses interleaved into main's one `traces.system`.
+//
+// Nothing on the path that matters is faked: the REAL @bugsee/node main (launchMain, with the real application tracker
+// resolving the key window from the fake Electron `BrowserWindow`), three REAL renderers (launchRenderer -> the real
+// @bugsee/browser launch and its real `url` producer over an injected window with a working `history.pushState`), the real
+// preload bridge, the real handshake and key-window control messages, and the bundle main uploads. Only Electron itself
+// (IPC bus, windows) and the page's window are fakes. Headless by construction: no Electron, no browser, no display.
+import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import { createMemoryCaptureStore } from '@bugsee/core';
+import { type NodeRuntime, realSystemProbe } from '@bugsee/node';
+import { strFromU8, unzipSync } from '@bugsee/util';
+import { describe, expect, it, vi } from 'vitest';
+import { launchMain } from './launch-main';
+import { launchRenderer } from './launch-renderer';
+import type { IpcMainControlEventLike, IpcMainControlListener } from './main-control';
+import { type BugseeElectronBridge, registerBugseePreload } from './preload-bridge';
+
+const jsonBody = (obj: unknown): Uint8Array => new Uint8Array(Buffer.from(JSON.stringify(obj)));
+
+function recordingTransport() {
+  const puts: Uint8Array[] = [];
+  const fn = vi.fn<HttpTransport>(async (url: string, options: HttpRequestOptions = {}) => {
+    if (url.endsWith('/v2/sessions')) {
+      return { status: 200, headers: {}, body: jsonBody({ access_token: 'access' }) };
+    }
+    if (url.endsWith('/v2/issues')) {
+      return {
+        status: 200,
+        headers: {},
+        body: jsonBody({ endpoint: 'https://s3.test/put', issueId: 'i1', recordingId: 'r1' }),
+      };
+    }
+    if (url === 'https://s3.test/put') {
+      puts.push(options.body as Uint8Array);
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    }
+    return { status: 200, headers: {}, body: new Uint8Array() } satisfies HttpResponse;
+  });
+  return { fn, puts };
+}
+
+const fakeProcess = (): NodeRuntime => {
+  const proc = { on: () => proc, off: () => proc, exit: () => {} } as unknown as NodeRuntime;
+  return proc;
+};
+
+type L = (...a: unknown[]) => void;
+class Emitter {
+  table = new Map<string, L[]>();
+  on = vi.fn((e: string, l: L) => {
+    this.table.set(e, [...(this.table.get(e) ?? []), l]);
+  });
+  removeListener = vi.fn((e: string, l: L) => {
+    this.table.set(
+      e,
+      (this.table.get(e) ?? []).filter((x) => x !== l),
+    );
+  });
+  emit(e: string, ...a: unknown[]) {
+    for (const l of [...(this.table.get(e) ?? [])]) l({}, ...a);
+  }
+  total() {
+    return [...this.table.values()].reduce((n, l) => n + l.length, 0);
+  }
+}
+
+/** Fake Electron: the IPC bus plus the windows. Each window owns the webContents its renderer talks through. */
+function fakeElectron() {
+  const mainListeners = new Map<string, IpcMainControlListener[]>();
+  const ipcMain = {
+    on(channel: string, listener: IpcMainControlListener): void {
+      mainListeners.set(channel, [...(mainListeners.get(channel) ?? []), listener]);
+    },
+    removeListener(channel: string, listener: IpcMainControlListener): void {
+      mainListeners.set(
+        channel,
+        (mainListeners.get(channel) ?? []).filter((l) => l !== listener),
+      );
+    },
+  };
+  const app = new Emitter();
+  const windows: Window[] = [];
+  let focused: Window | null = null;
+
+  class Window extends Emitter {
+    gone = false;
+    contentsGone = false;
+    visible = true;
+    readonly contentsListeners = new Map<string, Array<() => void>>();
+    readonly webContents: {
+      id: number;
+      send(channel: string, raw: string): void;
+      once(event: string, listener: () => void): void;
+      isDestroyed(): boolean;
+    };
+    readonly rendererListeners = new Map<
+      string,
+      Array<(event: unknown, ...args: unknown[]) => void>
+    >();
+    constructor(readonly id: number) {
+      super();
+      this.webContents = {
+        id: id + 100,
+        send: (channel, raw) => {
+          for (const l of this.rendererListeners.get(channel) ?? []) l({}, raw);
+        },
+        once: (event, listener) => {
+          this.contentsListeners.set(event, [
+            ...(this.contentsListeners.get(event) ?? []),
+            listener,
+          ]);
+        },
+        isDestroyed: () => this.contentsGone,
+      };
+    }
+    isDestroyed = () => this.gone;
+    isVisible = () => this.visible;
+    getBounds = () => ({ x: 0, y: 0, width: 800, height: 600 });
+    /** The user focuses this window (the previous one blurs first, as Electron does). */
+    focus(): void {
+      focused?.emit('blur');
+      focused = this;
+      this.emit('focus');
+    }
+    /**
+     * Real Electron 44 order when a window closes: the webContents fires `destroyed` FIRST, while the window is still
+     * listed, not destroyed and (if it was) still the focused one; only then does the window fire `closed`.
+     */
+    close(): void {
+      this.contentsGone = true;
+      for (const l of this.contentsListeners.get('destroyed') ?? []) l();
+      this.gone = true;
+      if (focused === this) focused = null;
+      this.emit('closed');
+    }
+  }
+
+  const BrowserWindow = {
+    // REAL Electron 44.9.3 does not list windows in creation order: newest first (5,4,3,2,1), and unordered once a window
+    // has been closed and another created (5,4,2,6,1). `listing.order` lets a test pick the shape.
+    getAllWindows: () => listing.order(windows.filter((w) => !w.gone)),
+    getFocusedWindow: () => focused,
+    fromWebContents: (contents: unknown) =>
+      windows.find((w) => (w.webContents as unknown) === contents) ?? null,
+  };
+
+  const listing = { order: (ws: Window[]): Window[] => [...ws].reverse() };
+  function openWindow() {
+    const win = new Window(windows.length + 1);
+    windows.push(win);
+    app.emit('browser-window-created', win);
+    const ipcRenderer = {
+      send(channel: string, ...args: unknown[]): void {
+        const event: IpcMainControlEventLike = { sender: win.webContents };
+        for (const l of mainListeners.get(channel) ?? []) l(event, ...args);
+      },
+      on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): void {
+        win.rendererListeners.set(channel, [
+          ...(win.rendererListeners.get(channel) ?? []),
+          listener,
+        ]);
+      },
+    };
+    return { win, ipcRenderer };
+  }
+  return { ipcMain, app, BrowserWindow, openWindow, listing };
+}
+
+/** A page's window: a working location + history.pushState, so the real `url` producer sees real navigations. */
+function pageWindow(href: string) {
+  const listeners = new Map<string, Set<(event: Event) => void>>();
+  const location = { pathname: new URL(href).pathname, href };
+  const history = {
+    pushState(_s: unknown, _t: string, next: string) {
+      const u = new URL(next, location.href);
+      location.href = u.href;
+      location.pathname = u.pathname;
+    },
+    replaceState() {},
+  };
+  const win = {
+    navigator: { onLine: true },
+    performance: { now: () => 1 },
+    screen: { width: 800, height: 600 },
+    devicePixelRatio: 1,
+    location,
+    history,
+    addEventListener(type: string, listener: (event: Event) => void) {
+      listeners.set(type, (listeners.get(type) ?? new Set()).add(listener));
+    },
+    removeEventListener(type: string, listener: (event: Event) => void) {
+      listeners.get(type)?.delete(listener);
+    },
+  };
+  return { win, navigate: (to: string) => history.pushState({}, '', to) };
+}
+
+async function bootWindow(
+  electron: ReturnType<typeof fakeElectron>,
+  href: string,
+  opened = electron.openWindow(),
+) {
+  const { win, ipcRenderer } = opened;
+  let bridge: BugseeElectronBridge | undefined;
+  registerBugseePreload({
+    contextBridge: { exposeInMainWorld: (_k, api) => (bridge = api as BugseeElectronBridge) },
+    ipcRenderer,
+  });
+  // Each call stands for a SEPARATE renderer page: the one-instance-per-page slot is per JS realm.
+  delete (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('bugsee.electron.renderer')];
+  const page = pageWindow(href);
+  await launchRenderer('tok', {
+    bridge,
+    carrier: {},
+    window: page.win as never,
+    replay: false,
+    captureNetwork: false,
+    onError: vi.fn(),
+  } as never);
+  return { win, navigate: page.navigate };
+}
+
+const urlsIn = (zip: Uint8Array): string[] =>
+  (
+    JSON.parse(strFromU8(unzipSync(zip)['traces.system.json'] as Uint8Array)) as Array<{
+      name: string;
+      value: unknown;
+    }>
+  )
+    .filter((t) => t.name === 'url')
+    .map((t) => t.value as string);
+
+function launch(electron: ReturnType<typeof fakeElectron>) {
+  const { fn: transport, puts } = recordingTransport();
+  const onError = vi.fn();
+  const client = launchMain('tok', {
+    ipcMain: electron.ipcMain,
+    app: electron.app as never,
+    BrowserWindow: electron.BrowserWindow,
+    transport,
+    captureStore: createMemoryCaptureStore({ maxRecordingTimeMs: Number.POSITIVE_INFINITY }),
+    captureNetwork: false,
+    capturedDataStore: 'memory',
+    detectHangs: false,
+    process: fakeProcess(),
+    systemProbe: realSystemProbe,
+    onError,
+  });
+  return { client, puts, onError };
+}
+
+describe('per-window traces: only the key window writes them (C26)', () => {
+  it('three windows write ONE interleave-free `url` curve that follows the key window', async () => {
+    const electron = fakeElectron();
+    const { client, puts, onError } = launch(electron);
+    const w1 = await bootWindow(electron, 'https://app.test/one');
+    const w2 = await bootWindow(electron, 'https://app.test/two');
+    const w3 = await bootWindow(electron, 'https://app.test/three');
+
+    // nothing focused yet: the key window is the first created, so only its address is in the session
+    w2.navigate('/two/b'); // a non-key window navigates: nothing written
+    w3.navigate('/three/b');
+    // the user focuses window 2: its CURRENT address is re-recorded at the switch (it navigated while it was not key)
+    w2.win.focus();
+    w2.navigate('/two/c'); // now key: written
+    w1.navigate('/one/b'); // window 1 lost the key: nothing
+    // focus moves to window 3 (re-recorded), then back to window 1 (its held address, which moved while it was silent)
+    w3.win.focus();
+    w1.win.focus();
+
+    await client.logException(new Error('report'));
+    expect(puts).toHaveLength(1);
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual([
+      'https://app.test/one', // window 1 is the key at start
+      'https://app.test/two/b', // window 2 gains the key: its held address, as it is NOW
+      'https://app.test/two/c', // and follows it while it is key
+      'https://app.test/three/b', // window 3 gains the key
+      'https://app.test/one/b', // window 1 gains it back
+    ]);
+    expect(onError).not.toHaveBeenCalled();
+    await client.stop();
+  });
+
+  it("closing the key window hands the key on without a spurious all-key moment: only the next window's address is re-recorded", async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const w1 = await bootWindow(electron, 'https://app.test/one');
+    await bootWindow(electron, 'https://app.test/two');
+    await bootWindow(electron, 'https://app.test/three');
+    await bootWindow(electron, 'https://app.test/four');
+    w1.win.focus();
+    w1.win.close(); // destroyed fires before closed: nobody may be told "key" in between
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one', 'https://app.test/two']);
+    await client.stop();
+  });
+
+  it('a key window whose renderer process crashes (render-process-gone) hands the key on the same way', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const w1 = await bootWindow(electron, 'https://app.test/one');
+    await bootWindow(electron, 'https://app.test/two');
+    await bootWindow(electron, 'https://app.test/three');
+    w1.win.focus();
+    electron.app.emit('render-process-gone', w1.win.webContents, { reason: 'crashed' });
+    w1.win.close();
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[puts.length - 1] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/two',
+    ]);
+    await client.stop();
+  });
+
+  it('with nothing focused, windows are keyed by LOWEST id whatever order Electron lists them in (newest-first, and unordered after a close)', async () => {
+    for (const order of [
+      (ws: Array<{ id: number }>) => [...ws].reverse(),
+      (ws: Array<{ id: number }>) => [...ws].sort((a, b) => (b.id % 3) - (a.id % 3) || b.id - a.id), // some scrambled order
+    ]) {
+      const electron = fakeElectron();
+      electron.listing.order = order as never;
+      const { client, puts } = launch(electron);
+      for (const n of ['one', 'two', 'three', 'four', 'five']) {
+        await bootWindow(electron, `https://app.test/${n}`);
+      }
+      await client.logException(new Error('report'));
+      expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one']);
+      await client.stop();
+    }
+  });
+
+  it('STARTUP with the SDKs loading in another order than the window ids: no stray value from a window that is not the lowest id', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three'].map((n) => `https://app.test/${n}`);
+    for (const i of [2, 1, 0]) await bootWindow(electron, hrefs[i] as string, opened[i]);
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one']);
+    await client.stop();
+  });
+
+  it("closing the key window: the next key is the TRACKER's (lowest id), not the earliest renderer to say hello, and no other value appears in between", async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3, 4].map(() => electron.openWindow()); // ids 1..4
+    // the SDKs start in a different order than the window ids (window 1 first, then 4, 3, 2): the earliest renderer left after
+    // window 1 goes is window 4's, but the tracker's next key is window 2
+    const hrefs = ['one', 'two', 'three', 'four'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 3, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    (booted[0] as { win: { focus(): void } }).win.focus();
+    (booted[0] as { win: { close(): void } }).win.close();
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual(['https://app.test/one', 'https://app.test/two']);
+    await client.stop();
+  });
+
+  it('closing the key window and then focusing another window: still no value from a window that was never key', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3, 4].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three', 'four'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 3, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    (booted[0] as { win: { focus(): void } }).win.focus();
+    (booted[0] as { win: { close(): void } }).win.close();
+    (booted[3] as { win: { focus(): void } }).win.focus();
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[0] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/two',
+      'https://app.test/four',
+    ]);
+    await client.stop();
+  });
+
+  it('a key window whose renderer crashes and then reloads: the others never flash in, and the reloaded window writes again', async () => {
+    const electron = fakeElectron();
+    const { client, puts } = launch(electron);
+    const opened = [1, 2, 3].map(() => electron.openWindow());
+    const hrefs = ['one', 'two', 'three'].map((n) => `https://app.test/${n}`);
+    const booted = [] as Awaited<ReturnType<typeof bootWindow>>[];
+    for (const i of [0, 2, 1])
+      booted[i] = await bootWindow(electron, hrefs[i] as string, opened[i]);
+    const w1 = booted[0] as { win: { focus(): void; webContents: unknown } };
+    w1.win.focus();
+    electron.app.emit('render-process-gone', w1.win.webContents, { reason: 'crashed' });
+    // the window reloads: a NEW renderer page says hello through the same webContents
+    await bootWindow(electron, 'https://app.test/one-reloaded', opened[0]);
+    await client.logException(new Error('report'));
+    expect(urlsIn(puts[puts.length - 1] as Uint8Array)).toEqual([
+      'https://app.test/one',
+      'https://app.test/one-reloaded',
+    ]);
+    await client.stop();
+  });
+});

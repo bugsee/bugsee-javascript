@@ -10,6 +10,7 @@ function harness(over: Partial<Parameters<typeof createRendererControlHandler>[0
     flush: vi.fn(),
     onBlackout: vi.fn(),
     onHostOwned: vi.fn(),
+    onKeyWindow: vi.fn(),
   };
   const handle = createRendererControlHandler({ ...calls, ...over });
   return { ...calls, handle };
@@ -78,6 +79,44 @@ describe('createRendererControlHandler', () => {
     expect(() =>
       handle(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['a'] })),
     ).not.toThrow();
+  });
+
+  it('session → onKeyWindow(kw), AFTER onHostOwned and BEFORE onSession', () => {
+    const order: string[] = [];
+    const h = harness({
+      onHostOwned: () => order.push('ho'),
+      onKeyWindow: (k) => order.push(`kw:${k}`),
+      onSession: () => order.push('session'),
+    });
+    h.handle(
+      encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [], keyWindow: false }),
+    );
+    expect(order).toEqual(['ho', 'kw:false', 'session']);
+  });
+
+  it('a session reply that says nothing about the key window means this renderer IS the key one (a main that cannot resolve windows)', () => {
+    const h = harness();
+    h.handle(encodeControl({ command: 'session', sessionId: 's' }));
+    expect(h.onKeyWindow).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it('window-key → onKeyWindow(true / false) from the flag; a missing flag is NOT key', () => {
+    const h = harness();
+    h.handle(encodeControl({ command: 'window-key', keyWindow: true }));
+    expect(h.onKeyWindow).toHaveBeenLastCalledWith(true);
+    h.handle(encodeControl({ command: 'window-key', keyWindow: false }));
+    expect(h.onKeyWindow).toHaveBeenLastCalledWith(false);
+    h.handle(encodeControl({ command: 'window-key' }));
+    expect(h.onKeyWindow).toHaveBeenLastCalledWith(false);
+    expect(h.onKeyWindow).toHaveBeenCalledTimes(3);
+  });
+
+  it('key-window messages with no onKeyWindow handler are ignored', () => {
+    const handle = createRendererControlHandler({ setPaused: vi.fn(), stop: vi.fn() });
+    expect(() => {
+      handle(encodeControl({ command: 'window-key', keyWindow: true }));
+      handle(encodeControl({ command: 'session', sessionId: 's' }));
+    }).not.toThrow();
   });
 
   it('session without a sessionId does not call onSession', () => {

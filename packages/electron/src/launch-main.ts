@@ -105,7 +105,11 @@ export interface ElectronAppLike {
 import type { CrashpadSessionMarker } from '@bugsee/core';
 import { TraceName } from '@bugsee/protocol';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
-import { createElectronMainControl, type IpcMainControlLike } from './main-control';
+import {
+  type ControlSenderLike,
+  createElectronMainControl,
+  type IpcMainControlLike,
+} from './main-control';
 import { createElectronMainReceiver, type IpcMainLike } from './main-receiver';
 import { createElectronNativeCrashSource, createNodeCrashDumpFs } from './native-crash-source';
 import {
@@ -217,6 +221,35 @@ const chainAppIdentity =
     };
   };
 
+/**
+ * The id of the window that owns a renderer's webContents: Electron's `BrowserWindow.fromWebContents`, else the contents' own
+ * `getOwnerBrowserWindow()` (a BrowserView / WebContentsView). Undefined resolver: this `BrowserWindow` cannot say, so the
+ * key-window rule is off. A resolver answers undefined for a webContents with no owning window or no numeric id; the control
+ * manager then treats that renderer as key (an unplaceable renderer is never silenced).
+ */
+function ownerResolver(
+  BrowserWindow: BrowserWindowSource | undefined,
+  onError: ((error: unknown) => void) | undefined,
+): ((sender: ControlSenderLike) => number | undefined) | undefined {
+  let resolve: ((contents: unknown) => unknown) | undefined;
+  try {
+    resolve = BrowserWindow?.fromWebContents?.bind(BrowserWindow);
+  } catch (error) {
+    reportGuarded(onError, error); // a host object that throws on the property read: the rule is simply off
+    return undefined;
+  }
+  if (typeof resolve !== 'function') return undefined;
+  const fromWebContents = resolve;
+  const idOf = (win: unknown): number | undefined => {
+    const id = (win as { id?: unknown } | null | undefined)?.id;
+    return typeof id === 'number' && Number.isFinite(id) ? id : undefined;
+  };
+  return (sender) =>
+    idOf(fromWebContents(sender)) ??
+    // a BrowserView / WebContentsView may not resolve through the static lookup: ask the contents for its owner window
+    idOf((sender as { getOwnerBrowserWindow?: () => unknown }).getOwnerBrowserWindow?.());
+}
+
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
   const {
@@ -311,9 +344,12 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // ONE shared application tracker serves two jobs: the `window_*`/`renderer_*` EVENTS (gated by `captureWindowEvents`) and
   // the KEY window (focused, else most recently focused, else first created) that decides which display is `displays` id 0
   // and re-reads the list on focus/move. The key-window job needs the tracker whenever `screen` is injected, independent
-  // of `captureWindowEvents` (which only governs the events below).
+  // of `captureWindowEvents` (which only governs the events below). The same key window decides which RENDERER writes the
+  // per-window traces (below), which needs the tracker whenever `BrowserWindow` is injected.
   const appTracker =
-    app !== undefined && !repeat && (windowEvents || screen !== undefined)
+    app !== undefined &&
+    !repeat &&
+    (windowEvents || screen !== undefined || BrowserWindow !== undefined)
       ? electronApplicationTrackerFor(
           { app, ...(BrowserWindow !== undefined ? { BrowserWindow } : {}) },
           nodeOptions.onError,
@@ -536,11 +572,35 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     };
   }
 
-  // The DOWNstream control channel: reply to each renderer's `hello` with this session id (the handshake)
-  // and propagate pause/resume/flush/stop to every renderer.
+  // The KEY window (spec "Several windows in one session"): only its renderer writes the per-window traces (`url`, ...), so
+  // every `session` reply states whether a renderer is the key one and `keyWindowChanged()` tells the renderers whose answer
+  // moves. It needs the application tracker (the key rule) and `BrowserWindow.fromWebContents` (which window owns a renderer);
+  // without either every renderer stays key, as before.
+  const ownerOf =
+    appTracker !== undefined ? ownerResolver(BrowserWindow, nodeOptions.onError) : undefined;
+  let known: ReadonlySet<number> | null = null;
+  const keyWindow =
+    ownerOf === undefined
+      ? undefined
+      : {
+          currentId: () => appTracker?.keyWindowId(),
+          // The window list is read ONCE per evaluation (not once per renderer): `known` is that snapshot.
+          beginEvaluation: () => {
+            known = appTracker?.windowIds() ?? null;
+          },
+          // An owner the BrowserWindow list does not contain (a renderer hosted in a `BaseWindow`: `fromWebContents` and
+          // `getOwnerBrowserWindow()` answer its id, `getAllWindows()` omits it and its creation fires no
+          // `browser-window-created`) cannot be compared with the key window: unplaceable, so key.
+          ownerId: (sender: ControlSenderLike) => {
+            const id = ownerOf(sender);
+            return id !== undefined && known?.has(id) ? id : undefined;
+          },
+        };
   const control = createElectronMainControl({
     ipcMain,
     sessionId: internals.api.sessionId,
+    ...(keyWindow !== undefined ? { keyWindow } : {}),
+    ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
     // A renderer that says hello mid-blackout is told in its session reply and starts dark.
     isBlackout: () => blackout.isActive(),
     // What main actually writes (see `writesTraces`): every renderer is told in its handshake reply and must not write it.
@@ -554,6 +614,11 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ],
   });
   control.start();
+  // Arm the key-window stage and forward every change to the renderers whose answer moved (released in the wrapped stop).
+  const offKeyWindow =
+    keyWindow === undefined
+      ? undefined
+      : appTracker?.on('keyWindow', () => control.keyWindowChanged());
   // Forward the main client's blackout to EVERY renderer. Without this a blackout applied in main only
   // blacked out main's own capture while each renderer kept recording its DOM replay, input and
   // breadcrumbs into the same session.
@@ -591,6 +656,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     try {
       tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
+      offKeyWindow?.();
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture

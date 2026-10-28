@@ -23,6 +23,7 @@ import { createElectronRendererCaptureStore } from './renderer-capture-store';
 import { createRendererControlHandler } from './renderer-control';
 import { createElectronRendererReportPipeline } from './renderer-report-pipeline';
 import {
+  ELECTRON_PER_WINDOW_TRACES,
   ELECTRON_RENDERER_HOST_OWNED_TRACES,
   ELECTRON_RENDERER_NEVER_WRITES,
 } from './trace-tables';
@@ -153,7 +154,13 @@ async function launchRendererOnce(
   // The trace names main writes (so this renderer must not): a LIVE set the browser launch's trace provider consults for
   // every value. It starts as the built-in table (fail closed: nothing main owns leaks before the handshake) and the
   // handshake reply REPLACES it with what main actually declares.
-  const hostOwned = createTraceSuppression({ host: ELECTRON_RENDERER_HOST_OWNED_TRACES });
+  // A second layer holds the PER-WINDOW names while this window is not the key window (spec "Several windows in one
+  // session"): fail closed again, so a window writes none of them until the handshake says it is the key one; a held
+  // value (`url`, ...) it saw meanwhile is re-recorded by the provider at that moment.
+  const hostOwned = createTraceSuppression({
+    host: ELECTRON_RENDERER_HOST_OWNED_TRACES,
+    window: ELECTRON_PER_WINDOW_TRACES,
+  });
   const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
@@ -258,6 +265,12 @@ async function launchRendererOnce(
         if (live()) {
           // main's declaration REPLACES the heap part, but a renderer never writes displays/capture, whatever main declares
           hostOwned.setLayer('host', [...ELECTRON_RENDERER_NEVER_WRITES, ...names]);
+        }
+      },
+      // the key-window rule: the session reply, then main's `window-key` whenever this window gains or loses the key
+      onKeyWindow: (isKey: boolean): void => {
+        if (live()) {
+          hostOwned.setLayer('window', isKey ? [] : ELECTRON_PER_WINDOW_TRACES);
         }
       },
       onSession: (id: string): void => {

@@ -4,6 +4,7 @@
 // to every registered renderer (reusing the WebView control kinds). Sends are best-effort: a destroyed
 // webContents throws, so each send is guarded and never breaks the broadcast to the others. `electron` is
 // taken as plain args (no dependency; fully testable).
+import { reportGuarded } from '@bugsee/util';
 import { BUGSEE_CONTROL_CHANNEL, BUGSEE_HELLO_CHANNEL } from './preload-bridge';
 import { encodeControl, isHello } from './protocol';
 
@@ -58,6 +59,23 @@ export interface ElectronMainControlOptions {
    * the reply declares nothing and a renderer keeps its built-in default (an older main behaves the same).
    */
   hostOwnedTraces?: readonly string[];
+  /**
+   * Resolves the session's KEY window (spec "Several windows in one session"): `currentId` is the key window's id (undefined:
+   * there is none; null: it CANNOT SAY, a failed window-list read, which fails open like a failing probe) and `ownerId` the id of the window that owns a renderer's webContents (undefined: it has none). When given, every
+   * `session` reply states whether the renderer is key (`kw`) and {@link ElectronMainControl.keyWindowChanged} tells the
+   * renderers whose answer changed. A renderer whose window cannot be resolved (`ownerId` undefined) and a probe that
+   * throws (reported to `onError`) both fail OPEN: an unknown key never silences a window. Without it no `kw` is stated and every renderer stays key.
+   */
+  keyWindow?: {
+    currentId(): number | undefined | null;
+    /** Called once at the start of every evaluation (a probe may read its window list once for all the owner lookups). */
+    beginEvaluation?(): void;
+    ownerId(sender: ControlSenderLike): number | undefined;
+  };
+  /** How long the key is held on a window whose renderer left while the tracker still calls it key (default 3000 ms). */
+  holdMs?: number;
+  /** Internal-error sink (a failing key-window probe). */
+  onError?: (error: unknown) => void;
 }
 
 export interface ElectronMainControl {
@@ -71,6 +89,11 @@ export interface ElectronMainControl {
   blackoutStart(): void;
   /** Tell every renderer the owner's blackout ended. */
   blackoutEnd(): void;
+  /**
+   * The key window may have changed: re-evaluate every registered renderer and send `window-key` to those whose answer
+   * differs from what they were last told. A no-op without the `keyWindow` option.
+   */
+  keyWindowChanged(): void;
   /**
    * A renderer process died (`render-process-gone`): forget the webContents with this id. If it reloads, its new
    * frame's `hello` re-registers it and re-sends the session reply, so a crashed-then-reloaded window rejoins.
@@ -116,6 +139,86 @@ export function createElectronMainControl(
   /** Drop a renderer that is gone. Idempotent — `destroyed` and a later `isDestroyed()` both land here. */
   const forget = (sender: ControlSenderLike): void => {
     renderers.delete(sender);
+  };
+
+  // The key-window flag each renderer was LAST told (reply or `window-key`): a change is sent only to those it changed for.
+  // (a WeakMap: a forgotten webContents is never pinned by it)
+  const sentKey = new WeakMap<ControlSenderLike, boolean>();
+  // The last key window that hosted an SDK renderer: a focused window with NO Bugsee in it must not silence every
+  // instrumented window, so the key falls back to this one while it still hosts a renderer.
+  let lastParticipatingKey: number | undefined;
+  // When the tracker's key window is the one whose renderer just left, the key is HELD there (nobody writes) until the tracker
+  // moves it (its `closed` follows the webContents `destroyed` by a tick) or this expires: a crash with no reload never gets
+  // a `closed`, and must not silence every other window for ever.
+  const HOLD_MS = options.holdMs ?? 3000;
+  let heldSince: number | undefined;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** No window id equals this: a held key makes every placed renderer non-key. */
+  const HELD = -1;
+  /**
+   * ONE evaluation of "which renderer is key", from a single snapshot (the key is read once, each renderer's owner window
+   * once, and the probe may read the window list once for all of them). Returns `isKey(sender)`.
+   *
+   * The key window is the tracker's when it hosts a registered renderer; else the last window that did (while it still does);
+   * else, when the tracker's key is still the window whose renderer just left (a closing window's webContents `destroyed`
+   * fires before its `closed`; a crash), or no window has hosted a renderer yet (startup: the key window's SDK is still
+   * loading), the key is HELD there for a short while so nobody flashes in and the tracker's own
+   * next choice wins when it publishes it; else the window of the EARLIEST registered renderer. `undefined`: no key window
+   * at all. `null`: the probe cannot say (everyone is key). A renderer whose window cannot be resolved is never silenced
+   * (key). A failing probe is reported and fails OPEN.
+   */
+  const evaluate = (
+    probe: NonNullable<ElectronMainControlOptions['keyWindow']>,
+  ): ((sender: ControlSenderLike) => boolean) => {
+    try {
+      probe.beginEvaluation?.();
+      const owners = new Map<ControlSenderLike, number | undefined>();
+      for (const r of renderers) if (r.isDestroyed?.() !== true) owners.set(r, probe.ownerId(r));
+      const hosts = (id: number | undefined): boolean =>
+        id !== undefined && [...owners.values()].includes(id);
+      const current = probe.currentId();
+      let key: number | undefined | null = current;
+      if (current !== null && current !== undefined) {
+        const earliest = (): number | null => {
+          heldSince = undefined;
+          lastParticipatingKey = [...owners.values()].find((id) => id !== undefined);
+          return lastParticipatingKey ?? null;
+        };
+        if (hosts(current)) {
+          lastParticipatingKey = current;
+          heldSince = undefined;
+        } else if (hosts(lastParticipatingKey)) {
+          key = lastParticipatingKey;
+        } else if (lastParticipatingKey === undefined || current === lastParticipatingKey) {
+          const now = Date.now();
+          heldSince ??= now;
+          if (now - heldSince < HOLD_MS) {
+            key = HELD;
+            // one timer, always aimed at THIS hold's expiry (an earlier hold's timer must not decide for a later one)
+            if (holdTimer !== undefined) clearTimeout(holdTimer);
+            holdTimer = setTimeout(
+              () => {
+                holdTimer = undefined;
+                rediffKey();
+              },
+              HOLD_MS - (now - heldSince) + 1,
+            );
+            (holdTimer as { unref?: () => void }).unref?.();
+          } else {
+            key = earliest();
+          }
+        } else {
+          key = earliest();
+        }
+      }
+      return (sender) => {
+        const owner = owners.has(sender) ? owners.get(sender) : probe.ownerId(sender);
+        return owner === undefined || key === null || owner === key;
+      };
+    } catch (error) {
+      reportGuarded(options.onError, error);
+      return () => true;
+    }
   };
 
   const broadcast = (
@@ -171,6 +274,7 @@ export function createElectronMainControl(
         const onDestroyed = (): void => {
           subscribed.delete(sender);
           forget(sender);
+          rediffKey(); // the key window's participating renderer may be the one that just went
         };
         // Tracked ONLY when it can actually be subscribed (`once` present): otherwise `destroyed` never fires to
         // drop the entry and the map would pin the sender until stop().
@@ -180,6 +284,11 @@ export function createElectronMainControl(
         }
       }
     }
+    // Whether this renderer is the key window's: stated (and remembered, so a later change is diffed against it) only when
+    // main can resolve windows at all.
+    const probe = options.keyWindow;
+    const keyWindow = probe === undefined ? undefined : evaluate(probe)(sender);
+    if (keyWindow !== undefined) sentKey.set(sender, keyWindow);
     // Reply with the owner's session id — always, so a reloaded renderer re-learns the session.
     sendTo(
       sender,
@@ -189,8 +298,28 @@ export function createElectronMainControl(
         // ALWAYS stated: a probe-less owner says `false` instead of leaving the renderer to guess.
         blackout: options.isBlackout !== undefined ? readBlackout(options.isBlackout) : false,
         ...(declaredOwned !== undefined ? { hostOwnedTraces: declaredOwned } : {}),
+        ...(keyWindow !== undefined ? { keyWindow } : {}),
       }),
     );
+    // A new renderer can change who the key window's participating renderer is (a window that took focus before its SDK
+    // started): re-evaluate the others now, not at the next focus change. The sender's own flag is already recorded.
+    if (probe !== undefined) rediffKey();
+  };
+
+  /** Re-evaluate every registered renderer and tell those whose key flag differs from what they were last told. */
+  const rediffKey = (): void => {
+    const probe = options.keyWindow;
+    if (probe === undefined) return;
+    // forget the destroyed first: they must not count as participating
+    for (const sender of [...renderers]) if (sender.isDestroyed?.() === true) forget(sender);
+    const isKey = evaluate(probe);
+    for (const sender of [...renderers]) {
+      if (isCrashed(sender)) continue; // no frame to address; its reload's hello re-states the flag
+      const now = isKey(sender);
+      if (sentKey.get(sender) === now) continue;
+      sentKey.set(sender, now);
+      sendTo(sender, encodeControl({ command: 'window-key', keyWindow: now }));
+    }
   };
 
   return {
@@ -198,6 +327,8 @@ export function createElectronMainControl(
       options.ipcMain.on(helloChannel, onHello);
     },
     stop(): void {
+      if (holdTimer !== undefined) clearTimeout(holdTimer);
+      holdTimer = undefined;
       broadcast('stop');
       options.ipcMain.removeListener(helloChannel, onHello);
       for (const [sender, onDestroyed] of subscribed) {
@@ -224,12 +355,14 @@ export function createElectronMainControl(
     blackoutEnd(): void {
       broadcast('blackout-end');
     },
+    keyWindowChanged: rediffKey,
     rendererGone(id: number): void {
       for (const sender of [...renderers]) {
         if (sender.id === id) {
           forget(sender);
         }
       }
+      rediffKey();
     },
     get rendererCount(): number {
       return renderers.size;
