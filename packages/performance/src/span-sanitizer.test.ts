@@ -338,7 +338,7 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
 
   it('handles nested block comments', () => {
     // MySQL ends the comment at the first `*/`, Postgres at the second: the readings disagree, so cut.
-    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe('  ?');
+    expect(clean("/* outer /* inner */ it's */ SELECT * FROM t WHERE x = 'secretN'")).toBe(' ?');
     // ...and when nesting makes no difference the comment is simply dropped.
     expect(clean("/* a */ SELECT 'secretM' /* b */")).toBe('  SELECT ?  ');
     expect(clean("SELECT 1 /* a /* b */ 'secret")).toBe('SELECT ?  ?');
@@ -436,17 +436,18 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
   it('pins the known shape losses of the cross-dialect cut (safe side: no literal survives)', () => {
     expect(clean("SELECT data #> '{a}' FROM t WHERE id = 5")).toBe('SELECT data ?');
     expect(clean("SELECT * FROM #tmp WHERE id = 5 AND n = 'x'")).toBe('SELECT * FROM ?');
-    expect(clean("SELECT 1 /*+ IndexScan(t) */ FROM t WHERE a = 'x'")).toBe('SELECT ?   ?');
+    expect(clean("SELECT 1 /*+ IndexScan(t) */ FROM t WHERE a = 'x'")).toBe('SELECT ? ?');
   });
 
-  it('cuts at the first differing OUTPUT position; what is kept is a prefix of every reading own output', () => {
+  it('compares the readings by SOURCE position, so a suffix that only prints the same is cut', () => {
     // MySQL: `'a\'secretZ'` is one literal and `tail` an alias; Postgres/standard: `'a\'`, code `secretZ`, then an
     // unterminated literal. The readings print `?tail` and `?secretZ?`, so the cut is after the first `?`.
     expect(clean("SELECT 'a\\'secretZ'tail")).toBe('SELECT ??');
-    // Text that every reading prints as code stays, even though the readings map it to different input ranges
-    // (MySQL: the trailing word; Postgres: the one inside the quotes). Each kept character is part of each
-    // reading's own redacted output, so it discloses nothing any single reading would not.
-    expect(clean("SELECT 'a\\'PASSWORD'PASSWORD")).toBe('SELECT ?PASSWORD?');
+    // Here the readings print the SAME word, but it comes from different parts of the input (MySQL: the trailing
+    // word, where the first is literal content; Postgres: the first). Comparing printed text alone kept it.
+    expect(clean("SELECT 'a\\'PASSWORD'PASSWORD")).toBe('SELECT ??');
+    expect(clean("SELECT 'x\\'SECRET'SECRET FROM t")).toBe('SELECT ??');
+    expect(clean("SELECT 'a\\'hunter2'hunter2 FROM t WHERE id = 5")).toBe('SELECT ??');
   });
 
   it('redacts an exponent with underscore separators', () => {
@@ -454,10 +455,10 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
   });
 
   it('pins the exact output of truncated and minimal executable comments', () => {
-    expect(clean('/*!')).toBe(' ');
+    expect(clean('/*!')).toBe('?');
     expect(clean('/*M')).toBe(' ');
-    expect(clean('/*M!')).toBe(' ');
-    expect(clean('/*!12')).toBe(' ');
+    expect(clean('/*M!')).toBe('?');
+    expect(clean('/*!12')).toBe('?');
     expect(clean('a$$$')).toBe('a$$$');
   });
 });

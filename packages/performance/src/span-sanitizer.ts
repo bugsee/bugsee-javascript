@@ -143,9 +143,22 @@ function runEnd(sql: string, start: number, backslashEscapes: boolean): number {
   return -1;
 }
 
+/** One reading's output and, per output character, the source offset it came from. */
+interface Scan {
+  out: string;
+  pos: number[];
+}
+
 /** One pass over the statement under one dialect: comments dropped, literals replaced by `?`. */
-function scan(statement: string, dialect: Dialect): string {
+function scan(statement: string, dialect: Dialect): Scan {
   let out = '';
+  const pos: number[] = [];
+  // `pos` records the SOURCE offset every output character came from, so readings are compared by where in the
+  // input a character came from, not just by what it prints (see redactSqlLiterals).
+  const put = (text: string, at: number): void => {
+    out += text;
+    for (let j = 0; j < text.length; j++) pos.push(at + j);
+  };
   let i = 0;
   let executableDepth = 0;
   while (i < statement.length) {
@@ -160,7 +173,7 @@ function scan(statement: string, dialect: Dialect): string {
     ) {
       dialect.lineEnd.lastIndex = i;
       const eol = dialect.lineEnd.exec(statement)?.index ?? -1;
-      out += ' ';
+      put(' ', i);
       if (eol === -1) break;
       i = eol; // keep the terminator itself
     } else if (
@@ -173,13 +186,13 @@ function scan(statement: string, dialect: Dialect): string {
       i += statement[i + 2] === 'M' ? 4 : 3;
       while (statement[i] !== undefined && statement[i]! >= '0' && statement[i]! <= '9') i++;
       executableDepth++;
-      out += ' ';
+      put(' ', i);
     } else if (ch === '*' && next === '/' && executableDepth > 0) {
       executableDepth--;
       i += 2;
-      out += ' ';
+      put(' ', i);
     } else if (ch === '/' && next === '*') {
-      out += ' ';
+      put(' ', i);
       const close = blockCommentEnd(statement, i, dialect.nestedComments);
       if (close === -1) break;
       i = close;
@@ -191,7 +204,7 @@ function scan(statement: string, dialect: Dialect): string {
           /[eE]/.test(statement[i - 1] ?? '') &&
           !isWordChar(statement[i - 2]));
       const end = runEnd(statement, i, escapes);
-      out += '?';
+      put('?', i);
       if (end === -1) break;
       i = end;
     } else if (ch === '`') {
@@ -200,29 +213,29 @@ function scan(statement: string, dialect: Dialect): string {
       // the run is a real delimiter. A quote in the run is therefore ambiguous: fail closed.
       const run = end === -1 ? undefined : statement.slice(i, end);
       if (run === undefined || /['"$#]|--|\/\*/.test(run)) {
-        out += '?';
+        put('?', i);
         break;
       }
-      out += run;
+      put(run, i);
       i = end;
     } else if (ch === '$' && dialect.dollarQuotes && !isIdentifierTail(statement[i - 1])) {
       DOLLAR_TAG.lastIndex = i;
       const tag = DOLLAR_TAG.exec(statement)?.[0];
       if (tag === undefined) {
-        out += ch;
+        put(ch, i);
         i++;
         continue;
       }
       const close = statement.indexOf(tag, i + tag.length);
-      out += '?';
+      put('?', i);
       if (close === -1) break;
       i = close + tag.length;
     } else {
-      out += ch;
+      put(ch, i);
       i++;
     }
   }
-  return out;
+  return { out, pos };
 }
 
 /**
@@ -245,16 +258,24 @@ function scan(statement: string, dialect: Dialect): string {
  * a backslash-escaped quote, and MySQL-style `/*!` / `/*+` comments (so Oracle-style hints cut too).
  */
 export function redactSqlLiterals(statement: string): string {
-  const [first, ...rest] = DIALECTS.map((dialect) => scan(statement, dialect)) as [
-    string,
-    ...string[],
-  ];
-  let out = first;
+  const [first, ...rest] = DIALECTS.map((dialect) => scan(statement, dialect)) as [Scan, ...Scan[]];
+  let out = first.out;
+  let outPos = first.pos;
   for (const other of rest) {
-    if (other === out) continue;
+    // Compare by SOURCE position as well as by character: a suffix that prints the same but comes from a
+    // different part of the input is literal content in one reading and code in another (`'a\'X'X`).
     let k = 0;
-    while (k < out.length && k < other.length && out[k] === other[k]) k++;
+    while (
+      k < out.length &&
+      k < other.out.length &&
+      out[k] === other.out[k] &&
+      outPos[k] === other.pos[k]
+    ) {
+      k++;
+    }
+    if (k === out.length && k === other.out.length) continue;
     out = `${out.slice(0, k)}?`;
+    outPos = [...outPos.slice(0, k), -1];
   }
   // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
   return out.replace(
