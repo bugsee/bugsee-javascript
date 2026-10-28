@@ -14,16 +14,18 @@ describe('Electron trace tables', () => {
       TraceName.RAM_JS_HEAP_FREE,
     ]);
   });
-  it('a renderer never writes displays or capture', () => {
-    expect([...ELECTRON_RENDERER_NEVER_WRITES].sort()).toEqual(['capture', 'displays']);
-  });
-  it('the pre-handshake default is the never-written names plus main heap', () => {
-    expect([...ELECTRON_RENDERER_HOST_OWNED_TRACES].sort()).toEqual([
+  it('a renderer never writes displays, capture or the heap, whatever main declares', () => {
+    expect([...ELECTRON_RENDERER_NEVER_WRITES].sort()).toEqual([
       'capture',
       'displays',
       'ram_js_heap_free',
       'ram_js_heap_total',
       'ram_js_heap_used',
     ]);
+    for (const heap of ELECTRON_MAIN_HEAP_TRACES)
+      expect(ELECTRON_RENDERER_NEVER_WRITES).toContain(heap);
+  });
+  it('the pre-handshake default is the same set', () => {
+    expect([...ELECTRON_RENDERER_HOST_OWNED_TRACES]).toEqual([...ELECTRON_RENDERER_NEVER_WRITES]);
   });
 });

@@ -141,7 +141,7 @@ describe('launchRenderer', () => {
     expect(owned.has('ram_js_heap_total')).toBe(true);
     b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: ['connection'] }));
     expect(owned.has('connection')).toBe(true);
-    expect(owned.has('ram_js_heap_total')).toBe(false); // main does not write the heap: the renderer's own flows
+    expect(owned.has('ram_js_heap_total')).toBe(true); // a renderer never writes the heap, whatever main declares
     expect(owned.has('displays')).toBe(true); // main declared neither, and the renderer still never writes them
     expect(owned.has('capture')).toBe(true);
     b.drive(encodeControl({ command: 'session', sessionId: 's', hostOwnedTraces: [] }));

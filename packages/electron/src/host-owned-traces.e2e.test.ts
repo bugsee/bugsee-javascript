@@ -297,14 +297,20 @@ describe('host-owned traces: Electron renderers write none of the names main own
     await client.stop();
   });
 
-  it('without a heap producer main declares none, so the renderer heap flows (nothing else writes the name)', async () => {
+  it.each([
+    ['a custom producer set without a heap producer', { systemTraceProducers: [] }],
+    ['the legacy systemMetricsSampler', { systemMetricsSampler: () => [] }],
+    ['system traces off', { captureSystemTraces: false }],
+  ])('with %s main writes no heap, and two renderers sampling after the handshake still write none (never two heaps in one curve)', async (_n, over) => {
     const bus = fakeElectronBus();
-    const { client, puts } = mainWith(bus, { systemTraceProducers: [] });
-    const r = await bootRenderer(bus, 1, 0.77);
-    r.tick();
+    const { client, puts } = mainWith(bus, over);
+    const r1 = await bootRenderer(bus, 1, 0.77);
+    const r2 = await bootRenderer(bus, 2, 0.55);
+    r1.tick();
+    r2.tick();
     await client.logException(new Error('report'));
-    const heap = tracesOf(puts[0] as Uint8Array).filter((t) => t.name === 'ram_js_heap_total');
-    expect(heap.some((t) => t.value === 987_654_321)).toBe(true);
+    const heap = tracesOf(puts[0] as Uint8Array).filter((t) => t.name.startsWith('ram_js_heap_'));
+    expect(heap.some((t) => t.value === 987_654_321 || t.value === 1_234_567)).toBe(false);
     await client.stop();
   });
 });
