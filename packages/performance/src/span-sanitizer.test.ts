@@ -450,6 +450,13 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean("SELECT 'a\\'hunter2'hunter2 FROM t WHERE id = 5")).toBe('SELECT ??');
   });
 
+  it('redacts an exponent after a decimal point with no fraction digits', () => {
+    expect(clean('SELECT 1.e5 FROM t')).toBe('SELECT ? FROM t');
+    expect(clean('SELECT 123.e45, .5e3, 1.5e+3 FROM t')).toBe('SELECT ?, .?, ? FROM t');
+    expect(clean('SELECT 12.E-7')).toBe('SELECT ?');
+    expect(clean('SELECT 1..2, a1.e FROM t')).toBe('SELECT ?..?, a1.e FROM t');
+  });
+
   it('redacts an exponent with underscore separators', () => {
     expect(clean('SELECT 1e1_000')).toBe('SELECT ?');
   });

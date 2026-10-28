@@ -280,7 +280,7 @@ export function redactSqlLiterals(statement: string): string {
   }
   // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
   return out.replace(
-    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:e[+-]?\d[\d_]*)?)\b/gi,
+    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.(?:\d[\d_]*)?)?(?:e[+-]?\d[\d_]*)?)\b/gi,
     '?',
   );
 }
