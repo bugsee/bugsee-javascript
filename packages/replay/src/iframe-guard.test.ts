@@ -962,12 +962,13 @@ describe('legitimate iframe flows are not violations (#124)', () => {
     guard(snapshot(doc([outer])));
     const nested = el('iframe', {});
     guard(attach(outer.id, el('div', {}, [nested])));
-    guard(attach(nested.id, el('p', {}, [text('deep')])));
+    const deep = text('deep');
+    guard(attach(nested.id, el('p', {}, [deep])));
     guard(classChange(outer.id, 'private'));
     expect(guard(marker(nested.id))).toBeUndefined(); // still removed
     expect(onViolation).not.toHaveBeenCalled();
     // a real leak afterwards is still reported (the false report did not use up the report)
-    expect(guard(mutation({ texts: [{ id: nested.id, value: SECRET }] }))).toBeUndefined();
+    expect(guard(mutation({ texts: [{ id: deep.id, value: SECRET }] }))).toBeUndefined();
     expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
@@ -987,14 +988,18 @@ describe('legitimate iframe flows are not violations (#124)', () => {
   });
 
   it('LIMIT: a blocked iframe is never reopened, even when it is unblocked and navigated', () => {
-    const { guard } = make({ blockSelector: 'iframe.private' });
+    const { guard, onViolation } = make({ blockSelector: 'iframe.private' });
     const frame = el('iframe', { class: 'private' });
     guard(snapshot(doc([frame])));
     guard(classChange(frame.id, null)); // unblocked
     guard(marker(frame.id));
-    // the guard cannot tell an own block from an ancestor's: it fails closed until the next full snapshot
+    // the guard cannot tell an own block from an ancestor's: it fails closed (and reports) until the next snapshot
     expect(guard(attach(frame.id, el('p', {})))).toBeUndefined();
-    guard(snapshot(doc([el('iframe', {})])));
+    expect(onViolation).toHaveBeenCalledTimes(1);
+    const fresh = el('iframe', {});
+    guard(snapshot(doc([fresh])));
+    const a = attach(fresh.id, el('p', {}));
+    expect(guard(a)).toBe(a);
   });
 
   it('an iframe inside a blocked iframe document is never reopened', () => {
