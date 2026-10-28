@@ -549,6 +549,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       : [
           ...(display !== undefined ? [TraceName.DISPLAYS] : []),
           ...(captureState !== undefined ? [TraceName.CAPTURE] : []),
+          // information for other hosts: an Electron renderer ignores the heap part (it never writes `ram_js_heap_*`)
           ...(writesHeap ? ELECTRON_MAIN_HEAP_TRACES : []),
         ],
   });

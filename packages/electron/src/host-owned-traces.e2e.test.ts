@@ -310,7 +310,7 @@ describe('host-owned traces: Electron renderers write none of the names main own
     r2.tick();
     await client.logException(new Error('report'));
     const heap = tracesOf(puts[0] as Uint8Array).filter((t) => t.name.startsWith('ram_js_heap_'));
-    expect(heap.some((t) => t.value === 987_654_321 || t.value === 1_234_567)).toBe(false);
+    expect(heap).toEqual([]); // main writes none in these configurations, and no renderer may write any of the three
     await client.stop();
   });
 });
