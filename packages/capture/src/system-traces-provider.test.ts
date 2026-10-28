@@ -1134,6 +1134,53 @@ describe('producer ownership edge cases (#58)', () => {
   });
 });
 
+describe('stop ordering and failures (#58 review)', () => {
+  it('a throwing clearInterval still stops producers and releases ownership', () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const scheduler: Scheduler = {
+      setInterval: () => 'h',
+      clearInterval: () => {
+        throw new Error('clear failed');
+      },
+    };
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1, scheduler });
+    const b = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    expect(() => a.stop()).toThrow('clear failed');
+    expect(p.stoppedCount).toBe(1);
+    b.start(options);
+    expect(p.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it('ownership is held while a producer is still stopping (a start from inside stop() is refused)', () => {
+    const errors: unknown[] = [];
+    let other: ReturnType<typeof createSystemTracesProvider> | undefined;
+    class Reentrant extends Fixed {
+      override stop(): void {
+        other?.start(options);
+        super.stop();
+      }
+    }
+    const p = new Reentrant('shared', [['cpu_usage_process', 1]]);
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    other = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    other.init(buildInit(mkStore()));
+    a.start(options);
+    a.stop();
+    expect(errors).toHaveLength(1);
+    expect(p.startedCount).toBe(1);
+    other.stop();
+  });
+});
+
 describe('deriveRefreshMs', () => {
   it.each([
     [600_000, 10_000], // 150 s clamped down to the 10 s ceiling

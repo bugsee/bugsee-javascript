@@ -159,8 +159,8 @@ class SystemTracesProvider extends CaptureProviderBase {
         this.#started.push(producer);
       } catch (error) {
         this.#onError(error);
-        producerOwners.delete(producer);
         this.#safeStop(producer);
+        producerOwners.delete(producer);
       }
     }
     try {
@@ -176,13 +176,17 @@ class SystemTracesProvider extends CaptureProviderBase {
   }
 
   protected override onStop(): void {
-    this.#scheduler.clearInterval(this.#timer);
-    this.#timer = null;
-    this.#offSuppression?.();
-    this.#offSuppression = undefined;
-    this.#stopProducers();
-    this.#running = false;
-    this.#held.clear();
+    try {
+      this.#scheduler.clearInterval(this.#timer);
+      this.#timer = null;
+      this.#offSuppression?.();
+      this.#offSuppression = undefined;
+    } finally {
+      // a throwing scheduler/unsubscribe must still release the producers (and their ownership) and stop recording
+      this.#stopProducers();
+      this.#running = false;
+      this.#held.clear();
+    }
   }
 
   #tick(): void {
@@ -247,8 +251,8 @@ class SystemTracesProvider extends CaptureProviderBase {
 
   #stopProducers(): void {
     for (const producer of this.#started.splice(0)) {
+      this.#safeStop(producer); // ownership is held until stop() has finished (it never throws)
       producerOwners.delete(producer);
-      this.#safeStop(producer);
     }
   }
 
