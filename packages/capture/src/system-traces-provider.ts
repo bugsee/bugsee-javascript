@@ -139,7 +139,9 @@ class SystemTracesProvider extends CaptureProviderBase {
     this.#running = true;
     this.#offSuppression = this.#suppression?.subscribe((released) => this.#rerecord(released));
     for (const producer of this.#producers) {
-      if (producerOwners.has(producer)) {
+      const owner = producerOwners.get(producer);
+      if (owner === this) continue; // listed twice in this provider's own array: already started once
+      if (owner !== undefined) {
         this.#onError(
           new Error(
             `system trace producer "${producer.name}" is already owned by another client; skipped (build a fresh producer set per client)`,

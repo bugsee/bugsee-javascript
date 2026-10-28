@@ -1069,6 +1069,68 @@ describe('a producer shared by two providers (#58)', () => {
   });
 });
 
+describe('producer ownership edge cases (#58)', () => {
+  it('a producer listed twice in ONE provider is started once and not reported as foreign', () => {
+    const p = new Fixed('dup', [['cpu_usage_process', 1]]);
+    const errors: unknown[] = [];
+    const a = createSystemTracesProvider({
+      producers: [p, p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    a.start(options);
+    expect(errors).toEqual([]);
+    expect(p.startedCount).toBe(1);
+    a.stop();
+    expect(p.stoppedCount).toBe(1);
+  });
+
+  it('a producer is released when the scheduler fails at start, so another provider can claim it', () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const failing: Scheduler = {
+      setInterval: () => {
+        throw new Error('no timer');
+      },
+      clearInterval: () => {},
+    };
+    const a = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      scheduler: failing,
+      onError: () => {},
+    });
+    const errors: unknown[] = [];
+    const b = createSystemTracesProvider({
+      producers: [p],
+      now: () => 1,
+      onError: (e) => errors.push(e),
+    });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    expect(() => a.start(options)).toThrow('no timer');
+    b.start(options);
+    expect(errors).toEqual([]);
+    expect(p.startedCount).toBe(2);
+    b.stop();
+  });
+
+  it("a skipped producer stays skipped for the second provider's whole session, even after the owner stops", () => {
+    const p = new Fixed('shared', [['cpu_usage_process', 1]]);
+    const a = createSystemTracesProvider({ producers: [p], now: () => 1 });
+    const b = createSystemTracesProvider({ producers: [p], now: () => 1, onError: () => {} });
+    a.init(buildInit(mkStore()));
+    b.init(buildInit(mkStore()));
+    a.start(options);
+    b.start(options);
+    a.stop();
+    expect(p.startedCount).toBe(1);
+    expect(p.stoppedCount).toBe(1);
+    b.stop();
+    expect(p.stoppedCount).toBe(1);
+  });
+});
+
 describe('deriveRefreshMs', () => {
   it.each([
     [600_000, 10_000], // 150 s clamped down to the 10 s ceiling

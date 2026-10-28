@@ -467,7 +467,7 @@ export interface BugseeLaunchOptions {
    *
    * PER-LAUNCH ONLY: producers are stateful — a producer's `start()` is a no-op while it is already started —
    * so build a fresh set for each launch (it is RESET on relaunch). A producer instance already owned by another
-   * running client is skipped and reported through `onError` (first owner wins; ownership is released on stop).
+   * running client is skipped and reported through `onError` when one is supplied (first owner wins; ownership is released on stop).
    * On Bun/Deno a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
    * default set, including its gates (e.g. Deno's event-loop-lag opt-out), so pass
    * `createNodeSystemTraceProducers({ measuresEventLoopDelay: false, … })` yourself there.
