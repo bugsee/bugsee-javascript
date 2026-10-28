@@ -69,7 +69,7 @@ describe('BatteryProducer', () => {
     m.fire('levelchange');
     m.fire('chargingtimechange');
     expect(stamps.length).toBeGreaterThan(1);
-    expect(new Set(stamps).size).toBeLessThanOrEqual(2);
+    expect(new Set(stamps)).toEqual(new Set([8])); // one poll = one stamp (levelchange emits two values; chargingtimechange nothing)
     expect(stamps.every((t) => typeof t === 'number' && t > 7)).toBe(true);
     p.stop();
     offOther();

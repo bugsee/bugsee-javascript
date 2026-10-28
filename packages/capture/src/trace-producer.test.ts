@@ -61,10 +61,11 @@ describe('TraceProducerBase.poll', () => {
       p.emitAll('a', 1);
       p.emitAll('b', 2);
       p.run(() => p.emitAll('c', 3)); // nested: same poll
+      p.emitAll('c2', 3); // still in the OUTER poll after the nested one returned
     });
     p.emitAll('d', 4); // outside a poll: left to the sink
     p.run(() => p.emitAll('e', 5)); // a new poll takes a new timestamp
-    expect(stamps).toEqual([101, 101, 101, undefined, 102]);
+    expect(stamps).toEqual([101, 101, 101, 101, undefined, 102]);
   });
 
   it('clears the poll timestamp when fn throws', () => {
