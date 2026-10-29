@@ -459,6 +459,11 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     // a quote inside `[..]` is ambiguous (SQL Server identifier vs Postgres array / jsonb subscript)
     expect(clean("SELECT ARRAY['a','b'] FROM t WHERE x = 'y'")).toBe('SELECT ARRAY[?');
     expect(clean("SELECT data['k'] FROM t WHERE x = 1")).toBe('SELECT data[?');
+    // `]]` is SQL Server's escaped close, so nested Postgres subscripts / multi-dimensional arrays leave the run open
+    expect(clean("SELECT a[b[1]] FROM t WHERE x = 'secret'")).toBe('SELECT a?');
+    expect(clean("SELECT ARRAY[[1,2],[3,4]] FROM t WHERE x = 'secret'")).toBe(
+      'SELECT ARRAY[[?,?],?',
+    );
     // a string opening with an escaped quote looks like a BigQuery triple quote
     expect(clean("SELECT '''Hello'' she said' , 'x' FROM t")).toBe('SELECT ??');
     // numbers are redacted greedily, so hex-digit keyword letters and digit-led words are eaten
