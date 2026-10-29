@@ -36,5 +36,6 @@ export type {
   TransactionNameSource,
 } from '@bugsee/performance';
 export { type BugseeDenoLaunchOptions, launch, relaunch } from './deno';
-export type { Bugsee } from './server-launch';
+export type { Bugsee, BugseeServerLaunchOptions } from './server-launch';
 export { BugseeStatus, getStatus } from './status';
+export type { UmbrellaExtensionOptions } from './wire';

@@ -41,3 +41,24 @@ export const badLog: LogExceptionOptions = { mechanism: 'uncaught' };
 void client.upload({ trigger: 'code_dialog' });
 // @ts-expect-error a public caller cannot pass `mechanism` to `logException`.
 void client.logException(new Error('x'), { mechanism: 'uncaught' });
+
+// The option types a public launch signature is built from must be NAMEABLE from the entry that exposes
+// it. Otherwise the declaration bundler leaves the shared chunk's type private (tsup 9 warns) and a
+// consumer emitting declarations hits TS2742 ("inferred type cannot be named").
+import type { UmbrellaExtensionOptions as BrowserUmbrella } from './index';
+import type {
+  BugseeServerLaunchOptions as BunServerOptions,
+  UmbrellaExtensionOptions as BunUmbrella,
+} from './index.bun';
+import type { BugseeServerLaunchOptions as DenoServerOptions } from './index.deno';
+import type {
+  BugseeServerLaunchOptions as NodeServerOptions,
+  UmbrellaExtensionOptions as NodeUmbrella,
+} from './index.node';
+
+export const nameableServerOptions: [NodeServerOptions, BunServerOptions, DenoServerOptions] = [
+  {},
+  {},
+  {},
+];
+export const nameableUmbrellaOptions: [BrowserUmbrella, NodeUmbrella, BunUmbrella] = [{}, {}, {}];

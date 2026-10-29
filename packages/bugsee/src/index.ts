@@ -49,3 +49,4 @@ export {
   relaunch,
 } from './launch';
 export { BugseeStatus, getStatus } from './status';
+export type { UmbrellaExtensionOptions } from './wire';
