@@ -824,8 +824,8 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       await rewriteFrame('a', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_UNBLOCKED'));
       await rewriteFrame('b', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_BLOCKED'));
       await settle(500);
-      await pokeFrame('a', 'AFTEROPEN');
-      await pokeFrame('b', 'AFTEROPENB');
+      await pokeFrame('a', 'AFTEROPEN_UNBLOCKED');
+      await pokeFrame('b', 'AFTEROPEN_BLOCKED');
       await settle(500);
       const events = await dump();
       // visible in the unblocked frame: the harness can fail, for the rewrite and for what changes after it
@@ -833,16 +833,16 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         'FRAME4_SECRET_REWRITTEN_UNBLOCKED',
         'TYPED_SECRET_REWRITTEN_UNBLOCKED',
         'CONTROL_REWRITTEN_UNBLOCKED',
-        'IFB_SECRET_EDIT_AFTEROPEN',
-        'IFB_SECRET_ADDED_AFTEROPEN',
-        'TYPED_SECRET_AFTEROPEN',
-        'IFB_SECRET_PH_AFTEROPEN',
+        'IFB_SECRET_EDIT_AFTEROPEN_UNBLOCKED',
+        'IFB_SECRET_ADDED_AFTEROPEN_UNBLOCKED',
+        'TYPED_SECRET_AFTEROPEN_UNBLOCKED',
+        'IFB_SECRET_PH_AFTEROPEN_UNBLOCKED',
       ]) {
         expect(events, marker).toContain(marker);
       }
       // ...but nothing at all from the blocked one
       expect(events).not.toContain('REWRITTEN_BLOCKED');
-      expect(events).not.toContain('AFTEROPENB');
+      expect(events).not.toContain('AFTEROPEN_BLOCKED');
       await page.close();
     });
   }
