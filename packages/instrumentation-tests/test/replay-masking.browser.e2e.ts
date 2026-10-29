@@ -783,20 +783,38 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     });
   }
 
-  it('control: document.open content DOES leak with masking off, and a blocked iframe still does not', async () => {
-    await open();
-    await mountFrames({ id: 'a', n: 1, attrs: 'class="bugsee-show"' }, { id: 'b', n: 3 });
-    await start('raw', { maskAllText: false, maskAllInputs: false });
-    await settle(400);
-    await rewriteFrame('a', REWRITTEN.replace('FRAME4_SECRET', 'FRAME4_SECRET_UNBLOCKED'));
-    await rewriteFrame('b', REWRITTEN.replace('FRAME4_SECRET', 'FRAME4_SECRET_BLOCKED'));
-    await settle(500);
-    const events = await dump();
-    expect(events).toContain('FRAME4_SECRET_UNBLOCKED_REWRITTEN'); // visible in the unblocked frame: the harness can fail
-    expect(events).toContain('TYPED_SECRET_REWRITTEN'); // the typed value is detectable too
-    expect(events).not.toContain('FRAME4_SECRET_BLOCKED'); // ...but nothing from the blocked one
-    await page.close();
-  });
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`control (${mode}): document.open content and later edits DO leak with masking off; a blocked iframe still does not`, async () => {
+      await open();
+      await mountFrames({ id: 'a', n: 1, attrs: 'class="bugsee-show"' }, { id: 'b', n: 3 });
+      await start(mode, { maskAllText: false, maskAllInputs: false });
+      await settle(400);
+      // distinct markers per frame, so a leak can be attributed to the frame it came from
+      await rewriteFrame('a', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_UNBLOCKED'));
+      await rewriteFrame('b', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_BLOCKED'));
+      await settle(500);
+      await pokeFrame('a', 'AFTEROPEN');
+      await pokeFrame('b', 'AFTEROPENB');
+      await settle(500);
+      const events = await dump();
+      // visible in the unblocked frame: the harness can fail, for the rewrite and for what changes after it
+      for (const marker of [
+        'FRAME4_SECRET_REWRITTEN_UNBLOCKED',
+        'TYPED_SECRET_REWRITTEN_UNBLOCKED',
+        'CONTROL_REWRITTEN_UNBLOCKED',
+        'IFB_SECRET_EDIT_AFTEROPEN',
+        'IFB_SECRET_ADDED_AFTEROPEN',
+        'TYPED_SECRET_AFTEROPEN',
+        'IFB_SECRET_PH_AFTEROPEN',
+      ]) {
+        expect(events, marker).toContain(marker);
+      }
+      // ...but nothing at all from the blocked one
+      expect(events).not.toContain('REWRITTEN_BLOCKED');
+      expect(events).not.toContain('AFTEROPENB');
+      await page.close();
+    });
+  }
 
   it('control: with maskAllText and maskAllInputs switched off the same page DOES leak (the harness can fail)', async () => {
     await open();
