@@ -1695,6 +1695,93 @@ describe('launch (webview)', () => {
     }
   });
 
+  it('a caller sampler cannot give a producer-owned name a second writer (battery handed back by native, route, view, url); its other rows pass', async () => {
+    const fake = fakeGlobal();
+    batteryGlobals();
+    const tickCbs: Array<() => void> = [];
+    const scheduler: Scheduler = {
+      setInterval: (cb) => {
+        tickCbs.push(cb as () => void);
+        return 0 as unknown as ReturnType<Scheduler['setInterval']>;
+      },
+      clearInterval: () => {},
+    };
+    try {
+      track(
+        'tok',
+        baseOptions({
+          global: fake.global,
+          window: {
+            location: { href: 'https://a.com/o' },
+            get navigator() {
+              return (globalThis as { navigator?: unknown }).navigator;
+            },
+            addEventListener() {},
+            removeEventListener() {},
+          } as never,
+          scheduler,
+          systemMetricsSampler: () => [
+            { name: 'wv_metric', value: 7 },
+            { name: 'battery', value: 7 },
+            { name: 'charging', value: { state: 1 } },
+            { name: 'battery_charging_time_s', value: 111 },
+            { name: 'battery_discharging_time_s', value: 222 },
+            { name: 'route', value: 'sampler-route' },
+            { name: 'view', value: 'sampler-view' },
+            { name: 'url', value: 'sampler-url' },
+          ],
+        }),
+      );
+      sendControl(fake.global, { config: { hostOwnedTraces: [] } }); // native hands every name back: only the producers may write them
+      await new Promise((r) => setTimeout(r, 0));
+      for (const cb of tickCbs) cb(); // a tick runs the sampler
+      const traces = tracesOf(fake);
+      expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toEqual([100]);
+      expect(traces.filter((t) => t.name === 'charging').map((t) => t.value)).toEqual([
+        { state: 3 },
+      ]);
+      expect(traces).toContainEqual(expect.objectContaining({ name: 'wv_metric', value: 7 }));
+      const values = traces.map((t) => t.value);
+      for (const leaked of [111, 222, 'sampler-route', 'sampler-view', 'sampler-url']) {
+        expect(values).not.toContain(leaked);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a caller sampler may still write url when no url producer exists (no readable window)', async () => {
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: undefined,
+        systemMetricsSampler: () => [{ name: 'url', value: 'sampler-url' }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(tracesOf(fake)).toContainEqual(
+      expect.objectContaining({ name: 'url', value: 'sampler-url' }),
+    );
+  });
+
+  it('a caller sampler may still write url when URL capture is off', async () => {
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        captureUrl: false,
+        systemMetricsSampler: () => [{ name: 'url', value: 'sampler-url' }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(tracesOf(fake)).toContainEqual(
+      expect.objectContaining({ name: 'url', value: 'sampler-url' }),
+    );
+  });
+
   it('a malformed hostOwnedTraces leaves the built-in list in force', async () => {
     const fake = fakeGlobal();
     batteryGlobals();

@@ -11,6 +11,17 @@ import type { TraceSuppression } from './trace-suppression';
 // FPS_REPORT_INTERVAL_MS parity). The timer is unref'd by the default scheduler so it never keeps a
 // process alive. Mobile-only traces (orientation/battery/fps/displays) are simply not sampled.
 
+/**
+ * Wrap a caller's polled `sample()` so rows under `owned` names are dropped on every call: a name a still-running
+ * producer owns keeps ONE writer (the sampler's other rows pass through).
+ */
+export function withoutTraceNames(
+  sample: () => readonly TraceSample[],
+  owned: ReadonlySet<string>,
+): () => readonly TraceSample[] {
+  return () => sample().filter((row) => !owned.has(row.name));
+}
+
 /** One sampled system trace: a named value at the sampling instant. */
 export interface TraceSample {
   name: string;
