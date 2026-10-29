@@ -1356,6 +1356,55 @@ describe('launch', () => {
     );
   });
 
+  it('a caller sampler returning battery/charging does not duplicate the battery producer (one writer per name)', async () => {
+    vi.stubGlobal('navigator', { getBattery: () => Promise.resolve(batteryManager()) });
+    const store = memStore();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        systemMetricsSampler: () => [
+          { name: 'ram_js_heap_used', value: 42 },
+          { name: 'battery', value: 7 },
+          { name: 'charging', value: { state: 1 } },
+          { name: 'battery_charging_time_s', value: 111 },
+          { name: 'battery_discharging_time_s', value: 222 },
+          { name: 'route', value: 'sampler-route' },
+          { name: 'view', value: 'sampler-view' },
+          { name: 'url', value: 'sampler-url' },
+        ],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const traces = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    // the producer owns the names: the sampler's rows are dropped, its other rows are kept
+    expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toEqual([50]);
+    expect(traces.filter((t) => t.name === 'charging').map((t) => t.value)).toEqual([{ state: 2 }]);
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'ram_js_heap_used', value: 42 }));
+    const values = traces.map((t) => t.value);
+    for (const leaked of [111, 222, 'sampler-route', 'sampler-view', 'sampler-url']) {
+      expect(values).not.toContain(leaked);
+    }
+  });
+
+  it('a caller sampler may still write url when URL capture is off', async () => {
+    const store = memStore();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        captureUrl: false,
+        systemMetricsSampler: () => [{ name: 'url', value: 'sampler-url' }],
+      }),
+    );
+    const traces = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'url', value: 'sampler-url' }));
+  });
+
   it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
     const getBattery = vi.fn(() =>
       Promise.resolve({
@@ -3907,6 +3956,42 @@ describe('launch — session replay (lazy)', () => {
     const win = Object.assign(fakeWindow().win, { document: fakeDocument(viewEl('body')) });
     await launchTracked('tok', baseOptions({ window: win })); // no `document` option at all
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+  });
+
+  it.each([
+    { replay: undefined, kept: false },
+    { replay: false, kept: true },
+  ])('a caller sampler row named `capture` is dropped only while the capture producer exists (replay=$replay)', async ({
+    replay,
+    kept,
+  }) => {
+    const store = memStore();
+    // A real recorder makes the producer's own `capture` row appear (`active`); `undefined` would leave it unwritten.
+    if (replay === undefined) registerReplay.mockReturnValueOnce({ stop: vi.fn() });
+    await launchTracked(
+      'tok',
+      domReplayOptions({
+        captureStore: store,
+        ...(replay === undefined ? {} : { replay }),
+        systemMetricsSampler: () => [{ name: 'capture', value: 'sampler-capture' }],
+      }),
+    );
+    if (replay === undefined) {
+      await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+      await vi.waitFor(async () => {
+        const rows = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => e.data as { value: unknown },
+        );
+        // the producer's row survives the filter, and the caller's same-named row does not
+        expect(rows.some((r) => (r.value as { state?: string } | null)?.state === 'active')).toBe(
+          true,
+        );
+      });
+    }
+    const values = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => (e.data as { value: unknown }).value,
+    );
+    expect(values.includes('sampler-capture')).toBe(kept);
   });
 
   it('the DEFAULT path resolves to FAIL-CLOSED masking (mask all text/inputs, block all media)', async () => {

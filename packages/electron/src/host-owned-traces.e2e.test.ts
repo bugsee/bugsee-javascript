@@ -271,14 +271,15 @@ describe('host-owned traces: Electron renderers write none of the names main own
       systemMetricsSampler: () => [
         { name: 'capture', value: { state: 'active' } },
         { name: 'displays', value: [{ id: 0, width: 800, height: 600 }] },
-        { name: 'battery', value: 42 },
+        // `battery` is owned by the renderer's own producer (a sampler row under it is dropped, #154), so use a sampler-only name
+        { name: 'app_state', value: 42 },
       ],
     });
     r.tick();
     await client.logException(new Error('report'));
     const traces = tracesOf(puts[0] as Uint8Array);
     expect(traces.some((t) => t.name === 'capture' || t.name === 'displays')).toBe(false);
-    expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toContain(42); // unlisted still flows
+    expect(traces.filter((t) => t.name === 'app_state').map((t) => t.value)).toContain(42); // unlisted still flows
     await client.stop();
   });
 
