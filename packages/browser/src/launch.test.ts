@@ -3966,6 +3966,8 @@ describe('launch — session replay (lazy)', () => {
     kept,
   }) => {
     const store = memStore();
+    // A real recorder makes the producer's own `capture` row appear (`active`); `undefined` would leave it unwritten.
+    if (replay === undefined) registerReplay.mockReturnValueOnce({ stop: vi.fn() });
     await launchTracked(
       'tok',
       domReplayOptions({
@@ -3974,6 +3976,18 @@ describe('launch — session replay (lazy)', () => {
         systemMetricsSampler: () => [{ name: 'capture', value: 'sampler-capture' }],
       }),
     );
+    if (replay === undefined) {
+      await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
+      await vi.waitFor(async () => {
+        const rows = ((await drain(store, 'traces.system')) ?? []).map(
+          (e) => e.data as { value: unknown },
+        );
+        // the producer's row survives the filter, and the caller's same-named row does not
+        expect(rows.some((r) => (r.value as { state?: string } | null)?.state === 'active')).toBe(
+          true,
+        );
+      });
+    }
     const values = ((await drain(store, 'traces.system')) ?? []).map(
       (e) => (e.data as { value: unknown }).value,
     );
