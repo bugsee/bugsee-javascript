@@ -712,6 +712,10 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       const events = await runAttrSmoke(mode, {});
       expect(events).toContain('TOP_CONTROL'); // the harness sees the page (control)
       expect(events).toContain('smoke_PRE'); // ...the snapshot section (ids are not masked)
+      // the password/card fields ARE in the snapshot (as masked/ignored inputs), so their absence of secrets below is a
+      // statement about masking, not about the recorder never seeing them. Typed events on them are dropped by the
+      // sensitive-input ignore rule, so the PWTYPED/CCTYPED checks guard that rule and have no failing control by design.
+      expect(events).toContain('"type":"password"');
       expect(events).toContain('smoke_ADDED'); // ...and the node added after start reached the events
       expect(attrLeaks(events)).toEqual([]);
       await page.close();
@@ -724,6 +728,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     it(`attribute smoke (${mode}): with blockAllMedia off, attribute masking still hides alt/title/data-*`, async () => {
       const events = await runAttrSmoke(mode, { blockAllMedia: false });
       expect(events).toContain('smoke_ADDED');
+      expect(events).toContain('R0lGODlhAQABAAAAACw'); // the image IS serialized (not a blocked placeholder)
       expect(attrLeaks(events)).toEqual([]);
       await page.close();
     });
