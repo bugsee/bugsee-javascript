@@ -65,8 +65,10 @@ try {
 
 const env: NodeJS.ProcessEnv = { ...process.env, BUGSEE_SMOKE_DIR: dir };
 delete env.ELECTRON_RUN_AS_NODE; // would make the binary a plain Node and skip the app entirely
-// `--no-sandbox` is Chromium's OS-level sandbox, which a CI container cannot set up (no SUID helper). It is
-// unrelated to the `sandbox: true` WINDOW option under test, which stays on (and is asserted below).
+// `--no-sandbox` turns off Chromium's OS-level renderer sandbox, which a CI container cannot set up (no SUID
+// helper). So on Linux this lane covers the sandboxed-PRELOAD environment (`sandbox: true`: no Node polyfills,
+// built-ins-only `require`, `process.sandboxed`), NOT the OS-sandboxed renderer path; only a run without the
+// flag (e.g. the macOS measurement in the README) exercises that.
 const args = process.platform === 'linux' ? ['--no-sandbox', dir] : [dir];
 const run = spawnSync(bin, args, { env, encoding: 'utf8', timeout: 120_000 });
 rmSync(dir, { recursive: true, force: true });
@@ -92,7 +94,10 @@ const checks: Array<[string, boolean]> = [
     typeof r.renderer?.sid === 'string' && r.renderer.sid.length > 0,
   ],
   ['preload exposed the bridge', r.renderer?.bridge === 'object'],
-  ['window is really sandboxed', r.renderer?.probe?.sandboxed === true],
+  [
+    'preload runs in a sandboxed context (process.sandboxed)',
+    r.renderer?.probe?.sandboxed === true,
+  ],
   ['no Buffer in sandboxed preload', r.renderer?.probe?.hasBuffer === 'undefined'],
   ['no setImmediate in sandboxed preload', r.renderer?.probe?.hasSetImmediate === 'undefined'],
   ['no node globals in the renderer', r.rendererGlobals === 'undefined/undefined'],
