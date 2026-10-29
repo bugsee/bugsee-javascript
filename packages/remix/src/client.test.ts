@@ -61,6 +61,28 @@ describe('bugseeOnError (RR7 <HydratedRouter onError>)', () => {
     expect(reportReactError).toHaveBeenCalledWith(err, {});
   });
 
+  it("reads the component stack from React Router's `{ location, params, pattern, errorInfo }` info (RR7.x/8)", () => {
+    const err = new Error('render boom');
+    bugseeOnError(err, {
+      location: { pathname: '/x' },
+      params: {},
+      pattern: '/x',
+      errorInfo: { componentStack: '\n  at Route' },
+    });
+    expect(reportReactError).toHaveBeenCalledWith(err, { componentStack: '\n  at Route' });
+  });
+
+  it('prefers the nested `errorInfo` stack over a top-level one, and omits a null nested stack', () => {
+    const err = new Error('boom');
+    bugseeOnError(err, {
+      componentStack: '\n  at Top',
+      errorInfo: { componentStack: '\n  at Nested' },
+    });
+    expect(reportReactError).toHaveBeenLastCalledWith(err, { componentStack: '\n  at Nested' });
+    bugseeOnError(err, { pattern: '/x', errorInfo: { componentStack: null } });
+    expect(reportReactError).toHaveBeenLastCalledWith(err, {});
+  });
+
   it('omits the component stack when React passes null (componentStack is string | null)', () => {
     const err = new Error('boom');
     bugseeOnError(err, { componentStack: null });

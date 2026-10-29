@@ -107,7 +107,7 @@ machine you develop on.
 
 What is left:
 
-- **Node version.** CI pins Node 22; the script warns when the local major differs.
+- **Node version.** CI pins Node `>=22.23.4 <23` (Astro 7 refuses anything older); the script warns when the local major differs.
 - **A clean tree, not a clean machine.** `actions/checkout` wipes the working tree (`git clean -ffdx`),
   so `node_modules` and the local turbo cache are cold every run — but the pnpm store, the runner tool
   cache and *anything a previous run leaked* persist. Leaked processes are the practical hazard: the

@@ -68,6 +68,8 @@ export default {
 };
 ```
 
+On SvelteKit 3 there is no `svelte.config.js`; pass `preprocess` to the `sveltekit()` Vite plugin instead (see the [`@bugsee/sveltekit` README](../sveltekit/README.md)).
+
 ## Options
 
 `launch(appToken, options)` accepts the SDK launch options. The most relevant ones in the browser:

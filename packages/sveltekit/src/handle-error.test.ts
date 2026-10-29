@@ -156,4 +156,22 @@ describe('handleErrorWithBugsee', () => {
     expect(client.logException).not.toHaveBeenCalled();
     expect(result).toEqual({ message: 'nf' });
   });
+  it("Kit 3: forwards an app handler's `{ message, status }` return verbatim and gates only on the INPUT status", () => {
+    const client = fakeClient();
+    const returned = { message: 'down for maintenance', status: 503 };
+    const appHandler = vi.fn((_i: SvelteKitServerErrorInput) => returned);
+    const wired = handleErrorWithBugsee(appHandler, { getClient: () => client });
+
+    const unexpected = input(); // input status 500 -> reported, even if the app maps it to 404 below
+    const mapTo404 = handleErrorWithBugsee(() => ({ message: 'nf', status: 404 }), {
+      getClient: () => client,
+    });
+    expect(mapTo404(unexpected)).toEqual({ message: 'nf', status: 404 });
+    expect(client.logException).toHaveBeenCalledTimes(1);
+
+    const result = wired(unexpected);
+    expect(result).toBe(returned); // same object — no cloning, no status rewriting
+    expect(appHandler).toHaveBeenCalledWith(unexpected);
+    expect(client.logException).toHaveBeenCalledTimes(2);
+  });
 });

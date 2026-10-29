@@ -34,14 +34,25 @@ export async function registerClient(
   return await launch(appToken, options);
 }
 
+/** What React Router's `onError` receives as its second argument (structural; no `react-router` dep): the
+ *  RR8 `{ location, params, pattern, errorInfo }` shape (extra fields ignored) or a bare React `ErrorInfo`. */
+export interface RouterOnErrorInfo extends ReactErrorInfo {
+  errorInfo?: ReactErrorInfo;
+  location?: unknown;
+  params?: unknown;
+  pattern?: string;
+}
+
 /**
- * The React Router v7 `<HydratedRouter onError>` (and data-router `onError`) handler — report a client
+ * The React Router v7/v8 `<HydratedRouter onError>` (and data-router `onError`) handler — report a client
  * React error to Bugsee with its component stack. Defensive + no-ops when Bugsee is not launched (via
  * `reportReactError`).
  */
-export function bugseeOnError(error: unknown, errorInfo?: ReactErrorInfo): void {
-  // React's `errorInfo.componentStack` is `string | null` — narrow to a real stack before forwarding.
-  const componentStack = errorInfo?.componentStack;
+export function bugseeOnError(error: unknown, info?: RouterOnErrorInfo): void {
+  // React Router (7.x/8) passes `{ location, params, pattern, errorInfo }`; the React `ErrorInfo` is NESTED
+  // under `errorInfo`. A bare React `ErrorInfo` (older RR7 / direct use) is still accepted. React's
+  // `componentStack` is `string | null` — narrow to a real stack before forwarding.
+  const componentStack = info?.errorInfo?.componentStack ?? info?.componentStack;
   reportReactError(error, typeof componentStack === 'string' ? { componentStack } : {});
 }
 

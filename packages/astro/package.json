@@ -110,6 +110,6 @@
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",
-    "astro": "^5.0.0"
+    "astro": "^7.0.0"
   }
 }

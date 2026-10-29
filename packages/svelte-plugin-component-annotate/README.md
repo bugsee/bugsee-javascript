@@ -29,6 +29,8 @@ export default {
 };
 ```
 
+On SvelteKit 3 there is no `svelte.config.js`; pass `preprocess` to the `sveltekit()` Vite plugin instead (see the [`@bugsee/sveltekit` README](../sveltekit/README.md)).
+
 Each host element (lowercase tag) in a `.svelte` file gets a `data-bugsee-component="<ComponentName>"` attribute. The name comes from the file name (`UserCard.svelte` becomes `UserCard`). For `index.svelte` and SvelteKit route files (`+page`, `+layout`, `+error`) the enclosing directory name is used. Elements you already annotated by hand are left alone, and component instances (`<Child />`) get no attribute.
 
 ## Options

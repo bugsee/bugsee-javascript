@@ -14,8 +14,8 @@
     "@bugsee/util": "workspace:*"
   },
   "devDependencies": {
-    "@astrojs/node": "^9.0.0",
-    "astro": "^5.0.0",
+    "@astrojs/node": "^11.0.0",
+    "astro": "^7.0.0",
     "vitest": "^4.0.0"
   }
 }
