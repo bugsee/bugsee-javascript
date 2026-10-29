@@ -1367,6 +1367,11 @@ describe('launch', () => {
           { name: 'ram_js_heap_used', value: 42 },
           { name: 'battery', value: 7 },
           { name: 'charging', value: { state: 1 } },
+          { name: 'battery_charging_time_s', value: 111 },
+          { name: 'battery_discharging_time_s', value: 222 },
+          { name: 'route', value: 'sampler-route' },
+          { name: 'view', value: 'sampler-view' },
+          { name: 'url', value: 'sampler-url' },
         ],
       }),
     );
@@ -1378,6 +1383,26 @@ describe('launch', () => {
     expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toEqual([50]);
     expect(traces.filter((t) => t.name === 'charging').map((t) => t.value)).toEqual([{ state: 2 }]);
     expect(traces).toContainEqual(expect.objectContaining({ name: 'ram_js_heap_used', value: 42 }));
+    const values = traces.map((t) => t.value);
+    for (const leaked of [111, 222, 'sampler-route', 'sampler-view', 'sampler-url']) {
+      expect(values).not.toContain(leaked);
+    }
+  });
+
+  it('a caller sampler may still write url when URL capture is off', async () => {
+    const store = memStore();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        captureUrl: false,
+        systemMetricsSampler: () => [{ name: 'url', value: 'sampler-url' }],
+      }),
+    );
+    const traces = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'url', value: 'sampler-url' }));
   });
 
   it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {

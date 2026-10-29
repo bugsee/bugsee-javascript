@@ -82,7 +82,7 @@ import {
   type TriggerPipeline,
   type UploadResult,
 } from '@bugsee/core';
-import { BugseeOption, type EnvironmentEnvelope } from '@bugsee/protocol';
+import { BugseeOption, type EnvironmentEnvelope, TraceName } from '@bugsee/protocol';
 import { applicationTrackerFor } from '@bugsee/trackers/browser';
 import { reportGuarded } from '@bugsee/util';
 import { BROWSER_APP_VERSION_HINT, metaAppIdentity, warnToConsole } from './app-identity';
@@ -568,7 +568,7 @@ export interface BugseeLaunchOptions {
   systemProbe?: BrowserProbe;
   /**
    * LEGACY polled system-traces override. It REPLACES the default heap/connection/orientation traces (as on
-   * Node); battery stays a tracker-backed producer that owns `battery`/`charging` (sampler rows under those names are dropped). The defaults are producers, not a sampler.
+   * Node); battery stays a tracker-backed producer that (with `url`/`route`/`view`) owns its trace names; sampler rows under them are dropped. The defaults are producers, not a sampler.
    */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
@@ -660,6 +660,26 @@ function reportInvalidHostOwned(onError: ((error: unknown) => void) | undefined)
       'Bugsee: hostOwnedTraces must be an array of trace-name strings; anything else is ignored',
     ),
   );
+}
+
+/** Names the producers that run alongside a caller sampler (`sensors: false`) own: battery x4, route, view, and url when built. */
+function producerOwnedNames(withUrl: boolean): ReadonlySet<string> {
+  return new Set<string>([
+    TraceName.BATTERY,
+    TraceName.CHARGING,
+    TraceName.BATTERY_CHARGING_TIME_S,
+    TraceName.BATTERY_DISCHARGING_TIME_S,
+    TraceName.ROUTE,
+    TraceName.VIEW,
+    ...(withUrl ? [TraceName.URL] : []),
+  ]);
+}
+
+function withoutNames(
+  sample: () => readonly TraceSample[],
+  owned: ReadonlySet<string>,
+): () => readonly TraceSample[] {
+  return () => sample().filter((row) => !owned.has(row.name));
 }
 
 // The public composition root's lifecycle shell: publishes Launching while the (async) composition is in
@@ -1093,12 +1113,14 @@ async function buildLaunch(
   if (diskPressure !== undefined && resolved.isEnabled(BugseeOption.CaptureDiskSpace)) {
     captureState?.bindPressure(diskPressure); // the disk STATES are telemetry: behind the opt-in, the protection is not
   }
+  const captureUrl = resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true);
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still
-      // runs and OWNS `battery`/`charging`: a sampler row under those names is dropped (one writer per trace name, #154).
+      // runs alongside it and OWNS its names (battery, charging, the two battery times, route, view, url when captured): a sampler row
+      // under those names is dropped (one writer per trace name, #154).
       ...(options.systemMetricsSampler !== undefined
-        ? { sample: withoutProducerOwnedNames(options.systemMetricsSampler) }
+        ? { sample: withoutNames(options.systemMetricsSampler, producerOwnedNames(captureUrl)) }
         : {}),
       ...(suppression !== undefined ? { suppression } : {}),
       producers: [
@@ -1109,7 +1131,7 @@ async function buildLaunch(
             ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
             captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
             // The page's own sanitized address: written from the navigation source, not from the performance extension.
-            ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
+            ...(captureUrl
               ? withUrl(
                   urlProducerDepsFor(win, {
                     ...(carrier !== undefined ? { carrier } : {}),
@@ -1621,15 +1643,6 @@ export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
 // The public composition root: the launched client. Equivalent to `(await launchCore(...)).client` —
 // `launchCore` additionally surfaces the internal wiring (`LaunchInternals`) that the `bugsee` umbrella
 // uses to wire on-by-default extensions; bare `@bugsee/browser` callers use this and never see the internals.
-/** Trace names the always-on battery producer owns; a caller sampler may not also write them. */
-const PRODUCER_OWNED_SAMPLER_NAMES: ReadonlySet<string> = new Set(['battery', 'charging']);
-
-function withoutProducerOwnedNames(
-  sample: () => readonly TraceSample[],
-): () => readonly TraceSample[] {
-  return () => sample().filter((row) => !PRODUCER_OWNED_SAMPLER_NAMES.has(row.name));
-}
-
 export async function launch(appToken: string, options: BugseeLaunchOptions = {}): Promise<Bugsee> {
   return (await launchCore(appToken, options)).client;
 }
