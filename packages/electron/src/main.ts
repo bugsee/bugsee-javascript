@@ -53,6 +53,7 @@ export {
   type PixelVideoController,
   type PixelVideoControllerOptions,
 } from './pixel-video-controller';
+export type { DecodedReport } from './protocol';
 export {
   type CapturePageVideoSourceOptions,
   createCapturePageVideoSource,

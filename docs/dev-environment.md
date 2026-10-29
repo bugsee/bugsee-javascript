@@ -8,7 +8,7 @@
 
 | Tool | Version | Required for |
 |---|---|---|
-| **Node.js** | **≥18** | Baseline tooling runtime: pnpm, Vitest, Rollup, tsup, lint, type-check |
+| **Node.js** | **22.18+, 24.11+ or ≥26** (not 23, not 24.0-24.10) | Development tooling runtime (tsup 9 engine range: pnpm, Vitest, Rollup, tsup, lint, type-check, builds). The *SDK runtime* floor is unchanged: Node ≥18 (see Tier-1 below) |
 | **pnpm** | **≥9** | Package manager (strict node_modules, monorepo workspaces) |
 | Bun | ≥1.1.13 | Building/smoke-testing `@bugsee/bun`; optional otherwise |
 | Deno | ≥1.36 | Smoke-testing `@bugsee/deno` (`--allow-net`, `--allow-write`) |

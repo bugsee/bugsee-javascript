@@ -7,7 +7,7 @@
   "license": "MIT",
   "packageManager": "pnpm@11.3.0",
   "engines": {
-    "node": ">=18"
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
   },
   "scripts": {
     "build": "turbo run build",
@@ -44,7 +44,7 @@
     "madge": "^8.0.0",
     "rollup": "^4.64.7",
     "size-limit": "^12.1.0",
-    "tsup": "^8.5.1",
+    "tsup": "^9.0.0",
     "turbo": "^2.11.8",
     "typescript": "^6.0.3",
     "vitest": "^4.1.7"
