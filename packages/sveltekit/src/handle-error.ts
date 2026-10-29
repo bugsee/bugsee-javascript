@@ -31,12 +31,13 @@ export interface SvelteKitServerErrorInput {
   kind?: 'app' | 'framework' | 'validation' | 'unknown';
 }
 
-/** The HTTP status of the caught error: Kit 2's top-level `status`, else (Kit 3) the body's `status` for any
- *  non-`unknown` kind. An `unknown` error is a thrown value that may carry an unrelated `status`, so it is
- *  never read (Kit treats it as a 500). */
+/** The HTTP status of the caught error. Kit 3 (`kind` present): the body's `status` for any non-`unknown` kind
+ *  (an `unknown` error is a thrown value that may carry an unrelated `status`, so it is never read; Kit treats
+ *  it as a 500). Kit 2 (no `kind`): the top-level `status`. `kind` is checked FIRST because in Kit 3 dev the
+ *  top-level `status` is a deprecated getter that logs a warning on every read. */
 function effectiveStatus(input: SvelteKitServerErrorInput): number | undefined {
-  if (typeof input.status === 'number') return input.status;
-  if (input.kind === undefined || input.kind === 'unknown') return undefined;
+  if (input.kind === undefined) return typeof input.status === 'number' ? input.status : undefined;
+  if (input.kind === 'unknown') return undefined;
   const body = input.error as { status?: unknown } | null | undefined;
   return typeof body?.status === 'number' ? body.status : undefined;
 }

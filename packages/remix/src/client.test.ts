@@ -83,6 +83,12 @@ describe('bugseeOnError (RR7 <HydratedRouter onError>)', () => {
     expect(reportReactError).toHaveBeenLastCalledWith(err, {});
   });
 
+  it('skips expected control flow: route error responses and thrown Responses', () => {
+    bugseeOnError({ status: 404, statusText: 'Not Found', data: 'x' }, { pattern: '/x' });
+    bugseeOnError(new Response(null, { status: 404 }));
+    expect(reportReactError).not.toHaveBeenCalled();
+  });
+
   it('omits the component stack when React passes null (componentStack is string | null)', () => {
     const err = new Error('boom');
     bugseeOnError(err, { componentStack: null });

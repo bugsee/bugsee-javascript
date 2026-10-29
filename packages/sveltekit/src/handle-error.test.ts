@@ -194,4 +194,30 @@ describe('handleErrorWithBugsee', () => {
     run({ ...base, kind: 'app', error: null });
     expect(client.logException).toHaveBeenCalledTimes(3);
   });
+  it('Kit 3: never reads the deprecated top-level `status`/`message` getters (they warn in dev)', () => {
+    const client = fakeClient();
+    const getter = vi.fn(() => 500);
+    const kit3 = { kind: 'framework', error: { status: 404, message: 'Not Found' }, event: {} };
+    for (const key of ['status', 'message']) Object.defineProperty(kit3, key, { get: getter });
+    createHandleServerError({ getClient: () => client })(kit3 as SvelteKitServerErrorInput);
+    handleErrorWithBugsee(undefined, { getClient: () => client })({
+      ...kit3,
+      kind: 'unknown',
+      error: new Error('x'),
+    } as SvelteKitServerErrorInput);
+    expect(getter).not.toHaveBeenCalled();
+    expect(client.logException).toHaveBeenCalledTimes(1); // only the unknown one
+  });
+
+  it("Kit 3 forwarding: an app handler's `{ status }` return is passed through untouched", () => {
+    const client = fakeClient();
+    const returned = { status: 503 };
+    const result = handleErrorWithBugsee(() => returned, { getClient: () => client })({
+      kind: 'unknown',
+      error: new Error('x'),
+      event: {},
+    });
+    expect(result).toBe(returned);
+    expect(client.logException).toHaveBeenCalledTimes(1);
+  });
 });

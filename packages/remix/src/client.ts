@@ -49,6 +49,9 @@ export interface RouterOnErrorInfo extends ReactErrorInfo {
  * `reportReactError`).
  */
 export function bugseeOnError(error: unknown, info?: RouterOnErrorInfo): void {
+  // React Router calls `onError` for thrown `data()`/`Response` values (404s, auth redirects) too.
+  if (isRouteErrorResponse(error) || (typeof Response !== 'undefined' && error instanceof Response))
+    return;
   // React Router (7.x/8) passes `{ location, params, pattern, errorInfo }`; the React `ErrorInfo` is NESTED
   // under `errorInfo`. A bare React `ErrorInfo` (older RR7 / direct use) is still accepted. React's
   // `componentStack` is `string | null` — narrow to a real stack before forwarding.

@@ -70,6 +70,34 @@ describe('handleErrorWithBugsee', () => {
     expect(result).toEqual({ message: 'Custom error page' }); // …and its return is forwarded to SvelteKit
   });
 
+  it('skips expected <500 errors (Kit 3 kind bodies, Kit 2 status) but still delegates; reports 5xx/unknown', () => {
+    const { client, logException } = fakeClient();
+    const appHandler = vi.fn();
+    const h = handleErrorWithBugsee(appHandler, { getClient: () => client });
+    h({ kind: 'framework', error: { status: 404 } });
+    h({ kind: 'app', error: { status: 403 } });
+    h({ error: new Error('k2 404'), status: 404 });
+    expect(logException).not.toHaveBeenCalled();
+    expect(appHandler).toHaveBeenCalledTimes(3);
+    h({ kind: 'app', error: { status: 503 } });
+    h({ error: new Error('k2 500'), status: 500 });
+    h({ kind: 'unknown', error: Object.assign(new Error('x'), { status: 404 }) }); // thrown value: not trusted
+    h({ kind: 'app', error: null });
+    h({ error: new Error('no status at all') });
+    expect(logException).toHaveBeenCalledTimes(5);
+  });
+
+  it('Kit 3: does not read the deprecated top-level `status` getter', () => {
+    const { client } = fakeClient();
+    const getter = vi.fn(() => 404);
+    const input = { kind: 'unknown', error: new Error('x') } as Record<string, unknown>;
+    Object.defineProperty(input, 'status', { get: getter });
+    handleErrorWithBugsee(undefined, { getClient: () => client })(
+      input as unknown as Parameters<ReturnType<typeof handleErrorWithBugsee>>[0],
+    );
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   // The four cases below all describe a DEGRADED route shape: no label is expected, but THE ERROR MUST
   // STILL BE REPORTED. `expect(calls[0]?.[1]?.labels).toBeUndefined()` alone cannot say that — it passes
   // just as happily when `logException` was never called at all, which is exactly what happens if a
