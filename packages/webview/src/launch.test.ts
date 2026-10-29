@@ -1711,6 +1711,14 @@ describe('launch (webview)', () => {
         'tok',
         baseOptions({
           global: fake.global,
+          window: {
+            location: { href: 'https://a.com/o' },
+            get navigator() {
+              return (globalThis as { navigator?: unknown }).navigator;
+            },
+            addEventListener() {},
+            removeEventListener() {},
+          } as never,
           scheduler,
           systemMetricsSampler: () => [
             { name: 'wv_metric', value: 7 },
@@ -1740,6 +1748,22 @@ describe('launch (webview)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('a caller sampler may still write url when no url producer exists (no readable window)', async () => {
+    const fake = fakeGlobal();
+    track(
+      'tok',
+      baseOptions({
+        global: fake.global,
+        window: undefined,
+        systemMetricsSampler: () => [{ name: 'url', value: 'sampler-url' }],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(tracesOf(fake)).toContainEqual(
+      expect.objectContaining({ name: 'url', value: 'sampler-url' }),
+    );
   });
 
   it('a caller sampler may still write url when URL capture is off', async () => {

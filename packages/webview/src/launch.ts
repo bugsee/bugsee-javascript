@@ -764,6 +764,14 @@ export function launchWithSeams(
     options.onError,
   );
   const captureUrl = resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true);
+  // Undefined when URL capture is off or the window cannot be read: then no url producer is built and the sampler may write `url`.
+  const urlDeps = captureUrl
+    ? urlProducerDepsFor(win, {
+        ...(carrier !== undefined ? { carrier } : {}),
+        urlSanitizer: options.urlSanitizer,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      })
+    : undefined;
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery,
@@ -771,7 +779,10 @@ export function launchWithSeams(
       // name, #158), even when native hands a host-owned name back.
       ...(options.systemMetricsSampler !== undefined
         ? {
-            sample: withoutTraceNames(options.systemMetricsSampler, producerOwnedNames(captureUrl)),
+            sample: withoutTraceNames(
+              options.systemMetricsSampler,
+              producerOwnedNames(urlDeps !== undefined),
+            ),
           }
         : {}),
       suppression: hostOwned,
@@ -786,15 +797,7 @@ export function launchWithSeams(
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
-          ...(captureUrl
-            ? withUrl(
-                urlProducerDepsFor(win, {
-                  ...(carrier !== undefined ? { carrier } : {}),
-                  urlSanitizer: options.urlSanitizer,
-                  ...(options.onError !== undefined ? { onError: options.onError } : {}),
-                }),
-              )
-            : {}),
+          ...withUrl(urlDeps),
           // `route` / `view`: the page's own router state (`client.setRoute` / `setView`, fed by the framework adapters)
           routeViewState: screenTrackerFor(carrier, options.onError),
           lifecycle,
