@@ -57,6 +57,8 @@ jobs:
           cd "$RUNNER_TEMP/electron"
           npm init -y >/dev/null
           npm install --no-audit --no-fund "electron@${ELECTRON_SPEC}"
+          # Fetch the binary explicitly: `require('electron')` downloads lazily and prints progress to stdout.
+          node node_modules/electron/install.js
           node -e "process.stdout.write('ELECTRON_BIN=' + require('electron') + '\n')" >> "$GITHUB_ENV"
           cat "$GITHUB_ENV"
 
