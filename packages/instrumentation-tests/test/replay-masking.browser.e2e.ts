@@ -645,7 +645,11 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     'DIVTITLE',
     'DIV',
     'TYPED',
+    'PWTYPED',
+    'CCTYPED',
   ];
+  // the always-masked floor: never visible, whatever the options
+  const FLOOR = ['PASSWORD', 'CC', 'PWTYPED', 'CCTYPED'];
   const attrSecrets = (phase: string) => ATTR_CATEGORIES.map((c) => `ATTRSMOKE_${c}_${phase}`);
   const attrLeaks = (events: string) =>
     attrSecrets('PRE')
@@ -659,8 +663,8 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
         'beforeend',
         `<section id="smoke_${p}">
 <input type="text" value="ATTRSMOKE_TEXT_${p}">
-<input type="password" value="ATTRSMOKE_PASSWORD_${p}">
-<input type="text" autocomplete="cc-number" value="ATTRSMOKE_CC_${p}">
+<input class="pw" type="password" value="ATTRSMOKE_PASSWORD_${p}">
+<input class="cc" type="text" autocomplete="cc-number" value="ATTRSMOKE_CC_${p}">
 <input type="email" value="ATTRSMOKE_EMAIL_${p}">
 <textarea>ATTRSMOKE_TEXTAREA_${p}</textarea>
 <img alt="ATTRSMOKE_ALT_${p}" title="ATTRSMOKE_IMGTITLE_${p}" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
@@ -679,6 +683,16 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       ) as HTMLInputElement;
       el.value = `ATTRSMOKE_TYPED_${p}`;
       el.dispatchEvent(new Event('input', { bubbles: true }));
+      for (const [cls, tag] of [
+        ['pw', 'PWTYPED'],
+        ['cc', 'CCTYPED'],
+      ] as const) {
+        const f = document.querySelector<HTMLInputElement>(
+          `#smoke_${p} input.${cls}`,
+        ) as HTMLInputElement;
+        f.value = `ATTRSMOKE_${tag}_${p}`;
+        f.dispatchEvent(new Event('input', { bubbles: true }));
+      }
     }, phase);
 
   const runAttrSmoke = async (mode: Mode, options: Record<string, unknown>) => {
@@ -705,6 +719,17 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
   }
 
   for (const mode of ['raw', 'provider'] as const) {
+    // At defaults the <img> alt/title are hidden because the image is BLOCKED; with media unblocked the
+    // attribute masking itself must hide them (the control below proves they are detectable then).
+    it(`attribute smoke (${mode}): with blockAllMedia off, attribute masking still hides alt/title/data-*`, async () => {
+      const events = await runAttrSmoke(mode, { blockAllMedia: false });
+      expect(events).toContain('smoke_ADDED');
+      expect(attrLeaks(events)).toEqual([]);
+      await page.close();
+    });
+  }
+
+  for (const mode of ['raw', 'provider'] as const) {
     it(`control (${mode}): the attribute smoke fixture DOES leak with masking off (every category, both phases)`, async () => {
       const events = await runAttrSmoke(mode, {
         maskAllText: false,
@@ -714,10 +739,9 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       const found = attrLeaks(events);
       for (const phase of ['PRE', 'ADDED']) {
         // the always-masked sensitive inputs (password, card) must NOT appear even here: the hard floor
-        expect(found).not.toContain(`ATTRSMOKE_PASSWORD_${phase}`);
-        expect(found).not.toContain(`ATTRSMOKE_CC_${phase}`);
+        for (const c of FLOOR) expect(found).not.toContain(`ATTRSMOKE_${c}_${phase}`);
         // everything else was recorded in the clear, so the harness can see each category
-        for (const c of ATTR_CATEGORIES.filter((x) => x !== 'PASSWORD' && x !== 'CC')) {
+        for (const c of ATTR_CATEGORIES.filter((x) => !FLOOR.includes(x))) {
           expect(found, `${c} (${phase}) should be visible when masking is off`).toContain(
             `ATTRSMOKE_${c}_${phase}`,
           );
