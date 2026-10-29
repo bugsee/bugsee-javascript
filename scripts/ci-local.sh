@@ -46,6 +46,11 @@ if [ "$LOCAL_NODE_MAJOR" != "$CI_NODE_MAJOR" ]; then
   yellow "! Node v$LOCAL_NODE_MAJOR locally, v$CI_NODE_MAJOR on the runner — results can differ."
 fi
 
+# Astro 7 refuses to build below Node 22.23.4, so a 22.x older than that fails astro-e2e here too.
+if [ "$LOCAL_NODE_MAJOR" = "22" ] && ! node -e 'const [a,b,c]=process.versions.node.split(".").map(Number);process.exit(b>23||(b===23&&c>=4)?0:1)'; then
+  yellow "! Node v$(node -p 'process.versions.node') is below the 22.23.4 floor CI uses (Astro 7) — astro-e2e will fail."
+fi
+
 FAILED=()
 STEP_TIMES=()
 

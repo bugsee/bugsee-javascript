@@ -3,8 +3,10 @@
 // THE differentiator: a server-side load/action/render throw is reported to Bugsee AND stitched to the
 // session that led to it. Wire it in `src/hooks.server.ts`:
 //   export const handleError = handleErrorWithBugsee(myHandler?);   // reports + keeps your own handler
-// SvelteKit only calls `handleError` for UNEXPECTED errors (thrown `error()` control-flow is handled before
-// this hook); we additionally skip a <500 `status` (a 404 not-found) as expected.
+// Kit 2 calls `handleError` only for unexpected errors and passes a top-level `status`. Kit 3 calls it for EVERY
+// error (app `error()` throws, framework 404s, validation 400s) as `{ kind, error, issues? }` with the status
+// inside `error` (`kind` is `app` | `framework` | `validation` | `unknown`). Either way a <500 status is an
+// expected condition, not a crash, and is skipped.
 //
 // RUNTIME-PORTABLE: `hooks.server.ts` runs on node OR edge, so this uses only the portable
 // `@bugsee/adapter-kit` bridge — never node/edge-specific code. Fully defensive — never throws out of the
@@ -22,8 +24,21 @@ export interface SvelteKitServerErrorInput {
     /** SvelteKit's `event.url` — `pathname` is already query-stripped (no secret-in-`?token=` leak). */
     url?: { pathname?: string };
   };
+  /** Kit 2 only (Kit 3 keeps a deprecated dev-only getter). */
   status?: number;
   message?: string;
+  /** Kit 3: the error category; for every kind but `unknown`, `error` is a `{ status, message }` body. */
+  kind?: 'app' | 'framework' | 'validation' | 'unknown';
+}
+
+/** The HTTP status of the caught error: Kit 2's top-level `status`, else (Kit 3) the body's `status` for any
+ *  non-`unknown` kind. An `unknown` error is a thrown value that may carry an unrelated `status`, so it is
+ *  never read (Kit treats it as a 500). */
+function effectiveStatus(input: SvelteKitServerErrorInput): number | undefined {
+  if (typeof input.status === 'number') return input.status;
+  if (input.kind === undefined || input.kind === 'unknown') return undefined;
+  const body = input.error as { status?: unknown } | null | undefined;
+  return typeof body?.status === 'number' ? body.status : undefined;
 }
 
 /** A SvelteKit `handleError` hook (returns the `App.Error` to render, or void). */
@@ -41,8 +56,9 @@ function reportSvelteKitServerError(
   options: CreateHandleServerErrorOptions,
 ): void {
   try {
-    // handleError fires for unexpected errors; a <500 status (e.g. 404 not-found) is expected, not a crash.
-    if (typeof input?.status === 'number' && input.status < 500) return;
+    // A <500 status (e.g. 404 not-found, 400 validation) is expected, not a crash.
+    const status = effectiveStatus(input);
+    if (status !== undefined && status < 500) return;
     const routeId = input?.event?.route?.id;
     const method = input?.event?.request?.method;
     const path = input?.event?.url?.pathname;
