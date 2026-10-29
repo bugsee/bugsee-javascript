@@ -623,6 +623,230 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     });
   }
 
+  // ---------------------------------------------------------------------------------------------------------
+  // Secrets in every place a page keeps them: prefilled and typed input values (text, password, card, e-mail),
+  // textarea, `alt`, `title`, `placeholder`, `aria-label`, `data-*`, element text; both present BEFORE recording
+  // starts (the full snapshot) and ADDED / TYPED into after (the mutation path); existing nodes get typed values and a second section is inserted.
+  // ---------------------------------------------------------------------------------------------------------
+  const ATTR_CATEGORIES = [
+    'TEXT',
+    'PASSWORD',
+    'CC',
+    'EMAIL',
+    'TEXTAREA',
+    'ALT',
+    'IMGTITLE',
+    'TITLE',
+    'DATA',
+    'ARIA',
+    'LINK',
+    'PH',
+    'DATAUSER',
+    'DIVTITLE',
+    'DIV',
+    'TYPED',
+    'PWTYPED',
+    'CCTYPED',
+  ];
+  // the always-masked floor: never visible, whatever the options
+  const FLOOR = ['PASSWORD', 'CC', 'PWTYPED', 'CCTYPED'];
+  const attrSecrets = (phase: string) => ATTR_CATEGORIES.map((c) => `ATTRSMOKE_${c}_${phase}`);
+  const attrLeaks = (events: string) =>
+    attrSecrets('PRE')
+      .concat(attrSecrets('ADDED'))
+      .filter((s) => events.includes(s));
+
+  const insertAttrFixture = (phase: string) =>
+    page.evaluate((p) => {
+      const mount = document.getElementById('mount') as HTMLElement;
+      mount.insertAdjacentHTML(
+        'beforeend',
+        `<section id="smoke_${p}">
+<input type="text" value="ATTRSMOKE_TEXT_${p}">
+<input class="pw" type="password" value="ATTRSMOKE_PASSWORD_${p}">
+<input class="cc" type="text" autocomplete="cc-number" value="ATTRSMOKE_CC_${p}">
+<input type="email" value="ATTRSMOKE_EMAIL_${p}">
+<textarea>ATTRSMOKE_TEXTAREA_${p}</textarea>
+<img alt="ATTRSMOKE_ALT_${p}" title="ATTRSMOKE_IMGTITLE_${p}" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+<a href="#" title="ATTRSMOKE_TITLE_${p}" data-token="ATTRSMOKE_DATA_${p}" aria-label="ATTRSMOKE_ARIA_${p}">ATTRSMOKE_LINK_${p}</a>
+<input type="text" placeholder="ATTRSMOKE_PH_${p}">
+<div data-user="ATTRSMOKE_DATAUSER_${p}" title="ATTRSMOKE_DIVTITLE_${p}">ATTRSMOKE_DIV_${p}</div>
+<input class="typed" type="text">
+</section>`,
+      );
+    }, phase);
+
+  const typeAttrSecret = (phase: string) =>
+    page.evaluate((p) => {
+      const el = document.querySelector<HTMLInputElement>(
+        `#smoke_${p} input.typed`,
+      ) as HTMLInputElement;
+      el.value = `ATTRSMOKE_TYPED_${p}`;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      for (const [cls, tag] of [
+        ['pw', 'PWTYPED'],
+        ['cc', 'CCTYPED'],
+      ] as const) {
+        const f = document.querySelector<HTMLInputElement>(
+          `#smoke_${p} input.${cls}`,
+        ) as HTMLInputElement;
+        f.value = `ATTRSMOKE_${tag}_${p}`;
+        f.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }, phase);
+
+  const runAttrSmoke = async (mode: Mode, options: Record<string, unknown>) => {
+    await open();
+    await insertAttrFixture('PRE');
+    await start(mode, options);
+    await settle();
+    await insertAttrFixture('ADDED');
+    await typeAttrSecret('PRE');
+    await typeAttrSecret('ADDED');
+    await settle(400);
+    return dump();
+  };
+
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`attribute/value smoke (${mode}): no secret in values, text, alt, title, placeholder, aria, data-* at defaults`, async () => {
+      const events = await runAttrSmoke(mode, {});
+      expect(events).toContain('TOP_CONTROL'); // the harness sees the page (control)
+      expect(events).toContain('smoke_PRE'); // ...the snapshot section (ids are not masked)
+      // the password field IS in the snapshot (as masked/ignored inputs), so their absence of secrets below is a
+      // statement about masking, not about the recorder never seeing them. Typed events on them are dropped by the
+      // sensitive-input ignore rule, so the PWTYPED/CCTYPED checks guard that rule and have no failing control by design.
+      expect(events).toContain('"type":"password"');
+      expect(events).toContain('"class":"cc"'); // ...and so is the card field
+      expect(events).toContain('smoke_ADDED'); // ...and the node added after start reached the events
+      expect(attrLeaks(events)).toEqual([]);
+      await page.close();
+    });
+  }
+
+  for (const mode of ['raw', 'provider'] as const) {
+    // At defaults the <img> alt/title are hidden because the image is BLOCKED; with media unblocked the
+    // attribute masking itself must hide them (the control below proves they are detectable then).
+    it(`attribute smoke (${mode}): with blockAllMedia off, attribute masking still hides alt/title/data-*`, async () => {
+      const events = await runAttrSmoke(mode, { blockAllMedia: false });
+      expect(events).toContain('smoke_ADDED');
+      expect(events).toContain('smoke_PRE');
+      expect(events).toContain('R0lGODlhAQABAAAAACw'); // the image IS serialized (not a blocked placeholder)
+      expect(attrLeaks(events)).toEqual([]);
+      await page.close();
+    });
+  }
+
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`control (${mode}): the attribute smoke fixture DOES leak with masking off (every category, both phases)`, async () => {
+      const events = await runAttrSmoke(mode, {
+        maskAllText: false,
+        maskAllInputs: false,
+        blockAllMedia: false,
+      });
+      const found = attrLeaks(events);
+      for (const phase of ['PRE', 'ADDED']) {
+        // the always-masked sensitive inputs (password, card) must NOT appear even here: the hard floor
+        for (const c of FLOOR) expect(found).not.toContain(`ATTRSMOKE_${c}_${phase}`);
+        // everything else was recorded in the clear, so the harness can see each category
+        for (const c of ATTR_CATEGORIES.filter((x) => !FLOOR.includes(x))) {
+          expect(found, `${c} (${phase}) should be visible when masking is off`).toContain(
+            `ATTRSMOKE_${c}_${phase}`,
+          );
+        }
+      }
+      await page.close();
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // document.open(): rewrites a document in place (replaces a frame's content without a navigation).
+  // ---------------------------------------------------------------------------------------------------------
+  const rewriteFrame = (id: string, html: string) =>
+    page.evaluate(
+      ([frameId, markup]) => {
+        const d = (document.getElementById(frameId as string) as HTMLIFrameElement)
+          .contentDocument as Document;
+        d.open();
+        d.write(markup as string);
+        d.close();
+      },
+      [id, html] as const,
+    );
+
+  const REWRITTEN =
+    '<!doctype html><html><body><p id="ft">FRAME4_SECRET_REWRITTEN</p><input id="fi" type="text" value="TYPED_SECRET_REWRITTEN"><p class="bugsee-unmask">CONTROL_REWRITTEN</p></body></html>';
+
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`document.open (${mode}): a blocked iframe rewritten in place contributes nothing`, async () => {
+      await open();
+      await mountFrames({ id: 'a', n: 1 });
+      await start(mode);
+      await settle();
+      await rewriteFrame('a', REWRITTEN);
+      await settle(400);
+      await pokeFrame('a', 'AFTEROPEN');
+      await settle();
+      const events = await dump();
+      expect(events).toContain('TOP_CONTROL');
+      expect(events).not.toContain('CONTROL_REWRITTEN');
+      expect(events).not.toContain('FRAME4_SECRET');
+      expect(events).not.toContain('TYPED_SECRET_REWRITTEN');
+      expect(leaks(events)).toEqual([]);
+      await page.close();
+    });
+
+    it(`document.open (${mode}): an unblocked iframe rewritten in place stays masked`, async () => {
+      await open();
+      await mountFrames({ id: 'a', n: 1, attrs: 'class="bugsee-show"' });
+      await start(mode);
+      await settle(400);
+      await rewriteFrame('a', REWRITTEN);
+      await settle(400);
+      await pokeFrame('a', 'AFTEROPEN');
+      await settle();
+      const events = await dump();
+      expect(events).toContain('CONTROL_FRAME1'); // the unblocked frame was recorded before the rewrite (control)
+      expect(events).toContain('CONTROL_REWRITTEN'); // ...and the rewritten document is still being recorded
+      expect(events).not.toContain('FRAME4_SECRET');
+      expect(events).not.toContain('TYPED_SECRET_REWRITTEN');
+      expect(leaks(events)).toEqual([]);
+      await page.close();
+    });
+  }
+
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`control (${mode}): document.open content and later edits DO leak with masking off; a blocked iframe still does not`, async () => {
+      await open();
+      await mountFrames({ id: 'a', n: 1, attrs: 'class="bugsee-show"' }, { id: 'b', n: 3 });
+      await start(mode, { maskAllText: false, maskAllInputs: false });
+      await settle(400);
+      // distinct markers per frame, so a leak can be attributed to the frame it came from
+      await rewriteFrame('a', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_UNBLOCKED'));
+      await rewriteFrame('b', REWRITTEN.replaceAll('REWRITTEN', 'REWRITTEN_BLOCKED'));
+      await settle(500);
+      await pokeFrame('a', 'AFTEROPEN_UNBLOCKED');
+      await pokeFrame('b', 'AFTEROPEN_BLOCKED');
+      await settle(500);
+      const events = await dump();
+      // visible in the unblocked frame: the harness can fail, for the rewrite and for what changes after it
+      for (const marker of [
+        'FRAME4_SECRET_REWRITTEN_UNBLOCKED',
+        'TYPED_SECRET_REWRITTEN_UNBLOCKED',
+        'CONTROL_REWRITTEN_UNBLOCKED',
+        'IFB_SECRET_EDIT_AFTEROPEN_UNBLOCKED',
+        'IFB_SECRET_ADDED_AFTEROPEN_UNBLOCKED',
+        'TYPED_SECRET_AFTEROPEN_UNBLOCKED',
+        'IFB_SECRET_PH_AFTEROPEN_UNBLOCKED',
+      ]) {
+        expect(events, marker).toContain(marker);
+      }
+      // ...but nothing at all from the blocked one
+      expect(events).not.toContain('REWRITTEN_BLOCKED');
+      expect(events).not.toContain('AFTEROPEN_BLOCKED');
+      await page.close();
+    });
+  }
+
   it('control: with maskAllText and maskAllInputs switched off the same page DOES leak (the harness can fail)', async () => {
     await open();
     await mountFrames({ id: 'a', n: 3, attrs: 'class="bugsee-show"' });
