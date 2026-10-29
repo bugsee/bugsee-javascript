@@ -400,13 +400,132 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     );
   });
 
-  it('documents the unmodelled dialect gaps: bracket identifiers and q-quotes are not tokenised', () => {
-    // Known, pre-existing (the old regex leaked these too) and out of scope for #109: an apostrophe inside
-    // `[..]` or `q'[..]'` shifts the pairing identically in every reading, so nothing is cut. Pinned so a
-    // future fix has to change this test on purpose.
-    expect(clean("SELECT [it's] FROM t WHERE a = 'secret1' AND b = 'x'")).toBe(
-      'SELECT [it?secret1?x?',
+  it.each([
+    // SQL Server `[..]` identifiers, Oracle `q'..'` / `nq'..'` quoting, BigQuery triple quotes: a quote inside
+    // them shifts the pairing in the plain readings, so the readings disagree and the tail is cut.
+    ["SELECT [it's] FROM t WHERE a = 'secret1' AND b = 'x'", 'secret1', 'SELECT [it?'],
+    ["SELECT q'[O'Brien secret2]' FROM dual WHERE a = 'secret2b'", 'secret2', 'SELECT q??'],
+    ["SELECT nq'{O'Brien secret3}', 'secret3b' FROM dual", 'secret3', 'SELECT nq??'],
+    ["SELECT '''it's secret4''' FROM t WHERE a = 'secret4b'", 'secret4', 'SELECT ??'],
+    ['SELECT """it"s secret5""" FROM t WHERE a = "secret5b"', 'secret5', 'SELECT ??'],
+    ["SELECT [a]]b'c] , 'secret6'", 'secret6', 'SELECT [a]]b?'],
+  ])('fails closed on bracket, q-quote and triple-quote constructs: %j', (sql, secret, out) => {
+    expect(clean(sql)).not.toContain(secret);
+    expect(clean(sql)).toBe(out);
+  });
+
+  it('fails closed on an unterminated bracket run, q-quote or triple quote', () => {
+    expect(clean("SELECT [abc 'secret7")).toBe('SELECT ?');
+    expect(clean("SELECT q'[abc secret8")).toBe('SELECT q?');
+    expect(clean("SELECT '''abc secret9")).toBe('SELECT ?');
+    expect(clean("SELECT '''abc\\'''secret10")).toBe('SELECT ??');
+  });
+
+  it('keeps ordinary bracketed identifiers, subscripts and q-lookalikes intact', () => {
+    expect(clean('SELECT [col] FROM [t] WHERE arr[2] = x')).toBe(
+      'SELECT [col] FROM [t] WHERE arr[?] = x',
     );
+    expect(clean("SELECT '' FROM t WHERE a = 'x'")).toBe('SELECT ? FROM t WHERE a = ?');
+    expect(clean("SELECT faq'x' FROM t")).toBe('SELECT faq? FROM t');
+    expect(clean("SELECT q' x' FROM t")).toBe('SELECT q? FROM t');
+  });
+
+  it.each([
+    ['SELECT * FROM t WHERE ssn=123456789AND x=1', '123456789'],
+    ['SELECT * FROM t WHERE ssn=123456789OR x=1', '123456789'],
+    ['SELECT * FROM t WHERE x=0xDEADBEEFAND y=1', 'DEADBEEF'],
+    ['SELECT * FROM t WHERE x=1e5AND y=1', '1e5'],
+  ])('redacts a number glued to a following keyword: %j', (sql, secret) => {
+    expect(clean(sql)).not.toContain(secret);
+  });
+
+  it('reads well-formed q-quotes and triple quotes without cutting the statement', () => {
+    expect(clean("SELECT q'(abc)', q'<d>', Q'{e}', q'[f]', nq'!g!' FROM t WHERE a = 'x'")).toBe(
+      'SELECT q?, q?, Q?, q?, nq? FROM t WHERE a = ?',
+    );
+    expect(clean("SELECT Q'{O'B secret13}' , 'secret14' FROM t")).not.toMatch(/secret1[34]/);
+    expect(clean("SELECT q'' , 'a' FROM t")).toBe('SELECT q? , ? FROM t');
+    expect(clean("SELECT '''abc''' FROM t WHERE a = 'x'")).toBe('SELECT ? FROM t WHERE a = ?');
+    expect(clean('SELECT """abc""" FROM t WHERE a = "x"')).toBe('SELECT ? FROM t WHERE a = ?');
+  });
+
+  it('does not end a triple-quoted body at a backslash-escaped quote', () => {
+    const out = clean("SELECT '''a\\''' secret11''' FROM t WHERE b = 'secret12'");
+    expect(out).not.toContain('secret11');
+    expect(out).not.toContain('secret12');
+  });
+
+  it('documents the accepted shape losses of failing closed (nothing leaks, the tail is cut)', () => {
+    // a quote inside `[..]` is ambiguous (SQL Server identifier vs Postgres array / jsonb subscript)
+    expect(clean("SELECT ARRAY['a','b'] FROM t WHERE x = 'y'")).toBe('SELECT ARRAY[?');
+    expect(clean("SELECT data['k'] FROM t WHERE x = 1")).toBe('SELECT data[?');
+    // `]]` is SQL Server's escaped close, so nested Postgres subscripts / multi-dimensional arrays leave the run open
+    expect(clean("SELECT a[b[1]] FROM t WHERE x = 'secret'")).toBe('SELECT a?');
+    expect(clean("SELECT ARRAY[[1,2],[3,4]] FROM t WHERE x = 'secret'")).toBe(
+      'SELECT ARRAY[[?,?],?',
+    );
+    // a string opening with an escaped quote looks like a BigQuery triple quote
+    expect(clean("SELECT '''Hello'' she said' , 'x' FROM t")).toBe('SELECT ??');
+    // numbers are redacted greedily, so hex-digit keyword letters and digit-led words are eaten
+    expect(clean('SELECT * FROM t WHERE x=0x1FAND y=1')).toBe('SELECT * FROM t WHERE x=?ND y=?');
+    expect(clean('SELECT 1abc')).toBe('SELECT ?abc');
+  });
+
+  it('still leaves digits inside identifiers alone', () => {
+    expect(clean('SELECT a1b2, _3, t.c4, col12, x345 FROM t5')).toBe(
+      'SELECT a1b2, _3, t.c4, col12, x345 FROM t5',
+    );
+  });
+
+  it('never lets a literal survive: randomised well-formed statements in each dialect', () => {
+    let seed = 12345;
+    const rnd = (n: number): number => {
+      // mulberry32: well distributed in every bit (a plain LCG masked to 31 bits was almost always even)
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n);
+    };
+    const pick = <T>(items: readonly T[]): T => items[rnd(items.length)] as T;
+    // nasty text that is plain content inside whichever construct it is generated for
+    const junk = ['[', ']', '--', '/*', '*/', '#', '$$', '"', '`', ' ', 'x', '{', '}', '(', ')'];
+    const body = (extra: readonly string[], marker: string, drop: RegExp): string => {
+      const parts = [marker];
+      for (let n = rnd(6); n > 0; n--) {
+        parts.splice(rnd(parts.length + 1), 0, pick([...junk, ...extra]).replace(drop, ''));
+      }
+      return parts.join('');
+    };
+    const T1 = "'".repeat(3);
+    const makers: ((marker: string) => string)[] = [
+      (m) => `'${body(["''"], m, /^$/)}'`,
+      (m) => `'${body(["\\'", '\\\\'], m, /^$/)}'`,
+      (m) => `E'${body(["\\'", "''"], m, /^$/)}'`,
+      (m) => `$t$${body(["'"], m, /^$/)}$t$`,
+      // a bracketed identifier is kept by design, so it carries no marker: only what FOLLOWS it must stay redacted
+      () => `[${body(["'"], 'id', /\]/)}]`,
+      (m) => `q'[${body(["'"], m, /\]/)}]'`,
+      (m) => `nq'{${body(["'"], m, /\}/)}}'`,
+      (m) => `${T1}${body(["'", '"', "\\'"], m, /^$/).replaceAll(T1, 'x')}${T1}`,
+      (m) => `"${body(["''"], m, /"/)}"`,
+      (m) => `/* ${body(["'"], m, /\*\//)} */`,
+      (m) => `-- ${body(["'"], m, /^$/)}\n`,
+    ];
+    for (let run = 0; run < 3000; run++) {
+      const markers: string[] = [];
+      let sql = 'SELECT ';
+      for (let n = rnd(3) + 1; n > 0; n--) {
+        const marker = `zq${run}k${n}z`;
+        markers.push(marker);
+        sql += `${pick(makers)(marker)}${pick([' ', ' = ', ', ', ' AND '])}`;
+      }
+      const digits = `9${run}7${rnd(1000)}1`;
+      markers.push(digits);
+      sql += `x = ${digits}${pick(['AND', ' AND', 'OR'])} y = 'zqend'`;
+      const out = clean(sql);
+      for (const marker of markers) expect(out, sql).not.toContain(marker);
+      expect(out, sql).not.toContain('zqend');
+    }
   });
 
   it('redacts underscore-separated, binary and octal numeric literals', () => {
@@ -454,7 +573,7 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(clean('SELECT 1.e5 FROM t')).toBe('SELECT ? FROM t');
     expect(clean('SELECT 123.e45, .5e3, 1.5e+3 FROM t')).toBe('SELECT ?, .?, ? FROM t');
     expect(clean('SELECT 12.E-7')).toBe('SELECT ?');
-    expect(clean('SELECT 1..2, a1.e FROM t')).toBe('SELECT ?..?, a1.e FROM t');
+    expect(clean('SELECT 1..2, a1.e FROM t')).toBe('SELECT ?.?, a1.e FROM t');
   });
 
   it('redacts an exponent with underscore separators', () => {
