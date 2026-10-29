@@ -57,7 +57,8 @@ jobs:
           cd "$RUNNER_TEMP/electron"
           npm init -y >/dev/null
           npm install --no-audit --no-fund "electron@${ELECTRON_SPEC}"
-          echo "ELECTRON_BIN=$(node -p "require('electron')")" >> "$GITHUB_ENV"
+          node -e "process.stdout.write('ELECTRON_BIN=' + require('electron') + '\n')" >> "$GITHUB_ENV"
+          cat "$GITHUB_ENV"
 
       # Chromium needs libs the runner image may lack; xvfb gives it a display for the (hidden) window.
       - name: Install Electron runtime libraries
