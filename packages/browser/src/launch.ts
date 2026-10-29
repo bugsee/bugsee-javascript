@@ -568,7 +568,7 @@ export interface BugseeLaunchOptions {
   systemProbe?: BrowserProbe;
   /**
    * LEGACY polled system-traces override. It REPLACES the default heap/connection/orientation traces (as on
-   * Node); battery stays a tracker-backed producer. The defaults are producers, not a sampler.
+   * Node); battery stays a tracker-backed producer that owns `battery`/`charging` (sampler rows under those names are dropped). The defaults are producers, not a sampler.
    */
   systemMetricsSampler?: () => readonly TraceSample[];
   /** Durable bundle store override (crash recovery across reloads). Default none (until B5). */
@@ -1095,9 +1095,10 @@ async function buildLaunch(
   }
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still
+      // runs and OWNS `battery`/`charging`: a sampler row under those names is dropped (one writer per trace name, #154).
       ...(options.systemMetricsSampler !== undefined
-        ? { sample: options.systemMetricsSampler }
+        ? { sample: withoutProducerOwnedNames(options.systemMetricsSampler) }
         : {}),
       ...(suppression !== undefined ? { suppression } : {}),
       producers: [
@@ -1620,6 +1621,15 @@ export function relaunch(options?: BugseeLaunchOptions): Promise<Bugsee> {
 // The public composition root: the launched client. Equivalent to `(await launchCore(...)).client` —
 // `launchCore` additionally surfaces the internal wiring (`LaunchInternals`) that the `bugsee` umbrella
 // uses to wire on-by-default extensions; bare `@bugsee/browser` callers use this and never see the internals.
+/** Trace names the always-on battery producer owns; a caller sampler may not also write them. */
+const PRODUCER_OWNED_SAMPLER_NAMES: ReadonlySet<string> = new Set(['battery', 'charging']);
+
+function withoutProducerOwnedNames(
+  sample: () => readonly TraceSample[],
+): () => readonly TraceSample[] {
+  return () => sample().filter((row) => !PRODUCER_OWNED_SAMPLER_NAMES.has(row.name));
+}
+
 export async function launch(appToken: string, options: BugseeLaunchOptions = {}): Promise<Bugsee> {
   return (await launchCore(appToken, options)).client;
 }

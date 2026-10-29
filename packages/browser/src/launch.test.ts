@@ -1356,6 +1356,30 @@ describe('launch', () => {
     );
   });
 
+  it('a caller sampler returning battery/charging does not duplicate the battery producer (one writer per name)', async () => {
+    vi.stubGlobal('navigator', { getBattery: () => Promise.resolve(batteryManager()) });
+    const store = memStore();
+    await launchTracked(
+      'tok',
+      baseOptions({
+        captureStore: store,
+        systemMetricsSampler: () => [
+          { name: 'ram_js_heap_used', value: 42 },
+          { name: 'battery', value: 7 },
+          { name: 'charging', value: { state: 1 } },
+        ],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const traces = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => e.data as { name: string; value: unknown },
+    );
+    // the producer owns the names: the sampler's rows are dropped, its other rows are kept
+    expect(traces.filter((t) => t.name === 'battery').map((t) => t.value)).toEqual([50]);
+    expect(traces.filter((t) => t.name === 'charging').map((t) => t.value)).toEqual([{ state: 2 }]);
+    expect(traces).toContainEqual(expect.objectContaining({ name: 'ram_js_heap_used', value: 42 }));
+  });
+
   it('a battery manager that throws after getBattery resolves reaches options.onError', async () => {
     const getBattery = vi.fn(() =>
       Promise.resolve({
