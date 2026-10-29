@@ -60,3 +60,7 @@ updates:
         update-types: ['version-update:semver-major']
       - dependency-name: 'preact'
         update-types: ['version-update:semver-major']
+      # unplugin 3 requires Node ^20.19 || >=22.12, but the shipped bundler plugins run in the user's build
+      # (webpack/vite) and the SDK supports Node >= 18. Nothing we use needs v3; revisit when the Node floor moves.
+      - dependency-name: 'unplugin'
+        update-types: ['version-update:semver-major']
