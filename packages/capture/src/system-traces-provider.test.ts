@@ -17,6 +17,7 @@ import {
   createSystemTracesProvider,
   deriveRefreshMs,
   type TraceSample,
+  withoutTraceNames,
 } from './system-traces-provider';
 import { type TraceProducer, TraceProducerBase, type TraceSink } from './trace-producer';
 import { createTraceSuppression } from './trace-suppression';
@@ -1249,5 +1250,27 @@ describe('deriveRefreshMs', () => {
     Number.NEGATIVE_INFINITY,
   ])('a non-finite or non-positive window (%d) falls back to the 10 s default', (windowMs) => {
     expect(deriveRefreshMs(windowMs)).toBe(10_000);
+  });
+});
+
+describe('withoutTraceNames', () => {
+  it('drops rows under the owned names on every call and keeps the rest in order', () => {
+    let n = 0;
+    const sample = withoutTraceNames(
+      () => [
+        { name: 'a', value: ++n },
+        { name: 'b', value: 2 },
+        { name: 'c', value: 3 },
+      ],
+      new Set(['b']),
+    );
+    expect(sample()).toEqual([
+      { name: 'a', value: 1 },
+      { name: 'c', value: 3 },
+    ]);
+    expect(sample()).toEqual([
+      { name: 'a', value: 2 },
+      { name: 'c', value: 3 },
+    ]);
   });
 });

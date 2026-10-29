@@ -67,6 +67,7 @@ export {
   deriveRefreshMs,
   type SystemTracesProviderOptions,
   type TraceSample,
+  withoutTraceNames,
 } from './system-traces-provider';
 export {
   type TraceEmitOptions,

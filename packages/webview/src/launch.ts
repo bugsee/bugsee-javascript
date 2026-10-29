@@ -32,6 +32,7 @@ import {
   installNetworkCapture,
   type TraceSample,
   WEBVIEW_HOST_OWNED_TRACES,
+  withoutTraceNames,
 } from '@bugsee/capture';
 import {
   BlackoutToken,
@@ -68,7 +69,7 @@ import {
   setCarrierClient,
   setCarrierStatus,
 } from '@bugsee/core';
-import { BugseeOption } from '@bugsee/protocol';
+import { BugseeOption, TraceName } from '@bugsee/protocol';
 import { randomId } from '@bugsee/util';
 import { mintControlToken } from './control-token';
 import { createHostBridge, type HostBridgeTransport } from './host-bridge';
@@ -449,6 +450,19 @@ export function launch(appToken: string, options: BugseeWebViewLaunchOptions = {
   return launchWithSeams(appToken, safe as BugseeWebViewLaunchOptions);
 }
 
+/** Names the producers that run alongside a caller sampler (`sensors: false`) own: battery x4, route, view, and url when built. */
+function producerOwnedNames(withUrl: boolean): ReadonlySet<string> {
+  return new Set<string>([
+    TraceName.BATTERY,
+    TraceName.CHARGING,
+    TraceName.BATTERY_CHARGING_TIME_S,
+    TraceName.BATTERY_DISCHARGING_TIME_S,
+    TraceName.ROUTE,
+    TraceName.VIEW,
+    ...(withUrl ? [TraceName.URL] : []),
+  ]);
+}
+
 /** {@link launch} with the injectable seams honoured. NOT for page-reachable surfaces (see {@link launch}). */
 export function launchWithSeams(
   appToken: string,
@@ -749,11 +763,16 @@ export function launchWithSeams(
     },
     options.onError,
   );
+  const captureUrl = resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true);
   client.addCaptureProvider(
     createSystemTracesProvider({
-      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still runs.
+      // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery,
+      // route, view and url (when captured) still run and OWN their names: a sampler row under them is dropped (one writer per
+      // name, #158), even when native hands a host-owned name back.
       ...(options.systemMetricsSampler !== undefined
-        ? { sample: options.systemMetricsSampler }
+        ? {
+            sample: withoutTraceNames(options.systemMetricsSampler, producerOwnedNames(captureUrl)),
+          }
         : {}),
       suppression: hostOwned,
       producers: createBrowserSystemTraceProducers(
@@ -767,7 +786,7 @@ export function launchWithSeams(
               }),
           ...(options.systemMetricsSampler !== undefined ? { sensors: false } : {}),
           captureUserIdle: resolved.options.get<boolean>(CAPTURE_USER_IDLE_OPTION_KEY, false),
-          ...(resolved.options.get<boolean>(CAPTURE_URL_OPTION_KEY, true)
+          ...(captureUrl
             ? withUrl(
                 urlProducerDepsFor(win, {
                   ...(carrier !== undefined ? { carrier } : {}),
