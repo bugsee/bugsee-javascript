@@ -626,7 +626,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
   // ---------------------------------------------------------------------------------------------------------
   // Secrets in every place a page keeps them: prefilled and typed input values (text, password, card, e-mail),
   // textarea, `alt`, `title`, `placeholder`, `aria-label`, `data-*`, element text; both present BEFORE recording
-  // starts (the full snapshot) and ADDED / EDITED after (the mutation path).
+  // starts (the full snapshot) and ADDED / TYPED into after (the mutation path); existing nodes get typed values and a second section is inserted.
   // ---------------------------------------------------------------------------------------------------------
   const ATTR_CATEGORIES = [
     'TEXT',
@@ -672,13 +672,14 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       );
     }, phase);
 
-  const typeAttrSecret = () =>
-    page.evaluate(() => {
-      for (const el of document.querySelectorAll<HTMLInputElement>('input.typed')) {
-        el.value = 'ATTRSMOKE_TYPED_PRE';
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-    });
+  const typeAttrSecret = (phase: string) =>
+    page.evaluate((p) => {
+      const el = document.querySelector<HTMLInputElement>(
+        `#smoke_${p} input.typed`,
+      ) as HTMLInputElement;
+      el.value = `ATTRSMOKE_TYPED_${p}`;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, phase);
 
   const runAttrSmoke = async (mode: Mode, options: Record<string, unknown>) => {
     await open();
@@ -686,7 +687,8 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     await start(mode, options);
     await settle();
     await insertAttrFixture('ADDED');
-    await typeAttrSecret();
+    await typeAttrSecret('PRE');
+    await typeAttrSecret('ADDED');
     await settle(400);
     return dump();
   };
@@ -695,27 +697,35 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     it(`attribute/value smoke (${mode}): no secret in values, text, alt, title, placeholder, aria, data-* at defaults`, async () => {
       const events = await runAttrSmoke(mode, {});
       expect(events).toContain('TOP_CONTROL'); // the harness sees the page (control)
+      expect(events).toContain('smoke_PRE'); // ...the snapshot section (ids are not masked)
+      expect(events).toContain('smoke_ADDED'); // ...and the node added after start reached the events
       expect(attrLeaks(events)).toEqual([]);
       await page.close();
     });
   }
 
-  it('control: the attribute smoke fixture DOES leak with masking off (every category is detectable)', async () => {
-    const events = await runAttrSmoke('raw', {
-      maskAllText: false,
-      maskAllInputs: false,
-      blockAllMedia: false,
+  for (const mode of ['raw', 'provider'] as const) {
+    it(`control (${mode}): the attribute smoke fixture DOES leak with masking off (every category, both phases)`, async () => {
+      const events = await runAttrSmoke(mode, {
+        maskAllText: false,
+        maskAllInputs: false,
+        blockAllMedia: false,
+      });
+      const found = attrLeaks(events);
+      for (const phase of ['PRE', 'ADDED']) {
+        // the always-masked sensitive inputs (password, card) must NOT appear even here: the hard floor
+        expect(found).not.toContain(`ATTRSMOKE_PASSWORD_${phase}`);
+        expect(found).not.toContain(`ATTRSMOKE_CC_${phase}`);
+        // everything else was recorded in the clear, so the harness can see each category
+        for (const c of ATTR_CATEGORIES.filter((x) => x !== 'PASSWORD' && x !== 'CC')) {
+          expect(found, `${c} (${phase}) should be visible when masking is off`).toContain(
+            `ATTRSMOKE_${c}_${phase}`,
+          );
+        }
+      }
+      await page.close();
     });
-    const found = attrLeaks(events);
-    // the always-masked sensitive inputs (password, card) must NOT appear even here: the hard floor
-    expect(found).not.toContain('ATTRSMOKE_PASSWORD_PRE');
-    expect(found).not.toContain('ATTRSMOKE_CC_PRE');
-    // the rest were recorded in the clear, so the harness can see each category
-    for (const c of ['TEXT', 'EMAIL', 'TEXTAREA', 'ALT', 'TITLE', 'PH', 'DIV', 'LINK', 'TYPED']) {
-      expect(found, `${c} should be visible when masking is off`).toContain(`ATTRSMOKE_${c}_PRE`);
-    }
-    await page.close();
-  });
+  }
 
   // ---------------------------------------------------------------------------------------------------------
   // document.open(): rewrites a document in place (replaces a frame's content without a navigation).
@@ -765,6 +775,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
       await settle();
       const events = await dump();
       expect(events).toContain('CONTROL_FRAME1'); // the unblocked frame was recorded before the rewrite (control)
+      expect(events).toContain('CONTROL_REWRITTEN'); // ...and the rewritten document is still being recorded
       expect(events).not.toContain('FRAME4_SECRET');
       expect(events).not.toContain('TYPED_SECRET_REWRITTEN');
       expect(leaks(events)).toEqual([]);
@@ -782,6 +793,7 @@ describe('replay masking — REAL Chromium + REAL rrweb bundle', () => {
     await settle(500);
     const events = await dump();
     expect(events).toContain('FRAME4_SECRET_UNBLOCKED_REWRITTEN'); // visible in the unblocked frame: the harness can fail
+    expect(events).toContain('TYPED_SECRET_REWRITTEN'); // the typed value is detectable too
     expect(events).not.toContain('FRAME4_SECRET_BLOCKED'); // ...but nothing from the blocked one
     await page.close();
   });
