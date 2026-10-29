@@ -10,6 +10,8 @@ name: Electron compat (non-blocking)
 # The repo has no Electron dependency on purpose; the binary is installed into a scratch dir.
 
 on:
+  push:
+    branches: [fix/issue-116] # TEMP: verify the lane on a real runner before merge; removed afterwards
   schedule:
     - cron: '17 4 * * *' # nightly
   workflow_dispatch:
