@@ -9,6 +9,7 @@
     "test:e2e": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "typecheck": "tsc --noEmit",
+    "test:electron-smoke": "tsx harness/electron-smoke.mts",
     "test:invariants": "tsx harness/invariants.mts"
   },
   "dependencies": {
