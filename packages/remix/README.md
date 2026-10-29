@@ -1,10 +1,10 @@
 # @bugsee/remix
 
-Remix and React Router v7 adapter for the Bugsee SDK: server error reporting through `handleError` in `entry.server`, and browser capture through `entry.client`.
+Remix and React Router v7/v8 adapter for the Bugsee SDK: server error reporting through `handleError` in `entry.server`, and browser capture through `entry.client`.
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-Install this package directly in Remix and React Router v7 (framework mode) apps. It is a single install: it bundles the browser and Node.js SDKs and re-exports the React adapter from `@bugsee/remix/client`.
+Install this package directly in Remix and React Router v7 or v8 (framework mode) apps. It is a single install: it bundles the browser and Node.js SDKs and re-exports the React adapter from `@bugsee/remix/client`.
 
 ## Install
 

@@ -15,6 +15,7 @@ export default defineConfig({
     testTimeout: 30_000,
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    exclude: ['src/**/*.preact.test.ts', '**/node_modules/**'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

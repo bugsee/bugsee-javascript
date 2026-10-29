@@ -156,4 +156,68 @@ describe('handleErrorWithBugsee', () => {
     expect(client.logException).not.toHaveBeenCalled();
     expect(result).toEqual({ message: 'nf' });
   });
+  it("Kit 3: forwards an app handler's `{ message, status }` return verbatim and gates only on the INPUT (not the returned) status", () => {
+    const client = fakeClient();
+    const returned = { message: 'down for maintenance', status: 503 };
+    const appHandler = vi.fn((_i: SvelteKitServerErrorInput) => returned);
+    const wired = handleErrorWithBugsee(appHandler, { getClient: () => client });
+
+    const unexpected = input(); // input status 500 -> reported, even if the app maps it to 404 below
+    const mapTo404 = handleErrorWithBugsee(() => ({ message: 'nf', status: 404 }), {
+      getClient: () => client,
+    });
+    expect(mapTo404(unexpected)).toEqual({ message: 'nf', status: 404 });
+    expect(client.logException).toHaveBeenCalledTimes(1);
+
+    const result = wired(unexpected);
+    expect(result).toBe(returned); // same object — no cloning, no status rewriting
+    expect(appHandler).toHaveBeenCalledWith(unexpected);
+    expect(client.logException).toHaveBeenCalledTimes(2);
+  });
+  it('Kit 3 input shape: skips <500 app/framework/validation errors, reports 5xx and unknown', () => {
+    const client = fakeClient();
+    const run = (i: SvelteKitServerErrorInput) =>
+      createHandleServerError({ getClient: () => client })(i);
+    const base = {
+      event: { route: { id: '/x' }, request: { method: 'GET' }, url: { pathname: '/x' } },
+    };
+    run({ ...base, kind: 'framework', error: { status: 404, message: 'Not Found' } });
+    run({ ...base, kind: 'app', error: { status: 403, message: 'no' } });
+    run({ ...base, kind: 'validation', error: { status: 400, message: 'Bad Request' } });
+    expect(client.logException).not.toHaveBeenCalled();
+    run({ ...base, kind: 'app', error: { status: 503, message: 'down' } });
+    expect(client.logException).toHaveBeenCalledTimes(1);
+    // unknown: a thrown value's own `status` is NOT trusted (Kit treats it as a 500)
+    run({ ...base, kind: 'unknown', error: Object.assign(new Error('x'), { status: 404 }) });
+    expect(client.logException).toHaveBeenCalledTimes(2);
+    // malformed non-unknown body without a numeric status -> report
+    run({ ...base, kind: 'app', error: null });
+    expect(client.logException).toHaveBeenCalledTimes(3);
+  });
+  it('Kit 3: never reads the deprecated top-level `status`/`message` getters (they warn in dev)', () => {
+    const client = fakeClient();
+    const getter = vi.fn(() => 500);
+    const kit3 = { kind: 'framework', error: { status: 404, message: 'Not Found' }, event: {} };
+    for (const key of ['status', 'message']) Object.defineProperty(kit3, key, { get: getter });
+    createHandleServerError({ getClient: () => client })(kit3 as SvelteKitServerErrorInput);
+    handleErrorWithBugsee(undefined, { getClient: () => client })({
+      ...kit3,
+      kind: 'unknown',
+      error: new Error('x'),
+    } as SvelteKitServerErrorInput);
+    expect(getter).not.toHaveBeenCalled();
+    expect(client.logException).toHaveBeenCalledTimes(1); // only the unknown one
+  });
+
+  it("Kit 3 forwarding: an app handler's `{ status }` return is passed through untouched", () => {
+    const client = fakeClient();
+    const returned = { status: 503 };
+    const result = handleErrorWithBugsee(() => returned, { getClient: () => client })({
+      kind: 'unknown',
+      error: new Error('x'),
+      event: {},
+    });
+    expect(result).toBe(returned);
+    expect(client.logException).toHaveBeenCalledTimes(1);
+  });
 });

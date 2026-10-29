@@ -27,6 +27,19 @@ export interface ReportSvelteErrorOptions extends SvelteErrorOptions {
 export interface HandleErrorInput {
   error: unknown;
   event?: { route?: { id?: string | null } };
+  /** Kit 3: the error category; for every kind but `unknown`, `error` is a `{ status, message }` body. */
+  kind?: 'app' | 'framework' | 'unknown';
+  /** Kit 2 only (a deprecated, warning getter in Kit 3 dev — read only when `kind` is absent). */
+  status?: number;
+}
+
+/** True for an expected <500 condition (404, `error(4xx)`), which is not a crash. Kit 3 (`kind` present) keeps
+ *  the status in the `error` body (never for `unknown`, a thrown value); Kit 2 has a top-level `status`. */
+function isExpectedStatus(input: HandleErrorInput): boolean {
+  let status: unknown;
+  if (input.kind === undefined) status = input.status;
+  else if (input.kind !== 'unknown') status = (input.error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status < 500;
 }
 /** A SvelteKit `handleError` hook (returns the `App.Error` to render, or void). */
 export type HandleErrorHook = (input: HandleErrorInput) => unknown;
@@ -57,6 +70,7 @@ export function handleErrorWithBugsee(
     // the error seam did not.
     const routeId = neverThrow(() => input.event?.route?.id, options.onError);
     neverThrow(() => {
+      if (isExpectedStatus(input)) return;
       reportSvelteError(input.error, {
         ...options,
         ...(typeof routeId === 'string' && routeId !== '' ? { routeId } : {}),
