@@ -22,6 +22,7 @@ import {
   type NetworkCapture,
   type TraceSample,
   type TraceSuppression,
+  withoutTraceNames,
 } from '@bugsee/capture';
 import {
   asInternalClient,
@@ -676,13 +677,6 @@ function producerOwnedNames(withUrl: boolean, withCapture: boolean): ReadonlySet
   ]);
 }
 
-function withoutNames(
-  sample: () => readonly TraceSample[],
-  owned: ReadonlySet<string>,
-): () => readonly TraceSample[] {
-  return () => sample().filter((row) => !owned.has(row.name));
-}
-
 // The public composition root's lifecycle shell: publishes Launching while the (async) composition is in
 // flight, Launched once it has built a client, and falls back to Stopped if it throws. A repeat launch
 // (a client already owns the slot) leaves the state alone.
@@ -1122,7 +1116,7 @@ async function buildLaunch(
       // under those names is dropped (one writer per trace name, #154).
       ...(options.systemMetricsSampler !== undefined
         ? {
-            sample: withoutNames(
+            sample: withoutTraceNames(
               options.systemMetricsSampler,
               producerOwnedNames(captureUrl, captureState !== undefined),
             ),
