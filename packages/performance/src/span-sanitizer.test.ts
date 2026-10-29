@@ -455,6 +455,17 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
     expect(out).not.toContain('secret12');
   });
 
+  it('documents the accepted shape losses of failing closed (nothing leaks, the tail is cut)', () => {
+    // a quote inside `[..]` is ambiguous (SQL Server identifier vs Postgres array / jsonb subscript)
+    expect(clean("SELECT ARRAY['a','b'] FROM t WHERE x = 'y'")).toBe('SELECT ARRAY[?');
+    expect(clean("SELECT data['k'] FROM t WHERE x = 1")).toBe('SELECT data[?');
+    // a string opening with an escaped quote looks like a BigQuery triple quote
+    expect(clean("SELECT '''Hello'' she said' , 'x' FROM t")).toBe('SELECT ??');
+    // numbers are redacted greedily, so hex-digit keyword letters and digit-led words are eaten
+    expect(clean('SELECT * FROM t WHERE x=0x1FAND y=1')).toBe('SELECT * FROM t WHERE x=?ND y=?');
+    expect(clean('SELECT 1abc')).toBe('SELECT ?abc');
+  });
+
   it('still leaves digits inside identifiers alone', () => {
     expect(clean('SELECT a1b2, _3, t.c4, col12, x345 FROM t5')).toBe(
       'SELECT a1b2, _3, t.c4, col12, x345 FROM t5',
@@ -464,8 +475,11 @@ describe('redactSqlLiterals: quotes that are not string delimiters (#109)', () =
   it('never lets a literal survive: randomised well-formed statements in each dialect', () => {
     let seed = 12345;
     const rnd = (n: number): number => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed % n;
+      // mulberry32: well distributed in every bit (a plain LCG masked to 31 bits was almost always even)
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n);
     };
     const pick = <T>(items: readonly T[]): T => items[rnd(items.length)] as T;
     // nasty text that is plain content inside whichever construct it is generated for
