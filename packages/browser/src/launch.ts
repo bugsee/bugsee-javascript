@@ -662,8 +662,8 @@ function reportInvalidHostOwned(onError: ((error: unknown) => void) | undefined)
   );
 }
 
-/** Names the producers that run alongside a caller sampler (`sensors: false`) own: battery x4, route, view, and url when built. */
-function producerOwnedNames(withUrl: boolean): ReadonlySet<string> {
+/** Names the producers that run alongside a caller sampler (`sensors: false`) own: battery x4, route, view, url when built, and capture when replay is on. */
+function producerOwnedNames(withUrl: boolean, withCapture: boolean): ReadonlySet<string> {
   return new Set<string>([
     TraceName.BATTERY,
     TraceName.CHARGING,
@@ -672,6 +672,7 @@ function producerOwnedNames(withUrl: boolean): ReadonlySet<string> {
     TraceName.ROUTE,
     TraceName.VIEW,
     ...(withUrl ? [TraceName.URL] : []),
+    ...(withCapture ? [TraceName.CAPTURE] : []),
   ]);
 }
 
@@ -1117,10 +1118,15 @@ async function buildLaunch(
   client.addCaptureProvider(
     createSystemTracesProvider({
       // A `systemMetricsSampler` REPLACES the sensor traces (heap, connection, orientation, app_state, fps), as on Node; battery still
-      // runs alongside it and OWNS its names (battery, charging, the two battery times, route, view, url when captured): a sampler row
+      // runs alongside it and OWNS its names (battery, charging, the two battery times, route, view, url when captured, capture when replay is on): a sampler row
       // under those names is dropped (one writer per trace name, #154).
       ...(options.systemMetricsSampler !== undefined
-        ? { sample: withoutNames(options.systemMetricsSampler, producerOwnedNames(captureUrl)) }
+        ? {
+            sample: withoutNames(
+              options.systemMetricsSampler,
+              producerOwnedNames(captureUrl, captureState !== undefined),
+            ),
+          }
         : {}),
       ...(suppression !== undefined ? { suppression } : {}),
       producers: [

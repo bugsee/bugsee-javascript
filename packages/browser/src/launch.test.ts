@@ -3958,6 +3958,28 @@ describe('launch — session replay (lazy)', () => {
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
   });
 
+  it.each([
+    { replay: undefined, kept: false },
+    { replay: false, kept: true },
+  ])('a caller sampler row named `capture` is dropped only while the capture producer exists (replay=$replay)', async ({
+    replay,
+    kept,
+  }) => {
+    const store = memStore();
+    await launchTracked(
+      'tok',
+      domReplayOptions({
+        captureStore: store,
+        ...(replay === undefined ? {} : { replay }),
+        systemMetricsSampler: () => [{ name: 'capture', value: 'sampler-capture' }],
+      }),
+    );
+    const values = ((await drain(store, 'traces.system')) ?? []).map(
+      (e) => (e.data as { value: unknown }).value,
+    );
+    expect(values.includes('sampler-capture')).toBe(kept);
+  });
+
   it('the DEFAULT path resolves to FAIL-CLOSED masking (mask all text/inputs, block all media)', async () => {
     // The default now applies to EVERY integration that does not opt out, so "fail-closed" has to hold on
     // the default path and not merely on the opted-in one. Asserting the forwarded options object is `{}`
