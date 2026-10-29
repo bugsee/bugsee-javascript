@@ -5,13 +5,12 @@ name: Electron compat (non-blocking)
 # `sandbox: true` window) against a chosen Electron dist-tag.
 #
 # NON-BLOCKING BY DESIGN: it only triggers on a schedule and by hand, never on push / pull_request, so it can
-# never be a required check on a PR. The job also sets `continue-on-error`, so a red alpha shows up as a
-# visible failed run on the Actions tab without poisoning anything that aggregates run conclusions.
+# never be a required check on a PR. A red alpha therefore shows up as a failed run on the Actions tab (and
+# notifies the schedule's owner) without blocking anything. There is deliberately NO `continue-on-error`:
+# GitHub reports a job that has it as successful, which would hide exactly the failure this lane exists for.
 # The repo has no Electron dependency on purpose; the binary is installed into a scratch dir.
 
 on:
-  push:
-    branches: [fix/issue-116] # TEMP: verify the lane on a real runner before merge; removed afterwards
   schedule:
     - cron: '17 4 * * *' # nightly
   workflow_dispatch:
@@ -25,14 +24,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: electron-compat-${{ github.ref }}
+  group: electron-compat-${{ github.ref }}-${{ inputs.electron || 'alpha' }}
   cancel-in-progress: true
 
 jobs:
   smoke:
     name: Real Electron smoke (${{ inputs.electron || 'alpha' }})
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7

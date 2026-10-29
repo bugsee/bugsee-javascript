@@ -51,3 +51,10 @@ loss would hide. Every other artifact in those cases is still judged normally, a
 control in that set is the safety rail: an unknown staging time must NEVER expire, or the launch after
 an SDK upgrade deletes every pending crash report. Injecting `firstSeenMs ?? 0` there is caught by the
 pre-existing P2 in set H, 23 times over.
+
+## Real-Electron smoke
+
+`electron-smoke.mts` boots the real `launchMain` + `launchRenderer` in a `sandbox: true` window on a real
+Electron binary (the repo has no Electron dependency, so pass one): `ELECTRON_BIN=/path/to/electron pnpm --filter
+@bugsee/instrumentation-tests test:electron-smoke` (on Linux wrap it in `xvfb-run -a`). No network; the transport is
+a recorder. Run nightly and on demand, non-blocking, by `.github/workflows/electron-compat.yml` (issue #116).

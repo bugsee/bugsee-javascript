@@ -28,6 +28,9 @@ const transport = async (url: string, o: { body?: Uint8Array } = {}) => {
   return none;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Bound a step that is not itself asserted, so a hang there cannot swallow the assertions that matter.
+const within = <T>(p: Promise<T>, ms = 10_000): Promise<T | string> =>
+  Promise.race([p, sleep(ms).then(() => `timed out after ${ms} ms`)]);
 // Poll a condition instead of sleeping a fixed time, so a slow runner waits and a fast one does not.
 async function until<T>(
   read: () => Promise<T | undefined> | T | undefined,
@@ -94,19 +97,22 @@ app.whenReady().then(async () => {
       out.files = Object.keys(files);
       out.logs = JSON.parse(strFromU8(files['logs.json'] as Uint8Array));
     }
+    await sleep(1000); // settle: a stray second upload would arrive after the first
     out.bundles = puts.length;
     out.errors = errors;
     // Informational only (not asserted): which permission Electron routes getDisplayMedia through.
     try {
-      out.displayMedia = await win.webContents.executeJavaScript(
-        'navigator.mediaDevices.getDisplayMedia({video:true}).then(()=>"granted",e=>"denied:"+e.name)',
-        true,
+      out.displayMedia = await within(
+        win.webContents.executeJavaScript(
+          'navigator.mediaDevices.getDisplayMedia({video:true}).then(()=>"granted",e=>"denied:"+e.name)',
+          true,
+        ),
       );
     } catch (e) {
       out.displayMedia = `threw ${e}`;
     }
     out.perms = perms;
-    await client.stop();
+    await within(client.stop());
   } catch (e) {
     out.fatal = String((e as Error)?.stack ?? e);
   }
