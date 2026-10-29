@@ -71,6 +71,12 @@ interface Dialect {
    * disagree at the same point, so it adds nothing and is not scanned.
    */
   backslashEscapes: 'all' | 'e' | 'none';
+  /** `[..]` is a quoted identifier (SQL Server); `]]` is its escaped close. */
+  brackets: boolean;
+  /** `q'<d>..<d>'` is a quoted body (Oracle). */
+  qQuotes: boolean;
+  /** `'''..'''` and `""".."""` are quoted bodies (BigQuery). */
+  tripleQuotes: boolean;
 }
 
 /**
@@ -78,6 +84,19 @@ interface Dialect {
  * pairing and leaves a later literal in the clear, so the statement is read under EACH of these and anything
  * the readings disagree about fails closed (see `redactSqlLiterals`).
  */
+const STANDARD: Dialect = {
+  hashComment: false,
+  lineEnd: LF,
+  executableComments: false,
+  dashNeedsSpace: false,
+  nestedComments: false,
+  dollarQuotes: false,
+  backslashEscapes: 'none',
+  brackets: false,
+  qQuotes: false,
+  tripleQuotes: false,
+};
+
 const DIALECTS: readonly Dialect[] = [
   // MySQL / MariaDB
   {
@@ -88,6 +107,9 @@ const DIALECTS: readonly Dialect[] = [
     nestedComments: false,
     dollarQuotes: false,
     backslashEscapes: 'all',
+    brackets: false,
+    qQuotes: false,
+    tripleQuotes: false,
   },
   // Postgres, standard_conforming_strings on
   {
@@ -98,17 +120,19 @@ const DIALECTS: readonly Dialect[] = [
     nestedComments: true,
     dollarQuotes: true,
     backslashEscapes: 'e',
+    brackets: false,
+    qQuotes: false,
+    tripleQuotes: false,
   },
-  // standard SQL and SQLite. SQL Server `[..]` identifiers and Oracle `q'..'` quoting are NOT modelled (known gap)
-  {
-    hashComment: false,
-    lineEnd: LF,
-    executableComments: false,
-    dashNeedsSpace: false,
-    nestedComments: false,
-    dollarQuotes: false,
-    backslashEscapes: 'none',
-  },
+  // standard SQL and SQLite
+  { ...STANDARD },
+  // SQL Server: `[..]` identifiers
+  { ...STANDARD, brackets: true },
+  // Oracle: `q'[..]'` quoting
+  { ...STANDARD, qQuotes: true },
+  // BigQuery: `'''..'''` bodies (their backslash escapes are read by the triple scan; its other strings, comments
+  // and escapes are the MySQL / standard readings above)
+  { ...STANDARD, tripleQuotes: true },
 ];
 
 /** End (exclusive) of the block comment opening at `start`; `-1` when it never closes. */
@@ -141,6 +165,25 @@ function runEnd(sql: string, start: number, backslashEscapes: boolean): number {
     }
   }
   return -1;
+}
+
+/** End (exclusive) of a `'''..'''` / `""".."""` body opening at `start`; `-1` when it never closes. */
+function tripleEnd(sql: string, start: number): number {
+  const triple = sql.slice(start, start + 3);
+  for (let i = start + 3; i < sql.length; i++) {
+    if (sql[i] === '\\') i++;
+    else if (sql.startsWith(triple, i)) return i + 3;
+  }
+  return -1;
+}
+
+const Q_CLOSERS: Record<string, string> = { '[': ']', '{': '}', '(': ')', '<': '>' };
+
+/** Is the quote at `at` the opener of an Oracle `q'..'` / `nq'..'` literal (and not the tail of an identifier)? */
+function isQQuote(sql: string, at: number): boolean {
+  if (!/[qQ]/.test(sql[at - 1] ?? '')) return false;
+  const before = /[nN]/.test(sql[at - 2] ?? '') ? at - 3 : at - 2;
+  return !isWordChar(sql[before]);
 }
 
 /** One reading's output and, per output character, the source offset it came from. */
@@ -197,6 +240,38 @@ function scan(statement: string, dialect: Dialect): Scan {
       const close = blockCommentEnd(statement, i, dialect.nestedComments);
       if (close === -1) break;
       i = close;
+    } else if (dialect.brackets && ch === '[') {
+      // `]]` is an escaped close. The run is kept as written, so any quote inside it makes the readings disagree.
+      let end = i + 1;
+      while (end < statement.length && (statement[end] !== ']' || statement[end + 1] === ']')) {
+        end += statement[end] === ']' ? 2 : 1;
+      }
+      if (end >= statement.length) {
+        put('?', i);
+        break;
+      }
+      put(statement.slice(i, end + 1), i);
+      i = end + 1;
+    } else if (
+      dialect.qQuotes &&
+      ch === "'" &&
+      isQQuote(statement, i) &&
+      (next ?? ' ') > ' ' &&
+      next !== "'"
+    ) {
+      const close = statement.indexOf(`${Q_CLOSERS[next as string] ?? next}'`, i + 2);
+      put('?', i);
+      if (close === -1) break;
+      i = close + 2;
+    } else if (
+      dialect.tripleQuotes &&
+      (ch === "'" || ch === '"') &&
+      statement.startsWith(ch.repeat(3), i)
+    ) {
+      const end = tripleEnd(statement, i);
+      put('?', i);
+      if (end === -1) break;
+      i = end;
     } else if (ch === "'" || ch === '"') {
       const escapes =
         dialect.backslashEscapes === 'all' ||
@@ -255,6 +330,8 @@ function scan(statement: string, dialect: Dialect): Scan {
  * where the readings first disagree: the agreed prefix is kept, the rest is redacted. Anything that never
  * closes (including a statement cut by a length cap) likewise fails CLOSED to the end. The price is shape:
  * a statement using a dialect-specific construct may lose its tail, which is the safe side of the trade.
+ * SQL Server `[..]` identifiers, Oracle `q'..'` bodies and BigQuery `'''..'''` bodies are read too, so a quote
+ * inside them cuts rather than shifting the pairing. Numbers are redacted even when a keyword is glued on.
  * Examples that cut: `#` (MySQL comment, Postgres JSON operator `#>`, SQL Server `#tmp`), `$$` bodies,
  * a backslash-escaped quote, and MySQL-style `/*!` / `/*+` comments (so Oracle-style hints cut too).
  */
@@ -279,8 +356,9 @@ export function redactSqlLiterals(statement: string): string {
     outPos = [...outPos.slice(0, k), -1];
   }
   // numeric literals (decimal, exponent, hex/binary/octal, underscore-separated), but never the digits inside an identifier like `column2`
+  // (a keyword may be glued straight on: `123456789AND`)
   return out.replace(
-    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.(?:\d[\d_]*)?)?(?:e[+-]?\d[\d_]*)?)\b/gi,
+    /\b(?:0x[0-9a-f_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*(?:\.(?:\d[\d_]*)?)?(?:e[+-]?\d[\d_]*)?)/gi,
     '?',
   );
 }
