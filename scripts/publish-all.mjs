@@ -114,6 +114,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         skipped++;
         continue;
       }
+      if (interactive)
+        console.error(
+          `\n${name}: publish failed. npm's output is on the terminal above (not captured in --interactive mode, so the\n` +
+            '"accepted earlier, not readable yet" skip cannot apply). If it said "cannot publish over the previously\n' +
+            'published version", the registry already has it: wait a few minutes and re-run.',
+        );
       process.stderr.write(text);
       throw error;
     }
