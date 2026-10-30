@@ -30,7 +30,7 @@ export type ServiceManifest = (internal: ServiceRegistrar & ServiceResolver) => 
 // node:/DOM imports), so core stays runtime-portable.
 
 /** The SDK's own version — the carrier slot key. Distinct from the user-facing `sdkVersion` option. */
-export const BUGSEE_SDK_VERSION = '0.1.0-beta.3';
+export const BUGSEE_SDK_VERSION = '0.1.0-beta.4';
 
 const CARRIER_PROPERTY = '__BUGSEE__';
 
