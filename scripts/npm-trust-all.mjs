@@ -16,6 +16,8 @@ const REPO = 'bugsee/bugsee-javascript';
 const WORKFLOW = 'release.yml';
 const argv = process.argv.slice(2);
 const dryRun = argv.includes('--dry-run');
+const onlyIndex = argv.indexOf('--only');
+const only = onlyIndex === -1 ? undefined : argv[onlyIndex + 1].split(',');
 const otpIndex = argv.indexOf('--otp');
 let otp = otpIndex === -1 ? undefined : argv[otpIndex + 1];
 
@@ -65,6 +67,7 @@ const failures = [];
 
 packages: for (const { json } of loadPackages()) {
   const name = json.name;
+  if (only && !only.includes(name)) continue;
   const args = [
     'trust',
     'github',

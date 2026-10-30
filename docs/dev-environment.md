@@ -73,7 +73,7 @@ Methodology (test-first TDD + per-entity **mutator loop** + integration tests at
 
 ## Versioning & release
 
-Changesets, independent versioning. `@bugsee/protocol` exact-pinned by every consumer (protocol drift is dangerous); others use caret ranges. Release: `pnpm changeset` → `pnpm version-packages` → `pnpm release` (CI publishes from `main` after tag). CDN bundles publish **SRI hashes** per release; Rollup build fails if `eval`/`Function()`/`setTimeout(string)` appears (§12.6/§12.9).
+Changesets, independent versioning. `@bugsee/protocol` exact-pinned by every consumer (protocol drift is dangerous); others use caret ranges. Release: `pnpm changeset` → `pnpm version-packages` → `pnpm release` (CI publishes from `main` after tag). **Releasing the version on `main`:** bump with `node scripts/bump-version.mjs <semver>` (merge the PR), then run `scripts/release.sh [--tag <dist-tag>]` from a clean `main`. It checks CI, first-publishes any package that was never on npm (trusted publishing cannot do a first publish, so that step needs your npm auth/2FA), runs the Release workflow (dry run, then real), verifies every package on the registry, and tags + creates the GitHub release. It is resumable. CDN bundles publish **SRI hashes** per release; Rollup build fails if `eval`/`Function()`/`setTimeout(string)` appears (§12.6/§12.9).
 
 ## Open / unconfirmed tooling decisions
 
