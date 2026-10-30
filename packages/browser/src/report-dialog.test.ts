@@ -715,6 +715,14 @@ describe('mutation-driven gaps', () => {
 describe('powered-by link', () => {
   const link = (): HTMLAnchorElement => q<HTMLAnchorElement>('a[data-powered]');
 
+  it('sizes the footer logo at 18px high and the "Powered by" text at 11px', () => {
+    const rule = (cls: string): string =>
+      REPORT_DIALOG_CSS.match(new RegExp(`\\.bugsee-reporting-dialog-${cls} \\{([^}]*)\\}`))?.[1] ?? '';
+    expect(rule('logo')).toMatch(/height: 18px;/);
+    expect(rule('logo')).not.toMatch(/height: 30px/);
+    expect(rule('powered-text')).toMatch(/font-size: 11px;/);
+  });
+
   it('shows the Bugsee logo with "Powered by Bugsee" at the bottom of the dialog', () => {
     const { show } = harness();
     void show();

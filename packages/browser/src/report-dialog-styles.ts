@@ -242,8 +242,8 @@ textarea.${p}input { min-height: 8.2em; resize: vertical; }
 /* The link has no box of its own: its logo and text are laid out on the footer grid, with the version
    line under the text. */
 .${p}powered { display: contents; font-size: 16px; color: ${v('hint')}; text-decoration: none; }
-.${p}logo { grid-column: 1; grid-row: 1 / span 2; display: block; height: 30px; width: auto; }
-.${p}powered-text { grid-column: 2; grid-row: 1; font-size: 16px; color: ${v('hint')}; }
+.${p}logo { grid-column: 1; grid-row: 1 / span 2; display: block; height: 18px; width: auto; }
+.${p}powered-text { grid-column: 2; grid-row: 1; font-size: 11px; color: ${v('hint')}; }
 .${p}version { grid-column: 2; grid-row: 2; margin: 0; font-size: 9px; color: ${v('hint')}; opacity: 0.3; }
 .${p}powered:hover .${p}powered-text { color: ${v('text')}; text-decoration: underline; }
 .${p}powered:focus-visible .${p}powered-text,
