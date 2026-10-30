@@ -34,6 +34,8 @@ const value = (name) => {
 const dryRun = flag('--dry-run');
 const tag = value('--tag') ?? 'latest';
 const only = value('--only')?.split(',');
+// Hand the terminal to npm so it can prompt for a 2FA code / show a web-auth URL (a human is at the keyboard).
+const interactive = flag('--interactive');
 
 const run = (cmd, args, options = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], ...options });
@@ -100,7 +102,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (dryRun) args.push('--dry-run');
     console.log(`${dryRun ? 'dry-run ' : 'publish '} ${name}@${version} (tag ${tag})`);
     try {
-      process.stdout.write(run('npm', args, { stdio: ['ignore', 'pipe', 'pipe'] }));
+      if (interactive) run('npm', args, { stdio: 'inherit' });
+      else process.stdout.write(run('npm', args, { stdio: ['ignore', 'pipe', 'pipe'] }));
       done++;
     } catch (error) {
       const text = `${error.stdout ?? ''}${error.stderr ?? ''}`;

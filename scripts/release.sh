@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     --tag) TAG="$2"; shift ;;
     --yes) ASSUME_YES=1 ;;
     --skip-github-release) GH_RELEASE=0 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -41,17 +41,22 @@ confirm() {
   [ "$answer" = "y" ] || [ "$answer" = "Y" ] || die "aborted."
 }
 
-# Wait for a workflow run started by `gh workflow run` (id looked up after a short settle).
+# Dispatch the Release workflow and watch THAT run. main must still be the commit preflight checked (a merge
+# during a confirm prompt would otherwise publish a different commit than the one we tag), and the run is found by
+# event + commit, newer than the last one seen, so another person's run is never watched.
 dispatch_and_wait() {
   local dry="$1" before run
-  before=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+  git fetch -q origin main
+  [ "$(git rev-parse origin/main)" = "$sha" ] || die "origin/main moved since preflight — pull and re-run"
+  before=$(gh run list --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')
   gh workflow run release.yml --ref main -f tag="$TAG" -f dry_run="$dry"
+  run=0
   for _ in $(seq 1 30); do
-    run=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')
-    [ "$run" != "$before" ] && break
+    run=$(gh run list --workflow release.yml --event workflow_dispatch --commit "$sha" --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+    [ "$run" -gt "$before" ] && break
     sleep 2
   done
-  [ "$run" != "$before" ] || die "the dispatched Release run never appeared"
+  [ "$run" -gt "$before" ] || die "the dispatched Release run never appeared"
   echo "run $run: $(gh run view "$run" --json url --jq .url)"
   gh run watch "$run" --interval 15 --exit-status >/dev/null || {
     gh run view "$run" --log-failed | tail -30
@@ -70,51 +75,63 @@ echo "main @ ${sha:0:8}"
 
 command -v gh >/dev/null || die "gh CLI not found"
 gh auth status >/dev/null 2>&1 || die "gh is not logged in — run: gh auth login"
-user=$(npm whoami 2>/dev/null) || die "not logged in to npm — run: npm login"
-echo "npm user: $user"
 
 pnpm check:publishable
 version=$(node -p "require('./packages/core/package.json').version")
 tagname="v$version"
-if git rev-parse -q --verify "refs/tags/$tagname" >/dev/null; then
-  die "tag $tagname already exists — bump the version first (node scripts/bump-version.mjs)"
+if git rev-parse -q --verify "refs/tags/$tagname" >/dev/null && [ "$(git rev-parse "$tagname^{commit}")" != "$sha" ]; then
+  die "tag $tagname exists on another commit — bump the version first (node scripts/bump-version.mjs)"
 fi
 
 ci=$(gh run list --branch main --workflow ci.yml --commit "$sha" --limit 1 --json conclusion,status --jq '.[0]|"\(.status)/\(.conclusion)"' 2>/dev/null || true)
 [ "$ci" = "completed/success" ] || die "CI on ${sha:0:8} is '${ci:-none}', expected completed/success"
 echo "CI green on HEAD; releasing $version under dist-tag '$TAG'"
 
-step "Packages that have never been on npm"
+step "Packages that have never been on npm, or published but not yet trusted"
+# A first publish cannot use OIDC; trust can attach only once the package exists. Names stay in a marker file
+# until the trust step succeeds, so a re-run after a failed trust still finishes it.
+pending_file="$(git rev-parse --git-dir)/release-trust-pending"
 new=()
 while read -r name; do
   npm view "$name" version >/dev/null 2>&1 || new+=("$name")
 done < <(node scripts/check-publishable.mjs --list)
+todo=(${new[@]+"${new[@]}"})
+if [ -f "$pending_file" ]; then
+  while read -r name; do
+    [ -n "$name" ] && [[ " ${todo[*]:-} " != *" $name "* ]] && todo+=("$name")
+  done < "$pending_file"
+fi
 
-if [ "${#new[@]}" = 0 ]; then
-  echo "none — every package already exists, so trusted publishing covers the whole release."
+if [ "${#todo[@]}" = 0 ]; then
+  echo "none — every package already exists and is trusted, so trusted publishing covers the whole release."
 else
-  echo "needs a first publish from this machine: ${new[*]}"
+  echo "needs the bootstrap from this machine: ${todo[*]}"
+  user=$(npm whoami 2>/dev/null) || die "not logged in to npm — run: npm login"
+  echo "npm user: $user"
   npm trust github --help 2>/dev/null | grep -q allow-publish \
     || die "this npm ($(npm --version)) cannot set the trust permission the registry requires — run: npm install -g npm@latest"
-  confirm "Publish ${#new[@]} new package(s) as $user (you will be asked for 2FA)?"
+  printf '%s\n' "${todo[@]}" > "$pending_file"
 
-  pnpm install --frozen-lockfile
-  pnpm exec turbo run build
-  only=$(IFS=,; echo "${new[*]}")
-  node scripts/publish-all.mjs --only "$only" --tag "$TAG"
+  if [ "${#new[@]}" -gt 0 ]; then
+    confirm "Publish ${#new[@]} new package(s) as $user (npm will prompt for 2FA in this terminal)?"
+    pnpm install --frozen-lockfile
+    pnpm exec turbo run build
+    node scripts/publish-all.mjs --only "$(IFS=,; echo "${new[*]}")" --tag "$TAG" --interactive
+  fi
 
   # A publish is accepted (202) and only readable a little later; trust can attach only once it exists.
   deadline=$((SECONDS + 900))
-  for name in "${new[@]}"; do
-    until [ "$(npm view "$name@$version" version --prefer-online 2>/dev/null || true)" = "$version" ]; do
-      [ "$SECONDS" -lt "$deadline" ] || die "$name@$version still not readable after 15 min — re-run to resume"
+  for name in "${todo[@]}"; do
+    until npm view "$name" version --prefer-online >/dev/null 2>&1; do
+      [ "$SECONDS" -lt "$deadline" ] || die "$name still not readable after 15 min — re-run to resume"
       echo "waiting for the registry: $name"
       sleep 20
     done
   done
 
-  step "Attach the trusted publisher (skips packages already trusted; asks for 2FA if needed)"
-  node scripts/npm-trust-all.mjs
+  step "Attach the trusted publisher (asks for 2FA if needed)"
+  node scripts/npm-trust-all.mjs --only "$(IFS=,; echo "${todo[*]}")"
+  rm -f "$pending_file"
 fi
 
 step "Release workflow: dry run"
@@ -148,12 +165,17 @@ if [ "$GH_RELEASE" = 0 ]; then
 fi
 
 step "Tag $tagname and create the GitHub release"
-prev=$(git tag --list 'v*' --sort=-creatordate | head -1 || true)
-git tag -a "$tagname" -m "$tagname" "$sha"
-git push origin "$tagname"
-flags=(--title "$version" --verify-tag)
-case "$version" in *-*) flags+=(--prerelease) ;; esac
-if [ -n "$prev" ]; then flags+=(--generate-notes --notes-start-tag "$prev"); else flags+=(--generate-notes); fi
-gh release create "$tagname" "${flags[@]}"
+# Each part is skipped when already done, so a failure here is fixed by re-running.
+prev=$(git tag --list 'v*' --sort=-creatordate | grep -vx "$tagname" | head -1 || true)
+git rev-parse -q --verify "refs/tags/$tagname" >/dev/null || git tag -a "$tagname" -m "$tagname" "$sha"
+git ls-remote --exit-code --tags origin "refs/tags/$tagname" >/dev/null 2>&1 || git push origin "$tagname"
+if gh release view "$tagname" >/dev/null 2>&1; then
+  echo "GitHub release $tagname already exists."
+else
+  flags=(--title "$version" --verify-tag --generate-notes)
+  case "$version" in *-*) flags+=(--prerelease) ;; esac
+  [ -z "$prev" ] || flags+=(--notes-start-tag "$prev")
+  gh release create "$tagname" "${flags[@]}"
+fi
 
 step "Done: $version is released"
