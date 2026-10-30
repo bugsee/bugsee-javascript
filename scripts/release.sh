@@ -59,7 +59,7 @@ dispatch_and_wait() {
   [ "$run" -gt "$before" ] || die "the dispatched Release run never appeared"
   echo "run $run: $(gh run view "$run" --json url --jq .url)"
   gh run watch "$run" --interval 15 --exit-status >/dev/null || {
-    gh run view "$run" --log-failed | tail -30
+    gh run view "$run" --log-failed 2>&1 | tail -30 || true
     die "Release workflow run $run failed (dry_run=$dry)"
   }
 }
