@@ -717,7 +717,8 @@ describe('powered-by link', () => {
 
   it('sizes the footer logo at 18px high and the "Powered by" text at 11px', () => {
     const rule = (cls: string): string =>
-      REPORT_DIALOG_CSS.match(new RegExp(`\\.bugsee-reporting-dialog-${cls} \\{([^}]*)\\}`))?.[1] ?? '';
+      REPORT_DIALOG_CSS.match(new RegExp(`\\.bugsee-reporting-dialog-${cls} \\{([^}]*)\\}`))?.[1] ??
+      '';
     expect(rule('logo')).toMatch(/height: 18px;/);
     expect(rule('logo')).not.toMatch(/height: 30px/);
     expect(rule('powered-text')).toMatch(/font-size: 11px;/);
