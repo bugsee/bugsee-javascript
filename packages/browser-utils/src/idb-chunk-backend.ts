@@ -706,5 +706,6 @@ export function createIdbChunkCaptureStore(
       ? { onDiskWriteError: options.onDiskWriteError }
       : {}),
     ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
+    ...(options?.onVisualReset !== undefined ? { onVisualReset: options.onVisualReset } : {}),
   });
 }

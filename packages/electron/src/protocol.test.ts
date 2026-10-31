@@ -54,6 +54,23 @@ describe('decodeStreamEntry', () => {
     });
   });
 
+  it('round-trips the anchor flag, putting nothing extra on the wire for an ordinary entry', () => {
+    const anchored = encodeStreamEntry(streamEntry({ anchor: true }));
+    expect(decodeStreamEntry(anchored)?.anchor).toBe(true);
+    const plain = encodeStreamEntry(streamEntry());
+    expect(JSON.parse(plain)).not.toHaveProperty('a');
+    expect(decodeStreamEntry(plain)).not.toHaveProperty('anchor');
+  });
+
+  it('honours only the exact wire flag `a: 1` from the (untrusted) renderer', () => {
+    for (const a of ['yes', true, 'true', null, {}, false, 2]) {
+      const raw = JSON.stringify({ k: 'entry', t: 'replay', s: 1, ts: 1, p: {}, a });
+      expect(decodeStreamEntry(raw)).not.toHaveProperty('anchor');
+    }
+    const raw = JSON.stringify({ k: 'entry', t: 'replay', s: 1, ts: 1, p: {}, a: 1 });
+    expect(decodeStreamEntry(raw)?.anchor).toBe(true);
+  });
+
   it('returns undefined for invalid JSON', () => {
     expect(decodeStreamEntry('<<not json>>')).toBeUndefined();
   });

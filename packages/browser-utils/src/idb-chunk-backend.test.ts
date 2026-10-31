@@ -295,6 +295,17 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
     over: Partial<Parameters<typeof createIdbChunkCaptureStore>[1]> = {},
   ) => createIdbChunkCaptureStore(store, { clock: clockAt(10_000), generation: 42, ...over });
 
+  it('forwards onVisualReset to the chunk store', async () => {
+    const calls: number[] = [];
+    const store = mk(keyed(), { maxDataSizeBytes: 100, onVisualReset: () => calls.push(1) });
+    store.add({ type: 'replay', timestamp: 10_000, serialized: 'x'.repeat(120), anchor: true });
+    store.tick(11_000);
+    store.add(rec('x', 'log', 1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([1]);
+  });
+
   it('defaults the clock (system) and generation (wallNow) when unspecified', async () => {
     const store = createIdbChunkCaptureStore(keyed()); // no clock, no generation → defaults
     store.add(rec('x', 'log', 1));

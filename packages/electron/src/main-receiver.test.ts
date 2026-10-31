@@ -54,6 +54,28 @@ describe('createElectronMainReceiver', () => {
     expect(s.added).toEqual([{ type: 'network', timestamp: 500, serialized: '{"u":"x"}' }]);
   });
 
+  it('forwards the anchor flag into the main store (a renderer base must survive eviction there too)', () => {
+    const ipc = fakeIpcMain();
+    const s = fakeStore();
+    createElectronMainReceiver({ ipcMain: ipc.ipcMain, store: s.store }).start();
+    const anchored = encodeStreamEntry({
+      type: 'replay' as never,
+      seq: 1,
+      timestamp: 5,
+      mono: 0,
+      timeOrigin: 0,
+      redacted: false,
+      payload: '{}',
+      anchor: true,
+    });
+    ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, anchored);
+    ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, wire('replay', 6, '{}'));
+    expect(s.added).toEqual([
+      { type: 'replay', timestamp: 5, serialized: '{}', anchor: true },
+      { type: 'replay', timestamp: 6, serialized: '{}' },
+    ]);
+  });
+
   it('calls onEntry with the decoded entry + originating window id', () => {
     const ipc = fakeIpcMain();
     const s = fakeStore();

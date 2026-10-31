@@ -223,7 +223,11 @@ class ReplayCaptureProvider extends CaptureProviderBase implements ReplayRecorde
           // The guard's report goes to host code, which may have started a blackout (or stopped the recorder)
           // in the meantime: whatever the guard let through is dropped then too.
           if (safe !== undefined && session === this.#session && !this.#blackedOut) {
-            this.capture('replay', safe.timestamp, withSafeHref(safe));
+            // rrweb's FullSnapshot (type 2) completes every self-contained base (Meta + FullSnapshot, emitted
+            // synchronously together at the start and at each checkout): flag it so the store keeps the newest base at
+            // the window start (StoredEntry.anchor). Flagging the FullSnapshot, not the Meta, means a snapshot the
+            // guard dropped never leaves a base that has no snapshot.
+            this.capture('replay', safe.timestamp, withSafeHref(safe), safe.type === 2);
           }
         }
       },

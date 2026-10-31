@@ -3947,7 +3947,7 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({ blackout: expect.any(Object) }); // no caller overrides → replay's own fail-closed defaults apply
+    expect(call[2]).toEqual({ blackout: expect.any(Object), checkoutEveryNms: 30_000 }); // default 60 s window → 30 s cadence; no caller overrides → replay's own fail-closed defaults apply
   });
 
   it('records when the document arrives via window.document (the real-browser path)', async () => {
@@ -4049,7 +4049,10 @@ describe('launch — session replay (lazy)', () => {
   it('enables replay with default options when replay is `true`', async () => {
     await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
-    expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({
+      blackout: expect.any(Object),
+      checkoutEveryNms: 30_000,
+    }); // no options object
   });
 
   // Product decision: `replay` collects data and is ON by default, so an invalid scalar is OFF (fail

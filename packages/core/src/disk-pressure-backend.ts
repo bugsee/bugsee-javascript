@@ -224,8 +224,9 @@ export function withDiskPressure(
     parts.delete(key);
   };
 
-  // Probe scheduling (see PROBE above). `ticks` counts closePart calls, i.e. the store's ~1 s tick.
+  // Probe scheduling (see PROBE above). `ticks` counts store ticks (closePart calls with a new `end`), i.e. ~1 s each.
   let ticks = 0;
+  let lastTickEnd: number | undefined;
   let nextProbeAt = 0;
   let probeEvery = 1;
   let releasedAt: number | undefined;
@@ -512,6 +513,12 @@ export function withDiskPressure(
           options.onWriteError?.(error); // a seal refused for lack of room must not take the tick (or the probe) with it
         }
       }
+      // One store tick closes every open part (data and, when it holds replay, visual) with the SAME end: that is one
+      // tick, not two, or the probe backoff and the flap window would run twice as fast whenever replay is recorded.
+      if (end === lastTickEnd) {
+        return;
+      }
+      lastTickEnd = end;
       ticks += 1;
       if (ticks % 60 === 0) {
         largestRecent = Math.floor(largestRecent / 2);

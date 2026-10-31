@@ -62,7 +62,7 @@ export abstract class CaptureProviderBase implements CaptureProvider {
   }
 
   /** Build the default JSON capture entry and route it in one call. */
-  protected capture(type: FileType, timestamp: number, data: unknown): void {
-    this.addEntry(new CaptureDataEntryBase(type, timestamp, data));
+  protected capture(type: FileType, timestamp: number, data: unknown, anchor = false): void {
+    this.addEntry(new CaptureDataEntryBase(type, timestamp, data, anchor));
   }
 }

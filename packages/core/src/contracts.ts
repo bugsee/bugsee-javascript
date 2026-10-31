@@ -52,6 +52,8 @@ export interface CaptureDataEntry {
   timestamp: number;
   /** The structured payload (what lands in the bundle file). */
   data: unknown;
+  /** True for the first record of a self-contained base (see `StoredEntry.anchor`). Absent = false. */
+  readonly anchor?: boolean;
   /** Serialize this entry to its stored string form. */
   serialize(): string;
   /** Populate this entry from its stored string form (mutates `this`; Android instance deserialize). */
@@ -69,6 +71,13 @@ export interface StoredEntry {
   timestamp: number;
   /** The entry's serialized string form. */
   serialized: string;
+  /**
+   * The record opens a self-contained base that later records of its type depend on (rrweb's Meta before its
+   * FullSnapshot). Out-of-band for the same reason as `timestamp`: the store must act on it without
+   * deserializing. Time eviction keeps the newest anchored part at or before the window start so a replay never
+   * begins with changes to a page it has no snapshot of. Absent = an ordinary record.
+   */
+  anchor?: boolean;
   /**
    * Tenant/owner key for store partitioning, kept out-of-band for the same reason as `timestamp` — a store
    * must route on it without deserializing. Set from the active `RequestContext.owner`; `undefined` on the

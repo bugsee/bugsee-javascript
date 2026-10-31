@@ -29,6 +29,22 @@ describe('createCaptureAggregator', () => {
     expect(added).toEqual([{ type: 'network', timestamp: 1, serialized: e.serialize() }]);
   });
 
+  it('carries an anchor entry to the store as an out-of-band flag, not in the payload', () => {
+    const { store, added } = fakeStore();
+    const e = new CaptureDataEntryBase('replay', 1, { type: 4 }, true);
+    createCaptureAggregator(store).addEntry(e);
+    expect(added).toEqual([
+      { type: 'replay', timestamp: 1, serialized: e.serialize(), anchor: true },
+    ]);
+    expect(added[0]?.serialized).not.toContain('anchor');
+  });
+
+  it('leaves the anchor flag off for an ordinary entry', () => {
+    const { store, added } = fakeStore();
+    createCaptureAggregator(store).addEntry(new CaptureDataEntryBase('log', 1, {}));
+    expect(added[0]).not.toHaveProperty('anchor');
+  });
+
   it("routes the entry's OWN serialize() output", () => {
     const { store, added } = fakeStore();
     const custom: CaptureDataEntry = {

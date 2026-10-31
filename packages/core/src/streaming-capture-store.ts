@@ -21,6 +21,8 @@ export interface StreamingCaptureEntry {
   payload: string;
   /** Redaction provenance: did a local filter already run for this entry type? */
   redacted: boolean;
+  /** The record opens a self-contained base (`StoredEntry.anchor`); present only when true. */
+  anchor?: true;
 }
 
 export interface StreamingCaptureStoreOptions {
@@ -85,6 +87,7 @@ export function createStreamingCaptureStore(opts: StreamingCaptureStoreOptions):
           timeOrigin,
           payload: record.serialized,
           redacted: redactedFor(record.type),
+          ...(record.anchor === true ? { anchor: true as const } : {}),
         }),
       );
     },

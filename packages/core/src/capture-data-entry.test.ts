@@ -15,6 +15,14 @@ describe('CaptureDataEntryBase', () => {
     expect(e.data).toBeUndefined();
   });
 
+  it('carries the anchor flag (default false) and never serializes it', () => {
+    expect(new CaptureDataEntryBase('replay', 1, {}).anchor).toBe(false);
+    const e = new CaptureDataEntryBase('replay', 1, { a: 1 }, true);
+    expect(e.anchor).toBe(true);
+    expect(e.serialize()).not.toContain('anchor');
+    expect(JSON.parse(e.serialize())).toEqual({ timestamp: 1, data: { a: 1 } });
+  });
+
   it('serializes timestamp and data to JSON', () => {
     const e = new CaptureDataEntryBase('log', 7, { message: 'hi' });
     expect(JSON.parse(e.serialize())).toEqual({ timestamp: 7, data: { message: 'hi' } });

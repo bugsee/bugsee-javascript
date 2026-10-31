@@ -79,6 +79,7 @@ export function createElectronMainReceiver(
         type: decoded.type,
         timestamp: decoded.timestamp,
         serialized: decoded.payload,
+        ...(decoded.anchor === true ? { anchor: true } : {}),
       });
       options.onEntry?.(decoded, windowId);
     } catch (error) {

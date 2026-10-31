@@ -118,6 +118,40 @@ describe('createReplayCaptureProvider', () => {
     });
   });
 
+  it('marks only an ACCEPTED FullSnapshot as an anchor (the base the store keeps), never Meta or an incremental', () => {
+    const { record, emit } = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    emit(meta('https://a.com/'));
+    emit({
+      type: 2,
+      data: { node: {}, initialOffset: { top: 0, left: 0 } },
+      timestamp: 6,
+    } as never);
+    emit(evt(7));
+    emit({ type: 5, data: { tag: 'x', payload: {} }, timestamp: 8 } as never);
+    expect(added.map((e) => e.anchor === true)).toEqual([false, true, false, false]);
+  });
+
+  it('a FullSnapshot the guard drops leaves its Meta unanchored (no base without a snapshot)', () => {
+    const { record, emit } = fakeRecord();
+    const { init, added } = fakeInit();
+    const provider = createReplayCaptureProvider({
+      record,
+      masking: resolveReplayMaskingOptions(),
+    });
+    provider.init(init);
+    provider.start(options());
+    emit(meta('https://a.com/'));
+    emit({ type: 2, data: {}, timestamp: 6 } as never); // no node tree: the guard drops it as malformed
+    expect(added.some((e) => e.anchor === true)).toBe(false);
+  });
+
   it('passes every other event, and a Meta event without a string href, through as the same object', () => {
     const { record, emit } = fakeRecord();
     const { init, added } = fakeInit();

@@ -11,6 +11,11 @@ export class CaptureDataEntryBase implements CaptureDataEntry {
     public readonly type: FileType,
     public timestamp = 0,
     public data: unknown = undefined,
+    /**
+     * Marks the first record of a self-contained base (rrweb's Meta before its FullSnapshot). It is carried
+     * to the store out-of-band and is NOT part of the serialized payload, so the wire is unchanged.
+     */
+    public readonly anchor: boolean = false,
   ) {}
 
   serialize(): string {

@@ -142,6 +142,12 @@ const DEFAULT_MAX_DATA_SIZE_MB = 10;
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 /** How long persistence must hold before the replay recorder restarts for a fresh snapshot (see the disk-pressure hook). */
 const REPLAY_CHECKOUT_QUIET_MS = 5000;
+/** Longest replay checkout cadence (rrweb default) and the shortest we derive from a short window. */
+const REPLAY_CHECKOUT_MAX_MS = 60_000;
+const REPLAY_CHECKOUT_MIN_MS = 5000;
+/** Visual-reset restarts back off (x2 per consecutive reset) up to this, and start over after this much quiet. */
+const REPLAY_RESET_MAX_INTERVAL_MS = 300_000;
+const REPLAY_RESET_QUIET_RESET_MS = 600_000;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
@@ -853,9 +859,28 @@ async function buildLaunch(
   // self's namespace is fresh, so `cleanOtherGenerations` is left at its harmless default (nothing to clean).
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  // Set once the replay recorder exists. The store calls it when the byte cap forced every replay base out, so the
+  // recorder takes a fresh FullSnapshot; rate-limited so an oversized snapshot cannot loop snapshot -> drop -> snapshot.
+  let restartReplay: (() => void) | undefined;
+  let lastReplayRestart = Number.NEGATIVE_INFINITY;
+  let replayRestartInterval = REPLAY_CHECKOUT_QUIET_MS;
   const storeBounds = {
     maxRecordingTimeMs: maxRecordingTime * 1000,
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    onVisualReset: (): void => {
+      const at = clock.monotonicNow();
+      if (restartReplay === undefined || at - lastReplayRestart < replayRestartInterval) {
+        return;
+      }
+      // Resets that keep coming mean one snapshot does not fit the cap: back off (doubling, up to 5 min) instead of
+      // snapshotting the whole DOM every few seconds; a long quiet spell starts over from the base interval.
+      replayRestartInterval =
+        at - lastReplayRestart > REPLAY_RESET_QUIET_RESET_MS
+          ? REPLAY_CHECKOUT_QUIET_MS
+          : Math.min(replayRestartInterval * 2, REPLAY_RESET_MAX_INTERVAL_MS);
+      lastReplayRestart = at;
+      restartReplay();
+    },
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   const clock = options.clock ?? createSystemClock();
@@ -1245,6 +1270,14 @@ async function buildLaunch(
         ),
       );
     }
+    // A base (FullSnapshot) must exist at the start of the window or the replay opens on orphans: snapshot at least
+    // twice per window (a non-finite window falls back to the longest cadence).
+    const derivedCheckoutMs = Number.isFinite(maxRecordingTime)
+      ? Math.max(
+          REPLAY_CHECKOUT_MIN_MS,
+          Math.min(REPLAY_CHECKOUT_MAX_MS, (maxRecordingTime * 1000) / 2),
+        )
+      : REPLAY_CHECKOUT_MAX_MS;
     void import('@bugsee/replay')
       .then(async (m) => {
         // Canvas is an opt-in add-on: lazy-`import()` @bugsee/replay-canvas ONLY when replay.canvas is set,
@@ -1258,7 +1291,14 @@ async function buildLaunch(
             )
           : undefined;
         const recorder = m.registerReplay(client, fileEncoders, {
+          // A base (FullSnapshot) must exist at the start of the window or the replay opens on orphans: snapshot at
+          // least twice per window. An explicit positive replay.checkoutEveryNms wins; undefined / 0 / NaN do not
+          // (they would silently restore the 60 s default, or disable periodic snapshots).
           ...replayMasking,
+          checkoutEveryNms:
+            typeof replayMasking.checkoutEveryNms === 'number' && replayMasking.checkoutEveryNms > 0
+              ? replayMasking.checkoutEveryNms
+              : derivedCheckoutMs,
           // The recorder follows the client's blackout: stopped for its whole span, restarted (a fresh full
           // snapshot) at the end — and never started at all if a blackout began before this chunk loaded.
           blackout: client.getService(BlackoutToken),
@@ -1269,6 +1309,7 @@ async function buildLaunch(
         });
         // `undefined` = a DOM-less host, where nothing records: only a real recorder makes `capture` claim `active`.
         if (recorder !== undefined) {
+          restartReplay = (): void => recorder.checkout();
           captureState?.setVisualCapture(true);
           // Replay stops being persisted under pressure (the window stays in memory), so the durable stream has a
           // gap of incremental events. When persistence resumes, restart the recorder: the resumed tail then begins
