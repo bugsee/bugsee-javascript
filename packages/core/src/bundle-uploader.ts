@@ -1,3 +1,4 @@
+import { asBody, type BundleBodyLike, isBundleBody } from './bundle-body';
 import {
   type BundleUploader,
   type HttpResponse,
@@ -19,9 +20,19 @@ import {
 
 export function createBundleUploader(transport: HttpTransport): BundleUploader {
   return {
-    async putBundle(url: string, body: Uint8Array, options: PutBundleOptions): Promise<PutResult> {
+    async putBundle(
+      url: string,
+      body: BundleBodyLike,
+      options: PutBundleOptions,
+    ): Promise<PutResult> {
       let response: HttpResponse;
       try {
+        // A transport that declares it can send a BundleBody gets it as is (a pipe / a Blob, nothing materialized); every
+        // other one, third-party injections included, gets the plain bytes it always has.
+        const sendBody =
+          isBundleBody(body) && transport.acceptsBundleBody !== true
+            ? await asBody(body).bytes()
+            : body;
         response = await transport(url, {
           method: 'PUT',
           headers: {
@@ -36,7 +47,7 @@ export function createBundleUploader(transport: HttpTransport): BundleUploader {
             // signable — and only then send it again.
             fileName: options.fileName,
           },
-          body,
+          body: sendBody,
         });
       } catch (cause) {
         // Carry the error: status 0 alone says only "the request never completed", which is the same

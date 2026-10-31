@@ -2,6 +2,7 @@ import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
 import { strFromU8, strToU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import { createMemoryBody } from './bundle-body';
 import { assembleBundleStream } from './bundle-stream-assembler';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
@@ -793,5 +794,297 @@ describe('assembleBundleStream — time plan', () => {
       );
       expect(plans).toEqual([{ start: NOW2 - 5000, end: NOW2 }]);
     });
+  });
+});
+
+describe('assembleBundleStream — sink', () => {
+  const NOWS = 1_700_000_000_000;
+  const fakeSink = (opts: { failWriteAt?: number; slow?: boolean; failFinish?: boolean } = {}) => {
+    const events: string[] = [];
+    const written: Uint8Array[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const sink = {
+      open: () => {
+        events.push('open');
+        return {
+          write: async (chunk: Uint8Array) => {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            if (opts.slow === true) for (let i = 0; i < 5; i++) await Promise.resolve();
+            if (opts.failWriteAt !== undefined && written.length === opts.failWriteAt) {
+              inFlight -= 1;
+              throw new Error('disk full');
+            }
+            written.push(chunk);
+            inFlight -= 1;
+          },
+          finish: async () => {
+            events.push('finish');
+            if (opts.failFinish === true) throw new Error('finish failed');
+            return createMemoryBody(written);
+          },
+          abort: async () => {
+            events.push('abort');
+          },
+        };
+      },
+    };
+    return { sink, events, written, maxInFlight: () => maxInFlight };
+  };
+  const request = () => createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+
+  it('writes the zip to the sink and returns the body the sink finished with', async () => {
+    const { sink, events, written } = fakeSink();
+    const bundle = await assembleBundleStream(
+      request(),
+      from([entry('log', NOWS - 5, 'a')]),
+      context({ sink }),
+    );
+    expect(events).toEqual(['open', 'finish']);
+    expect(written.length).toBeGreaterThan(0);
+    const files = members(await bundle.body.bytes());
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['a']);
+    expect(Array.from(await bundle.body.bytes())).toEqual(
+      Array.from(written.flatMap((c) => Array.from(c))),
+    );
+  });
+
+  it('produces the same archive through a custom sink as through the default one', async () => {
+    const entries = [entry('log', NOWS - 5, 'a'), entry('network', NOWS - 4, { u: 1 })];
+    const viaDefault = await assembleBundleStream(request(), from(entries), context());
+    const { sink } = fakeSink();
+    const viaSink = await assembleBundleStream(request(), from(entries), context({ sink }));
+    expect(normalized(members(await viaSink.body.bytes()))).toEqual(
+      normalized(members(await viaDefault.body.bytes())),
+    );
+  });
+
+  it('aborts the writer, closes the source and rethrows when the sink fails to write', async () => {
+    const { sink, events } = fakeSink({ failWriteAt: 0 });
+    let closed = false;
+    const source: AsyncIterable<CaptureDataEntry> = {
+      [Symbol.asyncIterator]: () => {
+        const it = from([entry('log', NOWS - 5, 'a')])[Symbol.asyncIterator]();
+        return {
+          next: () => it.next(),
+          return: async () => {
+            closed = true;
+            return { done: true as const, value: undefined };
+          },
+        };
+      },
+    };
+    await expect(assembleBundleStream(request(), source, context({ sink }))).rejects.toThrow(
+      'disk full',
+    );
+    expect(events).toContain('abort');
+    expect(events).not.toContain('finish');
+    expect(closed).toBe(true);
+  });
+
+  it('fails the bundle when only the LAST chunks cannot be written (the end-of-build wait)', async () => {
+    const probe = fakeSink();
+    await assembleBundleStream(
+      request(),
+      from([entry('log', NOWS - 5, 'a')]),
+      context({ sink: probe.sink }),
+    );
+    const total = probe.written.length;
+    const { sink, events } = fakeSink({ failWriteAt: total - 1 });
+    await expect(
+      assembleBundleStream(request(), from([entry('log', NOWS - 5, 'a')]), context({ sink })),
+    ).rejects.toThrow('disk full');
+    expect(events).toContain('abort');
+    expect(events).not.toContain('finish');
+  });
+
+  it('lets an in-flight write finish before it aborts the writer (no write after abort)', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const sink = {
+      open: () => ({
+        write: async () => {
+          order.push('write-start');
+          await gate;
+          order.push('write-end');
+        },
+        finish: async () => createMemoryBody([]),
+        abort: async () => {
+          order.push('abort');
+        },
+      }),
+    };
+    const crash: CrashJson = {
+      exception_type: 'error',
+      ndkCrash: false,
+      handled: true,
+      exception: { name: 'E', reason: 'r', frames: [] },
+    };
+    const pending = assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1', crash }),
+      from([entry('crash', 1, { x: 1 })]),
+      context({ sink }),
+    ).catch((e: unknown) => e);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+    expect(order).not.toContain('abort'); // still waiting for the blocked write
+    release();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(order.filter((e) => e === 'abort')).toHaveLength(1);
+    expect(order[order.length - 1]).toBe('abort'); // nothing is written after the abort
+    expect(order.filter((e) => e === 'write-start').length).toBe(
+      order.filter((e) => e === 'write-end').length,
+    );
+  });
+
+  it('aborts the writer when finish() fails', async () => {
+    const { sink, events } = fakeSink({ failFinish: true });
+    await expect(assembleBundleStream(request(), from([]), context({ sink }))).rejects.toThrow(
+      'finish failed',
+    );
+    expect(events).toEqual(['open', 'finish', 'abort']);
+  });
+
+  it('aborts the writer when the build itself fails (a duplicate member name)', async () => {
+    const { sink, events } = fakeSink();
+    const crash: CrashJson = {
+      exception_type: 'error',
+      ndkCrash: false,
+      handled: true,
+      exception: { name: 'E', reason: 'r', frames: [] },
+    };
+    await expect(
+      assembleBundleStream(
+        createReportingRequest({ source: { type: 'error' }, id: 'r1', crash }),
+        from([entry('crash', 1, { x: 1 })]),
+        context({ sink }),
+      ),
+    ).rejects.toThrow(/duplicate file name/);
+    expect(events).toContain('abort');
+  });
+
+  it('a failing open() fails the bundle and closes the source', async () => {
+    let closed = false;
+    const source: AsyncIterable<CaptureDataEntry> = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: true as const, value: undefined }),
+        return: async () => {
+          closed = true;
+          return { done: true as const, value: undefined };
+        },
+      }),
+    };
+    const sink = { open: () => Promise.reject(new Error('no temp dir')) };
+    await expect(assembleBundleStream(request(), source, context({ sink }))).rejects.toThrow(
+      'no temp dir',
+    );
+    expect(closed).toBe(true);
+  });
+
+  // Incompressible text, so the zip output is as big as the input and a slow sink actually backs up.
+  const noise = (seed: number, length: number): string => {
+    let x = seed;
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      x = (x * 1664525 + 1013904223) >>> 0;
+      out += String.fromCharCode(33 + ((x >>> 24) % 90));
+    }
+    return out;
+  };
+
+  it('does not read ahead of a slow sink: the backlog stays bounded', async () => {
+    let pulled = 0;
+    async function* source(): AsyncIterable<CaptureDataEntry> {
+      for (let i = 0; i < 30; i++) {
+        pulled += 1;
+        yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+      }
+    }
+    const { sink, written, maxInFlight } = fakeSink({ slow: true });
+    const pulledAtWrite: number[] = [];
+    const slowSink = {
+      open: async () => {
+        const writer = await sink.open();
+        return {
+          ...writer,
+          write: async (chunk: Uint8Array) => {
+            pulledAtWrite.push(pulled);
+            await writer.write(chunk);
+          },
+        };
+      },
+    };
+    await assembleBundleStream(request(), source(), context({ sink: slowSink }));
+    expect(written.length).toBeGreaterThan(1);
+    expect(maxInFlight()).toBe(1); // writes are strictly sequential
+    // Written chunks lag the reader by at most the backlog bound (a few entries), never the whole export.
+    expect(Math.min(...pulledAtWrite.slice(0, 5))).toBeLessThan(30);
+    expect(pulledAtWrite[0]).toBeLessThanOrEqual(8);
+  });
+
+  it('stops reading entries once the sink has failed', async () => {
+    let pulled = 0;
+    async function* source(): AsyncIterable<CaptureDataEntry> {
+      for (let i = 0; i < 300; i++) {
+        pulled += 1;
+        yield entry('log', NOWS - 100 + i, noise(i + 1, 2000));
+      }
+    }
+    const { sink } = fakeSink({ failWriteAt: 0 });
+    await expect(assembleBundleStream(request(), source(), context({ sink }))).rejects.toThrow(
+      'disk full',
+    );
+    expect(pulled).toBeLessThan(5);
+  });
+
+  it('holds the read-ahead to a bounded backlog while the sink is blocked, then completes once it is released', async () => {
+    let pulled = 0;
+    async function* source(): AsyncIterable<CaptureDataEntry> {
+      for (let i = 0; i < 40; i++) {
+        pulled += 1;
+        yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+      }
+    }
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const written: Uint8Array[] = [];
+    const sink = {
+      open: () => ({
+        write: async (chunk: Uint8Array) => {
+          await gate;
+          written.push(chunk);
+        },
+        finish: async () => createMemoryBody(written),
+        abort: async () => {},
+      }),
+    };
+    const pending = assembleBundleStream(request(), source(), context({ sink }));
+    for (let i = 0; i < 200; i++) await Promise.resolve();
+    expect(pulled).toBeLessThan(40); // blocked sink: the reader did not run away with the whole export
+    open();
+    await pending;
+    expect(pulled).toBe(40);
+  });
+
+  it('stops writing to a sink after its first failed write', async () => {
+    let calls = 0;
+    const sink = {
+      open: () => ({
+        write: async () => {
+          calls += 1;
+          throw new Error('disk full');
+        },
+        finish: async () => createMemoryBody([]),
+        abort: async () => {},
+      }),
+    };
+    const entries = Array.from({ length: 200 }, (_, i) =>
+      entry('log', NOWS - 100 + i, noise(i + 1, 2000)),
+    );
+    await expect(assembleBundleStream(request(), from(entries), context({ sink }))).rejects.toThrow(
+      'disk full',
+    );
+    expect(calls).toBe(1);
   });
 });

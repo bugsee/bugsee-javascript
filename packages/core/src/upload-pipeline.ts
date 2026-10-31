@@ -1,5 +1,5 @@
 import { computeBackoff, sha256Hex } from '@bugsee/util';
-import { asBody } from './bundle-body';
+import { asBody, isBundleBody } from './bundle-body';
 import { BugseeError } from './errors';
 import {
   type BugseeApi,
@@ -174,15 +174,26 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
   };
 
+  /** The pipeline owns a body once it is handed over: release it when the upload is over, whatever the outcome. */
+  const disposeBody = (bundle: Bundle): void => {
+    if (!isBundleBody(bundle.body)) {
+      return;
+    }
+    try {
+      void Promise.resolve(bundle.body.dispose()).catch(() => {});
+    } catch {
+      // A body that cannot be released must never change the upload's result.
+    }
+  };
+
   const runOperation = async (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
     // BEFORE the issue: creating it is what leaves a record on the collector, so local work runs first —
     // and iOS carries `bundle_sha256` in the issue-create body itself, which needs the digest by then.
-    // Everything below still hands the transport contiguous bytes (streaming transports are a later slice), so the body
-    // is materialized once here: free for an in-memory body, the one copy for any other. Done BEFORE the issue is
-    // created, and a read that fails is an ordinary upload failure (retryable), not a throw out of the pipeline.
-    let bytes: Uint8Array;
+    // A body whose content can go missing (a temp file) is checked BEFORE the issue is created: an unreadable one is an
+    // ordinary retryable upload failure, not a throw out of the pipeline and not an empty issue left on the collector.
+    const body = asBody(bundle.body);
     try {
-      bytes = await asBody(bundle.body).bytes();
+      await body.ready?.();
     } catch (err) {
       return fail(
         err instanceof BugseeError
@@ -192,7 +203,9 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
         'upload_failed',
       );
     }
-    const checksumSha256 = await checksumOf(bytes);
+    // Hashed only when the body is already in memory: a file/Blob body is never pulled into memory for a digest nothing sends.
+    const held = body.peek();
+    const checksumSha256 = held !== undefined ? await checksumOf(held) : undefined;
 
     let issue: IssueCreateResult;
     try {
@@ -205,7 +218,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
 
     const putOptions: PutBundleOptions = {
-      contentLength: bytes.length,
+      contentLength: body.size,
       fileName: bundle.fileName,
       ...(checksumSha256 !== undefined ? { checksumSha256 } : {}),
     };
@@ -222,7 +235,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       }
       let put: PutResult;
       try {
-        put = await uploader.putBundle(endpoint, bytes, putOptions);
+        put = await uploader.putBundle(endpoint, bundle.body, putOptions);
       } catch (err) {
         return fail(
           err instanceof BugseeError
@@ -279,7 +292,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
   /** Begin an upload, holding a concurrency slot until it settles, then release the slot to whoever
    *  is waiting. */
   const start = (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
-    const operation = runOperation(bundle, category);
+    const operation = runOperation(bundle, category).finally(() => disposeBody(bundle));
     inFlight.add(operation);
     void operation.finally(() => {
       inFlight.delete(operation);
@@ -297,6 +310,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       if (inFlight.size >= bufferSize) {
         if (waiting.length >= maxWaiting) {
           onOutcome?.({ kind: 'drop', category, reason: 'queue_overflow' });
+          disposeBody(bundle);
           return Promise.resolve({
             ok: false,
             error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),

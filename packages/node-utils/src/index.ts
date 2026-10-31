@@ -16,6 +16,7 @@ export {
   type CrashpadSessionMarkerStore,
   createNodeCrashpadSessionMarkerStore,
 } from './crashpad-session-marker-store';
+export { createFileBundleSink, sweepStaleExports } from './file-bundle-sink';
 export { createFsChunkStorage } from './fs-chunk-storage';
 export {
   appendFileSecure,

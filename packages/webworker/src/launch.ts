@@ -44,8 +44,6 @@ import {
   getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
@@ -60,6 +58,7 @@ import {
   setCarrierLastLaunch,
   setCarrierStatus,
   TransportToken,
+  withTransportHeaders,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
 import { isServiceWorker } from '@bugsee/util';
@@ -210,10 +209,8 @@ export interface BugseeWorkerLaunchOptions {
 export type Bugsee = BugseeClient;
 
 // Tag every SDK request with X-Bugsee-Internal so the network capture self-skips the SDK's own traffic.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, { ...options, headers: { ...options.headers, 'x-bugsee-internal': '1' } });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
 
 /** Launch the Bugsee worker SDK. A per-worker singleton (a repeat call is ignored). Returns the started client. */
 export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}): Bugsee {

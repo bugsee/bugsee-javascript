@@ -63,6 +63,14 @@ export {
   createMemoryBody,
   isBundleBody,
 } from './bundle-body';
+export {
+  type BlobBundleBody,
+  type BundleSink,
+  type BundleSinkWriter,
+  createBlobSink,
+  createMemorySink,
+  isBlobBundleBody,
+} from './bundle-sink';
 export { assembleBundleStream } from './bundle-stream-assembler';
 export { createBundleUploader } from './bundle-uploader';
 export { type BundleFile, writeBundleZip } from './bundle-writer';
@@ -360,6 +368,7 @@ export {
   TransportToken,
   UploadPipelineToken,
 } from './transport';
+export { withTransportHeaders } from './transport-headers';
 export {
   createTriggerPipeline,
   type TriggerPipeline,

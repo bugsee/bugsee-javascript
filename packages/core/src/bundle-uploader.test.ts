@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createMemoryBody } from './bundle-body';
 import { createBundleUploader } from './bundle-uploader';
 import type { HttpRequestOptions, HttpResponse, PutBundleOptions } from './transport';
 
@@ -150,5 +151,44 @@ describe('createBundleUploader', () => {
     const result = await createBundleUploader(transport).putBundle('u', body, opts);
     expect(result.ok).toBe(false);
     expect((result as { cause?: unknown }).cause).toBe(boom);
+  });
+});
+
+describe('createBundleUploader — body kinds', () => {
+  const memoryBody = createMemoryBody([new Uint8Array([1, 2]), new Uint8Array([3])]);
+
+  it('hands a transport that does not declare BundleBody support the whole bytes, never the body', async () => {
+    const { transport, calls } = fakeTransport(() => res(200));
+    await createBundleUploader(transport).putBundle('u', memoryBody, opts);
+    const sent = calls[0]?.options?.body as Uint8Array;
+    expect(ArrayBuffer.isView(sent)).toBe(true);
+    expect(Array.from(sent)).toEqual([1, 2, 3]);
+  });
+
+  it('hands a transport that declares support the body itself (no materializing)', async () => {
+    const { transport, calls } = fakeTransport(() => res(200));
+    const bytes = vi.fn(memoryBody.bytes);
+    const body = { ...memoryBody, bytes };
+    await createBundleUploader(
+      Object.assign(transport, { acceptsBundleBody: true as const }),
+    ).putBundle('u', body, opts);
+    expect(calls[0]?.options?.body).toBe(body);
+    expect(bytes).not.toHaveBeenCalled();
+  });
+
+  it('passes raw bytes through untouched even to a transport that declares support', async () => {
+    const { transport, calls } = fakeTransport(() => res(200));
+    await createBundleUploader(
+      Object.assign(transport, { acceptsBundleBody: true as const }),
+    ).putBundle('u', body, opts);
+    expect(calls[0]?.options?.body).toBe(body);
+  });
+
+  it('maps a body that cannot be read to a retryable failure with its cause', async () => {
+    const { transport } = fakeTransport(() => res(200));
+    const broken = { ...memoryBody, bytes: () => Promise.reject(new Error('gone')) };
+    const result = await createBundleUploader(transport).putBundle('u', broken, opts);
+    expect(result).toMatchObject({ ok: false, status: 0, retryable: true });
+    expect((result as { cause?: Error }).cause?.message).toBe('gone');
   });
 });

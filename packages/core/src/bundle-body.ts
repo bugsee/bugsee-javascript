@@ -4,6 +4,11 @@
 // Blob, a temp file, or, here, memory chunks.
 
 export interface BundleBody {
+  /**
+   * Optional pre-flight, awaited BEFORE the upload creates anything on the collector: rejects when the content can no
+   * longer be read (a temp file that was removed). Bodies that cannot go missing (memory, Blob) omit it.
+   */
+  ready?(): Promise<void>;
   /** Total length in bytes (the signed PUT's Content-Length). */
   readonly size: number;
   /** The content in order. RESTARTABLE: every call reads from the start, so an upload retry can run again. */
@@ -13,8 +18,9 @@ export interface BundleBody {
   /** The whole content when it is already in memory, else `undefined`: lets a synchronous writer avoid a copy. */
   peek(): Uint8Array | undefined;
   /**
-   * Release whatever backs the body (a temp file, a Blob). Repeatable. The CREATOR of a body owns it; the upload
-   * pipelines do not call this yet (they arrive with the file/Blob sinks), and an in-memory body has nothing to release.
+   * Release whatever backs the body (a temp file, a Blob). Repeatable and never throws into its caller. Ownership
+   * passes with the body: the upload pipeline that was handed it disposes it once the upload is over (success or not).
+   * An in-memory body has nothing to release.
    */
   dispose(): void | Promise<void>;
 }

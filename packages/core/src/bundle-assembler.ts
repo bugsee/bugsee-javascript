@@ -16,6 +16,7 @@ import {
 } from '@bugsee/protocol';
 import type { AttributeValue, IssueType } from '@bugsee/types';
 import { resolveUserAttachments } from './attachments';
+import type { BundleSink } from './bundle-sink';
 import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
@@ -64,6 +65,8 @@ export interface BundleAssemblyContext {
    * over `fileEncoders` for the same type. See {@link FileStreamEncoder}.
    */
   streamEncoders?: Partial<Record<FileType, FileStreamEncoder>>;
+  /** Where the streaming assembler writes the zip as it is built. Default: memory (see {@link BundleSink}). */
+  sink?: BundleSink;
   /** Sink for non-fatal problems (a dropped user attachment). Absent → they are dropped silently. */
   onError?: (error: unknown) => void;
 }

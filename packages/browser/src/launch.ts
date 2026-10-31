@@ -60,8 +60,6 @@ import {
   getOrCreateInterceptor,
   getProcessStatus,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
@@ -82,6 +80,7 @@ import {
   TransportToken,
   type TriggerPipeline,
   type UploadResult,
+  withTransportHeaders,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope, TraceName } from '@bugsee/protocol';
 import { applicationTrackerFor } from '@bugsee/trackers/browser';
@@ -652,13 +651,8 @@ export interface LaunchResult {
 
 // Wrap the transport so EVERY SDK request carries X-Bugsee-Internal — the network capture's default
 // self-isolation skips it, so the SDK never records its own traffic.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, {
-      ...options,
-      headers: { ...options.headers, 'x-bugsee-internal': '1' },
-    });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
 
 function reportInvalidHostOwned(onError: ((error: unknown) => void) | undefined): void {
   reportGuarded(

@@ -1,7 +1,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import { gunzipSync, inflateSync } from 'node:zlib';
-import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import {
+  type BundleBody,
+  type HttpRequestOptions,
+  type HttpResponse,
+  type HttpTransport,
+  isBundleBody,
+} from '@bugsee/core';
 
 // The Node implementation of core's HttpTransport primitive — the spine for core's
 // BugseeApi + BundleUploader. Uses node:http(s) rather than global fetch so proxy agents can be
@@ -54,7 +60,7 @@ export function settleOnce<T>(
   };
 }
 
-export const httpRequest: HttpTransport = (url: string, options: HttpRequestOptions = {}) => {
+const httpRequestImpl = (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> => {
   const { method = 'GET', headers = {}, body, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
   const parsed = new URL(url);
   const transport = transportFor(parsed.protocol);
@@ -92,9 +98,43 @@ export const httpRequest: HttpTransport = (url: string, options: HttpRequestOpti
       req.destroy(new Error(`request to ${url} timed out after ${timeoutMs}ms`));
     });
 
-    if (body !== undefined) {
+    if (body === undefined) {
+      req.end();
+    } else if (typeof body !== 'string' && isBundleBody(body)) {
+      // Pipe the body: one chunk at a time, waiting for the socket to drain, so a large bundle is never held whole.
+      void pipeBody(req, body).catch((error: unknown) => {
+        fail(error as Error);
+        req.destroy();
+      });
+    } else {
       req.write(body);
+      req.end();
     }
-    req.end();
   });
 };
+
+/** Write a body's chunks to the request with backpressure, then end it. Stops quietly if the request closes first. */
+async function pipeBody(req: http.ClientRequest, body: BundleBody): Promise<void> {
+  for await (const chunk of body.stream()) {
+    if (req.destroyed) {
+      return;
+    }
+    if (!req.write(chunk)) {
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          req.off('drain', done);
+          req.off('close', done); // whichever fired, the other listener must not stay behind (one per stall adds up)
+          resolve();
+        };
+        req.on('drain', done);
+        req.on('close', done);
+      });
+    }
+  }
+  req.end();
+}
+
+/** The node:http(s) transport. It also sends a `BundleBody` as a request body without materializing it. */
+export const httpRequest: HttpTransport = Object.assign(httpRequestImpl, {
+  acceptsBundleBody: true as const,
+});

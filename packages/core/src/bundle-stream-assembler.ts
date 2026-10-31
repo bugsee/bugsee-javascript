@@ -16,7 +16,8 @@ import {
   manifestEntryForType,
   randomBundleFileName,
 } from './bundle-assembler';
-import { type BundleBody, createMemoryBody } from './bundle-body';
+import type { BundleBody } from './bundle-body';
+import { type BundleSinkWriter, createMemorySink } from './bundle-sink';
 import type { CaptureDataEntry } from './contracts';
 import type { StreamEncoderSession } from './file-stream-encoder';
 import type { ReportingRequest } from './reporting';
@@ -79,10 +80,87 @@ async function build(
   extra: ReadonlyMap<FileType, readonly CaptureDataEntry[]> | undefined,
   plan: TimeRange | undefined,
 ): Promise<Bundle & { body: BundleBody }> {
+  const writer = await (context.sink ?? defaultSink).open();
+  const queue = createWriteQueue(writer);
+  try {
+    return await buildInto(writer, queue, request, iterator, context, extra, plan);
+  } catch (error) {
+    try {
+      await queue.idle(); // a write still in flight must land (or fail) before the artifact is deleted under it
+      await writer.abort(); // drop the partial artifact; the ORIGINAL failure is what the caller needs
+    } catch {
+      // Aborting failed too.
+    }
+    throw error;
+  }
+}
+
+interface WriteQueue {
+  add(chunk: Uint8Array): void;
+  /** Bytes still waiting for the sink. */
+  readonly queued: number;
+  /** Wait for every queued write, then throw the first sink failure if there was one. */
+  settle(): Promise<void>;
+  /** Wait for every queued write; never throws. */
+  idle(): Promise<void>;
+  throwIfFailed(): void;
+}
+
+/**
+ * The zip's output goes to the sink writer strictly in order: each write starts when the previous one is done. A failed
+ * write is remembered (and the later ones skipped) so the build fails with it.
+ */
+function createWriteQueue(writer: BundleSinkWriter): WriteQueue {
+  let writes: Promise<void> = Promise.resolve();
+  let queued = 0;
+  let failure: { error: unknown } | undefined;
+  const throwIfFailed = (): void => {
+    if (failure !== undefined) {
+      throw failure.error;
+    }
+  };
+  return {
+    add(chunk): void {
+      queued += chunk.length;
+      writes = writes.then(async () => {
+        if (failure === undefined) {
+          try {
+            await writer.write(chunk);
+          } catch (error) {
+            failure = { error };
+          }
+        }
+        queued -= chunk.length;
+      });
+    },
+    get queued(): number {
+      return queued;
+    },
+    async settle(): Promise<void> {
+      await writes;
+      throwIfFailed();
+    },
+    idle: () => writes,
+    throwIfFailed,
+  };
+}
+
+/** Writes beyond this many queued bytes make the build wait for the sink instead of racing ahead of it. */
+const MAX_QUEUED_BYTES = 1 << 20;
+const defaultSink = createMemorySink();
+
+async function buildInto(
+  writer: BundleSinkWriter,
+  queue: WriteQueue,
+  request: ReportingRequest,
+  iterator: AsyncIterator<CaptureDataEntry>,
+  context: BundleAssemblyContext,
+  extra: ReadonlyMap<FileType, readonly CaptureDataEntry[]> | undefined,
+  plan: TimeRange | undefined,
+): Promise<Bundle & { body: BundleBody }> {
   const now = context.clock.wallNow();
   const requestJson = buildRequestJson(request, context, now);
 
-  const chunks: Uint8Array[] = [];
   const done = createDeferred<void>();
   const zip = new Zip((error, data, final) => {
     /* v8 ignore next 4 -- fflate's streaming deflate is synchronous and reports no error for in-memory input; the guard keeps the contract if that ever changes */
@@ -90,7 +168,7 @@ async function build(
       done.reject(error);
       return;
     }
-    chunks.push(data);
+    queue.add(data);
     if (final) {
       done.resolve();
     }
@@ -196,6 +274,10 @@ async function build(
   };
   for await (const entry of { [Symbol.asyncIterator]: () => iterator }) {
     take(entry, true);
+    queue.throwIfFailed(); // the sink already failed: stop reading, nothing more can be delivered
+    if (queue.queued > MAX_QUEUED_BYTES) {
+      await queue.settle(); // the sink is behind: let it catch up before reading more
+    }
   }
   for (const list of extra?.values() ?? []) {
     for (const entry of list) {
@@ -237,9 +319,10 @@ async function build(
   addWhole(MANIFEST_JSON_FILENAME, JSON.stringify(buildManifest(context, start, now, files)));
   zip.end();
   await done.promise;
+  await queue.settle();
   return {
     request: requestJson,
-    body: createMemoryBody(chunks),
+    body: await writer.finish(),
     fileName: (context.fileName ?? randomBundleFileName)(),
   };
 }

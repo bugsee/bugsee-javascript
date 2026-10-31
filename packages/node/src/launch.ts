@@ -49,8 +49,6 @@ import {
   getOrCreateInterceptor,
   getProcessStatus,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
@@ -70,6 +68,7 @@ import {
   setCarrierStatus,
   setStackAppRoot,
   TransportToken,
+  withTransportHeaders,
 } from '@bugsee/core';
 import {
   createBatchedFsChunkStorage,
@@ -582,13 +581,8 @@ export interface LaunchResult {
 // Wrap the transport so EVERY SDK request (control-plane sessions/issues AND the signed S3 PUT)
 // carries X-Bugsee-Internal — the network capture's default self-isolation skips it, so the SDK
 // never records its own traffic. An extra unsigned header is harmless to the S3 signature.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, {
-      ...options,
-      headers: { ...options.headers, 'x-bugsee-internal': '1' },
-    });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
 
 /** `process.cwd()` can throw when the working directory has been deleted out from under the process. */
 const safeCwd = (): string | undefined => {
