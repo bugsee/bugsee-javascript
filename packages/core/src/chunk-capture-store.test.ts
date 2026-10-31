@@ -306,3 +306,138 @@ describe('flush', () => {
     expect(store.flush).toBeUndefined();
   });
 });
+
+describe('createChunkCaptureStore — snapshot time range', () => {
+  const mutableClock = (start: number): { clock: Clock; set: (now: number) => void } => {
+    let now = start;
+    return { clock: { wallNow: () => now, monotonicNow: () => 0 }, set: (v) => (now = v) };
+  };
+
+  it('reports the window ending now when the store has been recording for longer than the window', () => {
+    const { clock, set } = mutableClock(1000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 5000,
+    });
+    set(20_000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 15_000, end: 20_000 });
+  });
+
+  it('starts at the store epoch (first part start) while the store is younger than the window', () => {
+    const { clock, set } = mutableClock(1000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 60_000,
+    });
+    set(4000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 1000, end: 4000 });
+  });
+
+  it('restarts the epoch on clear()', () => {
+    const { clock, set } = mutableClock(1000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 60_000,
+    });
+    set(9000);
+    store.clear();
+    set(10_000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 9000, end: 10_000 });
+  });
+
+  it('never reports start after end when the wall clock steps backwards', () => {
+    const { clock, set } = mutableClock(5000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), { clock });
+    set(2000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 2000, end: 2000 });
+  });
+
+  it('fixes the range at snapshot time', () => {
+    const { clock, set } = mutableClock(1000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 5000,
+    });
+    set(20_000);
+    const snapshot = store.snapshot();
+    set(30_000);
+    expect(snapshot.timeRange?.()).toEqual({ start: 15_000, end: 20_000 });
+  });
+
+  it('keeps the wrapped snapshot working: stream, drainAll, release', async () => {
+    const { clock } = mutableClock(1000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), { clock });
+    store.add({ type: 'log', timestamp: 1, serialized: 'a' });
+    const snapshot = store.snapshot();
+    const streamed: StoredEntry[] = [];
+    for await (const record of snapshot.stream()) {
+      streamed.push(record);
+    }
+    expect(streamed.map((r) => r.serialized)).toEqual(['a']);
+    expect((await snapshot.drainAll()).get('log')?.length).toBe(1);
+    snapshot.release();
+    expect(await snapshot.drainAll()).toEqual(new Map());
+  });
+
+  it('forwards unpin and inMemory only when the backend snapshot has them', () => {
+    const calls: string[] = [];
+    const base = createMemoryChunkBackend();
+    const backend = {
+      ...base,
+      snapshot: (frozen: Parameters<typeof base.snapshot>[0]) => ({
+        ...base.snapshot(frozen),
+        unpin: () => calls.push('unpin'),
+        inMemory: () => new Map([['log' as FileType, []]]),
+      }),
+    };
+    const store = createChunkCaptureStore(backend, { clock: clockAt(0) });
+    const snapshot = store.snapshot();
+    snapshot.unpin?.();
+    expect(calls).toEqual(['unpin']);
+    expect(snapshot.inMemory?.()).toEqual(new Map([['log', []]]));
+    const plain = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock: clockAt(0),
+    }).snapshot();
+    expect(plain.unpin).toBeUndefined();
+    expect(plain.inMemory).toBeUndefined();
+  });
+
+  it('delegates to a snapshot whose methods depend on `this`', async () => {
+    class ThisSnapshot {
+      private readonly items = [{ type: 'log' as FileType, timestamp: 1, serialized: 'a' }];
+      released = false;
+      async *stream(): AsyncIterableIterator<StoredEntry> {
+        yield* this.items;
+      }
+      async drainAll(): Promise<Map<FileType, StoredEntry[]>> {
+        return new Map([['log', [...this.items]]]);
+      }
+      release(): void {
+        this.released = true;
+      }
+      unpin(): void {
+        this.released = true;
+      }
+      inMemory(): Map<FileType, StoredEntry[]> {
+        return new Map([['log', [...this.items]]]);
+      }
+    }
+    const inner = new ThisSnapshot();
+    const base = createMemoryChunkBackend();
+    const store = createChunkCaptureStore(
+      { ...base, snapshot: () => inner as never },
+      { clock: clockAt(0) },
+    );
+    const snapshot = store.snapshot();
+    const seen: string[] = [];
+    for await (const r of snapshot.stream()) seen.push(r.serialized);
+    expect(seen).toEqual(['a']);
+    expect((await snapshot.drainAll()).get('log')?.length).toBe(1);
+    expect(snapshot.inMemory?.().get('log')?.length).toBe(1);
+    snapshot.unpin?.();
+    expect(inner.released).toBe(true);
+    inner.released = false;
+    snapshot.release();
+    expect(inner.released).toBe(true);
+  });
+});

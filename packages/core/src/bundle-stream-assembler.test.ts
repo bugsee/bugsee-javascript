@@ -4,8 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { assembleBundleStream } from './bundle-stream-assembler';
 import { CaptureDataEntryBase } from './capture-data-entry';
+import { createCaptureExporter } from './capture-exporter';
+import { createChunkCaptureStore } from './chunk-capture-store';
 import type { CaptureDataEntry } from './contracts';
 import type { CrashJson } from './crash';
+import { createMemoryChunkBackend } from './memory-chunk-backend';
 import { createReportingRequest } from './reporting';
 
 // The streaming assembler must produce a bundle that unzips to EXACTLY what the buffered one does (member names,
@@ -387,5 +390,138 @@ describe('assembleBundleStream — failure', () => {
       throw new Error('read failed');
     }
     await expect(assembleBundleStream(request, broken(), context())).rejects.toThrow('read failed');
+  });
+});
+
+describe('assembleBundleStream — time plan', () => {
+  const withRange = (
+    entries: CaptureDataEntry[],
+    range: { start: number; end: number } | undefined,
+  ): AsyncIterable<CaptureDataEntry> & { timeRange?: { start: number; end: number } } =>
+    Object.assign(from(entries), range !== undefined ? { timeRange: range } : {});
+  const run = async (
+    entries: CaptureDataEntry[],
+    range: { start: number; end: number } | undefined,
+    over: Partial<BundleAssemblyContext> = {},
+  ) => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const bundle = await assembleBundleStream(request, withRange(entries, range), context(over));
+    return members(await bundle.body.bytes());
+  };
+  const manifestOf = (files: Record<string, Uint8Array>) =>
+    JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+      time: { start: number; end: number };
+      files: Array<{ filename: string }>;
+    };
+  const NOW = 1_700_000_000_000;
+
+  it('takes manifest time.start from the plan, not from the earliest record', async () => {
+    const files = await run([entry('log', NOW - 1000, 'a')], { start: NOW - 5000, end: NOW });
+    expect(manifestOf(files).time).toEqual({ start: NOW - 5000, end: NOW });
+  });
+
+  it('keeps time.start at the plan even when no record was captured', async () => {
+    const files = await run([], { start: NOW - 5000, end: NOW });
+    expect(manifestOf(files).time).toEqual({ start: NOW - 5000, end: NOW });
+  });
+
+  it('ends the manifest time at the trigger moment (the clock), not the snapshot range end', async () => {
+    const files = await run([], { start: NOW - 5000, end: NOW - 10 });
+    expect(manifestOf(files).time.end).toBe(NOW);
+  });
+
+  it('drops non-replay records older than the plan start and keeps those at or after it', async () => {
+    const files = await run(
+      [
+        entry('log', NOW - 6000, 'old'),
+        entry('log', NOW - 5001, 'just-before'),
+        entry('log', NOW - 5000, 'edge'),
+        entry('log', NOW - 10, 'new'),
+      ],
+      { start: NOW - 5000, end: NOW },
+    );
+    const logs = JSON.parse(strFromU8(files['logs.json'] as Uint8Array)) as unknown[];
+    expect(logs).toEqual(['edge', 'new']);
+  });
+
+  it('omits a member (and its manifest entry) whose records were all older than the plan start', async () => {
+    const files = await run(
+      [entry('log', NOW - 6000, 'old'), entry('events.user', NOW - 10, 'e')],
+      {
+        start: NOW - 5000,
+        end: NOW,
+      },
+    );
+    expect(files['logs.json']).toBeUndefined();
+    expect(manifestOf(files).files.map((f) => f.filename)).not.toContain('logs.json');
+  });
+
+  it('does not trim a type that has an injected encoder (the encoder owns the clamp)', async () => {
+    const seen: unknown[][] = [];
+    const files = await run(
+      [entry('replay', NOW - 9000, 'r')],
+      { start: NOW - 5000, end: NOW },
+      {
+        fileEncoders: {
+          replay: (payloads) => {
+            seen.push(payloads);
+            return new Uint8Array([1]);
+          },
+        },
+      },
+    );
+    expect(seen).toEqual([['r']]);
+    expect(files['replay.bin']).toBeDefined();
+    expect(manifestOf(files).time.start).toBe(NOW - 5000);
+  });
+
+  it('falls back to the earliest record when the source states no range', async () => {
+    const files = await run(
+      [entry('log', NOW - 7000, 'a'), entry('log', NOW - 10, 'b')],
+      undefined,
+    );
+    expect(manifestOf(files).time.start).toBe(NOW - 7000);
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['a', 'b']);
+  });
+
+  it('does not trim the report-time extras, and they do not move a planned start', async () => {
+    const request = createReportingRequest({ source: { type: 'error' }, id: 'r1' });
+    const bundle = await assembleBundleStream(
+      request,
+      withRange([], { start: NOW - 5000, end: NOW }),
+      context(),
+      new Map([['events.user', [entry('events.user', NOW - 9000, 'x')]]]),
+    );
+    const files = members(await bundle.body.bytes());
+    expect(JSON.parse(strFromU8(files['events.user.json'] as Uint8Array))).toEqual(['x']);
+    expect(manifestOf(files).time.start).toBe(NOW - 5000);
+  });
+
+  it('end to end: a real chunk store, through the exporter, bounds the manifest and trims old logs', async () => {
+    let now = NOW - 20_000;
+    const clock = { wallNow: () => now, monotonicNow: () => 0 };
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 5000,
+    });
+    store.add({
+      type: 'log',
+      timestamp: NOW - 6000,
+      serialized: JSON.stringify({ timestamp: NOW - 6000, data: 'old' }),
+    });
+    store.add({
+      type: 'log',
+      timestamp: NOW - 100,
+      serialized: JSON.stringify({ timestamp: NOW - 100, data: 'new' }),
+    });
+    now = NOW;
+    const bundle = await assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+      createCaptureExporter(store).stream(),
+      context(),
+    );
+    const files = members(await bundle.body.bytes());
+    expect(manifestOf(files).time).toEqual({ start: NOW - 5000, end: NOW });
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['new']);
   });
 });

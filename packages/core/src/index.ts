@@ -134,6 +134,7 @@ export type {
   CaptureAggregator,
   CaptureDataEntry,
   CaptureEntryFactory,
+  CaptureEntryStream,
   CaptureExporter,
   CaptureProvider,
   CaptureProviderInit,

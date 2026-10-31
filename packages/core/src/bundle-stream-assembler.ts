@@ -31,6 +31,8 @@ import type { Bundle } from './transport';
 // the helpers the buffered assembler exports, so the two cannot drift. File types with an injected binary encoder (the
 // replay) still collect their payloads and encode at the end; a streaming encoder for them is a later slice.
 
+type TimeRange = { readonly start: number; readonly end: number };
+
 interface StreamMember {
   readonly file: ZipDeflate;
   readonly shape: ReturnType<typeof fileShape>;
@@ -44,7 +46,7 @@ function jsonItem(value: unknown): string {
 
 export async function assembleBundleStream(
   request: ReportingRequest,
-  entries: AsyncIterable<CaptureDataEntry>,
+  entries: AsyncIterable<CaptureDataEntry> & { readonly timeRange?: TimeRange },
   context: BundleAssemblyContext,
   extra?: ReadonlyMap<FileType, readonly CaptureDataEntry[]>,
 ): Promise<Bundle & { body: BundleBody }> {
@@ -52,7 +54,7 @@ export async function assembleBundleStream(
   // stream does), and a generator that was never read would otherwise never run its own cleanup.
   const iterator = entries[Symbol.asyncIterator]();
   try {
-    return await build(request, iterator, context, extra);
+    return await build(request, iterator, context, extra, entries.timeRange);
   } catch (error) {
     try {
       await iterator.return?.();
@@ -68,6 +70,7 @@ async function build(
   iterator: AsyncIterator<CaptureDataEntry>,
   context: BundleAssemblyContext,
   extra: ReadonlyMap<FileType, readonly CaptureDataEntry[]> | undefined,
+  plan: TimeRange | undefined,
 ): Promise<Bundle & { body: BundleBody }> {
   const now = context.clock.wallNow();
   const requestJson = buildRequestJson(request, context, now);
@@ -106,14 +109,24 @@ async function build(
   addWhole(APP_TOKEN_FILENAME, context.appToken);
 
   // The data pass. `order` is the first-seen order of the types (the manifest lists them in it).
-  let start = now;
+  // With a plan the report starts where the plan says (the window), whatever the records are; without one, at the earliest
+  // record. The plan also bounds the ROLLING records: older ones (the store keeps up to a second of slack) are dropped.
+  let start = plan?.start ?? now;
   const order: FileType[] = [];
   const streamed = new Map<FileType, StreamMember>();
   const collected = new Map<FileType, unknown[]>(); // types with an injected encoder
-  const take = (entry: CaptureDataEntry): void => {
+  const take = (entry: CaptureDataEntry, rolling: boolean): void => {
     const type = entry.type;
-    if (entry.timestamp < start) {
-      start = entry.timestamp;
+    if (plan === undefined) {
+      if (entry.timestamp < start) {
+        start = entry.timestamp;
+      }
+    } else if (
+      rolling &&
+      entry.timestamp < plan.start &&
+      context.fileEncoders?.[entry.type] === undefined
+    ) {
+      return; // before the window; types with an encoder (the replay) are clamped by it instead
     }
     if (!streamed.has(type) && !collected.has(type)) {
       order.push(type);
@@ -145,11 +158,11 @@ async function build(
     member.count += 1;
   };
   for await (const entry of { [Symbol.asyncIterator]: () => iterator }) {
-    take(entry);
+    take(entry, true);
   }
   for (const list of extra?.values() ?? []) {
     for (const entry of list) {
-      take(entry);
+      take(entry, false);
     }
   }
 

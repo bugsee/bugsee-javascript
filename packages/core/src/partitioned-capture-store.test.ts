@@ -347,3 +347,52 @@ describe('the default error sink', () => {
     expect(() => store.add(rec('a', '1'))).not.toThrow();
   });
 });
+
+describe('createPartitionedCaptureStore — snapshot time range', () => {
+  const rangedPartition = (range?: { start: number; end: number }): CaptureStore => {
+    const base = fakePartition();
+    return {
+      ...base,
+      snapshot: () => ({
+        ...base.snapshot(),
+        ...(range !== undefined ? { timeRange: () => range } : {}),
+      }),
+    };
+  };
+
+  it('is the partition range for a single partition', () => {
+    const store = createPartitionedCaptureStore({
+      createPartition: () => rangedPartition({ start: 10, end: 20 }),
+    });
+    store.add(rec('tenant-A', 'x'));
+    expect(store.snapshot({ owner: 'tenant-A' }).timeRange?.()).toEqual({ start: 10, end: 20 });
+  });
+
+  it('is absent when the partition cannot say', () => {
+    const store = createPartitionedCaptureStore({ createPartition: () => rangedPartition() });
+    store.add(rec('tenant-A', 'x'));
+    expect(store.snapshot({ owner: 'tenant-A' }).timeRange).toBeUndefined();
+  });
+
+  it('is absent when no partition exists', () => {
+    const store = createPartitionedCaptureStore({
+      createPartition: () => rangedPartition({ start: 1, end: 2 }),
+    });
+    expect(store.snapshot({ owner: 'nobody' }).timeRange).toBeUndefined();
+  });
+
+  it('answers per scope: the default partition, a tenant, and absent for a partition that cannot say', () => {
+    const ranges = [{ start: 10, end: 20 }, { start: 5, end: 15 }, undefined];
+    let i = 0;
+    const store = createPartitionedCaptureStore({
+      createPartition: () => rangedPartition(ranges[i++]),
+    });
+    store.add(rec(undefined, 'a'));
+    store.add(rec('t1', 'b'));
+    store.add(rec('t2', 'c'));
+    // An unscoped snapshot reads only the default partition; reach several sources through the owners instead.
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 10, end: 20 });
+    expect(store.snapshot({ owner: 't1' }).timeRange?.()).toEqual({ start: 5, end: 15 });
+    expect(store.snapshot({ owner: 't2' }).timeRange).toBeUndefined();
+  });
+});

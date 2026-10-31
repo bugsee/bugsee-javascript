@@ -3,6 +3,7 @@ import { defaultEntryFactory } from './capture-data-entry';
 import type {
   CaptureDataEntry,
   CaptureEntryFactory,
+  CaptureEntryStream,
   CaptureExporter,
   CaptureStore,
   StoredEntry,
@@ -27,7 +28,7 @@ export function createCaptureExporter(
   onError: (error: unknown) => void = (): void => {},
 ): CaptureExporter {
   return {
-    stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry> {
+    stream(options?: { owner?: string }): CaptureEntryStream {
       const snapshot = store.snapshot(options);
       const records = snapshot.stream();
       // The snapshot is taken NOW (it freezes the window at the moment of the call), so its release must not depend on the
@@ -58,7 +59,9 @@ export function createCaptureExporter(
           release();
         }
       })();
-      const stream: AsyncIterableIterator<CaptureDataEntry> = {
+      const range = snapshot.timeRange?.();
+      const stream: CaptureEntryStream = {
+        ...(range !== undefined ? { timeRange: range } : {}),
         next: () => inner.next(),
         return: async (value) => {
           try {

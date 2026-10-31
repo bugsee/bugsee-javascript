@@ -136,6 +136,27 @@ describe('createCaptureExporter — stream', () => {
   });
 });
 
+describe('createCaptureExporter — stream time range', () => {
+  const storeWithRange = (range: { start: number; end: number } | undefined): CaptureStore => {
+    const { store } = fakeStore([]);
+    const inner = store.snapshot();
+    return {
+      ...store,
+      snapshot: () => ({ ...inner, ...(range !== undefined ? { timeRange: () => range } : {}) }),
+    };
+  };
+
+  it('carries the snapshot range on the stream', () => {
+    const stream = createCaptureExporter(storeWithRange({ start: 5, end: 9 })).stream();
+    expect(stream.timeRange).toEqual({ start: 5, end: 9 });
+  });
+
+  it('has no range when the snapshot cannot state one', () => {
+    const stream = createCaptureExporter(storeWithRange(undefined)).stream();
+    expect('timeRange' in stream).toBe(false);
+  });
+});
+
 describe('createCaptureExporter — drain', () => {
   it('deserializes all snapshot records grouped by file type, then releases', async () => {
     const fake = fakeStore([

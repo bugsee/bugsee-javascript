@@ -157,7 +157,17 @@ export function createPartitionedCaptureStore(
     return partition !== undefined ? [partition] : [];
   };
 
+  // A snapshot reads at most one partition (default or one tenant), so its range is that partition's; with none there is
+  // nothing to state a range for.
+  const combinedRange = (
+    sources: CaptureSnapshot[],
+  ): { timeRange: () => { start: number; end: number } } | undefined => {
+    const range = sources[0]?.timeRange?.();
+    return range !== undefined ? { timeRange: () => range } : undefined;
+  };
+
   const combinedSnapshot = (sources: CaptureSnapshot[]): CaptureSnapshot => ({
+    ...combinedRange(sources),
     stream: async function* () {
       for (const source of sources) {
         yield* source.stream();

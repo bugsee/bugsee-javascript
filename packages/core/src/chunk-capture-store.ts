@@ -60,6 +60,23 @@ type Lane = 'data' | 'visual';
 // byte cap can shed them (whole base segments) before it touches logs, network or events.
 const VISUAL_TYPES: ReadonlySet<string> = new Set(['replay', 'video']);
 
+// The backend's snapshot plus the range fixed at snapshot time. Explicit delegation (not a spread) keeps any `this`-bound
+// snapshot working, and `unpin` / `inMemory` stay absent when the backend's snapshot has none (callers test for them).
+function withTimeRange(
+  snapshot: CaptureSnapshot,
+  range: { readonly start: number; readonly end: number },
+): CaptureSnapshot {
+  const { unpin, inMemory } = snapshot;
+  return {
+    stream: () => snapshot.stream(),
+    drainAll: () => snapshot.drainAll(),
+    release: () => snapshot.release(),
+    ...(unpin !== undefined ? { unpin: () => unpin.call(snapshot) } : {}),
+    ...(inMemory !== undefined ? { inMemory: () => inMemory.call(snapshot) } : {}),
+    timeRange: () => range,
+  };
+}
+
 export function createChunkCaptureStore(
   durableBackend: ChunkBackend,
   options?: ChunkCaptureStoreOptions,
@@ -110,7 +127,10 @@ export function createChunkCaptureStore(
     return part;
   };
 
-  let dataPart = openNewPart(clock.wallNow(), 'data');
+  const firstStart = clock.wallNow();
+  let dataPart = openNewPart(firstStart, 'data');
+  // When this store started recording (first part start since launch / the last clear): nothing older can exist.
+  let epoch = firstStart;
 
   const partFor = (lane: Lane): IndexedPart => {
     if (lane === 'data') {
@@ -253,7 +273,9 @@ export function createChunkCaptureStore(
       // Freeze each in-window part with its CURRENT entry count — the boundary that keeps post-snapshot
       // captures (to the still-open part) out of the frozen view. The backend isolates the read.
       const frozen: FrozenPart[] = parts.map((part) => ({ ref: part.ref, count: part.count }));
-      return backend.snapshot(frozen);
+      const end = clock.wallNow();
+      const range = { start: Math.min(Math.max(end - maxRecordingTimeMs, epoch), end), end };
+      return withTimeRange(backend.snapshot(frozen), range);
     },
 
     clear(): void {
@@ -261,7 +283,8 @@ export function createChunkCaptureStore(
       parts = [];
       totalBytes = 0;
       visualPart = undefined;
-      dataPart = openNewPart(clock.wallNow(), 'data');
+      epoch = clock.wallNow();
+      dataPart = openNewPart(epoch, 'data');
     },
 
     // Forwarded only when the backend HAS one, so `'flush' in store` stays an honest test for "this store

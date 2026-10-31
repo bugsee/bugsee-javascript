@@ -153,6 +153,13 @@ export interface CaptureSnapshot {
    * write was refused. A reader that finds the medium unreadable (or hung) serves this instead of nothing.
    */
   inMemory?(): Map<FileType, StoredEntry[]>;
+  /**
+   * Optional: the time range this snapshot is meant to cover, fixed when it was taken (Android's `timeRange`): the
+   * recording window ending now, clipped to when the store started recording. It comes from the store's own window and
+   * part index, never from the records, so an export can state the report's start without a pre-scan. Absent when the
+   * store cannot say (the exporter then falls back to the earliest record).
+   */
+  timeRange?(): { readonly start: number; readonly end: number };
 }
 
 /**
@@ -175,10 +182,15 @@ export interface CaptureAggregator {
  * returns them streaming (one-by-one) or all-at-once (grouped by file type), then releases the
  * snapshot — the live store keeps rolling throughout (no drain-on-read).
  */
+/** The exporter's entry stream, plus the time range of the snapshot it reads (see {@link CaptureSnapshot.timeRange}). */
+export interface CaptureEntryStream extends AsyncIterableIterator<CaptureDataEntry> {
+  readonly timeRange?: { readonly start: number; readonly end: number };
+}
+
 export interface CaptureExporter {
   /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
-  stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry>;
+  stream(options?: { owner?: string }): CaptureEntryStream;
   /** Snapshot the store, read + deserialize all entries grouped by file type, then release.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
   drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>>;
