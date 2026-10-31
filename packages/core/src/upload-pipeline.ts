@@ -1,4 +1,5 @@
 import { computeBackoff, sha256Hex } from '@bugsee/util';
+import { asBody } from './bundle-body';
 import { BugseeError } from './errors';
 import {
   type BugseeApi,
@@ -176,7 +177,22 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
   const runOperation = async (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
     // BEFORE the issue: creating it is what leaves a record on the collector, so local work runs first —
     // and iOS carries `bundle_sha256` in the issue-create body itself, which needs the digest by then.
-    const checksumSha256 = await checksumOf(bundle.body);
+    // Everything below still hands the transport contiguous bytes (streaming transports are a later slice), so the body
+    // is materialized once here: free for an in-memory body, the one copy for any other. Done BEFORE the issue is
+    // created, and a read that fails is an ordinary upload failure (retryable), not a throw out of the pipeline.
+    let bytes: Uint8Array;
+    try {
+      bytes = await asBody(bundle.body).bytes();
+    } catch (err) {
+      return fail(
+        err instanceof BugseeError
+          ? err
+          : new BugseeError('bundle body could not be read', 0, { cause: err }),
+        category,
+        'upload_failed',
+      );
+    }
+    const checksumSha256 = await checksumOf(bytes);
 
     let issue: IssueCreateResult;
     try {
@@ -189,7 +205,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
 
     const putOptions: PutBundleOptions = {
-      contentLength: bundle.body.length,
+      contentLength: bytes.length,
       fileName: bundle.fileName,
       ...(checksumSha256 !== undefined ? { checksumSha256 } : {}),
     };
@@ -206,7 +222,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       }
       let put: PutResult;
       try {
-        put = await uploader.putBundle(endpoint, bundle.body, putOptions);
+        put = await uploader.putBundle(endpoint, bytes, putOptions);
       } catch (err) {
         return fail(
           err instanceof BugseeError

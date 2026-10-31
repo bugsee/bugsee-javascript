@@ -560,13 +560,13 @@ describe('createClient — file encoders', () => {
     });
     await client.logException(new Error('x'));
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    expect(unzipSync(bundle.body)['replay.bin']).toEqual(new Uint8Array([7, 1])); // encoder output, stored raw
+    expect(unzipSync(bundle.body as Uint8Array)['replay.bin']).toEqual(new Uint8Array([7, 1])); // encoder output, stored raw
   });
 });
 
 describe('createClient — crash.json', () => {
   const crashOf = (bundle: Bundle) =>
-    JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
+    JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['crash.json'] as Uint8Array));
 
   it('logException writes a structured crash.json (handled) into the bundle', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
@@ -785,7 +785,7 @@ describe('createClient — crash.json', () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     await client.logException('just a string');
-    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
     expect('crash.json' in files).toBe(true);
     const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
       handled: boolean;
@@ -805,7 +805,7 @@ describe('createClient — report identity is snapshotted at submit time', () =>
   // very same report. The request context was already snapshotted at submit for exactly this reason;
   // these two were left reading live.
   const assembledFrom = (enqueue: ReturnType<typeof fakeUpload>['enqueue'], call = 0) => {
-    const files = unzipSync((enqueue.mock.calls[call]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[call]?.[0] as Bundle).body as Uint8Array);
     return {
       attrs: (
         JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
@@ -1856,7 +1856,7 @@ describe('createClient — report path (built trigger pipeline)', () => {
     await client.logException(new Error('boom'));
     expect(snap).toHaveBeenCalledWith(1000); // pulled with the report's wall-clock timestamp
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body);
+    const files = unzipSync(bundle.body as Uint8Array);
     // viewtree.json holds the array of entry data, in source order.
     expect(JSON.parse(strFromU8(files['viewtree.json'] as Uint8Array))).toEqual([
       { tag: 'body', children: [] },
@@ -1878,7 +1878,7 @@ describe('createClient — report path (built trigger pipeline)', () => {
     });
     await client.logException(new Error('boom'));
     expect(snap).toHaveBeenCalledWith(1000);
-    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
     // profile.json is the single bare object (the assembler's profile special-case).
     expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual({
       nodes: [],
@@ -2312,7 +2312,7 @@ describe('createClient — per-tenant capture isolation', () => {
     await client.logException(new Error('boom in C'));
 
     const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const text = Object.values(files)
       .map((b) => strFromU8(b))
       .join('\n');
@@ -2367,7 +2367,7 @@ describe('createClient — per-tenant capture isolation', () => {
     client.log('SECOND');
     await client.logException(new Error('boom'));
     const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const text = Object.values(files)
       .map((b) => strFromU8(b))
       .join('\n');
@@ -2419,7 +2419,7 @@ describe('createClient — upload (manual report)', () => {
     });
 
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const names = manifest.files
       .filter((f: { type: string }) => f.type === 'attachment')
@@ -2446,7 +2446,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const names = manifest.files
       .filter((f: { type: string }) => f.type === 'attachment')
@@ -2478,7 +2478,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     expect(
       manifest.files
@@ -2498,7 +2498,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(entry.attrs.fileName).toBe('x');
@@ -3142,7 +3142,7 @@ describe('createClient — upload (manual report)', () => {
     await client.upload();
 
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(entry.attrs.mimeType).toBe('application/json');
@@ -3225,7 +3225,7 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
     const log = (msg: string, at: number) =>
       client.captureAggregator.addEntry(new CaptureDataEntryBase('log', at, { msg }));
     const sentLogs = (): string[] => {
-      const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+      const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
       const raw = files['logs.json'];
       return raw === undefined
         ? []
@@ -3260,7 +3260,9 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
     const request = JSON.parse(
       strFromU8(
-        unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body)['request.json'] as Uint8Array,
+        unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array)[
+          'request.json'
+        ] as Uint8Array,
       ),
     ) as Record<string, unknown>;
     expect(request).toMatchObject({

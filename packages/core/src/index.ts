@@ -56,6 +56,13 @@ export {
 } from './blackout';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+export {
+  asBody,
+  type BundleBody,
+  type BundleBodyLike,
+  createMemoryBody,
+  isBundleBody,
+} from './bundle-body';
 export { createBundleUploader } from './bundle-uploader';
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { createCaptureAggregator } from './capture-aggregator';

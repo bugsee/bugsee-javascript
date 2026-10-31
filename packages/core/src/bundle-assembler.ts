@@ -115,11 +115,14 @@ function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   return payloads;
 }
 
+/** What the buffered assembler returns: a {@link Bundle} whose body is known to be raw bytes (narrower than `Bundle.body`). */
+export type BufferedBundle = Bundle & { body: Uint8Array };
+
 export function assembleBundle(
   request: ReportingRequest,
   capturedByType: Map<FileType, CaptureDataEntry[]>,
   context: BundleAssemblyContext,
-): Bundle {
+): BufferedBundle {
   const { report, source } = request;
   const now = context.clock.wallNow();
 

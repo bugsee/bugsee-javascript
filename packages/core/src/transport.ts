@@ -1,6 +1,7 @@
 import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
+import type { BundleBodyLike } from './bundle-body';
 import type { BugseeError } from './errors';
 
 // Transport split into three roles. The BugseeApi / BundleUploader / UploadPipeline
@@ -140,8 +141,8 @@ export interface BundleUploader {
 export interface Bundle {
   /** The /v2/issues body, also embedded verbatim in the zip. */
   request: RequestJson;
-  /** The `*.bundle.zip` bytes. */
-  body: Uint8Array;
+  /** The `*.bundle.zip` content: raw bytes, or a {@link BundleBody} (a stream/Blob/file-backed artifact). */
+  body: BundleBodyLike;
   /** Bundle archive basename `<random20>.bundle.zip`. */
   fileName: string;
 }

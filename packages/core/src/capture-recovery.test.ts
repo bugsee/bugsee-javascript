@@ -88,7 +88,7 @@ function fakePipeline(result: UploadResult = { ok: true }) {
 }
 
 const logsOf = (bundle: Bundle): unknown =>
-  JSON.parse(strFromU8(unzipSync(bundle.body)['logs.json'] as Uint8Array));
+  JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['logs.json'] as Uint8Array));
 
 describe('recoverReports', () => {
   it('rebuilds + enqueues one bundle per marker from its generation’s chunks, then removes it', async () => {
@@ -139,7 +139,10 @@ describe('recoverReports', () => {
       context: baseContext,
       uploadPipeline: pipe,
     });
-    const files = unzipSync((pipe.bundles[0] as Bundle).body) as Record<string, Uint8Array>;
+    const files = unzipSync((pipe.bundles[0] as Bundle).body as Uint8Array) as Record<
+      string,
+      Uint8Array
+    >;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(Array.from(files[entry.filename] as Uint8Array)).toEqual([9, 0, 255]);
@@ -179,7 +182,9 @@ describe('recoverReports', () => {
       uploadPipeline: pipe,
     });
     const manifest = JSON.parse(
-      strFromU8(unzipSync((pipe.bundles[0] as Bundle).body)['manifest.json'] as Uint8Array),
+      strFromU8(
+        unzipSync((pipe.bundles[0] as Bundle).body as Uint8Array)['manifest.json'] as Uint8Array,
+      ),
     );
     expect(manifest.attrs).toEqual({ plan: 'enterprise', n: 7 }); // from the marker
     expect((pipe.bundles[0] as Bundle).request.email).toBe('who@x.com'); // userIdentifier → email

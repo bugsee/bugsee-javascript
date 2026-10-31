@@ -1,6 +1,7 @@
 import { type EnvironmentEnvelope, type RequestJson, Severity } from '@bugsee/protocol';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryBody } from './bundle-body';
 import {
   type BundleStore,
   createDurableUploadPipeline,
@@ -56,6 +57,21 @@ function fakePipeline(result: UploadResult = { ok: true }) {
   const drop = vi.fn();
   return { pipeline: { enqueue, flush, drop } as UploadPipeline, enqueue, flush, drop };
 }
+
+describe('serializeBundle with a BundleBody', () => {
+  it('frames an in-memory body exactly as it frames the same raw bytes', () => {
+    const raw = bundle();
+    const body = createMemoryBody([raw.body as Uint8Array]);
+    expect(Array.from(serializeBundle({ ...raw, body }, 5))).toEqual(
+      Array.from(serializeBundle(raw, 5)),
+    );
+  });
+
+  it('refuses a body that is not held in memory (a streaming put is a later slice) instead of writing a short frame', () => {
+    const lazy = { ...createMemoryBody([new Uint8Array([1])]), peek: () => undefined };
+    expect(() => serializeBundle({ ...bundle(), body: lazy }, 5)).toThrow(/not held in memory/);
+  });
+});
 
 describe('deserializeBundleFrame + DEFAULT_DURABLE_RETENTION', () => {
   // Both exist for ONE reason: the browser/worker dead-sibling recovery leg reads a dead instance's blobs
@@ -140,19 +156,19 @@ describe('serializeBundle / deserializeBundle', () => {
     const restored = deserializeBundle(serializeBundle(original));
     expect(restored.request).toEqual(original.request);
     expect(restored.fileName).toBe(original.fileName);
-    expect([...restored.body]).toEqual([...original.body]);
+    expect([...(restored.body as Uint8Array)]).toEqual([...(original.body as Uint8Array)]);
   });
 
   it('round-trips an empty body', () => {
     const restored = deserializeBundle(serializeBundle(bundle({ body: new Uint8Array() })));
-    expect(restored.body.length).toBe(0);
+    expect((restored.body as Uint8Array).length).toBe(0);
     expect(restored.fileName).toBe('abc.bundle.zip');
   });
 
   it('round-trips a body large enough that the header length field matters', () => {
     const body = new Uint8Array(5000).map((_v, i) => i % 256);
     const restored = deserializeBundle(serializeBundle(bundle({ body })));
-    expect([...restored.body]).toEqual([...body]);
+    expect([...(restored.body as Uint8Array)]).toEqual([...body]);
   });
 
   it('deserializes from a frame embedded at a non-zero byteOffset (subarray view)', () => {
@@ -161,7 +177,7 @@ describe('serializeBundle / deserializeBundle', () => {
     padded.set(framed, 8);
     const restored = deserializeBundle(padded.subarray(8));
     expect(restored.request).toEqual(bundle().request);
-    expect([...restored.body]).toEqual([...bundle().body]);
+    expect([...(restored.body as Uint8Array)]).toEqual([...(bundle().body as Uint8Array)]);
   });
 });
 

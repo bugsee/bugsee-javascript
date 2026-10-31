@@ -1,6 +1,7 @@
 import type { RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import { isThenable, strFromU8, strToU8 } from '@bugsee/util';
+import { asBody } from './bundle-body';
 import {
   type Bundle,
   isUploadSettled,
@@ -187,10 +188,17 @@ export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number):
       ...(bundle.reportId !== undefined ? { reportId: bundle.reportId } : {}),
     }),
   );
-  const out = new Uint8Array(4 + header.length + bundle.body.length);
+  // A synchronous writer needs the bytes now, so only a body held in memory can be framed here; a file/Blob-backed body
+  // needs the streaming `put` (a later slice) and must not be silently framed short. `enqueue` catches this and reports it
+  // (the upload still goes out, just not retained), which is the existing best-effort contract for a failed stage.
+  const bytes = asBody(bundle.body).peek();
+  if (bytes === undefined) {
+    throw new Error('Bundle body is not held in memory: cannot frame it synchronously');
+  }
+  const out = new Uint8Array(4 + header.length + bytes.length);
   new DataView(out.buffer).setUint32(0, header.length, true);
   out.set(header, 4);
-  out.set(bundle.body, 4 + header.length);
+  out.set(bytes, 4 + header.length);
   return out;
 }
 

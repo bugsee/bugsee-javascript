@@ -211,7 +211,7 @@ consumer goes through one `asBody()` normalizer, so third-party `Transport` inje
 | Slice | Content | Gate |
 | --- | --- | --- |
 | **S0** | **DONE 2026-10-31.** Baseline bench: a realistic window (the BGSVIEWER-12 replay events + logs/network), live-heap need and wall time of today's export vs a streaming prototype; results in section 8 | numbers in this doc |
-| **S1** | Inventory every reader/writer of `Bundle.body`, `capturedByType` mutation and `BundleStore`; add `BundleBody` + memory sink + `asBody()`; `Bundle.body: Uint8Array \| BundleBody`; no behaviour change | contract + type tests |
+| **S1** | **DONE 2026-10-31** (two review rounds). Inventory every reader/writer of `Bundle.body`, `capturedByType` mutation and `BundleStore`; add `BundleBody` + memory sink + `asBody()`; `Bundle.body: Uint8Array \| BundleBody`; no behaviour change | contract + type tests |
 | **S2** | Streaming assembler for the **built-in JSON types** + manifest/request/attachments, behind the same `assembleBundle` outcome (byte-equivalent after unzip, asserted against the buffered assembler on fixtures) | equivalence tests |
 | **S3** | `CaptureSnapshot.timeRange()` from the chunk store; plan; manifest `time` from the plan; non-replay trim | store + assembler tests, mutants on the bounds |
 | **S4** | Replay `FileStreamEncoder` in `@bugsee/replay`: gzip stream, orphan trim, timestamp clamp, empty-member omission | encoder tests incl. real rrweb Replayer probe on the BGSVIEWER-12 data |

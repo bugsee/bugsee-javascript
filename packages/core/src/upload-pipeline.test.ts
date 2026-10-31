@@ -3,8 +3,16 @@ import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { createDeferred, strToU8 } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBugseeApi } from './bugsee-api';
+import { createMemoryBody } from './bundle-body';
 import { BugseeError } from './errors';
-import type { BugseeApi, Bundle, BundleUploader, IssueCreateResult, PutResult } from './transport';
+import type {
+  BugseeApi,
+  Bundle,
+  BundleUploader,
+  IssueCreateResult,
+  PutBundleOptions,
+  PutResult,
+} from './transport';
 import {
   createUploadPipeline,
   type PipelineOutcome,
@@ -80,6 +88,96 @@ describe('createUploadPipeline — happy path', () => {
       contentLength: 3,
       checksumSha256: 'deadbeef',
       fileName: 'a.bundle.zip',
+    });
+  });
+
+  it('uploads a BundleBody: its size is the content length and its bytes are hashed and PUT', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const sha256 = vi.fn(async () => 'cafe');
+    const body = createMemoryBody([new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])]);
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256 })).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(Array.from((sha256.mock.calls[0] as unknown as [Uint8Array])[0])).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    const [, sent, options] = put.mock.calls[0] as unknown as [
+      string,
+      Uint8Array,
+      PutBundleOptions,
+    ];
+    expect(Array.from(sent)).toEqual([1, 2, 3, 4, 5]);
+    expect(options).toEqual({ contentLength: 5, checksumSha256: 'cafe', fileName: 'a.bundle.zip' });
+  });
+
+  it('a body that cannot be read fails the upload (no throw, nothing created on the collector), retryable', async () => {
+    const api = fakeApi();
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const unreadable = {
+      ...createMemoryBody([new Uint8Array([1])]),
+      bytes: () => Promise.reject(new Error('temp file gone')),
+    };
+    const result = await createUploadPipeline(deps({ api, uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body: unreadable,
+    });
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty('permanent');
+    expect((result as { error: Error }).error.message).toBe('bundle body could not be read');
+    expect(api.createIssue).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable body records one drop and frees its slot for the next upload', async () => {
+    const outcomes: unknown[] = [];
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const pipeline = createUploadPipeline(
+      deps({
+        uploader: fakeUploader(put),
+        bufferSize: 1,
+        onOutcome: (o) => outcomes.push(o),
+      }),
+    );
+    const bad = pipeline.enqueue({
+      ...bundle,
+      body: {
+        ...createMemoryBody([new Uint8Array([1])]),
+        bytes: () => Promise.reject(new Error('x')),
+      },
+    });
+    const next = pipeline.enqueue(bundle); // waits behind the failing one (bufferSize 1)
+    expect((await bad).ok).toBe(false);
+    expect((await next).ok).toBe(true);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'upload_failed' });
+    expect(outcomes.filter((o) => (o as { kind: string }).kind === 'drop')).toHaveLength(1);
+  });
+
+  it('passes a BugseeError from an unreadable body through as it is, and wraps anything else with its cause', async () => {
+    const mk = (reason: unknown) =>
+      createUploadPipeline(deps({})).enqueue({
+        ...bundle,
+        body: { ...createMemoryBody([new Uint8Array([1])]), bytes: () => Promise.reject(reason) },
+      });
+    const own = new BugseeError('disk', 0);
+    expect((await mk(own)) as { error: unknown }).toMatchObject({ error: own });
+    const cause = new Error('raw');
+    const wrapped = (await mk(cause)) as { error: BugseeError };
+    expect(wrapped.error).toBeInstanceOf(BugseeError);
+    expect(wrapped.error.cause).toBe(cause);
+  });
+
+  it('declares the length of the bytes it actually sends, even if the body reports another size', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const liar = { ...createMemoryBody([new Uint8Array([1, 2, 3])]), size: 99 };
+    await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body: liar,
+    });
+    expect(
+      (put.mock.calls[0] as unknown as [string, Uint8Array, PutBundleOptions])[2],
+    ).toMatchObject({
+      contentLength: 3,
     });
   });
 
