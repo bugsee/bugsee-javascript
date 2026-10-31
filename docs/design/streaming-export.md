@@ -210,7 +210,7 @@ consumer goes through one `asBody()` normalizer, so third-party `Transport` inje
 
 | Slice | Content | Gate |
 | --- | --- | --- |
-| **S0** | Baseline: a bench that builds a realistic window (the BGSVIEWER-12 `replay.bin` shape + logs/network) and records peak heap and wall time of today's export, plus the fflate compressed-buffer behaviour on that data | numbers in this doc |
+| **S0** | **DONE 2026-10-31.** Baseline bench: a realistic window (the BGSVIEWER-12 replay events + logs/network), live-heap need and wall time of today's export vs a streaming prototype; results in section 8 | numbers in this doc |
 | **S1** | Inventory every reader/writer of `Bundle.body`, `capturedByType` mutation and `BundleStore`; add `BundleBody` + memory sink + `asBody()`; `Bundle.body: Uint8Array \| BundleBody`; no behaviour change | contract + type tests |
 | **S2** | Streaming assembler for the **built-in JSON types** + manifest/request/attachments, behind the same `assembleBundle` outcome (byte-equivalent after unzip, asserted against the buffered assembler on fixtures) | equivalence tests |
 | **S3** | `CaptureSnapshot.timeRange()` from the chunk store; plan; manifest `time` from the plan; non-replay trim | store + assembler tests, mutants on the bounds |
@@ -243,3 +243,28 @@ Each slice ends with a multi-agent review round to zero new real findings (CLAUD
 * **Q4. Node sink.** Temp file in the data dir (proposed; survives a crash for recovery and doubles as the durable queue
   file) vs. memory chunks. Requires a `dataDir`; without one, memory.
 * **Q5. Default cap.** 20 MB in memory / 30 MB durable (proposed), decided after S5 measurements, not before.
+
+## 8. S0 results (2026-10-31)
+
+Method: a throwaway bench (not committed; esbuild-bundled, node 24, in the session scratchpad). Window: the 496 real
+rrweb events of BGSVIEWER-12 (8.8 MB as JSON) + 20,000 synthetic log records + 3,000 synthetic network records (~20 MB of
+serialized records in a `createMemoryCaptureStore`). Two exports of the same store: **buffered** (today: `drain()` ->
+`assembleBundle` with `encodeReplay`) and a **streaming prototype** (`snapshot.stream()` -> per-type `ZipDeflate` members,
+parse-once/re-stringify `data` per Q2, interleaved in store order).
+
+* **Peak RSS growth is the wrong metric** (66 MB streaming vs 62 MB buffered): V8 does not collect the transient garbage
+  until it has to, so RSS records garbage, not what must be live.
+* **Live need** (smallest `--max-old-space-size` at which the export completes, setup phase confirmed done):
+  buffered **~70 MB**; streaming completes at **the floor of the setup itself (~44 MB)**, i.e. it adds nothing
+  measurable on top of the 20 MB the window already occupies. So buffered export needs **at least ~26 MB (> 1.3x the
+  window) of extra live heap**, which the streaming path does not. The bound for streaming is below the bench's
+  resolution; a finer figure needs a durable backend (the store itself then is not in the heap), which is S5's job.
+* **Output and time:** 3.97 MB (buffered) vs 4.07 MB (streaming; the replay member is deflated JSON instead of the
+  gzip-then-deflate of `replay.bin`, so this is not yet a like-for-like size), 461-470 ms vs 450-476 ms. Streaming costs
+  no wall time here.
+* **fflate interleaved members** behave as in section 4.1 on real data: the run above pushed three members in time order
+  with no temp files and a correct archive.
+
+Consequences for the design: the memory win is real (it is the whole export working set), and it is largest where it
+matters, on the durable backends, where today's export is the **only** place the window is ever fully in the heap.
+No change to the plan; S2 keeps an equivalence test against the buffered assembler and a `replay.bin` byte-format check.
