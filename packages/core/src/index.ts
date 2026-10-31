@@ -210,6 +210,7 @@ export {
   type DurableUploadPipelineOptions,
   deserializeBundle,
   deserializeBundleFrame,
+  frameHeader,
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';

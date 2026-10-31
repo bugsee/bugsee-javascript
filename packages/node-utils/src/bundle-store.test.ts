@@ -91,4 +91,76 @@ describe('createNodeBundleStore — a staged bundle is never half-written', () =
     expect(store.list()).toEqual([]);
     expect(readdirSync(dir)).toContain('b2.bundle.999.tmp'); // it is there, just not offered to recovery
   });
+
+  describe('putFrame (streamed body)', () => {
+    const body = (chunks: number[][], over: Record<string, unknown> = {}) => ({
+      size: chunks.reduce((n, c) => n + c.length, 0),
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          for (const c of chunks) yield new Uint8Array(c);
+        },
+      }),
+      bytes: async () => new Uint8Array(),
+      peek: () => undefined,
+      dispose: () => {},
+      ...over,
+    });
+
+    it('writes header then every body chunk as one frame, readable with read()', async () => {
+      const store = createNodeBundleStore(dir);
+      await store.putFrame?.('f', new Uint8Array([1, 2]), body([[3, 4], [5], [6, 7]]));
+      expect([...(store.read('f') ?? [])]).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(store.list()).toEqual(['f']);
+    });
+
+    it('replaces an existing blob of that id, and the file is owner-only', async () => {
+      const store = createNodeBundleStore(dir);
+      store.put('f', new Uint8Array([9, 9, 9, 9]));
+      await store.putFrame?.('f', new Uint8Array([1]), body([[2]]));
+      expect([...(store.read('f') ?? [])]).toEqual([1, 2]);
+      const { statSync } = await import('node:fs');
+      expect(statSync(join(dir, 'f.bundle')).mode & 0o777).toBe(0o600);
+    });
+
+    it('a body that fails part-way rejects, leaves no temp file, and keeps the previous blob', async () => {
+      const store = createNodeBundleStore(dir);
+      store.put('f', new Uint8Array([9, 9]));
+      const failing = body([[1]], {
+        stream: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield new Uint8Array([1]);
+            throw new Error('stream broke');
+          },
+        }),
+      });
+      await expect(store.putFrame?.('f', new Uint8Array([0]), failing)).rejects.toThrow(
+        'stream broke',
+      );
+      expect(readdirSync(dir)).toEqual(['f.bundle']);
+      expect([...(store.read('f') ?? [])]).toEqual([9, 9]);
+    });
+
+    it('never makes a half-written frame visible to list() while writing', async () => {
+      const store = createNodeBundleStore(dir);
+      let seen: string[] = [];
+      const slow = body([[1]], {
+        stream: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield new Uint8Array([1]);
+            seen = store.list();
+            yield new Uint8Array([2]);
+          },
+        }),
+      });
+      await store.putFrame?.('f', new Uint8Array([0]), slow);
+      expect(seen).toEqual([]);
+      expect(store.list()).toEqual(['f']);
+    });
+
+    it('an empty body is just the header', async () => {
+      const store = createNodeBundleStore(dir);
+      await store.putFrame?.('f', new Uint8Array([5, 6]), body([]));
+      expect([...(store.read('f') ?? [])]).toEqual([5, 6]);
+    });
+  });
 });

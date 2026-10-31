@@ -8,6 +8,7 @@ import {
   DEFAULT_DURABLE_RETENTION,
   deserializeBundle,
   deserializeBundleFrame,
+  frameHeader,
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
@@ -67,9 +68,249 @@ describe('serializeBundle with a BundleBody', () => {
     );
   });
 
-  it('refuses a body that is not held in memory (a streaming put is a later slice) instead of writing a short frame', () => {
+  it('refuses a body that is not held in memory instead of writing a short frame (staging streams or materializes it)', () => {
     const lazy = { ...createMemoryBody([new Uint8Array([1])]), peek: () => undefined };
     expect(() => serializeBundle({ ...bundle(), body: lazy }, 5)).toThrow(/not held in memory/);
+  });
+});
+
+describe('frameHeader', () => {
+  it('is the frame prefix: serializeBundle is exactly header followed by the body bytes', () => {
+    const b = { ...bundle(), reportId: 'inc-1' };
+    const header = frameHeader(b, 77);
+    const framed = serializeBundle(b, 77);
+    expect(Array.from(framed.subarray(0, header.length))).toEqual(Array.from(header));
+    expect(Array.from(framed.subarray(header.length))).toEqual(Array.from(b.body as Uint8Array));
+    expect(new DataView(header.buffer, header.byteOffset).getUint32(0, true)).toBe(
+      header.length - 4,
+    );
+  });
+});
+
+describe('createDurableUploadPipeline — bodies that are not held in memory', () => {
+  const lazyBody = (bytes: number[], over: Record<string, unknown> = {}) => {
+    const base = createMemoryBody([new Uint8Array(bytes)]);
+    let disposed = 0;
+    const body = {
+      ...base,
+      peek: () => undefined,
+      dispose: () => {
+        disposed += 1;
+      },
+      ...over,
+    };
+    return { body, disposed: () => disposed };
+  };
+  const retryable: UploadResult = { ok: false, error: new BugseeError('offline', 0) };
+
+  it('without a streaming store: stages the materialized frame, byte-identical to the in-memory framing', async () => {
+    const { store, map } = memStore();
+    const { pipeline } = fakePipeline(retryable);
+    const { body } = lazyBody([9, 8, 7]);
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      newId: () => 'a',
+      now: () => 5,
+    });
+    const result = await durable.enqueue({ ...bundle(), body });
+    expect(Array.from(map.get('a') as Uint8Array)).toEqual(
+      Array.from(serializeBundle({ ...bundle(), body: new Uint8Array([9, 8, 7]) }, 5)),
+    );
+    expect(result.retained).toBe(true);
+  });
+
+  it('with a streaming store: hands it the frame header and the body, and never materializes the body', async () => {
+    const { store, map } = memStore();
+    const calls: Array<{ id: string; header: Uint8Array; body: unknown }> = [];
+    const streaming: BundleStore = {
+      ...store,
+      putFrame: async (id, header, b) => {
+        calls.push({ id, header, body: b });
+      },
+    };
+    const { pipeline } = fakePipeline(retryable);
+    const bytes = vi.fn(async () => new Uint8Array([0]));
+    const { body } = lazyBody([1, 2, 3, 4], { bytes });
+    const durable = createDurableUploadPipeline({
+      store: streaming,
+      pipeline,
+      newId: () => 'a',
+      now: () => 5,
+    });
+    const result = await durable.enqueue({ ...bundle(), body });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.id).toBe('a');
+    expect(Array.from(calls[0]?.header as Uint8Array)).toEqual(
+      Array.from(frameHeader(bundle(), 5)),
+    );
+    expect(map.size).toBe(0); // put() was not used
+    expect(bytes).not.toHaveBeenCalled();
+    expect(result.retained).toBe(true);
+  });
+
+  it('a streaming store that rejects is reported, the bundle is not retained, and the upload still goes out', async () => {
+    const { store } = memStore();
+    const failing: BundleStore = {
+      ...store,
+      putFrame: () => Promise.reject(new Error('disk full')),
+    };
+    const { pipeline, enqueue } = fakePipeline(retryable);
+    const errors: unknown[] = [];
+    const { body } = lazyBody([1]);
+    const durable = createDurableUploadPipeline({
+      store: failing,
+      pipeline,
+      onError: (e) => errors.push(e),
+    });
+    const result = await durable.enqueue({ ...bundle(), body });
+    expect((errors[0] as Error).message).toBe('disk full');
+    expect(result.retained).toBeUndefined();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a body that cannot be read for staging is reported, not retained, and the upload still goes out', async () => {
+    const { store } = memStore();
+    const { pipeline, enqueue } = fakePipeline(retryable);
+    const errors: unknown[] = [];
+    const { body } = lazyBody([1], { bytes: () => Promise.reject(new Error('temp gone')) });
+    const durable = createDurableUploadPipeline({
+      store,
+      pipeline,
+      onError: (e) => errors.push(e),
+    });
+    const result = await durable.enqueue({ ...bundle(), body });
+    expect((errors[0] as Error).message).toBe('temp gone');
+    expect(result.retained).toBeUndefined();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('the body outlives whichever finishes last, staging or upload, and is disposed exactly once', async () => {
+    for (const order of ['upload-first', 'staging-first'] as const) {
+      const { store } = memStore();
+      let releaseStaging!: () => void;
+      const stagingGate = new Promise<void>((resolve) => (releaseStaging = resolve));
+      let releaseUpload!: () => void;
+      const uploadGate = new Promise<void>((resolve) => (releaseUpload = resolve));
+      const streaming: BundleStore = { ...store, putFrame: () => stagingGate };
+      const pipeline: UploadPipeline = {
+        // like the real pipeline: owns the body it is handed and disposes it when the upload is over
+        enqueue: async (b) => {
+          await uploadGate;
+          await (b.body as { dispose(): void }).dispose();
+          return { ok: true };
+        },
+        flush: async () => true,
+        drop: () => {},
+      };
+      const { body, disposed } = lazyBody([1, 2]);
+      const durable = createDurableUploadPipeline({ store: streaming, pipeline });
+      const pending = durable.enqueue({ ...bundle(), body });
+      const first = order === 'upload-first' ? releaseUpload : releaseStaging;
+      const second = order === 'upload-first' ? releaseStaging : releaseUpload;
+      first();
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(disposed()).toBe(0); // the other owner still needs it
+      second();
+      await pending;
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(disposed()).toBe(1);
+    }
+  });
+
+  it('an upload that settles BEFORE a slow streamed staging finishes leaves no blob behind afterwards', async () => {
+    const { store, map } = memStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const streaming: BundleStore = {
+      ...store,
+      putFrame: async (id, header) => {
+        await gate;
+        map.set(id, header); // the blob is only published when the write completes
+      },
+    };
+    const { pipeline } = fakePipeline({ ok: true });
+    const { body } = lazyBody([1, 2]);
+    const durable = createDurableUploadPipeline({ store: streaming, pipeline, newId: () => 'a' });
+    const done = durable.enqueue({ ...bundle(), body });
+    await done; // settled: delivered
+    expect(map.has('a')).toBe(false);
+    release();
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    expect(map.has('a')).toBe(false); // the late publish was cleaned up, not left for the next launch to re-upload
+  });
+
+  it('flush also waits for streamed staging to finish, so a flush-then-exit cannot lose the blob', async () => {
+    const { store } = memStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const streaming: BundleStore = { ...store, putFrame: () => gate };
+    const { pipeline } = fakePipeline(retryable);
+    const { body } = lazyBody([1]);
+    const durable = createDurableUploadPipeline({ store: streaming, pipeline });
+    void durable.enqueue({ ...bundle(), body });
+    let flushed = false;
+    const flushing = durable.flush().then((v) => {
+      flushed = true;
+      return v;
+    });
+    // a real macrotask turn, so a flush that only LOOKS at staging (a timer, not the write) would already have resolved
+    await new Promise<void>((resolve) =>
+      (globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }).setTimeout(
+        resolve,
+        20,
+      ),
+    );
+    expect(flushed).toBe(false);
+    release();
+    expect(await flushing).toBe(true);
+  });
+
+  it('flush with a timeout gives up on a staging that never finishes and says so', async () => {
+    const { store } = memStore();
+    const streaming: BundleStore = { ...store, putFrame: () => new Promise<void>(() => {}) };
+    const { pipeline } = fakePipeline(retryable);
+    const { body } = lazyBody([1]);
+    const durable = createDurableUploadPipeline({
+      store: streaming,
+      pipeline,
+      sleep: () => Promise.resolve(),
+    });
+    void durable.enqueue({ ...bundle(), body });
+    expect(await durable.flush(10)).toBe(false);
+  });
+
+  it('once a streamed staging has finished, flush is the wrapped flush again (nothing left to wait for)', async () => {
+    const { store } = memStore();
+    const streaming: BundleStore = { ...store, putFrame: async () => {} };
+    const { pipeline, flush } = fakePipeline(retryable);
+    const sleep = vi.fn(async () => {});
+    const { body } = lazyBody([1]);
+    const durable = createDurableUploadPipeline({ store: streaming, pipeline, sleep });
+    await durable.enqueue({ ...bundle(), body });
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    sleep.mockClear();
+    expect(await durable.flush(7)).toBe(true);
+    expect(flush).toHaveBeenCalledWith(7);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('flush without streamed staging is exactly the wrapped pipeline flush', async () => {
+    const { store } = memStore();
+    const { pipeline, flush } = fakePipeline();
+    const durable = createDurableUploadPipeline({ store, pipeline });
+    expect(await durable.flush(5)).toBe(true);
+    expect(flush).toHaveBeenCalledWith(5);
+  });
+
+  it('an in-memory body keeps the synchronous put and is handed to the pipeline as it was', async () => {
+    const { store, map } = memStore();
+    const { pipeline, enqueue } = fakePipeline({ ok: true });
+    const durable = createDurableUploadPipeline({ store, pipeline, newId: () => 'a' });
+    const b = bundle();
+    await durable.enqueue(b);
+    expect(map.has('a')).toBe(false); // settled upload frees it
+    expect(enqueue.mock.calls[0]?.[0]).toBe(b);
   });
 });
 

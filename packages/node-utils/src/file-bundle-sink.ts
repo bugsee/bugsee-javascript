@@ -2,6 +2,7 @@ import { createReadStream, readdirSync, rmSync, statSync } from 'node:fs';
 import { mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BundleBody, BundleSink, BundleSinkWriter } from '@bugsee/core';
+import { writeFully } from './write-fully';
 
 // The node/electron-main sink for the streaming export (docs/design/streaming-export.md §4.5): the zip is written to a
 // temp file under `dir` as it is built, and the finished body streams it from disk — a report never holds its bundle in
@@ -54,12 +55,7 @@ export function createFileBundleSink(dir: string): BundleSink {
       };
       return {
         async write(chunk): Promise<void> {
-          // A write may take less than it was given: continue from where it stopped, or the file is silently short.
-          let offset = 0;
-          while (offset < chunk.length) {
-            const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
-            offset += bytesWritten;
-          }
+          await writeFully(handle, chunk); // a short write must not leave the file silently short
           size += chunk.length;
         },
         async finish(): Promise<BundleBody> {

@@ -76,3 +76,26 @@ export function createMemoryBody(input: readonly Uint8Array[]): BundleBody {
 export function asBody(body: BundleBodyLike): BundleBody {
   return isBundleBody(body) ? body : createMemoryBody([body]);
 }
+
+/**
+ * Share one body between `count` owners (staging it durably and uploading it read it at the same time): the underlying
+ * body is disposed when the LAST of them releases it, and never twice. Content access delegates untouched.
+ */
+export function retainBody(body: BundleBody, count: number): BundleBody {
+  let remaining = count;
+  const shared: BundleBody = {
+    size: body.size,
+    stream: () => body.stream(),
+    bytes: () => body.bytes(),
+    peek: () => body.peek(),
+    dispose: (): void | Promise<void> => {
+      remaining -= 1;
+      return remaining === 0 ? body.dispose() : undefined; // exactly the last claim disposes; extra releases fall past 0
+    },
+  };
+  if (body.ready !== undefined) {
+    const ready = body.ready.bind(body);
+    shared.ready = ready;
+  }
+  return shared;
+}

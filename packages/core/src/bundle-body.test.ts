@@ -98,3 +98,65 @@ describe('asBody / isBundleBody', () => {
     expect(isBundleBody(u8(1))).toBe(false);
   });
 });
+
+import { retainBody } from './bundle-body';
+
+describe('retainBody', () => {
+  const tracked = () => {
+    const base = createMemoryBody([new Uint8Array([1, 2, 3])]);
+    let disposed = 0;
+    return {
+      body: {
+        ...base,
+        dispose: () => {
+          disposed += 1;
+        },
+        ready: async () => {},
+      },
+      disposed: () => disposed,
+    };
+  };
+
+  it('disposes the underlying body only after every owner has released it', () => {
+    const { body, disposed } = tracked();
+    const shared = retainBody(body, 3);
+    shared.dispose();
+    shared.dispose();
+    expect(disposed()).toBe(0);
+    shared.dispose();
+    expect(disposed()).toBe(1);
+  });
+
+  it('ignores releases beyond the count (a body is never disposed twice)', () => {
+    const { body, disposed } = tracked();
+    const shared = retainBody(body, 1);
+    shared.dispose();
+    shared.dispose();
+    shared.dispose();
+    expect(disposed()).toBe(1);
+  });
+
+  it('is the same content: size, stream, bytes, peek and ready all delegate', async () => {
+    const { body } = tracked();
+    const shared = retainBody(body, 2);
+    expect(shared.size).toBe(3);
+    expect(Array.from(await shared.bytes())).toEqual([1, 2, 3]);
+    expect(shared.peek()).toBe(body.peek());
+    const streamed: number[] = [];
+    for await (const chunk of shared.stream()) streamed.push(...chunk);
+    expect(streamed).toEqual([1, 2, 3]);
+    await expect(shared.ready?.()).resolves.toBeUndefined();
+  });
+
+  it('has no ready when the underlying body has none', () => {
+    const shared = retainBody(createMemoryBody([]), 1);
+    expect(shared.ready).toBeUndefined();
+  });
+
+  it('returns the dispose result of the final release (a promise is passed on)', async () => {
+    const base = createMemoryBody([]);
+    const body = { ...base, dispose: () => Promise.resolve() };
+    const shared = retainBody(body, 1);
+    await expect(shared.dispose()).resolves.toBeUndefined();
+  });
+});
