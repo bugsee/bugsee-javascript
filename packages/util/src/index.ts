@@ -21,7 +21,16 @@ export {
   isVercelEdge,
   isWebWorker,
 } from './env';
-export { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from './fflate';
+export {
+  gunzipSync,
+  gzipSync,
+  strFromU8,
+  strToU8,
+  unzipSync,
+  Zip,
+  ZipDeflate,
+  zipSync,
+} from './fflate';
 export { jsonSafeStringify } from './json-safe-stringify';
 export { randomId } from './random-id';
 export { reportGuarded } from './report-guarded';

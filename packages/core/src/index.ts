@@ -63,6 +63,7 @@ export {
   createMemoryBody,
   isBundleBody,
 } from './bundle-body';
+export { assembleBundleStream } from './bundle-stream-assembler';
 export { createBundleUploader } from './bundle-uploader';
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { createCaptureAggregator } from './capture-aggregator';

@@ -72,6 +72,46 @@ describe('createCaptureExporter — stream', () => {
     expect(fake.isReleased()).toBe(true);
   });
 
+  it('releases the snapshot when the stream is abandoned BEFORE it was ever read', async () => {
+    const fake = fakeStore([rec('log', 1, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await it.return?.(undefined); // an unstarted async generator would skip its own finally
+    expect(fake.isReleased()).toBe(true);
+  });
+
+  it('releases once, and a second return() is harmless', async () => {
+    const release = vi.fn();
+    const store: CaptureStore = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release,
+      }),
+    };
+    const it = createCaptureExporter(store).stream();
+    await it.return?.(undefined);
+    await it.return?.(undefined);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the snapshot when a consumer throws into a stream that was never read', async () => {
+    const fake = fakeStore([rec('log', 1, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await expect(it.throw?.(new Error('consumer failed'))).rejects.toThrow('consumer failed');
+    expect(fake.isReleased()).toBe(true);
+  });
+
+  it('releases the snapshot when a consumer throws into the stream mid-read', async () => {
+    const fake = fakeStore([rec('log', 1, {}), rec('log', 2, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await it.next();
+    await expect(it.throw?.(new Error('consumer failed'))).rejects.toThrow('consumer failed');
+    expect(fake.isReleased()).toBe(true);
+  });
+
   it('yields nothing for an empty snapshot', async () => {
     const seen: unknown[] = [];
     for await (const e of createCaptureExporter(fakeStore([]).store).stream()) {

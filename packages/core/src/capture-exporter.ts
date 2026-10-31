@@ -30,7 +30,17 @@ export function createCaptureExporter(
     stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry> {
       const snapshot = store.snapshot(options);
       const records = snapshot.stream();
-      return (async function* (): AsyncIterableIterator<CaptureDataEntry> {
+      // The snapshot is taken NOW (it freezes the window at the moment of the call), so its release must not depend on the
+      // generator below ever starting: an async generator that was never read skips its own `finally`, and a consumer
+      // that fails before its first read would leak the frozen copy. `return()` therefore always releases, once.
+      let released = false;
+      const release = (): void => {
+        if (!released) {
+          released = true;
+          snapshot.release();
+        }
+      };
+      const inner = (async function* (): AsyncGenerator<CaptureDataEntry, void, undefined> {
         try {
           for await (const record of records) {
             let entry: CaptureDataEntry;
@@ -45,9 +55,28 @@ export function createCaptureExporter(
             yield entry;
           }
         } finally {
-          snapshot.release();
+          release();
         }
       })();
+      const stream: AsyncIterableIterator<CaptureDataEntry> = {
+        next: () => inner.next(),
+        return: async (value) => {
+          try {
+            return await inner.return(value);
+          } finally {
+            release();
+          }
+        },
+        throw: async (error) => {
+          try {
+            return await inner.throw(error);
+          } finally {
+            release();
+          }
+        },
+        [Symbol.asyncIterator]: () => stream,
+      };
+      return stream;
     },
 
     async drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>> {
