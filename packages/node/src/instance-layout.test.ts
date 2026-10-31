@@ -34,6 +34,7 @@ describe('createInstanceLayout', () => {
     expect(layout.root).toBe(join('/data', '42-3-abc'));
     expect(layout.captureDir).toBe(join('/data', '42-3-abc', 'capture'));
     expect(layout.pendingDir).toBe(join('/data', '42-3-abc', 'pending'));
+    expect(layout.exportDir).toBe(join('/data', '42-3-abc', 'export'));
     expect(layout.incidentsDir).toBe(join('/data', '42-3-abc', 'incidents'));
     expect(layout.liveFile).toBe(join('/data', '42-3-abc', '.live'));
     expect(layout.ownerFile).toBe(join('/data', '42-3-abc', 'owner.json'));

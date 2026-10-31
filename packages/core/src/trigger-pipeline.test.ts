@@ -1,5 +1,6 @@
 import { createDeferred } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryBody } from './bundle-body';
 import { BugseeError } from './errors';
 import { createReportingRequest, type ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
@@ -201,5 +202,91 @@ describe('createTriggerPipeline — a burst of concurrent incidents', () => {
     const third = await pipeline.report(incident('c'));
     expect(third.ok).toBe(false);
     expect(third.error?.message).toMatch(/queue overflow/);
+  });
+});
+
+describe('createTriggerPipeline — body ownership', () => {
+  it('disposes an assembled body when the upload pipeline throws instead of resolving (nothing else owns it then)', async () => {
+    const dispose = vi.fn();
+    const body = { ...createMemoryBody([new Uint8Array([1])]), dispose };
+    const pipeline = createTriggerPipeline({
+      assemble: () => ({ request: {} as never, body, fileName: 'a.zip' }),
+      uploadPipeline: {
+        enqueue: () => Promise.reject(new Error('pipeline blew up')),
+        flush: async () => true,
+        drop: () => {},
+      },
+    });
+    const result = await pipeline.report({} as never);
+    expect(result.ok).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejecting dispose leaves no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on: (e: string, f: (r: unknown) => void) => void;
+          off: (e: string, f: (r: unknown) => void) => void;
+        };
+      }
+    ).process;
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    proc.on('unhandledRejection', listener);
+    try {
+      // a plain function (not vi.fn): a mock attaches its own handler to a returned promise and would hide the leak
+      const body = {
+        ...createMemoryBody([new Uint8Array([1])]),
+        dispose: () => Promise.reject(new Error('dispose failed')),
+      };
+      const pipeline = createTriggerPipeline({
+        assemble: () => ({ request: {} as never, body, fileName: 'a.zip' }),
+        uploadPipeline: {
+          enqueue: () => Promise.reject(new Error('boom')),
+          flush: async () => true,
+          drop: () => {},
+        },
+      });
+      expect((await pipeline.report({} as never)).ok).toBe(false);
+      const timer = (
+        globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }
+      ).setTimeout;
+      await new Promise<void>((resolve) => timer(() => resolve(), 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      proc.off('unhandledRejection', listener);
+    }
+  });
+
+  it('does not dispose a body the upload pipeline took (it owns it from enqueue on)', async () => {
+    const dispose = vi.fn();
+    const body = { ...createMemoryBody([new Uint8Array([1])]), dispose };
+    const pipeline = createTriggerPipeline({
+      assemble: () => ({ request: {} as never, body, fileName: 'a.zip' }),
+      uploadPipeline: {
+        enqueue: async () => ({ ok: true }),
+        flush: async () => true,
+        drop: () => {},
+      },
+    });
+    await pipeline.report({} as never);
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it('a failing assembly has no body to dispose', async () => {
+    const pipeline = createTriggerPipeline({
+      assemble: () => {
+        throw new Error('assembly failed');
+      },
+      uploadPipeline: {
+        enqueue: async () => ({ ok: true }),
+        flush: async () => true,
+        drop: () => {},
+      },
+    });
+    expect((await pipeline.report({} as never)).ok).toBe(false);
   });
 });

@@ -176,8 +176,11 @@ describe('launch — loopback end-to-end', () => {
       rmSync(dataDir, { recursive: true, force: true });
     });
 
-    it('hashes the bundle with node:crypto on a runtime with no WebCrypto (Node 18)', async () => {
+    // With a data dir the report zip is built into a temp file, so it is hashed from its STREAM by node:crypto (incremental
+    // SHA-256), whether or not WebCrypto exists: WebCrypto's one-shot digest would first read the whole file into the heap.
+    it('hashes a streamed bundle incrementally with node:crypto on a runtime with no WebCrypto (Node 18)', async () => {
       vi.stubGlobal('crypto', undefined);
+      nodeSha256Inputs.length = 0;
       const client = launchLoopback();
       const result = await client.logException(new Error('no webcrypto'));
       await client.stop();
@@ -187,11 +190,12 @@ describe('launch — loopback end-to-end', () => {
       expect(upload).toHaveLength(1);
       expect(upload[0]?.method).toBe('PUT');
       expect(upload[0]?.body.subarray(0, 2).toString('latin1')).toBe('PK');
-      // node:crypto hashed exactly the bytes that were PUT — the injected digest ran.
-      expect(nodeSha256Inputs.some((input) => input.equals(upload[0]?.body as Buffer))).toBe(true);
+      // node:crypto hashed exactly the bytes that were PUT, chunk by chunk.
+      expect(nodeSha256Inputs.length).toBeGreaterThan(0);
+      expect(Buffer.concat(nodeSha256Inputs).equals(upload[0]?.body as Buffer)).toBe(true);
     });
 
-    it('keeps WebCrypto as the single hashing path when crypto.subtle exists (no injection)', async () => {
+    it('does not read a streamed bundle into WebCrypto even when crypto.subtle exists', async () => {
       const real = globalThis.crypto.subtle;
       const digests: Array<{ algorithm: string; bytes: Buffer }> = [];
       vi.stubGlobal('crypto', {
@@ -202,6 +206,7 @@ describe('launch — loopback end-to-end', () => {
           },
         },
       });
+      nodeSha256Inputs.length = 0;
       const client = launchLoopback();
       const result = await client.logException(new Error('webcrypto present'));
       await client.stop();
@@ -209,11 +214,8 @@ describe('launch — loopback end-to-end', () => {
       expect(result.ok).toBe(true);
       const upload = received.filter((r) => r.url === '/upload');
       expect(upload).toHaveLength(1);
-      // The PUT body is exactly what WebCrypto hashed: node:crypto was not substituted for it.
-      expect(digests).toHaveLength(1);
-      expect(digests[0]?.algorithm).toBe('SHA-256');
-      expect(digests[0]?.bytes.equals(upload[0]?.body as Buffer)).toBe(true);
-      expect(nodeSha256Inputs.some((input) => input.equals(upload[0]?.body as Buffer))).toBe(false);
+      expect(digests).toHaveLength(0); // the bundle never went through the one-shot digest
+      expect(Buffer.concat(nodeSha256Inputs).equals(upload[0]?.body as Buffer)).toBe(true);
     });
   });
 

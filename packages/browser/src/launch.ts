@@ -54,6 +54,7 @@ import {
   FAIL_CLOSED_BOOLEAN_OPTION,
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
+  type FileStreamEncoder,
   getCarrierClient,
   getCarrierPendingLaunch,
   getCarrierStatus,
@@ -1000,6 +1001,12 @@ async function buildLaunch(
   const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
+  // The streaming counterpart of `fileEncoders`: the replay registers its entry-by-entry encoder here, and the client reads
+  // the same map by reference at every report (so the lazy-loaded chunk can still add to it).
+  const streamEncoders: Record<'replay', FileStreamEncoder> | undefined = replayEnabled
+    ? ({} as Record<'replay', FileStreamEncoder>)
+    : undefined;
+
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
@@ -1025,6 +1032,7 @@ async function buildLaunch(
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
+    ...(streamEncoders !== undefined ? { streamEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
@@ -1285,6 +1293,7 @@ async function buildLaunch(
             )
           : undefined;
         const recorder = m.registerReplay(client, fileEncoders, {
+          ...(streamEncoders !== undefined ? { streamEncoders } : {}),
           // A base (FullSnapshot) must exist at the start of the window or the replay opens on orphans: snapshot at
           // least twice per window. An explicit positive replay.checkoutEveryNms wins; undefined / 0 / NaN do not
           // (they would silently restore the 60 s default, or disable periodic snapshots).

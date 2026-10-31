@@ -1,5 +1,5 @@
 import { computeBackoff, sha256Hex } from '@bugsee/util';
-import { asBody, isBundleBody } from './bundle-body';
+import { asBody, type BundleBody, isBundleBody } from './bundle-body';
 import { BugseeError } from './errors';
 import {
   type BugseeApi,
@@ -40,6 +40,11 @@ export interface UploadPipelineOptions {
   /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. Best-effort: a rejection
    *  uploads the bundle without a checksum rather than failing it. */
   sha256?: (body: Uint8Array) => Promise<string>;
+  /**
+   * The same digest for a body that is NOT held in memory (a temp file), read as a stream and hashed incrementally so it is
+   * never pulled into the heap for it. Absent: such a body is uploaded without a checksum (nothing sends it today).
+   */
+  sha256Stream?: (chunks: AsyncIterable<Uint8Array>) => Promise<string>;
   /** Delay primitive (injected for tests). Default setTimeout-based. */
   sleep?: (ms: number) => Promise<void>;
   /** Backoff delay for retry `attempt` (1-based). Default util.computeBackoff. */
@@ -186,6 +191,15 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
   };
 
+  /** The digest of a body that is not in memory, hashed from its stream; `undefined` without a stream hasher or on failure. */
+  const streamChecksumOf = async (body: BundleBody): Promise<string | undefined> => {
+    try {
+      return await options.sha256Stream?.(body.stream());
+    } catch {
+      return undefined; // best-effort, like the one-shot digest
+    }
+  };
+
   const runOperation = async (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
     // BEFORE the issue: creating it is what leaves a record on the collector, so local work runs first —
     // and iOS carries `bundle_sha256` in the issue-create body itself, which needs the digest by then.
@@ -205,7 +219,8 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
     // Hashed only when the body is already in memory: a file/Blob body is never pulled into memory for a digest nothing sends.
     const held = body.peek();
-    const checksumSha256 = held !== undefined ? await checksumOf(held) : undefined;
+    const checksumSha256 =
+      held !== undefined ? await checksumOf(held) : await streamChecksumOf(body);
 
     let issue: IssueCreateResult;
     try {

@@ -129,7 +129,9 @@ export function createChunkCaptureStore(
 
   const firstStart = clock.wallNow();
   let dataPart = openNewPart(firstStart, 'data');
-  // When this store started recording (first part start since launch / the last clear): nothing older can exist.
+  // The earliest time this store holds (or held) data for: when it started recording (first part start since launch / the
+  // last clear), or an earlier record stamp (a log buffered before launch is replayed with its own time). Nothing older
+  // can be in the window, so the export range never starts before it, and never AFTER a record it would then trim.
   let epoch = firstStart;
 
   const partFor = (lane: Lane): IndexedPart => {
@@ -248,6 +250,9 @@ export function createChunkCaptureStore(
       const size = backend.appendEntry(part.ref, record);
       part.byteSize += size;
       part.count += 1;
+      if (record.timestamp < epoch) {
+        epoch = record.timestamp;
+      }
       if (record.anchor === true) {
         part.anchor = true;
       }

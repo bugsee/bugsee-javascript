@@ -128,6 +128,61 @@ describe('createUploadPipeline — happy path', () => {
     });
   });
 
+  it('a body that is not in memory is hashed by sha256Stream (incrementally) when one is given', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const sha256 = vi.fn(async () => 'one-shot');
+    const seen: number[] = [];
+    const sha256Stream = vi.fn(async (chunks: AsyncIterable<Uint8Array>) => {
+      for await (const chunk of chunks) seen.push(...chunk);
+      return 'streamed';
+    });
+    const base = createMemoryBody([new Uint8Array([1, 2]), new Uint8Array([3])]);
+    const bytes = vi.fn(base.bytes);
+    const body = { ...base, peek: () => undefined, bytes };
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256, sha256Stream })).enqueue(
+      {
+        ...bundle,
+        body,
+      },
+    );
+    expect(seen).toEqual([1, 2, 3]);
+    expect(sha256).not.toHaveBeenCalled();
+    expect(bytes).not.toHaveBeenCalled();
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toMatchObject({
+      checksumSha256: 'streamed',
+    });
+  });
+
+  it('an in-memory body still uses the one-shot digest even when sha256Stream exists', async () => {
+    const sha256 = vi.fn(async () => 'one-shot');
+    const sha256Stream = vi.fn(async () => 'streamed');
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256, sha256Stream })).enqueue(
+      {
+        ...bundle,
+        body: createMemoryBody([new Uint8Array([1])]),
+      },
+    );
+    expect(sha256).toHaveBeenCalledTimes(1);
+    expect(sha256Stream).not.toHaveBeenCalled();
+  });
+
+  it('a streaming digest that fails uploads without a checksum rather than failing the upload', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const body = { ...createMemoryBody([new Uint8Array([1])]), peek: () => undefined };
+    const result = await createUploadPipeline(
+      deps({
+        uploader: fakeUploader(put),
+        sha256Stream: () => Promise.reject(new Error('hash failed')),
+      }),
+    ).enqueue({ ...bundle, body });
+    expect(result.ok).toBe(true);
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toEqual({
+      contentLength: 1,
+      fileName: 'a.bundle.zip',
+    });
+  });
+
   it('a body that cannot be read fails the upload (no throw, nothing created on the collector), retryable', async () => {
     const api = fakeApi();
     const put = vi.fn(async () => ({ ok: true }) as PutResult);

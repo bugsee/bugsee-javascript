@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import http, { createServer, type Server } from 'node:http';
@@ -2040,6 +2041,69 @@ describe('launch — system trace producers', () => {
     );
     expect(client.isLaunched()).toBe(true);
     expect((onError.mock.calls[0]?.[0] as Error).message).toBe('p boom');
+  });
+});
+
+describe('launch — streamed export to a temp file', () => {
+  it('builds the report zip into the instance export dir, uploads it, and leaves the dir empty', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-export-'));
+    const { fn: transport, puts } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        carrier: {},
+      }),
+    );
+    clients.push(client);
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1000, { msg: 'streamed' }));
+    await client.logException(new Error('x'));
+    expect(puts).toHaveLength(1);
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(strFromU8(files['logs.json'] as Uint8Array)).toContain('streamed');
+    // the export file existed while the bundle was built and is gone once the upload is over
+    expect(existsSync(join(dir, FIXED_INSTANCE_ID, 'export'))).toBe(true);
+    await vi.waitFor(() => expect(readdirSync(join(dir, FIXED_INSTANCE_ID, 'export'))).toEqual([]));
+  });
+
+  it('sweeps export files a previous run of the same instance left behind, and keeps recent ones', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-export-sweep-'));
+    const exportDir = join(dir, FIXED_INSTANCE_ID, 'export');
+    mkdirSync(exportDir, { recursive: true });
+    const stale = join(exportDir, 'export-stale.zip');
+    const fresh = join(exportDir, 'export-fresh.zip');
+    writeFileSync(stale, 'x');
+    writeFileSync(fresh, 'x');
+    const old = new Date(Date.now() - 2 * 3_600_000);
+    utimesSync(stale, old, old);
+    const { fn: transport } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        carrier: {},
+      }),
+    );
+    clients.push(client);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('without an on-disk instance the report is built in memory (no export dir anywhere)', async () => {
+    const { fn: transport, puts } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({ transport, clock: fixedClock, persist: false, carrier: {} } as never),
+    );
+    clients.push(client);
+    await client.logException(new Error('x'));
+    expect(puts).toHaveLength(1);
   });
 });
 

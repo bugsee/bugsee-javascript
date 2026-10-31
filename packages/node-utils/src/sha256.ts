@@ -27,3 +27,16 @@ export function nodeSha256Fallback(
 ): Sha256Digest | undefined {
   return runtime.crypto?.subtle ? undefined : nodeSha256Hex;
 }
+
+/**
+ * Hex SHA-256 of a body read as a stream, hashed incrementally: the digest a bundle that is NOT held in memory (a temp
+ * file) gets, which WebCrypto's one-shot `digest` cannot give without reading the whole file into the heap first. Hashing
+ * runs chunk by chunk between reads, so a large bundle never blocks the event loop for its whole length either.
+ */
+export async function nodeSha256Stream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of chunks) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
+}

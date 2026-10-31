@@ -333,6 +333,42 @@ describe('createChunkCaptureStore — snapshot time range', () => {
     expect(store.snapshot().timeRange?.()).toEqual({ start: 1000, end: 4000 });
   });
 
+  it('moves the epoch back to a record stamped before the store started, so the report keeps it (nothing in the window is trimmed)', () => {
+    const { clock, set } = mutableClock(10_000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 60_000,
+    });
+    store.add({ type: 'log', timestamp: 4000, serialized: 'early' }); // e.g. an early-buffered pre-launch log
+    store.add({ type: 'log', timestamp: 9000, serialized: 'later' });
+    set(12_000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 4000, end: 12_000 });
+  });
+
+  it('an old record never pulls the start before the window', () => {
+    const { clock, set } = mutableClock(100_000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 5000,
+    });
+    store.add({ type: 'log', timestamp: 4000, serialized: 'ancient' });
+    set(120_000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 115_000, end: 120_000 });
+  });
+
+  it('forgets the early record on clear() along with the rest of the epoch', () => {
+    const { clock, set } = mutableClock(10_000);
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock,
+      maxRecordingTimeMs: 60_000,
+    });
+    store.add({ type: 'log', timestamp: 4000, serialized: 'early' });
+    set(11_000);
+    store.clear();
+    set(12_000);
+    expect(store.snapshot().timeRange?.()).toEqual({ start: 11_000, end: 12_000 });
+  });
+
   it('restarts the epoch on clear()', () => {
     const { clock, set } = mutableClock(1000);
     const store = createChunkCaptureStore(createMemoryChunkBackend(), {

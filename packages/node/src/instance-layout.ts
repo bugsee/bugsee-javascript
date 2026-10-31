@@ -28,6 +28,8 @@ export interface InstanceLayout {
   readonly root: string;
   readonly captureDir: string;
   readonly pendingDir: string;
+  /** Where a report's zip is written while it is built (see `createFileBundleSink`); empty again once each upload is over. */
+  readonly exportDir: string;
   readonly incidentsDir: string;
   /** The liveness heartbeat file — its mtime is touched from the watchdog thread. */
   readonly liveFile: string;
@@ -73,6 +75,7 @@ export function createInstanceLayout(
     root,
     captureDir: join(root, 'capture'),
     pendingDir: join(root, 'pending'),
+    exportDir: join(root, 'export'),
     incidentsDir: join(root, 'incidents'),
     liveFile: join(root, LIVE_FILE),
     ownerFile: join(root, OWNER_FILE),

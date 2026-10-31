@@ -3947,7 +3947,11 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({ blackout: expect.any(Object), checkoutEveryNms: 30_000 }); // default 60 s window → 30 s cadence; no caller overrides → replay's own fail-closed defaults apply
+    expect(call[2]).toEqual({
+      blackout: expect.any(Object),
+      checkoutEveryNms: 30_000,
+      streamEncoders: {},
+    }); // default 60 s window → 30 s cadence; no caller overrides → replay's own fail-closed defaults apply
   });
 
   it('records when the document arrives via window.document (the real-browser path)', async () => {
@@ -4034,6 +4038,7 @@ describe('launch — session replay (lazy)', () => {
       maskAllText: false,
       checkoutEveryNms: 5000,
       blackout: expect.any(Object),
+      streamEncoders: {},
     }); // options forwarded
   });
 
@@ -4052,6 +4057,7 @@ describe('launch — session replay (lazy)', () => {
     expect(registerReplay.mock.calls[0]?.[2]).toEqual({
       blackout: expect.any(Object),
       checkoutEveryNms: 30_000,
+      streamEncoders: {},
     }); // no options object
   });
 
