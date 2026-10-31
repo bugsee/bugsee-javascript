@@ -217,7 +217,7 @@ consumer goes through one `asBody()` normalizer, so third-party `Transport` inje
 | **S4** | **DONE 2026-10-31** (two review rounds; `createReplayStreamEncoder`, assembler `streamEncoders`; real rrweb Replayer probe on the BGSVIEWER-12 events passed; not yet wired into launch/client, that is S5). Replay `FileStreamEncoder` in `@bugsee/replay`: gzip stream, orphan trim, timestamp clamp, empty-member omission | encoder tests incl. real rrweb Replayer probe on the BGSVIEWER-12 data |
 | **S5a** | **DONE 2026-11-01** (two review rounds): `BundleBody.ready`, `HttpTransport.acceptsBundleBody`, uploader/pipeline take and dispose a `BundleBody`, sinks (memory, Blob, node temp file + sweep), assembler write queue with backpressure/abort, node pipe + fetch Blob transports, `withTransportHeaders`. **S5b DONE 2026-11-01**: `BundleStore.putFrame?` (node: atomic temp+rename), `retainBody` shared by staging and upload, staging that outlives the upload frees its own blob, `flush` waits for streamed staging; stores without `putFrame` (IndexedDB mirror) get the materialized frame through `put`. Known: a streamed `enqueue` verdict waits up to `stagedWaitMs` (a slow big write reports `retained:false`, the safe direction); recovery still reads a staged frame whole (bounded by retention). **S5c DONE 2026-11-01** (three review rounds): `client.ts` assembles through `assembleBundleStream` over the exporter stream (+ report-time extras), the report dialog freezes (reads out) its capture with the window it covered, an export failure retries through memory and ships the report without rolling capture data, default memory sink keeps plain-bytes bundles, node builds into `<instance>/export/` (file sink, swept at launch), streamed durable staging, incremental `node:crypto` digest for file bodies (`sha256Stream`), browser registers the streaming replay encoder; chunk-store epoch moves back to early-stamped records so nothing in the window is trimmed. **Not streamed (residual):** capture-recovery and native-crash-recovery keep the buffered assembler (they re-use one drained capture for several bundles at launch); viewer unzip not exercised (worker-side Python `zipfile` verified against a streamed bundle). | |
 | **S5** | Sinks (Blob, node temp file) + transports + `BundleStore` streaming `put/open` + durable pipeline + recovery paths; worker/viewer compatibility check against the real worker test and viewer unzip | cross-package integration + e2e |
-| **S6** | Default byte cap (20 MB memory / 30 MB durable, owner to confirm), `PROGRESS.md`, remove the buffered path where no longer reachable | gates |
+| **S6** | **DONE 2026-11-01.** Default byte cap (browser: 20 MB memory / 30 MB durable; section 9), `PROGRESS.md`. The buffered assembler is NOT removed: capture-recovery and native-crash-recovery still use it | gates |
 
 Each slice ends with a multi-agent review round to zero new real findings (CLAUDE.md, implementation standards §7).
 
@@ -269,3 +269,40 @@ parse-once/re-stringify `data` per Q2, interleaved in store order).
 Consequences for the design: the memory win is real (it is the whole export working set), and it is largest where it
 matters, on the durable backends, where today's export is the **only** place the window is ever fully in the heap.
 No change to the plan; S2 keeps an equivalence test against the buffered assembler and a `replay.bin` byte-format check.
+
+## 9. S6 results: measured live heap of the real paths, and the default byte cap (2026-11-01)
+
+Method: same window as section 8 (the 496 real BGSVIEWER-12 rrweb events + 20,000 logs + 3,000 network records, 20.0 MB
+serialized, 20 s of capture), but through the shipped code: `drain()` -> `assembleBundle` (buffered, `encodeReplay`) against
+`assembleBundleStream` over `captureExporter.stream()` with the streaming replay encoder (memory sink, and the node temp-file
+sink), on a memory store and on the file-backed chunk store. Metric: the smallest `--max-old-space-size` at which the whole run
+(window build + export) completes, node 24. The window build alone sets the floor (~40-44 MB), so the DIFFERENCE between rows
+is the export's own live-heap cost.
+
+| store | export | smallest heap (MB) | export cost over the store |
+| --- | --- | --- | --- |
+| memory | buffered (before S2-S5) | 80 | about +36 MB (1.8x the window) |
+| memory | streaming, memory sink | 48 | about +4 MB |
+| memory | streaming, temp-file sink | 48 | about +4 MB |
+| durable (file store) | buffered | 60 | about +20 MB (1.0x the window) |
+| durable (file store) | streaming, memory sink | 44 | about +4 MB |
+| durable (file store) | streaming, temp-file sink | 40 | at the floor, not measurable |
+
+Compressed output is 3.8-4.1 MB for the 20 MB window (about 5:1), so what the memory sink holds is the compressed bundle,
+which is also what the IndexedDB bundle mirror keeps today.
+
+**Cap decision.** A bigger in-memory window is a real heap cost: in this bench the 20 MB window itself puts the process at
+about 44 MB (roughly 2x its serialized size), so raising the memory default from 10 to 20 MB raises steady-state heap by about
+that much; that is the owner's trade (20 MB, not 10, because 10 MB holds only a few seconds of rrweb DOM events). What S2-S5 change
+is the REPORT-TIME copy: the same 20 MB window needed 80 MB of heap to be exported before and needs 48 MB now. Shipped: **browser
+20 MB (window in memory), 30 MB (IndexedDB capture store)**, an explicit `maxDataSize` winning over both; the report's
+`sdk.options` shows the value in effect. Unchanged: Node/Electron 50 MB, edge/worker 10 MB (no replay there; no BGSVIEWER-12
+exposure, no durable window).
+
+Limits of the measurement: the durable rows are the node FILE-backed chunk store, not the browser's IndexedDB backend, whose
+read path (`snapshot()` reading parts back from the database) was not measured; and the claim "the durable window is not in the
+heap" holds while IndexedDB accepts writes: records it refuses (quota, `AbortError`) are served from memory, still bounded by the
+cap, so under disk pressure the heap window can be the full 30 MB.
+
+Residual: the browser's IndexedDB bundle store keeps whole bundle frames in an in-memory mirror (compressed, ~5:1), a few MB per
+queued report, bounded by the durable queue's retention (32 bundles / 64 MiB); it was not changed.

@@ -228,3 +228,54 @@ describe('launch — a dropped replay restarts the recorder', () => {
     await flush();
   });
 });
+
+describe('launch — the default byte cap is the one the store enforces', () => {
+  // 24 closed parts of 1 MB each: a 20 MB cap must drop the oldest, a 30 MB cap must keep all of them.
+  const fill = (store: ReturnType<typeof createMemoryCaptureStore>): void => {
+    for (let i = 0; i < 24; i++) {
+      store.add({ type: 'log', timestamp: now + i, serialized: `${i}:${'x'.repeat(MB)}` });
+      store.tick(now + (i + 1) * 1000);
+    }
+  };
+  const kept = async (over: Partial<BugseeLaunchOptions>): Promise<number> => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const client = await launched(opts(over));
+    const store = client.getService(CaptureStoreToken);
+    fill(store);
+    let count = 0;
+    await vi.waitFor(async () => {
+      count = ((await store.snapshot().drainAll()).get('log') ?? []).length;
+      expect(count).toBeGreaterThan(0);
+    });
+    return count;
+  };
+
+  it('keeps about 20 MB when the window is in memory', async () => {
+    const n = await kept({ persist: false });
+    expect(n).toBeGreaterThanOrEqual(19);
+    expect(n).toBeLessThanOrEqual(20);
+  });
+
+  it('keeps all 24 MB with the durable store (30 MB cap)', async () => {
+    expect(
+      await kept({
+        persist: true,
+        indexedDB: new IDBFactory(),
+        locks: freeLocks,
+        diskProtection: false,
+      } as Partial<BugseeLaunchOptions>),
+    ).toBe(24);
+  });
+
+  it('an explicit maxDataSize is the cap, durable or not', async () => {
+    const n = await kept({
+      persist: true,
+      indexedDB: new IDBFactory(),
+      locks: freeLocks,
+      maxDataSize: 10,
+      diskProtection: false,
+    } as Partial<BugseeLaunchOptions>);
+    expect(n).toBeGreaterThanOrEqual(9);
+    expect(n).toBeLessThanOrEqual(10);
+  });
+});

@@ -1014,7 +1014,7 @@ interface BugseeOptions {
 
   // ── Recording size / duration ─────────────────────────────────────
   maxRecordingTime?: number;                    // seconds; default 60
-  maxDataSize?: number;                         // megabytes; default 10 on browser/edge, 50 on Node/Electron — per [R:dx MAJOR-11]
+  maxDataSize?: number;                         // megabytes; default 20 on browser (30 with the IndexedDB capture store), 10 on edge/worker, 50 on Node/Electron — per [R:dx MAJOR-11], raised for the browser 2026-11-01 (streaming-export §9)
   maxBreadcrumbs?: number;                      // default 100
 
   // ── Severity defaults ─────────────────────────────────────────────

@@ -134,11 +134,16 @@ const SDK_VERSION = BUGSEE_SDK_VERSION;
 // the data safe is that it becomes DURABLE, and the next page load recovers it.
 const PAGE_HIDE_FLUSH_MS = 1000;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
-// Browser/edge capture buffer ceiling (10 MB on browser, 50 MB on Node).
-const DEFAULT_MAX_DATA_SIZE_MB = 10;
+// The byte cap on the rolling capture window: 20 MB while the window lives in memory, 30 MB when the IndexedDB capture store
+// holds it (the window is then not in the heap, so a larger one costs quota rather than heap; if IndexedDB refuses writes the
+// store keeps those records in memory, still bounded by this cap). Both used to be 10 MB, which a few seconds of rrweb DOM
+// events fill (BGSVIEWER-12). A bigger in-memory window is a real heap cost (about 2x its serialized size); what the streaming
+// export changes is the REPORT-TIME copy of it, which used to add another 1-2x (docs/design/streaming-export.md section 9).
+const DEFAULT_MAX_DATA_SIZE_MB = 20;
+const DEFAULT_DURABLE_MAX_DATA_SIZE_MB = 30;
 
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
-// (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
+// (20 MB default, 30 MB with the IndexedDB store, vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 /** How long persistence must hold before the replay recorder restarts for a fresh snapshot (see the disk-pressure hook). */
 const REPLAY_CHECKOUT_QUIET_MS = 5000;
@@ -507,7 +512,7 @@ export interface BugseeLaunchOptions {
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
-  /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
+  /** Max captured data kept in the rolling buffer, in megabytes. Default 20 (30 when the IndexedDB capture store holds it). */
   maxDataSize?: number;
   /**
    * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
@@ -785,6 +790,11 @@ async function buildLaunch(
   // check decided instead of the static `false` default (for an explicit or invalid value this is a no-op).
   resolved.canonical[PERSIST_OPTION_KEY] = persist;
   const durableCapture = persist && options.captureStore === undefined;
+  // The durable window is not in the heap: a host that did not choose a cap gets the larger durable default (and the
+  // report's `sdk.options` says so, like `persist` above).
+  if (durableCapture && !Object.hasOwn(resolved.host, BugseeOption.MaxDataSize)) {
+    resolved.canonical[BugseeOption.MaxDataSize] = DEFAULT_DURABLE_MAX_DATA_SIZE_MB;
+  }
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
     appToken,
