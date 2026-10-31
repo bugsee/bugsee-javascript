@@ -1,5 +1,5 @@
 import type { EnvironmentEnvelope, FileType } from '@bugsee/protocol';
-import { strFromU8, unzipSync } from '@bugsee/util';
+import { strFromU8, strToU8, unzipSync } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
 import { assembleBundleStream } from './bundle-stream-assembler';
@@ -523,5 +523,275 @@ describe('assembleBundleStream — time plan', () => {
     const files = members(await bundle.body.bytes());
     expect(manifestOf(files).time).toEqual({ start: NOW - 5000, end: NOW });
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['new']);
+  });
+
+  describe('stream encoders', () => {
+    const NOW2 = 1_700_000_000_000;
+    // A recording encoder: emits one chunk per entry, a trailer, and can declare itself empty.
+    const recorder = (opts: { silent?: boolean; failOn?: unknown } = {}) => {
+      const log: string[] = [];
+      const plans: unknown[] = [];
+      const encoder = {
+        begin: (plan: unknown) => {
+          plans.push(plan);
+          return {
+            write: (e: CaptureDataEntry) => {
+              if (e.data === opts.failOn) throw new Error('bad record');
+              log.push(`w:${String(e.data)}`);
+              return opts.silent === true ? [] : [strToU8(`<${String(e.data)}>`)];
+            },
+            end: () => {
+              log.push('end');
+              return opts.silent === true ? [] : [strToU8('|end')];
+            },
+          };
+        },
+      };
+      return { encoder, log, plans };
+    };
+    const runEnc = async (
+      entries: CaptureDataEntry[],
+      range: { start: number; end: number } | undefined,
+      over: Partial<BundleAssemblyContext>,
+    ) => {
+      const src = Object.assign(from(entries), range !== undefined ? { timeRange: range } : {});
+      const bundle = await assembleBundleStream(
+        createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+        src,
+        context(over),
+      );
+      return members(await bundle.body.bytes());
+    };
+    const mf = (files: Record<string, Uint8Array>) =>
+      JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+        time: { start: number; end: number };
+        files: Array<{ filename: string; type: string }>;
+      };
+
+    it('feeds entries in order, writes the chunks into the member and lists it in the manifest', async () => {
+      const { encoder, log, plans } = recorder();
+      const files = await runEnc(
+        [
+          entry('replay', NOW2 - 9000, 'a'),
+          entry('log', NOW2 - 10, 'l'),
+          entry('replay', NOW2 - 8000, 'b'),
+        ],
+        { start: NOW2 - 5000, end: NOW2 },
+        { streamEncoders: { replay: encoder } },
+      );
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<a><b>|end');
+      expect(log).toEqual(['w:a', 'w:b', 'end']);
+      expect(plans).toEqual([{ start: NOW2 - 5000, end: NOW2 }]);
+      expect(mf(files).files.map((f) => f.filename)).toContain('replay.bin');
+    });
+
+    it('begins the session with an absent start when the source states no range', async () => {
+      const { encoder, plans } = recorder();
+      await runEnc([entry('replay', NOW2 - 100, 'a')], undefined, {
+        streamEncoders: { replay: encoder },
+      });
+      expect(plans).toEqual([{ start: undefined, end: NOW2 }]);
+    });
+
+    it('omits the member and its manifest entry when the encoder produced no bytes', async () => {
+      const { encoder } = recorder({ silent: true });
+      const files = await runEnc([entry('replay', NOW2 - 100, 'a')], undefined, {
+        streamEncoders: { replay: encoder },
+      });
+      expect(files['replay.bin']).toBeUndefined();
+      expect(mf(files).files.map((f) => f.filename)).not.toContain('replay.bin');
+    });
+
+    it('skips a record whose write throws, reports it, and keeps the rest', async () => {
+      const { encoder } = recorder({ failOn: 'bad' });
+      const errors: unknown[] = [];
+      const files = await runEnc(
+        [
+          entry('replay', NOW2 - 300, 'a'),
+          entry('replay', NOW2 - 200, 'bad'),
+          entry('replay', NOW2 - 100, 'b'),
+        ],
+        undefined,
+        { streamEncoders: { replay: encoder }, onError: (e) => errors.push(e) },
+      );
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<a><b>|end');
+      expect(errors).toHaveLength(1);
+    });
+
+    it('prefers the stream encoder over a buffered one for the same type', async () => {
+      const { encoder } = recorder();
+      const files = await runEnc([entry('replay', NOW2 - 100, 'a')], undefined, {
+        streamEncoders: { replay: encoder },
+        fileEncoders: { replay: () => new Uint8Array([9]) },
+      });
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<a>|end');
+    });
+
+    it('does not trim a streamed type by the plan start (the encoder clamps)', async () => {
+      const { encoder, log } = recorder();
+      await runEnc(
+        [entry('replay', NOW2 - 9000, 'old')],
+        { start: NOW2 - 5000, end: NOW2 },
+        {
+          streamEncoders: { replay: encoder },
+        },
+      );
+      expect(log).toEqual(['w:old', 'end']);
+    });
+
+    it('closes cleanly when the stream encoder never saw an entry (no session, no member)', async () => {
+      const { encoder, plans } = recorder();
+      const files = await runEnc([], undefined, { streamEncoders: { replay: encoder } });
+      expect(plans).toEqual([]);
+      expect(files['replay.bin']).toBeUndefined();
+    });
+
+    it('creates the member in end() when every chunk only appears there (buffering encoders)', async () => {
+      const encoder = {
+        begin: () => ({
+          write: () => [],
+          end: () => [strToU8('all-at-end')],
+        }),
+      };
+      const files = await runEnc([entry('replay', NOW2 - 100, 'a')], undefined, {
+        streamEncoders: { replay: encoder },
+      });
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('all-at-end');
+      expect(mf(files).files.map((f) => f.filename)).toContain('replay.bin');
+    });
+
+    it('fails the bundle and closes the source when end() throws', async () => {
+      const encoder = {
+        begin: () => ({
+          write: () => [strToU8('x')],
+          end: (): Uint8Array[] => {
+            throw new Error('end failed');
+          },
+        }),
+      };
+      let closed = false;
+      const source: AsyncIterable<CaptureDataEntry> = {
+        [Symbol.asyncIterator]: () => {
+          const it = from([entry('replay', NOW2 - 100, 'a')])[Symbol.asyncIterator]();
+          return {
+            next: () => it.next(),
+            return: async () => {
+              closed = true;
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+      await expect(
+        assembleBundleStream(
+          createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+          source,
+          context({ streamEncoders: { replay: encoder } }),
+        ),
+      ).rejects.toThrow('end failed');
+      expect(closed).toBe(true);
+    });
+
+    it('fails the bundle (not a skipped record) when the member name clashes with another member', async () => {
+      const { encoder } = recorder();
+      const errors: unknown[] = [];
+      const crash: CrashJson = {
+        exception_type: 'error',
+        ndkCrash: false,
+        handled: true,
+        exception: { name: 'E', reason: 'r', frames: [] },
+      };
+      await expect(
+        assembleBundleStream(
+          createReportingRequest({ source: { type: 'error' }, id: 'r2', crash }),
+          from([entry('crash', NOW2 - 100, 'a')]),
+          context({ streamEncoders: { crash: encoder }, onError: (e) => errors.push(e) }),
+        ),
+      ).rejects.toThrow(/duplicate file name: crash.json/);
+      expect(errors).toEqual([]);
+    });
+
+    it('handles several streamed types and a mix with plain and buffered types, in first-seen order', async () => {
+      const a = recorder();
+      const b = recorder();
+      const files = await runEnc(
+        [
+          entry('log', NOW2 - 300, 'l1'),
+          entry('replay', NOW2 - 250, 'r1'),
+          entry('viewtree', NOW2 - 200, 'v1'),
+          entry('replay', NOW2 - 150, 'r2'),
+          entry('events.user', NOW2 - 100, 'e1'),
+        ],
+        undefined,
+        {
+          streamEncoders: { replay: a.encoder, viewtree: b.encoder },
+          fileEncoders: { 'events.user': () => strToU8('buffered') },
+        },
+      );
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<r1><r2>|end');
+      expect(strFromU8(files['viewtree.json'] as Uint8Array)).toBe('<v1>|end');
+      expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['l1']);
+      expect(strFromU8(files['events.user.json'] as Uint8Array)).toBe('buffered');
+      expect(mf(files).files.map((f) => f.type)).toEqual([
+        'log',
+        'replay',
+        'viewtree',
+        'events.user',
+      ]);
+    });
+
+    it('feeds report-time extras of a streamed type through the encoder too', async () => {
+      const { encoder, log } = recorder();
+      const bundle = await assembleBundleStream(
+        createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+        from([entry('replay', NOW2 - 100, 'a')]),
+        context({ streamEncoders: { replay: encoder } }),
+        new Map([['replay', [entry('replay', NOW2 - 50, 'x')]]]),
+      );
+      const files = members(await bundle.body.bytes());
+      expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<a><x>|end');
+      expect(log).toEqual(['w:a', 'w:x', 'end']);
+    });
+
+    it('closes the source and rethrows the original error when it fails after a member was opened', async () => {
+      const { encoder } = recorder();
+      let closed = false;
+      const source: AsyncIterable<CaptureDataEntry> = {
+        [Symbol.asyncIterator]: () => {
+          let n = 0;
+          return {
+            next: async () => {
+              if (n++ === 0)
+                return { done: false as const, value: entry('replay', NOW2 - 100, 'a') };
+              throw new Error('source died');
+            },
+            return: async () => {
+              closed = true;
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+      await expect(
+        assembleBundleStream(
+          createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+          source,
+          context({ streamEncoders: { replay: encoder } }),
+        ),
+      ).rejects.toThrow('source died');
+      expect(closed).toBe(true);
+    });
+
+    it('passes the clock moment, not the snapshot range end, as plan.end', async () => {
+      const { encoder, plans } = recorder();
+      await runEnc(
+        [entry('replay', NOW2 - 100, 'a')],
+        { start: NOW2 - 5000, end: NOW2 - 77 },
+        {
+          streamEncoders: { replay: encoder },
+        },
+      );
+      expect(plans).toEqual([{ start: NOW2 - 5000, end: NOW2 }]);
+    });
   });
 });

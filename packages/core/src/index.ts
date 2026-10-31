@@ -213,6 +213,7 @@ export { InputTool } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 export { createFileChunkBackend, type FileChunkBackendOptions } from './file-chunk-backend';
+export type { ExportPlan, FileStreamEncoder, StreamEncoderSession } from './file-stream-encoder';
 export {
   type BreadcrumbFilter,
   createFilterStore,

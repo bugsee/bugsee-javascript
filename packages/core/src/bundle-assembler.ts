@@ -20,6 +20,7 @@ import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
 import { stampCrashProvenance } from './crash';
+import type { FileStreamEncoder } from './file-stream-encoder';
 import type { ReportingRequest } from './reporting';
 import type { RequestContext } from './request-context';
 import type { Bundle } from './transport';
@@ -58,6 +59,11 @@ export interface BundleAssemblyContext {
    * JSON path — keeping core codec-free. The encoder receives the type's ordered payloads (`entry.data`).
    */
   fileEncoders?: Partial<Record<FileType, (payloads: unknown[]) => Uint8Array>>;
+  /**
+   * Per-file-type STREAMING encoders (the replay's `replay.bin`): honoured by the streaming assembler only, and preferred
+   * over `fileEncoders` for the same type. See {@link FileStreamEncoder}.
+   */
+  streamEncoders?: Partial<Record<FileType, FileStreamEncoder>>;
   /** Sink for non-fatal problems (a dropped user attachment). Absent → they are dropped silently. */
   onError?: (error: unknown) => void;
 }

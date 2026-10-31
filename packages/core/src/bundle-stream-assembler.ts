@@ -18,6 +18,7 @@ import {
 } from './bundle-assembler';
 import { type BundleBody, createMemoryBody } from './bundle-body';
 import type { CaptureDataEntry } from './contracts';
+import type { StreamEncoderSession } from './file-stream-encoder';
 import type { ReportingRequest } from './reporting';
 import type { Bundle } from './transport';
 
@@ -32,6 +33,12 @@ import type { Bundle } from './transport';
 // replay) still collect their payloads and encode at the end; a streaming encoder for them is a later slice.
 
 type TimeRange = { readonly start: number; readonly end: number };
+
+interface EncodedMember {
+  readonly session: StreamEncoderSession;
+  /** Created with the first chunk, so a type that produced nothing leaves no empty member behind. */
+  file: ZipDeflate | undefined;
+}
 
 interface StreamMember {
   readonly file: ZipDeflate;
@@ -115,6 +122,16 @@ async function build(
   const order: FileType[] = [];
   const streamed = new Map<FileType, StreamMember>();
   const collected = new Map<FileType, unknown[]>(); // types with an injected encoder
+  const encoded = new Map<FileType, EncodedMember>(); // types with a stream encoder
+  const writeChunks = (type: FileType, member: EncodedMember, chunks: Uint8Array[]): void => {
+    for (const chunk of chunks) {
+      if (member.file === undefined) {
+        member.file = new ZipDeflate(claim(fileNameForType(type)));
+        zip.add(member.file);
+      }
+      member.file.push(chunk, false);
+    }
+  };
   const take = (entry: CaptureDataEntry, rolling: boolean): void => {
     const type = entry.type;
     if (plan === undefined) {
@@ -124,19 +141,39 @@ async function build(
     } else if (
       rolling &&
       entry.timestamp < plan.start &&
-      context.fileEncoders?.[entry.type] === undefined
+      context.fileEncoders?.[entry.type] === undefined &&
+      context.streamEncoders?.[entry.type] === undefined
     ) {
       return; // before the window; types with an encoder (the replay) are clamped by it instead
     }
-    if (!streamed.has(type) && !collected.has(type)) {
+    if (!streamed.has(type) && !collected.has(type) && !encoded.has(type)) {
       order.push(type);
-      if (context.fileEncoders?.[type] !== undefined) {
+      const streamEncoder = context.streamEncoders?.[type];
+      if (streamEncoder !== undefined) {
+        encoded.set(type, {
+          session: streamEncoder.begin({ start: plan?.start, end: now }),
+          file: undefined,
+        });
+      } else if (context.fileEncoders?.[type] !== undefined) {
         collected.set(type, []);
       } else {
         const file = new ZipDeflate(claim(fileNameForType(type)));
         zip.add(file);
         streamed.set(type, { file, shape: fileShape(type), count: 0 });
       }
+    }
+    const session = encoded.get(type);
+    if (session !== undefined) {
+      let chunks: Uint8Array[];
+      try {
+        chunks = session.session.write(entry);
+      } catch (error) {
+        context.onError?.(error); // one bad record never costs the member
+        return;
+      }
+      // Outside the try: a name clash (or any zip failure) is not a bad record and must fail the bundle, as it does everywhere.
+      writeChunks(type, session, chunks);
+      return;
     }
     const payloads = collected.get(type);
     if (payloads !== undefined) {
@@ -169,10 +206,20 @@ async function build(
   const files: ManifestFileEntry[] = [];
   const dataNames: string[] = [];
   for (const type of order) {
+    const stream = encoded.get(type);
+    if (stream !== undefined) {
+      writeChunks(type, stream, stream.session.end());
+      if (stream.file === undefined) {
+        continue; // nothing was produced: no member, no manifest entry
+      }
+      stream.file.push(new Uint8Array(0), true);
+    }
     files.push(manifestEntryForType(type));
     dataNames.push(fileNameForType(type));
     const member = streamed.get(type);
-    if (member !== undefined) {
+    if (stream !== undefined) {
+      // finalized above
+    } else if (member !== undefined) {
       member.file.push(strToU8(member.shape.close), true);
     } else {
       const encode = (context.fileEncoders as NonNullable<typeof context.fileEncoders>)[type] as (

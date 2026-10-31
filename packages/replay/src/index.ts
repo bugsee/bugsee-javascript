@@ -19,5 +19,7 @@ export {
   type RegisterReplayOptions,
   type ReplayClientLike,
   type ReplayFileEncoders,
+  type ReplayStreamEncoders,
   registerReplay,
 } from './register';
+export { createReplayStreamEncoder } from './stream-encoder';
