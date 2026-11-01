@@ -26,10 +26,12 @@ const SKIP_DIRS = new Set([
   'node_modules',
   'dist',
   '.git',
+  '.claude', // agent worktrees: gitignored whole-repo copies, not the repo
   '.turbo',
   '.local-registry',
   '.changeset', // release notes are history
   'coverage',
+  'reports', // gitignored generated output (Stryker)
   '.next',
   '.nuxt',
   '.output',
@@ -73,15 +75,18 @@ describe('retired system-event names', () => {
     expect(offendersIn(ROOT).map((f) => relative(ROOT, f))).toEqual([]);
   });
 
-  it('probe: a retired name in a scanned file IS reported, in a skipped dir or unscanned type it is not', () => {
+  it('probe: a retired name in a scanned file IS reported, in a skipped dir (node_modules, an agent worktree) or unscanned type it is not', () => {
     const dir = mkdtempSync(join(tmpdir(), 'event-names-guard-'));
     try {
       mkdirSync(join(dir, 'src'));
       mkdirSync(join(dir, 'node_modules'));
+      mkdirSync(join(dir, '.claude', 'worktrees', 'agent-x'), { recursive: true });
       writeFileSync(join(dir, 'src', 'a.vue'), `emit('${RETIRED[0]}')`);
       writeFileSync(join(dir, 'src', 'clean.ts'), 'emit("OrientationChanged")');
       writeFileSync(join(dir, 'src', 'a.png'), RETIRED[1] as string);
       writeFileSync(join(dir, 'node_modules', 'b.ts'), RETIRED[2] as string);
+      // agent worktrees are whole copies of the repo (and are gitignored), not part of it
+      writeFileSync(join(dir, '.claude', 'worktrees', 'agent-x', 'c.md'), RETIRED[3] as string);
       expect(offendersIn(dir).map((f) => relative(dir, f))).toEqual([join('src', 'a.vue')]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
