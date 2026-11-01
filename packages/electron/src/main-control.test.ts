@@ -83,6 +83,26 @@ describe('createElectronMainControl', () => {
     }
   });
 
+  it('checkout() asks every live renderer for a fresh replay base, skipping destroyed and crashed ones', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const live = fakeSender(1);
+    const gone = { ...fakeSender(2), destroyed: false };
+    const goneSender = Object.assign(gone.sender, { isDestroyed: () => gone.destroyed });
+    const crashed = fakeSender(3);
+    const crashedSender = Object.assign(crashed.sender, { isCrashed: () => true });
+    for (const sender of [live.sender, goneSender, crashedSender]) {
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    }
+    gone.destroyed = true;
+    control.checkout();
+    expect(live.sent.slice(1).map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    expect(gone.sent.slice(1)).toEqual([]);
+    expect(crashed.sent.slice(1)).toEqual([]);
+    expect(control.rendererCount).toBe(2); // the destroyed one was pruned on the way past
+  });
+
   it('the hello reply carries the CURRENT blackout state, so a renderer born mid-blackout stays dark', () => {
     const ipc = fakeIpcMain();
     let blackout = true;

@@ -445,6 +445,12 @@ export interface BugseeLaunchOptions {
   scheduler?: Scheduler;
   /** Capture store override; wins over dataDir/capturedDataStore. Default file-backed on disk; 'memory' opts out. */
   captureStore?: CaptureStore;
+  /**
+   * Called when the byte cap forced every visual (replay) base out of the store, so a recorder that feeds it must take a
+   * fresh snapshot. For a host whose recorders live elsewhere (the Electron main, whose renderers stream into this store);
+   * it is not called for a `captureStore` you supply (that store is yours). Called at most once per drop, off the write path.
+   */
+  onVisualReset?: () => void;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
   /**
@@ -793,6 +799,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   const storeOptions = {
     maxRecordingTimeMs: maxRecordingTime * 1000,
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.onVisualReset !== undefined ? { onVisualReset: options.onVisualReset } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   // This launch's capture generation (the launch epoch); shared by the live store, the marker hook, the

@@ -157,6 +157,78 @@ describe('launchMain', () => {
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
   });
 
+  describe('a visual reset in the main store (every replay base shed under the byte cap)', () => {
+    const setup = (over: Record<string, unknown> = {}) => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+        ...over,
+      } as never);
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      r.sent.length = 0;
+      const reset = (): void =>
+        (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      return { f, r, reset, at: (t: number) => (now = t) };
+    };
+
+    it('asks every renderer to restart its replay recorder', () => {
+      const { r, reset } = setup();
+      reset();
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
+    it('is paced: a reset inside the quiet period asks nothing, a later one asks again (backing off)', () => {
+      const { r, reset, at } = setup();
+      reset();
+      at(1_000);
+      reset();
+      expect(r.sent).toHaveLength(1);
+      at(5_000);
+      reset();
+      expect(r.sent).toHaveLength(2);
+      at(10_000); // the interval doubled to 10 s
+      reset();
+      expect(r.sent).toHaveLength(2);
+      at(15_000);
+      reset();
+      expect(r.sent).toHaveLength(3);
+    });
+
+    it("still calls the caller's own onVisualReset", () => {
+      const own = vi.fn();
+      const { reset } = setup({ onVisualReset: own });
+      reset();
+      expect(own).toHaveBeenCalledTimes(1);
+    });
+
+    it('a throwing caller callback neither stops the restart nor escapes', () => {
+      const { r, reset } = setup({
+        onVisualReset: () => {
+          throw new Error('host broke');
+        },
+      });
+      expect(reset).not.toThrow();
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
+    it('does nothing once the client is stopped (control is released)', async () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch } as never);
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      await client.stop();
+      r.sent.length = 0;
+      (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      expect(r.sent).toEqual([]);
+    });
+  });
+
   it('replies to a renderer hello with the owner session id (the handshake)', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();

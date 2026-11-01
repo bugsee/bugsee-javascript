@@ -81,7 +81,7 @@ export {
   type OptionGate,
 } from './capture-coordinator';
 export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry';
-export { drainReified } from './capture-drain';
+export { drainReified, streamReified } from './capture-drain';
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export {
@@ -380,3 +380,4 @@ export {
   type PipelineOutcome,
   type UploadPipelineOptions,
 } from './upload-pipeline';
+export { createVisualResetGate, type VisualResetGateOptions } from './visual-reset-gate';

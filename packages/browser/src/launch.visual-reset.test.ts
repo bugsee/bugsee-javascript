@@ -229,6 +229,46 @@ describe('launch — a dropped replay restarts the recorder', () => {
   });
 });
 
+describe('launch — a host can restart the recorder (onReplayRestart)', () => {
+  it('hands the host a restart that asks the recorder for a fresh base, with no backoff of its own', async () => {
+    const checkout = vi.fn();
+    registerReplay.mockReturnValue({ checkout });
+    let restart: (() => void) | undefined;
+    await launched(
+      opts({ onReplayRestart: (fn: () => void) => (restart = fn) } as Partial<BugseeLaunchOptions>),
+    );
+    await flush();
+    expect(restart).toBeTypeOf('function');
+    restart?.();
+    restart?.(); // the host owns the pacing (the Electron main gates it): every call is a checkout
+    expect(checkout).toHaveBeenCalledTimes(2);
+  });
+
+  it('is a no-op before the recorder exists and when there is none (DOM-less host)', async () => {
+    registerReplay.mockReturnValue(undefined);
+    let restart: (() => void) | undefined;
+    await launched(
+      opts({ onReplayRestart: (fn: () => void) => (restart = fn) } as Partial<BugseeLaunchOptions>),
+    );
+    await flush();
+    expect(() => restart?.()).not.toThrow();
+  });
+
+  it('a throwing host callback is reported and never fails the launch', async () => {
+    registerReplay.mockReturnValue({ checkout: vi.fn() });
+    const onError = vi.fn();
+    await launched(
+      opts({
+        onError,
+        onReplayRestart: () => {
+          throw new Error('host broke');
+        },
+      } as Partial<BugseeLaunchOptions>),
+    );
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'host broke' }));
+  });
+});
+
 describe('launch — the default byte cap is the one the store enforces', () => {
   // 24 closed parts of 1 MB each: a 20 MB cap must drop the oldest, a 30 MB cap must keep all of them.
   const fill = (store: ReturnType<typeof createMemoryCaptureStore>): void => {

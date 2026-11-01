@@ -48,6 +48,7 @@ import {
   createServiceContainer,
   createSystemClock,
   createUploadPipeline,
+  createVisualResetGate,
   type DiskPressureState,
   DiskPressureToken,
   defineService,
@@ -150,9 +151,6 @@ const REPLAY_CHECKOUT_QUIET_MS = 5000;
 /** Longest replay checkout cadence (rrweb default) and the shortest we derive from a short window. */
 const REPLAY_CHECKOUT_MAX_MS = 60_000;
 const REPLAY_CHECKOUT_MIN_MS = 5000;
-/** Visual-reset restarts back off (x2 per consecutive reset) up to this, and start over after this much quiet. */
-const REPLAY_RESET_MAX_INTERVAL_MS = 300_000;
-const REPLAY_RESET_QUIET_RESET_MS = 600_000;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
@@ -558,6 +556,12 @@ export interface BugseeLaunchOptions {
    * browser leaves it unset.
    */
   hostOwnedTraces?: readonly string[] | TraceSuppression;
+  /**
+   * For a host whose store lives elsewhere (the Electron renderer streams into main's): called once at launch with a function
+   * that restarts the replay recorder for a fresh full snapshot (a no-op until the recorder exists, or when there is none).
+   * The host decides WHEN (it paces its own restarts); a standalone browser needs none, its own store restarts the recorder.
+   */
+  onReplayRestart?: (restart: () => void) => void;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -867,25 +871,21 @@ async function buildLaunch(
   // Set once the replay recorder exists. The store calls it when the byte cap forced every replay base out, so the
   // recorder takes a fresh FullSnapshot; rate-limited so an oversized snapshot cannot loop snapshot -> drop -> snapshot.
   let restartReplay: (() => void) | undefined;
-  let lastReplayRestart = Number.NEGATIVE_INFINITY;
-  let replayRestartInterval = REPLAY_CHECKOUT_QUIET_MS;
+  try {
+    options.onReplayRestart?.((): void => restartReplay?.());
+  } catch (error) {
+    reportGuarded(options.onError, error); // a host callback must never fail the launch
+  }
   const storeBounds = {
     maxRecordingTimeMs: maxRecordingTime * 1000,
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
-    onVisualReset: (): void => {
-      const at = clock.monotonicNow();
-      if (restartReplay === undefined || at - lastReplayRestart < replayRestartInterval) {
-        return;
-      }
-      // Resets that keep coming mean one snapshot does not fit the cap: back off (doubling, up to 5 min) instead of
-      // snapshotting the whole DOM every few seconds; a long quiet spell starts over from the base interval.
-      replayRestartInterval =
-        at - lastReplayRestart > REPLAY_RESET_QUIET_RESET_MS
-          ? REPLAY_CHECKOUT_QUIET_MS
-          : Math.min(replayRestartInterval * 2, REPLAY_RESET_MAX_INTERVAL_MS);
-      lastReplayRestart = at;
-      restartReplay();
-    },
+    // Resets that keep coming mean one snapshot does not fit the cap: the gate backs off (doubling, up to 5 min) instead
+    // of snapshotting the whole DOM every few seconds, and a reset before the recorder exists spends none of its budget.
+    onVisualReset: createVisualResetGate({
+      now: () => clock.monotonicNow(),
+      ready: () => restartReplay !== undefined,
+      restart: () => restartReplay?.(),
+    }),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   const clock = options.clock ?? createSystemClock();

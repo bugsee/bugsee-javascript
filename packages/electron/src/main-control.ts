@@ -90,6 +90,11 @@ export interface ElectronMainControl {
   /** Tell every renderer the owner's blackout ended. */
   blackoutEnd(): void;
   /**
+   * Ask every renderer to restart its replay recorder for a fresh full snapshot: main's store shed every replay base under
+   * its byte cap, so what the renderers stream next would otherwise have no base until their next periodic checkout.
+   */
+  checkout(): void;
+  /**
    * The key window may have changed: re-evaluate every registered renderer and send `window-key` to those whose answer
    * differs from what they were last told. A no-op without the `keyWindow` option.
    */
@@ -222,7 +227,7 @@ export function createElectronMainControl(
   };
 
   const broadcast = (
-    command: 'pause' | 'resume' | 'flush' | 'stop' | 'blackout-start' | 'blackout-end',
+    command: 'pause' | 'resume' | 'flush' | 'stop' | 'blackout-start' | 'blackout-end' | 'checkout',
   ): void => {
     const raw = encodeControl({ command });
     for (const sender of [...renderers]) {
@@ -354,6 +359,9 @@ export function createElectronMainControl(
     },
     blackoutEnd(): void {
       broadcast('blackout-end');
+    },
+    checkout(): void {
+      broadcast('checkout');
     },
     keyWindowChanged: rediffKey,
     rendererGone(id: number): void {

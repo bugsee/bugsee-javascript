@@ -12,6 +12,8 @@ import {
   BlackoutToken,
   CaptureStoreToken,
   createDiskPressure,
+  createSystemClock,
+  createVisualResetGate,
   getCarrierClient,
   resolveFailClosedBoolean,
 } from '@bugsee/core';
@@ -478,6 +480,25 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     }
   };
 
+  // Main's store is the one with the byte cap, and the renderers' recorders stream into it. When it sheds every replay base
+  // the renderers are told to take a fresh full snapshot (control `checkout`); without that the stream has no base until a
+  // renderer's next periodic checkout. Paced by the same backoff the browser applies to its own store, and released by stop.
+  let checkoutRenderers: (() => void) | undefined;
+  const callerReset = nodeOptions.onVisualReset;
+  const resetClock = nodeOptions.clock ?? createSystemClock();
+  const gateReset = createVisualResetGate({
+    now: () => resetClock.monotonicNow(),
+    restart: () => checkoutRenderers?.(),
+  });
+  nodeOptions.onVisualReset = (): void => {
+    try {
+      callerReset?.(); // the caller's own callback keeps working, and cannot cost the restart
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
+    gateReset();
+  };
+
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
@@ -614,6 +635,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ],
   });
   control.start();
+  checkoutRenderers = (): void => control.checkout();
   // Arm the key-window stage and forward every change to the renderers whose answer moved (released in the wrapped stop).
   const offKeyWindow =
     keyWindow === undefined
@@ -657,6 +679,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       offKeyWindow?.();
+      checkoutRenderers = undefined; // a reset after stop has nobody to tell
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture

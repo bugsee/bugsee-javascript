@@ -221,7 +221,9 @@ export type ControlCommand =
   | 'session'
   | 'blackout-start'
   | 'blackout-end'
-  | 'window-key';
+  | 'window-key'
+  /** Main shed every replay base from its store (byte cap): each renderer restarts its recorder for a fresh full snapshot. */
+  | 'checkout';
 
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'pause',
@@ -232,6 +234,7 @@ const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'blackout-start',
   'blackout-end',
   'window-key',
+  'checkout',
 ]);
 
 export interface ControlMessage {

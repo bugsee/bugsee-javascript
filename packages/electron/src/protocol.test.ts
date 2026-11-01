@@ -106,6 +106,10 @@ describe('encodeControl / decodeControl', () => {
     }
   });
 
+  it('round-trips the checkout command (main asks every renderer for a fresh replay base)', () => {
+    expect(decodeControl(encodeControl({ command: 'checkout' }))).toEqual({ command: 'checkout' });
+  });
+
   it('round-trips the session handshake reply (carries the assigned session id)', () => {
     const msg: ControlMessage = { command: 'session', sessionId: 'sess-42' };
     expect(decodeControl(encodeControl(msg))).toEqual(msg);

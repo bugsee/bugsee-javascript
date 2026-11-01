@@ -11,6 +11,7 @@ function harness(over: Partial<Parameters<typeof createRendererControlHandler>[0
     onBlackout: vi.fn(),
     onHostOwned: vi.fn(),
     onKeyWindow: vi.fn(),
+    onCheckout: vi.fn(),
   };
   const handle = createRendererControlHandler({ ...calls, ...over });
   return { ...calls, handle };
@@ -123,6 +124,19 @@ describe('createRendererControlHandler', () => {
     const h = harness();
     h.handle(encodeControl({ command: 'session' }));
     expect(h.onSession).not.toHaveBeenCalled();
+  });
+
+  it('checkout → onCheckout(), and nothing else moves', () => {
+    const h = harness();
+    h.handle(encodeControl({ command: 'checkout' }));
+    expect(h.onCheckout).toHaveBeenCalledTimes(1);
+    expect(h.setPaused).not.toHaveBeenCalled();
+    expect(h.stop).not.toHaveBeenCalled();
+  });
+
+  it('checkout without an onCheckout handler is ignored', () => {
+    const handle = createRendererControlHandler({ setPaused: vi.fn(), stop: vi.fn() });
+    expect(() => handle(encodeControl({ command: 'checkout' }))).not.toThrow();
   });
 
   it('blackout-start / blackout-end → onBlackout(true / false)', () => {
