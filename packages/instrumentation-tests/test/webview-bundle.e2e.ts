@@ -32,9 +32,12 @@ const KB = 1024;
 // duplicate-bundled or heavy new dep. It tracks real growth, so it is raised on purpose, never silently: it was 64 KiB while
 // the bundle was ~22 KB gzip, and is now 68 KiB (69,632 bytes) because the bundle has grown to ~64-65 KB gzip with the route
 // and view traces, the wire-name registry and the host-owned trace suppression (the live set, its table and the handshake
-// field cost ~340 bytes gzip). The artifact size stays logged by the test below.
-const GZIP_BUDGET = 68 * KB;
-const RAW_BUDGET = 200 * KB;
+// field cost ~340 bytes gzip). Raised again, on purpose (2026-11-01), to 69 KiB gzip / 204 KiB raw: the shared core grew by about
+// 1 KB raw (~0.2 KB gzip) with the per-source visual lanes (lane routing in the chunk store, the per-lane members in the bundle
+// assembler, the lane in the part meta), which the webview bundles but does not use; the bundle measured 201.0 KB raw / 67.8 KB
+// gzip against the old 200 / 68 limits. The artifact size stays logged by the test below.
+const GZIP_BUDGET = 69 * KB;
+const RAW_BUDGET = 204 * KB;
 
 const IIFE_ENTRY = fileURLToPath(new URL('../../webview/src/iife.ts', import.meta.url));
 
