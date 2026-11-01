@@ -42,11 +42,12 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 * **L5 DONE 2026-11-01** the lane is persisted in the part meta (all backends and the disk-pressure wrapper), and capture
   recovery and native-crash recovery freeze each part with it: a crashed multi-window session rebuilds one replay per window.
 
+* **L6 DONE 2026-11-01** `CaptureStore.retireLane(lane)`: main retires a window's lane when its webContents is destroyed or its
+  process is gone; the store drops it once none of its data is inside the recording window (so the report range is kept
+  whole), and any new record for the lane revives it (a crashed window that reloads keeps its id).
+
 Known limits of what shipped: the viewer still reads only `replay.bin`, which is the first window to produce a base, not
-necessarily the key window. A window that closes leaves its last base segment in the store until the byte cap sheds it (it is
-the oldest visual data, so it goes first): time eviction keeps the newest base per lane, and an idle window is
-indistinguishable from a closed one without a signal from main, so the lane is not dropped on `rendererGone` yet (open:
-a store `dropLane`). A stream-encoded lane keeps the type's own manifest attrs (a laned video keeps `format`).
+necessarily the key window. A stream-encoded lane keeps the type's own manifest attrs (a laned video keeps `format`).
 
 Viewer (checked 2026-11-01, `viewer/src/app/features/recording/shared/recording-session.service.ts`): it takes
 `files.find(type === 'replay')`, i.e. only the FIRST replay entry of the manifest, so extra windows are ignored today and

@@ -600,4 +600,54 @@ describe('createChunkCaptureStore — one visual lane per source key (per-window
     // [0] is the store's own first data part; then a's part, then the unkeyed visual part
     expect(opened).toEqual([[], ['a'], []]);
   });
+
+  describe('retireLane (a window that closed)', () => {
+    const mk = () =>
+      createChunkCaptureStore(createMemoryChunkBackend(), {
+        clock: clockAt(0),
+        maxRecordingTimeMs: 2000,
+      });
+    const run = (store: ReturnType<typeof mk>, from: number, to: number) => {
+      for (let s = from; s < to; s++) {
+        store.tick((s + 1) * 1000);
+      }
+    };
+
+    it('drops a retired lane once none of its data is inside the window, and keeps an idle lane that was not retired', async () => {
+      const store = mk();
+      store.add(rec('closed', 'c0', 0, true));
+      store.add(rec('idle', 'i0', 0, true));
+      run(store, 0, 1);
+      store.retireLane?.('closed');
+      run(store, 1, 10);
+      expect(await held(store)).toEqual({ idle: ['i0'] });
+    });
+
+    it('keeps a retired lane while its data is still inside the window (the report range is kept whole)', async () => {
+      const store = mk();
+      run(store, 0, 8);
+      store.add(rec('closed', 'c8', 8, true));
+      run(store, 8, 9);
+      store.retireLane?.('closed');
+      run(store, 9, 10); // now = 10 s, window starts at 8 s: c8 is inside
+      expect(await held(store)).toEqual({ closed: ['c8'] });
+    });
+
+    it('a record for a retired lane revives it (a crashed window that reloads keeps its id)', async () => {
+      const store = mk();
+      store.add(rec('w', 'w0', 0, true));
+      run(store, 0, 1);
+      store.retireLane?.('w');
+      store.add(rec('w', 'w1', 1, true));
+      run(store, 1, 10);
+      expect((await held(store)).w).toEqual(['w1']);
+    });
+
+    it('retiring an unknown lane is harmless', async () => {
+      const store = mk();
+      store.retireLane?.('nobody');
+      store.add(rec('a', 'a0', 0, true));
+      expect(await held(store)).toEqual({ a: ['a0'] });
+    });
+  });
 });

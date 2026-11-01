@@ -643,6 +643,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         };
   const control = createElectronMainControl({
     ipcMain,
+    // A window that closed produces no more replay: its lane leaves the store once its data is out of the window.
+    onRendererLeft: (id) => store.retireLane?.(String(id)),
     sessionId: internals.api.sessionId,
     ...(keyWindow !== undefined ? { keyWindow } : {}),
     ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),

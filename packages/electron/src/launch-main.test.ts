@@ -67,7 +67,8 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
   const added: unknown[] = [];
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
-  const store = { add: (e: unknown) => added.push(e) };
+  const retireLane = vi.fn();
+  const store = { add: (e: unknown) => added.push(e), retireLane };
   const blackout = createBlackoutState();
   const client = {
     getService: vi.fn((token: unknown) => {
@@ -97,6 +98,7 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
     stop,
     flush,
     added,
+    retireLane,
     get received() {
       return received;
     },
@@ -155,6 +157,26 @@ describe('launchMain', () => {
     expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // control listener removed
     expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['stop']); // renderer told to stop
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
+  });
+
+  describe('a window that is gone retires its replay lane in the main store', () => {
+    it('retires the lane named by the window id, when its renderer process is gone', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      const handlers = new Map<string, (...args: never[]) => void>();
+      const app = {
+        on: (event: string, listener: (...args: never[]) => void) => handlers.set(event, listener),
+      };
+      launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, app } as never);
+      const r = fakeSender(7);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      handlers.get('render-process-gone')?.(
+        {} as never,
+        { id: 7 } as never,
+        { reason: 'crashed' } as never,
+      );
+      expect(f.retireLane).toHaveBeenCalledWith('7');
+    });
   });
 
   describe('a visual reset of one window (per-window lanes)', () => {

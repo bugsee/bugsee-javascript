@@ -113,6 +113,8 @@ export function createChunkCaptureStore(
   let nextNumber = 0;
   // The OPEN visual part of each source key ('' = the unkeyed source), opened lazily by its first record of a tick.
   const openVisual = new Map<string, IndexedPart>();
+  // Lanes whose window closed: dropped once nothing of theirs is inside the recording window (see `retireLane`).
+  const retired = new Set<string>();
 
   const openNewPart = (start: number, lane: Lane, key?: string): IndexedPart => {
     const ref: PartRef = { generation, number: nextNumber };
@@ -148,6 +150,7 @@ export function createChunkCaptureStore(
       return dataPart;
     }
     const name = record.lane ?? '';
+    retired.delete(name);
     let part = openVisual.get(name);
     if (part === undefined) {
       part = openNewPart(dataPart.start, 'visual', record.lane);
@@ -301,6 +304,16 @@ export function createChunkCaptureStore(
       const keys = new Set(parts.filter((part) => part.lane === 'visual').map((part) => part.key));
       for (const key of keys) {
         evictByTime('visual', nowMs, key);
+        if (key !== undefined && retired.has(key)) {
+          const rest = parts.filter((part) => part.lane === 'visual' && part.key === key);
+          // A retired lane has no open part (the tick above closed it), so the newest end says when it last held data.
+          if (rest.every((part) => (part.end ?? nowMs) < nowMs - maxRecordingTimeMs)) {
+            for (const part of rest) {
+              evictPart(part);
+            }
+            retired.delete(key);
+          }
+        }
       }
     },
 
@@ -317,8 +330,13 @@ export function createChunkCaptureStore(
       return withTimeRange(backend.snapshot(frozen), range);
     },
 
+    retireLane(lane: string): void {
+      retired.add(lane);
+    },
+
     clear(): void {
       backend.removeGeneration(generation);
+      retired.clear();
       parts = [];
       totalBytes = 0;
       openVisual.clear();

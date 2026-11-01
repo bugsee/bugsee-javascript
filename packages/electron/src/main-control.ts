@@ -42,6 +42,11 @@ export interface IpcMainControlLike {
 
 export interface ElectronMainControlOptions {
   ipcMain: IpcMainControlLike;
+  /**
+   * A registered renderer left (its webContents was destroyed or its process is gone), by `webContents` id. A throwing
+   * callback never breaks the control.
+   */
+  onRendererLeft?: (id: number) => void;
   /** The owner's session id — sent to each renderer on its `hello` handshake. */
   sessionId: string;
   /** The renderer→main handshake channel (default {@link BUGSEE_HELLO_CHANNEL}). */
@@ -146,6 +151,13 @@ export function createElectronMainControl(
   /** Drop a renderer that is gone. Idempotent — `destroyed` and a later `isDestroyed()` both land here. */
   const forget = (sender: ControlSenderLike): void => {
     renderers.delete(sender);
+    if (sender.id !== undefined) {
+      try {
+        options.onRendererLeft?.(sender.id);
+      } catch (error) {
+        options.onError?.(error);
+      }
+    }
   };
 
   // The key-window flag each renderer was LAST told (reply or `window-key`): a change is sent only to those it changed for.

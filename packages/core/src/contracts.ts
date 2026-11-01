@@ -122,6 +122,12 @@ export interface CaptureStore {
    * capture.
    */
   snapshot(options?: { owner?: string }): CaptureSnapshot;
+  /**
+   * The visual source `lane` will produce nothing more (its window closed). Optional: only a store with visual lanes has
+   * it. The lane is NOT dropped at once (what it captured inside the recording window is part of the report); it goes once
+   * none of its data is inside the window. A record for the lane afterwards revives it.
+   */
+  retireLane?(lane: string): void;
   /** Discard all live records. */
   clear(): void;
   /**
