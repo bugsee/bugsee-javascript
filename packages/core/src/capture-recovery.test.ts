@@ -190,7 +190,7 @@ describe('recoverReports', () => {
     expect((pipe.bundles[0] as Bundle).request.email).toBe('who@x.com'); // userIdentifier → email
   });
 
-  it('drains a generation ONCE for its N markers (N bundles, one snapshot)', async () => {
+  it('streams a generation through one snapshot per marker (N bundles, N snapshots)', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
     const backend = readBackend(storage);
@@ -206,7 +206,7 @@ describe('recoverReports', () => {
     });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(2); // one bundle per marker
-    expect(snapSpy).toHaveBeenCalledTimes(1); // but the gen's chunks were read once
+    expect(snapSpy).toHaveBeenCalledTimes(2); // each streams the gen's chunks itself; nothing is held between incidents
   });
 
   it('never recovers the CURRENT generation', async () => {

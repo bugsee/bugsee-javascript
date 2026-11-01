@@ -1,7 +1,7 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { defaultEntryFactory } from './capture-data-entry';
-import { drainReified } from './capture-drain';
+import { drainReified, streamReified } from './capture-drain';
 import type { CaptureEntryFactory, CaptureSnapshot, StoredEntry } from './contracts';
 
 /** A fake snapshot over a fixed grouped record set that records its release. */
@@ -80,5 +80,79 @@ describe('drainReified', () => {
     const grouped = new Map<FileType, StoredEntry[]>([['log', [stored('log', { m: 1 })]]]);
     await drainReified(fakeSnapshot(grouped), factory, () => {});
     expect(factory).toHaveBeenCalledWith('log');
+  });
+});
+
+/** A fake snapshot whose `stream()` serves the records one by one and counts releases. */
+function streamingSnapshot(
+  records: StoredEntry[],
+  range?: { start: number; end: number },
+): CaptureSnapshot & { releases: number } {
+  const snap = {
+    releases: 0,
+    drainAll: () => Promise.resolve(new Map()),
+    stream: async function* () {
+      yield* records;
+    },
+    release() {
+      snap.releases += 1;
+    },
+    ...(range !== undefined ? { timeRange: () => range } : {}),
+  } as CaptureSnapshot & { releases: number };
+  return snap;
+}
+
+describe('streamReified', () => {
+  it('yields the reified entries in store order and releases the snapshot once it is read through', async () => {
+    const snap = streamingSnapshot([stored('log', { m: 1 }), stored('network', { u: '/a' })]);
+    const seen: unknown[] = [];
+    for await (const entry of streamReified(snap, defaultEntryFactory, () => {})) {
+      seen.push([entry.type, entry.data]);
+    }
+    expect(seen).toEqual([
+      ['log', { m: 1 }],
+      ['network', { u: '/a' }],
+    ]);
+    expect(snap.releases).toBe(1);
+  });
+
+  it('skips a torn record, reporting it, and keeps the rest', async () => {
+    const snap = streamingSnapshot([
+      stored('log', { m: 1 }),
+      tornStored('log'),
+      stored('log', { m: 3 }),
+    ]);
+    const onError = vi.fn();
+    const data: unknown[] = [];
+    for await (const entry of streamReified(snap, defaultEntryFactory, onError)) {
+      data.push(entry.data);
+    }
+    expect(data).toEqual([{ m: 1 }, { m: 3 }]);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes the snapshot time range when the snapshot has one, and none otherwise', () => {
+    const range = { start: 5, end: 9 };
+    expect(
+      streamReified(streamingSnapshot([], range), defaultEntryFactory, () => {}).timeRange,
+    ).toEqual(range);
+    expect('timeRange' in streamReified(streamingSnapshot([]), defaultEntryFactory, () => {})).toBe(
+      false,
+    );
+  });
+
+  it('releases a snapshot that is abandoned before it was ever read, once', async () => {
+    const snap = streamingSnapshot([stored('log', { m: 1 })]);
+    const stream = streamReified(snap, defaultEntryFactory, () => {});
+    await stream.return?.();
+    await stream.return?.();
+    expect(snap.releases).toBe(1);
+  });
+
+  it('releases the snapshot when a consumer throws into the stream', async () => {
+    const snap = streamingSnapshot([stored('log', { m: 1 })]);
+    const stream = streamReified(snap, defaultEntryFactory, () => {});
+    await expect(stream.throw?.(new Error('stop'))).rejects.toThrow('stop');
+    expect(snap.releases).toBe(1);
   });
 });

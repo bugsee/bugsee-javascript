@@ -1,10 +1,10 @@
 import type { AttributeValue } from '@bugsee/types';
-import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import type { BundleAssemblyContext } from './bundle-assembler';
 import { defaultEntryFactory } from './capture-data-entry';
-import { drainReified } from './capture-drain';
 import type { ChunkBackend, FrozenPart } from './chunk-backend';
 import type { CaptureEntryFactory } from './contracts';
 import type { NativeCrashJson } from './crash';
+import { assembleFromSnapshot, enqueueOwningBody } from './recovered-bundle';
 import { createReportingRequest } from './reporting';
 import { isUploadSettled, type UploadPipeline } from './transport';
 
@@ -104,13 +104,13 @@ export async function recoverNativeCrashes(
     }
 
     const base = options.context();
-    // Drain the crashed generation's capture ONCE — every dump of this session shares the same recording.
+    // The crashed generation's capture is streamed through a snapshot per dump (every dump of this session shares the
+    // same recording), so nothing of it is held between dumps.
     const parts = await backend.listParts(marker.generation);
     const frozen: FrozenPart[] = parts.map((part) => ({
       ref: { generation: marker.generation, number: part.number },
       count: Number.MAX_SAFE_INTEGER, // recover the whole part
     }));
-    const captured = await drainReified(backend.snapshot(frozen), entryFactory, onError);
 
     for (const dump of dumps) {
       try {
@@ -129,12 +129,13 @@ export async function recoverNativeCrashes(
           },
           options.generateId,
         );
-        const bundle = assembleBundle(request, captured, {
+        const bundle = await assembleFromSnapshot(request, backend.snapshot(frozen), entryFactory, {
           ...base,
+          onError: base.onError ?? onError,
           attributes: marker.attributes,
           userIdentifier: marker.userIdentifier,
         });
-        const result = await uploadPipeline.enqueue(bundle);
+        const result = await enqueueOwningBody(uploadPipeline, bundle);
         if (isUploadSettled(result)) {
           // Delivered, or PERMANENTLY REFUSED — settled either way, so the dump is claimed and the
           // session's marker becomes clearable. Gating on `ok` alone (as this leg used to) meant a

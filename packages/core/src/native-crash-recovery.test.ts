@@ -42,11 +42,13 @@ function stored(type: FileType, data: unknown): StoredEntry {
 /** A fake chunk backend that records snapshot() calls and drains a fixed grouped record set. */
 function fakeBackend(grouped: Map<FileType, StoredEntry[]> = new Map()) {
   const snapshotCalls: FrozenPart[][] = [];
+  const releases = { count: 0 };
   const parts: PartMeta[] = [
     { generation: 0, number: 0, start: 0, end: 1, byteSize: 1 } as PartMeta,
   ];
   return {
     snapshotCalls,
+    releases,
     backend: {
       listParts: (_gen: number): PartMeta[] => parts,
       snapshot(frozen: readonly FrozenPart[]): CaptureSnapshot {
@@ -54,9 +56,14 @@ function fakeBackend(grouped: Map<FileType, StoredEntry[]> = new Map()) {
         let released = false;
         return {
           drainAll: () => Promise.resolve(grouped),
-          stream: async function* () {},
+          stream: async function* () {
+            for (const records of grouped.values()) {
+              yield* records;
+            }
+          },
           release() {
             released = true;
+            releases.count += 1;
           },
           get released() {
             return released;
@@ -153,8 +160,8 @@ describe('recoverNativeCrashes', () => {
     expect(source.claims).toEqual(['main.dmp']);
   });
 
-  it('harvests from the crashed generation and drains its capture exactly ONCE across all dumps', async () => {
-    const { backend, snapshotCalls } = fakeBackend();
+  it('streams the crashed generation through one snapshot per dump, each released', async () => {
+    const { backend, snapshotCalls, releases } = fakeBackend();
     const source = fakeSource([dump('a.dmp', 1), dump('b.dmp', 2)]);
     const { pipeline, enqueued } = fakePipeline();
 
@@ -168,9 +175,13 @@ describe('recoverNativeCrashes', () => {
 
     expect(result).toEqual({ harvested: 2, settled: 2, complete: true });
     expect(enqueued).toHaveLength(2);
-    // ONE snapshot, over generation 7's parts.
-    expect(snapshotCalls).toHaveLength(1);
-    expect(snapshotCalls[0]?.[0]?.ref).toEqual({ generation: 7, number: 0 });
+    // One snapshot per dump (nothing is held between them), each over generation 7's parts and each released.
+    expect(snapshotCalls).toHaveLength(2);
+    expect(snapshotCalls.map((call) => call[0]?.ref)).toEqual([
+      { generation: 7, number: 0 },
+      { generation: 7, number: 0 },
+    ]);
+    expect(releases.count).toBe(2);
     expect(source.claims).toEqual(['a.dmp', 'b.dmp']);
   });
 

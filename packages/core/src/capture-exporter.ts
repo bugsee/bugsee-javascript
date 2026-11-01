@@ -1,5 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 import { defaultEntryFactory } from './capture-data-entry';
+import { streamReified } from './capture-drain';
 import type {
   CaptureDataEntry,
   CaptureEntryFactory,
@@ -29,57 +30,7 @@ export function createCaptureExporter(
 ): CaptureExporter {
   return {
     stream(options?: { owner?: string }): CaptureEntryStream {
-      const snapshot = store.snapshot(options);
-      const records = snapshot.stream();
-      // The snapshot is taken NOW (it freezes the window at the moment of the call), so its release must not depend on the
-      // generator below ever starting: an async generator that was never read skips its own `finally`, and a consumer
-      // that fails before its first read would leak the frozen copy. `return()` therefore always releases, once.
-      let released = false;
-      const release = (): void => {
-        if (!released) {
-          released = true;
-          snapshot.release();
-        }
-      };
-      const inner = (async function* (): AsyncGenerator<CaptureDataEntry, void, undefined> {
-        try {
-          for await (const record of records) {
-            let entry: CaptureDataEntry;
-            try {
-              entry = reify(record, factory);
-            } catch (error) {
-              // A torn/un-deserializable record (e.g. a crash's torn trailing frame): skip + report it,
-              // never let one bad record abort the whole export.
-              onError(error);
-              continue;
-            }
-            yield entry;
-          }
-        } finally {
-          release();
-        }
-      })();
-      const range = snapshot.timeRange?.();
-      const stream: CaptureEntryStream = {
-        ...(range !== undefined ? { timeRange: range } : {}),
-        next: () => inner.next(),
-        return: async (value) => {
-          try {
-            return await inner.return(value);
-          } finally {
-            release();
-          }
-        },
-        throw: async (error) => {
-          try {
-            return await inner.throw(error);
-          } finally {
-            release();
-          }
-        },
-        [Symbol.asyncIterator]: () => stream,
-      };
-      return stream;
+      return streamReified(store.snapshot(options), factory, onError);
     },
 
     async drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>> {

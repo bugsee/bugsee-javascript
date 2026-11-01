@@ -1,10 +1,10 @@
 import { decodeRequestFromMarker } from './attachments';
-import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import type { BundleAssemblyContext } from './bundle-assembler';
 import { defaultEntryFactory } from './capture-data-entry';
-import { drainReified } from './capture-drain';
 import type { ChunkBackend, FrozenPart } from './chunk-backend';
 import type { CaptureEntryFactory } from './contracts';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
+import { assembleFromSnapshot, enqueueOwningBody } from './recovered-bundle';
 import type { ReportMarker, ReportMarkerStore } from './report-marker-store';
 import {
   type Bundle,
@@ -178,23 +178,27 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
           ref: { generation, number: part.number },
           count: Number.MAX_SAFE_INTEGER, // recover the whole part
         }));
-        // Drain ONCE per generation — its markers share the same captured context.
-        const captured = await drainReified(backend.snapshot(frozen), entryFactory, onError);
-
+        // Each marker streams the generation through its own snapshot: nothing is held between incidents, so a window
+        // that was cap-sized costs one live export's memory, not the whole window parsed.
         for (const marker of group) {
           try {
             const bundle: IdentifiedBundle = {
-              ...assembleBundle(decodeRequestFromMarker(marker.request, onError), captured, {
-                ...base,
-                onError: base.onError ?? onError,
-                attributes: marker.attributes,
-                userIdentifier: marker.userIdentifier,
-              }),
+              ...(await assembleFromSnapshot(
+                decodeRequestFromMarker(marker.request, onError),
+                backend.snapshot(frozen),
+                entryFactory,
+                {
+                  ...base,
+                  onError: base.onError ?? onError,
+                  attributes: marker.attributes,
+                  userIdentifier: marker.userIdentifier,
+                },
+              )),
               // Keep the incident id on the rebuilt bundle: a durable pipeline re-stages it, and only the
               // id lets a later pass tell that blob apart from one nothing has uploaded (see client.ts).
               reportId: marker.request.id,
             };
-            const result = await uploadPipeline.enqueue(bundle);
+            const result = await enqueueOwningBody(uploadPipeline, bundle);
             if (isUploadSettled(result)) {
               // Delivered, or PERMANENTLY refused — settled either way, exactly as the live durable
               // pipeline treats it. Rebuilding a refused bundle on every launch is a self-DoS against our
