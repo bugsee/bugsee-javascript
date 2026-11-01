@@ -106,6 +106,7 @@ export interface ElectronAppLike {
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
 import { TraceName } from '@bugsee/protocol';
+import { createReplayStreamEncoder } from '@bugsee/replay/stream-encoder';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import {
   type ControlSenderLike,
@@ -277,6 +278,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       version: app.getVersion?.(),
     }));
   }
+
+  // The renderers' rrweb replay arrives here as records, one lane per window: building `replay.bin` needs the replay's stream
+  // encoder, which also splits the type into one member per window lane (a type without an encoder is written merged). The
+  // encoder alone is imported (no rrweb in main). A caller's own encoder wins.
+  nodeOptions.streamEncoders = {
+    replay: createReplayStreamEncoder(),
+    ...nodeOptions.streamEncoders,
+  };
 
   // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).

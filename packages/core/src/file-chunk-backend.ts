@@ -104,6 +104,8 @@ export function createFileChunkBackend(
       openStarts.set(startKey(ref), start);
       if (lane !== undefined) {
         openLanes.set(startKey(ref), lane);
+      } else {
+        openLanes.delete(startKey(ref)); // a reopened ref must not inherit the lane of its previous life
       }
       writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
@@ -155,10 +157,22 @@ export function createFileChunkBackend(
 
     removePart(ref: PartRef): void {
       openStarts.delete(startKey(ref));
+      openLanes.delete(startKey(ref));
       storage.removeChunk(ref.generation, ref.number);
     },
 
     removeGeneration(gen: number): void {
+      // The open parts of a removed generation are never closed: forget their starts and lanes with it.
+      for (const key of [...openStarts.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          openStarts.delete(key);
+        }
+      }
+      for (const key of [...openLanes.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          openLanes.delete(key);
+        }
+      }
       storage.removeGeneration(gen);
     },
 

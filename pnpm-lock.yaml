@@ -536,6 +536,9 @@ importers:
       '@bugsee/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@bugsee/replay':
+        specifier: workspace:*
+        version: link:../replay
       '@bugsee/trackers':
         specifier: workspace:*
         version: link:../trackers

@@ -649,6 +649,168 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0']);
   });
 
+  it('a window whose capture never answers is dropped from its display frame after layerTimeoutMs, the others still compose', async () => {
+    const errors: unknown[] = [];
+    const s = fakeScheduler();
+    const timers: Array<() => void> = [];
+    const composed: number[][] = [];
+    const source = createDisplayVideoSource({
+      displays: () => [
+        { id: 0, bounds: rect(0, 0, 10, 10) },
+        { id: 1, bounds: rect(10, 0, 10, 10) },
+      ],
+      layers: (display) =>
+        display.id === 0
+          ? [
+              { bounds: rect(0, 0, 10, 10), capture: () => new Promise<Uint8Array>(() => {}) },
+              { bounds: rect(0, 0, 5, 5), capture: async () => new Uint8Array([9]) },
+            ]
+          : [{ bounds: rect(10, 0, 10, 10), capture: async () => new Uint8Array([4]) }],
+      compose: async (display, layers) => {
+        composed.push([display.id, ...layers.map((l) => l.bytes[0] as number)]);
+        return new Uint8Array([display.id]);
+      },
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => 1000,
+      layerTimeoutMs: 2500,
+      after: (ms, fn) => {
+        expect(ms).toBe(2500);
+        timers.push(fn);
+        return () => {};
+      },
+      onError: (e) => errors.push(e),
+    });
+    source.start();
+    const ticking = s.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    for (const fire of timers) fire(); // the hung window's timer fires
+    await ticking;
+    expect(composed.sort()).toEqual([
+      [0, 9],
+      [1, 4],
+    ]);
+    expect(errors).toHaveLength(1);
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0', '1']);
+  });
+
+  it('cancels the capture timer of a window that answered in time', async () => {
+    const s = fakeScheduler();
+    const cancelled: number[] = [];
+    let n = 0;
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () => [{ bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([1]) }],
+      compose: async () => new Uint8Array([2]),
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => 1000,
+      after: () => {
+        const mine = n++;
+        return () => cancelled.push(mine);
+      },
+    });
+    source.start();
+    await s.tick();
+    expect(cancelled).toEqual([0]);
+  });
+
+  it('a display whose last window left gives up the id another display now holds', async () => {
+    let time = 1000;
+    const s = fakeScheduler();
+    let displays = [
+      { id: 0, key: 'A', bounds: rect(0, 0, 10, 10) },
+      { id: 1, key: 'B', bounds: rect(10, 0, 10, 10) },
+    ];
+    let withWindowOnB = true;
+    const source = createDisplayVideoSource({
+      displays: () => displays,
+      layers: (display) =>
+        display.key === 'B' && !withWindowOnB
+          ? []
+          : [{ bounds: display.bounds, capture: async () => new Uint8Array([1]) }],
+      compose: async () => new Uint8Array([1]),
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => time,
+    });
+    source.start();
+    await s.tick(); // A = 0, B = 1
+    // focus moves to B: B is 0 now, A is 1, and B has no visible window any more
+    displays = [
+      { id: 0, key: 'B', bounds: rect(10, 0, 10, 10) },
+      { id: 1, key: 'A', bounds: rect(0, 0, 10, 10) },
+    ];
+    withWindowOnB = false;
+    time = 2000;
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane).sort()).toEqual(['0', '1']);
+  });
+
+  it('drops the frames older than the ring covers from a display that shows a window again', async () => {
+    let time = 1000;
+    const s = fakeScheduler();
+    let alive = true;
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () =>
+        alive ? [{ bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([1]) }] : [],
+      compose: async (_d, layers) => layers[0]?.bytes as Uint8Array,
+      encode: (frames) => Uint8Array.from(frames.map((f) => f.timestamp / 1000)),
+      scheduler: s.scheduler,
+      now: () => time,
+      maxFrames: 4, // covers 4 s at 1 fps
+    });
+    source.start();
+    await s.tick(); // t = 1000: a frame
+    alive = false;
+    time = 3000;
+    await s.tick(); // nothing visible: no frame, the old one stays (inside the span)
+    alive = true;
+    time = 6000;
+    await s.tick(); // a new frame; the one at 1000 is now older than 6000 - 4000
+    expect((await source.snapshot(5)).map((e) => [...(e.data as Uint8Array)])).toEqual([[6]]);
+  });
+
+  it('a throwing onError never makes the timer callback reject', async () => {
+    const s = fakeScheduler();
+    const source = createDisplayVideoSource({
+      displays: () => {
+        throw new Error('screen not ready');
+      },
+      layers: () => [],
+      compose: async () => new Uint8Array([2]),
+      encode: () => new Uint8Array(),
+      scheduler: s.scheduler,
+      now: () => 1000,
+      onError: () => {
+        throw new Error('sink broke');
+      },
+    });
+    source.start();
+    await expect(s.tick()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects an fps of %s at construction', (fps) => {
+    expect(() =>
+      createDisplayVideoSource({
+        displays: () => [],
+        layers: () => [],
+        compose: async () => new Uint8Array(),
+        encode: () => new Uint8Array(),
+        scheduler: fakeScheduler().scheduler,
+        now: () => 0,
+        fps,
+      }),
+    ).toThrow(RangeError);
+  });
+
   it('an encode that throws for one display costs only that display its video', async () => {
     const errors: unknown[] = [];
     const s = fakeScheduler();

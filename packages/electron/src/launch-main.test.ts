@@ -564,6 +564,29 @@ describe('launchMain', () => {
     expect(onError).toHaveBeenCalled(); // the cleanup error was routed, not propagated
   });
 
+  it('hands the replay stream encoder to the node launch, so the report splits one replay member per window', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const opts = f.received?.options as BugseeLaunchOptions;
+    const replay = opts.streamEncoders?.replay;
+    expect(typeof replay?.begin).toBe('function');
+    // the real encoder: a session that saw no base writes nothing
+    expect(replay?.begin({ start: undefined, end: 1 }).end()).toEqual([]);
+  });
+
+  it('a stream encoder the caller passed wins over the default one', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const mine = { begin: () => ({ write: () => [], end: () => [] }) };
+    launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      streamEncoders: { replay: mine },
+    });
+    expect((f.received?.options as BugseeLaunchOptions).streamEncoders?.replay).toBe(mine);
+  });
+
   it('omits pixel-video wiring entirely when no video option is given', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();

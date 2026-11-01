@@ -10,6 +10,7 @@
 //     combination) → an encoded video blob.
 // The two can run together (the controller composes them); each emits an independent `video` entry.
 import { type CaptureDataEntry, CaptureDataEntryBase, type Scheduler } from '@bugsee/core';
+import { reportGuarded } from '@bugsee/util';
 
 /** A single captured frame: the encoded image bytes (e.g. a JPEG/PNG from `capturePage`) + its capture time. */
 export interface VideoFrame {
@@ -215,8 +216,15 @@ export interface DisplayVideoSourceOptions {
    * abandoned, so capture resumes at the next tick; its late result is discarded. Default 10000.
    */
   stuckMs?: number;
+  /**
+   * One window's `capture()` that has not answered after this many ms is dropped from its display's frame (the other windows
+   * still compose, and the other displays are not held up). Default half of `stuckMs`.
+   */
+  layerTimeoutMs?: number;
+  /** One-shot timer: calls `fn` after `ms` and returns its canceller. Default the global `setTimeout`. */
+  after?: (ms: number, fn: () => void) => () => void;
   now: () => number;
-  /** Sink for a failed grab or compose — the timer never throws. */
+  /** Sink for a failed grab or compose — the timer never throws, whatever the sink does. */
   onError?: (error: unknown) => void;
 }
 
@@ -227,8 +235,23 @@ export interface DisplayVideoSourceOptions {
  */
 export function createDisplayVideoSource(options: DisplayVideoSourceOptions): VideoCaptureSource {
   const fps = options.fps ?? 1;
+  if (!Number.isFinite(fps) || fps <= 0) {
+    throw new RangeError(`fps must be a positive finite number, got ${fps}`);
+  }
   const maxFrames = options.maxFrames ?? 300;
   const stuckMs = options.stuckMs ?? 10_000;
+  const layerTimeoutMs = options.layerTimeoutMs ?? Math.floor(stuckMs / 2);
+  const after =
+    options.after ??
+    ((ms: number, fn: () => void): (() => void) => {
+      const timers = globalThis as unknown as {
+        setTimeout(cb: () => void, ms: number): unknown;
+        clearTimeout(handle: unknown): void;
+      };
+      const handle = timers.setTimeout(fn, ms);
+      return () => timers.clearTimeout(handle);
+    });
+  const report = (error: unknown): void => reportGuarded(options.onError, error);
   // Per PHYSICAL display (its key); `id` is the number it has now, refreshed every tick.
   const rings = new Map<string | number, { id: number; frames: VideoFrame[] }>();
   let handle: unknown;
@@ -242,11 +265,20 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
   ): Promise<Array<{ bytes: Uint8Array; bounds: Rect }>> => {
     const grabbed = await Promise.all(
       layers.map(async (layer) => {
+        let cancel: (() => void) | undefined;
         try {
-          return { bytes: await layer.capture(), bounds: layer.bounds };
+          // A window that never answers must not hold the whole display (and, through the tick, every display) hostage.
+          const timeout = new Promise<never>((_, reject) => {
+            cancel = after(layerTimeoutMs, () =>
+              reject(new Error(`window capture did not answer in ${layerTimeoutMs} ms`)),
+            );
+          });
+          return { bytes: await Promise.race([layer.capture(), timeout]), bounds: layer.bounds };
         } catch (error) {
-          options.onError?.(error);
+          report(error);
           return undefined; // one window failing does not cost the display its frame
+        } finally {
+          cancel?.();
         }
       }),
     );
@@ -255,6 +287,11 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
 
   const frameOf = async (display: DisplayInfo, started: number, mine: number): Promise<void> => {
     try {
+      // Refreshed now, even when this display shows no window: its ring must not keep a number another display holds.
+      const known = rings.get(display.key ?? display.id);
+      if (known !== undefined) {
+        known.id = display.id;
+      }
       const layers = await grab(options.layers(display));
       if (layers.length === 0) {
         return;
@@ -272,7 +309,7 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
         ring.frames.shift();
       }
     } catch (error) {
-      options.onError?.(error);
+      report(error);
     }
   };
 
@@ -297,7 +334,10 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
         // A display that is gone keeps its frames only as long as the ring covers: after that nothing of it is in the window.
         const cutoff = options.now() - (maxFrames / fps) * 1000;
         for (const [key, ring] of rings) {
-          if ((ring.frames[ring.frames.length - 1]?.timestamp ?? 0) < cutoff) {
+          while (ring.frames.length > 0 && (ring.frames[0] as VideoFrame).timestamp < cutoff) {
+            ring.frames.shift();
+          }
+          if (ring.frames.length === 0) {
             rings.delete(key);
           }
         }
@@ -307,7 +347,7 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
         }
       }
     } catch (error) {
-      options.onError?.(error); // a screen that is not ready, a throwing clock: the timer must never see a rejection
+      report(error); // a screen that is not ready, a throwing clock or sink: the timer must never see a rejection
     }
   };
 
@@ -337,7 +377,7 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
           entry.lane = String(id);
           out.push(entry);
         } catch (error) {
-          options.onError?.(error); // one display's muxer failing costs only that display's video
+          report(error); // one display's muxer failing costs only that display's video
         }
       }
       return out;

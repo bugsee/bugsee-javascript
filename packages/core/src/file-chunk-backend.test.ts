@@ -292,3 +292,40 @@ describe('createFileChunkBackend — the lane survives a meta that cannot be rea
     });
   });
 });
+
+describe('createFileChunkBackend — an open part that is removed leaves no lane behind', () => {
+  const metaOf = (storage: ReturnType<typeof createInMemoryChunkStorage>, n: number) =>
+    JSON.parse(storage.read(5, n, 'meta') as string) as Record<string, unknown>;
+
+  it('removePart of an open laned part: a later unkeyed part with the same ref is not given that lane', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.removePart(ref(5, 0));
+    b.openPart(ref(5, 0), 3);
+    b.closePart(ref(5, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+  });
+
+  it('removeGeneration forgets the lanes of that generation only', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(50, 0), 1, 'win-9'); // another generation whose number starts with 5
+    b.removeGeneration(5);
+    b.openPart(ref(5, 0), 3); // reopened without a lane
+    b.closePart(ref(5, 0), 4, 0);
+    b.closePart(ref(50, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+    expect(JSON.parse(storage.read(50, 0, 'meta') as string)).toMatchObject({ l: 'win-9' });
+  });
+
+  it('an unkeyed openPart over a ref whose lane was never closed starts with no lane', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(5, 0), 3); // the same ref reopened unkeyed
+    b.closePart(ref(5, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+  });
+});

@@ -2775,6 +2775,39 @@ describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)',
   });
 });
 
+describe('launch — forwarded streamEncoders (one member per visual source lane)', () => {
+  it('builds one replay member per window lane through the forwarded stream encoder', async () => {
+    const encoder = {
+      begin: () => {
+        let first = true;
+        return {
+          write: (entry: { lane?: string }) => {
+            const chunk = new TextEncoder().encode(`lane:${entry.lane}`);
+            if (first) {
+              first = false;
+              return [chunk];
+            }
+            return [];
+          },
+          end: () => [],
+        };
+      },
+    };
+    const store = memStore();
+    store.add({ type: 'replay', timestamp: Date.now(), serialized: '{"a":1}', lane: '3' });
+    store.add({ type: 'replay', timestamp: Date.now(), serialized: '{"b":2}', lane: '8' });
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: store, streamEncoders: { replay: encoder } }),
+    );
+    await client.logException(new Error('boom'));
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(new TextDecoder().decode(files['replay.bin'])).toBe('lane:3');
+    expect(new TextDecoder().decode(files['replay.1.bin'])).toBe('lane:8');
+  });
+});
+
 // launchCore() is the seam the umbrella uses: it returns the same public client launch() returns, PLUS the
 // internal wiring the umbrella needs to wire performance/OTel. launch() = launchCore(...).client.
 describe('launchCore', () => {

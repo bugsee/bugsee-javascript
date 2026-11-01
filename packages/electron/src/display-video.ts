@@ -26,26 +26,41 @@ export interface ElectronBrowserWindowLike {
 const overlaps = (a: Rect, b: Rect): boolean =>
   a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
+const intersectionArea = (a: Rect, b: Rect): number => {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return width > 0 && height > 0 ? width * height : 0;
+};
+
 /**
- * The displays as the `displays` trace numbers them: id 0 is the display of the focused window (the key window), the others
- * follow in ascending native id. Without a focused window the lowest native id is 0.
+ * The displays as the `displays` trace numbers them: id 0 is the display that most overlaps the KEY window
+ * (`screen.getDisplayMatching`), the others follow in ascending native id. The key window is the focused one, else the one
+ * that was focused last, else the first created visible window, else the first created (the application tracker's rule).
  */
 export function electronDisplays(
   screen: ScreenLike,
   BrowserWindow: ElectronBrowserWindowLike,
 ): () => DisplayInfo[] {
+  let lastFocused: WindowLike | undefined;
+  const usable = (window: WindowLike): boolean => window.isDestroyed?.() !== true;
   return () => {
     const native = [...screen.getAllDisplays()].sort((a, b) => a.id - b.id);
-    const focused = BrowserWindow.getAllWindows().find(
-      (window) => window.isDestroyed?.() !== true && window.isFocused(),
+    const windows = BrowserWindow.getAllWindows().filter(usable);
+    const focused = windows.find((window) => window.isFocused());
+    if (focused !== undefined) {
+      lastFocused = focused;
+    }
+    const created = [...windows].sort((a, b) => a.id - b.id);
+    const key =
+      focused ??
+      (lastFocused !== undefined && usable(lastFocused) ? lastFocused : undefined) ??
+      created.find((window) => window.isVisible()) ??
+      created[0];
+    const bounds = key?.getBounds();
+    const areas = native.map((display) =>
+      bounds === undefined ? 0 : intersectionArea(display.bounds, bounds),
     );
-    const keyIndex =
-      focused === undefined
-        ? 0
-        : Math.max(
-            0,
-            native.findIndex((display) => overlaps(display.bounds, focused.getBounds())),
-          );
+    const keyIndex = Math.max(0, areas.indexOf(Math.max(...areas)));
     const ordered = [
       ...native.slice(keyIndex, keyIndex + 1),
       ...native.filter((_, i) => i !== keyIndex),

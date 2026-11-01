@@ -504,6 +504,12 @@ export interface BugseeLaunchOptions {
    * `video` file). A platform extension registers its encoder here; JSON file types need no encoder.
    */
   fileEncoders?: BundleAssemblyContext['fileEncoders'];
+  /**
+   * Per-file-type STREAMING encoders (the replay's `replay.bin`). A type that has one is split into one member per visual source
+   * lane (a window of the Electron main), and a recovered bundle uses the same encoders. Without one the type's records are
+   * written as they are, merged.
+   */
+  streamEncoders?: BundleAssemblyContext['streamEncoders'];
 
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
@@ -1004,6 +1010,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       : {}),
     ...(reportSnapshots.length > 0 ? { reportSnapshots } : {}),
     ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
+    ...(options.streamEncoders !== undefined ? { streamEncoders: options.streamEncoders } : {}),
     // With an on-disk instance the report's zip is built straight into a temp file under it (and streamed from there to
     // the durable queue and the upload), so a large report never sits in the heap; without one, memory as before.
     ...(instanceLayout !== undefined
@@ -1231,7 +1238,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
             ownInstanceId: instanceLayout.instanceId,
             uploadPipeline,
             // a recovered incident belongs to a PRIOR process: this launch's uptime would be wrong for it, so it is omitted
-            context: () => ({ appToken, environment: withoutUptime(getEnvironment()), clock }),
+            context: () => ({
+              appToken,
+              environment: withoutUptime(getEnvironment()),
+              clock,
+              // The same encoders as the live export: without them a recovered multi-window replay merges into one member.
+              ...(options.streamEncoders !== undefined
+                ? { streamEncoders: options.streamEncoders }
+                : {}),
+            }),
             ...(options.nativeCrash !== undefined
               ? { nativeCrashSource: options.nativeCrash.source }
               : {}),

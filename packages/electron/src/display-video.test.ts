@@ -50,8 +50,68 @@ describe('electronDisplays', () => {
     expect(keyOf(focusOn(1100), 1)).toBe(30);
   });
 
-  it('without a focused window the lowest native id is display 0', () => {
-    const displays = electronDisplays(screen, windowsOf(win(1, rect(1100, 10, 100, 100))));
+  it('numbers the display that most overlaps a window straddling two displays (as getDisplayMatching does)', () => {
+    const displays = electronDisplays(
+      screen,
+      windowsOf(win(1, rect(900, 10, 400, 100), { isFocused: () => true })), // 100 px on the left display, 300 on the right
+    );
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+  });
+
+  it('falls back to the first created visible window when none is focused and none was', () => {
+    const displays = electronDisplays(
+      screen,
+      windowsOf(
+        win(3, rect(0, 10, 100, 100)),
+        win(2, rect(1100, 10, 100, 100)),
+        win(1, rect(0, 10, 100, 100), { isVisible: () => false }),
+      ),
+    );
+    expect(displays().map((d) => d.key)).toEqual([70, 30]); // window 2: the lowest id that is visible
+  });
+
+  it('falls back to the first created window when none is visible', () => {
+    const displays = electronDisplays(
+      screen,
+      windowsOf(
+        win(5, rect(0, 10, 100, 100), { isVisible: () => false }),
+        win(4, rect(1100, 10, 100, 100), { isVisible: () => false }),
+      ),
+    );
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+  });
+
+  it('keeps the display of the window that was focused last while nothing is focused now', () => {
+    let focusedId: number | undefined = 2;
+    const windows = [
+      win(1, rect(0, 10, 100, 100), { isFocused: () => focusedId === 1 }),
+      win(2, rect(1100, 10, 100, 100), { isFocused: () => focusedId === 2 }),
+    ];
+    const displays = electronDisplays(screen, windowsOf(...windows));
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+    focusedId = undefined; // the app lost focus: window 2 is still the key window
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+  });
+
+  it('forgets a last-focused window that was destroyed', () => {
+    let destroyed = false;
+    let focused = true;
+    const windows = [
+      win(1, rect(0, 10, 100, 100)),
+      win(2, rect(1100, 10, 100, 100), {
+        isFocused: () => focused,
+        isDestroyed: () => destroyed,
+      }),
+    ];
+    const displays = electronDisplays(screen, windowsOf(...windows));
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+    focused = false;
+    destroyed = true;
+    expect(displays().map((d) => d.key)).toEqual([30, 70]); // window 1 now
+  });
+
+  it('without any window the lowest native id is display 0', () => {
+    const displays = electronDisplays(screen, windowsOf());
     expect(displays().map((d) => [d.id, d.bounds.x])).toEqual([
       [0, 0],
       [1, 1000],

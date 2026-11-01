@@ -58,6 +58,19 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
   process is gone; the store drops it once none of its data is inside the recording window (so the report range is kept
   whole), and any new record for the lane revives it (a crashed window that reloads keeps its id).
 
+* **Review of PR #173 (2026-11-01)** found that the split never reached a real Electron export: neither `@bugsee/node` nor
+  `launchMain` passed the replay stream encoder, and a type without an encoder is written merged (one member, all windows). Now
+  `launch()` takes `streamEncoders` (live export AND the recovery context, so a recovered multi-window replay splits too),
+  `launchMain` supplies `createReplayStreamEncoder()` (imported from the new `@bugsee/replay/stream-encoder` subpath: fflate and
+  core types only, no rrweb in main; a caller's own encoder wins), and an integration test drives two windows through the real
+  receiver, chunk store, exporter, assembler and encoder. Also fixed: the file store forwards `onVisualReset` (it was dropped on
+  the default Node/Electron store, so the per-window `checkout` never went out), the file backend forgets an open part's lane when
+  the part or its generation is removed, `electronDisplays` follows the trace's key-window rule (focused, last focused, first
+  visible by id, first by id; display = largest overlap), a window whose `capture()` never answers is dropped from its display's
+  frame after `layerTimeoutMs` (a hung window no longer stalls every display), a ring refreshes its display number before the
+  empty-layer return, expired frames are trimmed from a live ring, a throwing `onError` cannot reject the timer, and an `fps` that
+  is not a positive finite number is rejected.
+
 Not shipped: a concrete `compose` (painting the grabbed windows onto one display-sized frame needs an image library or an
 offscreen canvas; the package stays free of both, so the host injects it) and the viewer changes below.
 
