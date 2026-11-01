@@ -983,6 +983,9 @@ describe('assembleBundleStream — sink', () => {
   });
 
   // Incompressible text, so the zip output is as big as the input and a slow sink actually backs up.
+  // These tests deflate ~10 MB of incompressible text: ~1 s locally, but the coverage-instrumented CI runner is ~40x slower and
+  // the default 30 s limit flaked (this file took 46 s there even when green).
+  const SLOW_RUNNER_TIMEOUT_MS = 120_000;
   const noise = (seed: number, length: number): string => {
     let x = seed;
     let out = '';
@@ -993,35 +996,39 @@ describe('assembleBundleStream — sink', () => {
     return out;
   };
 
-  it('does not read ahead of a slow sink: the backlog stays bounded', async () => {
-    let pulled = 0;
-    async function* source(): AsyncIterable<CaptureDataEntry> {
-      for (let i = 0; i < 30; i++) {
-        pulled += 1;
-        yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+  it(
+    'does not read ahead of a slow sink: the backlog stays bounded',
+    async () => {
+      let pulled = 0;
+      async function* source(): AsyncIterable<CaptureDataEntry> {
+        for (let i = 0; i < 30; i++) {
+          pulled += 1;
+          yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+        }
       }
-    }
-    const { sink, written, maxInFlight } = fakeSink({ slow: true });
-    const pulledAtWrite: number[] = [];
-    const slowSink = {
-      open: async () => {
-        const writer = await sink.open();
-        return {
-          ...writer,
-          write: async (chunk: Uint8Array) => {
-            pulledAtWrite.push(pulled);
-            await writer.write(chunk);
-          },
-        };
-      },
-    };
-    await assembleBundleStream(request(), source(), context({ sink: slowSink }));
-    expect(written.length).toBeGreaterThan(1);
-    expect(maxInFlight()).toBe(1); // writes are strictly sequential
-    // Written chunks lag the reader by at most the backlog bound (a few entries), never the whole export.
-    expect(Math.min(...pulledAtWrite.slice(0, 5))).toBeLessThan(30);
-    expect(pulledAtWrite[0]).toBeLessThanOrEqual(8);
-  });
+      const { sink, written, maxInFlight } = fakeSink({ slow: true });
+      const pulledAtWrite: number[] = [];
+      const slowSink = {
+        open: async () => {
+          const writer = await sink.open();
+          return {
+            ...writer,
+            write: async (chunk: Uint8Array) => {
+              pulledAtWrite.push(pulled);
+              await writer.write(chunk);
+            },
+          };
+        },
+      };
+      await assembleBundleStream(request(), source(), context({ sink: slowSink }));
+      expect(written.length).toBeGreaterThan(1);
+      expect(maxInFlight()).toBe(1); // writes are strictly sequential
+      // Written chunks lag the reader by at most the backlog bound (a few entries), never the whole export.
+      expect(Math.min(...pulledAtWrite.slice(0, 5))).toBeLessThan(30);
+      expect(pulledAtWrite[0]).toBeLessThanOrEqual(8);
+    },
+    SLOW_RUNNER_TIMEOUT_MS,
+  );
 
   it('stops reading entries once the sink has failed', async () => {
     let pulled = 0;
@@ -1038,34 +1045,38 @@ describe('assembleBundleStream — sink', () => {
     expect(pulled).toBeLessThan(5);
   });
 
-  it('holds the read-ahead to a bounded backlog while the sink is blocked, then completes once it is released', async () => {
-    let pulled = 0;
-    async function* source(): AsyncIterable<CaptureDataEntry> {
-      for (let i = 0; i < 40; i++) {
-        pulled += 1;
-        yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+  it(
+    'holds the read-ahead to a bounded backlog while the sink is blocked, then completes once it is released',
+    async () => {
+      let pulled = 0;
+      async function* source(): AsyncIterable<CaptureDataEntry> {
+        for (let i = 0; i < 40; i++) {
+          pulled += 1;
+          yield entry('log', NOWS - 100 + i, noise(i + 1, 300_000));
+        }
       }
-    }
-    let open!: () => void;
-    const gate = new Promise<void>((resolve) => (open = resolve));
-    const written: Uint8Array[] = [];
-    const sink = {
-      open: () => ({
-        write: async (chunk: Uint8Array) => {
-          await gate;
-          written.push(chunk);
-        },
-        finish: async () => createMemoryBody(written),
-        abort: async () => {},
-      }),
-    };
-    const pending = assembleBundleStream(request(), source(), context({ sink }));
-    for (let i = 0; i < 200; i++) await Promise.resolve();
-    expect(pulled).toBeLessThan(40); // blocked sink: the reader did not run away with the whole export
-    open();
-    await pending;
-    expect(pulled).toBe(40);
-  });
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const written: Uint8Array[] = [];
+      const sink = {
+        open: () => ({
+          write: async (chunk: Uint8Array) => {
+            await gate;
+            written.push(chunk);
+          },
+          finish: async () => createMemoryBody(written),
+          abort: async () => {},
+        }),
+      };
+      const pending = assembleBundleStream(request(), source(), context({ sink }));
+      for (let i = 0; i < 200; i++) await Promise.resolve();
+      expect(pulled).toBeLessThan(40); // blocked sink: the reader did not run away with the whole export
+      open();
+      await pending;
+      expect(pulled).toBe(40);
+    },
+    SLOW_RUNNER_TIMEOUT_MS,
+  );
 
   it('stops writing to a sink after its first failed write', async () => {
     let calls = 0;
