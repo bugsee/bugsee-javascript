@@ -18,6 +18,9 @@ export class CaptureDataEntryBase implements CaptureDataEntry {
     public readonly anchor: boolean = false,
   ) {}
 
+  /** The visual source the record was read from (`StoredEntry.lane`); set by the reader, never serialized. */
+  lane?: string;
+
   serialize(): string {
     return JSON.stringify({ timestamp: this.timestamp, data: this.data });
   }

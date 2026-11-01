@@ -156,3 +156,27 @@ describe('streamReified', () => {
     expect(snap.releases).toBe(1);
   });
 });
+
+describe('reified entries carry their visual source lane', () => {
+  const withLane = (lane?: string): StoredEntry => ({
+    ...stored('replay', { e: 1 }),
+    ...(lane !== undefined ? { lane } : {}),
+  });
+
+  it('streamReified sets the lane of a laned record and leaves an unlaned one without', async () => {
+    const snap = streamingSnapshot([withLane('win-3'), withLane()]);
+    const lanes: Array<string | undefined> = [];
+    for await (const entry of streamReified(snap, defaultEntryFactory, () => {})) {
+      lanes.push(entry.lane);
+    }
+    expect(lanes).toEqual(['win-3', undefined]);
+  });
+
+  it('drainReified does the same', async () => {
+    const grouped = new Map<FileType, StoredEntry[]>([['replay', [withLane('win-3'), withLane()]]]);
+    const entries = (await drainReified(fakeSnapshot(grouped), defaultEntryFactory, () => {})).get(
+      'replay',
+    );
+    expect(entries?.map((e) => e.lane)).toEqual(['win-3', undefined]);
+  });
+});

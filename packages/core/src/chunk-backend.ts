@@ -30,6 +30,8 @@ export interface FrozenPart {
   readonly ref: PartRef;
   /** Records to include, oldest-first — the part's entry count at snapshot time (open-part boundary). */
   readonly count: number;
+  /** The visual source every record of this part belongs to (see `StoredEntry.lane`); absent = unkeyed or not visual. */
+  readonly lane?: string;
 }
 
 export interface ChunkBackend {

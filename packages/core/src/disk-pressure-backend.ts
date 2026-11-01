@@ -555,8 +555,12 @@ export function withDiskPressure(
     snapshot(frozen: readonly FrozenPart[]): CaptureSnapshot {
       // The counts are the boundary of each half at THIS instant (the store's own count is their sum).
       const durableParts: FrozenPart[] = [];
-      for (const { ref } of frozen) {
-        durableParts.push({ ref, count: parts.get(keyOf(ref))?.durableCount ?? 0 });
+      for (const { ref, lane } of frozen) {
+        durableParts.push({
+          ref,
+          count: parts.get(keyOf(ref))?.durableCount ?? 0,
+          ...(lane !== undefined ? { lane } : {}),
+        });
       }
       if (shadowed === 0) {
         // One durable snapshot PER PART, so that a part whose read throws costs only that part (the rest of the window
@@ -576,7 +580,7 @@ export function withDiskPressure(
         routes: Map<FileType, boolean[]>;
       }
       const deadMedium = { failed: false, threw: false }; // shared by every part of this snapshot (see guardedRead)
-      const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
+      const reads: FrozenPartRead[] = frozen.map(({ ref, lane }, index) => {
         const state = parts.get(keyOf(ref));
         const fromDurable = guardedRead(
           snapshotOrEmpty([durableParts[index] as FrozenPart], deadMedium),
@@ -587,7 +591,9 @@ export function withDiskPressure(
         }
         return {
           fromDurable,
-          fromShadow: shadow.snapshot([{ ref, count: state.shadowCount }]),
+          fromShadow: shadow.snapshot([
+            { ref, count: state.shadowCount, ...(lane !== undefined ? { lane } : {}) },
+          ]),
           routes: state.routes,
         };
       });

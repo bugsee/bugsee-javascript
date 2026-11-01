@@ -1912,3 +1912,17 @@ describe('withDiskPressure — a part that keeps throwing', () => {
     expect(calls).toEqual(['unpin0', 'unpin1', 'unpin2', 'release0', 'release1', 'release2']);
   });
 });
+
+describe('disk pressure — visual source lanes survive both halves', () => {
+  it("serves each window's replay with its lane whether it landed on the medium or only in the shadow", async () => {
+    const { pressure, store } = setup();
+    store.add({ ...rec('replay', 1, 'a-on-disk'), lane: 'a' });
+    pressure.observe(5 * MB); // low: replay now stays in memory only
+    store.add({ ...rec('replay', 2, 'b-shadow'), lane: 'b' });
+    const replay = (await drain(store)).get('replay') ?? [];
+    expect(replay.map((r) => [r.serialized, r.lane])).toEqual([
+      ['a-on-disk', 'a'],
+      ['b-shadow', 'b'],
+    ]);
+  });
+});

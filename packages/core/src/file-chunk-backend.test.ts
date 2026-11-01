@@ -233,3 +233,25 @@ describe('createFileChunkBackend — probeWrite', () => {
     expect(flushNow).not.toHaveBeenCalled();
   });
 });
+
+describe('createFileChunkBackend — visual source lane', () => {
+  it('attaches the frozen part lane to every record it reads back', async () => {
+    const b = createFileChunkBackend(createInMemoryChunkStorage(), { generation: 5 });
+    b.openPart(ref(5, 0), 0);
+    b.appendEntry(ref(5, 0), rec('w', 'replay', 1));
+    b.openPart(ref(5, 1), 0);
+    b.appendEntry(ref(5, 1), rec('u', 'replay', 2));
+    const snap = b.snapshot([
+      { ref: ref(5, 0), count: 1, lane: 'win-3' },
+      { ref: ref(5, 1), count: 1 },
+    ]);
+    const seen: Array<[string, string | undefined]> = [];
+    for await (const r of snap.stream()) {
+      seen.push([r.serialized, r.lane]);
+    }
+    expect(seen).toEqual([
+      ['w', 'win-3'],
+      ['u', undefined],
+    ]);
+  });
+});

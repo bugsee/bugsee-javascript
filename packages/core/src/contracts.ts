@@ -54,6 +54,8 @@ export interface CaptureDataEntry {
   data: unknown;
   /** True for the first record of a self-contained base (see `StoredEntry.anchor`). Absent = false. */
   readonly anchor?: boolean;
+  /** The visual source the record came from (see `StoredEntry.lane`). Absent = the unkeyed source. */
+  lane?: string;
   /** Serialize this entry to its stored string form. */
   serialize(): string;
   /** Populate this entry from its stored string form (mutates `this`; Android instance deserialize). */
@@ -86,6 +88,13 @@ export interface StoredEntry {
    * Exists because Durable Objects for different tenants share one isolate, one client and one capture ring
    */
   owner?: string;
+  /**
+   * The visual SOURCE this record belongs to (Electron main: the id of the window whose recorder produced it), kept
+   * out-of-band like `timestamp`. Each source has its own visual lane: its own bases, eviction and reset, and its own
+   * member in the bundle. Absent = the single unkeyed source (every runtime with one screen). Only the visual types
+   * (`replay`, `video`) are routed on it.
+   */
+  lane?: string;
 }
 
 /**

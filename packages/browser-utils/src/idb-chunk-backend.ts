@@ -543,7 +543,7 @@ export function createIdbChunkBackend(
             `bugsee: IndexedDB made no progress for ${stallMs} ms; the queued writes are served from memory`,
           );
         }
-        for (const [index, { ref, count }] of frozen.entries()) {
+        for (const [index, { ref, count, lane }] of frozen.entries()) {
           const records = await until(
             withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
           );
@@ -561,7 +561,15 @@ export function createIdbChunkBackend(
             if (d === undefined) {
               continue; // one torn envelope loses ONE record, never the generation
             }
-            landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
+            landed.push({
+              seq,
+              record: {
+                type: d.ty,
+                timestamp: d.t,
+                serialized: d.s,
+                ...(lane !== undefined ? { lane } : {}),
+              },
+            });
           }
           // An entry can be BOTH landed (the read saw it) and in the frozen copy: by sequence it is one record.
           const landedSeqs = new Set(landed.map(({ seq }) => seq));

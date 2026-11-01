@@ -1,13 +1,12 @@
 import type { FileType } from '@bugsee/protocol';
 import { defaultEntryFactory } from './capture-data-entry';
-import { streamReified } from './capture-drain';
+import { reify, streamReified } from './capture-drain';
 import type {
   CaptureDataEntry,
   CaptureEntryFactory,
   CaptureEntryStream,
   CaptureExporter,
   CaptureStore,
-  StoredEntry,
 } from './contracts';
 
 // CaptureExporter (Android CaptureExporter parity): the read side of the capture pipeline. It takes a
@@ -16,12 +15,6 @@ import type {
 // instance deserialize), and RELEASES the snapshot when done (try/finally). stream() reads one-by-one
 // (memory-light); drain() reads all-at-once grouped by file type. The aggregator writes; the exporter
 // reads — the two directions are separate.
-
-function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEntry {
-  const entry = factory(record.type);
-  entry.deserialize(record.serialized);
-  return entry;
-}
 
 export function createCaptureExporter(
   store: CaptureStore,

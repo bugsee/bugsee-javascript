@@ -7,9 +7,13 @@ import type {
   StoredEntry,
 } from './contracts';
 
-function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEntry {
+/** Rebuild a stored record as an entry, carrying the visual source lane (not part of the serialized payload). */
+export function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEntry {
   const entry = factory(record.type);
   entry.deserialize(record.serialized);
+  if (record.lane !== undefined) {
+    entry.lane = record.lane;
+  }
   return entry;
 }
 
@@ -92,9 +96,7 @@ export async function drainReified(
       const entries: CaptureDataEntry[] = [];
       for (const record of records) {
         try {
-          const entry = factory(type);
-          entry.deserialize(record.serialized);
-          entries.push(entry);
+          entries.push(reify(record, factory));
         } catch (error) {
           // A torn trailing frame — the exact artifact a crash/SIGKILL leaves mid-write — yields one
           // un-deserializable record (the snapshot parser only guards the timestamp, not the payload).

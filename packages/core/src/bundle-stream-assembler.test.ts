@@ -1088,3 +1088,104 @@ describe('assembleBundleStream — sink', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('assembleBundleStream — one stream-encoded member per visual source lane', () => {
+  const NOW3 = 1_700_000_000_000;
+  const laned = (lane: string | undefined, at: number, data: string): CaptureDataEntry => {
+    const e = new CaptureDataEntryBase('replay', at, data);
+    if (lane !== undefined) e.lane = lane;
+    return e;
+  };
+  const recorder = (silentLane?: string) => {
+    const sessions: string[][] = [];
+    const encoder = {
+      begin: () => {
+        const mine: string[] = [];
+        sessions.push(mine);
+        let silent = false;
+        return {
+          write: (e: CaptureDataEntry) => {
+            mine.push(String(e.data));
+            silent = e.lane === silentLane && silentLane !== undefined;
+            return silent ? [] : [strToU8(`<${String(e.data)}>`)];
+          },
+          end: () => (silent ? [] : [strToU8('|end')]),
+        };
+      },
+    };
+    return { encoder, sessions };
+  };
+  const run = async (entries: CaptureDataEntry[], encoder: unknown) => {
+    const bundle = await assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+      from(entries),
+      context({ streamEncoders: { replay: encoder as never } }),
+    );
+    const files = members(await bundle.body.bytes());
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+      files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
+    };
+    return { files, manifest };
+  };
+
+  it('writes each window its own member, the first under the canonical name, with its own encoder session', async () => {
+    const { encoder, sessions } = recorder();
+    const { files, manifest } = await run(
+      [
+        laned('3', NOW3 - 300, 'a1'),
+        laned('9', NOW3 - 250, 'b1'),
+        laned('3', NOW3 - 200, 'a2'),
+        laned('9', NOW3 - 100, 'b2'),
+      ],
+      encoder,
+    );
+    expect(sessions).toEqual([
+      ['a1', 'a2'],
+      ['b1', 'b2'],
+    ]);
+    expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<a1><a2>|end');
+    expect(strFromU8(files['replay.1.bin'] as Uint8Array)).toBe('<b1><b2>|end');
+    const replays = manifest.files.filter((f) => f.type === 'replay');
+    expect(replays).toEqual([
+      expect.objectContaining({ filename: 'replay.bin', attrs: { window: '3' } }),
+      expect.objectContaining({ filename: 'replay.1.bin', attrs: { window: '9' } }),
+    ]);
+  });
+
+  it('a window that produced nothing leaves no member and does not take the canonical name', async () => {
+    const { encoder } = recorder('3');
+    const { files, manifest } = await run(
+      [laned('3', NOW3 - 300, 'quiet'), laned('9', NOW3 - 100, 'b1')],
+      encoder,
+    );
+    expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('<b1>|end');
+    expect(files['replay.1.bin']).toBeUndefined();
+    expect(manifest.files.filter((f) => f.type === 'replay').map((f) => f.filename)).toEqual([
+      'replay.bin',
+    ]);
+  });
+
+  it('keeps unkeyed records in the one canonical member with no window attribute', async () => {
+    const { encoder, sessions } = recorder();
+    const { manifest } = await run(
+      [laned(undefined, NOW3 - 200, 'u1'), laned(undefined, NOW3 - 100, 'u2')],
+      encoder,
+    );
+    expect(sessions).toEqual([['u1', 'u2']]);
+    expect(manifest.files.filter((f) => f.type === 'replay')).toEqual([
+      { filename: 'replay.bin', type: 'replay' },
+    ]);
+  });
+
+  it('ignores the lane of a type that has no stream encoder', async () => {
+    const log = new CaptureDataEntryBase('log', NOW3 - 100, 'l');
+    log.lane = '3';
+    const bundle = await assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+      from([log, Object.assign(new CaptureDataEntryBase('log', NOW3 - 50, 'm'), { lane: '9' })]),
+      context(),
+    );
+    const files = members(await bundle.body.bytes());
+    expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['l', 'm']);
+  });
+});

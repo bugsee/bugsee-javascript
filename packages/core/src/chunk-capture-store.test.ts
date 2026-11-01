@@ -1,5 +1,6 @@
 import type { FileType } from '@bugsee/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import type { FrozenPart } from './chunk-backend';
 import { createChunkCaptureStore } from './chunk-capture-store';
 import type { Clock } from './clock';
 import type { StoredEntry } from './contracts';
@@ -475,5 +476,115 @@ describe('createChunkCaptureStore — snapshot time range', () => {
     inner.released = false;
     snapshot.release();
     expect(inner.released).toBe(true);
+  });
+});
+
+describe('createChunkCaptureStore — one visual lane per source key (per-window replay)', () => {
+  // A replay record of `bytes` serialized bytes, labelled, in the lane `lane` (a window), at second `s`.
+  const rec = (
+    lane: string | undefined,
+    label: string,
+    s: number,
+    anchor = false,
+    bytes = 10,
+  ): StoredEntry => ({
+    type: 'replay',
+    timestamp: s * 1000,
+    serialized: label.padEnd(bytes, '.'),
+    ...(lane !== undefined ? { lane } : {}),
+    ...(anchor ? { anchor: true } : {}),
+  });
+  const held = async (store: ReturnType<typeof createChunkCaptureStore>) => {
+    const out: Record<string, string[]> = {};
+    for (const e of (await store.snapshot().drainAll()).get('replay') ?? []) {
+      const name = e.lane ?? '';
+      out[name] = [...(out[name] ?? []), e.serialized.replace(/\.+$/, '')];
+    }
+    return out;
+  };
+
+  it('time eviction keeps the newest base at or before the window start PER lane', async () => {
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock: clockAt(0),
+      maxRecordingTimeMs: 2000,
+    });
+    // Window a opens a base at 0 and again at 5; window b opens one at 1 only. At t=10 the window starts at 8.
+    const plan: Array<[string, string, number, boolean]> = [
+      ['a', 'a0', 0, true],
+      ['b', 'b1', 1, true],
+      ['b', 'b2', 2, false],
+      ['a', 'a5', 5, true],
+      ['a', 'a6', 6, false],
+    ];
+    for (let s = 0; s < 10; s++) {
+      for (const [lane, label, at, anchor] of plan) {
+        if (at === s) {
+          store.add(rec(lane, label, s, anchor));
+        }
+      }
+      store.tick((s + 1) * 1000);
+    }
+    const kept = await held(store);
+    expect(kept.a).toEqual(['a5', 'a6']); // a's older base is superseded
+    expect(kept.b).toEqual(['b1', 'b2']); // b's only base survives even though it is older than the window
+  });
+
+  it('the byte cap resets the lane whose bases are all gone, by name', async () => {
+    const reset = vi.fn();
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock: clockAt(0),
+      maxRecordingTimeMs: 1_000_000,
+      maxDataSizeBytes: 50,
+      onVisualReset: reset,
+    });
+    store.add(rec('a', 'A', 0, true, 30)); // a: one base segment
+    store.tick(1000);
+    store.add(rec('b', 'B', 1, true, 15)); // b: one base segment, newer
+    store.tick(2000);
+    store.add(rec('b', 'b', 2, false, 15)); // 60 bytes > 50: the OLDEST visual bytes (a's lone base) go
+    await Promise.resolve();
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenCalledWith('a');
+    expect(await held(store)).toEqual({ b: ['B', 'b'] });
+  });
+
+  it('an unkeyed record resets without an argument (the single-lane contract)', async () => {
+    const reset = vi.fn();
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock: clockAt(0),
+      maxRecordingTimeMs: 1_000_000,
+      maxDataSizeBytes: 20,
+      onVisualReset: reset,
+    });
+    store.add(rec(undefined, 'A', 0, true, 30));
+    store.tick(1000);
+    store.add(rec(undefined, 'x', 1, false, 5));
+    await Promise.resolve();
+    expect(reset).toHaveBeenCalledWith();
+  });
+
+  it('the snapshot hands every record back with its lane', async () => {
+    const store = createChunkCaptureStore(createMemoryChunkBackend(), {
+      clock: clockAt(0),
+      maxRecordingTimeMs: 1_000_000,
+    });
+    store.add(rec('a', 'a0', 0, true));
+    store.add(rec('b', 'b0', 0, true));
+    store.add(rec(undefined, 'u0', 0, true));
+    expect(await held(store)).toEqual({ a: ['a0'], b: ['b0'], '': ['u0'] });
+  });
+
+  it('freezes each visual part with its lane, and the data part without one', () => {
+    const inner = createMemoryChunkBackend();
+    const seen: Array<readonly FrozenPart[]> = [];
+    const store = createChunkCaptureStore(
+      { ...inner, snapshot: (parts) => (seen.push(parts), inner.snapshot(parts)) },
+      { clock: clockAt(0), maxRecordingTimeMs: 1_000_000 },
+    );
+    store.add(rec('a', 'a0', 0, true));
+    store.add(rec(undefined, 'u0', 0, true));
+    store.add({ type: 'log', timestamp: 0, serialized: 'l' });
+    store.snapshot().release();
+    expect((seen[0] ?? []).map((part) => part.lane)).toEqual([undefined, 'a', undefined]);
   });
 });

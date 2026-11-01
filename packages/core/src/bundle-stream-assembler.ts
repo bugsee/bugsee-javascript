@@ -36,10 +36,25 @@ import type { Bundle } from './transport';
 type TimeRange = { readonly start: number; readonly end: number };
 
 interface EncodedMember {
+  readonly type: FileType;
+  /** The visual source this member holds (`CaptureDataEntry.lane`); absent for the unkeyed source. */
+  readonly lane: string | undefined;
   readonly session: StreamEncoderSession;
-  /** Created with the first chunk, so a type that produced nothing leaves no empty member behind. */
+  /** Created with the first chunk, so a source that produced nothing leaves no empty member behind. */
   file: ZipDeflate | undefined;
+  /** The member's file name, fixed when the file is created. */
+  name: string | undefined;
 }
+
+/** `replay.bin` for the first member of a type, `replay.1.bin`, `replay.2.bin`, ... for the next ones. */
+const nthFileName = (type: FileType, index: number): string => {
+  const base = fileNameForType(type);
+  if (index === 0) {
+    return base;
+  }
+  const dot = base.lastIndexOf('.');
+  return dot === -1 ? `${base}.${index}` : `${base.slice(0, dot)}.${index}${base.slice(dot)}`;
+};
 
 interface StreamMember {
   readonly file: ZipDeflate;
@@ -197,14 +212,18 @@ async function buildInto(
   // With a plan the report starts where the plan says (the window), whatever the records are; without one, at the earliest
   // record. The plan also bounds the ROLLING records: older ones (the store keeps up to a second of slack) are dropped.
   let start = plan?.start ?? now;
-  const order: FileType[] = [];
-  const streamed = new Map<FileType, StreamMember>();
-  const collected = new Map<FileType, unknown[]>(); // types with an injected encoder
-  const encoded = new Map<FileType, EncodedMember>(); // types with a stream encoder
-  const writeChunks = (type: FileType, member: EncodedMember, chunks: Uint8Array[]): void => {
+  const order: string[] = []; // member keys: a type, or `type\0lane` for one visual source of a stream-encoded type
+  const streamed = new Map<string, StreamMember>();
+  const collected = new Map<string, unknown[]>(); // types with an injected encoder
+  const encoded = new Map<string, EncodedMember>(); // types with a stream encoder: one member per visual source lane
+  const filesOfType = new Map<FileType, number>(); // members actually created per type (names the next one)
+  const writeChunks = (member: EncodedMember, chunks: Uint8Array[]): void => {
     for (const chunk of chunks) {
       if (member.file === undefined) {
-        member.file = new ZipDeflate(claim(fileNameForType(type)));
+        const index = filesOfType.get(member.type) ?? 0;
+        filesOfType.set(member.type, index + 1);
+        member.name = claim(nthFileName(member.type, index));
+        member.file = new ZipDeflate(member.name);
         zip.add(member.file);
       }
       member.file.push(chunk, false);
@@ -224,23 +243,29 @@ async function buildInto(
     ) {
       return; // before the window; types with an encoder (the replay) are clamped by it instead
     }
-    if (!streamed.has(type) && !collected.has(type) && !encoded.has(type)) {
-      order.push(type);
-      const streamEncoder = context.streamEncoders?.[type];
+    const streamEncoder = context.streamEncoders?.[type];
+    // Only a stream-encoded (reconstructed) type splits by source: every other type is one member whatever its lane.
+    const key =
+      streamEncoder !== undefined && entry.lane !== undefined ? `${type}\0${entry.lane}` : type;
+    if (!streamed.has(key) && !collected.has(key) && !encoded.has(key)) {
+      order.push(key);
       if (streamEncoder !== undefined) {
-        encoded.set(type, {
+        encoded.set(key, {
+          type,
+          lane: entry.lane,
           session: streamEncoder.begin({ start: plan?.start, end: now }),
           file: undefined,
+          name: undefined,
         });
       } else if (context.fileEncoders?.[type] !== undefined) {
-        collected.set(type, []);
+        collected.set(key, []);
       } else {
         const file = new ZipDeflate(claim(fileNameForType(type)));
         zip.add(file);
-        streamed.set(type, { file, shape: fileShape(type), count: 0 });
+        streamed.set(key, { file, shape: fileShape(type), count: 0 });
       }
     }
-    const session = encoded.get(type);
+    const session = encoded.get(key);
     if (session !== undefined) {
       let chunks: Uint8Array[];
       try {
@@ -250,15 +275,15 @@ async function buildInto(
         return;
       }
       // Outside the try: a name clash (or any zip failure) is not a bad record and must fail the bundle, as it does everywhere.
-      writeChunks(type, session, chunks);
+      writeChunks(session, chunks);
       return;
     }
-    const payloads = collected.get(type);
+    const payloads = collected.get(key);
     if (payloads !== undefined) {
       payloads.push(entry.data);
       return;
     }
-    const member = streamed.get(type) as StreamMember;
+    const member = streamed.get(key) as StreamMember;
     if (member.shape.single) {
       // `profile`: the first entry alone, as a bare object.
       if (member.count === 0) {
@@ -287,18 +312,24 @@ async function buildInto(
 
   const files: ManifestFileEntry[] = [];
   const dataNames: string[] = [];
-  for (const type of order) {
-    const stream = encoded.get(type);
+  for (const key of order) {
+    const stream = encoded.get(key);
+    const type = (stream?.type ?? key) as FileType;
     if (stream !== undefined) {
-      writeChunks(type, stream, stream.session.end());
+      writeChunks(stream, stream.session.end());
       if (stream.file === undefined) {
         continue; // nothing was produced: no member, no manifest entry
       }
       stream.file.push(new Uint8Array(0), true);
     }
-    files.push(manifestEntryForType(type));
-    dataNames.push(fileNameForType(type));
-    const member = streamed.get(type);
+    const name = stream?.name ?? fileNameForType(type);
+    files.push({
+      ...manifestEntryForType(type),
+      filename: name,
+      ...(stream?.lane !== undefined ? { attrs: { window: stream.lane } } : {}),
+    });
+    dataNames.push(name);
+    const member = streamed.get(key);
     if (stream !== undefined) {
       // finalized above
     } else if (member !== undefined) {
@@ -307,7 +338,7 @@ async function buildInto(
       const encode = (context.fileEncoders as NonNullable<typeof context.fileEncoders>)[type] as (
         payloads: unknown[],
       ) => Uint8Array;
-      addWhole(fileNameForType(type), encode(collected.get(type) as unknown[]));
+      addWhole(fileNameForType(type), encode(collected.get(key) as unknown[]));
     }
   }
 

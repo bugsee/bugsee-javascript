@@ -140,7 +140,7 @@ export function createFileChunkBackend(
       // EAGER read at snapshot() time: the data files hold exactly the records captured so far (add is
       // sync), so reading them now freezes the view — post-snapshot appends land after and are excluded.
       const frozen: StoredEntry[] = [];
-      for (const { ref } of parts) {
+      for (const { ref, lane } of parts) {
         for (const file of storage.files(ref.generation, ref.number)) {
           if (file === META_FILE) {
             continue;
@@ -159,7 +159,12 @@ export function createFileChunkBackend(
             if (!Number.isFinite(timestamp)) {
               continue; // skip a corrupt timestamp
             }
-            frozen.push({ type, timestamp, serialized: line.slice(tab + 1) });
+            frozen.push({
+              type,
+              timestamp,
+              serialized: line.slice(tab + 1),
+              ...(lane !== undefined ? { lane } : {}),
+            });
           }
         }
       }

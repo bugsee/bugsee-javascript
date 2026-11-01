@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import type { CaptureEntryFactory, CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
+import { createMemoryCaptureStore } from './memory-capture-store';
 
 const rec = (type: FileType, timestamp: number, data: unknown): StoredEntry => ({
   type,
@@ -267,5 +268,19 @@ describe('createCaptureExporter — owner-scoped export', () => {
     const { store, calls } = spyStore();
     await createCaptureExporter(store).drain();
     expect(calls[0]?.owner).toBeUndefined();
+  });
+});
+
+describe('createCaptureExporter — lane', () => {
+  it('drain() entries keep the lane of the record they came from', async () => {
+    const store = createMemoryCaptureStore();
+    store.add({
+      type: 'replay',
+      timestamp: 1,
+      serialized: '{"timestamp":1,"data":1}',
+      lane: 'win-3',
+    });
+    const replay = (await createCaptureExporter(store).drain()).get('replay');
+    expect(replay?.[0]?.lane).toBe('win-3');
   });
 });

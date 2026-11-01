@@ -35,10 +35,11 @@ export interface ChunkCaptureStoreOptions {
   diskReadTimeoutMs?: number;
   /**
    * Called (once, deferred to a microtask so the recorder's synchronous restart cannot re-enter the store) when
-   * the byte cap forced the whole visual lane out and no new base is open: the host should restart its recorder so
-   * the next records start a fresh base (a replay's Meta + FullSnapshot).
+   * the byte cap forced a whole visual lane out and no new base is open: the host should restart its recorder so
+   * the next records start a fresh base (a replay's Meta + FullSnapshot). Called with the lane key (a window) of the
+   * lane that lost its bases, and with no argument for the unkeyed lane.
    */
-  onVisualReset?: () => void;
+  onVisualReset?: (lane?: string) => void;
 }
 
 // The in-memory index entry per live part (NO record data — that lives in the backend).
@@ -52,6 +53,8 @@ interface IndexedPart {
   anchor: boolean;
   /** `visual`: replay/video, shed first under the byte cap and kept anchored to a base. `data`: everything else. */
   readonly lane: Lane;
+  /** The visual source key (`StoredEntry.lane`) of a visual part; absent for the data lane and the unkeyed source. */
+  readonly key?: string;
 }
 
 type Lane = 'data' | 'visual';
@@ -101,16 +104,17 @@ export function createChunkCaptureStore(
   const generation = backend.generation;
 
   // Every live part, oldest-first by part number; both lanes share one number space and one backend, so
-  // snapshot and crash recovery see plain parts. The open part of each lane is `dataPart` / `visualPart` (the visual
-  // part is opened lazily by the first visual record of a tick, so a store that never sees one is unchanged).
+  // snapshot and crash recovery see plain parts. The open part of the data lane is `dataPart`; each visual source key has its own
+  // open part in `openVisual`, opened lazily by its first record of a tick (a store that never sees one is unchanged).
   let parts: IndexedPart[] = [];
   // Running byte total across all live parts; kept in sync with every add/evict so the byte cap and the
   // time window never double-count.
   let totalBytes = 0;
   let nextNumber = 0;
-  let visualPart: IndexedPart | undefined;
+  // The OPEN visual part of each source key ('' = the unkeyed source), opened lazily by its first record of a tick.
+  const openVisual = new Map<string, IndexedPart>();
 
-  const openNewPart = (start: number, lane: Lane): IndexedPart => {
+  const openNewPart = (start: number, lane: Lane, key?: string): IndexedPart => {
     const ref: PartRef = { generation, number: nextNumber };
     nextNumber += 1;
     backend.openPart(ref, start);
@@ -122,6 +126,7 @@ export function createChunkCaptureStore(
       count: 0,
       anchor: false,
       lane,
+      ...(key !== undefined ? { key } : {}),
     };
     parts.push(part);
     return part;
@@ -134,12 +139,17 @@ export function createChunkCaptureStore(
   // can be in the window, so the export range never starts before it, and never AFTER a record it would then trim.
   let epoch = firstStart;
 
-  const partFor = (lane: Lane): IndexedPart => {
-    if (lane === 'data') {
+  const partFor = (record: StoredEntry): IndexedPart => {
+    if (!VISUAL_TYPES.has(record.type)) {
       return dataPart;
     }
-    visualPart ??= openNewPart(dataPart.start, 'visual');
-    return visualPart;
+    const name = record.lane ?? '';
+    let part = openVisual.get(name);
+    if (part === undefined) {
+      part = openNewPart(dataPart.start, 'visual', record.lane);
+      openVisual.set(name, part);
+    }
+    return part;
   };
 
   const evictPart = (part: IndexedPart): void => {
@@ -148,18 +158,24 @@ export function createChunkCaptureStore(
     backend.removePart(part.ref);
   };
 
-  const closedParts = (lane: Lane): IndexedPart[] =>
-    parts.filter((part) => part.lane === lane && part.end !== undefined);
+  const closedParts = (lane: Lane, key?: string): IndexedPart[] =>
+    parts.filter(
+      (part) =>
+        part.lane === lane && part.end !== undefined && (lane === 'data' || part.key === key),
+    );
 
   // Make room for a byte cap by dropping VISUAL records only, always leaving what remains valid: records before
   // the first base are useless and go first; then the oldest base segment (everything before the next base); a lone
   // segment cannot be shrunk and stays valid, so it goes whole and the host is asked for a fresh base.
   // @returns whether anything was dropped.
   const shedVisual = (): boolean => {
-    const closed = closedParts('visual');
-    if (closed.length === 0) {
+    // The lane that holds the OLDEST visual bytes pays first; each lane keeps its own bases valid.
+    const oldest = parts.find((part) => part.lane === 'visual' && part.end !== undefined);
+    if (oldest === undefined) {
       return false;
     }
+    const key = oldest.key;
+    const closed = closedParts('visual', key);
     const firstBase = closed.findIndex((part) => part.anchor);
     let upTo: number;
     if (firstBase !== 0) {
@@ -171,13 +187,17 @@ export function createChunkCaptureStore(
     for (const part of closed.slice(0, upTo)) {
       evictPart(part);
     }
-    if (upTo === closed.length && visualPart?.anchor !== true) {
+    if (upTo === closed.length && openVisual.get(key ?? '')?.anchor !== true) {
       // Nothing valid is left to show and the open part has no base: a fresh one is needed.
       const reset = options?.onVisualReset;
       if (reset !== undefined) {
         void Promise.resolve().then(() => {
           try {
-            reset();
+            if (key === undefined) {
+              reset();
+            } else {
+              reset(key);
+            }
           } catch {
             /* a host callback must never break capture */
           }
@@ -206,7 +226,7 @@ export function createChunkCaptureStore(
       // the loss would buy nothing, so keep the in-window logs and let the cap be a soft bound. (Without a visual part
       // the old rule stands: the newest, oversized record is kept and the history before it goes.)
       if (
-        visualPart !== undefined &&
+        openVisual.size > 0 &&
         totalBytes - closedData.reduce((sum, part) => sum + part.byteSize, 0) > maxDataSizeBytes
       ) {
         break;
@@ -219,10 +239,12 @@ export function createChunkCaptureStore(
   // before the window start (the BASE the window's first records depend on) and everything after it, even though it is
   // older than the window; export trims what falls outside. No such part (no anchor recorded, or the only one is
   // newer) evicts as plain time.
-  const evictByTime = (lane: Lane, nowMs: number): void => {
+  const evictByTime = (lane: Lane, nowMs: number, key?: string): void => {
     const cutting = nowMs - maxRecordingTimeMs - PART_DURATION_MS;
     const windowStart = nowMs - maxRecordingTimeMs;
-    const laneParts = parts.filter((part) => part.lane === lane);
+    const laneParts = parts.filter(
+      (part) => part.lane === lane && (lane === 'data' || part.key === key),
+    );
     let evictable = laneParts.length;
     if (lane === 'visual') {
       for (let i = laneParts.length - 1; i >= 0; i--) {
@@ -246,7 +268,7 @@ export function createChunkCaptureStore(
 
   return {
     add(record: StoredEntry): void {
-      const part = partFor(VISUAL_TYPES.has(record.type) ? 'visual' : 'data');
+      const part = partFor(record);
       const size = backend.appendEntry(part.ref, record);
       part.byteSize += size;
       part.count += 1;
@@ -263,21 +285,29 @@ export function createChunkCaptureStore(
     tick(nowMs: number): void {
       dataPart.end = nowMs;
       backend.closePart(dataPart.ref, nowMs, dataPart.byteSize);
-      if (visualPart !== undefined) {
-        visualPart.end = nowMs;
-        backend.closePart(visualPart.ref, nowMs, visualPart.byteSize);
-        visualPart = undefined;
+      for (const open of openVisual.values()) {
+        open.end = nowMs;
+        backend.closePart(open.ref, nowMs, open.byteSize);
       }
+      openVisual.clear();
       dataPart = openNewPart(nowMs, 'data');
       // Evict closed parts whose end is outside the window (keep one extra part, Android parity).
       evictByTime('data', nowMs);
-      evictByTime('visual', nowMs);
+      // Each visual source keeps the base ITS first in-window records depend on.
+      const keys = new Set(parts.filter((part) => part.lane === 'visual').map((part) => part.key));
+      for (const key of keys) {
+        evictByTime('visual', nowMs, key);
+      }
     },
 
     snapshot(): CaptureSnapshot {
       // Freeze each in-window part with its CURRENT entry count — the boundary that keeps post-snapshot
       // captures (to the still-open part) out of the frozen view. The backend isolates the read.
-      const frozen: FrozenPart[] = parts.map((part) => ({ ref: part.ref, count: part.count }));
+      const frozen: FrozenPart[] = parts.map((part) => ({
+        ref: part.ref,
+        count: part.count,
+        ...(part.key !== undefined ? { lane: part.key } : {}),
+      }));
       const end = clock.wallNow();
       const range = { start: Math.min(Math.max(end - maxRecordingTimeMs, epoch), end), end };
       return withTimeRange(backend.snapshot(frozen), range);
@@ -287,7 +317,7 @@ export function createChunkCaptureStore(
       backend.removeGeneration(generation);
       parts = [];
       totalBytes = 0;
-      visualPart = undefined;
+      openVisual.clear();
       epoch = clock.wallNow();
       dataPart = openNewPart(epoch, 'data');
     },

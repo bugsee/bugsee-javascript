@@ -1741,4 +1741,29 @@ describe('createIdbChunkBackend — stream() reads one part at a time', () => {
     expect(await pending).toEqual([]);
     expect(reads).toEqual([dataPrefixFor(5, 0)]);
   });
+
+  it("attaches the frozen part's lane to the records it reads back", async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 0);
+    b.appendEntry(ref(5, 0), rec('w', 'replay', 0));
+    b.openPart(ref(5, 1), 0);
+    b.appendEntry(ref(5, 1), rec('u', 'replay', 0));
+    await b.flush?.();
+    const snap = b.snapshot([
+      { ref: ref(5, 0), count: 1, lane: 'win-3' },
+      { ref: ref(5, 1), count: 1 },
+    ]);
+    const seen: Array<[string, string | undefined]> = [];
+    for await (const r of snap.stream()) {
+      seen.push([r.serialized, r.lane]);
+    }
+    expect(seen).toEqual([
+      ['w', 'win-3'],
+      ['u', undefined],
+    ]);
+    const drained = (
+      await b.snapshot([{ ref: ref(5, 0), count: 1, lane: 'win-3' }]).drainAll()
+    ).get('replay');
+    expect(drained?.[0]?.lane).toBe('win-3');
+  });
 });
