@@ -252,6 +252,14 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
       return () => timers.clearTimeout(handle);
     });
   const report = (error: unknown): void => reportGuarded(options.onError, error);
+  // `work` settles with its own result, or the call fails once `ms` have passed (the work itself cannot be cancelled).
+  const bounded = <T>(work: Promise<T>, ms: number, what: string): Promise<T> => {
+    let cancel: (() => void) | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      cancel = after(ms, () => reject(new Error(`${what} did not answer in ${ms} ms`)));
+    });
+    return Promise.race([work, timeout]).finally(() => cancel?.());
+  };
   // Per PHYSICAL display (its key); `id` is the number it has now, refreshed every tick.
   const rings = new Map<string | number, { id: number; frames: VideoFrame[] }>();
   let handle: unknown;
@@ -265,20 +273,15 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
   ): Promise<Array<{ bytes: Uint8Array; bounds: Rect }>> => {
     const grabbed = await Promise.all(
       layers.map(async (layer) => {
-        let cancel: (() => void) | undefined;
         try {
           // A window that never answers must not hold the whole display (and, through the tick, every display) hostage.
-          const timeout = new Promise<never>((_, reject) => {
-            cancel = after(layerTimeoutMs, () =>
-              reject(new Error(`window capture did not answer in ${layerTimeoutMs} ms`)),
-            );
-          });
-          return { bytes: await Promise.race([layer.capture(), timeout]), bounds: layer.bounds };
+          return {
+            bytes: await bounded(layer.capture(), layerTimeoutMs, 'window capture'),
+            bounds: layer.bounds,
+          };
         } catch (error) {
           report(error);
           return undefined; // one window failing does not cost the display its frame
-        } finally {
-          cancel?.();
         }
       }),
     );
@@ -296,7 +299,8 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
       if (layers.length === 0) {
         return;
       }
-      const bytes = await options.compose(display, layers);
+      // A compositor that never settles must not keep the layers (and this display's turn) for ever either.
+      const bytes = await bounded(options.compose(display, layers), stuckMs, 'compose');
       if (started !== epoch || mine !== token) {
         return; // cleared (blackout) or abandoned while this frame was in flight
       }

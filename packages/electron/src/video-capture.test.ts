@@ -695,7 +695,40 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0', '1']);
   });
 
-  it('cancels the capture timer of a window that answered in time', async () => {
+  it('a compose that never answers is abandoned after stuckMs: that display loses the frame, the other one records', async () => {
+    const errors: unknown[] = [];
+    const s = fakeScheduler();
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    const source = createDisplayVideoSource({
+      displays: () => [
+        { id: 0, bounds: rect(0, 0, 10, 10) },
+        { id: 1, bounds: rect(10, 0, 10, 10) },
+      ],
+      layers: (display) => [
+        { bounds: display.bounds, capture: async () => new Uint8Array([display.id]) },
+      ],
+      compose: (display) =>
+        display.id === 0 ? new Promise<Uint8Array>(() => {}) : Promise.resolve(new Uint8Array([5])),
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => 1000,
+      stuckMs: 4000,
+      after: (ms, fn) => {
+        timers.push({ ms, fire: fn });
+        return () => {};
+      },
+      onError: (e) => errors.push(e),
+    });
+    source.start();
+    const ticking = s.tick();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    for (const t of timers.filter((x) => x.ms === 4000)) t.fire(); // the compose timers (the capture timers are layerTimeoutMs)
+    await ticking;
+    expect(errors).toHaveLength(1);
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['1']);
+  });
+
+  it('cancels the capture timer and the compose timer of work that answered in time', async () => {
     const s = fakeScheduler();
     const cancelled: number[] = [];
     let n = 0;
@@ -713,7 +746,7 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     });
     source.start();
     await s.tick();
-    expect(cancelled).toEqual([0]);
+    expect(cancelled).toEqual([0, 1]); // the window capture's timer, then the compose's
   });
 
   it('a display whose last window left gives up the id another display now holds', async () => {

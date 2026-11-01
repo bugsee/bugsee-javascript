@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FileStreamEncoder, LaunchRecoveryOptions } from '@bugsee/core';
@@ -47,12 +47,22 @@ const fakeProcess = (): NodeRuntime =>
   }) as unknown as NodeRuntime;
 
 const clients: ReturnType<typeof launch>[] = [];
+const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.stop(0)));
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
   vi.mocked(runLaunchRecovery).mockClear();
   vi.mocked(recoverInstances).mockClear();
   delete (globalThis as { __BUGSEE__?: unknown }).__BUGSEE__;
 });
+
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'bugsee-recovery-enc-'));
+  dirs.push(dir);
+  return dir;
+};
 
 const options = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions => ({
   process: fakeProcess(),
@@ -61,7 +71,7 @@ const options = (over: Partial<BugseeLaunchOptions> = {}): BugseeLaunchOptions =
   systemMetricsSampler: () => [],
   captureNetwork: false,
   detectCrashes: false,
-  dataDir: mkdtempSync(join(tmpdir(), 'bugsee-recovery-enc-')),
+  dataDir: tempDir(),
   ...over,
 });
 

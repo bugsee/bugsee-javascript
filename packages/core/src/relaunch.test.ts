@@ -119,6 +119,10 @@ describe('relaunchWith — options reset to defaults, integration seams kept', (
         'captureStore',
         'bundleStore',
         'onError',
+        // a relaunch calls the platform launch, not launchMain: an encoder the host built must survive it, or the replay
+        // goes back to one merged member
+        'fileEncoders',
+        'streamEncoders',
       ]),
     );
     for (const option of ['captureLogs', 'captureNetwork', 'replay', 'maxRecordingTime']) {

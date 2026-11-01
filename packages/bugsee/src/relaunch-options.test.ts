@@ -150,7 +150,6 @@ const RESET_OPTIONS: readonly string[] = [
   'onSpanProcessor',
   'onVisualReset', // wired by the host (the Electron main) to its control channel, released with the client
   'setupOtelProvider',
-  'streamEncoders', // supplied by the host (the Electron main builds its replay encoder); a relaunch's host re-passes it
   'bridge',
   'captureBreadcrumbs',
   'captureDiskSpace',

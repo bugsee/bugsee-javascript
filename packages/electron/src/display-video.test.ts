@@ -110,6 +110,25 @@ describe('electronDisplays', () => {
     expect(displays().map((d) => d.key)).toEqual([30, 70]); // window 1 now
   });
 
+  it("takes the key window from the tracker's keyWindowBounds when it is given (the source the displays trace uses)", () => {
+    // no window is focused now and none was observed: only the tracker knows the key window is on the right display
+    const displays = electronDisplays(screen, windowsOf(win(1, rect(0, 10, 100, 100))), () =>
+      rect(1100, 10, 100, 100),
+    );
+    expect(displays().map((d) => d.key)).toEqual([70, 30]);
+  });
+
+  it('falls back to its own key-window rule when keyWindowBounds says nothing or is not a rectangle', () => {
+    const own = windowsOf(win(1, rect(1100, 10, 100, 100)));
+    expect(electronDisplays(screen, own, () => undefined)().map((d) => d.key)).toEqual([70, 30]);
+    expect(electronDisplays(screen, own, () => 'nope')().map((d) => d.key)).toEqual([70, 30]);
+    expect(
+      electronDisplays(screen, own, () => {
+        throw new Error('tracker');
+      })().map((d) => d.key),
+    ).toEqual([70, 30]);
+  });
+
   it('without any window the lowest native id is display 0', () => {
     const displays = electronDisplays(screen, windowsOf());
     expect(displays().map((d) => [d.id, d.bounds.x])).toEqual([

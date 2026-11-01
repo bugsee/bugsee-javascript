@@ -37,9 +37,27 @@ const intersectionArea = (a: Rect, b: Rect): number => {
  * (`screen.getDisplayMatching`), the others follow in ascending native id. The key window is the focused one, else the one
  * that was focused last, else the first created visible window, else the first created (the application tracker's rule).
  */
+const asRect = (value: unknown): Rect | undefined => {
+  const r = value as Partial<Record<keyof Rect, unknown>> | null | undefined;
+  return typeof r === 'object' &&
+    r !== null &&
+    typeof r.x === 'number' &&
+    typeof r.y === 'number' &&
+    typeof r.width === 'number' &&
+    typeof r.height === 'number'
+    ? (r as Rect)
+    : undefined;
+};
+
+/**
+ * `keyWindowBounds` is the application tracker's key window (the source the `displays` trace reads on every focus event); give
+ * it when there is one, so lane 0 and trace id 0 cannot disagree. Without it (or when it says nothing) the adapter applies the
+ * same rule over the windows it sees, remembering the last focused one between ticks.
+ */
 export function electronDisplays(
   screen: ScreenLike,
   BrowserWindow: ElectronBrowserWindowLike,
+  keyWindowBounds?: () => unknown,
 ): () => DisplayInfo[] {
   let lastFocused: WindowLike | undefined;
   const usable = (window: WindowLike): boolean => window.isDestroyed?.() !== true;
@@ -56,7 +74,13 @@ export function electronDisplays(
       (lastFocused !== undefined && usable(lastFocused) ? lastFocused : undefined) ??
       created.find((window) => window.isVisible()) ??
       created[0];
-    const bounds = key?.getBounds();
+    let tracked: Rect | undefined;
+    try {
+      tracked = asRect(keyWindowBounds?.());
+    } catch {
+      tracked = undefined; // a throwing tracker: use our own rule
+    }
+    const bounds = tracked ?? key?.getBounds();
     const areas = native.map((display) =>
       bounds === undefined ? 0 : intersectionArea(display.bounds, bounds),
     );
