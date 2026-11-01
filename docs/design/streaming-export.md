@@ -304,10 +304,13 @@ parts; live heap above the idle store, forced GC every 200 records, sampled insi
 synchronous):** buffered export +77 MB; streaming export with the original read +33 MB; with the part-by-part read +21 MB.
 The original `snapshot().stream()` read EVERY part into one array before yielding the first record, so the window sat in the
 heap decoded; it now reads and decodes one part at a time (`readParts` in `idb-chunk-backend.ts`), and the store side alone costs
-+1.7 MB (iterating the raw stream). The remaining ~20 MB is in the assembler, not the store (the in-memory store measures +31 MB
-in the same harness); it has not been bisected, and it is not the +4 MB of the node file-store figure above, which came from a
-different harness, so the two numbers are not comparable. A failure in a later part now surfaces after earlier parts were served
-(the export's memory-build fallback handles it as before). Harness: `scratchpad/idbbench` (not committed).
++1.7 MB (iterating the raw stream). The remaining ~21 MB was bisected (same harness, one type at a time, streaming): replay +11.9 MB, logs +6.2, network +5.2, an empty
+export +0.9 (fixed cost). The peak is the same with the Blob sink as with the memory sink, so it is not the output body: it falls
+on the window's largest event, a 4.7 MB rrweb FullSnapshot that the reifier parses into an object graph (about 12 MB) before the
+stream encoder writes it back out. That is inherent to reifying one record at a time; a pass-through of the serialized string for
+replay would remove it and is not done (the cost is transient, one event, against +77 MB buffered). The node file-store figure
+above (+4 MB) came from a different harness, so the two numbers are not comparable. A failure in a later part now surfaces after
+earlier parts were served (the export's memory-build fallback handles it as before). Harness: `scratchpad/idbbench` (not committed).
 
 Limit of the measurement: the claim "the durable window is not in the
 heap" holds while IndexedDB accepts writes: records it refuses (quota, `AbortError`) are served from memory, still bounded by the
