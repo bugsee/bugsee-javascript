@@ -1188,4 +1188,22 @@ describe('assembleBundleStream — one stream-encoded member per visual source l
     const files = members(await bundle.body.bytes());
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toEqual(['l', 'm']);
   });
+
+  it("keeps the type's own manifest attrs next to the window (a laned video keeps its format)", async () => {
+    const encoder = { begin: () => ({ write: () => [strToU8('v')], end: () => [] }) };
+    const video = Object.assign(new CaptureDataEntryBase('video', NOW3 - 100, 'f'), { lane: 'd1' });
+    const bundle = await assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+      from([video]),
+      context({ streamEncoders: { video: encoder as never } }),
+    );
+    const files = members(await bundle.body.bytes());
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+      files: Array<{ type: string; attrs?: Record<string, unknown> }>;
+    };
+    expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({
+      format: 'webm',
+      window: 'd1',
+    });
+  });
 });

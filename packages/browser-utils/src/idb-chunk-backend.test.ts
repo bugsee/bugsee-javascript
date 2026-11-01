@@ -1766,4 +1766,36 @@ describe('createIdbChunkBackend — stream() reads one part at a time', () => {
     ).get('replay');
     expect(drained?.[0]?.lane).toBe('win-3');
   });
+
+  it('a release after the first part was served ends the stream there, without reading the next', async () => {
+    const { b, reads, frozen } = await setup();
+    const snap = b.snapshot(frozen.slice(0, 2));
+    const iterator = snap.stream();
+    await iterator.next(); // a0
+    await iterator.next(); // b0: part 0 is served
+    snap.release();
+    expect((await iterator.next()).done).toBe(true);
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+  });
+
+  it('a read that fails in a later part throws there, after the earlier part was served', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) =>
+        prefix === dataPrefixFor(5, 1)
+          ? Promise.reject(new Error('part 1 unreadable'))
+          : inner.readPrefix(prefix),
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 2);
+    }
+    await b.flush?.();
+    const iterator = b.snapshot([0, 1].map((n) => ({ ref: ref(5, n), count: 1 }))).stream();
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a0' });
+    await expect(iterator.next()).rejects.toThrow('part 1 unreadable');
+  });
 });

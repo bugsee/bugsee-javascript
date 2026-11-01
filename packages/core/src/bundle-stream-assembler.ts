@@ -323,10 +323,11 @@ async function buildInto(
       stream.file.push(new Uint8Array(0), true);
     }
     const name = stream?.name ?? fileNameForType(type);
+    const entry = manifestEntryForType(type);
     files.push({
-      ...manifestEntryForType(type),
+      ...entry,
       filename: name,
-      ...(stream?.lane !== undefined ? { attrs: { window: stream.lane } } : {}),
+      ...(stream?.lane !== undefined ? { attrs: { ...entry.attrs, window: stream.lane } } : {}),
     });
     dataNames.push(name);
     const member = streamed.get(key);

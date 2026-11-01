@@ -41,7 +41,10 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 
 Known limits of what shipped: a recovered prior generation (crash recovery) exports as one unkeyed replay, because part
 meta does not persist the lane; the viewer still reads only `replay.bin`, which is the first window to produce a base, not
-necessarily the key window.
+necessarily the key window. A window that closes leaves its last base segment in the store until the byte cap sheds it (it is
+the oldest visual data, so it goes first): time eviction keeps the newest base per lane, and an idle window is
+indistinguishable from a closed one without a signal from main, so the lane is not dropped on `rendererGone` yet (open:
+a store `dropLane`). A stream-encoded lane keeps the type's own manifest attrs (a laned video keeps `format`).
 
 Open (needs the viewer/mobile side): the exact secondary member names and manifest attrs are chosen here (`replay.<n>.bin`,
 `attrs.window`), not taken from a mobile convention; they must be confirmed against the viewer before the viewer reads them.

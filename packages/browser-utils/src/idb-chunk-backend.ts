@@ -544,6 +544,9 @@ export function createIdbChunkBackend(
           );
         }
         for (const [index, { ref, count, lane }] of frozen.entries()) {
+          if (released) {
+            return; // the consumer let go between parts: read nothing more
+          }
           const records = await until(
             withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
           );
