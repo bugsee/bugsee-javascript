@@ -24,7 +24,7 @@ export function createMemoryChunkBackend(options?: MemoryChunkBackendOptions): C
   return {
     generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       data.set(key(ref), []);
       meta.set(key(ref), {
         generation: ref.generation,
@@ -32,6 +32,7 @@ export function createMemoryChunkBackend(options?: MemoryChunkBackendOptions): C
         start,
         end: undefined,
         byteSize: 0,
+        ...(lane !== undefined ? { lane } : {}),
       });
     },
 

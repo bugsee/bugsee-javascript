@@ -117,7 +117,11 @@ export function createChunkCaptureStore(
   const openNewPart = (start: number, lane: Lane, key?: string): IndexedPart => {
     const ref: PartRef = { generation, number: nextNumber };
     nextNumber += 1;
-    backend.openPart(ref, start);
+    if (key === undefined) {
+      backend.openPart(ref, start);
+    } else {
+      backend.openPart(ref, start, key);
+    }
     const part: IndexedPart = {
       ref,
       start,

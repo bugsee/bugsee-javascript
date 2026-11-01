@@ -110,6 +110,8 @@ export interface DiskPressureBackendOptions {
 
 interface PartState {
   start: number;
+  /** The part's visual source lane, passed on to the medium when the part is opened there. */
+  lane?: string;
   /** Whether the durable medium has this part (openPart was forwarded). */
   opened: boolean;
   durableCount: number;
@@ -193,7 +195,11 @@ export function withDiskPressure(
 
   const ensureOpened = (ref: PartRef, state: PartState): void => {
     if (!state.opened) {
-      durable.openPart(ref, state.start);
+      if (state.lane === undefined) {
+        durable.openPart(ref, state.start);
+      } else {
+        durable.openPart(ref, state.start, state.lane);
+      }
       state.opened = true;
     }
   };
@@ -440,11 +446,12 @@ export function withDiskPressure(
   const wrapped: ChunkBackend = {
     generation: durable.generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       shadow.openPart(ref, start);
       currentRef = ref;
       const state: PartState = {
         start,
+        ...(lane !== undefined ? { lane } : {}),
         opened: false,
         durableCount: 0,
         shadowCount: 0,

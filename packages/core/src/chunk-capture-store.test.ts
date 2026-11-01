@@ -587,4 +587,17 @@ describe('createChunkCaptureStore — one visual lane per source key (per-window
     store.snapshot().release();
     expect((seen[0] ?? []).map((part) => part.lane)).toEqual([undefined, 'a', undefined]);
   });
+
+  it('opens a visual part on the backend with its lane, and every other part without one', () => {
+    const inner = createMemoryChunkBackend();
+    const opened: unknown[][] = [];
+    const store = createChunkCaptureStore(
+      { ...inner, openPart: (...args) => (opened.push(args.slice(2)), inner.openPart(...args)) },
+      { clock: clockAt(0), maxRecordingTimeMs: 1_000_000 },
+    );
+    store.add(rec('a', 'a0', 0, true));
+    store.add(rec(undefined, 'u0', 0, true));
+    // [0] is the store's own first data part; then a's part, then the unkeyed visual part
+    expect(opened).toEqual([[], ['a'], []]);
+  });
 });

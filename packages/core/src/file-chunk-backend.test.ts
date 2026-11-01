@@ -255,3 +255,16 @@ describe('createFileChunkBackend — visual source lane', () => {
     ]);
   });
 });
+
+describe('createFileChunkBackend — part lane in the durable meta', () => {
+  it('openPart(lane) is listed with its lane, open and after closePart; no lane lists none', async () => {
+    const b = createFileChunkBackend(createInMemoryChunkStorage(), { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(5, 1), 1);
+    expect((await b.listParts(5))[0]?.lane).toBe('win-3');
+    b.closePart(ref(5, 0), 2, 7);
+    const parts = await b.listParts(5);
+    expect(parts[0]).toMatchObject({ number: 0, end: 2, byteSize: 7, lane: 'win-3' });
+    expect(parts[1]).not.toHaveProperty('lane');
+  });
+});

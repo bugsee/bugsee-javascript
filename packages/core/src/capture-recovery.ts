@@ -177,6 +177,7 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
         const frozen: FrozenPart[] = parts.map((part) => ({
           ref: { generation, number: part.number },
           count: Number.MAX_SAFE_INTEGER, // recover the whole part
+          ...(part.lane !== undefined ? { lane: part.lane } : {}),
         }));
         // Each marker streams the generation through its own snapshot: nothing is held between incidents, so a window
         // that was cap-sized costs one live export's memory, not the whole window parsed.

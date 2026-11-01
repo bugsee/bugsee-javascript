@@ -27,6 +27,7 @@ interface StoredMeta {
   readonly s: number;
   readonly e: number | null;
   readonly b: number;
+  readonly l?: string;
 }
 
 export interface FileChunkBackendOptions {
@@ -57,8 +58,15 @@ export function createFileChunkBackend(
     start: number,
     end: number | null,
     byteSize: number,
+    lane?: string,
   ): void => {
-    const meta: StoredMeta = { n: number, s: start, e: end, b: byteSize };
+    const meta: StoredMeta = {
+      n: number,
+      s: start,
+      e: end,
+      b: byteSize,
+      ...(lane !== undefined ? { l: lane } : {}),
+    };
     storage.write(gen, number, META_FILE, JSON.stringify(meta));
   };
 
@@ -72,7 +80,14 @@ export function createFileChunkBackend(
     if (raw !== undefined) {
       try {
         const m = JSON.parse(raw) as StoredMeta;
-        return { generation: gen, number, start: m.s, end: m.e ?? undefined, byteSize: m.b };
+        return {
+          generation: gen,
+          number,
+          start: m.s,
+          end: m.e ?? undefined,
+          byteSize: m.b,
+          ...(typeof m.l === 'string' ? { lane: m.l } : {}),
+        };
       } catch {
         // fall through to the derived default below
       }
@@ -83,9 +98,9 @@ export function createFileChunkBackend(
   return {
     generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       openStarts.set(startKey(ref), start);
-      writeMeta(ref.generation, ref.number, start, null, 0);
+      writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
@@ -98,9 +113,10 @@ export function createFileChunkBackend(
     },
 
     closePart(ref: PartRef, end: number, byteSize: number): void {
-      const start = openStarts.get(startKey(ref)) ?? readMeta(ref.generation, ref.number).start;
+      const known = readMeta(ref.generation, ref.number);
+      const start = openStarts.get(startKey(ref)) ?? known.start;
       openStarts.delete(startKey(ref));
-      writeMeta(ref.generation, ref.number, start, end, byteSize);
+      writeMeta(ref.generation, ref.number, start, end, byteSize, known.lane);
       // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
       // open-handle count bounded to the active chunk rather than the whole rolling window.
       storage.sealChunk?.(ref.generation, ref.number);

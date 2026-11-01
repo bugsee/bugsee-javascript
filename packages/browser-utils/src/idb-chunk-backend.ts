@@ -78,6 +78,7 @@ interface StoredMeta {
   readonly s: number;
   readonly e: number | null;
   readonly b: number;
+  readonly l?: string;
 }
 interface StoredData {
   readonly t: number;
@@ -345,6 +346,7 @@ export function createIdbChunkBackend(
   // leaves the map when its write lands, and with its part; what a crash recovers is, by definition, only what landed.
   const unlanded = new Map<string, Map<number, StoredEntry>>();
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
+  const openLanes = new Map<string, string>(); // chunkKey → visual lane, for the closePart meta rewrite
   const seqByChunk = new Map<string, number>(); // chunkKey → next data sequence number
 
   // Snapshot pinning: a part pinned by ≥1 live snapshot is not physically deleted until released.
@@ -362,12 +364,22 @@ export function createIdbChunkBackend(
     start: number,
     end: number | null,
     byteSize: number,
+    lane?: string,
   ): void => {
     // NOT a health signal (`write` false): a ~60-byte meta put succeeds on a medium that still refuses real records
     // (a per-origin quota, a data-full filesystem with free metadata), so counting it released the disk-pressure pin
     // on every tick. Only a successful DATA put (a record, or the pressure probe's record) says writes work again.
     enqueue(() =>
-      store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
+      store.put(
+        metaKey(gen, number),
+        enc({
+          n: number,
+          s: start,
+          e: end,
+          b: byteSize,
+          ...(lane !== undefined ? { l: lane } : {}),
+        }),
+      ),
     );
   };
 
@@ -416,6 +428,7 @@ export function createIdbChunkBackend(
               start: m.s,
               end: m.e ?? undefined,
               byteSize: m.b,
+              ...(typeof m.l === 'string' ? { lane: m.l } : {}),
             };
           })
           .sort((a, b) => a.number - b.number),
@@ -424,10 +437,13 @@ export function createIdbChunkBackend(
   return {
     generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       openStarts.set(chunkKey(ref), start);
+      if (lane !== undefined) {
+        openLanes.set(chunkKey(ref), lane);
+      }
       seqByChunk.set(chunkKey(ref), 0);
-      writeMeta(ref.generation, ref.number, start, null, 0);
+      writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
@@ -458,12 +474,15 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       const start = openStarts.get(key) ?? 0;
       openStarts.delete(key);
-      writeMeta(ref.generation, ref.number, start, end, byteSize);
+      const lane = openLanes.get(key);
+      openLanes.delete(key);
+      writeMeta(ref.generation, ref.number, start, end, byteSize, lane);
     },
 
     removePart(ref: PartRef): void {
       const key = chunkKey(ref);
       openStarts.delete(key);
+      openLanes.delete(key);
       seqByChunk.delete(key);
       unlanded.delete(key); // a snapshot already holding the map keeps its own reference
       if ((pins.get(key) ?? 0) > 0) {

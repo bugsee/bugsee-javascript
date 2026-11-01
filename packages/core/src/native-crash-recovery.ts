@@ -110,6 +110,7 @@ export async function recoverNativeCrashes(
     const frozen: FrozenPart[] = parts.map((part) => ({
       ref: { generation: marker.generation, number: part.number },
       count: Number.MAX_SAFE_INTEGER, // recover the whole part
+      ...(part.lane !== undefined ? { lane: part.lane } : {}),
     }));
 
     for (const dump of dumps) {

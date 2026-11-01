@@ -868,3 +868,38 @@ describe('createMarkerAwareBundleReplay', () => {
     });
   });
 });
+
+describe('recoverReports — a prior generation with several windows', () => {
+  it('rebuilds one replay member per window from the lanes persisted in the part meta', async () => {
+    const storage = createInMemoryChunkStorage();
+    const seed = createFileChunkBackend(storage, { generation: 100, cleanOtherGenerations: false });
+    const replay = (timestamp: number, data: string): StoredEntry => ({
+      type: 'replay',
+      timestamp,
+      serialized: JSON.stringify({ timestamp, data }),
+    });
+    seed.openPart(ref(100, 0), 1, 'w1');
+    seed.appendEntry(ref(100, 0), replay(1, 'a1'));
+    seed.closePart(ref(100, 0), 2, 0);
+    seed.openPart(ref(100, 1), 1, 'w2');
+    seed.appendEntry(ref(100, 1), replay(1, 'b1'));
+    seed.closePart(ref(100, 1), 2, 0);
+    const encoder = {
+      begin: () => ({
+        write: (e: { data: unknown }) => [Uint8Array.from(String(e.data), (c) => c.charCodeAt(0))],
+        end: () => [],
+      }),
+    };
+    const pipe = fakePipeline();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers: fakeMarkers([marker('inc1', 100)]),
+      context: () => ({ ...baseContext(), streamEncoders: { replay: encoder } }),
+      uploadPipeline: pipe,
+    });
+    const files = unzipSync((await (pipe.bundles[0] as Bundle).body) as Uint8Array);
+    expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('a1');
+    expect(strFromU8(files['replay.1.bin'] as Uint8Array)).toBe('b1');
+  });
+});

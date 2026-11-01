@@ -1926,3 +1926,21 @@ describe('disk pressure — visual source lanes survive both halves', () => {
     ]);
   });
 });
+
+describe('disk pressure — the lane reaches the medium meta, also for a part opened late', () => {
+  it('persists a window lane for a part opened immediately and for one whose medium open was deferred', async () => {
+    const { storage, pressure, store } = setup();
+    store.add({ ...rec('replay', 1, 'now'), lane: 'a' });
+    pressure.observe(5 * MB); // low: the visual lane stays off the medium, so its part is not opened there yet
+    store.tick(2000);
+    store.add({ ...rec('replay', 3, 'late'), lane: 'b' });
+    pressure.observe(30 * MB); // pressure over: the next durable write opens the deferred part
+    store.tick(3000);
+    store.add({ ...rec('replay', 4, 'after'), lane: 'b' });
+    const lanes = (await createFileChunkBackend(storage, { generation: 7 }).listParts(7)).map(
+      (p) => p.lane,
+    );
+    expect(lanes).toContain('a');
+    expect(lanes.filter((l) => l === 'b').length).toBeGreaterThan(0);
+  });
+});

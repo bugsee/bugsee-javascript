@@ -441,3 +441,24 @@ describe('recoverNativeCrashes', () => {
     expect(source.claims).toEqual(['main.dmp']);
   });
 });
+
+describe('recoverNativeCrashes — windows of the crashed session', () => {
+  it('freezes each part with the lane the crashed run persisted for it', async () => {
+    const fake = fakeBackend();
+    const lanes: PartMeta[] = [
+      { generation: 0, number: 0, start: 0, end: 1, byteSize: 1, lane: 'w1' },
+      { generation: 0, number: 1, start: 0, end: 1, byteSize: 1 },
+    ];
+    const backend = { ...fake.backend, listParts: (): PartMeta[] => lanes };
+    const { pipeline } = fakePipeline();
+    await recoverNativeCrashes({
+      backend,
+      marker: marker(),
+      source: fakeSource([dump('main.dmp', 1)]),
+      context: baseContext,
+      uploadPipeline: pipeline,
+      generateId: () => 'nc-1',
+    });
+    expect((fake.snapshotCalls[0] ?? []).map((part) => part.lane)).toEqual(['w1', undefined]);
+  });
+});

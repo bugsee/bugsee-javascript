@@ -21,7 +21,7 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 |---|---|
 | `StoredEntry` | optional out-of-band `lane?: string` (a source key: the window id as text). Routing needs no deserialize. Absent = the single unkeyed lane (every runtime but Electron main; behavior unchanged). |
 | Chunk store | a visual lane per key: its own open part, its own base accounting. Time eviction keeps the newest anchored part at or before the window start PER KEY. Byte-cap shedding sheds the lane that holds the OLDEST visual bytes; `onVisualReset(lane)` names the lane whose bases are all gone. |
-| `FrozenPart` / backends | `FrozenPart.lane` carries the key; every backend attaches it to the records it yields (memory keeps it on the record; file, IndexedDB and the disk-pressure wrapper attach it from the frozen part). Part meta is NOT extended: a recovered prior generation exports as one unkeyed stream (documented limit). |
+| `FrozenPart` / backends | `FrozenPart.lane` carries the key; every backend attaches it to the records it yields (memory keeps it on the record; file, IndexedDB and the disk-pressure wrapper attach it from the frozen part). Part meta persists the lane (`openPart(ref, start, lane?)`; `PartMeta.lane`; file meta `l`, IndexedDB meta `l`), so both recovery paths rebuild one member per window. |
 | `CaptureDataEntry` | `lane?: string` copied from the stored record by the reifier. |
 | Export | members are grouped by `(type, lane)`. The first lane (by first record) keeps the canonical name (`replay.bin`); later lanes get `replay.<n>.bin` with a manifest entry `{type: 'replay', attrs: {window: <lane>}}`. Each member has its own stream encoder session (orphan trim and clamp are per window). A viewer that reads only `replay.bin` still gets a coherent single-window replay. |
 | Electron main | tags each renderer record with its window id as `lane`; `onVisualReset(lane)` restarts ONLY that window's recorder (`checkout` carries the window id; the gate paces per lane). |
@@ -39,12 +39,17 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
   no budget); an unkeyed reset still asks everyone.
 * **L4 open** pixel video per display (compositor in main), and viewer support for secondary members.
 
-Known limits of what shipped: a recovered prior generation (crash recovery) exports as one unkeyed replay, because part
-meta does not persist the lane; the viewer still reads only `replay.bin`, which is the first window to produce a base, not
+* **L5 DONE 2026-11-01** the lane is persisted in the part meta (all backends and the disk-pressure wrapper), and capture
+  recovery and native-crash recovery freeze each part with it: a crashed multi-window session rebuilds one replay per window.
+
+Known limits of what shipped: the viewer still reads only `replay.bin`, which is the first window to produce a base, not
 necessarily the key window. A window that closes leaves its last base segment in the store until the byte cap sheds it (it is
 the oldest visual data, so it goes first): time eviction keeps the newest base per lane, and an idle window is
 indistinguishable from a closed one without a signal from main, so the lane is not dropped on `rendererGone` yet (open:
 a store `dropLane`). A stream-encoded lane keeps the type's own manifest attrs (a laned video keeps `format`).
 
-Open (needs the viewer/mobile side): the exact secondary member names and manifest attrs are chosen here (`replay.<n>.bin`,
-`attrs.window`), not taken from a mobile convention; they must be confirmed against the viewer before the viewer reads them.
+Viewer (checked 2026-11-01, `viewer/src/app/features/recording/shared/recording-session.service.ts`): it takes
+`files.find(type === 'replay')`, i.e. only the FIRST replay entry of the manifest, so extra windows are ignored today and
+the shown window is the first in manifest order. For video it already maps EVERY `video` entry and reads
+`attrs.displayId` (`manifestEntryDisplayId`; legacy `display_id`; missing = 0), so the pixel half uses `attrs.displayId`.
+Replay members use `attrs.window` (the viewer has no window concept yet): a viewer change is needed to pick or switch windows.
