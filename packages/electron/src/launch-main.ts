@@ -130,7 +130,8 @@ import type { VideoCaptureSource } from './video-capture';
 type NodeLaunch = typeof launchCore;
 
 /** Opt-in pixel-capture video. The app supplies a source built with its Electron/DOM specifics (e.g.
- *  `createCapturePageVideoSource` over `webContents.capturePage`, and/or a `MediaRecorder` source — they can
+ *  `createCapturePageVideoSource` over `webContents.capturePage`, `createDisplayVideoSource` (one composed video per display),
+ *  and/or a `MediaRecorder` source — they can
  *  be composed into one source). rrweb DOM-replay stays the DEFAULT and rides the renderer streaming path. */
 export interface VideoLaunchOptions {
   /** The pixel-video capture source. */

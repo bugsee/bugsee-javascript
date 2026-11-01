@@ -163,3 +163,149 @@ export function createMediaRecorderVideoSource(
     },
   };
 }
+
+/** A rectangle in desktop (DIP) coordinates. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One display: its id (`displays` trace order: 0 = the key window's display) and its desktop bounds. */
+export interface DisplayInfo {
+  id: number;
+  bounds: Rect;
+}
+
+/** One visible window that overlaps a display: where it is, and a grab of its own pixels. */
+export interface WindowLayer {
+  bounds: Rect;
+  capture: () => Promise<Uint8Array>;
+}
+
+export interface DisplayVideoSourceOptions {
+  /** The displays present now (real: `screen.getAllDisplays()`). */
+  displays: () => readonly DisplayInfo[];
+  /** The visible windows that overlap `display`, BACK TO FRONT (real: the app's `BrowserWindow`s by z-order). */
+  layers: (display: DisplayInfo) => readonly WindowLayer[];
+  /**
+   * Paint the windows onto one frame the size of the display and encode it (real: an offscreen canvas or an image
+   * library; an injected seam, like `encode`). Layers arrive back to front with their grabbed bytes and bounds.
+   */
+  compose: (
+    display: DisplayInfo,
+    layers: ReadonlyArray<{ bytes: Uint8Array; bounds: Rect }>,
+  ) => Promise<Uint8Array>;
+  /** Mux one display's frame ring into the container bytes (as for {@link CapturePageVideoSourceOptions}). */
+  encode: (frames: readonly VideoFrame[], fps: number) => Uint8Array;
+  scheduler: Scheduler;
+  /** Frames per second (default 1). */
+  fps?: number;
+  /** Max frames retained PER DISPLAY (drop-oldest). Default 300. */
+  maxFrames?: number;
+  now: () => number;
+  /** Sink for a failed grab or compose — the timer never throws. */
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * A MAIN-process pixel-video source that follows the mobile model: the windows of one display are composed into ONE frame, and
+ * a report carries one `video` per display (entry lane = the display id; the bundle names the member and sets
+ * `attrs.displayId`). A display with no visible window records nothing for that tick.
+ */
+export function createDisplayVideoSource(options: DisplayVideoSourceOptions): VideoCaptureSource {
+  const fps = options.fps ?? 1;
+  const maxFrames = options.maxFrames ?? 300;
+  const rings = new Map<number, VideoFrame[]>();
+  let handle: unknown;
+  let epoch = 0; // bumped by clear(): a frame that began before it is discarded
+  let busy = false; // a slow compose must not overlap the next tick
+
+  const grab = async (
+    layers: readonly WindowLayer[],
+  ): Promise<Array<{ bytes: Uint8Array; bounds: Rect }>> => {
+    const grabbed = await Promise.all(
+      layers.map(async (layer) => {
+        try {
+          return { bytes: await layer.capture(), bounds: layer.bounds };
+        } catch (error) {
+          options.onError?.(error);
+          return undefined; // one window failing does not cost the display its frame
+        }
+      }),
+    );
+    return grabbed.filter((layer) => layer !== undefined);
+  };
+
+  const frameOf = async (display: DisplayInfo, started: number): Promise<void> => {
+    try {
+      const layers = await grab(options.layers(display));
+      if (layers.length === 0) {
+        return;
+      }
+      const bytes = await options.compose(display, layers);
+      if (started !== epoch) {
+        return;
+      }
+      const ring = rings.get(display.id) ?? [];
+      rings.set(display.id, ring);
+      ring.push({ timestamp: options.now(), bytes });
+      if (ring.length > maxFrames) {
+        ring.shift();
+      }
+    } catch (error) {
+      options.onError?.(error);
+    }
+  };
+
+  const tick = async (): Promise<void> => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    const started = epoch;
+    try {
+      await Promise.all(options.displays().map((display) => frameOf(display, started)));
+      // A display that is gone keeps its frames only as long as the ring covers: after that nothing of it is in the window.
+      const cutoff = options.now() - (maxFrames / fps) * 1000;
+      for (const [id, ring] of rings) {
+        if ((ring[ring.length - 1]?.timestamp ?? 0) < cutoff) {
+          rings.delete(id);
+        }
+      }
+    } finally {
+      busy = false;
+    }
+  };
+
+  return {
+    start(): void {
+      if (handle !== undefined) {
+        return;
+      }
+      // The promise is returned (it never rejects: every failure is caught inside), so a scheduler or a test can await a tick.
+      handle = options.scheduler.setInterval(() => tick(), Math.round(1000 / fps));
+    },
+    stop(): void {
+      if (handle !== undefined) {
+        options.scheduler.clearInterval(handle);
+        handle = undefined;
+      }
+    },
+    clear(): void {
+      epoch += 1;
+      rings.clear();
+    },
+    async snapshot(now: number): Promise<CaptureDataEntry[]> {
+      return [...rings.entries()]
+        .filter(([, ring]) => ring.length > 0)
+        .sort(([a], [b]) => a - b)
+        .map(([id, ring]) => {
+          const entry = videoEntry(now, options.encode([...ring], fps));
+          entry.lane = String(id);
+          return entry;
+        });
+    },
+  };
+}

@@ -46,6 +46,17 @@ interface EncodedMember {
   name: string | undefined;
 }
 
+/**
+ * The manifest attrs that name a member's visual source. A pixel `video` is per DISPLAY: the viewer reads `attrs.displayId`
+ * (a number; absent = 0). Everything else (a window's replay) is `attrs.window`, and so is a video whose lane is not a number.
+ */
+const laneAttrs = (type: FileType, lane: string): Record<string, unknown> => {
+  const id = Number(lane);
+  return type === 'video' && lane !== '' && Number.isInteger(id) && id >= 0
+    ? { displayId: id }
+    : { window: lane };
+};
+
 /** `replay.bin` for the first member of a type, `replay.1.bin`, `replay.2.bin`, ... for the next ones. */
 const nthFileName = (type: FileType, index: number): string => {
   const base = fileNameForType(type);
@@ -215,6 +226,7 @@ async function buildInto(
   const order: string[] = []; // member keys: a type, or `type\0lane` for one visual source of a stream-encoded type
   const streamed = new Map<string, StreamMember>();
   const collected = new Map<string, unknown[]>(); // types with an injected encoder
+  const collectedOf = new Map<string, { type: FileType; lane: string | undefined }>(); // what each collected key holds
   const encoded = new Map<string, EncodedMember>(); // types with a stream encoder: one member per visual source lane
   const filesOfType = new Map<FileType, number>(); // members actually created per type (names the next one)
   const writeChunks = (member: EncodedMember, chunks: Uint8Array[]): void => {
@@ -244,9 +256,10 @@ async function buildInto(
       return; // before the window; types with an encoder (the replay) are clamped by it instead
     }
     const streamEncoder = context.streamEncoders?.[type];
-    // Only a stream-encoded (reconstructed) type splits by source: every other type is one member whatever its lane.
-    const key =
-      streamEncoder !== undefined && entry.lane !== undefined ? `${type}\0${entry.lane}` : type;
+    // Only a type with an encoder (the reconstructed replay, the pixel video) splits by source, one member per lane: every
+    // other type is one member whatever its lane.
+    const splits = streamEncoder !== undefined || context.fileEncoders?.[type] !== undefined;
+    const key = splits && entry.lane !== undefined ? `${type}\0${entry.lane}` : type;
     if (!streamed.has(key) && !collected.has(key) && !encoded.has(key)) {
       order.push(key);
       if (streamEncoder !== undefined) {
@@ -259,6 +272,7 @@ async function buildInto(
         });
       } else if (context.fileEncoders?.[type] !== undefined) {
         collected.set(key, []);
+        collectedOf.set(key, { type, lane: entry.lane });
       } else {
         const file = new ZipDeflate(claim(fileNameForType(type)));
         zip.add(file);
@@ -314,7 +328,9 @@ async function buildInto(
   const dataNames: string[] = [];
   for (const key of order) {
     const stream = encoded.get(key);
-    const type = (stream?.type ?? key) as FileType;
+    const buffered = collectedOf.get(key);
+    const type = (stream?.type ?? buffered?.type ?? key) as FileType;
+    const lane = stream?.lane ?? buffered?.lane;
     if (stream !== undefined) {
       writeChunks(stream, stream.session.end());
       if (stream.file === undefined) {
@@ -322,12 +338,18 @@ async function buildInto(
       }
       stream.file.push(new Uint8Array(0), true);
     }
-    const name = stream?.name ?? fileNameForType(type);
+    let name = stream?.name;
+    if (name === undefined && buffered !== undefined) {
+      const index = filesOfType.get(type) ?? 0;
+      filesOfType.set(type, index + 1);
+      name = nthFileName(type, index);
+    }
+    name ??= fileNameForType(type);
     const entry = manifestEntryForType(type);
     files.push({
       ...entry,
       filename: name,
-      ...(stream?.lane !== undefined ? { attrs: { ...entry.attrs, window: stream.lane } } : {}),
+      ...(lane !== undefined ? { attrs: { ...entry.attrs, ...laneAttrs(type, lane) } } : {}),
     });
     dataNames.push(name);
     const member = streamed.get(key);
@@ -339,7 +361,7 @@ async function buildInto(
       const encode = (context.fileEncoders as NonNullable<typeof context.fileEncoders>)[type] as (
         payloads: unknown[],
       ) => Uint8Array;
-      addWhole(fileNameForType(type), encode(collected.get(key) as unknown[]));
+      addWhole(name, encode(collected.get(key) as unknown[]));
     }
   }
 

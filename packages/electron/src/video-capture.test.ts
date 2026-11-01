@@ -2,6 +2,7 @@ import type { Scheduler } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createCapturePageVideoSource,
+  createDisplayVideoSource,
   createMediaRecorderVideoSource,
   type MediaRecorderLike,
 } from './video-capture';
@@ -341,5 +342,195 @@ describe('createMediaRecorderVideoSource.clear (blackout: nothing may survive)',
     source.start();
     const [entry] = await source.snapshot(1);
     expect(entry?.data).toEqual(new Uint8Array([1])); // only the post-restart chunk
+  });
+});
+
+describe('createDisplayVideoSource — one composed frame per display', () => {
+  const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+  const setup = (over: Partial<Parameters<typeof createDisplayVideoSource>[0]> = {}) => {
+    const s = fakeScheduler();
+    let time = 1000;
+    const displays = [
+      { id: 0, bounds: rect(0, 0, 100, 100) },
+      { id: 1, bounds: rect(100, 0, 100, 100) },
+    ];
+    const layersOf = new Map<
+      number,
+      Array<{ bounds: ReturnType<typeof rect>; capture: () => Promise<Uint8Array> }>
+    >([
+      [
+        0,
+        [
+          { bounds: rect(0, 0, 50, 50), capture: async () => new Uint8Array([0xa]) },
+          { bounds: rect(10, 10, 50, 50), capture: async () => new Uint8Array([0xb]) },
+        ],
+      ],
+      [1, [{ bounds: rect(100, 0, 100, 100), capture: async () => new Uint8Array([0xc]) }]],
+    ]);
+    const compose = vi.fn(
+      async (display: { id: number }, layers: ReadonlyArray<{ bytes: Uint8Array }>) =>
+        new Uint8Array([display.id, ...layers.map((l) => l.bytes[0] as number)]),
+    );
+    const encode = vi.fn((frames: readonly { bytes: Uint8Array }[], fps: number) =>
+      Uint8Array.from([fps, ...frames.flatMap((f) => [...f.bytes])]),
+    );
+    const source = createDisplayVideoSource({
+      displays: () => displays,
+      layers: (display) => layersOf.get(display.id) ?? [],
+      compose,
+      encode,
+      scheduler: s.scheduler,
+      now: () => time,
+      ...over,
+    });
+    return { s, source, compose, encode, displays, layersOf, at: (t: number) => (time = t) };
+  };
+
+  it('composes the windows of each display back to front into one frame, and yields one video entry per display with its id as lane', async () => {
+    const { s, source, compose } = setup();
+    source.start();
+    await s.tick();
+    expect(compose).toHaveBeenCalledTimes(2);
+    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => l.bytes[0])).toEqual([0xa, 0xb]); // z order kept
+    const entries = await source.snapshot(5);
+    expect(entries.map((e) => [e.type, e.lane, [...(e.data as Uint8Array)]])).toEqual([
+      ['video', '0', [1, 0, 0xa, 0xb]],
+      ['video', '1', [1, 1, 0xc]],
+    ]);
+  });
+
+  it('orders the entries by display id, whatever order the displays were listed in', async () => {
+    const { s, source, displays } = setup();
+    displays.reverse();
+    source.start();
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0', '1']);
+  });
+
+  it('skips a display with no visible window (no frame, no entry)', async () => {
+    const { s, source, layersOf } = setup();
+    layersOf.set(1, []);
+    source.start();
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0']);
+  });
+
+  it('drops a window whose grab fails, reports it, and still composes the rest', async () => {
+    const errors: unknown[] = [];
+    const { s, source, compose, layersOf } = setup({ onError: (e) => errors.push(e) });
+    layersOf.set(0, [
+      {
+        bounds: rect(0, 0, 10, 10),
+        capture: async () => {
+          throw new Error('grab failed');
+        },
+      },
+      { bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([0xb]) },
+    ]);
+    source.start();
+    await s.tick();
+    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => l.bytes[0])).toEqual([0xb]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('a display whose compose fails loses that frame only, and the other display still records', async () => {
+    const errors: unknown[] = [];
+    const base = setup();
+    const compose = vi.fn(async (display: { id: number }) => {
+      if (display.id === 0) throw new Error('compose failed');
+      return new Uint8Array([9]);
+    });
+    const { s, source } = setup({ compose, onError: (e) => errors.push(e) });
+    source.start();
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['1']);
+    expect(errors).toHaveLength(1);
+    void base;
+  });
+
+  it('keeps at most maxFrames per display (drop-oldest)', async () => {
+    const { s, source, at } = setup({ maxFrames: 2 });
+    source.start();
+    for (const t of [1000, 1001, 1002]) {
+      at(t);
+      await s.tick();
+    }
+    const first = (await source.snapshot(5))[0];
+    expect((first?.data as Uint8Array).length).toBe(1 + 2 * 3); // fps byte + 2 frames of [id, a, b]
+  });
+
+  it('a tick that starts while the previous one is still grabbing is skipped', async () => {
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => (release = resolve));
+    const { s, source, compose, layersOf } = setup();
+    layersOf.set(0, [
+      {
+        bounds: rect(0, 0, 1, 1),
+        capture: async () => {
+          await slow;
+          return new Uint8Array([1]);
+        },
+      },
+    ]);
+    source.start();
+    const first = s.tick();
+    await s.tick(); // overlaps: skipped
+    release();
+    await first;
+    expect(compose).toHaveBeenCalledTimes(2); // display 0 and display 1 of the FIRST tick only
+  });
+
+  it('clear() forgets every frame, including a grab still in flight', async () => {
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => (release = resolve));
+    const { s, source, layersOf } = setup();
+    layersOf.set(0, [
+      {
+        bounds: rect(0, 0, 1, 1),
+        capture: async () => {
+          await slow;
+          return new Uint8Array([1]);
+        },
+      },
+    ]);
+    source.start();
+    const pending = s.tick();
+    source.clear();
+    release();
+    await pending;
+    expect(await source.snapshot(5)).toEqual([]);
+  });
+
+  it('forgets a display that has been gone for longer than the ring covers', async () => {
+    const { s, source, displays, at } = setup({ maxFrames: 2 });
+    source.start();
+    await s.tick(); // t = 1000: both displays have a frame
+    displays.pop(); // display 1 is unplugged
+    at(1000 + 2 * 1000 + 1); // ring covers maxFrames / fps = 2 s
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0']);
+  });
+
+  it('the ring of a vanished display lasts maxFrames / fps seconds (a faster rate covers less time)', async () => {
+    const { s, source, displays, at } = setup({ maxFrames: 2, fps: 2 }); // 2 frames at 2 fps = 1 s
+    source.start();
+    await s.tick(); // t = 1000
+    displays.pop();
+    at(1000 + 1500);
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0']);
+  });
+
+  it('start is idempotent, stop clears the timer, and the source samples at the configured fps', () => {
+    const { s, source } = setup({ fps: 4 });
+    source.start();
+    source.start();
+    expect(s.ms).toBe(250);
+    source.stop();
+    expect(s.cleared).toBe(true);
+  });
+
+  it('returns no entries before anything was captured', async () => {
+    expect(await setup().source.snapshot(5)).toEqual([]);
   });
 });

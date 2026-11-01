@@ -37,7 +37,14 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 * **L3 DONE 2026-11-01** Electron: the receiver tags a renderer's replay with its `webContents` id; `onVisualReset(lane)`
   paces and restarts ONLY that window (`checkout(windowId)`, a gate per window; a window with no registered renderer spends
   no budget); an unkeyed reset still asks everyone.
-* **L4 open** pixel video per display (compositor in main), and viewer support for secondary members.
+* **L4 DONE 2026-11-01** pixel video per display. The assembler splits every encoder type by lane (so `encodePixelVideo` is no
+  longer handed two displays to concatenate); a video lane that is a display id gets `attrs.displayId` (what the viewer
+  already reads), anything else `attrs.window`. `createDisplayVideoSource` (electron) composes the windows of each display into
+  one frame per tick (`displays`, `layers`, `compose`, `encode` injected), keeps a ring per display, skips a display with no
+  visible window, forgets a vanished display after the ring's span, and yields one `video` entry per display with the display
+  id as lane, lowest first. `electronDisplays` / `electronWindowLayers` adapt Electron's `screen` and `BrowserWindow`: display 0
+  is the focused window's display (as in the `displays` trace); windows are ordered by creation with the focused one on top,
+  because Electron exposes no z-order (the adapter's one stated limit).
 
 * **L5 DONE 2026-11-01** the lane is persisted in the part meta (all backends and the disk-pressure wrapper), and capture
   recovery and native-crash recovery freeze each part with it: a crashed multi-window session rebuilds one replay per window.
@@ -45,6 +52,9 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 * **L6 DONE 2026-11-01** `CaptureStore.retireLane(lane)`: main retires a window's lane when its webContents is destroyed or its
   process is gone; the store drops it once none of its data is inside the recording window (so the report range is kept
   whole), and any new record for the lane revives it (a crashed window that reloads keeps its id).
+
+Not shipped: a concrete `compose` (painting the grabbed windows onto one display-sized frame needs an image library or an
+offscreen canvas; the package stays free of both, so the host injects it) and the viewer changes below.
 
 Known limits of what shipped: the viewer still reads only `replay.bin`, which is the first window to produce a base, not
 necessarily the key window. A stream-encoded lane keeps the type's own manifest attrs (a laned video keeps `format`).

@@ -1191,7 +1191,7 @@ describe('assembleBundleStream — one stream-encoded member per visual source l
 
   it("keeps the type's own manifest attrs next to the window (a laned video keeps its format)", async () => {
     const encoder = { begin: () => ({ write: () => [strToU8('v')], end: () => [] }) };
-    const video = Object.assign(new CaptureDataEntryBase('video', NOW3 - 100, 'f'), { lane: 'd1' });
+    const video = Object.assign(new CaptureDataEntryBase('video', NOW3 - 100, 'f'), { lane: '1' });
     const bundle = await assembleBundleStream(
       createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
       from([video]),
@@ -1203,7 +1203,58 @@ describe('assembleBundleStream — one stream-encoded member per visual source l
     };
     expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({
       format: 'webm',
-      window: 'd1',
+      displayId: 1,
+    });
+  });
+});
+
+describe('assembleBundleStream — one member per display for a buffered-encoder type (pixel video)', () => {
+  const NOW4 = 1_700_000_000_000;
+  const video = (lane: string | undefined, bytes: number[]): CaptureDataEntry => {
+    const e = new CaptureDataEntryBase('video', NOW4 - 100, new Uint8Array(bytes));
+    if (lane !== undefined) e.lane = lane;
+    return e;
+  };
+  // The real pixel-video encoder concatenates every payload: a bundle with two displays must NOT reach it as one list.
+  const encodeVideo = (payloads: unknown[]): Uint8Array =>
+    Uint8Array.from((payloads as Uint8Array[]).flatMap((p) => [...p]));
+  const run = async (entries: CaptureDataEntry[]) => {
+    const bundle = await assembleBundleStream(
+      createReportingRequest({ source: { type: 'error' }, id: 'r1' }),
+      from(entries),
+      context({ fileEncoders: { video: encodeVideo } }),
+    );
+    const files = members(await bundle.body.bytes());
+    const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
+      files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
+    };
+    return { files, manifest };
+  };
+
+  it('writes each display its own video member, encoded on its own, with attrs.displayId', async () => {
+    const { files, manifest } = await run([video('0', [1, 2]), video('1', [3, 4])]);
+    expect([...(files['video.webm'] as Uint8Array)]).toEqual([1, 2]);
+    expect([...(files['video.1.webm'] as Uint8Array)]).toEqual([3, 4]);
+    expect(manifest.files.filter((f) => f.type === 'video')).toEqual([
+      expect.objectContaining({ filename: 'video.webm', attrs: { format: 'webm', displayId: 0 } }),
+      expect.objectContaining({
+        filename: 'video.1.webm',
+        attrs: { format: 'webm', displayId: 1 },
+      }),
+    ]);
+  });
+
+  it('an unkeyed video stays the one canonical member with no displayId', async () => {
+    const { files, manifest } = await run([video(undefined, [9])]);
+    expect([...(files['video.webm'] as Uint8Array)]).toEqual([9]);
+    expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({ format: 'webm' });
+  });
+
+  it('a lane that is not a number is recorded as a window, not a display', async () => {
+    const { manifest } = await run([video('win-a', [1])]);
+    expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({
+      format: 'webm',
+      window: 'win-a',
     });
   });
 });

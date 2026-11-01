@@ -22,6 +22,13 @@ export {
   type InstallNativeCrashReporterOptions,
   installNativeCrashReporter,
 } from './crash-reporter';
+export {
+  type ElectronBrowserWindowLike,
+  electronDisplays,
+  electronWindowLayers,
+  type ScreenLike,
+  type WindowLike,
+} from './display-video';
 export { type LaunchMainOptions, launchMain, type VideoLaunchOptions } from './launch-main';
 export {
   type ControlSenderLike,
@@ -57,9 +64,14 @@ export type { DecodedReport } from './protocol';
 export {
   type CapturePageVideoSourceOptions,
   createCapturePageVideoSource,
+  createDisplayVideoSource,
   createMediaRecorderVideoSource,
+  type DisplayInfo,
+  type DisplayVideoSourceOptions,
   type MediaRecorderLike,
   type MediaRecorderVideoSourceOptions,
+  type Rect,
   type VideoCaptureSource,
   type VideoFrame,
+  type WindowLayer,
 } from './video-capture';
