@@ -182,6 +182,26 @@ describe('launchMain', () => {
       expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
     });
 
+    it('a reset while no renderer is registered spends none of the budget, so the first renderer is not made to wait', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const reset = (): void =>
+        (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      reset(); // nobody to tell
+      now = 1_000;
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      r.sent.length = 0;
+      reset(); // inside what would have been the quiet period
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
     it('is paced: a reset inside the quiet period asks nothing, a later one asks again (backing off)', () => {
       const { r, reset, at } = setup();
       reset();

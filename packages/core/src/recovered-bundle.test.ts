@@ -69,6 +69,24 @@ describe('assembleFromSnapshot', () => {
     expect(JSON.parse(strFromU8(files['logs.json'] as Uint8Array))).toHaveLength(1);
   });
 
+  it('reports a torn record to an explicit sink instead of the context onError', async () => {
+    const contextOnError = vi.fn();
+    const sink = vi.fn();
+    const snap = snapshotOf([
+      stored('log', 1_000, { m: 1 }),
+      { type: 'log', timestamp: 1_100, serialized: 'NOT-JSON' } as StoredEntry,
+    ]);
+    await assembleFromSnapshot(
+      request(),
+      snap,
+      defaultEntryFactory,
+      context({ onError: contextOnError }),
+      sink,
+    );
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(contextOnError).not.toHaveBeenCalled();
+  });
+
   it('tolerates a torn record when the context has no onError', async () => {
     const snap = snapshotOf([
       stored('log', 1_000, { m: 1 }),

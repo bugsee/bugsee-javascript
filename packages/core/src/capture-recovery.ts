@@ -193,6 +193,7 @@ export async function recoverReports(options: RecoverReportsOptions): Promise<vo
                   attributes: marker.attributes,
                   userIdentifier: marker.userIdentifier,
                 },
+                onError,
               )),
               // Keep the incident id on the rebuilt bundle: a durable pipeline re-stages it, and only the
               // id lets a later pass tell that blob apart from one nothing has uploaded (see client.ts).

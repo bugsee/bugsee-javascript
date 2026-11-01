@@ -484,10 +484,13 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // the renderers are told to take a fresh full snapshot (control `checkout`); without that the stream has no base until a
   // renderer's next periodic checkout. Paced by the same backoff the browser applies to its own store, and released by stop.
   let checkoutRenderers: (() => void) | undefined;
+  let mainControl: { readonly rendererCount: number } | undefined;
   const callerReset = nodeOptions.onVisualReset;
   const resetClock = nodeOptions.clock ?? createSystemClock();
   const gateReset = createVisualResetGate({
     now: () => resetClock.monotonicNow(),
+    // Nobody to tell (no renderer has said hello yet, or none is left): the reset must not spend the backoff budget.
+    ready: () => (mainControl?.rendererCount ?? 0) > 0,
     restart: () => checkoutRenderers?.(),
   });
   nodeOptions.onVisualReset = (): void => {
@@ -635,6 +638,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ],
   });
   control.start();
+  mainControl = control;
   checkoutRenderers = (): void => control.checkout();
   // Arm the key-window stage and forward every change to the renderers whose answer moved (released in the wrapped stop).
   const offKeyWindow =
@@ -680,6 +684,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       offBlackout();
       offKeyWindow?.();
       checkoutRenderers = undefined; // a reset after stop has nobody to tell
+      mainControl = undefined;
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture

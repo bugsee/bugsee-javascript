@@ -190,6 +190,82 @@ describe('recoverReports', () => {
     expect((pipe.bundles[0] as Bundle).request.email).toBe('who@x.com'); // userIdentifier → email
   });
 
+  it('a torn record in the generation still yields the bundle and removes the marker; the options sink hears of it, not the context sink', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [
+      logRecord(1, { m: 'good' }),
+      { type: 'log', timestamp: 2, serialized: 'NOT-JSON' } as StoredEntry,
+    ]);
+    const pipe = fakePipeline();
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const onError = vi.fn();
+    const contextOnError = vi.fn();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers,
+      context: () => ({ ...baseContext(), onError: contextOnError }),
+      uploadPipeline: pipe,
+      onError,
+    });
+    expect(logsOf(pipe.bundles[0] as Bundle)).toEqual([{ m: 'good' }]);
+    expect(markers.list()).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(contextOnError).not.toHaveBeenCalled();
+  });
+
+  it('a snapshot that cannot be taken keeps the marker and its generation for the next launch, and reports it', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const backend = readBackend(storage);
+    vi.spyOn(backend, 'snapshot').mockImplementation(() => {
+      throw new Error('cannot snapshot');
+    });
+    const pipe = fakePipeline();
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const onError = vi.fn();
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers,
+      context: baseContext,
+      uploadPipeline: pipe,
+      onError,
+    });
+    expect(pipe.enqueue).not.toHaveBeenCalled();
+    expect(markers.list()).toHaveLength(1);
+    expect(await backend.listGenerations()).toContain(100);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'cannot snapshot' }));
+  });
+
+  it('releases every snapshot it took, including when the pipeline throws (marker kept)', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const backend = readBackend(storage);
+    const releases: number[] = [];
+    const real = backend.snapshot.bind(backend);
+    vi.spyOn(backend, 'snapshot').mockImplementation((parts) => {
+      const snap = real(parts);
+      const release = snap.release.bind(snap);
+      snap.release = () => {
+        releases.push(1);
+        release();
+      };
+      return snap;
+    });
+    const markers = fakeMarkers([marker('a', 100), marker('b', 100)]);
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers,
+      context: baseContext,
+      uploadPipeline: { enqueue: () => Promise.reject(new Error('pipeline down')) },
+      onError: () => {},
+    });
+    expect(releases).toHaveLength(2);
+    expect(markers.list()).toHaveLength(2);
+  });
+
   it('streams a generation through one snapshot per marker (N bundles, N snapshots)', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);

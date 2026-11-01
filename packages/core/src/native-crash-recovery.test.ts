@@ -160,6 +160,38 @@ describe('recoverNativeCrashes', () => {
     expect(source.claims).toEqual(['main.dmp']);
   });
 
+  it('a torn record in the crashed generation costs only itself: the bundle still ships, the claim is made, onError hears of it', async () => {
+    const grouped = new Map<FileType, StoredEntry[]>([
+      [
+        'log',
+        [
+          {
+            type: 'log',
+            timestamp: 1,
+            serialized: JSON.stringify({ timestamp: 1, data: { m: 'ok' } }),
+          },
+          { type: 'log', timestamp: 2, serialized: 'NOT-JSON' },
+        ] as StoredEntry[],
+      ],
+    ]);
+    const { backend } = fakeBackend(grouped);
+    const source = fakeSource([dump('main.dmp', 1)]);
+    const { pipeline, enqueued } = fakePipeline();
+    const onError = vi.fn();
+    const result = await recoverNativeCrashes({
+      backend,
+      marker: marker({ generation: 7 }),
+      source,
+      context: baseContext,
+      uploadPipeline: pipeline,
+      onError,
+    });
+    expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
+    expect(enqueued).toHaveLength(1);
+    expect(source.claims).toEqual(['main.dmp']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('streams the crashed generation through one snapshot per dump, each released', async () => {
     const { backend, snapshotCalls, releases } = fakeBackend();
     const source = fakeSource([dump('a.dmp', 1), dump('b.dmp', 2)]);

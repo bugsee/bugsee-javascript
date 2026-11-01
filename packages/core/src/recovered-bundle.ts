@@ -13,7 +13,8 @@ import type { Bundle, UploadPipeline, UploadResult } from './transport';
 
 /**
  * Build a bundle from `snapshot`, streaming. The snapshot is released when the read ends, on success and failure alike;
- * a torn record is skipped and reported to `context.onError`, never allowed to fail the generation's recovery.
+ * a torn record is skipped and reported to `onTornRecord` (default `context.onError`), never allowed to fail the generation's
+ * recovery. The recovery paths pass their own sink: it is where the drain they replaced reported them.
  *
  * The default (memory) sink hands out plain bytes, as every assembler did; any other sink's body is passed on for the
  * upload pipeline to own.
@@ -23,10 +24,11 @@ export async function assembleFromSnapshot(
   snapshot: CaptureSnapshot,
   factory: CaptureEntryFactory,
   context: BundleAssemblyContext,
+  onTornRecord: (error: unknown) => void = context.onError ?? ((): void => {}),
 ): Promise<Bundle> {
   const assembled = await assembleBundleStream(
     request,
-    streamReified(snapshot, factory, context.onError ?? ((): void => {})),
+    streamReified(snapshot, factory, onTornRecord),
     context,
   );
   return {
