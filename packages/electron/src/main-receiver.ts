@@ -15,7 +15,7 @@ import {
 
 /** An Electron `ipcMain` event (we only read the sender's id, to tag the originating window). */
 export interface IpcMainEventLike {
-  sender?: { id?: number };
+  sender?: { id?: number; isDestroyed?(): boolean };
 }
 /** The subset of Electron's `ipcMain` we use. */
 export type IpcMainListener = (event: IpcMainEventLike, ...args: unknown[]) => void;
@@ -73,6 +73,11 @@ export function createElectronMainReceiver(
       }
       const decoded = decodeStreamEntry(raw);
       if (decoded === undefined) {
+        return;
+      }
+      // A window that is already destroyed cannot take part in the visual lane any more: a late replay flush must not revive
+      // the lane the control just retired.
+      if (decoded.type === 'replay' && event.sender?.isDestroyed?.() === true) {
         return;
       }
       options.store.add({

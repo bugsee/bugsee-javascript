@@ -232,4 +232,14 @@ describe('createElectronMainReceiver — one visual lane per window', () => {
   it('leaves a replay record unkeyed when the sender cannot be identified', () => {
     expect(run({}, 'replay')).not.toHaveProperty('lane');
   });
+
+  it('drops a replay record from a sender that is already destroyed (a closing window cannot revive its retired lane)', () => {
+    expect(run({ sender: { id: 7, isDestroyed: () => true } as never }, 'replay')).toBeUndefined();
+  });
+
+  it('keeps data records from a destroyed sender (only the visual lane is tied to the window)', () => {
+    expect(run({ sender: { id: 7, isDestroyed: () => true } as never }, 'log')).toMatchObject({
+      type: 'log',
+    });
+  });
 });

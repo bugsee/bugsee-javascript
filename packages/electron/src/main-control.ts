@@ -151,12 +151,14 @@ export function createElectronMainControl(
   /** Drop a renderer that is gone. Idempotent — `destroyed` and a later `isDestroyed()` both land here. */
   const forget = (sender: ControlSenderLike): void => {
     renderers.delete(sender);
-    if (sender.id !== undefined) {
-      try {
-        options.onRendererLeft?.(sender.id);
-      } catch (error) {
-        options.onError?.(error);
+    try {
+      // Read inside the guard: the id of a destroyed webContents can throw.
+      const id = sender.id;
+      if (id !== undefined) {
+        options.onRendererLeft?.(id);
       }
+    } catch (error) {
+      options.onError?.(error);
     }
   };
 

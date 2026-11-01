@@ -37,6 +37,19 @@ describe('electronDisplays', () => {
     ]);
   });
 
+  it('gives every display a key that is its native id, whichever number it has now', () => {
+    const focusOn = (x: number) =>
+      electronDisplays(
+        screen,
+        windowsOf(win(1, rect(x, 10, 100, 100), { isFocused: () => true })),
+      )();
+    const keyOf = (list: ReturnType<ReturnType<typeof electronDisplays>>, id: number) =>
+      list.find((d) => d.id === id)?.key;
+    expect(keyOf(focusOn(1100), 0)).toBe(70);
+    expect(keyOf(focusOn(10), 0)).toBe(30);
+    expect(keyOf(focusOn(1100), 1)).toBe(30);
+  });
+
   it('without a focused window the lowest native id is display 0', () => {
     const displays = electronDisplays(screen, windowsOf(win(1, rect(1100, 10, 100, 100))));
     expect(displays().map((d) => [d.id, d.bounds.x])).toEqual([

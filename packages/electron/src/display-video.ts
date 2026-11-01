@@ -50,7 +50,7 @@ export function electronDisplays(
       ...native.slice(keyIndex, keyIndex + 1),
       ...native.filter((_, i) => i !== keyIndex),
     ];
-    return ordered.map((display, id) => ({ id, bounds: display.bounds }));
+    return ordered.map((display, id) => ({ id, key: display.id, bounds: display.bounds }));
   };
 }
 

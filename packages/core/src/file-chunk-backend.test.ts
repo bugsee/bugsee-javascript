@@ -268,3 +268,27 @@ describe('createFileChunkBackend — part lane in the durable meta', () => {
     expect(parts[1]).not.toHaveProperty('lane');
   });
 });
+
+describe('createFileChunkBackend — the lane survives a meta that cannot be read back', () => {
+  it('closePart writes the lane even when the open-time meta never reached the medium', async () => {
+    const storage = createInMemoryChunkStorage();
+    const written: string[] = [];
+    const flaky = {
+      ...storage,
+      write: (gen: number, n: number, file: string, content: string) => {
+        if (file === 'meta') written.push(content);
+        storage.write(gen, n, file, content);
+      },
+      read: (gen: number, n: number, file: string) =>
+        file === 'meta' ? undefined : storage.read(gen, n, file),
+    };
+    const b = createFileChunkBackend(flaky as never, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.closePart(ref(5, 0), 2, 7);
+    expect(JSON.parse(written[written.length - 1] as string)).toMatchObject({
+      s: 1,
+      e: 2,
+      l: 'win-3',
+    });
+  });
+});

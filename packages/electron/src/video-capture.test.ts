@@ -533,4 +533,143 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
   it('returns no entries before anything was captured', async () => {
     expect(await setup().source.snapshot(5)).toEqual([]);
   });
+
+  it('keeps each physical display in its own ring when the ids move (focus changed monitors)', async () => {
+    const s = fakeScheduler();
+    let displays = [
+      { id: 0, key: 'A', bounds: rect(0, 0, 100, 100) },
+      { id: 1, key: 'B', bounds: rect(100, 0, 100, 100) },
+    ];
+    const source = createDisplayVideoSource({
+      displays: () => displays,
+      layers: (d) => [{ bounds: d.bounds, capture: async () => new Uint8Array([1]) }],
+      compose: async (d) => new Uint8Array([(d.key as string).charCodeAt(0)]),
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => 1000,
+    });
+    source.start();
+    await s.tick();
+    displays = [
+      { id: 0, key: 'B', bounds: rect(100, 0, 100, 100) }, // focus moved: B is now display 0
+      { id: 1, key: 'A', bounds: rect(0, 0, 100, 100) },
+    ];
+    await s.tick();
+    const out = await source.snapshot(5);
+    expect(out.map((e) => [e.lane, String.fromCharCode(...(e.data as Uint8Array))])).toEqual([
+      ['0', 'BB'],
+      ['1', 'AA'],
+    ]);
+  });
+
+  it('a grab that never answers is abandoned after stuckMs, so capture resumes', async () => {
+    let time = 1000;
+    let hang = true;
+    const s = fakeScheduler();
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () => [
+        {
+          bounds: rect(0, 0, 10, 10),
+          capture: () =>
+            hang ? new Promise<Uint8Array>(() => {}) : Promise.resolve(new Uint8Array([7])),
+        },
+      ],
+      compose: async (_d, layers) => layers[0]?.bytes as Uint8Array,
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => time,
+      stuckMs: 5000,
+    });
+    source.start();
+    void s.tick(); // hangs
+    time = 1000 + 4999;
+    hang = false;
+    await s.tick(); // still inside stuckMs: skipped
+    expect(await source.snapshot(5)).toEqual([]);
+    time = 1000 + 5000;
+    await s.tick(); // the stuck tick is abandoned and this one captures
+    expect((await source.snapshot(5)).map((e) => [...(e.data as Uint8Array)])).toEqual([[7]]);
+  });
+
+  it('an abandoned tick neither adds its late frame nor frees the busy flag of the tick that replaced it', async () => {
+    let time = 1000;
+    const s = fakeScheduler();
+    const grabs: Array<(bytes: Uint8Array) => void> = [];
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () => [
+        {
+          bounds: rect(0, 0, 10, 10),
+          capture: () => new Promise<Uint8Array>((resolve) => grabs.push(resolve)),
+        },
+      ],
+      compose: async (_d, layers) => layers[0]?.bytes as Uint8Array,
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => time,
+      stuckMs: 5000,
+    });
+    source.start();
+    const first = s.tick(); // grab #0 hangs
+    time = 6000;
+    const second = s.tick(); // abandons the first, grab #1 is pending
+    await Promise.resolve();
+    grabs[0]?.(new Uint8Array([9])); // the abandoned grab finally answers
+    await first;
+    time = 6001;
+    await s.tick(); // the second tick is still running: this one must be skipped, not start grab #2
+    expect(grabs).toHaveLength(2);
+    grabs[1]?.(new Uint8Array([7]));
+    await second;
+    expect((await source.snapshot(5)).map((e) => [...(e.data as Uint8Array)])).toEqual([[7]]);
+  });
+
+  it('a displays() that throws is reported and the timer survives (no rejection reaches the scheduler)', async () => {
+    const errors: unknown[] = [];
+    let broken = true;
+    const s = fakeScheduler();
+    const source = createDisplayVideoSource({
+      displays: () => {
+        if (broken) throw new Error('screen not ready');
+        return [{ id: 0, bounds: rect(0, 0, 10, 10) }];
+      },
+      layers: () => [{ bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([1]) }],
+      compose: async () => new Uint8Array([2]),
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => 1000,
+      onError: (e) => errors.push(e),
+    });
+    source.start();
+    await expect(s.tick()).resolves.toBeUndefined();
+    expect(errors).toHaveLength(1);
+    broken = false;
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['0']);
+  });
+
+  it('an encode that throws for one display costs only that display its video', async () => {
+    const errors: unknown[] = [];
+    const s = fakeScheduler();
+    const source = createDisplayVideoSource({
+      displays: () => [
+        { id: 0, bounds: rect(0, 0, 10, 10) },
+        { id: 1, bounds: rect(10, 0, 10, 10) },
+      ],
+      layers: (d) => [{ bounds: d.bounds, capture: async () => new Uint8Array([d.id]) }],
+      compose: async (d) => new Uint8Array([d.id]),
+      encode: (frames) => {
+        if (frames[0]?.bytes[0] === 0) throw new Error('mux failed');
+        return new Uint8Array([9]);
+      },
+      scheduler: s.scheduler,
+      now: () => 1000,
+      onError: (e) => errors.push(e),
+    });
+    source.start();
+    await s.tick();
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['1']);
+    expect(errors).toHaveLength(1);
+  });
 });

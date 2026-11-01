@@ -1212,4 +1212,25 @@ describe('onRendererLeft', () => {
     expect(() => control.rendererGone(2)).not.toThrow();
     expect(control.rendererCount).toBe(1);
   });
+
+  it('survives a sender whose id cannot be read when it is destroyed, and still re-evaluates', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      onRendererLeft: () => {},
+    });
+    control.start();
+    const destroyed: Array<() => void> = [];
+    const r = fakeSender(5);
+    Object.defineProperty(r.sender, 'id', {
+      get() {
+        throw new Error('destroyed object');
+      },
+    });
+    (r.sender as { once?: (e: string, l: () => void) => void }).once = (_e, l) => destroyed.push(l);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(() => destroyed[0]?.()).not.toThrow();
+    expect(control.rendererCount).toBe(0);
+  });
 });

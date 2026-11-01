@@ -175,6 +175,12 @@ export interface Rect {
 /** One display: its id (`displays` trace order: 0 = the key window's display) and its desktop bounds. */
 export interface DisplayInfo {
   id: number;
+  /**
+   * A key that names the PHYSICAL display and does not change when the ids are renumbered (focus moving between monitors
+   * renumbers `id`, since 0 is the key window's display). Frames are kept per key, so a ring never mixes two monitors.
+   * Default: `id`.
+   */
+  key?: string | number;
   bounds: Rect;
 }
 
@@ -204,6 +210,11 @@ export interface DisplayVideoSourceOptions {
   fps?: number;
   /** Max frames retained PER DISPLAY (drop-oldest). Default 300. */
   maxFrames?: number;
+  /**
+   * A tick that has not finished after this many ms (a `capturePage` of an occluded or hung window never answers) is
+   * abandoned, so capture resumes at the next tick; its late result is discarded. Default 10000.
+   */
+  stuckMs?: number;
   now: () => number;
   /** Sink for a failed grab or compose — the timer never throws. */
   onError?: (error: unknown) => void;
@@ -217,10 +228,14 @@ export interface DisplayVideoSourceOptions {
 export function createDisplayVideoSource(options: DisplayVideoSourceOptions): VideoCaptureSource {
   const fps = options.fps ?? 1;
   const maxFrames = options.maxFrames ?? 300;
-  const rings = new Map<number, VideoFrame[]>();
+  const stuckMs = options.stuckMs ?? 10_000;
+  // Per PHYSICAL display (its key); `id` is the number it has now, refreshed every tick.
+  const rings = new Map<string | number, { id: number; frames: VideoFrame[] }>();
   let handle: unknown;
   let epoch = 0; // bumped by clear(): a frame that began before it is discarded
   let busy = false; // a slow compose must not overlap the next tick
+  let busySince = 0;
+  let token = 0; // identifies the running tick: an abandoned one is told apart from the current one
 
   const grab = async (
     layers: readonly WindowLayer[],
@@ -238,21 +253,23 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
     return grabbed.filter((layer) => layer !== undefined);
   };
 
-  const frameOf = async (display: DisplayInfo, started: number): Promise<void> => {
+  const frameOf = async (display: DisplayInfo, started: number, mine: number): Promise<void> => {
     try {
       const layers = await grab(options.layers(display));
       if (layers.length === 0) {
         return;
       }
       const bytes = await options.compose(display, layers);
-      if (started !== epoch) {
-        return;
+      if (started !== epoch || mine !== token) {
+        return; // cleared (blackout) or abandoned while this frame was in flight
       }
-      const ring = rings.get(display.id) ?? [];
-      rings.set(display.id, ring);
-      ring.push({ timestamp: options.now(), bytes });
-      if (ring.length > maxFrames) {
-        ring.shift();
+      const key = display.key ?? display.id;
+      const ring = rings.get(key) ?? { id: display.id, frames: [] };
+      ring.id = display.id;
+      rings.set(key, ring);
+      ring.frames.push({ timestamp: options.now(), bytes });
+      if (ring.frames.length > maxFrames) {
+        ring.frames.shift();
       }
     } catch (error) {
       options.onError?.(error);
@@ -260,22 +277,37 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
   };
 
   const tick = async (): Promise<void> => {
-    if (busy) {
-      return;
-    }
-    busy = true;
-    const started = epoch;
     try {
-      await Promise.all(options.displays().map((display) => frameOf(display, started)));
-      // A display that is gone keeps its frames only as long as the ring covers: after that nothing of it is in the window.
-      const cutoff = options.now() - (maxFrames / fps) * 1000;
-      for (const [id, ring] of rings) {
-        if ((ring[ring.length - 1]?.timestamp ?? 0) < cutoff) {
-          rings.delete(id);
+      if (busy) {
+        if (options.now() - busySince < stuckMs) {
+          return;
+        }
+        // The running tick has not answered for stuckMs: abandon it (its result is ignored via the token).
+      }
+      busy = true;
+      busySince = options.now();
+      token += 1;
+      const mine = token;
+      const started = epoch;
+      try {
+        await Promise.all(options.displays().map((display) => frameOf(display, started, mine)));
+        if (mine !== token) {
+          return;
+        }
+        // A display that is gone keeps its frames only as long as the ring covers: after that nothing of it is in the window.
+        const cutoff = options.now() - (maxFrames / fps) * 1000;
+        for (const [key, ring] of rings) {
+          if ((ring.frames[ring.frames.length - 1]?.timestamp ?? 0) < cutoff) {
+            rings.delete(key);
+          }
+        }
+      } finally {
+        if (mine === token) {
+          busy = false;
         }
       }
-    } finally {
-      busy = false;
+    } catch (error) {
+      options.onError?.(error); // a screen that is not ready, a throwing clock: the timer must never see a rejection
     }
   };
 
@@ -298,14 +330,17 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
       rings.clear();
     },
     async snapshot(now: number): Promise<CaptureDataEntry[]> {
-      return [...rings.entries()]
-        .filter(([, ring]) => ring.length > 0)
-        .sort(([a], [b]) => a - b)
-        .map(([id, ring]) => {
-          const entry = videoEntry(now, options.encode([...ring], fps));
+      const out: CaptureDataEntry[] = [];
+      for (const { id, frames } of [...rings.values()].sort((a, b) => a.id - b.id)) {
+        try {
+          const entry = videoEntry(now, options.encode([...frames], fps)); // a ring exists only with its first frame
           entry.lane = String(id);
-          return entry;
-        });
+          out.push(entry);
+        } catch (error) {
+          options.onError?.(error); // one display's muxer failing costs only that display's video
+        }
+      }
+      return out;
     },
   };
 }

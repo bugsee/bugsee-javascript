@@ -73,6 +73,8 @@ export function createFileChunkBackend(
   // The part's start, kept only while it is open so closePart can rewrite a complete meta record. Keyed
   // by generation + number (the store only ever uses this backend's generation, but stay explicit).
   const openStarts = new Map<string, number>();
+  // The lane of each OPEN part, so closePart does not depend on reading back a meta that may never have reached the medium.
+  const openLanes = new Map<string, string>();
   const startKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
 
   const readMeta = (gen: number, number: number): PartMeta => {
@@ -100,6 +102,9 @@ export function createFileChunkBackend(
 
     openPart(ref: PartRef, start: number, lane?: string): void {
       openStarts.set(startKey(ref), start);
+      if (lane !== undefined) {
+        openLanes.set(startKey(ref), lane);
+      }
       writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
 
@@ -113,10 +118,15 @@ export function createFileChunkBackend(
     },
 
     closePart(ref: PartRef, end: number, byteSize: number): void {
-      const known = readMeta(ref.generation, ref.number);
-      const start = openStarts.get(startKey(ref)) ?? known.start;
+      const open = openStarts.get(startKey(ref));
+      const openLane = openLanes.get(startKey(ref));
+      // Only a part this instance did not open (or whose lane it never saw) needs its meta read back.
+      const known = open === undefined ? readMeta(ref.generation, ref.number) : undefined;
+      const start = open ?? known?.start ?? 0;
+      const lane = openLane ?? known?.lane;
       openStarts.delete(startKey(ref));
-      writeMeta(ref.generation, ref.number, start, end, byteSize, known.lane);
+      openLanes.delete(startKey(ref));
+      writeMeta(ref.generation, ref.number, start, end, byteSize, lane);
       // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
       // open-handle count bounded to the active chunk rather than the whole rolling window.
       storage.sealChunk?.(ref.generation, ref.number);

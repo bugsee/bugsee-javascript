@@ -44,7 +44,12 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
   visible window, forgets a vanished display after the ring's span, and yields one `video` entry per display with the display
   id as lane, lowest first. `electronDisplays` / `electronWindowLayers` adapt Electron's `screen` and `BrowserWindow`: display 0
   is the focused window's display (as in the `displays` trace); windows are ordered by creation with the focused one on top,
-  because Electron exposes no z-order (the adapter's one stated limit).
+  because Electron exposes no z-order (the adapter's one stated limit). Frames are kept per PHYSICAL display (`DisplayInfo.key`
+  = the native id), because the numbered `id` moves when focus changes monitors; a tick that does not answer for `stuckMs`
+  (a hung `capturePage`) is abandoned so capture resumes; a failing `encode` costs only its display's video.
+  Review of L4-L6 also fixed: the file backend keeps the open part's lane itself (no read-back dependency under disk
+  pressure), a destroyed window's late replay is dropped (it cannot revive a retired lane), `forget` reads `sender.id` inside
+  its guard.
 
 * **L5 DONE 2026-11-01** the lane is persisted in the part meta (all backends and the disk-pressure wrapper), and capture
   recovery and native-crash recovery freeze each part with it: a crashed multi-window session rebuilds one replay per window.
