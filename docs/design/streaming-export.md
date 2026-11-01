@@ -299,8 +299,17 @@ is the REPORT-TIME copy: the same 20 MB window needed 80 MB of heap to be export
 `sdk.options` shows the value in effect. Unchanged: Node/Electron 50 MB, edge/worker 10 MB (no replay there; no BGSVIEWER-12
 exposure, no durable window).
 
-Limits of the measurement: the durable rows are the node FILE-backed chunk store, not the browser's IndexedDB backend, whose
-read path (`snapshot()` reading parts back from the database) was not measured; and the claim "the durable window is not in the
+**IndexedDB read path (measured 2026-11-01, headless Chromium 1234, real IndexedDB, the same 20 MB window of 74 one-second
+parts; live heap above the idle store, forced GC every 200 records, sampled inside the pipeline because the buffered build is
+synchronous):** buffered export +77 MB; streaming export with the original read +33 MB; with the part-by-part read +21 MB.
+The original `snapshot().stream()` read EVERY part into one array before yielding the first record, so the window sat in the
+heap decoded; it now reads and decodes one part at a time (`readParts` in `idb-chunk-backend.ts`), and the store side alone costs
++1.7 MB (iterating the raw stream). The remaining ~20 MB is in the assembler, not the store (the in-memory store measures +31 MB
+in the same harness); it has not been bisected, and it is not the +4 MB of the node file-store figure above, which came from a
+different harness, so the two numbers are not comparable. A failure in a later part now surfaces after earlier parts were served
+(the export's memory-build fallback handles it as before). Harness: `scratchpad/idbbench` (not committed).
+
+Limit of the measurement: the claim "the durable window is not in the
 heap" holds while IndexedDB accepts writes: records it refuses (quota, `AbortError`) are served from memory, still bounded by the
 cap, so under disk pressure the heap window can be the full 30 MB.
 

@@ -530,23 +530,25 @@ export function createIdbChunkBackend(
           .map(([seq, record]) => ({ seq, record }))
           .sort((a, b) => a.seq - b.seq);
 
-      const readAll = async (): Promise<StoredEntry[]> => {
+      // One part at a time: only the part being served is ever decoded and held, so a consumer that streams the
+      // records (the export) pays for one part, not for the window. A failed read throws when its part is reached,
+      // after the earlier parts were already served.
+      const readParts = async function* (): AsyncGenerator<StoredEntry> {
         const waited = await until(waitForQueue(frozenQueue));
         if (waited === CANCELLED) {
-          return [];
+          return;
         }
         if (waited === STALLED) {
           throw new Error(
             `bugsee: IndexedDB made no progress for ${stallMs} ms; the queued writes are served from memory`,
           );
         }
-        const out: StoredEntry[] = [];
         for (const [index, { ref, count }] of frozen.entries()) {
           const records = await until(
             withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
           );
           if (records === CANCELLED) {
-            return [];
+            return;
           }
           // By SEQUENCE, not by position: a refused write leaves a hole in the sequence, and the freeze is `seq < count`.
           const landed: Array<{ seq: number; record: StoredEntry }> = [];
@@ -567,10 +569,9 @@ export function createIdbChunkBackend(
           const merged =
             kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
           for (const { record } of merged) {
-            out.push(record);
+            yield record;
           }
         }
-        return out;
       };
 
       // Drops this snapshot's PINS: an evicted part may then be deleted at once. Idempotent, and shared by `release()`.
@@ -610,13 +611,13 @@ export function createIdbChunkBackend(
       };
 
       return {
-        async *stream(): AsyncIterableIterator<StoredEntry> {
-          for (const record of await readAll()) {
-            yield record;
-          }
-        },
+        stream: (): AsyncIterableIterator<StoredEntry> => readParts(),
         async drainAll(): Promise<Map<FileType, StoredEntry[]>> {
-          return groupByType(await readAll());
+          const all: StoredEntry[] = [];
+          for await (const record of readParts()) {
+            all.push(record);
+          }
+          return groupByType(all);
         },
         release,
         // The read goes on (its result is discarded) but must not delay evictions: pins dropped, nothing else.

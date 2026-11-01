@@ -1658,3 +1658,87 @@ describe('createIdbChunkBackend — unpin(): a read left to finish in the backgr
     expect(await dataKeys(inner)).toBe(0);
   });
 });
+
+describe('createIdbChunkBackend — stream() reads one part at a time', () => {
+  const setup = async () => {
+    const inner = keyed();
+    const reads: string[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        reads.push(prefix);
+        return inner.readPrefix(prefix);
+      },
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1, 2]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.appendEntry(ref(5, n), rec(`b${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 4);
+    }
+    await b.flush?.();
+    const frozen = [0, 1, 2].map((n) => ({ ref: ref(5, n), count: 2 }));
+    return { b, reads, frozen };
+  };
+
+  it('does not read a part until the consumer has taken the one before it', async () => {
+    const { b, reads, frozen } = await setup();
+    const iterator = b.snapshot(frozen).stream();
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a0' });
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+    await iterator.next(); // b0: still part 0
+    expect(reads).toHaveLength(1);
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a1' });
+    expect(reads).toEqual([dataPrefixFor(5, 0), dataPrefixFor(5, 1)]);
+  });
+
+  it('still serves every record in order, and drainAll agrees', async () => {
+    const { b, frozen } = await setup();
+    expect(await collect(b.snapshot(frozen))).toEqual(['a0', 'b0', 'a1', 'b1', 'a2', 'b2']);
+    const drained = await b.snapshot(frozen).drainAll();
+    expect([...drained.values()].flat().map((r) => r.serialized)).toEqual([
+      'a0',
+      'b0',
+      'a1',
+      'b1',
+      'a2',
+      'b2',
+    ]);
+  });
+
+  it('a consumer that stops early never reads the rest', async () => {
+    const { b, reads, frozen } = await setup();
+    const snap = b.snapshot(frozen);
+    const iterator = snap.stream();
+    await iterator.next();
+    await iterator.return?.(undefined);
+    snap.release();
+    expect(reads).toHaveLength(1);
+  });
+
+  it('a release while a part is being read ends the stream without touching the next part', async () => {
+    const inner = keyed();
+    const reads: string[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        reads.push(prefix);
+        return prefix.startsWith('d/') ? new Promise(() => {}) : inner.readPrefix(prefix);
+      },
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 2);
+    }
+    await b.flush?.();
+    const snap = b.snapshot([0, 1].map((n) => ({ ref: ref(5, n), count: 1 })));
+    const pending = collect(snap);
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    snap.release();
+    expect(await pending).toEqual([]);
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+  });
+});
