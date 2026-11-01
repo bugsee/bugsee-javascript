@@ -71,8 +71,8 @@ describe('createElectronMainReceiver', () => {
     ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, anchored);
     ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, wire('replay', 6, '{}'));
     expect(s.added).toEqual([
-      { type: 'replay', timestamp: 5, serialized: '{}', anchor: true },
-      { type: 'replay', timestamp: 6, serialized: '{}' },
+      { type: 'replay', timestamp: 5, serialized: '{}', anchor: true, lane: '1' },
+      { type: 'replay', timestamp: 6, serialized: '{}', lane: '1' },
     ]);
   });
 
@@ -209,5 +209,27 @@ describe('createElectronMainReceiver — report routing + listener containment',
       send(JSON.stringify({ k: 'report', p: { source: {}, report: {} }, ts: 1 })),
     ).not.toThrow();
     expect(String(errors[0])).toContain('join boom');
+  });
+});
+
+describe('createElectronMainReceiver — one visual lane per window', () => {
+  const run = (event: IpcMainEventLike, type: string) => {
+    const ipc = fakeIpcMain();
+    const s = fakeStore();
+    createElectronMainReceiver({ ipcMain: ipc.ipcMain, store: s.store }).start();
+    ipc.emit(BUGSEE_STREAM_CHANNEL, event, wire(type, 1, '{}'));
+    return s.added[0];
+  };
+
+  it('tags a renderer replay record with its window id', () => {
+    expect(run({ sender: { id: 7 } }, 'replay')).toMatchObject({ type: 'replay', lane: '7' });
+  });
+
+  it('leaves data records unkeyed (only the visual lane is split by window)', () => {
+    expect(run({ sender: { id: 7 } }, 'log')).not.toHaveProperty('lane');
+  });
+
+  it('leaves a replay record unkeyed when the sender cannot be identified', () => {
+    expect(run({}, 'replay')).not.toHaveProperty('lane');
   });
 });

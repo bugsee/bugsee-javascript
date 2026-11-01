@@ -448,9 +448,10 @@ export interface BugseeLaunchOptions {
   /**
    * Called when the byte cap forced every visual (replay) base out of the store, so a recorder that feeds it must take a
    * fresh snapshot. For a host whose recorders live elsewhere (the Electron main, whose renderers stream into this store);
-   * it is not called for a `captureStore` you supply (that store is yours). Called at most once per drop, off the write path.
+   * it is not called for a `captureStore` you supply (that store is yours). Called at most once per drop, off the write path,
+   * with the lane (an Electron window) that lost its bases, or no argument for the unkeyed lane.
    */
-  onVisualReset?: () => void;
+  onVisualReset?: (lane?: string) => void;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
   /**

@@ -29,11 +29,19 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 
 ## Slices
 
-* **L0** core: `lane` on records, per-lane visual state in the chunk store, per-lane reset callback (memory backend).
-* **L1** file, IndexedDB and disk-pressure backends attach the lane on read.
-* **L2** reifier + assembler: members per `(type, lane)`, naming, manifest attrs, per-member encoder sessions.
-* **L3** Electron: window id as lane, per-window `checkout` and per-lane pacing.
-* **L4** pixel video per display (compositor); viewer support for secondary members.
+* **L0 DONE 2026-11-01** core: `lane` on records, per-lane visual state in the chunk store, per-lane reset callback.
+* **L1 DONE 2026-11-01** file, IndexedDB and disk-pressure backends attach the lane on read (memory keeps it on the record).
+* **L2 DONE 2026-11-01** reifier + assembler: one stream-encoded member per lane (`replay.bin`, `replay.1.bin`, ...,
+  manifest `attrs.window`), per-member encoder sessions; a lane that produced nothing leaves no member and does not take
+  the canonical name; non-stream-encoded types ignore the lane.
+* **L3 DONE 2026-11-01** Electron: the receiver tags a renderer's replay with its `webContents` id; `onVisualReset(lane)`
+  paces and restarts ONLY that window (`checkout(windowId)`, a gate per window; a window with no registered renderer spends
+  no budget); an unkeyed reset still asks everyone.
+* **L4 open** pixel video per display (compositor in main), and viewer support for secondary members.
+
+Known limits of what shipped: a recovered prior generation (crash recovery) exports as one unkeyed replay, because part
+meta does not persist the lane; the viewer still reads only `replay.bin`, which is the first window to produce a base, not
+necessarily the key window.
 
 Open (needs the viewer/mobile side): the exact secondary member names and manifest attrs are chosen here (`replay.<n>.bin`,
 `attrs.window`), not taken from a mobile convention; they must be confirmed against the viewer before the viewer reads them.

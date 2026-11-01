@@ -157,6 +157,95 @@ describe('launchMain', () => {
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
   });
 
+  describe('a visual reset of one window (per-window lanes)', () => {
+    const setup = () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const a = fakeSender(1);
+      const b = fakeSender(2);
+      for (const r of [a, b]) {
+        ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+        r.sent.length = 0;
+      }
+      const reset = (lane?: string): void =>
+        (
+          f.received?.options as unknown as { onVisualReset: (lane?: string) => void }
+        ).onVisualReset(lane);
+      return { a, b, reset, at: (t: number) => (now = t) };
+    };
+    const asked = (r: { sent: Array<{ raw: string }> }) =>
+      r.sent.map((m) => decodeControl(m.raw)?.command);
+
+    it('restarts only the window whose lane lost its bases', () => {
+      const { a, b, reset } = setup();
+      reset('2');
+      expect(asked(a)).toEqual([]);
+      expect(asked(b)).toEqual(['checkout']);
+    });
+
+    it('paces each window on its own: window 2 backing off does not delay window 1', () => {
+      const { a, b, reset, at } = setup();
+      reset('2');
+      at(1_000);
+      reset('2'); // inside window 2's quiet period
+      reset('1'); // window 1 has never asked
+      expect(asked(b)).toEqual(['checkout']);
+      expect(asked(a)).toEqual(['checkout']);
+    });
+
+    it('a window with no registered renderer spends no budget and asks nobody', () => {
+      const { a, b, reset } = setup();
+      reset('99');
+      expect([...asked(a), ...asked(b)]).toEqual([]);
+    });
+
+    it('a reset of a window that has not registered yet leaves its budget unspent', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const reset = (lane: string): void =>
+        (
+          f.received?.options as unknown as { onVisualReset: (lane?: string) => void }
+        ).onVisualReset(lane);
+      reset('9'); // window 9 is not there yet
+      now = 1_000;
+      const late = fakeSender(9);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: late }, encodeHello());
+      late.sent.length = 0;
+      reset('9'); // inside what would have been the quiet period had the first call spent it
+      expect(asked(late)).toEqual(['checkout']);
+    });
+
+    it('an unkeyed reset still asks every renderer', () => {
+      const { a, b, reset } = setup();
+      reset();
+      expect(asked(a)).toEqual(['checkout']);
+      expect(asked(b)).toEqual(['checkout']);
+    });
+
+    it("hands the lane to the caller's own callback", () => {
+      const own = vi.fn();
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, onVisualReset: own } as never);
+      (f.received?.options as unknown as { onVisualReset: (lane?: string) => void }).onVisualReset(
+        '5',
+      );
+      expect(own).toHaveBeenCalledWith('5');
+    });
+  });
+
   describe('a visual reset in the main store (every replay base shed under the byte cap)', () => {
     const setup = (over: Record<string, unknown> = {}) => {
       const ipc = fakeIpcMain();

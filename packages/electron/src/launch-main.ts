@@ -483,8 +483,10 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // Main's store is the one with the byte cap, and the renderers' recorders stream into it. When it sheds every replay base
   // the renderers are told to take a fresh full snapshot (control `checkout`); without that the stream has no base until a
   // renderer's next periodic checkout. Paced by the same backoff the browser applies to its own store, and released by stop.
-  let checkoutRenderers: (() => void) | undefined;
-  let mainControl: { readonly rendererCount: number } | undefined;
+  let checkoutRenderers: ((windowId?: number) => void) | undefined;
+  let mainControl:
+    | { readonly rendererCount: number; hasRenderer(windowId: number): boolean }
+    | undefined;
   const callerReset = nodeOptions.onVisualReset;
   const resetClock = nodeOptions.clock ?? createSystemClock();
   const gateReset = createVisualResetGate({
@@ -493,13 +495,32 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     ready: () => (mainControl?.rendererCount ?? 0) > 0,
     restart: () => checkoutRenderers?.(),
   });
-  nodeOptions.onVisualReset = (): void => {
+  // A window's lane (its webContents id as text) is paced on its own, so one window backing off never delays another.
+  const windowGates = new Map<string, () => void>();
+  const gateWindow = (lane: string): (() => void) => {
+    let gate = windowGates.get(lane);
+    if (gate === undefined) {
+      const windowId = Number(lane);
+      gate = createVisualResetGate({
+        now: () => resetClock.monotonicNow(),
+        ready: () => mainControl?.hasRenderer(windowId) === true,
+        restart: () => checkoutRenderers?.(windowId),
+      });
+      windowGates.set(lane, gate);
+    }
+    return gate;
+  };
+  nodeOptions.onVisualReset = (lane?: string): void => {
     try {
-      callerReset?.(); // the caller's own callback keeps working, and cannot cost the restart
+      callerReset?.(...(lane === undefined ? [] : [lane])); // the caller's own callback keeps working, and cannot cost the restart
     } catch (error) {
       reportGuarded(nodeOptions.onError, error);
     }
-    gateReset();
+    if (lane === undefined) {
+      gateReset();
+    } else {
+      gateWindow(lane)();
+    }
   };
 
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
@@ -639,7 +660,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   });
   control.start();
   mainControl = control;
-  checkoutRenderers = (): void => control.checkout();
+  checkoutRenderers = (windowId?: number): void => control.checkout(windowId);
   // Arm the key-window stage and forward every change to the renderers whose answer moved (released in the wrapped stop).
   const offKeyWindow =
     keyWindow === undefined
@@ -684,6 +705,7 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       offBlackout();
       offKeyWindow?.();
       checkoutRenderers = undefined; // a reset after stop has nobody to tell
+      windowGates.clear();
       mainControl = undefined;
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();

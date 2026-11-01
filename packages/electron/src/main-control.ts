@@ -93,7 +93,9 @@ export interface ElectronMainControl {
    * Ask every renderer to restart its replay recorder for a fresh full snapshot: main's store shed every replay base under
    * its byte cap, so what the renderers stream next would otherwise have no base until their next periodic checkout.
    */
-  checkout(): void;
+  checkout(windowId?: number): void;
+  /** Whether a renderer with this `webContents` id is registered. */
+  hasRenderer(windowId: number): boolean;
   /**
    * The key window may have changed: re-evaluate every registered renderer and send `window-key` to those whose answer
    * differs from what they were last told. A no-op without the `keyWindow` option.
@@ -228,9 +230,13 @@ export function createElectronMainControl(
 
   const broadcast = (
     command: 'pause' | 'resume' | 'flush' | 'stop' | 'blackout-start' | 'blackout-end' | 'checkout',
+    only?: number,
   ): void => {
     const raw = encodeControl({ command });
     for (const sender of [...renderers]) {
+      if (only !== undefined && sender.id !== only) {
+        continue;
+      }
       // Prune on the way past. `destroyed` is the primary signal, but it is an EVENT — a missed or absent
       // one would keep the corpse forever, and broadcasting is where we would notice anyway.
       if (sender.isDestroyed?.() === true) {
@@ -360,8 +366,16 @@ export function createElectronMainControl(
     blackoutEnd(): void {
       broadcast('blackout-end');
     },
-    checkout(): void {
-      broadcast('checkout');
+    checkout(windowId?: number): void {
+      broadcast('checkout', windowId);
+    },
+    hasRenderer(windowId: number): boolean {
+      for (const sender of renderers) {
+        if (sender.id === windowId && sender.isDestroyed?.() !== true) {
+          return true;
+        }
+      }
+      return false;
     },
     keyWindowChanged: rediffKey,
     rendererGone(id: number): void {

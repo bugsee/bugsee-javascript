@@ -1117,3 +1117,50 @@ describe('stop() releases the destroyed subscriptions', () => {
     expect(a.listeners).toHaveLength(0);
   });
 });
+
+describe('checkout(windowId) — one window only', () => {
+  const setup = () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = fakeSender(1);
+    const b = fakeSender(2);
+    for (const sender of [a.sender, b.sender]) {
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    }
+    return { control, a, b };
+  };
+  const after = (r: { sent: Array<{ raw: string }> }) =>
+    r.sent.slice(1).map((m) => decodeControl(m.raw)?.command);
+
+  it('asks only the renderer of that window', () => {
+    const { control, a, b } = setup();
+    control.checkout(2);
+    expect(after(a)).toEqual([]);
+    expect(after(b)).toEqual(['checkout']);
+  });
+
+  it('asks nobody for a window that is not registered', () => {
+    const { control, a, b } = setup();
+    control.checkout(99);
+    expect([...after(a), ...after(b)]).toEqual([]);
+  });
+
+  it('says whether a window has a registered renderer', () => {
+    const { control } = setup();
+    expect(control.hasRenderer(1)).toBe(true);
+    expect(control.hasRenderer(99)).toBe(false);
+  });
+
+  it('does not count a destroyed renderer as registered', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const gone = { ...fakeSender(4), destroyed: false };
+    const sender = Object.assign(gone.sender, { isDestroyed: () => gone.destroyed });
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    expect(control.hasRenderer(4)).toBe(true);
+    gone.destroyed = true;
+    expect(control.hasRenderer(4)).toBe(false);
+  });
+});
