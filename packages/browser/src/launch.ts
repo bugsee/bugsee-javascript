@@ -8,6 +8,7 @@ import {
 } from '@bugsee/browser-utils';
 import {
   CaptureStateProducer,
+  createAsyncOriginReporting,
   createConsoleInterceptor,
   createHttpErrorDetectionProvider,
   createInputProvider,
@@ -17,6 +18,7 @@ import {
   createTraceSuppression,
   createVideoAuxProvider,
   deriveRefreshMs,
+  installAsyncOrigins,
   installNetworkCapture,
   isTraceSuppression,
   type NetworkCapture,
@@ -480,6 +482,13 @@ export interface BugseeLaunchOptions {
   diskProtection?: boolean;
   /** Detect window errors + unhandled rejections. Default true. */
   detectCrashes?: boolean;
+  /**
+   * Record where an asynchronous platform call was made (`video.play()`, `navigator.clipboard.*`, `getUserMedia`, ...), so that a
+   * rejection that carries no stack (a `NotSupportedError` from `play()` has none) is reported WITH its call site and the element it
+   * was made on. Wraps the promise-returning methods of the page window (about 100, a few more after the first stackless rejection)
+   * and restores them on `stop()`. Only boolean `false` opts out. Default true.
+   */
+  captureAsyncOrigins?: boolean;
   /** Report HTTP SERVER errors (500-599) as `error` reports, once per session per (method, templated URL, status); 4xx, transport failures and aborts are not reported (mobile parity). Default false. */
   detectHttpErrors?: boolean;
   /** Severity a crash report starts with. Default `blocker`. */
@@ -1017,6 +1026,17 @@ async function buildLaunch(
     ? ({} as Record<'replay', FileStreamEncoder>)
     : undefined;
 
+  // Async origin capture: wrap the page window's promise-returning platform methods BEFORE the application's first call, so a
+  // stackless rejection (BGSVIEWER-14) can be reported with where it was called from. Stopped with the client.
+  const asyncOrigins = resolveFailOnBoolean(options.captureAsyncOrigins, true)
+    ? installAsyncOrigins({
+        global: win,
+        ...(options.onError !== undefined ? { onError: options.onError } : {}),
+      })
+    : undefined;
+  const originReporting =
+    asyncOrigins === undefined ? undefined : createAsyncOriginReporting(asyncOrigins, parseStack);
+
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
@@ -1041,6 +1061,7 @@ async function buildLaunch(
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
+    ...(originReporting !== undefined ? { enrichFrames: originReporting.enrichFrames } : {}),
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
     ...(streamEncoders !== undefined ? { streamEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
@@ -1371,8 +1392,8 @@ async function buildLaunch(
   }
 
   // Detection providers: window error → crash, unhandledrejection → error.
-  client.addDetectionProvider(createWindowErrorProvider(win));
-  client.addDetectionProvider(createUnhandledRejectionProvider(win));
+  client.addDetectionProvider(createWindowErrorProvider(win, originReporting));
+  client.addDetectionProvider(createUnhandledRejectionProvider(win, originReporting));
   // fetch/xhr server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.
   client.addDetectionProvider(createHttpErrorDetectionProvider(network.interceptor));
 
@@ -1621,6 +1642,7 @@ async function buildLaunch(
         clearCarrierClient(publicClient, carrier);
       }
       uninstallPageHideFlush();
+      asyncOrigins?.stop();
       stopDiskFeed?.();
       stopReplayCheckout?.();
       let drained = false;

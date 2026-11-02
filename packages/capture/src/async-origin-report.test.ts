@@ -1,8 +1,12 @@
 import type { StackFrame } from '@bugsee/core';
 import { parseV8Stack } from '@bugsee/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AsyncOrigin, AsyncOriginRecorder } from './async-origin';
-import { createAsyncOriginEnricher, describeOriginTarget } from './async-origin-report';
+import {
+  createAsyncOriginEnricher,
+  createAsyncOriginReporting,
+  describeOriginTarget,
+} from './async-origin-report';
 
 const origin = (over: Partial<AsyncOrigin> = {}): AsyncOrigin => ({
   api: 'HTMLMediaElement.play',
@@ -139,5 +143,56 @@ describe('describeOriginTarget', () => {
       },
     };
     expect(describeOriginTarget(origin({ target: hostile }))).toBeUndefined();
+  });
+});
+
+describe('createAsyncOriginReporting', () => {
+  const stackless = { name: 'NotSupportedError', message: 'm' };
+
+  it('bundles the enricher and the target description for a reason the recorder knows', () => {
+    const video = { tagName: 'VIDEO', id: '', networkState: 3, readyState: 0 };
+    const reporting = createAsyncOriginReporting(
+      recorderFor(origin({ target: video })),
+      parseV8Stack,
+    );
+    expect(reporting.enrichFrames(stackless, []).map((f) => f.function)).toEqual([
+      'playClip',
+      'onClick',
+    ]);
+    expect(reporting.describeTarget(stackless)).toBe('Target: <video> networkState=3 readyState=0');
+  });
+
+  it('describeTarget is undefined for an unknown reason', () => {
+    expect(
+      createAsyncOriginReporting(recorderFor(undefined), parseV8Stack).describeTarget(stackless),
+    ).toBeUndefined();
+  });
+
+  it('arms the recorder on a stackless object nobody could locate, and only then', () => {
+    const arm = vi.fn();
+    const known = createAsyncOriginReporting({ ...recorderFor(origin()), arm }, parseV8Stack);
+    known.noteRejection(stackless); // located: nothing to learn
+    expect(arm).not.toHaveBeenCalled();
+    const unknown = createAsyncOriginReporting({ ...recorderFor(undefined), arm }, parseV8Stack);
+    unknown.noteRejection(new Error('has its own stack'));
+    unknown.noteRejection('a string');
+    unknown.noteRejection(null);
+    expect(arm).not.toHaveBeenCalled();
+    unknown.noteRejection(stackless);
+    expect(arm).toHaveBeenCalledTimes(1);
+    unknown.noteRejection(Object.assign(new Error('x'), { stack: '' })); // an Error whose stack is empty counts as stackless
+    expect(arm).toHaveBeenCalledTimes(2);
+  });
+
+  it('never throws, even when the recorder does', () => {
+    const hostile: AsyncOriginRecorder = {
+      ...recorderFor(undefined),
+      originOf: () => {
+        throw new Error('recorder broke');
+      },
+    };
+    const reporting = createAsyncOriginReporting(hostile, parseV8Stack);
+    expect(() => reporting.noteRejection(stackless)).not.toThrow();
+    expect(reporting.describeTarget(stackless)).toBeUndefined();
   });
 });

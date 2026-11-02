@@ -1747,7 +1747,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         onError(reportSiteError);
       }
       const message = error instanceof Error ? error.message : describeThrown(error);
-      const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
+      let description = describeError(error); // stack + the `cause` chain (LinkedErrors)
       // Structured crash.json: built from the Error's stack + per-frame debug-ids. handled: true —
       // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.
       // A thrown non-Error has no stack of its own, and shipping `frames: []` cost grouping, not just a
@@ -1769,6 +1769,14 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         ...(options.enrichFrames !== undefined ? { enrichFrames: options.enrichFrames } : {}),
         ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
       });
+      // An Error with no stack of its own (an async platform rejection) has no description either, yet an enricher may have given
+      // it frames (the call site, async-origin capture): they ARE its trace, and the report should read like one.
+      if (description === undefined && error instanceof Error) {
+        const traces = crash?.exception.frames.map((frame) => `    ${frame.trace}`) ?? [];
+        if (traces.length > 0) {
+          description = traces.join('\n');
+        }
+      }
       const crashOptions: { domain?: string; skipFrames?: number } = {};
       const domain = exceptionOptions?.domain;
       if (domain !== undefined) {

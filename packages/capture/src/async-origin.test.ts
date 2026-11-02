@@ -602,6 +602,16 @@ describe('installAsyncOrigins — defensive paths', () => {
     expect(() => install(g)).not.toThrow();
   });
 
+  it('survives a realm whose document getter throws (the iframe route is simply unavailable)', () => {
+    const g = { ...fakeGlobal(() => 1), Promise: class NotNative {} };
+    Object.defineProperty(g, 'document', {
+      get(): never {
+        throw new Error('document blocked');
+      },
+    });
+    expect(() => install(g)).not.toThrow();
+  });
+
   it('reports a restore that the realm refuses (the prototype was frozen after install) and carries on', () => {
     const onError = vi.fn();
     const g = fakeGlobal(() => Promise.resolve(1));

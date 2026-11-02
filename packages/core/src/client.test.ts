@@ -1373,6 +1373,48 @@ describe('createClient — capture-recovery markers', () => {
     expect(crash.exception.frames[0]?.variables).toEqual({ a: '1' });
   });
 
+  it('describes a stackless Error by the frames an enricher supplied (an async platform rejection)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      enrichFrames: (_error, frames) =>
+        frames.length > 0
+          ? frames
+          : [
+              {
+                function: 'startPlayback',
+                file: 'https://app.test/p.js',
+                line: 4,
+                column: 2,
+                origin: 'call',
+              },
+            ],
+    });
+    const stackless = new Error('The element has no supported sources');
+    Object.defineProperty(stackless, 'stack', { value: undefined });
+    await client.logException(stackless);
+    const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      description?: string;
+    };
+    expect(request.description).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+  });
+
+  it('adds no description to a stackless Error when nothing supplied frames', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const stackless = new Error('x');
+    Object.defineProperty(stackless, 'stack', { value: undefined });
+    await client.logException(stackless);
+    const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      description?: string;
+    };
+    expect(request.description).toBeUndefined();
+  });
+
   it('calls onReportSite at the boundary of logException, before the crash is built', async () => {
     // The seam exists for ONE reason: at this instant the caller's catch block is still on the stack,
     // so a platform with a debugger attached can read the scope the report was made from. A moment

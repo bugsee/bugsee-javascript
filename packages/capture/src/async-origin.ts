@@ -79,26 +79,26 @@ const isNative = (fn: unknown): boolean =>
   typeof fn === 'function' &&
   /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(fn));
 
-/** A `then` that is the engine's own, read once at install. See design §4.1a. */
+/** A `then` that is the engine's own, read once at install. See design §4.1a. Never throws: a hostile realm just has none. */
 function cleanThenOf(global: Record<string, unknown>): ThenFn | undefined {
-  const own = (global.Promise as { prototype?: { then?: unknown } } | undefined)?.prototype?.then;
-  if (isNative(global.Promise) && isNative(own)) {
-    return own as ThenFn;
-  }
-  // The global Promise was replaced (zone.js, core-js, Bluebird): a fresh same-origin iframe still has the native one. A promise
-  // from another realm is fine: the brand check is on the promise, not the realm.
-  const doc = global.document as
-    | {
-        createElement?: (tag: string) => {
-          style?: Record<string, string>;
-          setAttribute?: (name: string, value: string) => void;
-          remove?: () => void;
-          contentWindow?: { Promise?: { prototype?: { then?: unknown } } };
-        };
-        documentElement?: { appendChild?: (node: unknown) => unknown };
-      }
-    | undefined;
   try {
+    const own = (global.Promise as { prototype?: { then?: unknown } } | undefined)?.prototype?.then;
+    if (isNative(global.Promise) && isNative(own)) {
+      return own as ThenFn;
+    }
+    // The global Promise was replaced (zone.js, core-js, Bluebird): a fresh same-origin iframe still has the native one. A promise
+    // from another realm is fine: the brand check is on the promise, not the realm.
+    const doc = global.document as
+      | {
+          createElement?: (tag: string) => {
+            style?: Record<string, string>;
+            setAttribute?: (name: string, value: string) => void;
+            remove?: () => void;
+            contentWindow?: { Promise?: { prototype?: { then?: unknown } } };
+          };
+          documentElement?: { appendChild?: (node: unknown) => unknown };
+        }
+      | undefined;
     const frame = doc?.createElement?.('iframe');
     if (frame === undefined || doc?.documentElement?.appendChild === undefined) {
       return undefined;

@@ -116,3 +116,49 @@ export function describeOriginTarget(origin: AsyncOrigin): string | undefined {
     return undefined;
   }
 }
+
+/** What a detection provider needs to report an async platform rejection with its call site. */
+export interface AsyncOriginReporting {
+  /** Feed to `buildCrashJson({ enrichFrames })`. */
+  enrichFrames: FrameEnricher;
+  /** The target line for the report description, for a reason the recorder located. */
+  describeTarget(reason: unknown): string | undefined;
+  /**
+   * Call for every rejection reason that reaches a report. The FIRST stackless object nobody could locate is the signal that an
+   * armed API is failing, so the armed rows are installed (they cost nothing until then, see `arm()`).
+   */
+  noteRejection(reason: unknown): void;
+}
+
+export function createAsyncOriginReporting(
+  recorder: AsyncOriginRecorder,
+  parseStack: (stack: string) => StackFrame[],
+): AsyncOriginReporting {
+  return {
+    enrichFrames: createAsyncOriginEnricher(recorder, parseStack),
+    describeTarget(reason) {
+      try {
+        const origin = recorder.originOf(reason);
+        return origin === undefined ? undefined : describeOriginTarget(origin);
+      } catch {
+        return undefined;
+      }
+    },
+    noteRejection(reason) {
+      try {
+        if (typeof reason !== 'object' || reason === null) {
+          return;
+        }
+        const stack = (reason as { stack?: unknown }).stack;
+        if (
+          (typeof stack !== 'string' || stack === '') &&
+          recorder.originOf(reason) === undefined
+        ) {
+          recorder.arm();
+        }
+      } catch {
+        // reporting must never fail because the recorder did
+      }
+    },
+  };
+}
