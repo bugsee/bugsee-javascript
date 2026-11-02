@@ -509,7 +509,7 @@ describe('installAsyncOrigins — cost bounds', () => {
     const el1 = new (g1.Media as new () => { play(): Promise<unknown> })();
     const reason1 = await el1.play().catch((e: unknown) => e);
     expect(r1.originOf(reason1)?.skip).toBe(
-      typeof (Error as { captureStackTrace?: unknown }).captureStackTrace === 'function' ? 0 : 1,
+      typeof (Error as { captureStackTrace?: unknown }).captureStackTrace === 'function' ? 0 : 2,
     );
     r1.stop();
     const g2 = fakeGlobal(() => Promise.reject(stackless()));

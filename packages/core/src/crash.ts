@@ -278,13 +278,17 @@ function syntheticException(
   return exception;
 }
 
-/** A display name for a thrown value: its own `name`, else its class, else its primitive type. */
+/** A display name for a thrown value: its own `name`, else its class, else its primitive type. Never throws. */
 function typeTag(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
-    const named = (value as { name?: unknown }).name;
-    if (typeof named === 'string' && named !== '') return named;
-    const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
-    return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
+    try {
+      const named = (value as { name?: unknown }).name;
+      if (typeof named === 'string' && named !== '') return named;
+      const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
+      return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
+    } catch {
+      return 'Object'; // a revoked proxy or a throwing getter
+    }
   }
   if (value === null) return 'Null';
   // 'string' -> 'String', matching how the mobile SDKs label a thrown primitive.

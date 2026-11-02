@@ -495,3 +495,11 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   summary as well as in `exception.reason` (where they already were); nothing redacts them beyond the existing report-level rules.
 - **Target line:** `logException` gets call-site frames but not the `Target:` line (core has no recorder); media error messages are
   passed through the message sanitiser, source URLs through `sanitizeUrl` with the query and fragment dropped entirely.
+- **The budget counts calls, not failures.** A method called more than 200 times in a minute stops being captured for the rest of that
+  minute, so a later rejection of a bursty `always` method (`Permissions.query`, `decodeAudioData`) can lack an origin.
+- **Retention.** A recorded origin holds its target (a media element) and, on V8, a lazily formatted stack until `.stack` is read; an
+  app that keeps a rejected `DOMException` keeps both alive. The entry is dropped with the reason (WeakMap).
+- **Drift guard limits.** The extractor matches a return type literally named `Promise`, so `Promise<X> | undefined`, `PromiseLike` and
+  property-signature methods are not seen (none exist in the pinned lib.dom.d.ts); a mixin target is checked to be a real
+  constructor, not to carry the method (a wrong target wraps nothing, silently).
+- **Path tokens.** `sanitizeUrl` redacts `key=value` and `;matrix` secrets, not a bare path segment such as `/signed/<token>/clip.mp4`.

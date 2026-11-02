@@ -105,12 +105,13 @@ describe('describeOriginTarget', () => {
         origin({
           target: {
             tagName: 'VIDEO',
-            id: 'a"\nb',
+            id: 'a"\nb\u2028c\u0085d\u202ee',
             error: { code: 4, message: 'bad\nhttps://u:secret@h.test/x?token=TOP' },
           },
         }),
       ) ?? '';
     expect(text.split('\n')).toHaveLength(1);
+    expect(text).not.toMatch(/[\u0085\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
     expect(text).not.toContain('secret');
     expect(text).not.toContain('TOP');
     const font =

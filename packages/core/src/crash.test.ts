@@ -550,6 +550,18 @@ describe('toCrashFrame — call-site origin', () => {
   });
 });
 
+describe('buildCrashJson with a hostile non-Error value', () => {
+  it('still produces an exception when the type name cannot be read', () => {
+    const throwingName = {
+      get name(): string {
+        throw new Error('boom');
+      },
+    };
+    const crash = buildCrashJson(throwingName);
+    expect(crash.exception.name).toBe('Object');
+  });
+});
+
 describe('describeThrown', () => {
   it('never throws for a revoked proxy or a hostile toStringTag', () => {
     const revoked = Proxy.revocable({}, {});
@@ -564,7 +576,7 @@ describe('describeThrown', () => {
       },
     };
     expect(() => describeThrown(hostile)).not.toThrow();
-    expect(typeof describeThrown(hostile)).toBe('string');
+    expect(describeThrown(hostile)).toBe('[object Object]');
   });
 
   it('keeps a string, number, boolean, null, undefined, symbol and bigint as their plain text', () => {

@@ -37,9 +37,9 @@ type Probe = Record<string, unknown>;
 
 // Page-controlled text in a one-line description: control characters (newline included) and quotes go, and it is clipped.
 const FIELD_LIMIT = 80;
-const field = (raw: string): string =>
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
-  raw.replace(/[\u0000-\u001f\u007f"]+/g, ' ').slice(0, FIELD_LIMIT);
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069"]+/g;
+const field = (raw: string): string => raw.replace(UNSAFE, ' ').slice(0, FIELD_LIMIT);
 
 // A URL for a report: no query, no fragment (tokens live there), userinfo and path secrets redacted (`sanitizeUrl`), and a
 // data:/blob: URL is only its scheme (it can be megabytes).
