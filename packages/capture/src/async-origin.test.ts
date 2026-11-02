@@ -720,3 +720,25 @@ describe('installAsyncOrigins - unhandled rejections stay observable', () => {
     r.stop();
   });
 });
+
+describe('installAsyncOrigins - a reason that cannot be inspected', () => {
+  it('still rejects the caller with the SAME reason when reading its stack throws', async () => {
+    const hostile = new Proxy(
+      { name: 'NotSupportedError' },
+      {
+        get(target, key): unknown {
+          if (key === 'stack') {
+            throw new Error('stack getter');
+          }
+          return (target as Record<PropertyKey, unknown>)[key];
+        },
+      },
+    );
+    const g = fakeGlobal(() => Promise.reject(hostile));
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    const caught = await el.play().catch((e: unknown) => e);
+    expect(caught).toBe(hostile);
+    r.stop();
+  });
+});

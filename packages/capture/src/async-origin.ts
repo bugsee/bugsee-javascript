@@ -210,11 +210,15 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
         try {
           const derived = then.call(promise, undefined, (reason: unknown) => {
             // Only a reason with no stack of its own is worth remembering, and the FIRST origin wins.
-            if (isObjectLike(reason) && !byReason.has(reason)) {
-              const stack = (reason as { stack?: unknown }).stack;
-              if (typeof stack !== 'string' || stack === '') {
-                byReason.set(reason, origin);
+            try {
+              if (isObjectLike(reason) && !byReason.has(reason)) {
+                const stack = (reason as { stack?: unknown }).stack;
+                if (typeof stack !== 'string' || stack === '') {
+                  byReason.set(reason, origin);
+                }
               }
+            } catch {
+              // remembering is best-effort: the caller must still see the platform's own reason
             }
             throw reason;
           });

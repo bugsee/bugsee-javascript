@@ -105,7 +105,7 @@ describe('describeOriginTarget', () => {
         origin({
           target: {
             tagName: 'VIDEO',
-            id: 'a"\nb\u2028c\u0085d\u202ee',
+            id: 'a"\nb\u2028c\u0085d\u202ee\u2029f\u202ag\u2067h',
             error: { code: 4, message: 'bad\nhttps://u:secret@h.test/x?token=TOP' },
           },
         }),
