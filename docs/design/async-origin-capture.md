@@ -153,6 +153,31 @@ keeps the app's promise the one that is unhandled, with the **same reason object
 - The origin is attached at the two consumers that read a thrown value: the `unhandledrejection` provider and `captureException`/`crashOf`, via the existing `syntheticFrames` seam in `buildCrashJson` (`packages/core/src/crash.ts:114`). Frames are tagged as originating at the call ("async origin") so the viewer can say so.
 - The wrapper frame itself is dropped from the captured stack.
 
+### One factory for every method, and what it costs (measured)
+
+All patched methods go through ONE factory, `wrapPromiseMethod(prototype, name, options)`, which does the lookup, the guarded
+define, the idempotency mark, the `toString` delegation, the restore and the wrapper above. A new API is then one table row, not
+new code. The table row carries only data: `{ target, methods, hot?, why }`.
+
+Measured with `bench.mjs` (this directory) on a cheap real async call (`crypto.subtle.digest`, 20 000 calls, median of 5):
+
+| | Chromium 156 | Firefox 151 |
+|---|---|---|
+| native call | 1.2 µs | 4.3 µs |
+| wrapper (`apply` + `.then`), no `Error` | 1.37 µs | 6.7 µs |
+| **wrapper + `new Error()` (proposed)** | **2.33 µs** | **9.05 µs** |
+| hand-written specialised wrapper + `Error` | 2.11 µs | 9.05 µs |
+| `new Error()` alone / `new Error().stack` | 0.71 / 1.66 µs | 1.44 / 1.60 µs |
+
+- **The unified factory costs nothing measurable** over a hand-written wrapper (2.33 vs 2.11 µs Chromium; identical in Firefox): the
+  JIT specialises the closure per method. Unifying is free, and it is also the only way to keep the table maintainable.
+- **The overhead is the stack capture**, about 1 µs per call in Chromium and 2.5-4.7 µs in Firefox (it captures eagerly there).
+  The `apply` + `.then` part is about 0.2 µs in Chromium. Reading `.stack` is paid only on a rejection that has no frames.
+- That is noise for `play`, `getUserMedia`, clipboard, `decode` (a few calls per page) and visible only for APIs called thousands of
+  times a second, which is exactly the `hot` list kept out of the default set. If one of those is ever wanted, the factory takes
+  `capture: false` (0.17 µs) or a sampling rate, so the choice is data, not code.
+- Not measured: real-page effects of the extra microtask, and the retained-`Error` memory under very many pending promises.
+
 ### Cost and risk (what could make this a bad idea)
 1. **Per-call overhead** of `new Error()` (microseconds). Fine for `play`, `getUserMedia`, `clipboard`; wrong for hot APIs — `fetch` (the network interceptor already wraps it; reuse its capture, don't add a second), `Scheduler.postTask/yield`, `FileSystemWritableFileStream.write`, `Blob/Body.*`, `SubtleCrypto.*` in loops, `ReadableStream` readers. Ship a **default set** (§2 measured + obvious async-failure APIs) and a `denyHot` list; the rest is opt-in.
 2. **One-microtask delay** and a new promise identity: code comparing `video.play() === ...` or relying on exact microtask order can change. Rare, documented.
