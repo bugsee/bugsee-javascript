@@ -340,8 +340,8 @@ bounded JSON preview) in the summary/description instead of `String(value)`; (b)
 7. e2e (§5). Viewer: render origin frames distinctly and show the target description (viewer repo; needs the protocol decision below).
 
 ## 8. Open questions
-- **Protocol:** there is no frame field that says "this frame is where the API was called, not where an exception was thrown". Options:
-  a new optional `origin: 'call'` on the frame, or a fixed marker frame name. Needs the viewer owners.
+- **Protocol (DECIDED, owner 2026-11-02):** a new optional `origin: 'call'` field on the frame ("this is where the API was called, not
+  where an exception was thrown"). Not a fixed marker frame name. The viewer will adopt the field. The schema gets the field plus a drift test.
 - Default-on vs opt-in: measured value is high (BGSVIEWER-14 itself) and the always-on set is rare-call; recommend ON with opt-out.
 - WebKit is unmeasured (needs a Playwright WebKit build matching the installed Playwright).
 - `Function.prototype.toString` on a wrapped method is not `[native code]` unless the wrapper delegates; it remains detectable.
