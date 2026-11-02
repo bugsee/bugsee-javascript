@@ -516,8 +516,20 @@ describe('installAsyncOrigins — cost bounds', () => {
     const r2 = install(g2, { captureStackTrace: null });
     const el2 = new (g2.Media as new () => { play(): Promise<unknown> })();
     const reason2 = await el2.play().catch((e: unknown) => e);
-    expect(r2.originOf(reason2)?.skip).toBe(1);
+    // Both the recorder's own frames (observe, wrapped) sit above the caller in a plain `new Error().stack`.
+    expect(r2.originOf(reason2)?.skip).toBe(2);
     expect(typeof r2.originOf(reason2)?.holder.stack).toBe('string');
+  });
+
+  it('without captureStackTrace, the first frame after the skip is the CALLER, not the recorder', async () => {
+    const g = fakeGlobal(() => Promise.reject(stackless()));
+    const r = install(g, { captureStackTrace: null });
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    const callerOfPlay = (): Promise<unknown> => el.play();
+    const reason = await callerOfPlay().catch((e: unknown) => e);
+    const origin = r.originOf(reason);
+    const lines = (origin?.holder.stack ?? '').split('\n').filter((line) => /^\s+at\s/.test(line));
+    expect(lines[origin?.skip ?? 0]).toContain('callerOfPlay');
   });
 
   it('a failure while capturing degrades to the untouched result', () => {
@@ -640,6 +652,71 @@ describe('installAsyncOrigins — defaults', () => {
     const r = installAsyncOrigins({ global: g, rows: [row()], onError });
     expect(r.installed).toEqual([]);
     expect(onError).toHaveBeenCalledTimes(1);
+    r.stop();
+  });
+});
+
+// The whole point of returning a DERIVED promise: the app that ignores the rejection still produces `unhandledrejection`, exactly
+// once, for the promise the app holds - the recorder's own reaction must not mark it handled.
+describe('installAsyncOrigins - unhandled rejections stay observable', () => {
+  type Proc = {
+    listeners(event: string): ((...a: unknown[]) => void)[];
+    removeAllListeners(event: string): void;
+    on(event: string, fn: (...a: unknown[]) => void): void;
+    off(event: string, fn: (...a: unknown[]) => void): void;
+  };
+  const proc = (globalThis as unknown as { process: Proc }).process;
+
+  // The test runner listens on the same event and would fail the run; detach it for the duration.
+  const collectUnhandled = async (
+    run: () => unknown,
+  ): Promise<{ reason: unknown; promise: unknown }[]> => {
+    const saved = proc.listeners('unhandledRejection');
+    proc.removeAllListeners('unhandledRejection');
+    const seen: { reason: unknown; promise: unknown }[] = [];
+    const mine = (reason: unknown, promise: unknown): void => {
+      seen.push({ reason, promise });
+    };
+    proc.on('unhandledRejection', mine);
+    try {
+      run();
+      const { setTimeout: later } = globalThis as unknown as {
+        setTimeout(fn: () => void, ms: number): unknown;
+      };
+      await new Promise<void>((resolve) => later(resolve, 20));
+    } finally {
+      proc.off('unhandledRejection', mine);
+      for (const fn of saved) {
+        proc.on('unhandledRejection', fn);
+      }
+    }
+    return seen;
+  };
+
+  it('an ignored rejection is reported once, for the promise the caller holds, and its origin is found', async () => {
+    const reason = stackless();
+    const g = fakeGlobal(() => Promise.reject(reason));
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    let held: unknown;
+    const seen = await collectUnhandled(() => {
+      held = el.play();
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.reason).toBe(reason);
+    expect(seen[0]?.promise).toBe(held);
+    expect(r.originOf(reason)).toBeDefined();
+    r.stop();
+  });
+
+  it('a handled rejection is not reported', async () => {
+    const g = fakeGlobal(() => Promise.reject(stackless()));
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    const seen = await collectUnhandled(() => {
+      el.play().catch(() => undefined);
+    });
+    expect(seen).toHaveLength(0);
     r.stop();
   });
 });

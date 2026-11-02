@@ -85,6 +85,45 @@ describe('describeOriginTarget', () => {
     expect(text).not.toContain('SECRET');
   });
 
+  it('redacts credentials and path secrets in the source, not only the query', () => {
+    const text = describeOriginTarget(
+      origin({
+        target: {
+          tagName: 'VIDEO',
+          currentSrc: 'https://user:pw@cdn.test/app;jsessionid=ABC123/clip.mp4?x=1',
+        },
+      }),
+    );
+    expect(text).not.toContain('pw@');
+    expect(text).not.toContain('ABC123');
+    expect(text).toContain('cdn.test');
+  });
+
+  it('keeps page-controlled strings on one line and short (id, font family, media error message)', () => {
+    const text =
+      describeOriginTarget(
+        origin({
+          target: {
+            tagName: 'VIDEO',
+            id: 'a"\nb',
+            error: { code: 4, message: 'bad\nhttps://u:secret@h.test/x?token=TOP' },
+          },
+        }),
+      ) ?? '';
+    expect(text.split('\n')).toHaveLength(1);
+    expect(text).not.toContain('secret');
+    expect(text).not.toContain('TOP');
+    const font =
+      describeOriginTarget(
+        origin({
+          api: 'FontFace.load',
+          target: { family: `x\ny${'z'.repeat(500)}`, status: 'error' },
+        }),
+      ) ?? '';
+    expect(font.split('\n')).toHaveLength(1);
+    expect(font.length).toBeLessThan(200);
+  });
+
   it('omits what a media element does not have', () => {
     expect(
       describeOriginTarget(

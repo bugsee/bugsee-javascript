@@ -2,6 +2,7 @@
 // `buildCrashJson` through `enrichFrames`) and a one-line description of the TARGET the call was made on, read at REPORT time
 // (docs/design/async-origin-capture.md §4.3, §4.5). Runtime-portable: the target is read by duck typing, never by a DOM type.
 import type { FrameEnricher, StackFrame } from '@bugsee/core';
+import { sanitizeErrorMessage, sanitizeUrl } from '@bugsee/protocol';
 import type { AsyncOrigin, AsyncOriginRecorder } from './async-origin';
 
 /**
@@ -34,18 +35,25 @@ export function createAsyncOriginEnricher(
 
 type Probe = Record<string, unknown>;
 
-// A URL for a report: no query, no fragment (tokens live there), and a data:/blob: URL is only its scheme (it can be megabytes).
+// Page-controlled text in a one-line description: control characters (newline included) and quotes go, and it is clipped.
+const FIELD_LIMIT = 80;
+const field = (raw: string): string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
+  raw.replace(/[\u0000-\u001f\u007f"]+/g, ' ').slice(0, FIELD_LIMIT);
+
+// A URL for a report: no query, no fragment (tokens live there), userinfo and path secrets redacted (`sanitizeUrl`), and a
+// data:/blob: URL is only its scheme (it can be megabytes).
 const scrubSource = (raw: unknown): string | undefined => {
   if (typeof raw !== 'string' || raw === '') {
     return undefined;
   }
   const scheme = /^(data|blob):/.exec(raw);
-  return scheme !== null ? scheme[0] : (raw.split(/[?#]/)[0] as string);
+  return scheme !== null ? scheme[0] : field(sanitizeUrl(raw.split(/[?#]/)[0] as string));
 };
 
 const tag = (target: Probe): string => {
   const name = typeof target.tagName === 'string' ? target.tagName.toLowerCase() : 'element';
-  const id = typeof target.id === 'string' && target.id !== '' ? ` id="${target.id}"` : '';
+  const id = typeof target.id === 'string' && target.id !== '' ? ` id="${field(target.id)}"` : '';
   return `<${name}${id}>`;
 };
 
@@ -61,7 +69,7 @@ const describeMedia = (target: Probe): string => {
     typeof target.networkState === 'number' ? `networkState=${target.networkState}` : undefined,
     typeof target.readyState === 'number' ? `readyState=${target.readyState}` : undefined,
     error !== null && error !== undefined && typeof error.code === 'number'
-      ? `error=${error.code}${typeof error.message === 'string' && error.message !== '' ? ` "${error.message}"` : ''}`
+      ? `error=${error.code}${typeof error.message === 'string' && error.message !== '' ? ` "${field(sanitizeErrorMessage(error.message))}"` : ''}`
       : undefined,
   );
 };
@@ -79,7 +87,7 @@ const describeImage = (target: Probe): string => {
 const describeFont = (target: Probe): string =>
   parts(
     'FontFace',
-    typeof target.family === 'string' ? `"${target.family}"` : undefined,
+    typeof target.family === 'string' ? `"${field(target.family)}"` : undefined,
     typeof target.status === 'string' ? `status=${target.status}` : undefined,
   );
 

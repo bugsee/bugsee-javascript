@@ -478,3 +478,20 @@ documented requirement:
 Ember routes (`Route#model()`, router_js) ran as source only, not in a full Ember app; the Remix v2 browser runtime (`RemixBrowser`,
 single-fetch) is source-read only; Astro, Qwik, Stencil and Marko were not run in a browser (Marko `<await>`/`<try>` only skimmed).
 Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit untested.
+
+## 11. Known limitations of the first build (review round 1, accepted)
+
+- **A second recorder in the same realm is inert.** Install is idempotent through `Symbol.for('bugsee.asyncOrigin')`: a method already
+  wrapped is skipped, so a second copy of the SDK (two bundles, HMR) or a re-launch after a `launch()` that threw after installing
+  records nothing, and the first recorder's lookup does not see it. `launchCore` has no rollback for any of its interceptors, so this
+  is the same property fetch/XHR capture already has; a page reload clears it.
+- **Static methods are not patched** (`Notification.requestPermission`, `PublicKeyCredential.is…Available`, `*.isConfigSupported`, …).
+  They are one-off capability probes. The drift test lists them (`ASYNC_ORIGIN_UNPATCHED_STATICS`) so a new one forces a decision.
+- **A hostile or non-native `then`** that succeeds but returns a non-thenable leaves the derived promise dangling; native engines never
+  do this, and the recorder degrades to the untouched promise.
+- **The derived promise settles one microtask after the platform's**, and is not the platform's promise object (identity, subclass
+  species). Inherent to keeping `unhandledrejection` alive (§4.1).
+- **`describeThrown` serialises the whole object before clipping** to 256 characters. Contents of a thrown object appear in the report
+  summary as well as in `exception.reason` (where they already were); nothing redacts them beyond the existing report-level rules.
+- **Target line:** `logException` gets call-site frames but not the `Target:` line (core has no recorder); media error messages are
+  passed through the message sanitiser, source URLs through `sanitizeUrl` with the query and fragment dropped entirely.

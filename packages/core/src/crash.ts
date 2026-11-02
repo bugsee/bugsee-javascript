@@ -292,6 +292,15 @@ function typeTag(value: unknown): string {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
+// The engine's own tag; a revoked proxy or a throwing `Symbol.toStringTag` getter makes even that throw.
+const engineTag = (value: unknown): string => {
+  try {
+    return Object.prototype.toString.call(value);
+  } catch {
+    return '[object Object]';
+  }
+};
+
 /** A bounded, never-throwing rendering of a thrown value for `exception.reason`. */
 function renderThrowable(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
@@ -301,7 +310,7 @@ function renderThrowable(value: unknown): string {
       // A circular or getter-throwing object must not take the report down with it.
       return JSON.stringify(value) ?? String(value);
     } catch {
-      return Object.prototype.toString.call(value);
+      return engineTag(value);
     }
   }
   return String(value);
@@ -333,7 +342,7 @@ export function describeThrown(value: unknown): string {
     }
     return clip(String(value));
   } catch {
-    return Object.prototype.toString.call(value);
+    return engineTag(value);
   }
 }
 

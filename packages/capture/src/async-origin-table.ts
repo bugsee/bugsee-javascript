@@ -392,3 +392,26 @@ export const ASYNC_ORIGIN_EXTRAS: readonly AsyncOriginRow[] = [
 export function rowTargets(row: AsyncOriginRow): readonly string[] {
   return row.targets ?? [row.iface];
 }
+
+/**
+ * Promise-returning STATIC methods on lib.dom.d.ts (the constructor side, not a prototype). The patcher wraps prototype methods
+ * only, and every one of these is a one-off capability or permission probe that does not fail in a way worth locating, so none is
+ * patched. Listed so the drift test (`async-origin-drift.test.ts`) forces a decision when TypeScript adds one.
+ */
+export const ASYNC_ORIGIN_UNPATCHED_STATICS: Readonly<Record<string, readonly string[]>> = {
+  AudioDecoder: ['isConfigSupported'],
+  AudioEncoder: ['isConfigSupported'],
+  ImageDecoder: ['isTypeSupported'],
+  Notification: ['requestPermission'],
+  PublicKeyCredential: [
+    'getClientCapabilities',
+    'isConditionalMediationAvailable',
+    'isUserVerifyingPlatformAuthenticatorAvailable',
+    'signalAllAcceptedCredentials',
+    'signalCurrentUserDetails',
+    'signalUnknownCredential',
+  ],
+  RTCPeerConnection: ['generateCertificate'],
+  VideoDecoder: ['isConfigSupported'],
+  VideoEncoder: ['isConfigSupported'],
+};

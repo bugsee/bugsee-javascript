@@ -202,7 +202,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
         captureStackTrace(holder, self);
       } else {
         holder.stack = new Error().stack;
-        skip = 1;
+        skip = 2; // `observe` and `wrapped` sit above the caller; captureStackTrace(…, self) omits both
       }
       const origin: AsyncOrigin = { api, target, holder, skip };
       const then = thenOf(promise);

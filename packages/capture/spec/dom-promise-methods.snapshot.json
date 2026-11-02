@@ -346,5 +346,22 @@
       "mixin": false,
       "methods": ["abort", "close", "write"]
     }
+  },
+  "statics": {
+    "AudioDecoder": ["isConfigSupported"],
+    "AudioEncoder": ["isConfigSupported"],
+    "ImageDecoder": ["isTypeSupported"],
+    "Notification": ["requestPermission"],
+    "PublicKeyCredential": [
+      "getClientCapabilities",
+      "isConditionalMediationAvailable",
+      "isUserVerifyingPlatformAuthenticatorAvailable",
+      "signalAllAcceptedCredentials",
+      "signalCurrentUserDetails",
+      "signalUnknownCredential"
+    ],
+    "RTCPeerConnection": ["generateCertificate"],
+    "VideoDecoder": ["isConfigSupported"],
+    "VideoEncoder": ["isConfigSupported"]
   }
 }

@@ -16,7 +16,7 @@ const target = join(
   'dom-promise-methods.snapshot.json',
 );
 mkdirSync(dirname(target), { recursive: true });
-const snapshot = extractDomPromiseMethods();
+const { constructors: _constructors, ...snapshot } = extractDomPromiseMethods(); // constructors are for the drift test only
 writeFileSync(target, `${JSON.stringify(snapshot, null, 2)}\n`);
 const names = Object.values(snapshot.interfaces);
 console.log(

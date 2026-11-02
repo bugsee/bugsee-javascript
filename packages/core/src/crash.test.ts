@@ -551,6 +551,22 @@ describe('toCrashFrame — call-site origin', () => {
 });
 
 describe('describeThrown', () => {
+  it('never throws for a revoked proxy or a hostile toStringTag', () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    expect(() => describeThrown(revoked.proxy)).not.toThrow();
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+      get [Symbol.toStringTag](): string {
+        throw new Error('boom');
+      },
+    };
+    expect(() => describeThrown(hostile)).not.toThrow();
+    expect(typeof describeThrown(hostile)).toBe('string');
+  });
+
   it('keeps a string, number, boolean, null, undefined, symbol and bigint as their plain text', () => {
     expect(describeThrown('just a string')).toBe('just a string');
     expect(describeThrown(42)).toBe('42');
