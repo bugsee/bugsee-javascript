@@ -466,14 +466,67 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     expect(() => setup(over)).toThrow(new RegExp(`${name} must be`));
   });
 
+  it('an abandoned tick that finishes grabbing after a newer tick started a compose does not start a second one', async () => {
+    let time = 1000;
+    const s = fakeScheduler();
+    let releaseGrab: ((bytes: Uint8Array) => void) | undefined;
+    let slow = true;
+    let calls = 0;
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () => [
+        {
+          bounds: rect(0, 0, 10, 10),
+          capture: () =>
+            slow
+              ? new Promise<Uint8Array>((resolve) => {
+                  releaseGrab = resolve;
+                })
+              : Promise.resolve(new Uint8Array([1])),
+        },
+      ],
+      compose: () => {
+        calls += 1;
+        return new Promise<Uint8Array>(() => {}); // never settles
+      },
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => time,
+      stuckMs: 5000,
+      layerTimeoutMs: 100_000,
+      after: () => () => {},
+      onError: () => {},
+    });
+    source.start();
+    void s.tick(); // tick A: its window grab hangs
+    await Promise.resolve();
+    time += 5000;
+    slow = false;
+    void s.tick(); // tick B abandons A, grabs at once and starts a compose that never settles
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(calls).toBe(1);
+    releaseGrab?.(new Uint8Array([2])); // A's grab finally answers
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(calls).toBe(1);
+  });
+
   it('does not start another compose for a display while its earlier compose has not settled, and resumes once it does', async () => {
     let time = 1000;
     const s = fakeScheduler();
     let release: ((bytes: Uint8Array) => void) | undefined;
     let calls = 0;
+    let grabs = 0;
     const source = createDisplayVideoSource({
       displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
-      layers: () => [{ bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([1]) }],
+      layers: () => [
+        {
+          bounds: rect(0, 0, 10, 10),
+          capture: async () => {
+            grabs += 1;
+            return new Uint8Array([1]);
+          },
+        },
+      ],
       compose: () => {
         calls += 1;
         return new Promise<Uint8Array>((resolve) => {
@@ -498,12 +551,14 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     time += 1000;
     await s.tick();
     expect(calls).toBe(1); // no pile-up behind a hung compositor
+    expect(grabs).toBe(1); // and no window is grabbed (GPU readback + JPEG) for a frame that would be thrown away
     release?.(new Uint8Array([9]));
     await Promise.resolve();
     await Promise.resolve();
     time += 1000;
     await s.tick();
     expect(calls).toBe(2); // it settled, so the display is served again
+    expect(grabs).toBe(2);
   });
 
   it('a display whose compose fails loses that frame only, and the other display still records', async () => {

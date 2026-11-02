@@ -308,13 +308,18 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
       if (known !== undefined) {
         known.id = display.id;
       }
+      const key = display.key ?? display.id;
+      if (composing.has(key)) {
+        // An earlier compose for this display has not settled (a hung compositor): do not pile another on it, and do not
+        // grab (GPU readback + encode) windows for a frame that would be thrown away.
+        return;
+      }
       const layers = await grab(options.layers(display));
       if (!layers.some((layer) => layer.bytes !== undefined)) {
         return; // no window, or none that could be grabbed: nothing real to show
       }
-      const key = display.key ?? display.id;
       if (composing.has(key)) {
-        return; // an earlier compose for this display has not settled (a hung compositor): do not pile another on it
+        return; // started by an abandoned tick while these windows were being grabbed
       }
       const work = options.compose(display, layers);
       composing.add(key);
