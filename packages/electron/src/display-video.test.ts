@@ -118,10 +118,29 @@ describe('electronDisplays', () => {
     expect(displays().map((d) => d.key)).toEqual([70, 30]);
   });
 
-  it('falls back to its own key-window rule when keyWindowBounds says nothing or is not a rectangle', () => {
+  it('a given keyWindowBounds that names no window means NO key window: the primary display is 0, as in the displays trace', () => {
+    // a focused window on the non-primary display is ignored: the displays trace (given the same source) has none either
     const own = windowsOf(win(1, rect(1100, 10, 100, 100)));
-    expect(electronDisplays(screen, own, () => undefined)().map((d) => d.key)).toEqual([70, 30]);
-    expect(electronDisplays(screen, own, () => 'nope')().map((d) => d.key)).toEqual([70, 30]);
+    const withPrimary = { ...screen, getPrimaryDisplay: () => ({ id: 70 }) };
+    expect(electronDisplays(withPrimary, own, () => undefined)().map((d) => d.key)).toEqual([
+      70, 30,
+    ]);
+    expect(electronDisplays(withPrimary, own, () => 'nope')().map((d) => d.key)).toEqual([70, 30]);
+    // without a usable primary the lowest native id is 0, as the tracker does
+    expect(electronDisplays(screen, own, () => undefined)().map((d) => d.key)).toEqual([30, 70]);
+    const throwingPrimary = {
+      ...screen,
+      getPrimaryDisplay: () => {
+        throw new Error('primary');
+      },
+    };
+    expect(electronDisplays(throwingPrimary, own, () => undefined)().map((d) => d.key)).toEqual([
+      30, 70,
+    ]);
+  });
+
+  it('falls back to its own key-window rule only when the given keyWindowBounds THROWS', () => {
+    const own = windowsOf(win(1, rect(1100, 10, 100, 100)));
     expect(
       electronDisplays(screen, own, () => {
         throw new Error('tracker');

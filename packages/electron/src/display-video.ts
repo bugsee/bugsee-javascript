@@ -6,6 +6,8 @@ import type { DisplayInfo, Rect, WindowLayer } from './video-capture';
 /** The slice of Electron's `screen` used. */
 export interface ScreenLike {
   getAllDisplays(): Array<{ id: number; bounds: Rect }>;
+  /** The primary display: display 0 when there is no key window (as in the `displays` trace). */
+  getPrimaryDisplay?(): { id?: unknown } | null | undefined;
 }
 
 /** The slice of an Electron `BrowserWindow` used. */
@@ -50,9 +52,11 @@ const asRect = (value: unknown): Rect | undefined => {
 };
 
 /**
- * `keyWindowBounds` is the application tracker's key window (the source the `displays` trace reads on every focus event); give
- * it when there is one, so lane 0 and trace id 0 cannot disagree. Without it (or when it says nothing) the adapter applies the
- * same rule over the windows it sees, remembering the last focused one between ticks.
+ * `keyWindowBounds` is the application tracker's key window (the source the `displays` trace reads on every focus event). When
+ * it is GIVEN it is authoritative, so lane 0 and trace id 0 cannot disagree: a rectangle names the key window, anything else
+ * means there is none and the primary display is 0 (else the lowest native id), exactly as the trace numbers it. Only a source
+ * that throws, or none at all, makes the adapter apply the same rule over the windows it sees, remembering the last focused
+ * one between ticks.
  */
 export function electronDisplays(
   screen: ScreenLike,
@@ -74,17 +78,33 @@ export function electronDisplays(
       (lastFocused !== undefined && usable(lastFocused) ? lastFocused : undefined) ??
       created.find((window) => window.isVisible()) ??
       created[0];
-    let tracked: Rect | undefined;
-    try {
-      tracked = asRect(keyWindowBounds?.());
-    } catch {
-      tracked = undefined; // a throwing tracker: use our own rule
+    let bounds: Rect | undefined;
+    if (keyWindowBounds === undefined) {
+      bounds = key?.getBounds();
+    } else {
+      try {
+        bounds = asRect(keyWindowBounds());
+      } catch {
+        bounds = key?.getBounds(); // a throwing tracker: use our own rule
+      }
     }
-    const bounds = tracked ?? key?.getBounds();
     const areas = native.map((display) =>
       bounds === undefined ? 0 : intersectionArea(display.bounds, bounds),
     );
-    const keyIndex = Math.max(0, areas.indexOf(Math.max(...areas)));
+    let keyIndex = Math.max(0, areas.indexOf(Math.max(...areas)));
+    if (bounds === undefined) {
+      // No key window: the primary display is 0 (the trace's rule), else the lowest native id.
+      let primary: unknown;
+      try {
+        primary = screen.getPrimaryDisplay?.()?.id;
+      } catch {
+        primary = undefined;
+      }
+      keyIndex = Math.max(
+        0,
+        native.findIndex((display) => display.id === primary),
+      );
+    }
     const ordered = [
       ...native.slice(keyIndex, keyIndex + 1),
       ...native.filter((_, i) => i !== keyIndex),

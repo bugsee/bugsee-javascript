@@ -39,7 +39,7 @@ describe('a two-display session, end to end', () => {
         layers: electronWindowLayers(BrowserWindow),
         // "compose": the first layer's bytes stand for the composed frame of the display
         compose: async (display, layers) =>
-          new Uint8Array([display.id, ...layers.map((l) => l.bytes[0] as number)]),
+          new Uint8Array([display.id, ...layers.map((l) => l.bytes?.[0] as number)]),
         encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
         scheduler: {
           setInterval: (cb) => {

@@ -199,10 +199,12 @@ export interface DisplayVideoSourceOptions {
   /**
    * Paint the windows onto one frame the size of the display and encode it (real: an offscreen canvas or an image
    * library; an injected seam, like `encode`). Layers arrive back to front with their grabbed bytes and bounds.
+   * A window whose grab failed or timed out arrives with `bytes: undefined`, in its place in the order: paint an opaque
+   * placeholder over its bounds, so the window behind it does not show through where it was.
    */
   compose: (
     display: DisplayInfo,
-    layers: ReadonlyArray<{ bytes: Uint8Array; bounds: Rect }>,
+    layers: ReadonlyArray<{ bytes: Uint8Array | undefined; bounds: Rect }>,
   ) => Promise<Uint8Array>;
   /** Mux one display's frame ring into the container bytes (as for {@link CapturePageVideoSourceOptions}). */
   encode: (frames: readonly VideoFrame[], fps: number) => Uint8Array;
@@ -213,12 +215,12 @@ export interface DisplayVideoSourceOptions {
   maxFrames?: number;
   /**
    * A tick that has not finished after this many ms (a `capturePage` of an occluded or hung window never answers) is
-   * abandoned, so capture resumes at the next tick; its late result is discarded. Default 10000.
+   * abandoned, so capture resumes at the next tick; its late result is discarded. 1 to 2147483647. Default 10000.
    */
   stuckMs?: number;
   /**
    * One window's `capture()` that has not answered after this many ms is dropped from its display's frame (the other windows
-   * still compose, and the other displays are not held up). Default half of `stuckMs`.
+   * still compose, and the other displays are not held up). 1 to 2147483647. Default half of `stuckMs`.
    */
   layerTimeoutMs?: number;
   /** One-shot timer: calls `fn` after `ms` and returns its canceller. Default the global `setTimeout`. */
@@ -241,6 +243,15 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
   const maxFrames = options.maxFrames ?? 300;
   const stuckMs = options.stuckMs ?? 10_000;
   const layerTimeoutMs = options.layerTimeoutMs ?? Math.floor(stuckMs / 2);
+  for (const [name, ms] of [
+    ['stuckMs', stuckMs],
+    ['layerTimeoutMs', layerTimeoutMs],
+  ] as const) {
+    // The default timer runs a delay outside 1..2147483647 ms as 1 ms, which would abandon every grab at once.
+    if (!(ms >= 1 && ms <= 2_147_483_647)) {
+      throw new RangeError(`${name} must be from 1 to 2147483647 ms, got ${ms}`);
+    }
+  }
   const after =
     options.after ??
     ((ms: number, fn: () => void): (() => void) => {
@@ -264,13 +275,14 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
   const rings = new Map<string | number, { id: number; frames: VideoFrame[] }>();
   let handle: unknown;
   let epoch = 0; // bumped by clear(): a frame that began before it is discarded
+  const composing = new Set<string | number>(); // displays whose compose call has been started and has not yet settled
   let busy = false; // a slow compose must not overlap the next tick
   let busySince = 0;
   let token = 0; // identifies the running tick: an abandoned one is told apart from the current one
 
   const grab = async (
     layers: readonly WindowLayer[],
-  ): Promise<Array<{ bytes: Uint8Array; bounds: Rect }>> => {
+  ): Promise<Array<{ bytes: Uint8Array | undefined; bounds: Rect }>> => {
     const grabbed = await Promise.all(
       layers.map(async (layer) => {
         try {
@@ -281,11 +293,12 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
           };
         } catch (error) {
           report(error);
-          return undefined; // one window failing does not cost the display its frame
+          // One window failing does not cost the display its frame, but it keeps its place as a placeholder.
+          return { bytes: undefined, bounds: layer.bounds };
         }
       }),
     );
-    return grabbed.filter((layer) => layer !== undefined);
+    return grabbed;
   };
 
   const frameOf = async (display: DisplayInfo, started: number, mine: number): Promise<void> => {
@@ -296,15 +309,24 @@ export function createDisplayVideoSource(options: DisplayVideoSourceOptions): Vi
         known.id = display.id;
       }
       const layers = await grab(options.layers(display));
-      if (layers.length === 0) {
-        return;
+      if (!layers.some((layer) => layer.bytes !== undefined)) {
+        return; // no window, or none that could be grabbed: nothing real to show
       }
-      // A compositor that never settles must not keep the layers (and this display's turn) for ever either.
-      const bytes = await bounded(options.compose(display, layers), stuckMs, 'compose');
+      const key = display.key ?? display.id;
+      if (composing.has(key)) {
+        return; // an earlier compose for this display has not settled (a hung compositor): do not pile another on it
+      }
+      const work = options.compose(display, layers);
+      composing.add(key);
+      const release = (): void => {
+        composing.delete(key);
+      };
+      work.then(release, release);
+      // A compositor that never settles must not keep this tick for ever either.
+      const bytes = await bounded(work, stuckMs, 'compose');
       if (started !== epoch || mine !== token) {
         return; // cleared (blackout) or abandoned while this frame was in flight
       }
-      const key = display.key ?? display.id;
       const ring = rings.get(key) ?? { id: display.id, frames: [] };
       ring.id = display.id;
       rings.set(key, ring);

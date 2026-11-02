@@ -368,8 +368,10 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
       [1, [{ bounds: rect(100, 0, 100, 100), capture: async () => new Uint8Array([0xc]) }]],
     ]);
     const compose = vi.fn(
-      async (display: { id: number }, layers: ReadonlyArray<{ bytes: Uint8Array }>) =>
-        new Uint8Array([display.id, ...layers.map((l) => l.bytes[0] as number)]),
+      async (
+        display: { id: number },
+        layers: ReadonlyArray<{ bytes: Uint8Array | undefined; bounds: unknown }>,
+      ) => new Uint8Array([display.id, ...layers.map((l) => l.bytes?.[0] as number)]),
     );
     const encode = vi.fn((frames: readonly { bytes: Uint8Array }[], fps: number) =>
       Uint8Array.from([fps, ...frames.flatMap((f) => [...f.bytes])]),
@@ -391,7 +393,7 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     source.start();
     await s.tick();
     expect(compose).toHaveBeenCalledTimes(2);
-    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => l.bytes[0])).toEqual([0xa, 0xb]); // z order kept
+    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => l.bytes?.[0])).toEqual([0xa, 0xb]); // z order kept
     const entries = await source.snapshot(5);
     expect(entries.map((e) => [e.type, e.lane, [...(e.data as Uint8Array)]])).toEqual([
       ['video', '0', [1, 0, 0xa, 0xb]],
@@ -429,8 +431,79 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     ]);
     source.start();
     await s.tick();
-    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => l.bytes[0])).toEqual([0xb]);
+    // the failed window keeps its place in the z-order as a bytes-less placeholder, so the window behind it cannot show through
+    expect((compose.mock.calls[0]?.[1] ?? []).map((l) => [l.bytes?.[0], l.bounds])).toEqual([
+      [undefined, rect(0, 0, 10, 10)],
+      [0xb, rect(0, 0, 10, 10)],
+    ]);
     expect(errors).toHaveLength(1);
+  });
+
+  it('records no frame for a display whose every window failed to grab (nothing real to show)', async () => {
+    const { s, source, compose, layersOf } = setup({ onError: () => {} });
+    layersOf.set(0, [
+      {
+        bounds: rect(0, 0, 10, 10),
+        capture: async () => {
+          throw new Error('grab failed');
+        },
+      },
+    ]);
+    source.start();
+    await s.tick();
+    expect(compose.mock.calls.map((c) => (c[0] as { id: number }).id)).toEqual([1]);
+    expect((await source.snapshot(5)).map((e) => e.lane)).toEqual(['1']);
+  });
+
+  it.each([
+    ['stuckMs', { stuckMs: 0 }],
+    ['stuckMs', { stuckMs: Number.NaN }],
+    ['stuckMs', { stuckMs: 2_147_483_648 }],
+    ['layerTimeoutMs', { layerTimeoutMs: 0 }],
+    ['layerTimeoutMs', { layerTimeoutMs: Number.POSITIVE_INFINITY }],
+    ['layerTimeoutMs', { stuckMs: 1 }], // the derived default (floor(1 / 2) = 0) is checked too
+  ])('rejects a %s outside the timer range, as fps is', (name, over) => {
+    expect(() => setup(over)).toThrow(new RegExp(`${name} must be`));
+  });
+
+  it('does not start another compose for a display while its earlier compose has not settled, and resumes once it does', async () => {
+    let time = 1000;
+    const s = fakeScheduler();
+    let release: ((bytes: Uint8Array) => void) | undefined;
+    let calls = 0;
+    const source = createDisplayVideoSource({
+      displays: () => [{ id: 0, bounds: rect(0, 0, 10, 10) }],
+      layers: () => [{ bounds: rect(0, 0, 10, 10), capture: async () => new Uint8Array([1]) }],
+      compose: () => {
+        calls += 1;
+        return new Promise<Uint8Array>((resolve) => {
+          release = resolve;
+        });
+      },
+      encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+      scheduler: s.scheduler,
+      now: () => time,
+      stuckMs: 100,
+      after: (ms, fn) => {
+        const handle = globalThis.setTimeout(fn, 0);
+        void ms;
+        return () => globalThis.clearTimeout(handle);
+      },
+      onError: () => {},
+    });
+    source.start();
+    await s.tick(); // compose #1 starts, times out (stuckMs) and is abandoned, still pending
+    time += 1000;
+    await s.tick();
+    time += 1000;
+    await s.tick();
+    expect(calls).toBe(1); // no pile-up behind a hung compositor
+    release?.(new Uint8Array([9]));
+    await Promise.resolve();
+    await Promise.resolve();
+    time += 1000;
+    await s.tick();
+    expect(calls).toBe(2); // it settled, so the display is served again
   });
 
   it('a display whose compose fails loses that frame only, and the other display still records', async () => {
@@ -667,7 +740,7 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
             ]
           : [{ bounds: rect(10, 0, 10, 10), capture: async () => new Uint8Array([4]) }],
       compose: async (display, layers) => {
-        composed.push([display.id, ...layers.map((l) => l.bytes[0] as number)]);
+        composed.push([display.id, ...layers.map((l) => l.bytes?.[0] ?? -1)]);
         return new Uint8Array([display.id]);
       },
       encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
@@ -688,7 +761,7 @@ describe('createDisplayVideoSource — one composed frame per display', () => {
     for (const fire of timers) fire(); // the hung window's timer fires
     await ticking;
     expect(composed.sort()).toEqual([
-      [0, 9],
+      [0, -1, 9],
       [1, 4],
     ]);
     expect(errors).toHaveLength(1);
