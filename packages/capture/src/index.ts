@@ -8,6 +8,7 @@ export {
   type InstallAsyncOriginsOptions,
   installAsyncOrigins,
 } from './async-origin';
+export { createAsyncOriginEnricher, describeOriginTarget } from './async-origin-report';
 export {
   ASYNC_ORIGIN_EXTRAS,
   ASYNC_ORIGIN_TABLE,
