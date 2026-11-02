@@ -1893,6 +1893,30 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(factory.mock.calls[0]?.[0].keyWindowBounds()).toEqual(bounds);
   });
 
+  it('a throwing `video.source` factory is reported and launch carries on WITHOUT video: the receiver is still started', async () => {
+    clear();
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const onError = vi.fn();
+    const boom = new RangeError('fps must be a positive finite number, got 0');
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      onError,
+      video: {
+        source: () => {
+          throw boom;
+        },
+      },
+    });
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(true); // the rest of the Electron wiring still ran
+    const opts = f.received?.options as BugseeLaunchOptions;
+    expect(await opts.reportSnapshots?.[0]?.(5)).toEqual([]); // no video, and no crash at report time
+    await client.stop();
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // the wrapped stop still removes the listeners
+  });
+
   it('a `video.source` factory still gets a keyWindowBounds that answers undefined when no window tracker exists', () => {
     clear();
     const factory = vi.fn((_env: { keyWindowBounds: () => unknown }) => ({

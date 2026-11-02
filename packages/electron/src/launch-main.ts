@@ -559,12 +559,23 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // Start pixel capture (async permission check; a report before it's active just carries no video). The
   // controller follows the blackout: frames stop, the ring is cleared, and snapshots are empty for the span.
+  // A host factory runs HERE, after the client is registered: a throw must not abort the Electron wiring below (receiver,
+  // control, crash reporter, wrapped stop), and a retry cannot repair it (a second launch sees a repeat). So it is reported
+  // and the launch simply has no pixel video.
+  let videoSource: VideoCaptureSource | undefined;
   if (video !== undefined) {
-    videoController = createPixelVideoController({
-      source:
+    try {
+      videoSource =
         typeof video.source === 'function'
           ? video.source({ keyWindowBounds: () => appTracker?.keyWindowBounds() })
-          : video.source,
+          : video.source;
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
+  }
+  if (video !== undefined && videoSource !== undefined) {
+    videoController = createPixelVideoController({
+      source: videoSource,
       blackout,
       ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
       ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
