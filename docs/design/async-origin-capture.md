@@ -241,6 +241,8 @@ successful ones, and the breaker trips exactly when failures begin.
 - The same enricher must run on the **handled** path (`logException` / `captureException`, `packages/core/src/client.ts`), and on
   every framework adapter that captures an error instead of letting it reach `unhandledrejection` (§10): a stackless rejection that
   a framework swallows into its own error handler is exactly as useless as BGSVIEWER-14.
+- The enricher also walks `reason.cause` (a few levels) when the reason itself has no origin: `axios`, `ky`, `ofetch` and Mithril `m.request` wrap the
+  platform failure in their own class and keep the original only there (§10.4).
 - Lookup at report time is **by reason, everywhere** (the reason object is the only thing that survives every path below); by
   `event.promise` only in the fallback mode, bare call only.
 - Paths that carry the same stackless reason without ever raising `unhandledrejection` (measured, §10): Vue `app.config.errorHandler`
@@ -416,6 +418,53 @@ Every one of these is a route by which a stackless reason arrives; each must rea
 **Vue is the one that needs a documented requirement:** in production with no `app.config.errorHandler`, Vue only `console.error`s and
 the SDK sees nothing, with or without this work; the adapter must be installed.
 
-### 10.4 Unverified
-Svelte 3/4 `handle_promise`, Lit Task, Ember/RSVP, Preact (via the React compat path), SWR, Remix, Astro, Q v2 and NPO are from memory
-or adapter code only. Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit untested.
+### 10.4 The remaining frameworks and libraries (measured: headless Chromium 156, ~17 key cases also Firefox 151)
+
+**Answer: no library replaced the reason object on the platform-rejection path (`play()`), and none replaced `Promise` or
+`Promise.prototype.then`** (NPO only when the native `Promise` is deleted first; the pristine-then wrapper still tagged the reason
+there). Two kinds of extra handling emerge, neither library-specific code:
+
+1. **Identity breakers — network-error wrappers.** `axios` (1.21.0), `ky` (2.2.0), `ofetch` (1.5.1) and Mithril `m.request` wrap the
+   `fetch`/XHR failure in their own class; the original is only on `.cause` (axios with its **XHR adapter has no `.cause` at all**,
+   so the original is lost; Mithril `m.request` wraps in a new `Error`). These wrap *network* errors, not platform promises like
+   `play()`, but a stackless `TypeError: Failed to fetch` behind them is the same problem. **The enricher walks `reason.cause` a few
+   levels deep** as a fallback to the by-reason lookup.
+2. **Invisible-error gaps — the library swallows the error and the SDK sees nothing, with or without this work.** Listed in §10.5 so the
+   adapters/docs can address them.
+
+| Library (version) | Method | Effect on the promise | `unhandledrejection` | Same reason reaches its own channel? | SDK path / gap |
+|---|---|---|---|---|---|
+| Svelte 3.59.2, 4.2.20 | run | `{#await}` calls `.then(ok, err)`; with no `{:catch}` it rethrows (`await_block.js:70`) | fires with no `{:catch}`; silent with one; `onMount(async)`, `on:click(async)`, `$:` async fire | yes (`{:catch}`) | `packages/svelte` (no `{#await}` hook) |
+| Lit 3.3.3 + `@lit/task` 1.0.3 | run | Task catches into state | **silent** with no `render({error})`/`onError`; `until()` and async lifecycles fire | yes (`render`, `onError`, `.error`) | **GAP** (no Lit adapter) |
+| Ember 7.4.0 / RSVP 4.8.5 | run (bundled ember-source modules, not a full app) | `RSVP.resolve(p)` adopts `p`; the default `RSVP.on('error')` handler throws in a backburner microtask | fires with a **different `event.promise`**, same reason; `Ember.onerror` gets the same reason instead and nothing fires | yes; later-added `RSVP.on('error')` handlers never run | **GAP** (no Ember adapter) |
+| Preact 11.1.1 + compat + preact-iso 2.12.2 | run | compat `lazy` rethrows into the boundary; **iso `lazy` hangs and fires twice** (derived promises, same reason) | handlers fire; compat `lazy` with no boundary → window `error` | yes for compat `lazy`, `useErrorBoundary`, `componentDidCatch`; **no** for iso `lazy` (`ErrorBoundary.onError` never called) | `packages/react` (preact-compat test exists) |
+| SWR 2.5.1 | run | catches into hook state | none unless unhandled (`mutate(key, p)`, `trigger()`, `preload` fire) | yes (`onError`, `error`, Suspense) | `packages/react` |
+| React Router 7.18.5 | run | data router catches loader/action/lazy errors | none | yes (`useRouteError`, `useAsyncError`, `onError`) | `packages/remix` (`bugseeOnError`) |
+| React Router 6.30.4 / Remix 2.17.5 | router run; Remix runtime source only | as RR7; **no `onError` prop in v6** | none (console.error only without an `ErrorBoundary`) | yes | **GAP** (needs a route `ErrorBoundary`) |
+| Astro 7.4.4 | source, not run | island hydration errors are caught and re-dispatched as a cancelable `astro:hydration-error` `CustomEvent` (`detail.error` is the same object) plus `console.error` | none | yes (`detail.error`) | **GAP** — nothing in `packages/` listens for it |
+| Q 1.5.1 / 2.0.3 | run | Q-owned chains; adopts `p` on `Q.resolve` | none for `Q.resolve(p)`+`.then` (v2: `Q.resolve(p)` alone fires) | yes (`.fail`, `.done`, `Q.onerror`) | **GAP** |
+| NPO 0.8.1 | run | no-op if native exists; with native deleted it installs its own `Promise` | normal with native; silent with native deleted (`.catch` gets the reason) | yes | **GAP** |
+| Alpine 3.17.5 | run | evaluator catches, warns, rethrows via window `error` | window `error` (and `unhandledrejection` for a returned promise), same reason | yes | `crashOfErrorEvent`; **dedupe on reason identity** |
+| htmx 2.0.11, Stimulus 3.2.2 | run | ignore the returned promise (Stimulus `handleError`: sync throws only) | fire | n/a | browser provider |
+| Mithril 2.3.8 | run | handlers ignore it; **`m.route` `onmatch` rejection swallowed** (redirect + `console.error`); `m.request` wraps | handlers fire; `onmatch` silent | handlers yes; `onmatch` no; `m.request` no | **GAP** + `.cause` walk |
+| Inferno 10.0.0, Knockout 3.5.3, Backbone 1.6.1, Underscore 1.13.8, jQuery 4.0.0 | run | no promise machinery in the tested paths | async handlers fire | n/a | browser provider |
+| p-queue 10.0.0, p-retry 8.0.1 | run | pass the same reason through | fires if unhandled | yes | n/a |
+| axios 1.21.0, ky 2.2.0, ofetch 1.5.1 | run (network failure) | wrap in `AxiosError`/`NetworkError`/`FetchError` | fires with the wrapper type | **no**, except via `.cause` (axios XHR: none) | **walk `.cause`** |
+| RxJS 7.8.2 | run | `from(p)` forwards to `subscribe` | none (error → window `error` with no callback); `firstValueFrom` unhandled fires | yes, in all 9 cases (`config.onUnhandledError` too) | n/a |
+| Qwik 1.20.3, Stencil 4.45.2, Marko 6.4.7 | source only | Qwik passes the same reason to `onRejected`; **Stencil: a rejecting async `componentWillLoad/Render` goes to a bare `console.error` and bypasses `setErrorHandler`**; Marko not traced | not run | Qwik yes, Stencil yes | **GAP** |
+
+### 10.5 Invisible-error gaps found (independent of this feature)
+
+These swallow the error so the SDK sees nothing today; the origin work does not change that, but each is worth an adapter hook or a
+documented requirement:
+- **Lit `@lit/task`** with no `render({error})`/`onError`; **SWR** with no `onError`; **React Router 6 / Remix v2** with no `ErrorBoundary`
+  (`console.error` only); **Mithril `onmatch`**; **Q**; **Stencil** async lifecycle; **Vue production** without `errorHandler` (§10.3).
+- **Astro:** the cancelable `astro:hydration-error` event carries the same reason and nothing listens for it — a small, cheap listener in
+  `packages/astro`.
+- **Ember:** the default `RSVP.on('error')` throws before later handlers run; `Ember.onerror` is the usable channel.
+- **Preact-iso `lazy`:** double `unhandledrejection` on derived promises with the same reason → the SDK's dedupe must key on reason identity.
+
+### 10.6 Unverified
+Ember routes (`Route#model()`, router_js) ran as source only, not in a full Ember app; the Remix v2 browser runtime (`RemixBrowser`,
+single-fetch) is source-read only; Astro, Qwik, Stencil and Marko were not run in a browser (Marko `<await>`/`<try>` only skimmed).
+Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit untested.
