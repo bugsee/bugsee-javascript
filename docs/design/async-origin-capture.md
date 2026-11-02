@@ -139,36 +139,55 @@ Add them by hand with a source note.
 There is no hook at the origin other than the call (`ReportingObserver`, `PerformanceObserver`, `console.createTask`,
 `Error.prepareStackTrace` were checked: none yields anything for a media-task rejection), so the SDK wraps each listed method.
 
-### 4.1 The wrapper, in two modes
+### 4.1 The wrapper
 
 The trap that shapes everything: **attaching ANY reaction to a promise marks it handled**, so a side branch
-(`p.then(noop, record)`) silently disables `unhandledrejection` for the app. The wrapper therefore has two modes, chosen ONCE at
-install by testing `Function.prototype.toString.call(Promise.prototype.then)` for `[native code]`:
+(`p.then(noop, record)`) silently disables `unhandledrejection` for the app. The wrapper therefore returns a derived promise through a **pristine `then`**, and falls back to a no-reaction mode only when no
+pristine `then` exists (§4.1a):
 
 ```ts
-// native-then mode: return a DERIVED promise (same reason object), key the origin by reason
+// derived mode: return a DERIVED promise (same reason object) built with a PRISTINE then; key the origin by reason
 const origin = { error: new Error(), target: this, method };      // stack formatted lazily, only on failure
 const p = original.apply(this, args);
 if (!isThenable(p)) return p;
-return nativeThen.call(p, undefined, (r) => { if (isObject(r)) byReason.set(r, origin); throw r; });
+const then = pristineThen(p);                                     // §4.1a — NEVER the global Promise.prototype.then
+if (then !== undefined) return then.call(p, undefined, (r) => { if (isObject(r)) byReason.set(r, origin); throw r; });
 
-// patched-then mode (zone.js and friends): attach NO reaction; key the origin by the returned promise
+// fallback (no pristine then available): attach NO reaction; key the origin by the returned promise
 const p = original.apply(this, args);
 if (isObject(p)) byPromise.set(p, origin);
 return p;                                                         // look up with event.promise
 ```
 
-Why two modes (measured, Chromium 156 and Firefox 151):
-- With zone.js 0.14.10 loaded, `Promise.prototype.then` returns a `ZoneAwarePromise` and the derived promise's rejection **never
-  reaches `unhandledrejection`** (only zone's own `console.error`). A bare native `play()` rejection still does. So under zone.js the
-  derived-promise wrapper would turn a detectable rejection into a lost one; the no-reaction mode keeps it. A pristine native
-  `then` taken from a fresh iframe realm restores detection, but is not required.
-- In patched-then mode only a **bare** call is located (`event.promise === p`); an awaited chain surfaces the async function's own
-  promise, so the origin is lost there — the report still arrives, with element state (§4.3) instead of a call site.
-- The derived promise settles one microtask later than the original; the no-reaction mode has no such delay.
+Why this shape (measured, Chromium 156 and Firefox 151):
+- With zone.js 0.14.10 / 0.16.3 loaded, plain `p.then` returns a `ZoneAwarePromise` and the derived promise's rejection **never reaches
+  `unhandledrejection`**; a bare native `play()` rejection still does. A pristine `then` (§4.1a) gives a native derived promise, the
+  event fires with the same reason object, and the lookup by reason succeeds (Chromium and Firefox, bare and native `await`).
+- The no-reaction fallback only locates a **bare** `p` (`event.promise === p`). `await v.play()`, `play().then(...)` and a
+  downleveled `__awaiter` all surface a different `event.promise`, so the lookup misses (measured everywhere). It is a last resort,
+  not a peer mode.
+- The derived promise settles one microtask later than the original.
 
 Not used: a `Proxy` (apply trap +3.3 µs in Firefox, 20 µs cold), `Error.stackTraceLimit` tuning (capture cost is flat across limits;
 20% memory only, and it contradicts `packages/core/src/stack.ts:283-285`), side-branch reactions.
+
+### 4.1a Obtaining a pristine `then` (measured; changes the earlier design)
+
+Capturing `Promise.prototype.then` **from the global** and calling it on the platform's promise is wrong whenever the global `Promise` was
+replaced: with zone.js, core-js forced over a deleted native `Promise`, Bluebird (its UMD overwrites `window.Promise`), es6-promise
+and RSVP, the captured `then` throws a `TypeError` **synchronously inside the wrapped `play()`** ("Incompatible receiver",
+"this._then is not a function", "reading 'push'"). A wrapper must never be able to break the app call, so:
+
+1. Per call, take the `then` from the promise the platform returned, in this order: `p.__zone_symbol__then` (zone.js stores the native
+   one on native promises), else a `then` captured **at install** from a clean realm (a fresh hidden iframe's `Promise.prototype`,
+   called on `p`; or the global one if it was still native at install), else none.
+2. Call it inside a `try`; if it throws or returns a non-thenable, return the original `p` untouched (no origin recorded) — a
+   failed wrapper degrades to no wrapper, never to a broken call.
+3. Install order matters: if the SDK loads before zone.js, capturing at install is enough; after, rely on `__zone_symbol__then` or
+   the iframe realm. Without a document (worker) only the first two apply.
+
+Plain `p.then` under zone is the regression to avoid: the native event is lost for a bare `play()`, and the reason only reaches
+`NgZone.onError` / `ErrorHandler`.
 
 ### 4.2 Capture and retention
 
@@ -222,7 +241,13 @@ successful ones, and the breaker trips exactly when failures begin.
 - The same enricher must run on the **handled** path (`logException` / `captureException`, `packages/core/src/client.ts`), and on
   every framework adapter that captures an error instead of letting it reach `unhandledrejection` (§10): a stackless rejection that
   a framework swallows into its own error handler is exactly as useless as BGSVIEWER-14.
-- Lookup order at report time: by reason (native-then mode), then by `event.promise` (patched-then mode, bare call only).
+- Lookup at report time is **by reason, everywhere** (the reason object is the only thing that survives every path below); by
+  `event.promise` only in the fallback mode, bare call only.
+- Paths that carry the same stackless reason without ever raising `unhandledrejection` (measured, §10): Vue `app.config.errorHandler`
+  (Vue attaches a `.catch` to promises returned by handlers/hooks/watchers), React 19 `use()` and error boundaries
+  (`onCaughtError`, `componentDidCatch`), Alpine and a React root with no boundary (the window `error` event →
+  `crashOfErrorEvent`, `detection-providers.ts:54`), TanStack Query (thrown to the caller), zone.js chains (`NgZone.onError`).
+  `buildCrashJson` must therefore get the origin on **every** Error path, not only the `unhandledrejection` provider.
 
 ### One factory for every method, and what it costs (measured)
 
@@ -304,7 +329,7 @@ bounded JSON preview) in the summary/description instead of `String(value)`; (b)
 
 1. **Non-`Error` description** (§6a) — independent, can land first.
 2. **Table + generator + drift test**, no behaviour change.
-3. **`wrapPromiseMethod` factory with the two modes, arming and budget** (browser-only shell; runtime-portable core in `@bugsee/capture`),
+3. **`wrapPromiseMethod` factory with the pristine-then derived mode (no-reaction fallback), arming and budget** (browser-only shell; runtime-portable core in `@bugsee/capture`),
    option `captureAsyncOrigins` (default on for the always-on set, opt-out), install/restore by the browser/webworker/electron-renderer
    `launch`.
 4. **`asyncOriginEnricher`** + browser `crashOf` + `describeError` + `logException` (§4.5), and the per-API target describers (§4.3).
@@ -325,8 +350,72 @@ bounded JSON preview) in the summary/description instead of `String(value)`; (b)
 ## 9. Independent review (what changed from v1)
 
 An independent review (a second model, its own measurements) agreed that wrapping is the only hook and found these defects in v1,
-all now reflected above: (1) the derived-promise wrapper loses `unhandledrejection` under zone.js (measured) → two modes, §4.1;
+all now reflected above: (1) the derived-promise wrapper loses `unhandledrejection` under zone.js (measured) → pristine-`then` derived promise, §4.1/§4.1a (the first review proposed two modes; the framework survey, §10, showed capturing the global `then` itself breaks `play()` when `Promise` is replaced);
 (2) `syntheticFrames` is the wrong seam for a `DOMException` → `enrichFrames`, §4.5; (3) the rate breaker is inverted → arm on first
 failure plus a budget, §4.4; (4) Firefox's cost is the derived `then` as much as the `Error` → a no-reaction mode, §4.1; (5) `Proxy` and
 `stackTraceLimit` tuning buy nothing, §4.1; (6) the target (`this`) is the stronger signal for `play()` and v1 discarded it, §4.3.
 
+
+## 10. Frameworks and custom Promise implementations (measured, headless Chromium 156 / Firefox 151)
+
+Question: do React, Vue, Svelte, Solid, Preact, Angular and the replacement-Promise libraries change what the wrapper and
+`unhandledrejection` see? **No per-library code path is needed**, provided (a) the wrapper uses a pristine `then` and can never throw
+into the app call (§4.1a), (b) the origin is looked up **by reason** at every consumer (§4.5), and (c) the SDK's framework adapters
+pass the origin through the same crash builder.
+
+### 10.1 What each library does to a platform promise
+
+| Library | What it does to promises | Effect on `unhandledrejection` | Extra handling |
+|---|---|---|---|
+| Plain native; core-js with native present | does not replace `Promise` | fires, same reason | none |
+| core-js forced over a deleted native `Promise` | own `Promise`; dispatches an untrusted synthetic event for its own promises | fires for its own; for the native `p`, `p.then` is native | never use the global `then` |
+| Bluebird | UMD replaces `window.Promise`; own untrusted event | `Bluebird.resolve(p)` handles `p`; its event carries the same reason, not `p` | lookup by reason |
+| es6-promise, RSVP | global replaced only if the app does it; **no DOM event** | silent for those chains (baseline gap: the SDK sees nothing) | none for the wrapper |
+| zone.js (0.14.10, 0.16.3) | `ZoneAwarePromise`; patches native `then`; reports to console and `NgZone.onError` | native `p` unhandled: fires. Zone chains: **never fires** (also for a derived promise made with plain `p.then`) | pristine then (§4.1a) |
+| zone.js with `__zone_symbol__DISABLE_WRAPPING_UNCAUGHT_PROMISE_REJECTION=false` | wraps zone rejections | event fires for zone chains | pristine then |
+| Vue 3 dev, with `errorHandler` | `callWithAsyncErrorHandling` runs `.catch` on handler/hook/watcher promises | **does not fire**; `errorHandler` gets the same reason | lookup by reason |
+| Vue 3 dev, no `errorHandler` | `logError` rethrows | fires, same reason | none |
+| Vue 3 prod, no `errorHandler` | `console.error` only | **does not fire → invisible** | the adapter is required |
+| React 18/19 event handler | ignores the returned promise | fires, same reason | none |
+| React 19 `use()` | attaches `then`, rethrows in render | does not fire; boundary gets the same reason; no boundary → window `error` | lookup by reason |
+| TanStack Query | handles the promise internally | unhandled `fetchQuery`: fires; caught/observer errors: same reason | none |
+| Redux Toolkit `createAsyncThunk` | serializes the error | `unwrap()` rejects with a **plain object, not the reason**: identity lookup misses | optional name+message match |
+| jQuery 4 | `$.when`/`Deferred` pass the same reason to `.fail`; adopted native promises are handled | no event | none |
+| Alpine | `.catch` → `setTimeout(throw)` | window `error` event, same reason; no `unhandledrejection` | `crashOfErrorEvent` |
+| Solid | `castError` keeps Errors; `createResource` handles | reaches `ErrorBoundary` | none |
+| Svelte 5 `{#await}` (source) | no `catch` block rethrows from the `then` callback | fires, same reason; silent with a `catch` block | none |
+| Next.js / Nuxt client | listeners only check redirects / show a dev overlay; none `preventDefault` | no effect | the React / Vue adapters |
+| Angular | `NgZone.onError` → `ErrorHandler`; `provideBrowserGlobalErrorListeners()` is opt-in and `preventDefault`s | native event still fires without it; zoneless is the v22 default (`core.mjs:1994`) but `samples/angular-spa` ships zone.js ~0.14.10 | pristine then |
+
+### 10.2 "Custom Promise implementations"
+
+They fall into three groups, and none needs bespoke wrapper code:
+- **They replace `globalThis.Promise`** (Bluebird by default, core-js when forced, zone.js's `ZoneAwarePromise`): the only hazard is the
+  wrapper calling the captured global `then` on a native promise — fixed by §4.1a. The platform keeps returning **native** promises, so the
+  wrapper still sees a native `p`.
+- **They produce thenables or chains that never reach `unhandledrejection`** (es6-promise, RSVP, jQuery `Deferred`, Vue's handler
+  `.catch`, React's `use`): the reason is delivered through the library's or the framework's own channel. That is the SDK adapters'
+  job (§10.3); the wrapper's contribution is only that the **same reason object** carries the origin.
+- **Transpiled async** (`__awaiter`, regenerator): changes which promise `event.promise` is, which is why the lookup is by reason, not by promise.
+
+### 10.3 SDK adapter paths that must apply the enrichment
+
+Every one of these is a route by which a stackless reason arrives; each must reach `buildCrashJson` with the origin lookup
+(`asyncOriginEnricher`, §4.5):
+
+| Path | Where |
+|---|---|
+| `unhandledrejection` provider | `packages/browser/src/detection-providers.ts` |
+| `error` event provider (Alpine, React root with no boundary) | `crashOfErrorEvent`, `detection-providers.ts:54` |
+| `logException` / `captureException` | `packages/core/src/client.ts` |
+| React error boundary / `reportReactError` | `packages/react/src/error-boundary.ts` |
+| Vue `installBugseeErrorHandler`; Nuxt chains its own `errorHandler` (`entry.js:43`) | `packages/vue`, `packages/nuxt` |
+| Angular `BugseeErrorHandler` (`reportError` → `logException`) | `packages/angular/src/error.ts` |
+| Solid `solidErrorHandler`; SvelteKit `handleErrorWithBugsee` | `packages/solid`, `packages/sveltekit` |
+
+**Vue is the one that needs a documented requirement:** in production with no `app.config.errorHandler`, Vue only `console.error`s and
+the SDK sees nothing, with or without this work; the adapter must be installed.
+
+### 10.4 Unverified
+Svelte 3/4 `handle_promise`, Lit Task, Ember/RSVP, Preact (via the React compat path), SWR, Remix, Astro, Q v2 and NPO are from memory
+or adapter code only. Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit untested.
