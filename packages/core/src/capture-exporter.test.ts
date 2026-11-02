@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import type { CaptureEntryFactory, CaptureSnapshot, CaptureStore, StoredEntry } from './contracts';
+import { createMemoryCaptureStore } from './memory-capture-store';
 
 const rec = (type: FileType, timestamp: number, data: unknown): StoredEntry => ({
   type,
@@ -72,6 +73,46 @@ describe('createCaptureExporter — stream', () => {
     expect(fake.isReleased()).toBe(true);
   });
 
+  it('releases the snapshot when the stream is abandoned BEFORE it was ever read', async () => {
+    const fake = fakeStore([rec('log', 1, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await it.return?.(undefined); // an unstarted async generator would skip its own finally
+    expect(fake.isReleased()).toBe(true);
+  });
+
+  it('releases once, and a second return() is harmless', async () => {
+    const release = vi.fn();
+    const store: CaptureStore = {
+      add: () => {},
+      tick: () => {},
+      clear: () => {},
+      snapshot: () => ({
+        stream: async function* () {},
+        drainAll: async () => new Map(),
+        release,
+      }),
+    };
+    const it = createCaptureExporter(store).stream();
+    await it.return?.(undefined);
+    await it.return?.(undefined);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the snapshot when a consumer throws into a stream that was never read', async () => {
+    const fake = fakeStore([rec('log', 1, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await expect(it.throw?.(new Error('consumer failed'))).rejects.toThrow('consumer failed');
+    expect(fake.isReleased()).toBe(true);
+  });
+
+  it('releases the snapshot when a consumer throws into the stream mid-read', async () => {
+    const fake = fakeStore([rec('log', 1, {}), rec('log', 2, {})]);
+    const it = createCaptureExporter(fake.store).stream();
+    await it.next();
+    await expect(it.throw?.(new Error('consumer failed'))).rejects.toThrow('consumer failed');
+    expect(fake.isReleased()).toBe(true);
+  });
+
   it('yields nothing for an empty snapshot', async () => {
     const seen: unknown[] = [];
     for await (const e of createCaptureExporter(fakeStore([]).store).stream()) {
@@ -93,6 +134,27 @@ describe('createCaptureExporter — stream', () => {
     }
     expect(seen).toEqual([{ m: 'a' }, { m: 'c' }]); // the torn record skipped, the stream continued
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createCaptureExporter — stream time range', () => {
+  const storeWithRange = (range: { start: number; end: number } | undefined): CaptureStore => {
+    const { store } = fakeStore([]);
+    const inner = store.snapshot();
+    return {
+      ...store,
+      snapshot: () => ({ ...inner, ...(range !== undefined ? { timeRange: () => range } : {}) }),
+    };
+  };
+
+  it('carries the snapshot range on the stream', () => {
+    const stream = createCaptureExporter(storeWithRange({ start: 5, end: 9 })).stream();
+    expect(stream.timeRange).toEqual({ start: 5, end: 9 });
+  });
+
+  it('has no range when the snapshot cannot state one', () => {
+    const stream = createCaptureExporter(storeWithRange(undefined)).stream();
+    expect('timeRange' in stream).toBe(false);
   });
 });
 
@@ -206,5 +268,19 @@ describe('createCaptureExporter — owner-scoped export', () => {
     const { store, calls } = spyStore();
     await createCaptureExporter(store).drain();
     expect(calls[0]?.owner).toBeUndefined();
+  });
+});
+
+describe('createCaptureExporter — lane', () => {
+  it('drain() entries keep the lane of the record they came from', async () => {
+    const store = createMemoryCaptureStore();
+    store.add({
+      type: 'replay',
+      timestamp: 1,
+      serialized: '{"timestamp":1,"data":1}',
+      lane: 'win-3',
+    });
+    const replay = (await createCaptureExporter(store).drain()).get('replay');
+    expect(replay?.[0]?.lane).toBe('win-3');
   });
 });

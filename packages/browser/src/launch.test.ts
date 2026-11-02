@@ -2816,7 +2816,7 @@ describe('launch', () => {
     expect(env.app?.package_id).toBe('unknown');
   });
 
-  it('reports maxDataSize (default 10 MB) in the wire-form sdk.options, and honors an override', async () => {
+  it('reports maxDataSize (default 20 MB without a durable store) in the wire-form sdk.options, and honors an override', async () => {
     const sdkOptions = async (over: Partial<BugseeLaunchOptions>) => {
       const transport = uploadTransport();
       const client = await launchTracked(
@@ -2830,10 +2830,62 @@ describe('launch', () => {
         }
       ).environment.sdk.options as Record<string, unknown>;
     };
-    expect((await sdkOptions({}))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(10);
+    expect((await sdkOptions({}))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(20);
     expect((await sdkOptions({ maxDataSize: 7 }))[optionKeyToWire(BugseeOption.MaxDataSize)]).toBe(
       7,
     );
+  });
+
+  describe('maxDataSize default follows where the window lives', () => {
+    // The cap bounds what the window can hold. In memory it IS the heap cost; in IndexedDB the window is not in the heap,
+    // so it can be larger. Streaming export no longer copies the window at report time, so neither default raises the peak.
+    const effective = async (over: Partial<BugseeLaunchOptions>): Promise<unknown> => {
+      const transport = uploadTransport();
+      const client = await launchTracked('tok', baseOptions({ transport, carrier: {}, ...over }));
+      await client.logException(new Error('x'));
+      const sent = JSON.parse(
+        String(
+          (
+            transport.mock.calls.find(([url]) =>
+              String(url).endsWith('/v2/issues'),
+            )?.[1] as HttpRequestOptions
+          ).body,
+        ),
+      ) as { environment: EnvironmentEnvelope };
+      return (sent.environment.sdk.options as Record<string, unknown>)[
+        optionKeyToWire(BugseeOption.MaxDataSize)
+      ];
+    };
+
+    it('is 30 MB with a durable (IndexedDB) capture store', async () => {
+      expect(
+        await effective({ persist: true, indexedDB: new IDBFactory(), locks: fakeWebLocks() }),
+      ).toBe(30);
+    });
+
+    it('is 20 MB when the window is held in memory (persist off, or an injected store)', async () => {
+      expect(await effective({ persist: false })).toBe(20);
+      expect(
+        await effective({
+          persist: true,
+          captureStore: memStore(),
+          indexedDB: new IDBFactory(),
+          locks: fakeWebLocks(),
+        }),
+      ).toBe(20);
+    });
+
+    it('an explicit maxDataSize wins over both defaults', async () => {
+      expect(
+        await effective({
+          persist: true,
+          indexedDB: new IDBFactory(),
+          locks: fakeWebLocks(),
+          maxDataSize: 12,
+        }),
+      ).toBe(12);
+      expect(await effective({ persist: false, maxDataSize: 12 })).toBe(12);
+    });
   });
 
   it('passes app identity through to the environment', async () => {
@@ -3947,7 +3999,11 @@ describe('launch — session replay (lazy)', () => {
       'function',
     );
     expect(call[1]).toEqual({}); // the shared fileEncoders map (replay writes its encoder into it)
-    expect(call[2]).toEqual({ blackout: expect.any(Object) }); // no caller overrides → replay's own fail-closed defaults apply
+    expect(call[2]).toEqual({
+      blackout: expect.any(Object),
+      checkoutEveryNms: 30_000,
+      streamEncoders: {},
+    }); // default 60 s window → 30 s cadence; no caller overrides → replay's own fail-closed defaults apply
   });
 
   it('records when the document arrives via window.document (the real-browser path)', async () => {
@@ -4034,6 +4090,7 @@ describe('launch — session replay (lazy)', () => {
       maskAllText: false,
       checkoutEveryNms: 5000,
       blackout: expect.any(Object),
+      streamEncoders: {},
     }); // options forwarded
   });
 
@@ -4049,7 +4106,11 @@ describe('launch — session replay (lazy)', () => {
   it('enables replay with default options when replay is `true`', async () => {
     await launchTracked('tok', domReplayOptions({ replay: true }));
     await vi.waitFor(() => expect(registerReplay).toHaveBeenCalledTimes(1));
-    expect(registerReplay.mock.calls[0]?.[2]).toEqual({ blackout: expect.any(Object) }); // no options object
+    expect(registerReplay.mock.calls[0]?.[2]).toEqual({
+      blackout: expect.any(Object),
+      checkoutEveryNms: 30_000,
+      streamEncoders: {},
+    }); // no options object
   });
 
   // Product decision: `replay` collects data and is ON by default, so an invalid scalar is OFF (fail

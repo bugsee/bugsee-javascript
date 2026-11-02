@@ -18,6 +18,8 @@ export interface MemoryCaptureStoreOptions {
   maxDataSizeBytes?: number;
   /** Time source for the initial part / clear; injectable for tests. Default system clock. */
   clock?: Clock;
+  /** Called when the byte cap forced the whole visual lane out and a fresh replay base is needed (see ChunkCaptureStoreOptions). */
+  onVisualReset?: () => void;
 }
 
 export function createMemoryCaptureStore(options?: MemoryCaptureStoreOptions): CaptureStore {

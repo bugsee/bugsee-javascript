@@ -48,20 +48,20 @@ import {
   createServiceContainer,
   createSystemClock,
   createUploadPipeline,
+  createVisualResetGate,
   type DiskPressureState,
   DiskPressureToken,
   defineService,
   FAIL_CLOSED_BOOLEAN_OPTION,
   FAIL_CLOSED_BOOLEAN_OR_BAG_OPTION,
   FAIL_ON_BOOLEAN_OPTION,
+  type FileStreamEncoder,
   getCarrierClient,
   getCarrierPendingLaunch,
   getCarrierStatus,
   getOrCreateInterceptor,
   getProcessStatus,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
@@ -82,6 +82,7 @@ import {
   TransportToken,
   type TriggerPipeline,
   type UploadResult,
+  withTransportHeaders,
 } from '@bugsee/core';
 import { BugseeOption, type EnvironmentEnvelope, TraceName } from '@bugsee/protocol';
 import { applicationTrackerFor } from '@bugsee/trackers/browser';
@@ -134,14 +135,22 @@ const SDK_VERSION = BUGSEE_SDK_VERSION;
 // the data safe is that it becomes DURABLE, and the next page load recovers it.
 const PAGE_HIDE_FLUSH_MS = 1000;
 const DEFAULT_ENDPOINT = 'https://api.bugsee.com';
-// Browser/edge capture buffer ceiling (10 MB on browser, 50 MB on Node).
-const DEFAULT_MAX_DATA_SIZE_MB = 10;
+// The byte cap on the rolling capture window: 20 MB while the window lives in memory, 30 MB when the IndexedDB capture store
+// holds it (the window is then not in the heap, so a larger one costs quota rather than heap; if IndexedDB refuses writes the
+// store keeps those records in memory, still bounded by this cap). Both used to be 10 MB, which a few seconds of rrweb DOM
+// events fill (BGSVIEWER-12). A bigger in-memory window is a real heap cost (about 2x its serialized size); what the streaming
+// export changes is the REPORT-TIME copy of it, which used to add another 1-2x (docs/design/streaming-export.md section 9).
+const DEFAULT_MAX_DATA_SIZE_MB = 20;
+const DEFAULT_DURABLE_MAX_DATA_SIZE_MB = 30;
 
 // Browser launch-option definitions = the shared cross-runtime set plus the browser's own maxDataSize
-// (10 MB default vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
+// (20 MB default, 30 MB with the IndexedDB store, vs node's 50 — its canonical identifier lives in @bugsee/protocol for wire parity).
 /** Canonical identifier of the (browser-local) `replay` switch: no cross-SDK identity, so it lives here. */
 /** How long persistence must hold before the replay recorder restarts for a fresh snapshot (see the disk-pressure hook). */
 const REPLAY_CHECKOUT_QUIET_MS = 5000;
+/** Longest replay checkout cadence (rrweb default) and the shortest we derive from a short window. */
+const REPLAY_CHECKOUT_MAX_MS = 60_000;
+const REPLAY_CHECKOUT_MIN_MS = 5000;
 const REPLAY_OPTION_KEY = 'com.bugsee.option.replay.enabled';
 /** Canonical identifier of the (browser-local) `persist` switch: no cross-SDK identity, so it lives here. */
 const PERSIST_OPTION_KEY = 'com.bugsee.option.browser.persist';
@@ -501,7 +510,7 @@ export interface BugseeLaunchOptions {
 
   /** Rolling recording window in seconds. Default 60. */
   maxRecordingTime?: number;
-  /** Max captured data kept in the rolling buffer, in megabytes. Default 10. */
+  /** Max captured data kept in the rolling buffer, in megabytes. Default 20 (30 when the IndexedDB capture store holds it). */
   maxDataSize?: number;
   /**
    * Keep the rolling capture window and the report queue in IndexedDB, so the recent past survives a
@@ -547,6 +556,12 @@ export interface BugseeLaunchOptions {
    * browser leaves it unset.
    */
   hostOwnedTraces?: readonly string[] | TraceSuppression;
+  /**
+   * For a host whose store lives elsewhere (the Electron renderer streams into main's): called once at launch with a function
+   * that restarts the replay recorder for a fresh full snapshot (a no-op until the recorder exists, or when there is none).
+   * The host decides WHEN (it paces its own restarts); a standalone browser needs none, its own store restarts the recorder.
+   */
+  onReplayRestart?: (restart: () => void) => void;
   /** Time source. Default the system clock (createClient's default). */
   clock?: Clock;
   /** Scheduler for the capture-store tick + system-traces sampling. Default global timers. */
@@ -646,13 +661,8 @@ export interface LaunchResult {
 
 // Wrap the transport so EVERY SDK request carries X-Bugsee-Internal — the network capture's default
 // self-isolation skips it, so the SDK never records its own traffic.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, {
-      ...options,
-      headers: { ...options.headers, 'x-bugsee-internal': '1' },
-    });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
 
 function reportInvalidHostOwned(onError: ((error: unknown) => void) | undefined): void {
   reportGuarded(
@@ -784,6 +794,11 @@ async function buildLaunch(
   // check decided instead of the static `false` default (for an explicit or invalid value this is a no-op).
   resolved.canonical[PERSIST_OPTION_KEY] = persist;
   const durableCapture = persist && options.captureStore === undefined;
+  // The durable window is not in the heap: a host that did not choose a cap gets the larger durable default (and the
+  // report's `sdk.options` says so, like `persist` above).
+  if (durableCapture && !Object.hasOwn(resolved.host, BugseeOption.MaxDataSize)) {
+    resolved.canonical[BugseeOption.MaxDataSize] = DEFAULT_DURABLE_MAX_DATA_SIZE_MB;
+  }
   const recoverEnabled = (options.recover ?? true) && durableCapture;
   const coexistence = createCoexistence({
     appToken,
@@ -853,9 +868,24 @@ async function buildLaunch(
   // self's namespace is fresh, so `cleanOtherGenerations` is left at its harmless default (nothing to clean).
   const maxRecordingTime = resolved.options.get(BugseeOption.Duration, 60);
   const maxDataSize = resolved.options.get(BugseeOption.MaxDataSize, DEFAULT_MAX_DATA_SIZE_MB);
+  // Set once the replay recorder exists. The store calls it when the byte cap forced every replay base out, so the
+  // recorder takes a fresh FullSnapshot; rate-limited so an oversized snapshot cannot loop snapshot -> drop -> snapshot.
+  let restartReplay: (() => void) | undefined;
+  try {
+    options.onReplayRestart?.((): void => restartReplay?.());
+  } catch (error) {
+    reportGuarded(options.onError, error); // a host callback must never fail the launch
+  }
   const storeBounds = {
     maxRecordingTimeMs: maxRecordingTime * 1000,
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    // Resets that keep coming mean one snapshot does not fit the cap: the gate backs off (doubling, up to 5 min) instead
+    // of snapshotting the whole DOM every few seconds, and a reset before the recorder exists spends none of its budget.
+    onVisualReset: createVisualResetGate({
+      now: () => clock.monotonicNow(),
+      ready: () => restartReplay !== undefined,
+      restart: () => restartReplay?.(),
+    }),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   const clock = options.clock ?? createSystemClock();
@@ -981,6 +1011,12 @@ async function buildLaunch(
   const fileEncoders: Record<'replay', (payloads: unknown[]) => Uint8Array> | undefined =
     replayEnabled ? ({} as Record<'replay', (payloads: unknown[]) => Uint8Array>) : undefined;
 
+  // The streaming counterpart of `fileEncoders`: the replay registers its entry-by-entry encoder here, and the client reads
+  // the same map by reference at every report (so the lazy-loaded chunk can still add to it).
+  const streamEncoders: Record<'replay', FileStreamEncoder> | undefined = replayEnabled
+    ? ({} as Record<'replay', FileStreamEncoder>)
+    : undefined;
+
   const client = createClient({
     // Process-level state (the lifecycle listener, the blackout flag) lives on the carrier so it survives a
     // relaunch, which builds a new client.
@@ -1006,6 +1042,7 @@ async function buildLaunch(
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
+    ...(streamEncoders !== undefined ? { streamEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
     ...(reportMarkers !== undefined
       ? { reportMarkers: { store: reportMarkers, generation: captureGeneration } }
@@ -1245,6 +1282,14 @@ async function buildLaunch(
         ),
       );
     }
+    // A base (FullSnapshot) must exist at the start of the window or the replay opens on orphans: snapshot at least
+    // twice per window (a non-finite window falls back to the longest cadence).
+    const derivedCheckoutMs = Number.isFinite(maxRecordingTime)
+      ? Math.max(
+          REPLAY_CHECKOUT_MIN_MS,
+          Math.min(REPLAY_CHECKOUT_MAX_MS, (maxRecordingTime * 1000) / 2),
+        )
+      : REPLAY_CHECKOUT_MAX_MS;
     void import('@bugsee/replay')
       .then(async (m) => {
         // Canvas is an opt-in add-on: lazy-`import()` @bugsee/replay-canvas ONLY when replay.canvas is set,
@@ -1258,7 +1303,15 @@ async function buildLaunch(
             )
           : undefined;
         const recorder = m.registerReplay(client, fileEncoders, {
+          ...(streamEncoders !== undefined ? { streamEncoders } : {}),
+          // A base (FullSnapshot) must exist at the start of the window or the replay opens on orphans: snapshot at
+          // least twice per window. An explicit positive replay.checkoutEveryNms wins; undefined / 0 / NaN do not
+          // (they would silently restore the 60 s default, or disable periodic snapshots).
           ...replayMasking,
+          checkoutEveryNms:
+            typeof replayMasking.checkoutEveryNms === 'number' && replayMasking.checkoutEveryNms > 0
+              ? replayMasking.checkoutEveryNms
+              : derivedCheckoutMs,
           // The recorder follows the client's blackout: stopped for its whole span, restarted (a fresh full
           // snapshot) at the end — and never started at all if a blackout began before this chunk loaded.
           blackout: client.getService(BlackoutToken),
@@ -1269,6 +1322,7 @@ async function buildLaunch(
         });
         // `undefined` = a DOM-less host, where nothing records: only a real recorder makes `capture` claim `active`.
         if (recorder !== undefined) {
+          restartReplay = (): void => recorder.checkout();
           captureState?.setVisualCapture(true);
           // Replay stops being persisted under pressure (the window stays in memory), so the durable stream has a
           // gap of incremental events. When persistence resumes, restart the recorder: the resumed tail then begins

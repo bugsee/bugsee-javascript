@@ -1,3 +1,4 @@
+import { isBundleBody } from './bundle-body';
 import { BugseeError } from './errors';
 import type { ReportingRequest } from './reporting';
 import type { Bundle, UploadPipeline, UploadResult } from './transport';
@@ -45,10 +46,20 @@ export function createTriggerPipeline(options: TriggerPipelineOptions): TriggerP
   const queue: Array<{ request: ReportingRequest; resolve: (result: UploadResult) => void }> = [];
 
   const assembleAndEnqueue = async (request: ReportingRequest): Promise<UploadResult> => {
+    let bundle: Bundle | undefined;
     try {
-      const bundle = await assemble(request);
+      bundle = await assemble(request);
       return await uploadPipeline.enqueue(bundle);
     } catch (err) {
+      // An upload pipeline resolves (it owns and disposes the body from `enqueue` on), so reaching here with a bundle means
+      // it threw instead: nothing else will release a file/Blob-backed body.
+      if (bundle !== undefined && isBundleBody(bundle.body)) {
+        try {
+          void Promise.resolve(bundle.body.dispose()).catch(() => {});
+        } catch {
+          // releasing must never change the outcome
+        }
+      }
       return {
         ok: false,
         error:

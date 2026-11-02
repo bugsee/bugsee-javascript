@@ -1,6 +1,7 @@
 // @vitest-environment jsdom -- selector validation needs a DOM to parse against
 import {
   type CaptureDataEntry,
+  CaptureDataEntryBase,
   type CaptureProvider,
   type CaptureProviderInit,
   createBlackoutState,
@@ -9,7 +10,7 @@ import type { eventWithTime, recordOptions } from '@bugsee/rrweb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeReplay } from './encoder';
 import type { ReplayRecorder } from './recorder';
-import { type ReplayFileEncoders, registerReplay } from './register';
+import { type ReplayFileEncoders, type ReplayStreamEncoders, registerReplay } from './register';
 
 function fakeClient() {
   const providers: CaptureProvider[] = [];
@@ -43,6 +44,23 @@ const fakeInit = () =>
 describe('registerReplay', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('registers the streaming replay encoder into the stream map when one is given, and not otherwise', () => {
+    const streamEncoders: ReplayStreamEncoders = {};
+    mustRegister(fakeClient(), {}, { record: fakeRecord().record, streamEncoders });
+    expect(typeof streamEncoders.replay?.begin).toBe('function');
+    // It is the real encoder: a base in, a gzip out; and nothing is written when the map is not given.
+    const session = streamEncoders.replay?.begin({ start: undefined, end: 1 });
+    const chunks = [
+      ...(session?.write(new CaptureDataEntryBase('replay', 1, { type: 4, timestamp: 1 })) ?? []),
+      ...(session?.write(new CaptureDataEntryBase('replay', 1, { type: 2, timestamp: 1 })) ?? []),
+      ...(session?.end() ?? []),
+    ];
+    expect(chunks[0]?.[0]).toBe(0x1f);
+    const fileEncoders: ReplayFileEncoders = {};
+    mustRegister(fakeClient(), fileEncoders, { record: fakeRecord().record });
+    expect(fileEncoders.replay).toBe(encodeReplay);
   });
 
   it('installs the recorder capture-provider on the client + registers the replay.bin encoder', () => {

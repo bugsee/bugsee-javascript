@@ -100,6 +100,28 @@ describe('CaptureProviderBase — lifecycle', () => {
     ]);
   });
 
+  it('capture() flags an anchor entry, and leaves an ordinary one unflagged', () => {
+    class Anchoring extends CaptureProviderBase {
+      readonly name = 'anchoring';
+      readonly controllingOption = 'captureNetwork';
+      protected onStart(): void {}
+      emit(anchor?: boolean): void {
+        if (anchor === undefined) this.capture('replay', 1, {});
+        else this.capture('replay', 1, {}, anchor);
+      }
+    }
+    const added: { anchor?: boolean }[] = [];
+    const p = new Anchoring();
+    p.init({
+      operations: createOperationDispatcher(),
+      captureAggregator: { addEntry: (e) => added.push(e), addEntries: () => {}, clear: () => {} },
+    });
+    p.emit(true);
+    p.emit(false);
+    p.emit();
+    expect(added.map((e) => e.anchor === true)).toEqual([true, false, false]);
+  });
+
   it('throws when an entry is routed before init() (deps accessed via this.pipeline)', () => {
     const provider = new NetworkProvider(mkSource()); // never init()ed
     expect(() => provider.pushLog()).toThrow(/before init/);

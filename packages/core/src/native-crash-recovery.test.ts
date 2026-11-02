@@ -42,11 +42,13 @@ function stored(type: FileType, data: unknown): StoredEntry {
 /** A fake chunk backend that records snapshot() calls and drains a fixed grouped record set. */
 function fakeBackend(grouped: Map<FileType, StoredEntry[]> = new Map()) {
   const snapshotCalls: FrozenPart[][] = [];
+  const releases = { count: 0 };
   const parts: PartMeta[] = [
     { generation: 0, number: 0, start: 0, end: 1, byteSize: 1 } as PartMeta,
   ];
   return {
     snapshotCalls,
+    releases,
     backend: {
       listParts: (_gen: number): PartMeta[] => parts,
       snapshot(frozen: readonly FrozenPart[]): CaptureSnapshot {
@@ -54,9 +56,14 @@ function fakeBackend(grouped: Map<FileType, StoredEntry[]> = new Map()) {
         let released = false;
         return {
           drainAll: () => Promise.resolve(grouped),
-          stream: async function* () {},
+          stream: async function* () {
+            for (const records of grouped.values()) {
+              yield* records;
+            }
+          },
           release() {
             released = true;
+            releases.count += 1;
           },
           get released() {
             return released;
@@ -130,7 +137,7 @@ describe('recoverNativeCrashes', () => {
 
     expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
     expect(enqueued).toHaveLength(1);
-    const out = unzip((enqueued[0] as Bundle).body);
+    const out = unzip((enqueued[0] as Bundle).body as Uint8Array);
     // request.json is a native crash.
     expect(out.request.type).toBe('crash');
     expect(out.request.severity).toBe(5); // blocker
@@ -153,8 +160,40 @@ describe('recoverNativeCrashes', () => {
     expect(source.claims).toEqual(['main.dmp']);
   });
 
-  it('harvests from the crashed generation and drains its capture exactly ONCE across all dumps', async () => {
-    const { backend, snapshotCalls } = fakeBackend();
+  it('a torn record in the crashed generation costs only itself: the bundle still ships, the claim is made, onError hears of it', async () => {
+    const grouped = new Map<FileType, StoredEntry[]>([
+      [
+        'log',
+        [
+          {
+            type: 'log',
+            timestamp: 1,
+            serialized: JSON.stringify({ timestamp: 1, data: { m: 'ok' } }),
+          },
+          { type: 'log', timestamp: 2, serialized: 'NOT-JSON' },
+        ] as StoredEntry[],
+      ],
+    ]);
+    const { backend } = fakeBackend(grouped);
+    const source = fakeSource([dump('main.dmp', 1)]);
+    const { pipeline, enqueued } = fakePipeline();
+    const onError = vi.fn();
+    const result = await recoverNativeCrashes({
+      backend,
+      marker: marker({ generation: 7 }),
+      source,
+      context: baseContext,
+      uploadPipeline: pipeline,
+      onError,
+    });
+    expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
+    expect(enqueued).toHaveLength(1);
+    expect(source.claims).toEqual(['main.dmp']);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams the crashed generation through one snapshot per dump, each released', async () => {
+    const { backend, snapshotCalls, releases } = fakeBackend();
     const source = fakeSource([dump('a.dmp', 1), dump('b.dmp', 2)]);
     const { pipeline, enqueued } = fakePipeline();
 
@@ -168,9 +207,13 @@ describe('recoverNativeCrashes', () => {
 
     expect(result).toEqual({ harvested: 2, settled: 2, complete: true });
     expect(enqueued).toHaveLength(2);
-    // ONE snapshot, over generation 7's parts.
-    expect(snapshotCalls).toHaveLength(1);
-    expect(snapshotCalls[0]?.[0]?.ref).toEqual({ generation: 7, number: 0 });
+    // One snapshot per dump (nothing is held between them), each over generation 7's parts and each released.
+    expect(snapshotCalls).toHaveLength(2);
+    expect(snapshotCalls.map((call) => call[0]?.ref)).toEqual([
+      { generation: 7, number: 0 },
+      { generation: 7, number: 0 },
+    ]);
+    expect(releases.count).toBe(2);
     expect(source.claims).toEqual(['a.dmp', 'b.dmp']);
   });
 
@@ -287,7 +330,7 @@ describe('recoverNativeCrashes', () => {
       uploadPipeline: pipeline,
     });
 
-    const out = unzip((enqueued[0] as Bundle).body);
+    const out = unzip((enqueued[0] as Bundle).body as Uint8Array);
     expect(out.manifest.attrs).toEqual({ build: '30.1' });
     expect(out.request.email).toBe('user@x.io'); // user identifier → request.json email
   });
@@ -327,8 +370,8 @@ describe('recoverNativeCrashes', () => {
     const pipeline = {
       enqueue: vi.fn((bundle: Bundle) => {
         if (
-          JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array)).minidumpFile ===
-          'bad.dmp'
+          JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['crash.json'] as Uint8Array))
+            .minidumpFile === 'bad.dmp'
         ) {
           throw boom;
         }
@@ -396,5 +439,26 @@ describe('recoverNativeCrashes', () => {
     expect(result).toEqual({ harvested: 1, settled: 1, complete: true });
     expect(enqueued).toHaveLength(1);
     expect(source.claims).toEqual(['main.dmp']);
+  });
+});
+
+describe('recoverNativeCrashes — windows of the crashed session', () => {
+  it('freezes each part with the lane the crashed run persisted for it', async () => {
+    const fake = fakeBackend();
+    const lanes: PartMeta[] = [
+      { generation: 0, number: 0, start: 0, end: 1, byteSize: 1, lane: 'w1' },
+      { generation: 0, number: 1, start: 0, end: 1, byteSize: 1 },
+    ];
+    const backend = { ...fake.backend, listParts: (): PartMeta[] => lanes };
+    const { pipeline } = fakePipeline();
+    await recoverNativeCrashes({
+      backend,
+      marker: marker(),
+      source: fakeSource([dump('main.dmp', 1)]),
+      context: baseContext,
+      uploadPipeline: pipeline,
+      generateId: () => 'nc-1',
+    });
+    expect((fake.snapshotCalls[0] ?? []).map((part) => part.lane)).toEqual(['w1', undefined]);
   });
 });

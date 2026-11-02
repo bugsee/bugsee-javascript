@@ -30,6 +30,8 @@ export interface FileCaptureStoreOptions {
   onDiskWriteError?: (error: unknown) => void;
   /** See ChunkCaptureStoreOptions.onDiskReadError. */
   onDiskReadError?: (error: unknown) => void;
+  /** See ChunkCaptureStoreOptions.onVisualReset: told when the byte cap sheds the last base of a visual lane. */
+  onVisualReset?: (lane?: string) => void;
 }
 
 export function createFileCaptureStore(
@@ -51,6 +53,7 @@ export function createFileCaptureStore(
       ? { onDiskWriteError: options.onDiskWriteError }
       : {}),
     ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
+    ...(options?.onVisualReset !== undefined ? { onVisualReset: options.onVisualReset } : {}),
   };
   return createChunkCaptureStore(backend, storeOptions);
 }

@@ -233,3 +233,99 @@ describe('createFileChunkBackend — probeWrite', () => {
     expect(flushNow).not.toHaveBeenCalled();
   });
 });
+
+describe('createFileChunkBackend — visual source lane', () => {
+  it('attaches the frozen part lane to every record it reads back', async () => {
+    const b = createFileChunkBackend(createInMemoryChunkStorage(), { generation: 5 });
+    b.openPart(ref(5, 0), 0);
+    b.appendEntry(ref(5, 0), rec('w', 'replay', 1));
+    b.openPart(ref(5, 1), 0);
+    b.appendEntry(ref(5, 1), rec('u', 'replay', 2));
+    const snap = b.snapshot([
+      { ref: ref(5, 0), count: 1, lane: 'win-3' },
+      { ref: ref(5, 1), count: 1 },
+    ]);
+    const seen: Array<[string, string | undefined]> = [];
+    for await (const r of snap.stream()) {
+      seen.push([r.serialized, r.lane]);
+    }
+    expect(seen).toEqual([
+      ['w', 'win-3'],
+      ['u', undefined],
+    ]);
+  });
+});
+
+describe('createFileChunkBackend — part lane in the durable meta', () => {
+  it('openPart(lane) is listed with its lane, open and after closePart; no lane lists none', async () => {
+    const b = createFileChunkBackend(createInMemoryChunkStorage(), { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(5, 1), 1);
+    expect((await b.listParts(5))[0]?.lane).toBe('win-3');
+    b.closePart(ref(5, 0), 2, 7);
+    const parts = await b.listParts(5);
+    expect(parts[0]).toMatchObject({ number: 0, end: 2, byteSize: 7, lane: 'win-3' });
+    expect(parts[1]).not.toHaveProperty('lane');
+  });
+});
+
+describe('createFileChunkBackend — the lane survives a meta that cannot be read back', () => {
+  it('closePart writes the lane even when the open-time meta never reached the medium', async () => {
+    const storage = createInMemoryChunkStorage();
+    const written: string[] = [];
+    const flaky = {
+      ...storage,
+      write: (gen: number, n: number, file: string, content: string) => {
+        if (file === 'meta') written.push(content);
+        storage.write(gen, n, file, content);
+      },
+      read: (gen: number, n: number, file: string) =>
+        file === 'meta' ? undefined : storage.read(gen, n, file),
+    };
+    const b = createFileChunkBackend(flaky as never, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.closePart(ref(5, 0), 2, 7);
+    expect(JSON.parse(written[written.length - 1] as string)).toMatchObject({
+      s: 1,
+      e: 2,
+      l: 'win-3',
+    });
+  });
+});
+
+describe('createFileChunkBackend — an open part that is removed leaves no lane behind', () => {
+  const metaOf = (storage: ReturnType<typeof createInMemoryChunkStorage>, n: number) =>
+    JSON.parse(storage.read(5, n, 'meta') as string) as Record<string, unknown>;
+
+  it('removePart of an open laned part: a later unkeyed part with the same ref is not given that lane', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.removePart(ref(5, 0));
+    b.openPart(ref(5, 0), 3);
+    b.closePart(ref(5, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+  });
+
+  it('removeGeneration forgets the lanes of that generation only', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(50, 0), 1, 'win-9'); // another generation whose number starts with 5
+    b.removeGeneration(5);
+    b.openPart(ref(5, 0), 3); // reopened without a lane
+    b.closePart(ref(5, 0), 4, 0);
+    b.closePart(ref(50, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+    expect(JSON.parse(storage.read(50, 0, 'meta') as string)).toMatchObject({ l: 'win-9' });
+  });
+
+  it('an unkeyed openPart over a ref whose lane was never closed starts with no lane', () => {
+    const storage = createInMemoryChunkStorage();
+    const b = createFileChunkBackend(storage, { generation: 5 });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(5, 0), 3); // the same ref reopened unkeyed
+    b.closePart(ref(5, 0), 4, 0);
+    expect(metaOf(storage, 0)).not.toHaveProperty('l');
+  });
+});

@@ -52,6 +52,10 @@ export interface CaptureDataEntry {
   timestamp: number;
   /** The structured payload (what lands in the bundle file). */
   data: unknown;
+  /** True for the first record of a self-contained base (see `StoredEntry.anchor`). Absent = false. */
+  readonly anchor?: boolean;
+  /** The visual source the record came from (see `StoredEntry.lane`). Absent = the unkeyed source. */
+  lane?: string;
   /** Serialize this entry to its stored string form. */
   serialize(): string;
   /** Populate this entry from its stored string form (mutates `this`; Android instance deserialize). */
@@ -70,6 +74,13 @@ export interface StoredEntry {
   /** The entry's serialized string form. */
   serialized: string;
   /**
+   * The record opens a self-contained base that later records of its type depend on (rrweb's Meta before its
+   * FullSnapshot). Out-of-band for the same reason as `timestamp`: the store must act on it without
+   * deserializing. Time eviction keeps the newest anchored part at or before the window start so a replay never
+   * begins with changes to a page it has no snapshot of. Absent = an ordinary record.
+   */
+  anchor?: boolean;
+  /**
    * Tenant/owner key for store partitioning, kept out-of-band for the same reason as `timestamp` — a store
    * must route on it without deserializing. Set from the active `RequestContext.owner`; `undefined` on the
    * single-tenant path, where partitioning is a no-op.
@@ -77,6 +88,13 @@ export interface StoredEntry {
    * Exists because Durable Objects for different tenants share one isolate, one client and one capture ring
    */
   owner?: string;
+  /**
+   * The visual SOURCE this record belongs to (Electron main: the id of the window whose recorder produced it), kept
+   * out-of-band like `timestamp`. Each source has its own visual lane: its own bases, eviction and reset, and its own
+   * member in the bundle. Absent = the single unkeyed source (every runtime with one screen). Only the visual types
+   * (`replay`, `video`) are routed on it.
+   */
+  lane?: string;
 }
 
 /**
@@ -104,6 +122,12 @@ export interface CaptureStore {
    * capture.
    */
   snapshot(options?: { owner?: string }): CaptureSnapshot;
+  /**
+   * The visual source `lane` will produce nothing more (its window closed). Optional: only a store with visual lanes has
+   * it. The lane is NOT dropped at once (what it captured inside the recording window is part of the report); it goes once
+   * none of its data is inside the window. A record for the lane afterwards revives it.
+   */
+  retireLane?(lane: string): void;
   /** Discard all live records. */
   clear(): void;
   /**
@@ -144,6 +168,13 @@ export interface CaptureSnapshot {
    * write was refused. A reader that finds the medium unreadable (or hung) serves this instead of nothing.
    */
   inMemory?(): Map<FileType, StoredEntry[]>;
+  /**
+   * Optional: the time range this snapshot is meant to cover, fixed when it was taken (Android's `timeRange`): the
+   * recording window ending now, clipped to when the store started recording. It comes from the store's own window and
+   * part index, never from the records, so an export can state the report's start without a pre-scan. Absent when the
+   * store cannot say (the exporter then falls back to the earliest record).
+   */
+  timeRange?(): { readonly start: number; readonly end: number };
 }
 
 /**
@@ -166,10 +197,15 @@ export interface CaptureAggregator {
  * returns them streaming (one-by-one) or all-at-once (grouped by file type), then releases the
  * snapshot — the live store keeps rolling throughout (no drain-on-read).
  */
+/** The exporter's entry stream, plus the time range of the snapshot it reads (see {@link CaptureSnapshot.timeRange}). */
+export interface CaptureEntryStream extends AsyncIterableIterator<CaptureDataEntry> {
+  readonly timeRange?: { readonly start: number; readonly end: number };
+}
+
 export interface CaptureExporter {
   /** Snapshot the store, stream deserialized entries one-by-one, then release the snapshot.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
-  stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry>;
+  stream(options?: { owner?: string }): CaptureEntryStream;
   /** Snapshot the store, read + deserialize all entries grouped by file type, then release.
    *  `options.owner` scopes the export to one tenant (see CaptureStore.snapshot). */
   drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>>;

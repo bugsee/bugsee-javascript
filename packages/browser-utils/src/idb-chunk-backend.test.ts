@@ -295,6 +295,17 @@ describe('createIdbChunkCaptureStore — chunk store over IndexedDB', () => {
     over: Partial<Parameters<typeof createIdbChunkCaptureStore>[1]> = {},
   ) => createIdbChunkCaptureStore(store, { clock: clockAt(10_000), generation: 42, ...over });
 
+  it('forwards onVisualReset to the chunk store', async () => {
+    const calls: number[] = [];
+    const store = mk(keyed(), { maxDataSizeBytes: 100, onVisualReset: () => calls.push(1) });
+    store.add({ type: 'replay', timestamp: 10_000, serialized: 'x'.repeat(120), anchor: true });
+    store.tick(11_000);
+    store.add(rec('x', 'log', 1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([1]);
+  });
+
   it('defaults the clock (system) and generation (wallNow) when unspecified', async () => {
     const store = createIdbChunkCaptureStore(keyed()); // no clock, no generation → defaults
     store.add(rec('x', 'log', 1));
@@ -1645,5 +1656,161 @@ describe('createIdbChunkBackend — unpin(): a read left to finish in the backgr
     c.release();
     await b.flush?.();
     expect(await dataKeys(inner)).toBe(0);
+  });
+});
+
+describe('createIdbChunkBackend — stream() reads one part at a time', () => {
+  const setup = async () => {
+    const inner = keyed();
+    const reads: string[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        reads.push(prefix);
+        return inner.readPrefix(prefix);
+      },
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1, 2]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.appendEntry(ref(5, n), rec(`b${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 4);
+    }
+    await b.flush?.();
+    const frozen = [0, 1, 2].map((n) => ({ ref: ref(5, n), count: 2 }));
+    return { b, reads, frozen };
+  };
+
+  it('does not read a part until the consumer has taken the one before it', async () => {
+    const { b, reads, frozen } = await setup();
+    const iterator = b.snapshot(frozen).stream();
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a0' });
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+    await iterator.next(); // b0: still part 0
+    expect(reads).toHaveLength(1);
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a1' });
+    expect(reads).toEqual([dataPrefixFor(5, 0), dataPrefixFor(5, 1)]);
+  });
+
+  it('still serves every record in order, and drainAll agrees', async () => {
+    const { b, frozen } = await setup();
+    expect(await collect(b.snapshot(frozen))).toEqual(['a0', 'b0', 'a1', 'b1', 'a2', 'b2']);
+    const drained = await b.snapshot(frozen).drainAll();
+    expect([...drained.values()].flat().map((r) => r.serialized)).toEqual([
+      'a0',
+      'b0',
+      'a1',
+      'b1',
+      'a2',
+      'b2',
+    ]);
+  });
+
+  it('a consumer that stops early never reads the rest', async () => {
+    const { b, reads, frozen } = await setup();
+    const snap = b.snapshot(frozen);
+    const iterator = snap.stream();
+    await iterator.next();
+    await iterator.return?.(undefined);
+    snap.release();
+    expect(reads).toHaveLength(1);
+  });
+
+  it('a release while a part is being read ends the stream without touching the next part', async () => {
+    const inner = keyed();
+    const reads: string[] = [];
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) => {
+        reads.push(prefix);
+        return prefix.startsWith('d/') ? new Promise(() => {}) : inner.readPrefix(prefix);
+      },
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 2);
+    }
+    await b.flush?.();
+    const snap = b.snapshot([0, 1].map((n) => ({ ref: ref(5, n), count: 1 })));
+    const pending = collect(snap);
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    snap.release();
+    expect(await pending).toEqual([]);
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+  });
+
+  it("attaches the frozen part's lane to the records it reads back", async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 0);
+    b.appendEntry(ref(5, 0), rec('w', 'replay', 0));
+    b.openPart(ref(5, 1), 0);
+    b.appendEntry(ref(5, 1), rec('u', 'replay', 0));
+    await b.flush?.();
+    const snap = b.snapshot([
+      { ref: ref(5, 0), count: 1, lane: 'win-3' },
+      { ref: ref(5, 1), count: 1 },
+    ]);
+    const seen: Array<[string, string | undefined]> = [];
+    for await (const r of snap.stream()) {
+      seen.push([r.serialized, r.lane]);
+    }
+    expect(seen).toEqual([
+      ['w', 'win-3'],
+      ['u', undefined],
+    ]);
+    const drained = (
+      await b.snapshot([{ ref: ref(5, 0), count: 1, lane: 'win-3' }]).drainAll()
+    ).get('replay');
+    expect(drained?.[0]?.lane).toBe('win-3');
+  });
+
+  it('a release after the first part was served ends the stream there, without reading the next', async () => {
+    const { b, reads, frozen } = await setup();
+    const snap = b.snapshot(frozen.slice(0, 2));
+    const iterator = snap.stream();
+    await iterator.next(); // a0
+    await iterator.next(); // b0: part 0 is served
+    snap.release();
+    expect((await iterator.next()).done).toBe(true);
+    expect(reads).toEqual([dataPrefixFor(5, 0)]);
+  });
+
+  it('a read that fails in a later part throws there, after the earlier part was served', async () => {
+    const inner = keyed();
+    const store: AsyncKeyedStore = {
+      ...inner,
+      readPrefix: (prefix) =>
+        prefix === dataPrefixFor(5, 1)
+          ? Promise.reject(new Error('part 1 unreadable'))
+          : inner.readPrefix(prefix),
+    };
+    const b = createIdbChunkBackend(store, { generation: 5, cleanOtherGenerations: false });
+    for (const n of [0, 1]) {
+      b.openPart(ref(5, n), n);
+      b.appendEntry(ref(5, n), rec(`a${n}`, 'log', n));
+      b.closePart(ref(5, n), n + 1, 2);
+    }
+    await b.flush?.();
+    const iterator = b.snapshot([0, 1].map((n) => ({ ref: ref(5, n), count: 1 }))).stream();
+    expect((await iterator.next()).value).toMatchObject({ serialized: 'a0' });
+    await expect(iterator.next()).rejects.toThrow('part 1 unreadable');
+  });
+});
+
+describe('createIdbChunkBackend — part lane in the durable meta', () => {
+  it('openPart(lane) is listed with its lane, open and after closePart; no lane lists none', async () => {
+    const b = createIdbChunkBackend(keyed(), { generation: 5, cleanOtherGenerations: false });
+    b.openPart(ref(5, 0), 1, 'win-3');
+    b.openPart(ref(5, 1), 1);
+    await b.flush?.();
+    expect((await b.listParts(5))[0]?.lane).toBe('win-3');
+    b.closePart(ref(5, 0), 2, 7);
+    await b.flush?.();
+    const parts = await b.listParts(5);
+    expect(parts[0]).toMatchObject({ number: 0, end: 2, byteSize: 7, lane: 'win-3' });
+    expect(parts[1]).not.toHaveProperty('lane');
   });
 });

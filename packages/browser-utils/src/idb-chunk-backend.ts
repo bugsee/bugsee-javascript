@@ -78,6 +78,7 @@ interface StoredMeta {
   readonly s: number;
   readonly e: number | null;
   readonly b: number;
+  readonly l?: string;
 }
 interface StoredData {
   readonly t: number;
@@ -345,6 +346,7 @@ export function createIdbChunkBackend(
   // leaves the map when its write lands, and with its part; what a crash recovers is, by definition, only what landed.
   const unlanded = new Map<string, Map<number, StoredEntry>>();
   const openStarts = new Map<string, number>(); // chunkKey → start, for the closePart meta rewrite
+  const openLanes = new Map<string, string>(); // chunkKey → visual lane, for the closePart meta rewrite
   const seqByChunk = new Map<string, number>(); // chunkKey → next data sequence number
 
   // Snapshot pinning: a part pinned by ≥1 live snapshot is not physically deleted until released.
@@ -362,12 +364,22 @@ export function createIdbChunkBackend(
     start: number,
     end: number | null,
     byteSize: number,
+    lane?: string,
   ): void => {
     // NOT a health signal (`write` false): a ~60-byte meta put succeeds on a medium that still refuses real records
     // (a per-origin quota, a data-full filesystem with free metadata), so counting it released the disk-pressure pin
     // on every tick. Only a successful DATA put (a record, or the pressure probe's record) says writes work again.
     enqueue(() =>
-      store.put(metaKey(gen, number), enc({ n: number, s: start, e: end, b: byteSize })),
+      store.put(
+        metaKey(gen, number),
+        enc({
+          n: number,
+          s: start,
+          e: end,
+          b: byteSize,
+          ...(lane !== undefined ? { l: lane } : {}),
+        }),
+      ),
     );
   };
 
@@ -416,6 +428,7 @@ export function createIdbChunkBackend(
               start: m.s,
               end: m.e ?? undefined,
               byteSize: m.b,
+              ...(typeof m.l === 'string' ? { lane: m.l } : {}),
             };
           })
           .sort((a, b) => a.number - b.number),
@@ -424,10 +437,13 @@ export function createIdbChunkBackend(
   return {
     generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       openStarts.set(chunkKey(ref), start);
+      if (lane !== undefined) {
+        openLanes.set(chunkKey(ref), lane);
+      }
       seqByChunk.set(chunkKey(ref), 0);
-      writeMeta(ref.generation, ref.number, start, null, 0);
+      writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
@@ -458,12 +474,15 @@ export function createIdbChunkBackend(
       const key = chunkKey(ref);
       const start = openStarts.get(key) ?? 0;
       openStarts.delete(key);
-      writeMeta(ref.generation, ref.number, start, end, byteSize);
+      const lane = openLanes.get(key);
+      openLanes.delete(key);
+      writeMeta(ref.generation, ref.number, start, end, byteSize, lane);
     },
 
     removePart(ref: PartRef): void {
       const key = chunkKey(ref);
       openStarts.delete(key);
+      openLanes.delete(key);
       seqByChunk.delete(key);
       unlanded.delete(key); // a snapshot already holding the map keeps its own reference
       if ((pins.get(key) ?? 0) > 0) {
@@ -530,23 +549,28 @@ export function createIdbChunkBackend(
           .map(([seq, record]) => ({ seq, record }))
           .sort((a, b) => a.seq - b.seq);
 
-      const readAll = async (): Promise<StoredEntry[]> => {
+      // One part at a time: only the part being served is ever decoded and held, so a consumer that streams the
+      // records (the export) pays for one part, not for the window. A failed read throws when its part is reached,
+      // after the earlier parts were already served.
+      const readParts = async function* (): AsyncGenerator<StoredEntry> {
         const waited = await until(waitForQueue(frozenQueue));
         if (waited === CANCELLED) {
-          return [];
+          return;
         }
         if (waited === STALLED) {
           throw new Error(
             `bugsee: IndexedDB made no progress for ${stallMs} ms; the queued writes are served from memory`,
           );
         }
-        const out: StoredEntry[] = [];
-        for (const [index, { ref, count }] of frozen.entries()) {
+        for (const [index, { ref, count, lane }] of frozen.entries()) {
+          if (released) {
+            return; // the consumer let go between parts: read nothing more
+          }
           const records = await until(
             withDeadline(store.readPrefix(dataPrefix(ref.generation, ref.number)), readTimeoutMs),
           );
           if (records === CANCELLED) {
-            return [];
+            return;
           }
           // By SEQUENCE, not by position: a refused write leaves a hole in the sequence, and the freeze is `seq < count`.
           const landed: Array<{ seq: number; record: StoredEntry }> = [];
@@ -559,7 +583,15 @@ export function createIdbChunkBackend(
             if (d === undefined) {
               continue; // one torn envelope loses ONE record, never the generation
             }
-            landed.push({ seq, record: { type: d.ty, timestamp: d.t, serialized: d.s } });
+            landed.push({
+              seq,
+              record: {
+                type: d.ty,
+                timestamp: d.t,
+                serialized: d.s,
+                ...(lane !== undefined ? { lane } : {}),
+              },
+            });
           }
           // An entry can be BOTH landed (the read saw it) and in the frozen copy: by sequence it is one record.
           const landedSeqs = new Set(landed.map(({ seq }) => seq));
@@ -567,10 +599,9 @@ export function createIdbChunkBackend(
           const merged =
             kept.length === 0 ? landed : [...landed, ...kept].sort((a, b) => a.seq - b.seq);
           for (const { record } of merged) {
-            out.push(record);
+            yield record;
           }
         }
-        return out;
       };
 
       // Drops this snapshot's PINS: an evicted part may then be deleted at once. Idempotent, and shared by `release()`.
@@ -610,13 +641,13 @@ export function createIdbChunkBackend(
       };
 
       return {
-        async *stream(): AsyncIterableIterator<StoredEntry> {
-          for (const record of await readAll()) {
-            yield record;
-          }
-        },
+        stream: (): AsyncIterableIterator<StoredEntry> => readParts(),
         async drainAll(): Promise<Map<FileType, StoredEntry[]>> {
-          return groupByType(await readAll());
+          const all: StoredEntry[] = [];
+          for await (const record of readParts()) {
+            all.push(record);
+          }
+          return groupByType(all);
         },
         release,
         // The read goes on (its result is discarded) but must not delay evictions: pins dropped, nothing else.
@@ -706,5 +737,6 @@ export function createIdbChunkCaptureStore(
       ? { onDiskWriteError: options.onDiskWriteError }
       : {}),
     ...(options?.onDiskReadError !== undefined ? { onDiskReadError: options.onDiskReadError } : {}),
+    ...(options?.onVisualReset !== undefined ? { onVisualReset: options.onVisualReset } : {}),
   });
 }

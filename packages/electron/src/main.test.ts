@@ -13,6 +13,9 @@ describe('@bugsee/electron/main entry', () => {
     expect(typeof main.createPixelVideoController).toBe('function');
     expect(typeof main.encodePixelVideo).toBe('function');
     expect(typeof main.createCapturePageVideoSource).toBe('function');
+    expect(typeof main.createDisplayVideoSource).toBe('function');
+    expect(typeof main.electronDisplays).toBe('function');
+    expect(typeof main.electronWindowLayers).toBe('function');
     expect(typeof main.createMediaRecorderVideoSource).toBe('function');
   });
 });

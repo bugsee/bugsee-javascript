@@ -23,6 +23,8 @@ export interface PartMeta {
   readonly end: number | undefined;
   /** Byte size of the part's stored records (in the backend's storage form). */
   readonly byteSize: number;
+  /** The visual source the part's records belong to (see `StoredEntry.lane`); absent = unkeyed or not visual. */
+  readonly lane?: string;
 }
 
 /** A part frozen into a snapshot: its identity + how many of its records the snapshot includes. */
@@ -30,6 +32,8 @@ export interface FrozenPart {
   readonly ref: PartRef;
   /** Records to include, oldest-first — the part's entry count at snapshot time (open-part boundary). */
   readonly count: number;
+  /** The visual source every record of this part belongs to (see `StoredEntry.lane`); absent = unkeyed or not visual. */
+  readonly lane?: string;
 }
 
 export interface ChunkBackend {
@@ -37,7 +41,7 @@ export interface ChunkBackend {
   readonly generation: number;
 
   /** Begin a new part (and write its initial durable metadata, end = undefined). */
-  openPart(part: PartRef, start: number): void;
+  openPart(part: PartRef, start: number, lane?: string): void;
   /** Append a record to a part; returns the byte size it contributed (for the store's byte cap). */
   appendEntry(part: PartRef, record: StoredEntry): number;
   /** Finalize a part — record its end timestamp + final byte size durably. */

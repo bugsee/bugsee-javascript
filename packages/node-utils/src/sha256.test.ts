@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { nodeSha256Fallback, nodeSha256Hex } from './sha256';
+import { nodeSha256Fallback, nodeSha256Hex, nodeSha256Stream } from './sha256';
 
 const ABC = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 
@@ -77,5 +77,40 @@ describe('nodeSha256Fallback', () => {
     expect(nodeSha256Fallback()).toBeUndefined(); // this Node has WebCrypto
     vi.stubGlobal('crypto', undefined);
     expect(nodeSha256Fallback()).toBe(nodeSha256Hex);
+  });
+});
+
+describe('nodeSha256Stream', () => {
+  async function* chunks(parts: Uint8Array[]): AsyncIterable<Uint8Array> {
+    for (const part of parts) yield part;
+  }
+
+  it('hashes chunks exactly as the one-shot digest hashes their concatenation', async () => {
+    const parts = [
+      new TextEncoder().encode('a'),
+      new TextEncoder().encode('b'),
+      new TextEncoder().encode('c'),
+    ];
+    expect(await nodeSha256Stream(chunks(parts))).toBe(ABC);
+  });
+
+  it('hashes an empty stream as the empty body', async () => {
+    expect(await nodeSha256Stream(chunks([]))).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+  });
+
+  it('agrees with WebCrypto over a body split at arbitrary points', async () => {
+    const body = new Uint8Array(100_000).map((_, i) => (i * 31) % 251);
+    const parts = [body.subarray(0, 1), body.subarray(1, 4097), body.subarray(4097)];
+    expect(await nodeSha256Stream(chunks(parts))).toBe(await webCryptoHex(body));
+  });
+
+  it('rejects when the stream fails part-way', async () => {
+    async function* broken(): AsyncIterable<Uint8Array> {
+      yield new Uint8Array([1]);
+      throw new Error('read failed');
+    }
+    await expect(nodeSha256Stream(broken())).rejects.toThrow('read failed');
   });
 });

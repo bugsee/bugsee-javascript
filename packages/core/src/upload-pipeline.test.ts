@@ -3,8 +3,16 @@ import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
 import { createDeferred, strToU8 } from '@bugsee/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBugseeApi } from './bugsee-api';
+import { createMemoryBody } from './bundle-body';
 import { BugseeError } from './errors';
-import type { BugseeApi, Bundle, BundleUploader, IssueCreateResult, PutResult } from './transport';
+import type {
+  BugseeApi,
+  Bundle,
+  BundleUploader,
+  IssueCreateResult,
+  PutBundleOptions,
+  PutResult,
+} from './transport';
 import {
   createUploadPipeline,
   type PipelineOutcome,
@@ -80,6 +88,166 @@ describe('createUploadPipeline — happy path', () => {
       contentLength: 3,
       checksumSha256: 'deadbeef',
       fileName: 'a.bundle.zip',
+    });
+  });
+
+  it('uploads a BundleBody: its size is the content length, its bytes are hashed, and the body itself is PUT', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const sha256 = vi.fn(async () => 'cafe');
+    const body = createMemoryBody([new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])]);
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256 })).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(Array.from((sha256.mock.calls[0] as unknown as [Uint8Array])[0])).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    const [, sent, options] = put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions];
+    expect(sent).toBe(body);
+    expect(options).toEqual({ contentLength: 5, checksumSha256: 'cafe', fileName: 'a.bundle.zip' });
+  });
+
+  it('a body that is not held in memory is uploaded by its size and left unhashed (never materialized)', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const sha256 = vi.fn(async () => 'cafe');
+    const bytes = vi.fn(async () => new Uint8Array([9]));
+    const body = {
+      ...createMemoryBody([new Uint8Array([1, 2, 3, 4])]),
+      peek: () => undefined,
+      bytes,
+    };
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256 })).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(sha256).not.toHaveBeenCalled();
+    expect(bytes).not.toHaveBeenCalled();
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toEqual({
+      contentLength: 4,
+      fileName: 'a.bundle.zip',
+    });
+  });
+
+  it('a body that is not in memory is hashed by sha256Stream (incrementally) when one is given', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const sha256 = vi.fn(async () => 'one-shot');
+    const seen: number[] = [];
+    const sha256Stream = vi.fn(async (chunks: AsyncIterable<Uint8Array>) => {
+      for await (const chunk of chunks) seen.push(...chunk);
+      return 'streamed';
+    });
+    const base = createMemoryBody([new Uint8Array([1, 2]), new Uint8Array([3])]);
+    const bytes = vi.fn(base.bytes);
+    const body = { ...base, peek: () => undefined, bytes };
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256, sha256Stream })).enqueue(
+      {
+        ...bundle,
+        body,
+      },
+    );
+    expect(seen).toEqual([1, 2, 3]);
+    expect(sha256).not.toHaveBeenCalled();
+    expect(bytes).not.toHaveBeenCalled();
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toMatchObject({
+      checksumSha256: 'streamed',
+    });
+  });
+
+  it('an in-memory body still uses the one-shot digest even when sha256Stream exists', async () => {
+    const sha256 = vi.fn(async () => 'one-shot');
+    const sha256Stream = vi.fn(async () => 'streamed');
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    await createUploadPipeline(deps({ uploader: fakeUploader(put), sha256, sha256Stream })).enqueue(
+      {
+        ...bundle,
+        body: createMemoryBody([new Uint8Array([1])]),
+      },
+    );
+    expect(sha256).toHaveBeenCalledTimes(1);
+    expect(sha256Stream).not.toHaveBeenCalled();
+  });
+
+  it('a streaming digest that fails uploads without a checksum rather than failing the upload', async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const body = { ...createMemoryBody([new Uint8Array([1])]), peek: () => undefined };
+    const result = await createUploadPipeline(
+      deps({
+        uploader: fakeUploader(put),
+        sha256Stream: () => Promise.reject(new Error('hash failed')),
+      }),
+    ).enqueue({ ...bundle, body });
+    expect(result.ok).toBe(true);
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toEqual({
+      contentLength: 1,
+      fileName: 'a.bundle.zip',
+    });
+  });
+
+  it('a body that cannot be read fails the upload (no throw, nothing created on the collector), retryable', async () => {
+    const api = fakeApi();
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const unreadable = {
+      ...createMemoryBody([new Uint8Array([1])]),
+      ready: () => Promise.reject(new Error('temp file gone')),
+    };
+    const result = await createUploadPipeline(deps({ api, uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body: unreadable,
+    });
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty('permanent');
+    expect((result as { error: Error }).error.message).toBe('bundle body could not be read');
+    expect(api.createIssue).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable body records one drop and frees its slot for the next upload', async () => {
+    const outcomes: unknown[] = [];
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const pipeline = createUploadPipeline(
+      deps({
+        uploader: fakeUploader(put),
+        bufferSize: 1,
+        onOutcome: (o) => outcomes.push(o),
+      }),
+    );
+    const bad = pipeline.enqueue({
+      ...bundle,
+      body: {
+        ...createMemoryBody([new Uint8Array([1])]),
+        ready: () => Promise.reject(new Error('x')),
+      },
+    });
+    const next = pipeline.enqueue(bundle); // waits behind the failing one (bufferSize 1)
+    expect((await bad).ok).toBe(false);
+    expect((await next).ok).toBe(true);
+    expect(outcomes).toContainEqual({ kind: 'drop', category: 'issue', reason: 'upload_failed' });
+    expect(outcomes.filter((o) => (o as { kind: string }).kind === 'drop')).toHaveLength(1);
+  });
+
+  it('passes a BugseeError from an unreadable body through as it is, and wraps anything else with its cause', async () => {
+    const mk = (reason: unknown) =>
+      createUploadPipeline(deps({})).enqueue({
+        ...bundle,
+        body: { ...createMemoryBody([new Uint8Array([1])]), ready: () => Promise.reject(reason) },
+      });
+    const own = new BugseeError('disk', 0);
+    expect((await mk(own)) as { error: unknown }).toMatchObject({ error: own });
+    const cause = new Error('raw');
+    const wrapped = (await mk(cause)) as { error: BugseeError };
+    expect(wrapped.error).toBeInstanceOf(BugseeError);
+    expect(wrapped.error.cause).toBe(cause);
+  });
+
+  it("declares the body's own size as the content length (the body is the authority)", async () => {
+    const put = vi.fn(async () => ({ ok: true }) as PutResult);
+    const liar = { ...createMemoryBody([new Uint8Array([1, 2, 3])]), size: 99 };
+    await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body: liar,
+    });
+    expect((put.mock.calls[0] as unknown as [string, unknown, PutBundleOptions])[2]).toMatchObject({
+      contentLength: 99,
     });
   });
 
@@ -810,5 +978,139 @@ describe('createUploadPipeline + createBugseeApi — the control plane end to en
     expect(result.permanent).toBeUndefined();
     expect(result.error?.fatal).toBe(false);
     expect(result.error?.serverCode).toBeUndefined();
+  });
+});
+
+describe('createUploadPipeline — body ownership', () => {
+  const disposable = (over: { dispose?: () => void | Promise<void> } = {}) => {
+    const dispose = vi.fn(over.dispose ?? (() => {}));
+    return { body: { ...createMemoryBody([new Uint8Array([1, 2, 3])]), dispose }, dispose };
+  };
+
+  it('disposes the body after a successful upload', async () => {
+    const { body, dispose } = disposable();
+    await createUploadPipeline(deps({})).enqueue({ ...bundle, body });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes the body after a failed upload too (the durable copy, if any, is separate)', async () => {
+    const put = vi.fn(async () => ({ ok: false, status: 400, retryable: false }) as PutResult);
+    const { body, dispose } = disposable();
+    const result = await createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(result.ok).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes the body of a refused (queue overflow) upload', async () => {
+    const put = vi.fn(async () => new Promise<PutResult>(() => {}));
+    const pipeline = createUploadPipeline(
+      deps({ uploader: fakeUploader(put), bufferSize: 1, maxWaiting: 0 }),
+    );
+    void pipeline.enqueue(bundle);
+    const { body, dispose } = disposable();
+    await pipeline.enqueue({ ...bundle, body });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not dispose while the upload is still running', async () => {
+    let release: (value: PutResult) => void = () => {};
+    const put = vi.fn(() => new Promise<PutResult>((resolve) => (release = resolve)));
+    const { body, dispose } = disposable();
+    const pending = createUploadPipeline(deps({ uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body,
+    });
+    await vi.waitFor(() => expect(put).toHaveBeenCalled());
+    expect(dispose).not.toHaveBeenCalled();
+    release({ ok: true });
+    await pending;
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dispose that throws or rejects never changes the upload result and leaves no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const proc = (
+      globalThis as unknown as {
+        process: {
+          on: (e: string, f: (r: unknown) => void) => void;
+          off: (e: string, f: (r: unknown) => void) => void;
+        };
+      }
+    ).process;
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    proc.on('unhandledRejection', listener);
+    try {
+      for (const dispose of [
+        () => {
+          throw new Error('sync');
+        },
+        () => Promise.reject(new Error('async')),
+      ]) {
+        // A plain function, not vi.fn: a mock attaches its own handler to a returned promise and would hide the leak.
+        const body = { ...createMemoryBody([new Uint8Array([1, 2, 3])]), dispose };
+        const result = await createUploadPipeline(deps({})).enqueue({ ...bundle, body });
+        expect(result.ok).toBe(true);
+      }
+      // unhandledRejection is raised after a macrotask turn, so wait for one
+      const timer = (
+        globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }
+      ).setTimeout;
+      await new Promise<void>((resolve) => timer(() => resolve(), 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      proc.off('unhandledRejection', listener);
+    }
+  });
+
+  it('keeps and re-reads the same body across a retry and a renew, and disposes it once, after the last PUT', async () => {
+    const events: string[] = [];
+    const { body, dispose } = disposable({ dispose: () => void events.push('dispose') });
+    const sent: unknown[] = [];
+    const results: PutResult[] = [
+      { ok: false, status: 500, retryable: true },
+      { ok: false, status: 403, retryable: false },
+      { ok: true },
+    ];
+    const put = vi.fn(async (_url: string, b: unknown) => {
+      sent.push(b);
+      events.push('put');
+      return results.shift() as PutResult;
+    });
+    const result = await createUploadPipeline(
+      deps({ uploader: fakeUploader(put as never) }),
+    ).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(result.ok).toBe(true);
+    expect(sent).toHaveLength(3);
+    expect(sent.every((b) => b === body)).toBe(true);
+    expect(events).toEqual(['put', 'put', 'put', 'dispose']);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks the body is readable once (before the issue), not per attempt', async () => {
+    const readyCalls: number[] = [];
+    const base = createMemoryBody([new Uint8Array([1, 2, 3])]);
+    const body = { ...base, ready: async () => void readyCalls.push(1) };
+    const results: PutResult[] = [{ ok: false, status: 500, retryable: true }, { ok: true }];
+    const put = vi.fn(async () => results.shift() as PutResult);
+    const api = fakeApi();
+    await createUploadPipeline(deps({ api, uploader: fakeUploader(put) })).enqueue({
+      ...bundle,
+      body,
+    });
+    expect(readyCalls).toHaveLength(1);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('raw bytes need no disposal (nothing to call)', async () => {
+    const result = await createUploadPipeline(deps({})).enqueue(bundle);
+    expect(result.ok).toBe(true);
   });
 });

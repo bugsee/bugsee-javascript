@@ -31,7 +31,8 @@ import {
   reportChangeSignature,
 } from './attachments';
 import { type BlackoutState, BlackoutToken, createBlackoutState } from './blackout';
-import { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+import type { BundleAssemblyContext } from './bundle-assembler';
+import { assembleBundleStream } from './bundle-stream-assembler';
 import { createCaptureAggregator } from './capture-aggregator';
 import { createCaptureCoordinator, type OptionGate } from './capture-coordinator';
 import { CaptureDataEntryBase } from './capture-data-entry';
@@ -50,6 +51,7 @@ import {
 import { type Clock, ClockToken, createSystemClock } from './clock';
 import {
   type CaptureDataEntry,
+  type CaptureEntryStream,
   type CaptureProviderInit,
   type CaptureStore,
   CaptureStoreToken,
@@ -638,6 +640,17 @@ export interface CreateClientOptions {
    * extension loaded AFTER `createClient` (replay is lazy-loaded) can add its encoder into it. Default none.
    */
   fileEncoders?: BundleAssemblyContext['fileEncoders'];
+  /**
+   * Per-file-type STREAMING encoders (the replay's `replay.bin`), threaded into the bundle assembler like `fileEncoders` and
+   * read by reference each report. A type with one is encoded entry by entry (and clamped/trimmed to the report window by
+   * the encoder); it wins over `fileEncoders` for the same type. Default none.
+   */
+  streamEncoders?: BundleAssemblyContext['streamEncoders'];
+  /**
+   * Where a report's zip is written while it is built (a node temp file, a Blob). Default: memory, and the bundle then carries
+   * plain bytes exactly as before; any other sink makes `Bundle.body` a {@link BundleBody} the upload owns.
+   */
+  bundleSink?: BundleAssemblyContext['sink'];
   /** Trigger pipeline override; when omitted, built from uploadPipeline + appToken + getEnvironment. */
   triggerPipeline?: TriggerPipeline;
   /**
@@ -698,6 +711,33 @@ export interface CreateClientOptions {
 interface ReportIdentity {
   attributes: Record<string, AttributeValue>;
   userIdentifier: string | null;
+}
+
+/** What a report is built from: the rolling capture as an entry stream (with the time range it covers) and the report-time extras. */
+interface ExportedCapture {
+  readonly source: CaptureEntryStream;
+  readonly extras: ReadonlyMap<FileType, readonly CaptureDataEntry[]>;
+}
+
+/** An entry source with nothing in it (and no time range), for a report whose capture could not be exported. */
+function emptyCapture(): CaptureEntryStream {
+  return arrayCapture([], undefined);
+}
+
+/** An already-read capture as a re-iterable entry source carrying the time range it was taken for. */
+function arrayCapture(
+  entries: readonly CaptureDataEntry[],
+  timeRange: CaptureEntryStream['timeRange'],
+): CaptureEntryStream {
+  const stream: CaptureEntryStream = {
+    ...(timeRange !== undefined ? { timeRange } : {}),
+    next: () => iterator.next(),
+    [Symbol.asyncIterator]: () => stream,
+  };
+  const iterator = (async function* (): AsyncGenerator<CaptureDataEntry, void, undefined> {
+    yield* entries;
+  })();
+  return stream;
 }
 
 export function createClient(options: CreateClientOptions = {}): CreatedClient {
@@ -910,12 +950,23 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   let killed = false;
   let tickTimer: unknown = null;
   // Captures frozen by `prepareUpload`, keyed by the request they will be sent with (see assemble).
-  const frozenCaptures = new WeakMap<
-    ReportingRequest,
-    Promise<Map<FileType, CaptureDataEntry[]>>
-  >();
-  let collectCapture: (owner?: string) => Promise<Map<FileType, CaptureDataEntry[]>> = async () =>
-    new Map();
+  const frozenCaptures = new WeakMap<ReportingRequest, Promise<ExportedCapture>>();
+  let openCapture: (owner?: string) => Promise<ExportedCapture> = async () => ({
+    source: emptyCapture(),
+    extras: new Map(),
+  });
+
+  // The capture a report dialog holds from the moment it opened: read out in full NOW (the snapshot is released as soon as
+  // it is read, so an abandoned dialog pins nothing), with the time range the snapshot covered.
+  const freezeCapture = async (owner?: string): Promise<ExportedCapture> => {
+    const { source, extras } = await openCapture(owner);
+    const entries: CaptureDataEntry[] = [];
+    // (A read that fails ends the stream, which releases its snapshot itself.)
+    for await (const entry of source) {
+      entries.push(entry);
+    }
+    return { source: arrayCapture(entries, source.timeRange), extras };
+  };
 
   // Build the trigger pipeline from the report assembler when its inputs are present (unless an
   // override is injected). assemble reads the exporter drain + the live environment/attributes.
@@ -1014,30 +1065,28 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   };
   let triggerPipeline = options.triggerPipeline;
   if (triggerPipeline === undefined && uploadPipeline && appToken !== undefined && getEnvironment) {
-    // The captured data for a report: the exporter's drain plus the report-time snapshot sources (e.g. the
-    // DOM viewtree). Used LIVE at assembly, and EARLY by `prepareUpload` so the dialog's report is the
-    // moment it was opened, not the moment Send was pressed.
+    // The captured data for a report: a STREAM over the store's snapshot (taken now, released when the export ends) plus the
+    // report-time snapshot sources (e.g. the DOM viewtree), gathered here. Used LIVE at assembly, and EARLY by
+    // `prepareUpload` (which materializes it) so the dialog's report is the moment it was opened, not the moment Send was
+    // pressed.
     //
-    // Scope the drain to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable Objects)
-    // an unscoped drain would put every other tenant's capture into this bundle — the leak proven on real
-    // workerd. `owner` is undefined everywhere else, where the
-    // partitioned store is a no-op and this is byte-identical to an unscoped drain.
-    collectCapture = async (owner?: string): Promise<Map<FileType, CaptureDataEntry[]>> => {
-      const capturedByType = await captureExporter.drain(
-        owner !== undefined ? { owner } : undefined,
-      );
-      // Merge report-time snapshots into the drained map. Each source is isolated: a throw goes to
-      // onError and the report still uploads (a missing snapshot must never block delivery).
+    // Scope the snapshot to the TENANT that faulted. On a multi-tenant isolate (Cloudflare Durable Objects) an unscoped one
+    // would put every other tenant's capture into this bundle — the leak proven on real workerd. `owner` is undefined
+    // everywhere else, where the partitioned store is a no-op and this is byte-identical to an unscoped snapshot.
+    const gatherSnapshots = async (): Promise<Map<FileType, CaptureDataEntry[]>> => {
+      const extras = new Map<FileType, CaptureDataEntry[]>();
+      // Each source is isolated: a throw goes to onError and the report still uploads (a missing snapshot must never
+      // block delivery).
       if (options.reportSnapshots !== undefined) {
         const snapshotAt = clock.wallNow();
         for (const source of options.reportSnapshots) {
           try {
             for (const entry of await source(snapshotAt)) {
-              const existing = capturedByType.get(entry.type);
+              const existing = extras.get(entry.type);
               if (existing !== undefined) {
                 existing.push(entry);
               } else {
-                capturedByType.set(entry.type, [entry]);
+                extras.set(entry.type, [entry]);
               }
             }
           } catch (error) {
@@ -1045,7 +1094,16 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           }
         }
       }
-      return capturedByType;
+      return extras;
+    };
+    openCapture = async (owner?: string): Promise<ExportedCapture> => {
+      const stream = captureExporter.stream(owner !== undefined ? { owner } : undefined);
+      try {
+        return { source: stream, extras: await gatherSnapshots() };
+      } catch (error) {
+        await stream.return?.(); // the snapshot is pinned until released
+        throw error;
+      }
     };
     const assemble = async (request: ReportingRequest): Promise<Bundle> => {
       lifecycle.emit(LifecycleEvents.BeforeReportAssembled, { reportId: request.id });
@@ -1071,9 +1129,23 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // A prepared upload carries the capture it froze; anything else drains live. A frozen capture that
       // could not be read falls back to the live one — a stale-but-present report beats none.
       const frozen = frozenCaptures.get(request);
-      const capturedByType =
+      const capture =
         (frozen !== undefined ? await frozen.catch(() => undefined) : undefined) ??
-        (await collectCapture(reportContext?.owner));
+        (await openCapture(reportContext?.owner));
+      try {
+        return await buildReport(request, capture, reportContext);
+      } catch (error) {
+        // The live snapshot stays pinned until its stream ends, and an unread stream never runs its own cleanup: close it
+        // when anything between opening it and handing it to the assembler throws.
+        await capture.source.return?.();
+        throw error;
+      }
+    };
+    const buildReport = async (
+      request: ReportingRequest,
+      capture: ExportedCapture,
+      reportContext: RequestContext | undefined,
+    ): Promise<Bundle> => {
       // ReportHandler.after (Android `onAfterReportCreated`): the report exists and `before` has had its say;
       // assembly has not started. The handler may still mutate the request (labels, attributes,
       // attachments) and the bundle below carries the result. Reaching here is what "created" means, so a
@@ -1116,21 +1188,45 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       // The durable queue writes it into its frame header, which is the only thing that later lets
       // recovery tell "this staged blob IS the incident that marker is still holding open" from "this
       // staged blob is an incident nothing has uploaded yet". See IdentifiedBundle.
+      const assembled = await assembleWithFallback(request, capture, {
+        appToken,
+        environment: getEnvironment(),
+        attributes: identity.attributes,
+        userIdentifier: identity.userIdentifier,
+        clock,
+        onError: onErrorSafe,
+        ...(captured !== undefined ? { requestContext: captured } : {}),
+        ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
+        ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
+        ...(options.streamEncoders !== undefined ? { streamEncoders: options.streamEncoders } : {}),
+        ...(options.bundleSink !== undefined ? { sink: options.bundleSink } : {}),
+      });
       const bundle: IdentifiedBundle = {
-        ...assembleBundle(request, capturedByType, {
-          appToken,
-          environment: getEnvironment(),
-          attributes: identity.attributes,
-          userIdentifier: identity.userIdentifier,
-          clock,
-          onError: onErrorSafe,
-          ...(captured !== undefined ? { requestContext: captured } : {}),
-          ...(options.bundleFileName !== undefined ? { fileName: options.bundleFileName } : {}),
-          ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
-        }),
+        request: assembled.request,
+        fileName: assembled.fileName,
+        // The default (memory) sink keeps handing out plain bytes, as every assembler did; any other sink's body is
+        // passed on for the upload to own.
+        body: assembled.body.peek() ?? assembled.body,
         reportId: request.id,
       };
       return bundle;
+    };
+    // Build the bundle from the capture. A failure of the export itself (the sink cannot write, the snapshot cannot be
+    // read) must cost the DATA, not the report: the request, manifest and crash still ship, with the failure reported.
+    const assembleWithFallback = async (
+      request: ReportingRequest,
+      capture: ExportedCapture,
+      context: BundleAssemblyContext,
+    ): Promise<Awaited<ReturnType<typeof assembleBundleStream>>> => {
+      try {
+        return await assembleBundleStream(request, capture.source, context, capture.extras);
+      } catch (error) {
+        onErrorSafe(error);
+        // Not through the same sink: when the sink is what failed (an unwritable export dir, a full disk) the retry must
+        // not fail the same way. Memory always works, and the report is small without its rolling capture (the report-time extras are already in memory and stay).
+        const { sink: _failed, ...inMemory } = context;
+        return await assembleBundleStream(request, emptyCapture(), inMemory, capture.extras);
+      }
     };
     triggerPipeline = createTriggerPipeline({ assemble, uploadPipeline });
   }
@@ -1156,7 +1252,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
   // Build, filter and submit a report someone explicitly asked for (`upload` / a prepared upload).
   const sendUpload = (
     uploadOptions: InternalUploadOptions,
-    frozen?: Promise<Map<FileType, CaptureDataEntry[]>>,
+    frozen?: Promise<ExportedCapture>,
   ): Promise<UploadResult> => {
     const request = createReportingRequest({
       source: { type: uploadOptions.trigger ?? 'code_upload' },
@@ -1757,7 +1853,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       } catch {
         owner = undefined;
       }
-      const frozen = collectCapture(owner);
+      const frozen = freezeCapture(owner);
       // A rejected freeze is handled at assembly (live-drain fallback); this keeps it from being reported
       // as unhandled in the meantime.
       frozen.catch(() => undefined);

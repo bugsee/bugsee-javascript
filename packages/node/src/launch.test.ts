@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import http, { createServer, type Server } from 'node:http';
@@ -2043,6 +2044,69 @@ describe('launch — system trace producers', () => {
   });
 });
 
+describe('launch — streamed export to a temp file', () => {
+  it('builds the report zip into the instance export dir, uploads it, and leaves the dir empty', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-export-'));
+    const { fn: transport, puts } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        carrier: {},
+      }),
+    );
+    clients.push(client);
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 1000, { msg: 'streamed' }));
+    await client.logException(new Error('x'));
+    expect(puts).toHaveLength(1);
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(strFromU8(files['logs.json'] as Uint8Array)).toContain('streamed');
+    // the export file existed while the bundle was built and is gone once the upload is over
+    expect(existsSync(join(dir, FIXED_INSTANCE_ID, 'export'))).toBe(true);
+    await vi.waitFor(() => expect(readdirSync(join(dir, FIXED_INSTANCE_ID, 'export'))).toEqual([]));
+  });
+
+  it('sweeps export files a previous run of the same instance left behind, and keeps recent ones', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-export-sweep-'));
+    const exportDir = join(dir, FIXED_INSTANCE_ID, 'export');
+    mkdirSync(exportDir, { recursive: true });
+    const stale = join(exportDir, 'export-stale.zip');
+    const fresh = join(exportDir, 'export-fresh.zip');
+    writeFileSync(stale, 'x');
+    writeFileSync(fresh, 'x');
+    const old = new Date(Date.now() - 2 * 3_600_000);
+    utimesSync(stale, old, old);
+    const { fn: transport } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({
+        transport,
+        clock: fixedClock,
+        dataDir: dir,
+        instanceIdentity: FIXED_INSTANCE,
+        carrier: {},
+      }),
+    );
+    clients.push(client);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('without an on-disk instance the report is built in memory (no export dir anywhere)', async () => {
+    const { fn: transport, puts } = recordingTransport();
+    const { client } = launchCore(
+      'tok',
+      baseOptions({ transport, clock: fixedClock, persist: false, carrier: {} } as never),
+    );
+    clients.push(client);
+    await client.logException(new Error('x'));
+    expect(puts).toHaveLength(1);
+  });
+});
+
 describe('launch — capture recovery', () => {
   // The launch generation is fixedClock.wallNow() = 1000, so prior gens use 500 (≠ 1000).
   it('rebuilds + uploads a prior run’s detected incident, then sweeps its generation + marker', async () => {
@@ -2708,6 +2772,39 @@ describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)',
     const files = bundleFiles(puts);
     expect('profile.json' in files).toBe(true); // internal snapshot kept
     expect('video.webm' in files).toBe(true); // forwarded snapshot kept
+  });
+});
+
+describe('launch — forwarded streamEncoders (one member per visual source lane)', () => {
+  it('builds one replay member per window lane through the forwarded stream encoder', async () => {
+    const encoder = {
+      begin: () => {
+        let first = true;
+        return {
+          write: (entry: { lane?: string }) => {
+            const chunk = new TextEncoder().encode(`lane:${entry.lane}`);
+            if (first) {
+              first = false;
+              return [chunk];
+            }
+            return [];
+          },
+          end: () => [],
+        };
+      },
+    };
+    const store = memStore();
+    store.add({ type: 'replay', timestamp: Date.now(), serialized: '{"a":1}', lane: '3' });
+    store.add({ type: 'replay', timestamp: Date.now(), serialized: '{"b":2}', lane: '8' });
+    const { fn: transport, puts } = recordingTransport();
+    const client = launchTracked(
+      'tok',
+      baseOptions({ transport, captureStore: store, streamEncoders: { replay: encoder } }),
+    );
+    await client.logException(new Error('boom'));
+    const files = unzipSync(puts[0] as Uint8Array);
+    expect(new TextDecoder().decode(files['replay.bin'])).toBe('lane:3');
+    expect(new TextDecoder().decode(files['replay.1.bin'])).toBe('lane:8');
   });
 });
 

@@ -1,4 +1,5 @@
 import { computeBackoff, sha256Hex } from '@bugsee/util';
+import { asBody, type BundleBody, isBundleBody } from './bundle-body';
 import { BugseeError } from './errors';
 import {
   type BugseeApi,
@@ -39,6 +40,11 @@ export interface UploadPipelineOptions {
   /** Hex SHA-256 of the body for the PUT checksum. Default util.sha256Hex. Best-effort: a rejection
    *  uploads the bundle without a checksum rather than failing it. */
   sha256?: (body: Uint8Array) => Promise<string>;
+  /**
+   * The same digest for a body that is NOT held in memory (a temp file), read as a stream and hashed incrementally so it is
+   * never pulled into the heap for it. Absent: such a body is uploaded without a checksum (nothing sends it today).
+   */
+  sha256Stream?: (chunks: AsyncIterable<Uint8Array>) => Promise<string>;
   /** Delay primitive (injected for tests). Default setTimeout-based. */
   sleep?: (ms: number) => Promise<void>;
   /** Backoff delay for retry `attempt` (1-based). Default util.computeBackoff. */
@@ -173,10 +179,48 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
   };
 
+  /** The pipeline owns a body once it is handed over: release it when the upload is over, whatever the outcome. */
+  const disposeBody = (bundle: Bundle): void => {
+    if (!isBundleBody(bundle.body)) {
+      return;
+    }
+    try {
+      void Promise.resolve(bundle.body.dispose()).catch(() => {});
+    } catch {
+      // A body that cannot be released must never change the upload's result.
+    }
+  };
+
+  /** The digest of a body that is not in memory, hashed from its stream; `undefined` without a stream hasher or on failure. */
+  const streamChecksumOf = async (body: BundleBody): Promise<string | undefined> => {
+    try {
+      return await options.sha256Stream?.(body.stream());
+    } catch {
+      return undefined; // best-effort, like the one-shot digest
+    }
+  };
+
   const runOperation = async (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
     // BEFORE the issue: creating it is what leaves a record on the collector, so local work runs first —
     // and iOS carries `bundle_sha256` in the issue-create body itself, which needs the digest by then.
-    const checksumSha256 = await checksumOf(bundle.body);
+    // A body whose content can go missing (a temp file) is checked BEFORE the issue is created: an unreadable one is an
+    // ordinary retryable upload failure, not a throw out of the pipeline and not an empty issue left on the collector.
+    const body = asBody(bundle.body);
+    try {
+      await body.ready?.();
+    } catch (err) {
+      return fail(
+        err instanceof BugseeError
+          ? err
+          : new BugseeError('bundle body could not be read', 0, { cause: err }),
+        category,
+        'upload_failed',
+      );
+    }
+    // Hashed only when the body is already in memory: a file/Blob body is never pulled into memory for a digest nothing sends.
+    const held = body.peek();
+    const checksumSha256 =
+      held !== undefined ? await checksumOf(held) : await streamChecksumOf(body);
 
     let issue: IssueCreateResult;
     try {
@@ -189,7 +233,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
     }
 
     const putOptions: PutBundleOptions = {
-      contentLength: bundle.body.length,
+      contentLength: body.size,
       fileName: bundle.fileName,
       ...(checksumSha256 !== undefined ? { checksumSha256 } : {}),
     };
@@ -263,7 +307,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
   /** Begin an upload, holding a concurrency slot until it settles, then release the slot to whoever
    *  is waiting. */
   const start = (bundle: Bundle, category: OutcomeCategory): Promise<UploadResult> => {
-    const operation = runOperation(bundle, category);
+    const operation = runOperation(bundle, category).finally(() => disposeBody(bundle));
     inFlight.add(operation);
     void operation.finally(() => {
       inFlight.delete(operation);
@@ -281,6 +325,7 @@ export function createUploadPipeline(options: UploadPipelineOptions): UploadPipe
       if (inFlight.size >= bufferSize) {
         if (waiting.length >= maxWaiting) {
           onOutcome?.({ kind: 'drop', category, reason: 'queue_overflow' });
+          disposeBody(bundle);
           return Promise.resolve({
             ok: false,
             error: new BugseeError('upload queue overflow', QUEUE_OVERFLOW_CODE),

@@ -1,6 +1,7 @@
 import type { RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import { isThenable, strFromU8, strToU8 } from '@bugsee/util';
+import { asBody, type BundleBody, isBundleBody, retainBody } from './bundle-body';
 import {
   type Bundle,
   isUploadSettled,
@@ -66,6 +67,13 @@ export interface BundleStore {
    * one — must reject, or the incident is lost. A synchronous store simply returns nothing and throws.
    */
   put(id: string, bytes: Uint8Array): void | Promise<void>;
+  /**
+   * Optional: durably write a bundle whose body is NOT held in memory (a temp file, a Blob) as the frame
+   * `header ++ body`, reading the body as a stream so it is never materialized. Same contract as `put` (resolves once
+   * durable, rejects on failure, replaces an existing blob, never leaves a torn blob behind). A store without it is handed
+   * the whole frame through `put` instead (which materializes the body once).
+   */
+  putFrame?(id: string, header: Uint8Array, body: BundleBody): Promise<void>;
   /** Ids of every bundle still pending (written and not yet removed). */
   list(): string[];
   /** Read a bundle blob, or undefined if it is absent. */
@@ -173,8 +181,10 @@ export const DEFAULT_DURABLE_RETENTION: Required<DurableQueueRetention> = {
 
 // Durable frame: [4-byte LE header length][header JSON (utf8)][bundle body bytes]. The header carries
 // the request.json + fileName so the full Bundle can be reconstructed for re-upload from the blob.
-export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number): Uint8Array {
-  const header = strToU8(
+
+/** The frame prefix `[4-byte LE length][header JSON]`: everything but the body bytes. */
+export function frameHeader(bundle: IdentifiedBundle, firstSeenMs?: number): Uint8Array {
+  const json = strToU8(
     JSON.stringify({
       request: bundle.request,
       fileName: bundle.fileName,
@@ -187,10 +197,24 @@ export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number):
       ...(bundle.reportId !== undefined ? { reportId: bundle.reportId } : {}),
     }),
   );
-  const out = new Uint8Array(4 + header.length + bundle.body.length);
-  new DataView(out.buffer).setUint32(0, header.length, true);
-  out.set(header, 4);
-  out.set(bundle.body, 4 + header.length);
+  const out = new Uint8Array(4 + json.length);
+  new DataView(out.buffer).setUint32(0, json.length, true);
+  out.set(json, 4);
+  return out;
+}
+
+export function serializeBundle(bundle: IdentifiedBundle, firstSeenMs?: number): Uint8Array {
+  const header = frameHeader(bundle, firstSeenMs);
+  // A synchronous writer needs the bytes now, so only a body held in memory can be framed here; any other body is staged
+  // by `enqueue` through the streaming `putFrame` (or materialized once for a store without it), and must never be
+  // framed short.
+  const bytes = asBody(bundle.body).peek();
+  if (bytes === undefined) {
+    throw new Error('Bundle body is not held in memory: cannot frame it synchronously');
+  }
+  const out = new Uint8Array(header.length + bytes.length);
+  out.set(header, 0);
+  out.set(bytes, header.length);
   return out;
 }
 
@@ -286,6 +310,11 @@ export function createDurableUploadPipeline(
   // launch, and retrying it again immediately would only spin.
   const attempted = new Set<string>();
 
+  // Streamed stagings still writing, by id (each promise never rejects). `flush` waits for all of them.
+  const stagings = new Map<string, Promise<void>>();
+  // Ids whose upload settled while their streamed staging was still writing: the staging deletes them on landing.
+  const settledWhileStaging = new Set<string>();
+
   // Staged ids a SELECTIVE recover() pass is currently HOLDING BACK for a later one (see
   // DurableRecoverOptions.select). Consulted ONLY by the pump, which runs on every completion and would
   // otherwise hand a later instance's blob over unreconciled mid-scan.
@@ -327,19 +356,28 @@ export function createDurableUploadPipeline(
         attempted.delete(id);
         return result;
       }
-      if (isUploadSettled(result)) {
-        removeSafe(id); // delivered, or refused — either way there is nothing left to retry
-      }
-      // This upload held a slot and has now released it: hand the next staged bundle over.
-      //
-      // Two things bound this loop, and both are load-bearing. Pumping ONLY here means no attempt can
-      // happen without an upload having completed first; and `attempted` means each staged bundle is
-      // handed over at most once per completion. Remove either and the pump becomes a synchronous
-      // microtask spin that starves the event loop rather than failing an assertion — which is how
-      // the mutation check for both of them shows up.
-      pump();
-      return result;
+      return finish(id, result);
     });
+  };
+
+  const finish = (id: string, result: UploadResult): UploadResult => {
+    if (isUploadSettled(result)) {
+      removeSafe(id); // delivered, or refused — either way there is nothing left to retry
+      if (stagings.has(id)) {
+        // A streamed staging is still writing this blob and would publish it AFTER this removal; it frees its own blob
+        // when it lands (see `enqueue`), or the next launch would re-upload a report that was already delivered.
+        settledWhileStaging.add(id);
+      }
+    }
+    // This upload held a slot and has now released it: hand the next staged bundle over.
+    //
+    // Two things bound this loop, and both are load-bearing. Pumping ONLY here means no attempt can
+    // happen without an upload having completed first; and `attempted` means each staged bundle is
+    // handed over at most once per completion. Remove either and the pump becomes a synchronous
+    // microtask spin that starves the event loop rather than failing an assertion — which is how
+    // the mutation check for both of them shows up.
+    pump();
+    return result;
   };
 
   /**
@@ -467,6 +505,36 @@ export function createDurableUploadPipeline(
     }
   };
 
+  /**
+   * Stage a body that is not in memory. A store with `putFrame` streams it; any other gets the materialized frame through
+   * `put`. Either way the staging claim on the shared body is released when the write settles (or never started).
+   */
+  const stageStreamed = async (
+    id: string,
+    bundle: IdentifiedBundle,
+    shared: BundleBody,
+    firstSeenMs: number,
+  ): Promise<void> => {
+    try {
+      const header = frameHeader(bundle, firstSeenMs);
+      if (store.putFrame !== undefined) {
+        await store.putFrame(id, header, shared);
+        return;
+      }
+      const body = await shared.bytes();
+      const frame = new Uint8Array(header.length + body.length);
+      frame.set(header, 0);
+      frame.set(body, header.length);
+      await store.put(id, frame);
+    } finally {
+      try {
+        await shared.dispose(); // this claim only; the upload holds the other
+      } catch {
+        // releasing must never change the staging verdict
+      }
+    }
+  };
+
   return {
     enqueue(bundle: Bundle, hint?: UploadHint): Promise<UploadResult> {
       const id = newId();
@@ -476,11 +544,31 @@ export function createDurableUploadPipeline(
       // See UploadResult.retained.
       // `true`/`false` once known; a promise while an asynchronous store is still writing.
       let staged: boolean | Promise<boolean> = false;
+      // A body that is not held in memory is shared between staging and the upload (both read it, at the same time):
+      // each releases its own claim, and the underlying body (a temp file) goes away when the LAST one does.
+      const streamed = isBundleBody(bundle.body) && bundle.body.peek() === undefined;
+      const shared = streamed ? retainBody(bundle.body as BundleBody, 2) : undefined;
       try {
-        const written = store.put(id, serializeBundle(bundle, now())); // durable BEFORE the attempt
+        const written =
+          shared !== undefined
+            ? stageStreamed(id, bundle, shared, now()) // durable BEFORE the attempt is confirmed
+            : store.put(id, serializeBundle(bundle, now())); // durable BEFORE the attempt
         // `Promise.resolve` normalizes a hand-rolled thenable whose `then` returns something other than
         // a promise — otherwise `staged` lands on neither branch below and a working store is silently
         // reported as unstaged forever.
+        if (shared !== undefined) {
+          const writing = Promise.resolve(written).then(
+            () => {},
+            () => {}, // reported below; this promise only tracks completion
+          );
+          stagings.set(id, writing);
+          void writing.then(() => {
+            stagings.delete(id);
+            if (settledWhileStaging.delete(id)) {
+              removeSafe(id); // the upload already settled: this late blob has nothing left to retry
+            }
+          });
+        }
         staged = isThenable(written)
           ? Promise.resolve(written).then(
               () => true,
@@ -494,7 +582,7 @@ export function createDurableUploadPipeline(
         report(error); // best-effort persistence must never block the upload
       }
       // The attempt does NOT wait on the durable write; only the `retained` VERDICT does.
-      const result = attempt(id, bundle, hint);
+      const result = attempt(id, shared !== undefined ? { ...bundle, body: shared } : bundle, hint);
       if (staged === false) {
         return result;
       }
@@ -526,8 +614,17 @@ export function createDurableUploadPipeline(
       }
     },
 
-    flush(timeout?: number): Promise<boolean> {
-      return pipeline.flush(timeout);
+    async flush(timeout?: number): Promise<boolean> {
+      if (stagings.size === 0) {
+        return pipeline.flush(timeout);
+      }
+      // A streamed blob is only durable once its write is done: a flush-then-exit must wait for it as well.
+      const staging = Promise.all([...stagings.values()]).then(() => true);
+      const [uploaded, written] = await Promise.all([
+        pipeline.flush(timeout),
+        timeout === undefined ? staging : Promise.race([staging, sleep(timeout).then(() => false)]),
+      ]);
+      return uploaded && written;
     },
 
     drop(reason: string, category: OutcomeCategory): void {

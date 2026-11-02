@@ -37,6 +37,14 @@ describe('createStreamingCaptureStore', () => {
     });
   });
 
+  it('carries the anchor flag of a base-opening record, and omits it otherwise', () => {
+    const { store, encoded } = harness();
+    store.add({ ...entry('replay', 1, 'a'), anchor: true });
+    store.add(entry('replay', 2, 'b'));
+    expect(encoded[0]?.anchor).toBe(true);
+    expect('anchor' in (encoded[1] ?? {})).toBe(false);
+  });
+
   it('assigns a monotonically increasing seq by default', () => {
     const { store, encoded } = harness();
     store.add(entry('log', 1, 'a'));

@@ -185,6 +185,38 @@ describe('launchRenderer', () => {
     expect(owned.has('displays')).toBe(true);
   });
 
+  it("main's checkout command restarts this renderer's replay recorder", async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const restart = vi.fn();
+    (
+      f.received?.options as unknown as { onReplayRestart: (fn: () => void) => void }
+    ).onReplayRestart(restart);
+    b.drive(encodeControl({ command: 'checkout' }));
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('a checkout for a client that is no longer launched restarts nothing', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const restart = vi.fn();
+    (
+      f.received?.options as unknown as { onReplayRestart: (fn: () => void) => void }
+    ).onReplayRestart(restart);
+    (f.client as unknown as { isLaunched: () => boolean }).isLaunched = () => false;
+    b.drive(encodeControl({ command: 'checkout' }));
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it('a checkout that arrives before the browser launch handed over its restart is ignored', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    expect(() => b.drive(encodeControl({ command: 'checkout' }))).not.toThrow();
+  });
+
   it('a key-window message for a client that is no longer launched is ignored', async () => {
     const f = fakeLaunch();
     const b = fakeBridge();

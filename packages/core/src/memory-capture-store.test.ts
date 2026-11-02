@@ -213,3 +213,16 @@ describe('createMemoryCaptureStore — clear', () => {
     expect(got.map((r) => r.timestamp)).toEqual([4, 5]);
   });
 });
+
+describe('createMemoryCaptureStore — visual reset', () => {
+  it('forwards onVisualReset: a lone base segment over the cap is dropped and a fresh base requested', async () => {
+    const calls: number[] = [];
+    const store = mk({ maxDataSizeBytes: 100, onVisualReset: () => calls.push(1) });
+    store.add({ type: 'replay', timestamp: 10_000, serialized: 'x'.repeat(120), anchor: true });
+    store.tick(11_000);
+    store.add(rec('log', 11_000, '{}')); // over the cap with only one closed segment
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([1]);
+  });
+});

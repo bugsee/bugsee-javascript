@@ -54,6 +54,28 @@ describe('createElectronMainReceiver', () => {
     expect(s.added).toEqual([{ type: 'network', timestamp: 500, serialized: '{"u":"x"}' }]);
   });
 
+  it('forwards the anchor flag into the main store (a renderer base must survive eviction there too)', () => {
+    const ipc = fakeIpcMain();
+    const s = fakeStore();
+    createElectronMainReceiver({ ipcMain: ipc.ipcMain, store: s.store }).start();
+    const anchored = encodeStreamEntry({
+      type: 'replay' as never,
+      seq: 1,
+      timestamp: 5,
+      mono: 0,
+      timeOrigin: 0,
+      redacted: false,
+      payload: '{}',
+      anchor: true,
+    });
+    ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, anchored);
+    ipc.emit(BUGSEE_STREAM_CHANNEL, { sender: { id: 1 } }, wire('replay', 6, '{}'));
+    expect(s.added).toEqual([
+      { type: 'replay', timestamp: 5, serialized: '{}', anchor: true, lane: '1' },
+      { type: 'replay', timestamp: 6, serialized: '{}', lane: '1' },
+    ]);
+  });
+
   it('calls onEntry with the decoded entry + originating window id', () => {
     const ipc = fakeIpcMain();
     const s = fakeStore();
@@ -187,5 +209,37 @@ describe('createElectronMainReceiver — report routing + listener containment',
       send(JSON.stringify({ k: 'report', p: { source: {}, report: {} }, ts: 1 })),
     ).not.toThrow();
     expect(String(errors[0])).toContain('join boom');
+  });
+});
+
+describe('createElectronMainReceiver — one visual lane per window', () => {
+  const run = (event: IpcMainEventLike, type: string) => {
+    const ipc = fakeIpcMain();
+    const s = fakeStore();
+    createElectronMainReceiver({ ipcMain: ipc.ipcMain, store: s.store }).start();
+    ipc.emit(BUGSEE_STREAM_CHANNEL, event, wire(type, 1, '{}'));
+    return s.added[0];
+  };
+
+  it('tags a renderer replay record with its window id', () => {
+    expect(run({ sender: { id: 7 } }, 'replay')).toMatchObject({ type: 'replay', lane: '7' });
+  });
+
+  it('leaves data records unkeyed (only the visual lane is split by window)', () => {
+    expect(run({ sender: { id: 7 } }, 'log')).not.toHaveProperty('lane');
+  });
+
+  it('leaves a replay record unkeyed when the sender cannot be identified', () => {
+    expect(run({}, 'replay')).not.toHaveProperty('lane');
+  });
+
+  it('drops a replay record from a sender that is already destroyed (a closing window cannot revive its retired lane)', () => {
+    expect(run({ sender: { id: 7, isDestroyed: () => true } as never }, 'replay')).toBeUndefined();
+  });
+
+  it('keeps data records from a destroyed sender (only the visual lane is tied to the window)', () => {
+    expect(run({ sender: { id: 7, isDestroyed: () => true } as never }, 'log')).toMatchObject({
+      type: 'log',
+    });
   });
 });

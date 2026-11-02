@@ -121,3 +121,27 @@ describe('launch — maxDataSize byte-bound wiring', () => {
     expect(fileSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('launch — onVisualReset reaches the capture store', () => {
+  it('passes the callback to the in-memory store', () => {
+    const onVisualReset = vi.fn();
+    launchTracked({ capturedDataStore: 'memory', onVisualReset });
+    expect(memSpy.mock.calls[0]?.[0]).toMatchObject({ onVisualReset });
+  });
+
+  it('passes the callback to the file-backed store', () => {
+    const onVisualReset = vi.fn();
+    const dir = mkdtempSync(join(tmpdir(), 'bugsee-visual-reset-'));
+    try {
+      launchTracked({ dataDir: dir, onVisualReset });
+      expect(fileSpy.mock.calls[0]?.[0]).toMatchObject({ onVisualReset });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes nothing when none was given', () => {
+    launchTracked({ capturedDataStore: 'memory' });
+    expect(memSpy.mock.calls[0]?.[0]).not.toHaveProperty('onVisualReset');
+  });
+});

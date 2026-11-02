@@ -301,3 +301,20 @@ describe('createFileCaptureStore — clear', () => {
     expect(storage.read(5, 0, 'log')).toBe('other-gen'); // only generation 9’s chunks were cleared
   });
 });
+
+describe('createFileCaptureStore — onVisualReset', () => {
+  it("tells the host when the byte cap sheds a window lane's only base (the replay recorder must checkout)", async () => {
+    const resets: Array<string | undefined> = [];
+    const store = mk(createInMemoryChunkStorage(), {
+      maxRecordingTimeMs: 1_000_000,
+      maxDataSizeBytes: 2 * U - 1,
+      onVisualReset: (lane) => resets.push(lane),
+    });
+    store.add({ ...recBytes('replay', 10_000), anchor: true, lane: '7' });
+    store.tick(11_000);
+    store.add(recBytes('log', 11_000)); // 2 records > the cap: the lane's lone base goes
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resets).toEqual(['7']);
+  });
+});

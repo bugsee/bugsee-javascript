@@ -15,6 +15,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./stream-encoder": {
+      "types": "./src/stream-encoder.ts",
+      "import": "./src/stream-encoder.ts"
     }
   },
   "files": [
@@ -49,6 +53,16 @@
         "require": {
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
+        }
+      },
+      "./stream-encoder": {
+        "import": {
+          "types": "./dist/stream-encoder.d.ts",
+          "default": "./dist/stream-encoder.js"
+        },
+        "require": {
+          "types": "./dist/stream-encoder.d.cts",
+          "default": "./dist/stream-encoder.cjs"
         }
       }
     },

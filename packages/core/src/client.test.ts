@@ -4,6 +4,8 @@ import { strFromU8, unzipSync } from '@bugsee/util';
 import { describe, expect, it, vi } from 'vitest';
 import { addReportAttachment, decodeRequestFromMarker } from './attachments';
 import { BlackoutToken } from './blackout';
+import { createMemoryBody } from './bundle-body';
+import { createMemorySink } from './bundle-sink';
 import { CaptureDataEntryBase } from './capture-data-entry';
 import { createCaptureExporter } from './capture-exporter';
 import {
@@ -560,13 +562,310 @@ describe('createClient — file encoders', () => {
     });
     await client.logException(new Error('x'));
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    expect(unzipSync(bundle.body)['replay.bin']).toEqual(new Uint8Array([7, 1])); // encoder output, stored raw
+    expect(unzipSync(bundle.body as Uint8Array)['replay.bin']).toEqual(new Uint8Array([7, 1])); // encoder output, stored raw
+  });
+});
+
+describe('createClient — streaming export', () => {
+  const mutableClock = (start: number) => {
+    let now = start;
+    const clock: Clock = { wallNow: () => now, monotonicNow: () => now };
+    return {
+      clock,
+      set: (v: number) => {
+        now = v;
+      },
+    };
+  };
+  const filesOf = (bundle: Bundle) => unzipSync(bundle.body as Uint8Array);
+  const manifestOf = (bundle: Bundle) =>
+    JSON.parse(strFromU8(filesOf(bundle)['manifest.json'] as Uint8Array)) as {
+      time: { start: number; end: number };
+      files: Array<{ filename: string }>;
+    };
+
+  it('exports the capture window: older records are trimmed and the manifest starts at the window start', async () => {
+    const t = mutableClock(100_000);
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: 5000, clock: t.clock });
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      clock: t.clock,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 100_000, { msg: 'old' }));
+    t.set(103_000);
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 103_000, { msg: 'new' }));
+    t.set(106_000);
+    await client.logException(new Error('x'));
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(manifestOf(bundle).time).toEqual({ start: 101_000, end: 106_000 });
+    const logs = JSON.parse(strFromU8(filesOf(bundle)['logs.json'] as Uint8Array)) as Array<{
+      msg: string;
+    }>;
+    expect(logs.map((l) => l.msg)).toEqual(['new']);
+  });
+
+  it('threads streamEncoders, which win over fileEncoders and see the window plan', async () => {
+    const t = mutableClock(100_000);
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const plans: unknown[] = [];
+    const client = createClient({
+      clock: t.clock,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportSnapshots: [() => [new CaptureDataEntryBase('replay', 100_000, { e: 1 })]],
+      fileEncoders: { replay: () => new Uint8Array([1]) },
+      streamEncoders: {
+        replay: {
+          begin: (plan) => {
+            plans.push(plan);
+            return { write: () => [new Uint8Array([9, 9])], end: () => [] };
+          },
+        },
+      },
+    });
+    await client.logException(new Error('x'));
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(Array.from(filesOf(bundle)['replay.bin'] as Uint8Array)).toEqual([9, 9]);
+    expect(plans).toHaveLength(1);
+  });
+
+  it('releases the store snapshot once the report is built', async () => {
+    const store = createMemoryCaptureStore({});
+    const release = vi.fn();
+    const realSnapshot = store.snapshot.bind(store);
+    store.snapshot = (options) => {
+      const snapshot = realSnapshot(options);
+      return { ...snapshot, release: () => (release(), snapshot.release()) };
+    };
+    const { uploadPipeline } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    await client.logException(new Error('x'));
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands a non-memory sink body to the upload as a body, and plain bytes for the default sink', async () => {
+    const body = createMemoryBody([new Uint8Array([1])]);
+    const lazy = { ...body, peek: () => undefined };
+    const sink = {
+      open: () => ({
+        write: () => {},
+        finish: async () => lazy,
+        abort: () => {},
+      }),
+    };
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      bundleSink: sink,
+    });
+    await client.logException(new Error('x'));
+    expect((enqueue.mock.calls[0]?.[0] as Bundle).body).toBe(lazy);
+
+    const plain = fakeUpload();
+    const client2 = createClient({
+      uploadPipeline: plain.uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    await client2.logException(new Error('x'));
+    expect(ArrayBuffer.isView((plain.enqueue.mock.calls[0]?.[0] as Bundle).body)).toBe(true);
+  });
+
+  it('releases the snapshot when gathering the report-time snapshots itself fails', async () => {
+    const store = createMemoryCaptureStore({});
+    const release = vi.fn();
+    const realSnapshot = store.snapshot.bind(store);
+    store.snapshot = (options) => {
+      const snapshot = realSnapshot(options);
+      return { ...snapshot, release: () => (release(), snapshot.release()) };
+    };
+    const { uploadPipeline } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      reportSnapshots: [() => Promise.reject(new Error('source failed'))],
+      onError: () => {
+        throw new Error('the error sink itself fails');
+      },
+    });
+    await client.logException(new Error('x'));
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('a sink that cannot even open (unwritable export dir) still ships the report, through memory', async () => {
+    const sink = { open: () => Promise.reject(new Error('EACCES: export dir')) };
+    const onError = vi.fn();
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      bundleSink: sink,
+      onError,
+      reportSnapshots: [() => [new CaptureDataEntryBase('viewtree', 1, { v: 1 })]],
+    });
+    const result = await client.logException(new Error('x'));
+    expect(result).toEqual({ ok: true });
+    expect(onError).toHaveBeenCalled();
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(ArrayBuffer.isView(bundle.body)).toBe(true); // built in memory, not through the failed sink
+    expect(Object.keys(filesOf(bundle))).toContain('request.json');
+    expect(Object.keys(filesOf(bundle))).toContain('viewtree.json'); // the report-time snapshot survives
+  });
+
+  it('releases the live snapshot when building the report fails before the assembler has it', async () => {
+    const store = createMemoryCaptureStore({});
+    const release = vi.fn();
+    const realSnapshot = store.snapshot.bind(store);
+    store.snapshot = (options) => {
+      const snapshot = realSnapshot(options);
+      return { ...snapshot, release: () => (release(), snapshot.release()) };
+    };
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment: () => {
+        throw new Error('environment getter failed');
+      },
+    });
+    const result = await client.logException(new Error('x'));
+    expect(result.ok).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('a sink that cannot write costs the data, not the report: the request still ships and the failure is reported', async () => {
+    let attempts = 0;
+    const sink = {
+      open: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            write: () => {
+              throw new Error('disk full');
+            },
+            finish: async () => createMemoryBody([]),
+            abort: () => {},
+          };
+        }
+        return createMemorySink().open();
+      },
+    };
+    const onError = vi.fn();
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      bundleSink: sink,
+      onError,
+    });
+    client.captureAggregator.addEntry(
+      new CaptureDataEntryBase('log', 1, { msg: 'lost with the export' }),
+    );
+    const result = await client.logException(new Error('x'));
+    expect(result).toEqual({ ok: true });
+    expect(onError).toHaveBeenCalled();
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    expect(Object.keys(filesOf(bundle))).toContain('request.json');
+    expect(filesOf(bundle)['logs.json']).toBeUndefined();
+  });
+
+  it('a report dialog keeps the capture as of when it was opened, with the window it covered, and releases the snapshot at once', async () => {
+    const t = mutableClock(100_000);
+    const store = createMemoryCaptureStore({ maxRecordingTimeMs: 5000, clock: t.clock });
+    const release = vi.fn();
+    const realSnapshot = store.snapshot.bind(store);
+    store.snapshot = (options) => {
+      const snapshot = realSnapshot(options);
+      return { ...snapshot, release: () => (release(), snapshot.release()) };
+    };
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      clock: t.clock,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 100_500, { msg: 'before' }));
+    t.set(102_000);
+    const prepared = client.prepareUpload();
+    await flushMicrotasks();
+    expect(release).toHaveBeenCalledTimes(1); // frozen: read out, so an abandoned dialog pins nothing
+    t.set(150_000);
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', 150_000, { msg: 'after' }));
+    await prepared?.send({ summary: 's' });
+    const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
+    const logs = JSON.parse(strFromU8(filesOf(bundle)['logs.json'] as Uint8Array)) as Array<{
+      msg: string;
+    }>;
+    expect(logs.map((l) => l.msg)).toEqual(['before']);
+    expect(manifestOf(bundle).time.start).toBe(100_000); // the window as it was frozen, not as of Send
+  });
+
+  it('a frozen capture that cannot be read releases the snapshot and falls back to a live one', async () => {
+    const store = createMemoryCaptureStore({});
+    let first = true;
+    const release = vi.fn();
+    const realSnapshot = store.snapshot.bind(store);
+    store.snapshot = (options) => {
+      const snapshot = realSnapshot(options);
+      if (first) {
+        first = false;
+        return {
+          ...snapshot,
+          stream: () => ({
+            next: () => Promise.reject(new Error('unreadable')),
+            return: async () => ({ done: true as const, value: undefined }),
+            [Symbol.asyncIterator]() {
+              return this;
+            },
+          }),
+          release: () => (release(), snapshot.release()),
+        };
+      }
+      return snapshot;
+    };
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      captureStore: store,
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+    });
+    client.captureAggregator.addEntry(new CaptureDataEntryBase('log', Date.now(), { msg: 'live' }));
+    const prepared = client.prepareUpload();
+    await flushMicrotasks();
+    expect(await prepared?.send({ summary: 's' })).toEqual({ ok: true });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1); // the unreadable snapshot was released, not left pinned
+    const logs = JSON.parse(
+      strFromU8(filesOf(enqueue.mock.calls[0]?.[0] as Bundle)['logs.json'] as Uint8Array),
+    ) as Array<{ msg: string }>;
+    expect(logs.map((l) => l.msg)).toEqual(['live']); // and the report fell back to a live capture
   });
 });
 
 describe('createClient — crash.json', () => {
   const crashOf = (bundle: Bundle) =>
-    JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
+    JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['crash.json'] as Uint8Array));
 
   it('logException writes a structured crash.json (handled) into the bundle', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
@@ -785,7 +1084,7 @@ describe('createClient — crash.json', () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
     await client.logException('just a string');
-    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
     expect('crash.json' in files).toBe(true);
     const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
       handled: boolean;
@@ -805,7 +1104,7 @@ describe('createClient — report identity is snapshotted at submit time', () =>
   // very same report. The request context was already snapshotted at submit for exactly this reason;
   // these two were left reading live.
   const assembledFrom = (enqueue: ReturnType<typeof fakeUpload>['enqueue'], call = 0) => {
-    const files = unzipSync((enqueue.mock.calls[call]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[call]?.[0] as Bundle).body as Uint8Array);
     return {
       attrs: (
         JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
@@ -1856,7 +2155,7 @@ describe('createClient — report path (built trigger pipeline)', () => {
     await client.logException(new Error('boom'));
     expect(snap).toHaveBeenCalledWith(1000); // pulled with the report's wall-clock timestamp
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body);
+    const files = unzipSync(bundle.body as Uint8Array);
     // viewtree.json holds the array of entry data, in source order.
     expect(JSON.parse(strFromU8(files['viewtree.json'] as Uint8Array))).toEqual([
       { tag: 'body', children: [] },
@@ -1878,7 +2177,7 @@ describe('createClient — report path (built trigger pipeline)', () => {
     });
     await client.logException(new Error('boom'));
     expect(snap).toHaveBeenCalledWith(1000);
-    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
     // profile.json is the single bare object (the assembler's profile special-case).
     expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual({
       nodes: [],
@@ -2312,7 +2611,7 @@ describe('createClient — per-tenant capture isolation', () => {
     await client.logException(new Error('boom in C'));
 
     const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const text = Object.values(files)
       .map((b) => strFromU8(b))
       .join('\n');
@@ -2367,7 +2666,7 @@ describe('createClient — per-tenant capture isolation', () => {
     client.log('SECOND');
     await client.logException(new Error('boom'));
     const bundle = enqueue.mock.calls[0]?.[0] as { body: Uint8Array };
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const text = Object.values(files)
       .map((b) => strFromU8(b))
       .join('\n');
@@ -2419,7 +2718,7 @@ describe('createClient — upload (manual report)', () => {
     });
 
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const names = manifest.files
       .filter((f: { type: string }) => f.type === 'attachment')
@@ -2446,7 +2745,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const names = manifest.files
       .filter((f: { type: string }) => f.type === 'attachment')
@@ -2478,7 +2777,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     expect(
       manifest.files
@@ -2498,7 +2797,7 @@ describe('createClient — upload (manual report)', () => {
 
     expect(result.ok).toBe(true);
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(entry.attrs.fileName).toBe('x');
@@ -3142,7 +3441,7 @@ describe('createClient — upload (manual report)', () => {
     await client.upload();
 
     const bundle = enqueue.mock.calls[0]?.[0] as Bundle;
-    const files = unzipSync(bundle.body) as Record<string, Uint8Array>;
+    const files = unzipSync(bundle.body as Uint8Array) as Record<string, Uint8Array>;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(entry.attrs.mimeType).toBe('application/json');
@@ -3225,7 +3524,7 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
     const log = (msg: string, at: number) =>
       client.captureAggregator.addEntry(new CaptureDataEntryBase('log', at, { msg }));
     const sentLogs = (): string[] => {
-      const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body);
+      const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
       const raw = files['logs.json'];
       return raw === undefined
         ? []
@@ -3260,7 +3559,9 @@ describe('createClient — prepareUpload (capture frozen at preparation)', () =>
 
     const request = JSON.parse(
       strFromU8(
-        unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body)['request.json'] as Uint8Array,
+        unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array)[
+          'request.json'
+        ] as Uint8Array,
       ),
     ) as Record<string, unknown>;
     expect(request).toMatchObject({

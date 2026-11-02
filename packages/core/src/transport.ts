@@ -1,6 +1,7 @@
 import type { EnvironmentEnvelope, RequestJson } from '@bugsee/protocol';
 import { serviceToken } from '@bugsee/service';
 import type { AccessToken, IssueId, RecordingId } from '@bugsee/types';
+import type { BundleBody, BundleBodyLike } from './bundle-body';
 import type { BugseeError } from './errors';
 
 // Transport split into three roles. The BugseeApi / BundleUploader / UploadPipeline
@@ -14,7 +15,16 @@ import type { BugseeError } from './errors';
  * piece of the transport). node-utils `httpRequest` implements this over node:http(s); a browser
  * tier wraps fetch/XHR. Non-2xx resolves (callers map status); only network errors/timeouts reject.
  */
-export type HttpTransport = (url: string, options?: HttpRequestOptions) => Promise<HttpResponse>;
+export type HttpTransport = ((
+  url: string,
+  options?: HttpRequestOptions,
+) => Promise<HttpResponse>) & {
+  /**
+   * Set by a transport that can send a {@link BundleBody} as a request body without materializing it (a node pipe,
+   * a browser Blob). Every other transport, including third-party injections, is handed plain bytes.
+   */
+  readonly acceptsBundleBody?: true;
+};
 
 export interface HttpRequestOptions {
   /** HTTP method. Default 'GET'. */
@@ -22,7 +32,7 @@ export interface HttpRequestOptions {
   /** Request headers. */
   headers?: Record<string, string>;
   /** Request body. */
-  body?: Uint8Array | string;
+  body?: Uint8Array | string | BundleBody;
   /** Abort + reject after this many ms. */
   timeoutMs?: number;
 }
@@ -133,15 +143,15 @@ export interface PutBundleOptions {
 
 /** DATA PLANE — unauthenticated signed PUT; mirrors iOS PUT headers. */
 export interface BundleUploader {
-  putBundle(url: string, body: Uint8Array, options: PutBundleOptions): Promise<PutResult>;
+  putBundle(url: string, body: BundleBodyLike, options: PutBundleOptions): Promise<PutResult>;
 }
 
 /** A fully-assembled, ready-to-upload bundle (output of the trigger path). */
 export interface Bundle {
   /** The /v2/issues body, also embedded verbatim in the zip. */
   request: RequestJson;
-  /** The `*.bundle.zip` bytes. */
-  body: Uint8Array;
+  /** The `*.bundle.zip` content: raw bytes, or a {@link BundleBody} (a stream/Blob/file-backed artifact). */
+  body: BundleBodyLike;
   /** Bundle archive basename `<random20>.bundle.zip`. */
   fileName: string;
 }

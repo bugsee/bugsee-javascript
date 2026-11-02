@@ -64,6 +64,7 @@ export function createCaptureAggregator(
         type: entry.type,
         timestamp: entry.timestamp,
         serialized: entry.serialize(),
+        ...(entry.anchor === true ? { anchor: true } : {}),
         ...(owner !== undefined ? { owner } : {}),
       });
     } catch (error) {

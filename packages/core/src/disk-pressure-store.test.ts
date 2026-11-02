@@ -51,7 +51,9 @@ describe('disk pressure over the file capture store', () => {
     store.add(rec('log', 1));
     store.add(rec('replay', 2));
     store.add(rec('traces.system', 3));
-    expect(storage.files(7, 0).sort()).toEqual(['log', 'meta', 'replay', 'traces.system']);
+    // Replay lives in the store's visual lane, so it is its own part on the medium (part 1) next to the data part (0).
+    expect(storage.files(7, 0).sort()).toEqual(['log', 'meta', 'traces.system']);
+    expect(storage.files(7, 1).sort()).toEqual(['meta', 'replay']);
     const all = await drain(store);
     expect(names(all.get('log'))).toEqual(['log@1']);
     expect(names(all.get('replay'))).toEqual(['replay@2']);
@@ -495,6 +497,30 @@ describe('withDiskPressure — failures and surface', () => {
     store.tick(3000);
     expect(open.mock.calls.some((c) => c[1] === 2_000_000_000)).toBe(true);
     expect(storage.chunks(1)).not.toContain(2_000_000_000);
+  });
+
+  it('counts ONE tick per store tick even when the replay lane closes a second part (the flap window is not halved)', () => {
+    const storage = createInMemoryChunkStorage();
+    const pressure = createDiskPressure();
+    const store = throwawayProbeStore(storage, { clock: clockAt(1000), diskPressure: pressure });
+    const replay = (t: number): StoredEntry => ({ type: 'replay', timestamp: t, serialized: 'r' });
+    let now = 1000;
+    const tick = (): void => {
+      store.add(replay(now)); // every second holds a replay record: two parts close per tick
+      now += 1000;
+      store.tick(now);
+    };
+    pressure.noteWriteError({ code: 'ENOSPC' });
+    tick();
+    pressure.noteWriteRecovered(); // released
+    for (let i = 0; i < 6; i++) tick();
+    pressure.noteWriteError({ code: 'ENOSPC' }); // pinned again 6 ticks after the release: a flap (<= 10), probe slows to every 2nd tick
+    const probes = vi.spyOn(storage, 'write');
+    tick(); // due at +2, so no probe yet
+    expect(probes.mock.calls.some((c) => c[1] === 2_000_000_000)).toBe(false);
+    tick();
+    tick();
+    expect(probes.mock.calls.some((c) => c[1] === 2_000_000_000)).toBe(true);
   });
 
   it('does not probe when not pinned (a size-reading none must not touch the full disk)', () => {
@@ -1884,5 +1910,37 @@ describe('withDiskPressure — a part that keeps throwing', () => {
     snap.unpin?.();
     snap.release();
     expect(calls).toEqual(['unpin0', 'unpin1', 'unpin2', 'release0', 'release1', 'release2']);
+  });
+});
+
+describe('disk pressure — visual source lanes survive both halves', () => {
+  it("serves each window's replay with its lane whether it landed on the medium or only in the shadow", async () => {
+    const { pressure, store } = setup();
+    store.add({ ...rec('replay', 1, 'a-on-disk'), lane: 'a' });
+    pressure.observe(5 * MB); // low: replay now stays in memory only
+    store.add({ ...rec('replay', 2, 'b-shadow'), lane: 'b' });
+    const replay = (await drain(store)).get('replay') ?? [];
+    expect(replay.map((r) => [r.serialized, r.lane])).toEqual([
+      ['a-on-disk', 'a'],
+      ['b-shadow', 'b'],
+    ]);
+  });
+});
+
+describe('disk pressure — the lane reaches the medium meta, also for a part opened late', () => {
+  it('persists a window lane for a part opened immediately and for one whose medium open was deferred', async () => {
+    const { storage, pressure, store } = setup();
+    store.add({ ...rec('replay', 1, 'now'), lane: 'a' });
+    pressure.observe(5 * MB); // low: the visual lane stays off the medium, so its part is not opened there yet
+    store.tick(2000);
+    store.add({ ...rec('replay', 3, 'late'), lane: 'b' });
+    pressure.observe(30 * MB); // pressure over: the next durable write opens the deferred part
+    store.tick(3000);
+    store.add({ ...rec('replay', 4, 'after'), lane: 'b' });
+    const lanes = (await createFileChunkBackend(storage, { generation: 7 }).listParts(7)).map(
+      (p) => p.lane,
+    );
+    expect(lanes).toContain('a');
+    expect(lanes.filter((l) => l === 'b').length).toBeGreaterThan(0);
   });
 });

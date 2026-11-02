@@ -49,8 +49,6 @@ import {
   getOrCreateInterceptor,
   getProcessStatus,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   LifecycleEvents,
   type LifecycleEventsListener,
@@ -70,16 +68,20 @@ import {
   setCarrierStatus,
   setStackAppRoot,
   TransportToken,
+  withTransportHeaders,
 } from '@bugsee/core';
 import {
   createBatchedFsChunkStorage,
   createCaptureRingWriter,
+  createFileBundleSink,
   createNodeBundleStore,
   createNodeCrashpadSessionMarkerStore,
   createNodeReportMarkerStore,
   createWorkerThreadRingWorker,
   httpRequest,
   nodeSha256Fallback,
+  nodeSha256Stream,
+  sweepStaleExports,
   writeFileSecure,
 } from '@bugsee/node-utils';
 import type { ActiveSpanStore } from '@bugsee/performance';
@@ -443,6 +445,13 @@ export interface BugseeLaunchOptions {
   scheduler?: Scheduler;
   /** Capture store override; wins over dataDir/capturedDataStore. Default file-backed on disk; 'memory' opts out. */
   captureStore?: CaptureStore;
+  /**
+   * Called when the byte cap forced every visual (replay) base out of the store, so a recorder that feeds it must take a
+   * fresh snapshot. For a host whose recorders live elsewhere (the Electron main, whose renderers stream into this store);
+   * it is not called for a `captureStore` you supply (that store is yours). Called at most once per drop, off the write path,
+   * with the lane (an Electron window) that lost its bases, or no argument for the unkeyed lane.
+   */
+  onVisualReset?: (lane?: string) => void;
   /** System probe for the environment envelope. Default realSystemProbe. */
   systemProbe?: SystemProbe;
   /**
@@ -495,6 +504,12 @@ export interface BugseeLaunchOptions {
    * `video` file). A platform extension registers its encoder here; JSON file types need no encoder.
    */
   fileEncoders?: BundleAssemblyContext['fileEncoders'];
+  /**
+   * Per-file-type STREAMING encoders (the replay's `replay.bin`). A type that has one is split into one member per visual source
+   * lane (a window of the Electron main), and a recovered bundle uses the same encoders. Without one the type's records are
+   * written as they are, merged.
+   */
+  streamEncoders?: BundleAssemblyContext['streamEncoders'];
 
   /**
    * Auto-instrument INCOMING HTTP servers (the node:http emit patch + any injected native serve wraps) for
@@ -582,13 +597,11 @@ export interface LaunchResult {
 // Wrap the transport so EVERY SDK request (control-plane sessions/issues AND the signed S3 PUT)
 // carries X-Bugsee-Internal — the network capture's default self-isolation skips it, so the SDK
 // never records its own traffic. An extra unsigned header is harmless to the S3 signature.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, {
-      ...options,
-      headers: { ...options.headers, 'x-bugsee-internal': '1' },
-    });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
+
+/** Export files older than this at launch are leftovers of a dead run (a live export is deleted within one upload). */
+const EXPORT_FILE_MAX_AGE_MS = 60 * 60 * 1000;
 
 /** `process.cwd()` can throw when the working directory has been deleted out from under the process. */
 const safeCwd = (): string | undefined => {
@@ -683,7 +696,13 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // browser/edge bundles, so it cannot name `node:crypto`); where this runtime has no `crypto.subtle`
   // (unflagged Node 18, Electron mains on it) node supplies the `node:crypto` digest instead. Inherited by
   // bun, deno and electron main, which all compose this launch.
-  const baseUploadPipeline = createUploadPipeline({ api, uploader, sha256: nodeSha256Fallback() });
+  const baseUploadPipeline = createUploadPipeline({
+    api,
+    uploader,
+    sha256: nodeSha256Fallback(),
+    // A bundle built into a temp file is hashed from its stream (node:crypto, incremental) instead of being read whole.
+    sha256Stream: nodeSha256Stream,
+  });
 
   // Per-instance on-disk subtree (multi-instance coexistence; design: multi-instance-disk-coexistence.md).
   // When file-backed, every store lives under <dataDir>/<instanceId>/ so several aggregators (worker_threads
@@ -742,6 +761,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
           ...(options.onError !== undefined ? { onError: options.onError } : {}),
         })
       : undefined;
+  // An export file a previous launch of THIS instance identity left behind (it died between building the zip and deleting it)
+  // is of no use to anyone: a pinned identity reuses its subtree, so sweep it here rather than let them pile up.
+  if (instanceLayout !== undefined) {
+    sweepStaleExports(instanceLayout.exportDir, EXPORT_FILE_MAX_AGE_MS); // never throws: a missing dir or a vanished file is skipped
+  }
   const uploadPipeline = durable ?? baseUploadPipeline;
 
   // Node environment envelope, rebuilt at each report so it reflects current state. The canonical
@@ -782,6 +806,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   const storeOptions = {
     maxRecordingTimeMs: maxRecordingTime * 1000,
     maxDataSizeBytes: maxDataSize * 1024 * 1024,
+    ...(options.onVisualReset !== undefined ? { onVisualReset: options.onVisualReset } : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
   };
   // This launch's capture generation (the launch epoch); shared by the live store, the marker hook, the
@@ -985,6 +1010,12 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       : {}),
     ...(reportSnapshots.length > 0 ? { reportSnapshots } : {}),
     ...(options.fileEncoders !== undefined ? { fileEncoders: options.fileEncoders } : {}),
+    ...(options.streamEncoders !== undefined ? { streamEncoders: options.streamEncoders } : {}),
+    // With an on-disk instance the report's zip is built straight into a temp file under it (and streamed from there to
+    // the durable queue and the upload), so a large report never sits in the heap; without one, memory as before.
+    ...(instanceLayout !== undefined
+      ? { bundleSink: createFileBundleSink(instanceLayout.exportDir) }
+      : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -1207,7 +1238,15 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
             ownInstanceId: instanceLayout.instanceId,
             uploadPipeline,
             // a recovered incident belongs to a PRIOR process: this launch's uptime would be wrong for it, so it is omitted
-            context: () => ({ appToken, environment: withoutUptime(getEnvironment()), clock }),
+            context: () => ({
+              appToken,
+              environment: withoutUptime(getEnvironment()),
+              clock,
+              // The same encoders as the live export: without them a recovered multi-window replay merges into one member.
+              ...(options.streamEncoders !== undefined
+                ? { streamEncoders: options.streamEncoders }
+                : {}),
+            }),
             ...(options.nativeCrash !== undefined
               ? { nativeCrashSource: options.nativeCrash.source }
               : {}),

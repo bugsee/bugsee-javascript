@@ -20,6 +20,8 @@ export interface DecodedStreamEntry {
   timeOrigin: number;
   redacted: boolean;
   payload: string;
+  /** Present only when the renderer flagged a base-opening record (a strict boolean `true` on the wire). */
+  anchor?: true;
 }
 
 /** Encode a streaming capture entry to a wire string, splicing the already-serialized payload in verbatim. */
@@ -32,6 +34,8 @@ export function encodeStreamEntry(entry: StreamingCaptureEntry): string {
     mono: entry.mono,
     o: entry.timeOrigin,
     red: entry.redacted,
+    // Only a base-opening record carries the flag, so an ordinary entry's wire form is unchanged.
+    ...(entry.anchor === true ? { a: 1 } : {}),
   });
   // Splice the payload as the raw JSON value of `p` (no re-parse/escape of the payload on the hot path).
   return `${head.slice(0, -1)},"p":${entry.payload}}`;
@@ -45,6 +49,7 @@ interface WireEntry {
   mono?: number;
   o?: number;
   red?: boolean;
+  a?: unknown;
   p?: unknown;
 }
 
@@ -129,6 +134,9 @@ export function decodeStreamEntry(raw: string): DecodedStreamEntry | undefined {
     mono,
     timeOrigin,
     redacted: message.red ?? false,
+    // The wire flag is `1`; anything else a renderer sends (a string, `true`, an object) is not a flag. The flag only
+    // steers which records the main store keeps, so a misbehaving renderer can at worst hold extra replay parts.
+    ...(message.a === 1 ? { anchor: true as const } : {}),
     // Re-serialize the payload for the aggregator's `StoredEntry.serialized` (main-side, off the hot path).
     payload,
   };
@@ -213,7 +221,9 @@ export type ControlCommand =
   | 'session'
   | 'blackout-start'
   | 'blackout-end'
-  | 'window-key';
+  | 'window-key'
+  /** Main shed every replay base from its store (byte cap): each renderer restarts its recorder for a fresh full snapshot. */
+  | 'checkout';
 
 const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'pause',
@@ -224,6 +234,7 @@ const CONTROL_COMMANDS: ReadonlySet<string> = new Set([
   'blackout-start',
   'blackout-end',
   'window-key',
+  'checkout',
 ]);
 
 export interface ControlMessage {

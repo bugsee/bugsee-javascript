@@ -16,10 +16,12 @@ import {
 } from '@bugsee/protocol';
 import type { AttributeValue, IssueType } from '@bugsee/types';
 import { resolveUserAttachments } from './attachments';
+import type { BundleSink } from './bundle-sink';
 import { type BundleFile, writeBundleZip } from './bundle-writer';
 import type { Clock } from './clock';
 import type { CaptureDataEntry } from './contracts';
 import { stampCrashProvenance } from './crash';
+import type { FileStreamEncoder } from './file-stream-encoder';
 import type { ReportingRequest } from './reporting';
 import type { RequestContext } from './request-context';
 import type { Bundle } from './transport';
@@ -58,13 +60,20 @@ export interface BundleAssemblyContext {
    * JSON path — keeping core codec-free. The encoder receives the type's ordered payloads (`entry.data`).
    */
   fileEncoders?: Partial<Record<FileType, (payloads: unknown[]) => Uint8Array>>;
+  /**
+   * Per-file-type STREAMING encoders (the replay's `replay.bin`): honoured by the streaming assembler only, and preferred
+   * over `fileEncoders` for the same type. See {@link FileStreamEncoder}.
+   */
+  streamEncoders?: Partial<Record<FileType, FileStreamEncoder>>;
+  /** Where the streaming assembler writes the zip as it is built. Default: memory (see {@link BundleSink}). */
+  sink?: BundleSink;
   /** Sink for non-fatal problems (a dropped user attachment). Absent → they are dropped silently. */
   onError?: (error: unknown) => void;
 }
 
 const ALPHANUMERIC = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
-function randomBundleFileName(): string {
+export function randomBundleFileName(): string {
   let name = '';
   for (let i = 0; i < 20; i += 1) {
     name += ALPHANUMERIC.charAt(Math.floor(Math.random() * ALPHANUMERIC.length));
@@ -82,8 +91,37 @@ function defaultSummary(type: IssueType): string {
   return 'Bug Report';
 }
 
-function fileNameForType(type: FileType): string {
+export function fileNameForType(type: FileType): string {
   return type === 'attachment' ? 'attachment' : DEFAULT_FILENAMES[type];
+}
+
+/**
+ * The JSON text around the comma-joined items of one file type, for the STREAMING assembler: `open` + items + `close`
+ * equals `JSON.stringify(serializeFileData(type, payloads))`. `single` is the `profile` file, which is the first item
+ * alone (a bare object). An equivalence test pins the two against each other, so a new shape cannot be added to one.
+ */
+export function fileShape(type: FileType): { open: string; close: string; single: boolean } {
+  if (type === 'performance') {
+    return { open: '{"transactions":[', close: ']}', single: false };
+  }
+  if (type === 'video.aux') {
+    return {
+      open: `{"version":${JSON.stringify(VIDEO_AUX_VERSION)},"events":[`,
+      close: ']}',
+      single: false,
+    };
+  }
+  if (type === 'input') {
+    return {
+      open: `{"version":${JSON.stringify(INPUT_STREAM_VERSION)},"events":[`,
+      close: ']}',
+      single: false,
+    };
+  }
+  if (type === 'profile') {
+    return { open: '', close: '', single: true };
+  }
+  return { open: '[', close: ']', single: false };
 }
 
 // Per-type JSON shape. Most file types serialize to a top-level ARRAY of payloads. Four exceptions:
@@ -115,14 +153,13 @@ function serializeFileData(type: FileType, payloads: unknown[]): unknown {
   return payloads;
 }
 
-export function assembleBundle(
+/** request.json: metadata from the Report + the wire source mechanism + the environment. Shared by both assemblers. */
+export function buildRequestJson(
   request: ReportingRequest,
-  capturedByType: Map<FileType, CaptureDataEntry[]>,
   context: BundleAssemblyContext,
-): Bundle {
+  now: number,
+): RequestJson {
   const { report, source } = request;
-  const now = context.clock.wallNow();
-
   // Wire `email` = a per-report email if set, else the request-context user (when the report fired in a
   // request), else the global user identifier (Android "email from global scope"). Emitted only when it
   // is a non-empty string.
@@ -133,7 +170,7 @@ export function assembleBundle(
     report.email ?? (requestContext?.user || undefined) ?? context.userIdentifier ?? undefined;
 
   // request.json: metadata from the Report + the wire source mechanism + the environment.
-  const requestJson: RequestJson = {
+  return {
     type: report.type,
     summary: report.summary ?? defaultSummary(report.type),
     severity: severityToWire(report.severity),
@@ -155,37 +192,20 @@ export function assembleBundle(
     ...(email !== undefined && email !== '' ? { email } : {}),
     ...(report.signatures.length > 0 ? { signatures: report.signatures } : {}),
   };
+}
 
-  // Time bounds: earliest captured entry → trigger moment.
-  let start = now;
+/**
+ * The per-report members that are not a rolling capture stream: the crash detail, the report's attachments and the
+ * application's attachments. Shared by both assemblers. `dataNames` are the bundle member names already taken by the
+ * captured data (an attachment must not clash with one).
+ */
+export function buildReportMembers(
+  report: ReportingRequest['report'],
+  context: BundleAssemblyContext,
+  dataNames: readonly string[],
+): { files: ManifestFileEntry[]; typedFiles: BundleFile[] } {
   const files: ManifestFileEntry[] = [];
   const typedFiles: BundleFile[] = [];
-  for (const [type, entries] of capturedByType) {
-    for (const entry of entries) {
-      if (entry.timestamp < start) {
-        start = entry.timestamp;
-      }
-    }
-    const filename = fileNameForType(type);
-    files.push({
-      filename,
-      type,
-      // A video entry with no attrs reads as the default — an h264 MP4 — to the worker (which then skips the
-      // transcode a WebM needs) and to the viewer (which labels it `video/mp4`). The container is whatever
-      // the file name says it is.
-      ...(type === 'video'
-        ? { attrs: { format: filename.slice(filename.lastIndexOf('.') + 1) } }
-        : {}),
-    });
-    const payloads = entries.map((entry) => entry.data);
-    // A BINARY file type (e.g. `replay` → gzipped `replay.bin`) goes through its injected encoder → bytes;
-    // every other type is JSON. Core stays codec-free — the encoder is provided by the platform/extension.
-    const encoder = context.fileEncoders?.[type];
-    const data =
-      encoder !== undefined ? encoder(payloads) : JSON.stringify(serializeFileData(type, payloads));
-    typedFiles.push({ name: filename, data });
-  }
-
   // Structured crash detail (`crash.json`) — a per-report file (not a rolling capture stream) built
   // from the thrown Error at report time. The backend crash pipeline reads it for stack symbolication.
   //
@@ -211,6 +231,7 @@ export function assembleBundle(
     REQUEST_JSON_FILENAME,
     MANIFEST_JSON_FILENAME,
     APP_TOKEN_FILENAME,
+    ...dataNames,
     ...typedFiles.map((file) => file.name),
   ]);
   for (const attachment of report.attachments ?? []) {
@@ -244,18 +265,83 @@ export function assembleBundle(
     });
     typedFiles.push({ name: att.bundleName, data: att.data });
   }
+  return { files, typedFiles };
+}
 
-  // Manifest attributes: the request context's attributes (when present) merged OVER the global ones.
+/** manifest.json: the file inventory, the capture window and the attributes. Shared by both assemblers. */
+export function buildManifest(
+  context: BundleAssemblyContext,
+  start: number,
+  end: number,
+  files: ManifestFileEntry[],
+): ManifestJson {
+  // The request context's attributes (when present) merged OVER the global ones.
+  const requestContext = context.requestContext;
   const attrs =
     requestContext?.attributes !== undefined
       ? { ...context.attributes, ...requestContext.attributes }
       : context.attributes;
-  const manifest: ManifestJson = {
-    version: MANIFEST_VERSION,
-    time: { start, end: now },
-    files,
-    attrs,
+  return { version: MANIFEST_VERSION, time: { start, end }, files, attrs };
+}
+
+/** The manifest entry of one captured data type. Shared by both assemblers. */
+export function manifestEntryForType(type: FileType): ManifestFileEntry {
+  const filename = fileNameForType(type);
+  return {
+    filename,
+    type,
+    // A video entry with no attrs reads as the default — an h264 MP4 — to the worker (which then skips the
+    // transcode a WebM needs) and to the viewer (which labels it `video/mp4`). The container is whatever
+    // the file name says it is.
+    ...(type === 'video'
+      ? { attrs: { format: filename.slice(filename.lastIndexOf('.') + 1) } }
+      : {}),
   };
+}
+
+/** What the buffered assembler returns: a {@link Bundle} whose body is known to be raw bytes (narrower than `Bundle.body`). */
+export type BufferedBundle = Bundle & { body: Uint8Array };
+
+export function assembleBundle(
+  request: ReportingRequest,
+  capturedByType: Map<FileType, CaptureDataEntry[]>,
+  context: BundleAssemblyContext,
+): BufferedBundle {
+  const { report } = request;
+  const now = context.clock.wallNow();
+
+  const requestJson = buildRequestJson(request, context, now);
+
+  // Time bounds: earliest captured entry → trigger moment.
+  let start = now;
+  const files: ManifestFileEntry[] = [];
+  const typedFiles: BundleFile[] = [];
+  for (const [type, entries] of capturedByType) {
+    for (const entry of entries) {
+      if (entry.timestamp < start) {
+        start = entry.timestamp;
+      }
+    }
+    const filename = fileNameForType(type);
+    files.push(manifestEntryForType(type));
+    const payloads = entries.map((entry) => entry.data);
+    // A BINARY file type (e.g. `replay` → gzipped `replay.bin`) goes through its injected encoder → bytes;
+    // every other type is JSON. Core stays codec-free — the encoder is provided by the platform/extension.
+    const encoder = context.fileEncoders?.[type];
+    const data =
+      encoder !== undefined ? encoder(payloads) : JSON.stringify(serializeFileData(type, payloads));
+    typedFiles.push({ name: filename, data });
+  }
+
+  const reportMembers = buildReportMembers(
+    report,
+    context,
+    typedFiles.map((file) => file.name),
+  );
+  files.push(...reportMembers.files);
+  typedFiles.push(...reportMembers.typedFiles);
+
+  const manifest = buildManifest(context, start, now, files);
 
   const body = writeBundleZip([
     { name: REQUEST_JSON_FILENAME, data: JSON.stringify(requestJson) },

@@ -27,8 +27,6 @@ import {
   getCarrierStatus,
   getOrCreateInterceptor,
   getServiceManifests,
-  type HttpRequestOptions,
-  type HttpResponse,
   type HttpTransport,
   type LifecycleEventsListener,
   type RequestContext,
@@ -42,6 +40,7 @@ import {
   setCarrierLastLaunch,
   setCarrierStatus,
   TransportToken,
+  withTransportHeaders,
 } from '@bugsee/core';
 import { BugseeOption, type RuntimeType } from '@bugsee/protocol';
 import { describeValue, reportGuarded } from '@bugsee/util';
@@ -212,10 +211,8 @@ export interface BugseeEdgeLaunchOptions {
 export type Bugsee = BugseeClient;
 
 // Tag every SDK request with X-Bugsee-Internal so the network capture self-skips the SDK's own traffic.
-const internalTagged =
-  (transport: HttpTransport): HttpTransport =>
-  (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> =>
-    transport(url, { ...options, headers: { ...options.headers, 'x-bugsee-internal': '1' } });
+const internalTagged = (transport: HttpTransport): HttpTransport =>
+  withTransportHeaders(transport, { 'x-bugsee-internal': '1' });
 
 /** Launch the edge SDK. A per-isolate singleton (a repeat call is ignored). Returns the started client. */
 export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = {}): Bugsee {

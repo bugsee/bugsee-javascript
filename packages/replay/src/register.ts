@@ -4,7 +4,7 @@
 // `fileEncoders` map (read at each report's bundle assembly). The browser launch lazy-`import()`s this
 // module + calls `registerReplay` when the `replay` option is truthy. Returns the recorder so the
 // caller can wire `client.startBlackout` → its blackout controls (or pass `blackout`, and the recorder follows it).
-import type { BlackoutGate, CaptureProvider } from '@bugsee/core';
+import type { BlackoutGate, CaptureProvider, FileStreamEncoder } from '@bugsee/core';
 import { record as rrwebRecord } from '@bugsee/rrweb';
 import { encodeReplay } from './encoder';
 import { type ReplayMaskingOptions, resolveReplayMaskingOptions } from './masking';
@@ -14,6 +14,7 @@ import {
   type ReplayRecorder,
   type ReplayRecordFn,
 } from './recorder';
+import { createReplayStreamEncoder } from './stream-encoder';
 
 /** The client surface `registerReplay` needs (structural — no hard @bugsee/core client dep). */
 export interface ReplayClientLike {
@@ -23,6 +24,11 @@ export interface ReplayClientLike {
 /** The shared `fileEncoders` map `registerReplay` writes its `replay` encoder into. */
 export interface ReplayFileEncoders {
   replay?: (payloads: unknown[]) => Uint8Array;
+}
+
+/** The shared `streamEncoders` map `registerReplay` writes its streaming `replay` encoder into (when given one). */
+export interface ReplayStreamEncoders {
+  replay?: FileStreamEncoder;
 }
 
 export interface RegisterReplayOptions extends ReplayMaskingOptions {
@@ -35,6 +41,8 @@ export interface RegisterReplayOptions extends ReplayMaskingOptions {
   /** Internal-error sink. Today: an invalid masking selector that was dropped and escalated —
    *  without it the downgrade is silent, which is precisely how the original fail-open survived. */
   onError?: (error: unknown) => void;
+  /** The client's shared stream-encoder map: when given, the streaming `replay.bin` encoder is registered into it. */
+  streamEncoders?: ReplayStreamEncoders;
   /** The client's blackout gate (`client.getService(BlackoutToken)`): the recorder pauses/resumes with it. */
   blackout?: BlackoutGate;
 }
@@ -83,5 +91,8 @@ export function registerReplay(
   // Register the encoder into the SHARED map the client reads at assembly time — so the next report's
   // `replay` entries serialize to the gzipped `replay.bin`.
   fileEncoders.replay = encodeReplay;
+  if (options.streamEncoders !== undefined) {
+    options.streamEncoders.replay = createReplayStreamEncoder();
+  }
   return provider;
 }

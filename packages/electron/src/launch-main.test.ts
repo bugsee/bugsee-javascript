@@ -67,7 +67,8 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
   const added: unknown[] = [];
   const stop = vi.fn(() => Promise.resolve(true));
   const flush = vi.fn(() => Promise.resolve(true));
-  const store = { add: (e: unknown) => added.push(e) };
+  const retireLane = vi.fn();
+  const store = { add: (e: unknown) => added.push(e), retireLane };
   const blackout = createBlackoutState();
   const client = {
     getService: vi.fn((token: unknown) => {
@@ -97,6 +98,7 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
     stop,
     flush,
     added,
+    retireLane,
     get received() {
       return received;
     },
@@ -155,6 +157,207 @@ describe('launchMain', () => {
     expect(ipc.has(BUGSEE_HELLO_CHANNEL)).toBe(false); // control listener removed
     expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['stop']); // renderer told to stop
     expect(f.stop).toHaveBeenCalledTimes(1); // original node stop still runs
+  });
+
+  describe('a window that is gone retires its replay lane in the main store', () => {
+    it('retires the lane named by the window id, when its renderer process is gone', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      const handlers = new Map<string, (...args: never[]) => void>();
+      const app = {
+        on: (event: string, listener: (...args: never[]) => void) => handlers.set(event, listener),
+      };
+      launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, app } as never);
+      const r = fakeSender(7);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      handlers.get('render-process-gone')?.(
+        {} as never,
+        { id: 7 } as never,
+        { reason: 'crashed' } as never,
+      );
+      expect(f.retireLane).toHaveBeenCalledWith('7');
+    });
+  });
+
+  describe('a visual reset of one window (per-window lanes)', () => {
+    const setup = () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const a = fakeSender(1);
+      const b = fakeSender(2);
+      for (const r of [a, b]) {
+        ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+        r.sent.length = 0;
+      }
+      const reset = (lane?: string): void =>
+        (
+          f.received?.options as unknown as { onVisualReset: (lane?: string) => void }
+        ).onVisualReset(lane);
+      return { a, b, reset, at: (t: number) => (now = t) };
+    };
+    const asked = (r: { sent: Array<{ raw: string }> }) =>
+      r.sent.map((m) => decodeControl(m.raw)?.command);
+
+    it('restarts only the window whose lane lost its bases', () => {
+      const { a, b, reset } = setup();
+      reset('2');
+      expect(asked(a)).toEqual([]);
+      expect(asked(b)).toEqual(['checkout']);
+    });
+
+    it('paces each window on its own: window 2 backing off does not delay window 1', () => {
+      const { a, b, reset, at } = setup();
+      reset('2');
+      at(1_000);
+      reset('2'); // inside window 2's quiet period
+      reset('1'); // window 1 has never asked
+      expect(asked(b)).toEqual(['checkout']);
+      expect(asked(a)).toEqual(['checkout']);
+    });
+
+    it('a window with no registered renderer spends no budget and asks nobody', () => {
+      const { a, b, reset } = setup();
+      reset('99');
+      expect([...asked(a), ...asked(b)]).toEqual([]);
+    });
+
+    it('a reset of a window that has not registered yet leaves its budget unspent', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const reset = (lane: string): void =>
+        (
+          f.received?.options as unknown as { onVisualReset: (lane?: string) => void }
+        ).onVisualReset(lane);
+      reset('9'); // window 9 is not there yet
+      now = 1_000;
+      const late = fakeSender(9);
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: late }, encodeHello());
+      late.sent.length = 0;
+      reset('9'); // inside what would have been the quiet period had the first call spent it
+      expect(asked(late)).toEqual(['checkout']);
+    });
+
+    it('an unkeyed reset still asks every renderer', () => {
+      const { a, b, reset } = setup();
+      reset();
+      expect(asked(a)).toEqual(['checkout']);
+      expect(asked(b)).toEqual(['checkout']);
+    });
+
+    it("hands the lane to the caller's own callback", () => {
+      const own = vi.fn();
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch, onVisualReset: own } as never);
+      (f.received?.options as unknown as { onVisualReset: (lane?: string) => void }).onVisualReset(
+        '5',
+      );
+      expect(own).toHaveBeenCalledWith('5');
+    });
+  });
+
+  describe('a visual reset in the main store (every replay base shed under the byte cap)', () => {
+    const setup = (over: Record<string, unknown> = {}) => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+        ...over,
+      } as never);
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      r.sent.length = 0;
+      const reset = (): void =>
+        (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      return { f, r, reset, at: (t: number) => (now = t) };
+    };
+
+    it('asks every renderer to restart its replay recorder', () => {
+      const { r, reset } = setup();
+      reset();
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
+    it('a reset while no renderer is registered spends none of the budget, so the first renderer is not made to wait', () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      let now = 0;
+      launchMain('tok', {
+        ipcMain: ipc.ipcMain,
+        launch: f.launch,
+        clock: { wallNow: () => now, monotonicNow: () => now },
+      } as never);
+      const reset = (): void =>
+        (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      reset(); // nobody to tell
+      now = 1_000;
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      r.sent.length = 0;
+      reset(); // inside what would have been the quiet period
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
+    it('is paced: a reset inside the quiet period asks nothing, a later one asks again (backing off)', () => {
+      const { r, reset, at } = setup();
+      reset();
+      at(1_000);
+      reset();
+      expect(r.sent).toHaveLength(1);
+      at(5_000);
+      reset();
+      expect(r.sent).toHaveLength(2);
+      at(10_000); // the interval doubled to 10 s
+      reset();
+      expect(r.sent).toHaveLength(2);
+      at(15_000);
+      reset();
+      expect(r.sent).toHaveLength(3);
+    });
+
+    it("still calls the caller's own onVisualReset", () => {
+      const own = vi.fn();
+      const { reset } = setup({ onVisualReset: own });
+      reset();
+      expect(own).toHaveBeenCalledTimes(1);
+    });
+
+    it('a throwing caller callback neither stops the restart nor escapes', () => {
+      const { r, reset } = setup({
+        onVisualReset: () => {
+          throw new Error('host broke');
+        },
+      });
+      expect(reset).not.toThrow();
+      expect(r.sent.map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    });
+
+    it('does nothing once the client is stopped (control is released)', async () => {
+      const ipc = fakeIpcMain();
+      const f = fakeLaunch();
+      const client = launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch } as never);
+      const r = fakeSender();
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r }, encodeHello());
+      await client.stop();
+      r.sent.length = 0;
+      (f.received?.options as unknown as { onVisualReset: () => void }).onVisualReset();
+      expect(r.sent).toEqual([]);
+    });
   });
 
   it('replies to a renderer hello with the owner session id (the handshake)', () => {
@@ -359,6 +562,29 @@ describe('launchMain', () => {
     expect(result).toBe(false); // the wrapper returns the REAL node stop's result, not a fabricated one
     expect(f.stop).toHaveBeenCalledTimes(1); // the real node stop ALWAYS runs
     expect(onError).toHaveBeenCalled(); // the cleanup error was routed, not propagated
+  });
+
+  it('hands the replay stream encoder to the node launch, so the report splits one replay member per window', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    launchMain('tok', { ipcMain: ipc.ipcMain, launch: f.launch });
+    const opts = f.received?.options as BugseeLaunchOptions;
+    const replay = opts.streamEncoders?.replay;
+    expect(typeof replay?.begin).toBe('function');
+    // the real encoder: a session that saw no base writes nothing
+    expect(replay?.begin({ start: undefined, end: 1 }).end()).toEqual([]);
+  });
+
+  it('a stream encoder the caller passed wins over the default one', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const mine = { begin: () => ({ write: () => [], end: () => [] }) };
+    launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      streamEncoders: { replay: mine },
+    });
+    expect((f.received?.options as BugseeLaunchOptions).streamEncoders?.replay).toBe(mine);
   });
 
   it('omits pixel-video wiring entirely when no video option is given', () => {
@@ -1637,6 +1863,75 @@ describe('launchMain — Electron domain trackers: power, display, application w
     const mux = wrapOf(f)(new Inner());
     mux.on('event', () => {});
     expect(app.table.get('browser-window-created')).toBeUndefined(); // the events mux arms none
+  });
+
+  it("a `video.source` factory is called once with the launch tracker's key window, so video display 0 follows the same source as the displays trace", () => {
+    clear();
+    const app = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const bounds = { x: 1, y: 2, width: 3, height: 4 };
+    const BrowserWindow = {
+      getAllWindows: () => [],
+      getFocusedWindow: () => ({ isDestroyed: () => false, getBounds: () => bounds }),
+    };
+    const source: VideoCaptureSource = {
+      start() {},
+      stop() {},
+      clear() {},
+      snapshot: async () => [],
+    };
+    const factory = vi.fn((_env: { keyWindowBounds: () => unknown }) => source);
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: fakeLaunch().launch,
+      app,
+      screen,
+      BrowserWindow,
+      video: { source: factory },
+    });
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[0].keyWindowBounds()).toEqual(bounds);
+  });
+
+  it('a throwing `video.source` factory is reported and launch carries on WITHOUT video: the receiver is still started', async () => {
+    clear();
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const onError = vi.fn();
+    const boom = new RangeError('fps must be a positive finite number, got 0');
+    const client = launchMain('tok', {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      onError,
+      video: {
+        source: () => {
+          throw boom;
+        },
+      },
+    });
+    expect(onError).toHaveBeenCalledWith(boom);
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(true); // the rest of the Electron wiring still ran
+    const opts = f.received?.options as BugseeLaunchOptions;
+    expect(await opts.reportSnapshots?.[0]?.(5)).toEqual([]); // no video, and no crash at report time
+    await client.stop();
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false); // the wrapped stop still removes the listeners
+  });
+
+  it('a `video.source` factory still gets a keyWindowBounds that answers undefined when no window tracker exists', () => {
+    clear();
+    const factory = vi.fn((_env: { keyWindowBounds: () => unknown }) => ({
+      start() {},
+      stop() {},
+      clear() {},
+      snapshot: async () => [],
+    }));
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: fakeLaunch().launch,
+      video: { source: factory },
+    });
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[0].keyWindowBounds()).toBeUndefined();
   });
 
   it.each([

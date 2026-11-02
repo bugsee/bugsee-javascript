@@ -1,4 +1,10 @@
-import type { HttpRequestOptions, HttpResponse, HttpTransport } from '@bugsee/core';
+import {
+  type HttpRequestOptions,
+  type HttpResponse,
+  type HttpTransport,
+  isBlobBundleBody,
+  isBundleBody,
+} from '@bugsee/core';
 
 // The browser implementation of core's HttpTransport primitive — the fetch analog of
 // node-utils `httpRequest`. Wraps the platform `fetch`; non-2xx statuses RESOLVE (the caller maps
@@ -18,16 +24,27 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export function createFetchTransport(fetchImpl?: FetchLike): HttpTransport {
   const doFetch: FetchLike = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
 
-  return async (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> => {
+  const transport = async (
+    url: string,
+    options: HttpRequestOptions = {},
+  ): Promise<HttpResponse> => {
     const { method = 'GET', headers = {}, body, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const init: RequestInit = { method, headers, signal: controller.signal };
       if (body !== undefined) {
+        // A BundleBody: a Blob-backed one goes as its Blob (the engine reads it from wherever it keeps it); anything else
+        // is turned into bytes (free for an in-memory one).
+        const sent =
+          typeof body !== 'string' && isBundleBody(body)
+            ? isBlobBundleBody(body)
+              ? body.blob
+              : (body.peek() ?? (await body.bytes()))
+            : body;
         // lib.dom's `BodyInit` arms don't include the generic `Uint8Array<ArrayBufferLike>` shape,
         // but a string and a Uint8Array are both valid request bodies at runtime — widen safely.
-        init.body = body as BodyInit;
+        init.body = sent as BodyInit;
       }
       const response = await doFetch(url, init);
       const outHeaders: Record<string, string> = {};
@@ -50,6 +67,7 @@ export function createFetchTransport(fetchImpl?: FetchLike): HttpTransport {
       clearTimeout(timer);
     }
   };
+  return Object.assign(transport, { acceptsBundleBody: true as const });
 }
 
 /** The default browser transport, over `globalThis.fetch`. */

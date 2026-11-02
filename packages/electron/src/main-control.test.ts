@@ -83,6 +83,26 @@ describe('createElectronMainControl', () => {
     }
   });
 
+  it('checkout() asks every live renderer for a fresh replay base, skipping destroyed and crashed ones', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const live = fakeSender(1);
+    const gone = { ...fakeSender(2), destroyed: false };
+    const goneSender = Object.assign(gone.sender, { isDestroyed: () => gone.destroyed });
+    const crashed = fakeSender(3);
+    const crashedSender = Object.assign(crashed.sender, { isCrashed: () => true });
+    for (const sender of [live.sender, goneSender, crashedSender]) {
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    }
+    gone.destroyed = true;
+    control.checkout();
+    expect(live.sent.slice(1).map((m) => decodeControl(m.raw)?.command)).toEqual(['checkout']);
+    expect(gone.sent.slice(1)).toEqual([]);
+    expect(crashed.sent.slice(1)).toEqual([]);
+    expect(control.rendererCount).toBe(2); // the destroyed one was pruned on the way past
+  });
+
   it('the hello reply carries the CURRENT blackout state, so a renderer born mid-blackout stays dark', () => {
     const ipc = fakeIpcMain();
     let blackout = true;
@@ -1095,5 +1115,122 @@ describe('stop() releases the destroyed subscriptions', () => {
     expect(a.listeners).toHaveLength(1);
     control.stop();
     expect(a.listeners).toHaveLength(0);
+  });
+});
+
+describe('checkout(windowId) — one window only', () => {
+  const setup = () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const a = fakeSender(1);
+    const b = fakeSender(2);
+    for (const sender of [a.sender, b.sender]) {
+      ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    }
+    return { control, a, b };
+  };
+  const after = (r: { sent: Array<{ raw: string }> }) =>
+    r.sent.slice(1).map((m) => decodeControl(m.raw)?.command);
+
+  it('asks only the renderer of that window', () => {
+    const { control, a, b } = setup();
+    control.checkout(2);
+    expect(after(a)).toEqual([]);
+    expect(after(b)).toEqual(['checkout']);
+  });
+
+  it('asks nobody for a window that is not registered', () => {
+    const { control, a, b } = setup();
+    control.checkout(99);
+    expect([...after(a), ...after(b)]).toEqual([]);
+  });
+
+  it('says whether a window has a registered renderer', () => {
+    const { control } = setup();
+    expect(control.hasRenderer(1)).toBe(true);
+    expect(control.hasRenderer(99)).toBe(false);
+  });
+
+  it('does not count a destroyed renderer as registered', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({ ipcMain: ipc.ipcMain, sessionId: 's1' });
+    control.start();
+    const gone = { ...fakeSender(4), destroyed: false };
+    const sender = Object.assign(gone.sender, { isDestroyed: () => gone.destroyed });
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender }, encodeHello());
+    expect(control.hasRenderer(4)).toBe(true);
+    gone.destroyed = true;
+    expect(control.hasRenderer(4)).toBe(false);
+  });
+});
+
+describe('onRendererLeft', () => {
+  const setup = () => {
+    const ipc = fakeIpcMain();
+    const left: number[] = [];
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      onRendererLeft: (id) => left.push(id),
+    });
+    control.start();
+    return { ipc, control, left };
+  };
+
+  it('is told when a renderer is destroyed', () => {
+    const { ipc, left } = setup();
+    const destroyed: Array<() => void> = [];
+    const r = fakeSender(5);
+    (r.sender as { once?: (e: string, l: () => void) => void }).once = (_e, l) => destroyed.push(l);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    destroyed[0]?.();
+    expect(left).toEqual([5]);
+  });
+
+  it('is told when a renderer process is gone', () => {
+    const { ipc, control, left } = setup();
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: fakeSender(6).sender }, encodeHello());
+    control.rendererGone(6);
+    expect(left).toEqual([6]);
+  });
+
+  it('is not told for a sender without an id, and a throwing callback never breaks the control', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      onRendererLeft: () => {
+        throw new Error('host broke');
+      },
+    });
+    control.start();
+    const anonymous = fakeSender(1);
+    delete (anonymous.sender as { id?: number }).id;
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: anonymous.sender }, encodeHello());
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: fakeSender(2).sender }, encodeHello());
+    expect(() => control.rendererGone(2)).not.toThrow();
+    expect(control.rendererCount).toBe(1);
+  });
+
+  it('survives a sender whose id cannot be read when it is destroyed, and still re-evaluates', () => {
+    const ipc = fakeIpcMain();
+    const control = createElectronMainControl({
+      ipcMain: ipc.ipcMain,
+      sessionId: 's1',
+      onRendererLeft: () => {},
+    });
+    control.start();
+    const destroyed: Array<() => void> = [];
+    const r = fakeSender(5);
+    Object.defineProperty(r.sender, 'id', {
+      get() {
+        throw new Error('destroyed object');
+      },
+    });
+    (r.sender as { once?: (e: string, l: () => void) => void }).once = (_e, l) => destroyed.push(l);
+    ipc.emit(BUGSEE_HELLO_CHANNEL, { sender: r.sender }, encodeHello());
+    expect(() => destroyed[0]?.()).not.toThrow();
+    expect(control.rendererCount).toBe(0);
   });
 });

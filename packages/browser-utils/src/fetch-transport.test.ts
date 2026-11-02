@@ -1,3 +1,4 @@
+import { createBlobSink, createMemoryBody } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFetchTransport, type FetchLike, fetchTransport } from './fetch-transport';
 
@@ -109,6 +110,49 @@ describe('createFetchTransport', () => {
     // Advancing past the deadline must NOT produce a late rejection.
     await vi.advanceTimersByTimeAsync(2000);
     expect(out.status).toBe(200);
+  });
+});
+
+describe('createFetchTransport — BundleBody', () => {
+  const capture = () => {
+    let seenInit: RequestInit | undefined;
+    const fake: FetchLike = (_url, init) => {
+      seenInit = init;
+      return Promise.resolve(new Response('ok'));
+    };
+    return { fake, init: () => seenInit };
+  };
+
+  it('declares that it accepts a BundleBody', () => {
+    expect(createFetchTransport(capture().fake).acceptsBundleBody).toBe(true);
+  });
+
+  it('sends a Blob-backed body as its Blob, without reading it into memory', async () => {
+    const { fake, init } = capture();
+    const sink = createBlobSink();
+    const writer = await (sink as NonNullable<typeof sink>).open();
+    writer.write(new Uint8Array([1, 2, 3]));
+    const body = await writer.finish();
+    const bytes = vi.spyOn(body, 'bytes');
+    await createFetchTransport(fake)('https://x.test', { method: 'PUT', body });
+    expect(init()?.body).toBeInstanceOf(Blob);
+    expect((init()?.body as Blob).size).toBe(3);
+    expect(bytes).not.toHaveBeenCalled();
+  });
+
+  it('sends an in-memory body as its bytes', async () => {
+    const { fake, init } = capture();
+    const body = createMemoryBody([new Uint8Array([1]), new Uint8Array([2, 3])]);
+    await createFetchTransport(fake)('https://x.test', { method: 'PUT', body });
+    expect(Array.from(init()?.body as Uint8Array)).toEqual([1, 2, 3]);
+  });
+
+  it('materializes any other body once, as bytes', async () => {
+    const { fake, init } = capture();
+    const base = createMemoryBody([new Uint8Array([7, 8])]);
+    const body = { ...base, peek: () => undefined };
+    await createFetchTransport(fake)('https://x.test', { method: 'PUT', body });
+    expect(Array.from(init()?.body as Uint8Array)).toEqual([7, 8]);
   });
 });
 

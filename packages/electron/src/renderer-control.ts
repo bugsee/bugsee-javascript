@@ -34,6 +34,11 @@ export interface RendererControlHandlerOptions {
    * `window-key` command (a missing flag there is "not key"). Optional.
    */
   onKeyWindow?(isKey: boolean): void;
+  /**
+   * Main's store shed every replay base (its byte cap): restart the replay recorder so the stream gets a fresh full snapshot.
+   * Optional (a renderer without a recorder has nothing to restart).
+   */
+  onCheckout?(): void;
 }
 
 /** Build the renderer's control dispatcher: `handle(raw)` applies one main→renderer control message. */
@@ -72,6 +77,9 @@ export function createRendererControlHandler(
         break;
       case 'window-key':
         options.onKeyWindow?.(message.keyWindow === true);
+        break;
+      case 'checkout':
+        options.onCheckout?.();
         break;
       case 'blackout-start':
         options.onBlackout?.(true);

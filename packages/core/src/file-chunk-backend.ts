@@ -27,6 +27,7 @@ interface StoredMeta {
   readonly s: number;
   readonly e: number | null;
   readonly b: number;
+  readonly l?: string;
 }
 
 export interface FileChunkBackendOptions {
@@ -57,14 +58,23 @@ export function createFileChunkBackend(
     start: number,
     end: number | null,
     byteSize: number,
+    lane?: string,
   ): void => {
-    const meta: StoredMeta = { n: number, s: start, e: end, b: byteSize };
+    const meta: StoredMeta = {
+      n: number,
+      s: start,
+      e: end,
+      b: byteSize,
+      ...(lane !== undefined ? { l: lane } : {}),
+    };
     storage.write(gen, number, META_FILE, JSON.stringify(meta));
   };
 
   // The part's start, kept only while it is open so closePart can rewrite a complete meta record. Keyed
   // by generation + number (the store only ever uses this backend's generation, but stay explicit).
   const openStarts = new Map<string, number>();
+  // The lane of each OPEN part, so closePart does not depend on reading back a meta that may never have reached the medium.
+  const openLanes = new Map<string, string>();
   const startKey = (ref: PartRef): string => `${ref.generation}/${ref.number}`;
 
   const readMeta = (gen: number, number: number): PartMeta => {
@@ -72,7 +82,14 @@ export function createFileChunkBackend(
     if (raw !== undefined) {
       try {
         const m = JSON.parse(raw) as StoredMeta;
-        return { generation: gen, number, start: m.s, end: m.e ?? undefined, byteSize: m.b };
+        return {
+          generation: gen,
+          number,
+          start: m.s,
+          end: m.e ?? undefined,
+          byteSize: m.b,
+          ...(typeof m.l === 'string' ? { lane: m.l } : {}),
+        };
       } catch {
         // fall through to the derived default below
       }
@@ -83,9 +100,14 @@ export function createFileChunkBackend(
   return {
     generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       openStarts.set(startKey(ref), start);
-      writeMeta(ref.generation, ref.number, start, null, 0);
+      if (lane !== undefined) {
+        openLanes.set(startKey(ref), lane);
+      } else {
+        openLanes.delete(startKey(ref)); // a reopened ref must not inherit the lane of its previous life
+      }
+      writeMeta(ref.generation, ref.number, start, null, 0, lane);
     },
 
     appendEntry(ref: PartRef, record: StoredEntry): number {
@@ -98,9 +120,15 @@ export function createFileChunkBackend(
     },
 
     closePart(ref: PartRef, end: number, byteSize: number): void {
-      const start = openStarts.get(startKey(ref)) ?? readMeta(ref.generation, ref.number).start;
+      const open = openStarts.get(startKey(ref));
+      const openLane = openLanes.get(startKey(ref));
+      // Only a part this instance did not open (or whose lane it never saw) needs its meta read back.
+      const known = open === undefined ? readMeta(ref.generation, ref.number) : undefined;
+      const start = open ?? known?.start ?? 0;
+      const lane = openLane ?? known?.lane;
       openStarts.delete(startKey(ref));
-      writeMeta(ref.generation, ref.number, start, end, byteSize);
+      openLanes.delete(startKey(ref));
+      writeMeta(ref.generation, ref.number, start, end, byteSize, lane);
       // A sealed chunk: let a batched storage flush + close its file handles (no-op otherwise), keeping the
       // open-handle count bounded to the active chunk rather than the whole rolling window.
       storage.sealChunk?.(ref.generation, ref.number);
@@ -129,10 +157,22 @@ export function createFileChunkBackend(
 
     removePart(ref: PartRef): void {
       openStarts.delete(startKey(ref));
+      openLanes.delete(startKey(ref));
       storage.removeChunk(ref.generation, ref.number);
     },
 
     removeGeneration(gen: number): void {
+      // The open parts of a removed generation are never closed: forget their starts and lanes with it.
+      for (const key of [...openStarts.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          openStarts.delete(key);
+        }
+      }
+      for (const key of [...openLanes.keys()]) {
+        if (key.startsWith(`${gen}/`)) {
+          openLanes.delete(key);
+        }
+      }
       storage.removeGeneration(gen);
     },
 
@@ -140,7 +180,7 @@ export function createFileChunkBackend(
       // EAGER read at snapshot() time: the data files hold exactly the records captured so far (add is
       // sync), so reading them now freezes the view — post-snapshot appends land after and are excluded.
       const frozen: StoredEntry[] = [];
-      for (const { ref } of parts) {
+      for (const { ref, lane } of parts) {
         for (const file of storage.files(ref.generation, ref.number)) {
           if (file === META_FILE) {
             continue;
@@ -159,7 +199,12 @@ export function createFileChunkBackend(
             if (!Number.isFinite(timestamp)) {
               continue; // skip a corrupt timestamp
             }
-            frozen.push({ type, timestamp, serialized: line.slice(tab + 1) });
+            frozen.push({
+              type,
+              timestamp,
+              serialized: line.slice(tab + 1),
+              ...(lane !== undefined ? { lane } : {}),
+            });
           }
         }
       }

@@ -146,7 +146,9 @@ const RESET_OPTIONS: readonly string[] = [
   'gpuInfoType',
   'injectTraceMeta',
   'instanceIdentity',
+  'onReplayRestart', // wired by the host (the Electron renderer) to its own client; a relaunch's host re-passes it
   'onSpanProcessor',
+  'onVisualReset', // wired by the host (the Electron main) to its control channel, released with the client
   'setupOtelProvider',
   'bridge',
   'captureBreadcrumbs',

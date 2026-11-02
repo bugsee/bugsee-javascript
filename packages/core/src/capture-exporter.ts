@@ -1,11 +1,12 @@
 import type { FileType } from '@bugsee/protocol';
 import { defaultEntryFactory } from './capture-data-entry';
+import { reify, streamReified } from './capture-drain';
 import type {
   CaptureDataEntry,
   CaptureEntryFactory,
+  CaptureEntryStream,
   CaptureExporter,
   CaptureStore,
-  StoredEntry,
 } from './contracts';
 
 // CaptureExporter (Android CaptureExporter parity): the read side of the capture pipeline. It takes a
@@ -15,39 +16,14 @@ import type {
 // (memory-light); drain() reads all-at-once grouped by file type. The aggregator writes; the exporter
 // reads — the two directions are separate.
 
-function reify(record: StoredEntry, factory: CaptureEntryFactory): CaptureDataEntry {
-  const entry = factory(record.type);
-  entry.deserialize(record.serialized);
-  return entry;
-}
-
 export function createCaptureExporter(
   store: CaptureStore,
   factory: CaptureEntryFactory = defaultEntryFactory,
   onError: (error: unknown) => void = (): void => {},
 ): CaptureExporter {
   return {
-    stream(options?: { owner?: string }): AsyncIterableIterator<CaptureDataEntry> {
-      const snapshot = store.snapshot(options);
-      const records = snapshot.stream();
-      return (async function* (): AsyncIterableIterator<CaptureDataEntry> {
-        try {
-          for await (const record of records) {
-            let entry: CaptureDataEntry;
-            try {
-              entry = reify(record, factory);
-            } catch (error) {
-              // A torn/un-deserializable record (e.g. a crash's torn trailing frame): skip + report it,
-              // never let one bad record abort the whole export.
-              onError(error);
-              continue;
-            }
-            yield entry;
-          }
-        } finally {
-          snapshot.release();
-        }
-      })();
+    stream(options?: { owner?: string }): CaptureEntryStream {
+      return streamReified(store.snapshot(options), factory, onError);
     },
 
     async drain(options?: { owner?: string }): Promise<Map<FileType, CaptureDataEntry[]>> {

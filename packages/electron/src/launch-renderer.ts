@@ -161,9 +161,16 @@ async function launchRendererOnce(
     host: ELECTRON_RENDERER_HOST_OWNED_TRACES,
     window: ELECTRON_PER_WINDOW_TRACES,
   });
+  // The browser launch hands over a function that restarts the replay recorder (a fresh full snapshot). Main sends `checkout`
+  // when its store shed every replay base under the byte cap: this renderer's own store has no cap to hit, the cap is main's.
+  let restartReplay: (() => void) | undefined;
   const { client } = await (launch ?? launchCore)(appToken, {
     ...browserOptions,
     captureStore,
+    // After the caller's options: the control channel is the only thing that may restart the recorder from outside.
+    onReplayRestart: (restart: () => void): void => {
+      restartReplay = restart;
+    },
     // Main writes the `displays` trace (the full list), the `capture` trace (blackout is session-wide, and pixel video is
     // main's) and its own V8 heap as `ram_js_heap_*`; a renderer must not write a second one into the same session.
     // After the caller's options: it is not the caller's to switch back on.
@@ -258,6 +265,11 @@ async function launchRendererOnce(
       flush: (): void => {
         if (live()) {
           void client.flush();
+        }
+      },
+      onCheckout: (): void => {
+        if (live()) {
+          restartReplay?.();
         }
       },
       // main's declaration of the trace names it owns (the session reply carries it): applied before the hold opens

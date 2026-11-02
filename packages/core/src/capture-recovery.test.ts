@@ -88,7 +88,7 @@ function fakePipeline(result: UploadResult = { ok: true }) {
 }
 
 const logsOf = (bundle: Bundle): unknown =>
-  JSON.parse(strFromU8(unzipSync(bundle.body)['logs.json'] as Uint8Array));
+  JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['logs.json'] as Uint8Array));
 
 describe('recoverReports', () => {
   it('rebuilds + enqueues one bundle per marker from its generation’s chunks, then removes it', async () => {
@@ -139,7 +139,10 @@ describe('recoverReports', () => {
       context: baseContext,
       uploadPipeline: pipe,
     });
-    const files = unzipSync((pipe.bundles[0] as Bundle).body) as Record<string, Uint8Array>;
+    const files = unzipSync((pipe.bundles[0] as Bundle).body as Uint8Array) as Record<
+      string,
+      Uint8Array
+    >;
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array));
     const entry = manifest.files.find((f: { type: string }) => f.type === 'attachment');
     expect(Array.from(files[entry.filename] as Uint8Array)).toEqual([9, 0, 255]);
@@ -179,13 +182,91 @@ describe('recoverReports', () => {
       uploadPipeline: pipe,
     });
     const manifest = JSON.parse(
-      strFromU8(unzipSync((pipe.bundles[0] as Bundle).body)['manifest.json'] as Uint8Array),
+      strFromU8(
+        unzipSync((pipe.bundles[0] as Bundle).body as Uint8Array)['manifest.json'] as Uint8Array,
+      ),
     );
     expect(manifest.attrs).toEqual({ plan: 'enterprise', n: 7 }); // from the marker
     expect((pipe.bundles[0] as Bundle).request.email).toBe('who@x.com'); // userIdentifier → email
   });
 
-  it('drains a generation ONCE for its N markers (N bundles, one snapshot)', async () => {
+  it('a torn record in the generation still yields the bundle and removes the marker; the options sink hears of it, not the context sink', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [
+      logRecord(1, { m: 'good' }),
+      { type: 'log', timestamp: 2, serialized: 'NOT-JSON' } as StoredEntry,
+    ]);
+    const pipe = fakePipeline();
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const onError = vi.fn();
+    const contextOnError = vi.fn();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers,
+      context: () => ({ ...baseContext(), onError: contextOnError }),
+      uploadPipeline: pipe,
+      onError,
+    });
+    expect(logsOf(pipe.bundles[0] as Bundle)).toEqual([{ m: 'good' }]);
+    expect(markers.list()).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(contextOnError).not.toHaveBeenCalled();
+  });
+
+  it('a snapshot that cannot be taken keeps the marker and its generation for the next launch, and reports it', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const backend = readBackend(storage);
+    vi.spyOn(backend, 'snapshot').mockImplementation(() => {
+      throw new Error('cannot snapshot');
+    });
+    const pipe = fakePipeline();
+    const markers = fakeMarkers([marker('inc1', 100)]);
+    const onError = vi.fn();
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers,
+      context: baseContext,
+      uploadPipeline: pipe,
+      onError,
+    });
+    expect(pipe.enqueue).not.toHaveBeenCalled();
+    expect(markers.list()).toHaveLength(1);
+    expect(await backend.listGenerations()).toContain(100);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'cannot snapshot' }));
+  });
+
+  it('releases every snapshot it took, including when the pipeline throws (marker kept)', async () => {
+    const storage = createInMemoryChunkStorage();
+    seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
+    const backend = readBackend(storage);
+    const releases: number[] = [];
+    const real = backend.snapshot.bind(backend);
+    vi.spyOn(backend, 'snapshot').mockImplementation((parts) => {
+      const snap = real(parts);
+      const release = snap.release.bind(snap);
+      snap.release = () => {
+        releases.push(1);
+        release();
+      };
+      return snap;
+    });
+    const markers = fakeMarkers([marker('a', 100), marker('b', 100)]);
+    await recoverReports({
+      backend,
+      currentGeneration: 999,
+      markers,
+      context: baseContext,
+      uploadPipeline: { enqueue: () => Promise.reject(new Error('pipeline down')) },
+      onError: () => {},
+    });
+    expect(releases).toHaveLength(2);
+    expect(markers.list()).toHaveLength(2);
+  });
+
+  it('streams a generation through one snapshot per marker (N bundles, N snapshots)', async () => {
     const storage = createInMemoryChunkStorage();
     seedGen(storage, 100, [logRecord(1, { m: 'x' })]);
     const backend = readBackend(storage);
@@ -201,7 +282,7 @@ describe('recoverReports', () => {
     });
 
     expect(pipe.enqueue).toHaveBeenCalledTimes(2); // one bundle per marker
-    expect(snapSpy).toHaveBeenCalledTimes(1); // but the gen's chunks were read once
+    expect(snapSpy).toHaveBeenCalledTimes(2); // each streams the gen's chunks itself; nothing is held between incidents
   });
 
   it('never recovers the CURRENT generation', async () => {
@@ -785,5 +866,40 @@ describe('createMarkerAwareBundleReplay', () => {
     await expect(replay.pipeline.enqueue(staged('inc1 bundle', 'inc1'))).resolves.toEqual({
       ok: true,
     });
+  });
+});
+
+describe('recoverReports — a prior generation with several windows', () => {
+  it('rebuilds one replay member per window from the lanes persisted in the part meta', async () => {
+    const storage = createInMemoryChunkStorage();
+    const seed = createFileChunkBackend(storage, { generation: 100, cleanOtherGenerations: false });
+    const replay = (timestamp: number, data: string): StoredEntry => ({
+      type: 'replay',
+      timestamp,
+      serialized: JSON.stringify({ timestamp, data }),
+    });
+    seed.openPart(ref(100, 0), 1, 'w1');
+    seed.appendEntry(ref(100, 0), replay(1, 'a1'));
+    seed.closePart(ref(100, 0), 2, 0);
+    seed.openPart(ref(100, 1), 1, 'w2');
+    seed.appendEntry(ref(100, 1), replay(1, 'b1'));
+    seed.closePart(ref(100, 1), 2, 0);
+    const encoder = {
+      begin: () => ({
+        write: (e: { data: unknown }) => [Uint8Array.from(String(e.data), (c) => c.charCodeAt(0))],
+        end: () => [],
+      }),
+    };
+    const pipe = fakePipeline();
+    await recoverReports({
+      backend: readBackend(storage),
+      currentGeneration: 999,
+      markers: fakeMarkers([marker('inc1', 100)]),
+      context: () => ({ ...baseContext(), streamEncoders: { replay: encoder } }),
+      uploadPipeline: pipe,
+    });
+    const files = unzipSync((await (pipe.bundles[0] as Bundle).body) as Uint8Array);
+    expect(strFromU8(files['replay.bin'] as Uint8Array)).toBe('a1');
+    expect(strFromU8(files['replay.1.bin'] as Uint8Array)).toBe('b1');
   });
 });

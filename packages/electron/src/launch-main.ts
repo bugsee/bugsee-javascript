@@ -12,6 +12,8 @@ import {
   BlackoutToken,
   CaptureStoreToken,
   createDiskPressure,
+  createSystemClock,
+  createVisualResetGate,
   getCarrierClient,
   resolveFailClosedBoolean,
 } from '@bugsee/core';
@@ -104,6 +106,7 @@ export interface ElectronAppLike {
 
 import type { CrashpadSessionMarker } from '@bugsee/core';
 import { TraceName } from '@bugsee/protocol';
+import { createReplayStreamEncoder } from '@bugsee/replay/stream-encoder';
 import { reportGuarded, reportOncePerMessage } from '@bugsee/util';
 import {
   type ControlSenderLike,
@@ -127,12 +130,23 @@ import type { VideoCaptureSource } from './video-capture';
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
 
+/** What launch hands a `video.source` factory. */
+export interface VideoSourceEnv {
+  /** The key window's bounds (a rectangle), or undefined when there is none. Never throws. */
+  keyWindowBounds(): unknown;
+}
+
 /** Opt-in pixel-capture video. The app supplies a source built with its Electron/DOM specifics (e.g.
- *  `createCapturePageVideoSource` over `webContents.capturePage`, and/or a `MediaRecorder` source — they can
+ *  `createCapturePageVideoSource` over `webContents.capturePage`, `createDisplayVideoSource` (one composed video per display),
+ *  and/or a `MediaRecorder` source — they can
  *  be composed into one source). rrweb DOM-replay stays the DEFAULT and rides the renderer streaming path. */
 export interface VideoLaunchOptions {
-  /** The pixel-video capture source. */
-  source: VideoCaptureSource;
+  /**
+   * The pixel-video capture source, or a factory that builds it. A factory is called once, during launch, with the
+   * launch tracker's key window (`keyWindowBounds`, the same source the `displays` trace uses): pass it on as
+   * `electronDisplays(screen, BrowserWindow, env.keyWindowBounds)` so video display 0 and trace display 0 agree.
+   */
+  source: VideoCaptureSource | ((env: VideoSourceEnv) => VideoCaptureSource);
   /** macOS Screen-Recording (TCC) permission gate — resolves false → inert. Default granted. */
   hasPermission?: () => boolean | Promise<boolean>;
 }
@@ -274,6 +288,14 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       version: app.getVersion?.(),
     }));
   }
+
+  // The renderers' rrweb replay arrives here as records, one lane per window: building `replay.bin` needs the replay's stream
+  // encoder, which also splits the type into one member per window lane (a type without an encoder is written merged). The
+  // encoder alone is imported (no rrweb in main). A caller's own encoder wins.
+  nodeOptions.streamEncoders = {
+    replay: createReplayStreamEncoder(),
+    ...nodeOptions.streamEncoders,
+  };
 
   // Opt-in pixel video: build the permission-gated controller and forward its report-time snapshot +
   // the `video` binary encoder into the node launch (merged with any the caller passed directly).
@@ -478,6 +500,49 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
     }
   };
 
+  // Main's store is the one with the byte cap, and the renderers' recorders stream into it. When it sheds every replay base
+  // the renderers are told to take a fresh full snapshot (control `checkout`); without that the stream has no base until a
+  // renderer's next periodic checkout. Paced by the same backoff the browser applies to its own store, and released by stop.
+  let checkoutRenderers: ((windowId?: number) => void) | undefined;
+  let mainControl:
+    | { readonly rendererCount: number; hasRenderer(windowId: number): boolean }
+    | undefined;
+  const callerReset = nodeOptions.onVisualReset;
+  const resetClock = nodeOptions.clock ?? createSystemClock();
+  const gateReset = createVisualResetGate({
+    now: () => resetClock.monotonicNow(),
+    // Nobody to tell (no renderer has said hello yet, or none is left): the reset must not spend the backoff budget.
+    ready: () => (mainControl?.rendererCount ?? 0) > 0,
+    restart: () => checkoutRenderers?.(),
+  });
+  // A window's lane (its webContents id as text) is paced on its own, so one window backing off never delays another.
+  const windowGates = new Map<string, () => void>();
+  const gateWindow = (lane: string): (() => void) => {
+    let gate = windowGates.get(lane);
+    if (gate === undefined) {
+      const windowId = Number(lane);
+      gate = createVisualResetGate({
+        now: () => resetClock.monotonicNow(),
+        ready: () => mainControl?.hasRenderer(windowId) === true,
+        restart: () => checkoutRenderers?.(windowId),
+      });
+      windowGates.set(lane, gate);
+    }
+    return gate;
+  };
+  nodeOptions.onVisualReset = (lane?: string): void => {
+    try {
+      callerReset?.(...(lane === undefined ? [] : [lane])); // the caller's own callback keeps working, and cannot cost the restart
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
+    if (lane === undefined) {
+      gateReset();
+    } else {
+      gateWindow(lane)();
+    }
+  };
+
   const { client, internals } = (launch ?? launchCore)(appToken, nodeOptions);
 
   // `internals` is present only on the FIRST launch (the SDK is a per-process singleton); a repeat launch
@@ -494,9 +559,23 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
 
   // Start pixel capture (async permission check; a report before it's active just carries no video). The
   // controller follows the blackout: frames stop, the ring is cleared, and snapshots are empty for the span.
+  // A host factory runs HERE, after the client is registered: a throw must not abort the Electron wiring below (receiver,
+  // control, crash reporter, wrapped stop), and a retry cannot repair it (a second launch sees a repeat). So it is reported
+  // and the launch simply has no pixel video.
+  let videoSource: VideoCaptureSource | undefined;
   if (video !== undefined) {
+    try {
+      videoSource =
+        typeof video.source === 'function'
+          ? video.source({ keyWindowBounds: () => appTracker?.keyWindowBounds() })
+          : video.source;
+    } catch (error) {
+      reportGuarded(nodeOptions.onError, error);
+    }
+  }
+  if (video !== undefined && videoSource !== undefined) {
     videoController = createPixelVideoController({
-      source: video.source,
+      source: videoSource,
       blackout,
       ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
       ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
@@ -598,6 +677,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         };
   const control = createElectronMainControl({
     ipcMain,
+    // A window that closed produces no more replay: its lane leaves the store once its data is out of the window.
+    onRendererLeft: (id) => store.retireLane?.(String(id)),
     sessionId: internals.api.sessionId,
     ...(keyWindow !== undefined ? { keyWindow } : {}),
     ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),
@@ -614,6 +695,8 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
         ],
   });
   control.start();
+  mainControl = control;
+  checkoutRenderers = (windowId?: number): void => control.checkout(windowId);
   // Arm the key-window stage and forward every change to the renderers whose answer moved (released in the wrapped stop).
   const offKeyWindow =
     keyWindow === undefined
@@ -657,6 +740,9 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
       tracker?.cancelGpuInfo(); // a late getGPUInfo resolve must not write after stop (an already-resolved GPU is kept)
       offBlackout();
       offKeyWindow?.();
+      checkoutRenderers = undefined; // a reset after stop has nobody to tell
+      windowGates.clear();
+      mainControl = undefined;
       control.stop(); // broadcast stop to renderers + remove the hello listener
       receiver.stop();
       videoController?.stop(); // stop pixel capture

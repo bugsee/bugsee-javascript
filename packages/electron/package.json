@@ -45,6 +45,7 @@
     "@bugsee/core": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/protocol": "workspace:*",
+    "@bugsee/replay": "workspace:*",
     "@bugsee/trackers": "workspace:*"
   },
   "devDependencies": {

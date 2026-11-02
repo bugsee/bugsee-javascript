@@ -154,7 +154,7 @@ const fakeNativeSource = (dumps: HarvestedDump[]): NativeCrashSource & { claims:
 };
 
 const crashJsonOf = (bundle: Bundle): unknown =>
-  JSON.parse(strFromU8(unzipSync(bundle.body)['crash.json'] as Uint8Array));
+  JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['crash.json'] as Uint8Array));
 
 describe('recoverInstances', () => {
   it('is THROW-SAFE per subtree: an unreadable owner.json cannot abort the whole scan', async () => {
@@ -831,10 +831,12 @@ describe('recoverInstances', () => {
       source_platform: 'node',
     });
     // The .dmp rides as an attachment and the crashed session's capture is stitched in.
-    expect(Array.from(unzipSync(bundle.body)['main.dmp'] as Uint8Array)).toEqual([7, 8, 9]);
-    expect(JSON.parse(strFromU8(unzipSync(bundle.body)['logs.json'] as Uint8Array))).toEqual([
-      { m: 'before-native-crash' },
+    expect(Array.from(unzipSync(bundle.body as Uint8Array)['main.dmp'] as Uint8Array)).toEqual([
+      7, 8, 9,
     ]);
+    expect(
+      JSON.parse(strFromU8(unzipSync(bundle.body as Uint8Array)['logs.json'] as Uint8Array)),
+    ).toEqual([{ m: 'before-native-crash' }]);
     expect(source.claims).toEqual(['main.dmp']); // delivered → claimed
     expect(existsSync(join(dir, '9-9-dead'))).toBe(false); // fully drained → subtree removed
   });

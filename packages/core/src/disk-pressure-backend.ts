@@ -110,6 +110,8 @@ export interface DiskPressureBackendOptions {
 
 interface PartState {
   start: number;
+  /** The part's visual source lane, passed on to the medium when the part is opened there. */
+  lane?: string;
   /** Whether the durable medium has this part (openPart was forwarded). */
   opened: boolean;
   durableCount: number;
@@ -193,7 +195,11 @@ export function withDiskPressure(
 
   const ensureOpened = (ref: PartRef, state: PartState): void => {
     if (!state.opened) {
-      durable.openPart(ref, state.start);
+      if (state.lane === undefined) {
+        durable.openPart(ref, state.start);
+      } else {
+        durable.openPart(ref, state.start, state.lane);
+      }
       state.opened = true;
     }
   };
@@ -224,8 +230,9 @@ export function withDiskPressure(
     parts.delete(key);
   };
 
-  // Probe scheduling (see PROBE above). `ticks` counts closePart calls, i.e. the store's ~1 s tick.
+  // Probe scheduling (see PROBE above). `ticks` counts store ticks (closePart calls with a new `end`), i.e. ~1 s each.
   let ticks = 0;
+  let lastTickEnd: number | undefined;
   let nextProbeAt = 0;
   let probeEvery = 1;
   let releasedAt: number | undefined;
@@ -439,11 +446,12 @@ export function withDiskPressure(
   const wrapped: ChunkBackend = {
     generation: durable.generation,
 
-    openPart(ref: PartRef, start: number): void {
+    openPart(ref: PartRef, start: number, lane?: string): void {
       shadow.openPart(ref, start);
       currentRef = ref;
       const state: PartState = {
         start,
+        ...(lane !== undefined ? { lane } : {}),
         opened: false,
         durableCount: 0,
         shadowCount: 0,
@@ -512,6 +520,12 @@ export function withDiskPressure(
           options.onWriteError?.(error); // a seal refused for lack of room must not take the tick (or the probe) with it
         }
       }
+      // One store tick closes every open part (data and, when it holds replay, visual) with the SAME end: that is one
+      // tick, not two, or the probe backoff and the flap window would run twice as fast whenever replay is recorded.
+      if (end === lastTickEnd) {
+        return;
+      }
+      lastTickEnd = end;
       ticks += 1;
       if (ticks % 60 === 0) {
         largestRecent = Math.floor(largestRecent / 2);
@@ -548,8 +562,12 @@ export function withDiskPressure(
     snapshot(frozen: readonly FrozenPart[]): CaptureSnapshot {
       // The counts are the boundary of each half at THIS instant (the store's own count is their sum).
       const durableParts: FrozenPart[] = [];
-      for (const { ref } of frozen) {
-        durableParts.push({ ref, count: parts.get(keyOf(ref))?.durableCount ?? 0 });
+      for (const { ref, lane } of frozen) {
+        durableParts.push({
+          ref,
+          count: parts.get(keyOf(ref))?.durableCount ?? 0,
+          ...(lane !== undefined ? { lane } : {}),
+        });
       }
       if (shadowed === 0) {
         // One durable snapshot PER PART, so that a part whose read throws costs only that part (the rest of the window
@@ -569,7 +587,7 @@ export function withDiskPressure(
         routes: Map<FileType, boolean[]>;
       }
       const deadMedium = { failed: false, threw: false }; // shared by every part of this snapshot (see guardedRead)
-      const reads: FrozenPartRead[] = frozen.map(({ ref }, index) => {
+      const reads: FrozenPartRead[] = frozen.map(({ ref, lane }, index) => {
         const state = parts.get(keyOf(ref));
         const fromDurable = guardedRead(
           snapshotOrEmpty([durableParts[index] as FrozenPart], deadMedium),
@@ -580,7 +598,9 @@ export function withDiskPressure(
         }
         return {
           fromDurable,
-          fromShadow: shadow.snapshot([{ ref, count: state.shadowCount }]),
+          fromShadow: shadow.snapshot([
+            { ref, count: state.shadowCount, ...(lane !== undefined ? { lane } : {}) },
+          ]),
           routes: state.routes,
         };
       });

@@ -56,6 +56,22 @@ export {
 } from './blackout';
 export { type BugseeApiOptions, createBugseeApi } from './bugsee-api';
 export { assembleBundle, type BundleAssemblyContext } from './bundle-assembler';
+export {
+  asBody,
+  type BundleBody,
+  type BundleBodyLike,
+  createMemoryBody,
+  isBundleBody,
+} from './bundle-body';
+export {
+  type BlobBundleBody,
+  type BundleSink,
+  type BundleSinkWriter,
+  createBlobSink,
+  createMemorySink,
+  isBlobBundleBody,
+} from './bundle-sink';
+export { assembleBundleStream } from './bundle-stream-assembler';
 export { createBundleUploader } from './bundle-uploader';
 export { type BundleFile, writeBundleZip } from './bundle-writer';
 export { createCaptureAggregator } from './capture-aggregator';
@@ -65,7 +81,7 @@ export {
   type OptionGate,
 } from './capture-coordinator';
 export { CaptureDataEntryBase, defaultEntryFactory } from './capture-data-entry';
-export { drainReified } from './capture-drain';
+export { drainReified, streamReified } from './capture-drain';
 export { createCaptureExporter } from './capture-exporter';
 export { CaptureProviderBase } from './capture-provider-base';
 export {
@@ -126,6 +142,7 @@ export type {
   CaptureAggregator,
   CaptureDataEntry,
   CaptureEntryFactory,
+  CaptureEntryStream,
   CaptureExporter,
   CaptureProvider,
   CaptureProviderInit,
@@ -193,6 +210,7 @@ export {
   type DurableUploadPipelineOptions,
   deserializeBundle,
   deserializeBundleFrame,
+  frameHeader,
   type IdentifiedBundle,
   serializeBundle,
 } from './durable-upload-pipeline';
@@ -204,6 +222,7 @@ export { InputTool } from './events';
 export { createExtensionRegistry, type ExtensionRegistry } from './extension-registry';
 export { createFileCaptureStore, type FileCaptureStoreOptions } from './file-capture-store';
 export { createFileChunkBackend, type FileChunkBackendOptions } from './file-chunk-backend';
+export type { ExportPlan, FileStreamEncoder, StreamEncoderSession } from './file-stream-encoder';
 export {
   type BreadcrumbFilter,
   createFilterStore,
@@ -350,6 +369,7 @@ export {
   TransportToken,
   UploadPipelineToken,
 } from './transport';
+export { withTransportHeaders } from './transport-headers';
 export {
   createTriggerPipeline,
   type TriggerPipeline,
@@ -360,3 +380,4 @@ export {
   type PipelineOutcome,
   type UploadPipelineOptions,
 } from './upload-pipeline';
+export { createVisualResetGate, type VisualResetGateOptions } from './visual-reset-gate';
