@@ -3,6 +3,12 @@
 // their runtime-specific sources (XHR, node:http, error/rejection globals).
 
 export {
+  type AsyncOrigin,
+  type AsyncOriginRecorder,
+  type InstallAsyncOriginsOptions,
+  installAsyncOrigins,
+} from './async-origin';
+export {
   ASYNC_ORIGIN_EXTRAS,
   ASYNC_ORIGIN_TABLE,
   type AsyncOriginMode,

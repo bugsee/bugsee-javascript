@@ -221,6 +221,12 @@ successful ones, and the breaker trips exactly when failures begin.
 
 - **Rare set** (play, clipboard, wakeLock, getUserMedia, `serviceWorker.register`, pickers, worklet, `decodeAudioData`,
   file-system handles): always capture.
+- **AS BUILT (step 4):** an `armed` row is not wrapped at all until `recorder.arm()` is called, which the provider does on the first
+  stackless rejection nobody could locate. That is cheaper than the pass-through below (zero cost before the first failure, not one
+  boolean) and needs no per-call reaction to learn that a method failed. The trade-off: arming is for ALL armed rows at once, not the
+  one that failed, so afterwards the hot rows pay for capture too, bounded by the per-method budget (200 captures per minute per method,
+  reset by one shared 60 s timer). Verified in headless Chromium 156 with and without zone.js: a bare `play()` still raises
+  `unhandledrejection`, the origin is found by reason, and the recorded stack starts at the caller's frame.
 - **Every other row: armed after its first rejection.** Before that the wrapper is a pass-through with one boolean check (about
   the cost of the native call); the first failure is reported without a call site (the report still has name/message and, where a
   describer exists, the target), and from the second failure on the call site is captured. Cost on the fast path: one load and
