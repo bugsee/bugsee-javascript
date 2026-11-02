@@ -527,3 +527,24 @@ describe('applyExceptionOptions skipFrames clamp', () => {
     expect(sink).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('toCrashFrame — call-site origin', () => {
+  const crashFrames = (frames: StackFrame[]) =>
+    buildCrashJson(errorWith('Error', 'boom', 'Error: boom\n    at x (a.js:1:1)'), {
+      parseStack: () => frames,
+    }).exception.frames;
+
+  it("carries a frame's `origin: 'call'` onto the wire", () => {
+    // An async platform rejection has no thrown stack; the SDK records where the API was CALLED. The
+    // viewer must be able to tell that frame from a thrown one, so the marker rides the wire frame.
+    const [frame] = crashFrames([
+      { file: 'a.js', line: 3, column: 5, function: 'play', origin: 'call' },
+    ]);
+    expect(frame?.origin).toBe('call');
+  });
+
+  it('leaves the field off an ordinary thrown frame', () => {
+    const [frame] = crashFrames([{ file: 'a.js', line: 3, column: 5 }]);
+    expect(frame).not.toHaveProperty('origin');
+  });
+});

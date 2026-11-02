@@ -38,6 +38,12 @@ export interface StackFrame {
    * the platform read it (node's opt-in source-context capture).
    */
   context?: FrameContext;
+  /**
+   * `'call'` when this frame is where a platform API was CALLED rather than where anything was thrown —
+   * recorded for an async rejection (`video.play()`, `navigator.clipboard.*`) whose own error carries no
+   * stack. Absent on every ordinary thrown frame.
+   */
+  origin?: 'call';
 }
 
 // Strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the

@@ -26,6 +26,12 @@ export interface CrashFrame {
   variables?: Record<string, string>;
   /** Source lines around this frame, when the platform read them. */
   context?: FrameContext;
+  /**
+   * `'call'` marks the frame where a platform API was CALLED, not where an exception was thrown: an async
+   * rejection (`video.play()`, clipboard, …) has no stack of its own, so the SDK records the call site.
+   * Absent on every thrown frame; a viewer that does not know the field ignores it.
+   */
+  origin?: 'call';
 }
 
 /**
@@ -164,6 +170,9 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
   }
   if (frame.context !== undefined) {
     crashFrame.context = frame.context;
+  }
+  if (frame.origin !== undefined) {
+    crashFrame.origin = frame.origin;
   }
   return crashFrame;
 }
