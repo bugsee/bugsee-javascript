@@ -242,7 +242,7 @@ describe('createUnhandledRejectionProvider', () => {
     const w = fakeWindow();
     const requests = started(createUnhandledRejectionProvider(w.win));
     w.emit('unhandledrejection', { reason: { code: 42 } });
-    expect(requests[0]?.report.summary).toBe('[object Object]');
+    expect(requests[0]?.report.summary).toBe('Object: {"code":42}');
     expect(requests[0]?.report.description).toBeUndefined();
     // A rejected non-Error still gets a usable crash document.
     expect(requests[0]?.report.crash).toMatchObject({

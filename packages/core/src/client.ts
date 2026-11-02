@@ -58,7 +58,7 @@ import {
   type Client,
   type OptionsContainer,
 } from './contracts';
-import { applyExceptionOptions, buildCrashJson, type FrameEnricher } from './crash';
+import { applyExceptionOptions, buildCrashJson, describeThrown, type FrameEnricher } from './crash';
 import { checkOrSetAlreadyCaught } from './dedup';
 import { createDetectionCoordinator } from './detection-coordinator';
 import type { IdentifiedBundle } from './durable-upload-pipeline';
@@ -1746,7 +1746,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
       } catch (reportSiteError) {
         onError(reportSiteError);
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : describeThrown(error);
       const description = describeError(error); // stack + the `cause` chain (LinkedErrors)
       // Structured crash.json: built from the Error's stack + per-frame debug-ids. handled: true —
       // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.

@@ -5,6 +5,7 @@ import {
   buildCrashJson,
   type CrashJson,
   composeFrameEnrichers,
+  describeThrown,
   type NativeCrashJson,
   stampCrashProvenance,
 } from './crash';
@@ -546,5 +547,63 @@ describe('toCrashFrame — call-site origin', () => {
   it('leaves the field off an ordinary thrown frame', () => {
     const [frame] = crashFrames([{ file: 'a.js', line: 3, column: 5 }]);
     expect(frame).not.toHaveProperty('origin');
+  });
+});
+
+describe('describeThrown', () => {
+  it('keeps a string, number, boolean, null, undefined, symbol and bigint as their plain text', () => {
+    expect(describeThrown('just a string')).toBe('just a string');
+    expect(describeThrown(42)).toBe('42');
+    expect(describeThrown(false)).toBe('false');
+    expect(describeThrown(null)).toBe('null');
+    expect(describeThrown(undefined)).toBe('undefined');
+    expect(describeThrown(Symbol('s'))).toBe('Symbol(s)');
+    expect(describeThrown(10n)).toBe('10');
+  });
+
+  it('describes a plain object by its class and a JSON preview, never "[object Object]"', () => {
+    expect(describeThrown({ code: 42 })).toBe('Object: {"code":42}');
+  });
+
+  it("prefers an object's own message over its JSON", () => {
+    expect(describeThrown({ name: 'HttpError', message: 'not found', status: 404 })).toBe(
+      'HttpError: not found',
+    );
+  });
+
+  it('names a class instance by its constructor', () => {
+    class Quota {
+      left = 0;
+    }
+    expect(describeThrown(new Quota())).toBe('Quota: {"left":0}');
+  });
+
+  it('survives a circular object and a throwing getter', () => {
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    expect(describeThrown(loop)).toBe('Object: [object Object]');
+    const bad = {
+      get message(): string {
+        throw new Error('getter');
+      },
+    };
+    expect(describeThrown(bad)).toBe('[object Object]');
+  });
+
+  it('does not print the source of a function', () => {
+    function secretNamedThing(): string {
+      return 'api-key-123';
+    }
+    expect(describeThrown(secretNamedThing)).toBe('Function: secretNamedThing');
+    expect(describeThrown(() => 1)).toBe('Function');
+  });
+
+  it('truncates a long value to 256 characters with an ellipsis', () => {
+    const out = describeThrown({ blob: 'x'.repeat(1000) });
+    expect(out).toHaveLength(256);
+    expect(out.endsWith('…')).toBe(true);
+    expect(describeThrown('y'.repeat(1000))).toHaveLength(256);
+    expect(describeThrown('z'.repeat(256))).toBe('z'.repeat(256)); // exactly the limit is not clipped
+    expect(describeThrown('z'.repeat(257))).toBe(`${'z'.repeat(255)}…`);
   });
 });

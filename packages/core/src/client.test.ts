@@ -1093,6 +1093,17 @@ describe('createClient — crash.json', () => {
     expect(crash.exception).toMatchObject({ name: 'String', reason: 'just a string' });
     expect(crash.handled).toBe(true); // logException is a caught exception
   });
+
+  it('summarises a non-Error object by its class and contents, never "[object Object]"', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    await client.logException({ code: 'E_QUOTA' });
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      summary: string;
+    };
+    expect(request.summary).toBe('Object: {"code":"E_QUOTA"}');
+  });
 });
 
 describe('createClient — report identity is snapshotted at submit time', () => {

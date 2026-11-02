@@ -307,6 +307,36 @@ function renderThrowable(value: unknown): string {
   return String(value);
 }
 
+const DESCRIBE_LIMIT = 256;
+
+const clip = (text: string): string =>
+  text.length > DESCRIBE_LIMIT ? `${text.slice(0, DESCRIBE_LIMIT - 1)}…` : text;
+
+/**
+ * One line for a thrown or rejected value, for a report SUMMARY. `String(value)` printed a plain object
+ * as "[object Object]" and a class instance the same way, so `reject({ code: 'E1' })` produced an issue
+ * titled with nothing. An object is shown as `Class: <message, else JSON>`; a primitive keeps its plain
+ * text (a thrown string IS its own message); a function is named, never printed (its source is the
+ * application's). Bounded to 256 characters, and never throws: a hostile getter or a circular object
+ * falls back to the engine's own tag.
+ */
+export function describeThrown(value: unknown): string {
+  try {
+    if (typeof value === 'function') {
+      const name = (value as { name?: unknown }).name;
+      return typeof name === 'string' && name !== '' ? `Function: ${clip(name)}` : 'Function';
+    }
+    if (typeof value === 'object' && value !== null) {
+      const reason = renderThrowable(value);
+      const tag = typeTag(value);
+      return clip(reason === '' ? tag : `${tag}: ${reason}`);
+    }
+    return clip(String(value));
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
 /**
  * Apply the already-validated `logException` options that live in the crash document: stamp `domain` on
  * the outermost exception and mark its top `skipFrames` frames `hidden`, never the last one (Android/iOS `skipFrames`: the

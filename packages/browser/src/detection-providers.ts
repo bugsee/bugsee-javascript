@@ -3,6 +3,7 @@ import {
   applyDebugIds,
   buildCrashJson,
   DetectionProviderBase,
+  describeThrown,
   formatStack,
   neverThrow,
   parseLocation,
@@ -36,7 +37,7 @@ function describeError(value: unknown): { summary: string; description?: string 
     }
     return { summary };
   }
-  return { summary: String(value) };
+  return { summary: describeThrown(value) };
 }
 
 /** Structured crash.json from a thrown value — `handled: false` (uncaught). A non-Error gets a
