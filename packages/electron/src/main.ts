@@ -29,7 +29,12 @@ export {
   type ScreenLike,
   type WindowLike,
 } from './display-video';
-export { type LaunchMainOptions, launchMain, type VideoLaunchOptions } from './launch-main';
+export {
+  type LaunchMainOptions,
+  launchMain,
+  type VideoLaunchOptions,
+  type VideoSourceEnv,
+} from './launch-main';
 export {
   type ControlSenderLike,
   createElectronMainControl,

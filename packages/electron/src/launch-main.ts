@@ -130,13 +130,23 @@ import type { VideoCaptureSource } from './video-capture';
 /** The node `launchCore` shape, injectable for tests. */
 type NodeLaunch = typeof launchCore;
 
+/** What launch hands a `video.source` factory. */
+export interface VideoSourceEnv {
+  /** The key window's bounds (a rectangle), or undefined when there is none. Never throws. */
+  keyWindowBounds(): unknown;
+}
+
 /** Opt-in pixel-capture video. The app supplies a source built with its Electron/DOM specifics (e.g.
  *  `createCapturePageVideoSource` over `webContents.capturePage`, `createDisplayVideoSource` (one composed video per display),
  *  and/or a `MediaRecorder` source — they can
  *  be composed into one source). rrweb DOM-replay stays the DEFAULT and rides the renderer streaming path. */
 export interface VideoLaunchOptions {
-  /** The pixel-video capture source. */
-  source: VideoCaptureSource;
+  /**
+   * The pixel-video capture source, or a factory that builds it. A factory is called once, during launch, with the
+   * launch tracker's key window (`keyWindowBounds`, the same source the `displays` trace uses): pass it on as
+   * `electronDisplays(screen, BrowserWindow, env.keyWindowBounds)` so video display 0 and trace display 0 agree.
+   */
+  source: VideoCaptureSource | ((env: VideoSourceEnv) => VideoCaptureSource);
   /** macOS Screen-Recording (TCC) permission gate — resolves false → inert. Default granted. */
   hasPermission?: () => boolean | Promise<boolean>;
 }
@@ -551,7 +561,10 @@ export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee
   // controller follows the blackout: frames stop, the ring is cleared, and snapshots are empty for the span.
   if (video !== undefined) {
     videoController = createPixelVideoController({
-      source: video.source,
+      source:
+        typeof video.source === 'function'
+          ? video.source({ keyWindowBounds: () => appTracker?.keyWindowBounds() })
+          : video.source,
       blackout,
       ...(video.hasPermission !== undefined ? { hasPermission: video.hasPermission } : {}),
       ...(nodeOptions.onError !== undefined ? { onError: nodeOptions.onError } : {}),

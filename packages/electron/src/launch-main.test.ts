@@ -1865,6 +1865,51 @@ describe('launchMain — Electron domain trackers: power, display, application w
     expect(app.table.get('browser-window-created')).toBeUndefined(); // the events mux arms none
   });
 
+  it("a `video.source` factory is called once with the launch tracker's key window, so video display 0 follows the same source as the displays trace", () => {
+    clear();
+    const app = new FakeEmitter();
+    const screen = Object.assign(new FakeEmitter(), { getAllDisplays: () => [] });
+    const bounds = { x: 1, y: 2, width: 3, height: 4 };
+    const BrowserWindow = {
+      getAllWindows: () => [],
+      getFocusedWindow: () => ({ isDestroyed: () => false, getBounds: () => bounds }),
+    };
+    const source: VideoCaptureSource = {
+      start() {},
+      stop() {},
+      clear() {},
+      snapshot: async () => [],
+    };
+    const factory = vi.fn((_env: { keyWindowBounds: () => unknown }) => source);
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: fakeLaunch().launch,
+      app,
+      screen,
+      BrowserWindow,
+      video: { source: factory },
+    });
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[0].keyWindowBounds()).toEqual(bounds);
+  });
+
+  it('a `video.source` factory still gets a keyWindowBounds that answers undefined when no window tracker exists', () => {
+    clear();
+    const factory = vi.fn((_env: { keyWindowBounds: () => unknown }) => ({
+      start() {},
+      stop() {},
+      clear() {},
+      snapshot: async () => [],
+    }));
+    launchMain('tok', {
+      ipcMain: fakeIpcMain().ipcMain,
+      launch: fakeLaunch().launch,
+      video: { source: factory },
+    });
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[0].keyWindowBounds()).toBeUndefined();
+  });
+
   it.each([
     null,
     0,
