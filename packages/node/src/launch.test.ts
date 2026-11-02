@@ -2730,9 +2730,9 @@ describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)',
     );
     await client.logException(new Error('boom'));
     const files = bundleFiles(puts);
-    expect('video.webm' in files).toBe(true);
+    expect('video.mp4' in files).toBe(true);
     // The encoder ran over the snapshot's payloads (1 entry) — binary bytes, not JSON.
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0xa, 1, 0xb]);
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([0xa, 1, 0xb]);
   });
 
   it('concatenates the internal profiling snapshot with a forwarded one (neither is dropped)', async () => {
@@ -2771,7 +2771,7 @@ describe('launch — forwarded reportSnapshots + fileEncoders (extension seam)',
     await client.logException(new Error('boom'));
     const files = bundleFiles(puts);
     expect('profile.json' in files).toBe(true); // internal snapshot kept
-    expect('video.webm' in files).toBe(true); // forwarded snapshot kept
+    expect('video.mp4' in files).toBe(true); // forwarded snapshot kept
   });
 });
 

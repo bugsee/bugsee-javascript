@@ -482,7 +482,7 @@ describe('encodePixelVideo (the video fileEncoder)', () => {
     expect(encodePixelVideo([bytes])).toBe(bytes);
   });
 
-  it('concatenates multiple payloads (defensive — the single video.webm contract)', () => {
+  it('concatenates multiple payloads (defensive — the single video.mp4 contract)', () => {
     expect(encodePixelVideo([new Uint8Array([1, 2]), new Uint8Array([3])])).toEqual(
       new Uint8Array([1, 2, 3]),
     );

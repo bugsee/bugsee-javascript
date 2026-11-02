@@ -41,7 +41,7 @@ export interface CapturePageVideoSourceOptions {
   capturePage: () => Promise<Uint8Array>;
   /** Periodic sampler (real: the node global-timer scheduler). */
   scheduler: Scheduler;
-  /** Mux the frame ring into the final container bytes (real: a webm/mjpeg muxer; injected seam). */
+  /** Mux the frame ring into the final container bytes (real: an MP4 (H.264) muxer; injected seam). */
   encode: (frames: readonly VideoFrame[], fps: number) => Uint8Array;
   /** Frames per second (default 1). */
   fps?: number;

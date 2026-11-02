@@ -40,7 +40,7 @@ describe('wire constants', () => {
   });
 
   it('video default filename is the encoded pixel-capture stream (Electron)', () => {
-    expect(DEFAULT_FILENAMES.video).toBe('video.webm');
+    expect(DEFAULT_FILENAMES.video).toBe('video.mp4');
   });
 
   // The DEDICATED input stream (mobile-canonical `<random>.input.json`). It exists so SDK-captured

@@ -77,16 +77,16 @@ describe('a two-display session, end to end', () => {
     );
     const files = unzipSync(await bundle.body.bytes());
     // display 0 = the focused window's display (native 30, window 1); display 1 = native 70 (window 2)
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0, 1]);
-    expect([...(files['video.1.webm'] as Uint8Array)]).toEqual([1, 2]);
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([0, 1]);
+    expect([...(files['video.1.mp4'] as Uint8Array)]).toEqual([1, 2]);
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
       files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
     };
     expect(
       manifest.files.filter((f) => f.type === 'video').map((f) => [f.filename, f.attrs]),
     ).toEqual([
-      ['video.webm', { format: 'webm', displayId: 0 }],
-      ['video.1.webm', { format: 'webm', displayId: 1 }],
+      ['video.mp4', { format: 'mp4', displayId: 0 }],
+      ['video.1.mp4', { format: 'mp4', displayId: 1 }],
     ]);
   });
 });

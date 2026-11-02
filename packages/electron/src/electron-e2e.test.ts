@@ -199,6 +199,9 @@ async function bootRenderer(
   };
 }
 
+/** The start of an MP4 file: a box of size 24 and type `ftyp` (what an H.264 encoder's output begins with). */
+const MP4_FTYP = [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70];
+
 describe('Electron main + 2 renderers converge into one session/bundle', () => {
   it('handshake, native-crash correlation, ONE merged bundle, and stop/flush propagation', async () => {
     const bus = fakeElectronBus();
@@ -207,13 +210,13 @@ describe('Electron main + 2 renderers converge into one session/bundle', () => {
     const crashStarts: CrashReporterStartOptions[] = [];
     const crashReporter = { start: (o: CrashReporterStartOptions) => crashStarts.push(o) };
 
-    // A pixel-video source (fake capturer + encoder) — proves the opt-in path lands a video.webm.
+    // A pixel-video source (fake capturer + encoder) — proves the opt-in path lands a video.mp4.
     const videoSource: VideoCaptureSource = {
       start: () => {},
       stop: () => {},
       clear: () => {},
       snapshot: async (now: number): Promise<CaptureDataEntry[]> => [
-        new CaptureDataEntryBase('video', now, new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
+        new CaptureDataEntryBase('video', now, new Uint8Array(MP4_FTYP)),
       ],
     };
 
@@ -263,8 +266,8 @@ describe('Electron main + 2 renderers converge into one session/bundle', () => {
       expect.arrayContaining([{ from: 'renderer-1' }, { from: 'renderer-2' }, { from: 'main' }]),
     );
     // The opt-in pixel video rode the report-snapshot path into the SAME bundle (binary, via the encoder).
-    expect('video.webm' in files).toBe(true);
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    expect('video.mp4' in files).toBe(true);
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([...MP4_FTYP]);
 
     // ── Control propagation: flush + stop from the main reach both renderers ──
     await mainClient.flush();
@@ -290,7 +293,7 @@ describe('the main blackout reaches every renderer and the pixel video (privacy)
       stop: () => void videoCalls.push('stop'),
       clear: () => void videoCalls.push('clear'),
       snapshot: async (now: number): Promise<CaptureDataEntry[]> => [
-        new CaptureDataEntryBase('video', now, new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])),
+        new CaptureDataEntryBase('video', now, new Uint8Array(MP4_FTYP)),
       ],
     };
     const mainClient = launchMain('tok', {
@@ -325,13 +328,13 @@ describe('the main blackout reaches every renderer and the pixel video (privacy)
     // A report built DURING the blackout carries no pixel video.
     await mainClient.logException(new Error('during blackout'));
     expect(puts).toHaveLength(1);
-    expect('video.webm' in unzipSync(puts[0] as Uint8Array)).toBe(false);
+    expect('video.mp4' in unzipSync(puts[0] as Uint8Array)).toBe(false);
 
     mainClient.endBlackout();
     for (const r of [r1, r2, r3]) expect(r.blackout.isActive()).toBe(false);
     expect(videoCalls).toEqual(['start', 'stop', 'clear', 'start']);
     await mainClient.logException(new Error('after blackout'));
-    expect('video.webm' in unzipSync(puts[1] as Uint8Array)).toBe(true);
+    expect('video.mp4' in unzipSync(puts[1] as Uint8Array)).toBe(true);
 
     await mainClient.stop();
   });

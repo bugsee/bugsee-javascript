@@ -1,7 +1,7 @@
 // The pixel-video controller — wraps a VideoCaptureSource behind a permission gate and exposes the
 // report-time snapshot the bundle assembler pulls. The source is a single VideoCaptureSource; the
 // "capturePage + MediaRecorder" combination is composed INTO one source by the adapter (capturePage frames
-// → canvas → MediaRecorder → webm), so the controller stays source-agnostic. `snapshot` is the
+// → canvas → MediaRecorder → mp4), so the controller stays source-agnostic. `snapshot` is the
 // ReportSnapshotSource contract: given the report's wall-clock time, return the buffered `video` entries.
 import type { BlackoutGate, CaptureDataEntry } from '@bugsee/core';
 import type { VideoCaptureSource } from './video-capture';
@@ -136,7 +136,7 @@ export function createPixelVideoController(
 
 /**
  * The `video` file encoder: the source already produced encoded container bytes, so the common single-entry
- * case is verbatim. Multiple `video` entries (belt-and-braces — there is only one `video.webm`) are
+ * case is verbatim. Multiple `video` entries (belt-and-braces — there is only one `video.mp4`) are
  * concatenated.
  */
 export function encodePixelVideo(payloads: readonly unknown[]): Uint8Array {
