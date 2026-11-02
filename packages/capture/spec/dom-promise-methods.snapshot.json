@@ -1,0 +1,350 @@
+{
+  "typescript": "6.0.3",
+  "interfaces": {
+    "AudioContext": {
+      "mixin": false,
+      "methods": ["close", "resume", "suspend"]
+    },
+    "AudioDecoder": {
+      "mixin": false,
+      "methods": ["flush"]
+    },
+    "AudioEncoder": {
+      "mixin": false,
+      "methods": ["flush"]
+    },
+    "BaseAudioContext": {
+      "mixin": false,
+      "methods": ["decodeAudioData"]
+    },
+    "Blob": {
+      "mixin": false,
+      "methods": ["arrayBuffer", "bytes", "text"]
+    },
+    "Body": {
+      "mixin": true,
+      "methods": ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]
+    },
+    "CSSStyleSheet": {
+      "mixin": false,
+      "methods": ["replace"]
+    },
+    "Cache": {
+      "mixin": false,
+      "methods": ["add", "addAll", "delete", "keys", "match", "matchAll", "put"]
+    },
+    "CacheStorage": {
+      "mixin": false,
+      "methods": ["delete", "has", "keys", "match", "open"]
+    },
+    "Clipboard": {
+      "mixin": false,
+      "methods": ["read", "readText", "write", "writeText"]
+    },
+    "ClipboardItem": {
+      "mixin": false,
+      "methods": ["getType"]
+    },
+    "CookieStore": {
+      "mixin": false,
+      "methods": ["delete", "get", "getAll", "set"]
+    },
+    "CookieStoreManager": {
+      "mixin": false,
+      "methods": ["getSubscriptions", "subscribe", "unsubscribe"]
+    },
+    "CredentialsContainer": {
+      "mixin": false,
+      "methods": ["create", "get", "preventSilentAccess", "store"]
+    },
+    "CustomElementRegistry": {
+      "mixin": false,
+      "methods": ["whenDefined"]
+    },
+    "Document": {
+      "mixin": false,
+      "methods": [
+        "exitFullscreen",
+        "exitPictureInPicture",
+        "hasStorageAccess",
+        "requestStorageAccess"
+      ]
+    },
+    "Element": {
+      "mixin": false,
+      "methods": ["requestFullscreen", "requestPointerLock"]
+    },
+    "FileSystemDirectoryHandle": {
+      "mixin": false,
+      "methods": ["getDirectoryHandle", "getFileHandle", "removeEntry", "resolve"]
+    },
+    "FileSystemFileHandle": {
+      "mixin": false,
+      "methods": ["createWritable", "getFile"]
+    },
+    "FileSystemHandle": {
+      "mixin": false,
+      "methods": ["isSameEntry"]
+    },
+    "FileSystemWritableFileStream": {
+      "mixin": false,
+      "methods": ["seek", "truncate", "write"]
+    },
+    "FontFace": {
+      "mixin": false,
+      "methods": ["load"]
+    },
+    "FontFaceSet": {
+      "mixin": false,
+      "methods": ["load"]
+    },
+    "GPU": {
+      "mixin": false,
+      "methods": ["requestAdapter"]
+    },
+    "GPUAdapter": {
+      "mixin": false,
+      "methods": ["requestDevice"]
+    },
+    "GPUBuffer": {
+      "mixin": false,
+      "methods": ["mapAsync"]
+    },
+    "GPUDevice": {
+      "mixin": false,
+      "methods": ["createComputePipelineAsync", "createRenderPipelineAsync", "popErrorScope"]
+    },
+    "GPUQueue": {
+      "mixin": false,
+      "methods": ["onSubmittedWorkDone"]
+    },
+    "GPUShaderModule": {
+      "mixin": false,
+      "methods": ["getCompilationInfo"]
+    },
+    "GamepadHapticActuator": {
+      "mixin": false,
+      "methods": ["playEffect", "reset"]
+    },
+    "HTMLImageElement": {
+      "mixin": false,
+      "methods": ["decode"]
+    },
+    "HTMLMediaElement": {
+      "mixin": false,
+      "methods": ["play", "setMediaKeys", "setSinkId"]
+    },
+    "HTMLVideoElement": {
+      "mixin": false,
+      "methods": ["requestPictureInPicture"]
+    },
+    "IDBFactory": {
+      "mixin": false,
+      "methods": ["databases"]
+    },
+    "ImageCapture": {
+      "mixin": false,
+      "methods": ["getPhotoCapabilities", "getPhotoSettings", "grabFrame", "takePhoto"]
+    },
+    "ImageDecoder": {
+      "mixin": false,
+      "methods": ["decode"]
+    },
+    "LockManager": {
+      "mixin": false,
+      "methods": ["query", "request"]
+    },
+    "MIDIPort": {
+      "mixin": false,
+      "methods": ["close", "open"]
+    },
+    "MediaCapabilities": {
+      "mixin": false,
+      "methods": ["decodingInfo", "encodingInfo"]
+    },
+    "MediaDevices": {
+      "mixin": false,
+      "methods": ["enumerateDevices", "getDisplayMedia", "getUserMedia"]
+    },
+    "MediaKeySession": {
+      "mixin": false,
+      "methods": ["close", "generateRequest", "load", "remove", "update"]
+    },
+    "MediaKeySystemAccess": {
+      "mixin": false,
+      "methods": ["createMediaKeys"]
+    },
+    "MediaKeys": {
+      "mixin": false,
+      "methods": ["getStatusForPolicy", "setServerCertificate"]
+    },
+    "MediaSession": {
+      "mixin": false,
+      "methods": ["setCameraActive", "setMicrophoneActive"]
+    },
+    "MediaStreamTrack": {
+      "mixin": false,
+      "methods": ["applyConstraints"]
+    },
+    "NavigationPreloadManager": {
+      "mixin": false,
+      "methods": ["disable", "enable", "getState", "setHeaderValue"]
+    },
+    "Navigator": {
+      "mixin": false,
+      "methods": ["requestMIDIAccess", "requestMediaKeySystemAccess", "share"]
+    },
+    "NavigatorBadge": {
+      "mixin": true,
+      "methods": ["clearAppBadge", "setAppBadge"]
+    },
+    "NavigatorLogin": {
+      "mixin": false,
+      "methods": ["setStatus"]
+    },
+    "OfflineAudioContext": {
+      "mixin": false,
+      "methods": ["resume", "startRendering", "suspend"]
+    },
+    "OffscreenCanvas": {
+      "mixin": false,
+      "methods": ["convertToBlob"]
+    },
+    "PaymentRequest": {
+      "mixin": false,
+      "methods": ["abort", "canMakePayment", "show"]
+    },
+    "PaymentResponse": {
+      "mixin": false,
+      "methods": ["complete", "retry"]
+    },
+    "Permissions": {
+      "mixin": false,
+      "methods": ["query"]
+    },
+    "PushManager": {
+      "mixin": false,
+      "methods": ["getSubscription", "permissionState", "subscribe"]
+    },
+    "PushSubscription": {
+      "mixin": false,
+      "methods": ["unsubscribe"]
+    },
+    "RTCPeerConnection": {
+      "mixin": false,
+      "methods": [
+        "addIceCandidate",
+        "createAnswer",
+        "createOffer",
+        "getStats",
+        "setLocalDescription",
+        "setRemoteDescription"
+      ]
+    },
+    "RTCRtpReceiver": {
+      "mixin": false,
+      "methods": ["getStats"]
+    },
+    "RTCRtpSender": {
+      "mixin": false,
+      "methods": ["getStats", "replaceTrack", "setParameters"]
+    },
+    "ReadableStream": {
+      "mixin": false,
+      "methods": ["cancel", "pipeTo"]
+    },
+    "ReadableStreamBYOBReader": {
+      "mixin": false,
+      "methods": ["read"]
+    },
+    "ReadableStreamDefaultReader": {
+      "mixin": false,
+      "methods": ["read"]
+    },
+    "ReadableStreamGenericReader": {
+      "mixin": true,
+      "methods": ["cancel"]
+    },
+    "RemotePlayback": {
+      "mixin": false,
+      "methods": ["cancelWatchAvailability", "prompt", "watchAvailability"]
+    },
+    "Scheduler": {
+      "mixin": false,
+      "methods": ["postTask", "yield"]
+    },
+    "ScreenOrientation": {
+      "mixin": false,
+      "methods": ["lock"]
+    },
+    "ServiceWorkerContainer": {
+      "mixin": false,
+      "methods": ["getRegistration", "getRegistrations", "register"]
+    },
+    "ServiceWorkerRegistration": {
+      "mixin": false,
+      "methods": ["getNotifications", "showNotification", "unregister", "update"]
+    },
+    "StorageManager": {
+      "mixin": false,
+      "methods": ["estimate", "getDirectory", "persist", "persisted"]
+    },
+    "SubtleCrypto": {
+      "mixin": false,
+      "methods": [
+        "decrypt",
+        "deriveBits",
+        "deriveKey",
+        "digest",
+        "encrypt",
+        "exportKey",
+        "generateKey",
+        "importKey",
+        "sign",
+        "unwrapKey",
+        "verify",
+        "wrapKey"
+      ]
+    },
+    "VideoDecoder": {
+      "mixin": false,
+      "methods": ["flush"]
+    },
+    "VideoEncoder": {
+      "mixin": false,
+      "methods": ["flush"]
+    },
+    "VideoFrame": {
+      "mixin": false,
+      "methods": ["copyTo"]
+    },
+    "WakeLock": {
+      "mixin": false,
+      "methods": ["request"]
+    },
+    "WakeLockSentinel": {
+      "mixin": false,
+      "methods": ["release"]
+    },
+    "WebTransport": {
+      "mixin": false,
+      "methods": ["createBidirectionalStream", "createUnidirectionalStream"]
+    },
+    "WindowOrWorkerGlobalScope": {
+      "mixin": true,
+      "methods": ["createImageBitmap", "fetch"]
+    },
+    "Worklet": {
+      "mixin": false,
+      "methods": ["addModule"]
+    },
+    "WritableStream": {
+      "mixin": false,
+      "methods": ["abort", "close"]
+    },
+    "WritableStreamDefaultWriter": {
+      "mixin": false,
+      "methods": ["abort", "close", "write"]
+    }
+  }
+}
