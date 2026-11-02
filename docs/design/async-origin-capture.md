@@ -178,6 +178,28 @@ Measured with `bench.mjs` (this directory) on a cheap real async call (`crypto.s
   `capture: false` (0.17 µs) or a sampling rate, so the choice is data, not code.
 - Not measured: real-page effects of the extra microtask, and the retained-`Error` memory under very many pending promises.
 
+### Which listed methods can sit in a tight loop
+
+Judged from how apps use them (not measured per app); the SDK's own code is not affected — its loops use
+`ReadableStreamDefaultReader.read()` (fetch/bundle body streaming), which is **not** in the list, and `blob.arrayBuffer()` once per
+bundle.
+
+| Class | Methods | Where the loop comes from | Default |
+|---|---|---|---|
+| **Hot** (per frame / per chunk / per task) | `Scheduler.postTask`, `Scheduler.yield`; `FileSystemWritableFileStream.write/seek/truncate`; `GPUBuffer.mapAsync`, `GPUQueue.onSubmittedWorkDone`, `GPUDevice.popErrorScope`; `ImageCapture.grabFrame`, `ImageDecoder.decode`, `VideoFrame.copyTo`, `Video/AudioDecoder/Encoder.flush`; `OffscreenCanvas.convertToBlob`; `createImageBitmap` | frame-rate media/GPU pipelines, cooperative schedulers, chunked file writes | **off** (opt-in), except `createImageBitmap` which is on the measured-stackless list — see breaker |
+| **Hot in bulk** | `SubtleCrypto.*` (hashing/verifying many chunks or tokens), `Blob.arrayBuffer/bytes/text` and `Body.*` (`slice().arrayBuffer()` per chunk; `response.json()` per request on chatty apps), `Cache.*` / `CacheStorage.match` (a service worker's fetch handler runs per request) | loops over thousands of items | **off** (opt-in); `fetch` itself is covered by the network interceptor, never wrapped twice |
+| **Bursty** | `HTMLImageElement.decode` (galleries), `CustomElementRegistry.whenDefined`, `CSSStyleSheet.replace` (one per component at startup), `FontFaceSet.load` (per text measure in some canvas libs), `RTCPeerConnection.getStats/addIceCandidate/replaceTrack/setParameters`, `CookieStore.*`, `MediaStreamTrack.applyConstraints` (per slider tick) | hundreds in a burst, then quiet | on for the measured-stackless ones (`decode`, `FontFace.load`, `addIceCandidate`), guarded by the breaker |
+| **Rare** | `HTMLMediaElement.play`, `Clipboard.*`, `WakeLock.request`, `getUserMedia`, `ServiceWorkerContainer.register`, `Permissions.query`, `FileSystem*Handle.get*Handle`, `Worklet.addModule`, `decodeAudioData`, picker APIs | user-driven, a few per page | **on** |
+
+**Adaptive circuit breaker (proposed addition to the factory).** Frequency is a property of the app, not the API, so a static list will
+always be wrong for someone. Each wrapped method keeps a counter per 1 s window; above a threshold (say 200 calls/s) it stops
+capturing the stack and forwards at the `capture: false` cost (about 0.2 µs), and it re-arms when the rate falls. Cost on the
+fast path: one increment and one comparison. A tight loop therefore pays the stack-capture price for its first few hundred calls
+only. The report then loses the call site for that method under load, which is the right trade.
+
+In a pure tight loop over the cheapest native call the capture roughly doubles the per-call cost (1.2 to 2.3 µs in Chromium); that
+is the case the breaker exists for.
+
 ### Cost and risk (what could make this a bad idea)
 1. **Per-call overhead** of `new Error()` (microseconds). Fine for `play`, `getUserMedia`, `clipboard`; wrong for hot APIs — `fetch` (the network interceptor already wraps it; reuse its capture, don't add a second), `Scheduler.postTask/yield`, `FileSystemWritableFileStream.write`, `Blob/Body.*`, `SubtleCrypto.*` in loops, `ReadableStream` readers. Ship a **default set** (§2 measured + obvious async-failure APIs) and a `denyHot` list; the rest is opt-in.
 2. **One-microtask delay** and a new promise identity: code comparing `video.play() === ...` or relying on exact microtask order can change. Rare, documented.
