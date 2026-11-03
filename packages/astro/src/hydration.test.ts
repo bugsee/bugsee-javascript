@@ -262,4 +262,26 @@ describe('listenForAstroHydrationErrors', () => {
     target.dispatchEvent(hydrationError(new Error('on a custom carrier')));
     expect(logException).toHaveBeenCalledTimes(1);
   });
+
+  // core's relaunch KEEPS `carrier` and `onError` from the previous launch and lets an explicit one win; the listener mirrors that.
+  it('a re-registration without options keeps the earlier carrier and onError; an explicit one wins', () => {
+    const target = new EventTarget();
+    const carrier = {};
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    setCarrierClient(clientWith(logException), carrier);
+    const kept = vi.fn();
+    listenForAstroHydrationErrors({ target, carrier, onError: kept });
+    listenForAstroHydrationErrors({ target }); // a plain relaunch(): nothing explicit
+    target.dispatchEvent(hydrationError(new Error('still on the custom carrier')));
+    expect(logException).toHaveBeenCalledTimes(1); // found on the kept carrier, not on globalThis
+    const explicit = vi.fn();
+    const boom = () => {
+      throw new Error('sdk down');
+    };
+    setCarrierClient(clientWith(boom as never), carrier);
+    listenForAstroHydrationErrors({ target, onError: explicit }); // explicit onError wins, carrier is still kept
+    target.dispatchEvent(hydrationError(new Error('x')));
+    expect(explicit).toHaveBeenCalledTimes(1);
+    expect(kept).not.toHaveBeenCalled();
+  });
 });

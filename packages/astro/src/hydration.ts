@@ -60,7 +60,8 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
   }
   const existing = listening.get(target);
   if (existing !== undefined) {
-    existing.options = options; // relaunch: the new getClient / onError replace the first ones, and a new launch window opens
+    // relaunch: like core's `relaunchWith`, the carrier and onError of the previous launch are KEPT and an explicit one wins; a new window opens
+    existing.options = { ...existing.options, ...options };
     existing.pending += 1;
     return () => undefined;
   }

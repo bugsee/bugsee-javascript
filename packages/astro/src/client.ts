@@ -46,10 +46,6 @@ async function withHydrationWindow<T>(
  * Start Bugsee for the Astro client (browser). Returns the started client (a per-isolate singleton — a
  * repeat call returns the existing client).
  */
-/**
- * Start Bugsee for the Astro client (browser). Returns the started client (a per-isolate singleton — a
- * repeat call returns the existing client).
- */
 export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
