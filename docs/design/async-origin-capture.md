@@ -503,3 +503,21 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   property-signature methods are not seen (none exist in the pinned lib.dom.d.ts); a mixin target is checked to be a real
   constructor, not to carry the method (a wrong target wraps nothing, silently).
 - **Path tokens.** `sanitizeUrl` redacts `key=value` and `;matrix` secrets, not a bare path segment such as `/signed/<token>/clip.mp4`.
+
+## 12. Step 6 - spec proposal (blocked on the platform spec)
+
+Step 6 is the capture-phase `document` `error` listener (§4.3). It emits a **system event**, and every `events.system` name must exist
+in the platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) before it is registered here (`pnpm spec:refresh`, then
+`EventName`/`EVENT_PARAMS`). None of the current events fits, so this is the entry to add to the spec:
+
+| name | families | params | when |
+|---|---|---|---|
+| `resource_load_failed` | web (browser, Electron renderer) | `tag`, `src?`, `id?`, `code?`, `message?` | a `<video>`, `<audio>`, `<img>`, `<source>`, `<script>` or `<link>` in the document fails to load |
+
+- `tag`: lower-case element name. `src`: the element's `currentSrc` or `src`/`href`, through `sanitizeUrl` with query and fragment
+  dropped, `data:`/`blob:` reduced to the scheme. `id`: the element id, control characters stripped, clipped to 80. `code`/`message`:
+  `MediaError.code`/`message` for media elements (message through the message sanitiser).
+- Listener: one `{ capture: true }` `error` listener on `document` (`error` does not bubble, so capture is the only way to see it). It
+  misses detached elements and shadow-DOM content. A budget of 20 events per minute bounds a page that fails in a loop.
+- Held/emit style follows the other DOM events (`online`/`offline`); the spec owner decides the column.
+- Until the entry exists, step 6 is not built. The call-site + Target line (steps 1-5) already covers `play()`/decode failures.
