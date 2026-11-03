@@ -488,4 +488,20 @@ describe('registerClient', () => {
     await expect(relaunch({ document: same } as never)).rejects.toThrow('boom');
     expect(stop).not.toHaveBeenCalled();
   });
+
+  it('a repeat registration on a client Astro never launched still tracks the document it listens on, so a later move releases it', async () => {
+    await world.coreLaunch('tok', { document: doc('umbrella') }); // through the umbrella, not registerClient
+    await registerClient('tok'); // a repeat: listens on the recorded document
+    expect(lastListen().target).toEqual(doc('umbrella'));
+    await relaunch({ document: doc('moved') } as never);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('umbrella'));
+  });
+
+  it('a repeat never moves or releases what is already tracked for its host', async () => {
+    await registerClient('tok', { document: doc('first') } as never);
+    await registerClient('tok', { onError: vi.fn() });
+    await relaunch(); // still the first document: nothing stops
+    expect(stop).not.toHaveBeenCalled();
+  });
 });

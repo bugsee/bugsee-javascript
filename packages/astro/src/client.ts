@@ -150,6 +150,9 @@ async function openWindow(
   listenForAstroHydrationErrors(hydration);
   try {
     const client = await start();
+    if (repeat && tracked !== undefined && !activeTargets.has(host)) {
+      activeTargets.set(host, tracked); // a client Astro did not launch: remember where its listener is, so a later move can release it
+    }
     if (!repeat && tracked !== undefined) {
       const left = activeTargets.get(host);
       activeTargets.set(host, tracked);
