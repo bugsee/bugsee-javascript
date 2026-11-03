@@ -115,6 +115,42 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
 }
 
 /**
+ * Open a launch window on a listener that already exists, WITHOUT touching its options: a registration that must not change where errors go
+ * until its launch has succeeded (another host's client uses this listener). Settle it with `flushQueuedAstroHydrationErrors`. False when
+ * nothing listens on `target`.
+ */
+export function holdAstroHydrationWindow(target: EventTarget): boolean {
+  const state = listening.get(target);
+  if (state === undefined) {
+    return false;
+  }
+  state.pending += 1;
+  return true;
+}
+
+/** Merge `options` onto the listener of their target without opening a window (the counterpart of `holdAstroHydrationWindow`). */
+export function updateAstroHydrationOptions(options: AstroHydrationOptions): void {
+  const target = targetOf(options);
+  const state = target === undefined ? undefined : listening.get(target);
+  if (state !== undefined) {
+    state.options = { ...state.options, ...options };
+  }
+}
+
+/**
+ * Stop listening on `target` (the page moved to another document): removes the listener and forgets its queue and options. A no-op for a
+ * target that is not being listened on.
+ */
+export function stopListeningForAstroHydrationErrors(target: EventTarget): void {
+  const state = listening.get(target);
+  if (state === undefined) {
+    return;
+  }
+  target.removeEventListener(EVENT, state.listener);
+  listening.delete(target);
+}
+
+/**
  * Settle one registration's launch window (call once its launch has settled, success or failure): report what was queued if a client
  * exists now, and close the window once the last pending registration has settled (afterwards an error with no client is dropped, not
  * queued), with the options of the latest registration. Never throws.
