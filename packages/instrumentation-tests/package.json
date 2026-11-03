@@ -51,6 +51,7 @@
     "typescript": "^6.0.3",
     "vite": "^8.3.5",
     "webpack": "^5.112.2",
-    "webpack-subresource-integrity": "^5.1.0"
+    "webpack-subresource-integrity": "^5.1.0",
+    "zone.js": "0.16.3"
   }
 }

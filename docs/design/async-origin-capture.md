@@ -347,7 +347,7 @@ bounded JSON preview) in the summary/description instead of `String(value)`; (b)
 4. **`asyncOriginEnricher`** + browser `crashOf` + `describeError` + `logException` (§4.5), and the per-API target describers (§4.3).
 5. **Framework adapters** (§10): route the enricher through every adapter path that captures a rejection itself.
 6. `document` capture-phase `error` listener → system event.
-7. e2e (§5). Viewer: render origin frames distinctly and show the target description (viewer repo; needs the protocol decision below).
+7. e2e (§5) - **BUILT for `HTMLMediaElement.play()`** (`test/async-origin.browser.e2e.ts`: headless Chromium AND Firefox, plain page and zone.js-first page; unhandled and `logException` paths). Not yet: the other always-on APIs, the custom-Promise-library compositions, WebKit. Viewer: render origin frames distinctly and show the target description (viewer repo; needs the protocol decision below).
 
 ## 8. Open questions
 - **Protocol (DECIDED, owner 2026-11-02):** a new optional `origin: 'call'` field on the frame ("this is where the API was called, not
