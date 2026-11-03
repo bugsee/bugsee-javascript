@@ -115,6 +115,19 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
 }
 
 /**
+ * Stop listening on `target` (the page moved to another document): removes the listener and forgets its queue and options. A no-op for a
+ * target that is not being listened on.
+ */
+export function stopListeningForAstroHydrationErrors(target: EventTarget): void {
+  const state = listening.get(target);
+  if (state === undefined) {
+    return;
+  }
+  target.removeEventListener(EVENT, state.listener);
+  listening.delete(target);
+}
+
+/**
  * Settle one registration's launch window (call once its launch has settled, success or failure): report what was queued if a client
  * exists now, and close the window once the last pending registration has settled (afterwards an error with no client is dropped, not
  * queued), with the options of the latest registration. Never throws.

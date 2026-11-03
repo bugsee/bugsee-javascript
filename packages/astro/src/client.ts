@@ -10,8 +10,12 @@ import {
   launch,
   relaunch as umbrellaRelaunch,
 } from '@bugsee/bugsee';
-import { getCarrierClient } from '@bugsee/core';
-import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
+import { getCarrier, getCarrierClient } from '@bugsee/core';
+import {
+  flushQueuedAstroHydrationErrors,
+  listenForAstroHydrationErrors,
+  stopListeningForAstroHydrationErrors,
+} from './hydration';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
 export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {}
@@ -45,13 +49,19 @@ type Remembered = {
   carrier?: object;
 };
 
-// What the last SUCCESSFUL launch handed in, like core's `lastLaunch`. `document` and `window` stay RAW: which one the launch uses is
-// decided by precedence, so a relaunch that adds only a window must not displace a kept explicit document.
-let remembered: Remembered = {};
 // The launch still in flight. Every call waits for it first, as core's `relaunchWith` does: only then is it known whether a client is live
-// (the carrier is set at the END of a launch) and what the last launch remembered.
+// (the carrier is set at the END of a launch) and what the last launch recorded.
 let inFlight: Promise<unknown> = Promise.resolve();
-// Known limit (accepted): the hydration listener of a document the page has moved away from stays attached (as before this tracking).
+// The document the last launch listened on, so a launch that moves to another one can stop listening on the old one.
+let activeTarget: EventTarget | undefined;
+
+// What core recorded for the last SUCCESSFUL launch on `host` (`setCarrierLastLaunch`: the kept options, `undefined` ones dropped). This
+// is the very state `relaunchWith` merges from, so Astro cannot disagree with core, whichever entry point made that launch. `document` and
+// `window` stay RAW: which one the launch uses is decided by precedence, so a relaunch that adds only a window must not displace a kept
+// explicit document.
+function recordedBy(host: object): Remembered {
+  return pick(getCarrier(host).lastLaunch?.options as HydrationInput, true);
+}
 
 function pick(options: HydrationInput, definedOnly: boolean): Remembered {
   const picked: Remembered = {};
@@ -73,13 +83,13 @@ type Plan = { base: Remembered; repeat: boolean };
  * Open the hydration listener's launch window, run `start`, and close the window in a `finally`: an error dispatched while the client is
  * (re)starting is queued, and the flush runs whether the start succeeded or failed. Waits for the launch in flight first, then asks `plan`:
  *
- * - a relaunch builds on the remembered options (core's `relaunchWith` keeps `document`, `window`, `carrier` and `onError`; an explicit key
+ * - a relaunch builds on what core recorded (core's `relaunchWith` keeps `document`, `window`, `carrier` and `onError`; an explicit key
  *   wins, even an explicit `undefined`);
  * - a fresh launch builds on nothing (core's plain launch carries nothing over);
- * - a REPEAT (a client is live, so core ignores the call and returns it) builds on the remembered options and takes only the DEFINED keys
- *   it was given: its stated `undefined` was discarded by core, and the listener must not lose what it has. Nothing is remembered from it.
+ * - a REPEAT (a client is live, so core ignores the call and returns it) builds on what core recorded and takes only the DEFINED keys
+ *   it was given: its stated `undefined` was discarded by core, and the listener must not lose what it has. Core records nothing for it.
  *
- * The remembered state moves only once a non-repeat start succeeded.
+ * A non-repeat start that moved to another document stops listening on the old one.
  */
 function withHydrationWindow(
   options: HydrationInput,
@@ -118,8 +128,11 @@ async function openWindow(
   listenForAstroHydrationErrors(hydration);
   try {
     const client = await start();
-    if (!repeat) {
-      remembered = next;
+    if (!repeat && target !== undefined) {
+      if (activeTarget !== undefined && activeTarget !== target) {
+        stopListeningForAstroHydrationErrors(activeTarget); // the page moved to another document
+      }
+      activeTarget = target;
     }
     return client;
   } finally {
@@ -140,7 +153,7 @@ export async function registerClient(
     // a client already live on the carrier the launch would look at: core ignores this call
     () =>
       getCarrierClient(options.carrier ?? globalThis) !== undefined
-        ? { base: remembered, repeat: true }
+        ? { base: recordedBy(options.carrier ?? globalThis), repeat: true }
         : { base: {}, repeat: false },
     () => launch(appToken, options),
   );
@@ -153,7 +166,11 @@ export async function registerClient(
 export async function relaunch(options?: Parameters<typeof umbrellaRelaunch>[0]): Promise<Bugsee> {
   return await withHydrationWindow(
     options,
-    () => ({ base: remembered, repeat: false }),
+    () => ({
+      // the host core's `relaunchWith` would pick: the carrier option, else the one the last launch left, else the global
+      base: recordedBy(options?.carrier ?? getCarrier().lastHost ?? globalThis),
+      repeat: false,
+    }),
     () => umbrellaRelaunch(options),
   );
 }

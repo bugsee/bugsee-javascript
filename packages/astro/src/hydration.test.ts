@@ -1,7 +1,11 @@
 import type { Bugsee } from '@bugsee/bugsee';
 import { setCarrierClient } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
-import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
+import {
+  flushQueuedAstroHydrationErrors,
+  listenForAstroHydrationErrors,
+  stopListeningForAstroHydrationErrors,
+} from './hydration';
 
 const clientWith = (logException = vi.fn(() => Promise.resolve(undefined))) =>
   ({ logException }) as unknown as Bugsee;
@@ -299,5 +303,30 @@ describe('listenForAstroHydrationErrors', () => {
     target.dispatchEvent(hydrationError(new Error('x')));
     expect(onError).toHaveBeenCalledTimes(1);
     expect(getClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('stopListeningForAstroHydrationErrors', () => {
+  it('removes the listener of a target the page moved away from, and forgets its queue', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    const options = { target, getClient: () => clientWith(logException) };
+    listenForAstroHydrationErrors(options);
+    stopListeningForAstroHydrationErrors(target);
+    target.dispatchEvent(hydrationError(new Error('late')));
+    expect(logException).not.toHaveBeenCalled();
+    // a later registration on the same target is a NEW listener (the old state is gone), reporting exactly once
+    listenForAstroHydrationErrors(options);
+    target.dispatchEvent(hydrationError(new Error('again')));
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op for a target nobody is listening on, and does not touch other targets', () => {
+    const other = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    listenForAstroHydrationErrors({ target: other, getClient: () => clientWith(logException) });
+    expect(() => stopListeningForAstroHydrationErrors(new EventTarget())).not.toThrow();
+    other.dispatchEvent(hydrationError(new Error('x')));
+    expect(logException).toHaveBeenCalledTimes(1);
   });
 });
