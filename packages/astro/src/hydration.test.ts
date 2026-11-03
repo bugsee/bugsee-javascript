@@ -310,15 +310,18 @@ describe('stopListeningForAstroHydrationErrors', () => {
   it('removes the listener of a target the page moved away from, and forgets its queue', () => {
     const target = new EventTarget();
     const logException = vi.fn(() => Promise.resolve(undefined));
-    const options = { target, getClient: () => clientWith(logException) };
-    listenForAstroHydrationErrors(options);
+    // no client yet: the error is QUEUED inside the launch window
+    listenForAstroHydrationErrors({ target, getClient: () => undefined });
+    target.dispatchEvent(hydrationError(new Error('queued')));
     stopListeningForAstroHydrationErrors(target);
     target.dispatchEvent(hydrationError(new Error('late')));
-    expect(logException).not.toHaveBeenCalled();
-    // a later registration on the same target is a NEW listener (the old state is gone), reporting exactly once
+    // a later registration on the same target is a NEW listener with an empty queue: flushing it reports nothing of the old one
+    const options = { target, getClient: () => clientWith(logException) };
     listenForAstroHydrationErrors(options);
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).not.toHaveBeenCalled();
     target.dispatchEvent(hydrationError(new Error('again')));
-    expect(logException).toHaveBeenCalledTimes(1);
+    expect(logException).toHaveBeenCalledTimes(1); // exactly one listener
   });
 
   it('is a no-op for a target nobody is listening on, and does not touch other targets', () => {

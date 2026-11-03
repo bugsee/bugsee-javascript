@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // for a repeat (launchCore's alreadyLaunched), and `relaunch` merges `{ ...lastLaunch.options, ...options }` on the host relaunchWith picks.
 const world = vi.hoisted(() => {
   type Slot = {
+    pendingLaunch?: Promise<unknown>;
     client?: unknown;
     lastLaunch?: { appToken: string; options: Record<string, unknown> };
     lastHost?: object;
@@ -23,29 +24,40 @@ const world = vi.hoisted(() => {
     count: 0,
   };
   const KEPT = ['document', 'window', 'onError', 'carrier'];
-  async function coreLaunch(appToken: string, options: Record<string, unknown> = {}) {
+  function coreLaunch(appToken: string, options: Record<string, unknown> = {}): Promise<unknown> {
     const host = (options.carrier as object | undefined) ?? globalThis;
     const existing = slot(host).client;
     if (existing !== undefined) {
-      return existing;
+      return Promise.resolve(existing);
     }
-    await state.gate;
-    if (state.failNext !== undefined) {
-      const failure = state.failNext;
-      state.failNext = undefined;
-      throw failure;
-    }
-    const client = { id: ++state.count };
-    const retained: Record<string, unknown> = {};
-    for (const key of KEPT) {
-      if (options[key] !== undefined) {
-        retained[key] = options[key];
+    // like core, a launch in flight is visible on the carrier (getCarrierPendingLaunch) until it settles
+    const run = (async () => {
+      await state.gate;
+      if (state.failNext !== undefined) {
+        const failure = state.failNext;
+        state.failNext = undefined;
+        throw failure;
       }
-    }
-    slot(host).client = client;
-    slot(host).lastLaunch = { appToken, options: retained };
-    slot(globalThis).lastHost = host === globalThis ? undefined : host;
-    return client;
+      const client = { id: ++state.count };
+      const retained: Record<string, unknown> = {};
+      for (const key of KEPT) {
+        if (options[key] !== undefined) {
+          retained[key] = options[key];
+        }
+      }
+      slot(host).client = client;
+      slot(host).lastLaunch = { appToken, options: retained };
+      slot(globalThis).lastHost = host === globalThis ? undefined : host;
+      return client;
+    })();
+    slot(host).pendingLaunch = run;
+    const clear = () => {
+      if (slot(host).pendingLaunch === run) {
+        slot(host).pendingLaunch = undefined;
+      }
+    };
+    run.then(clear, clear);
+    return run;
   }
   async function coreRelaunch(options?: Record<string, unknown>) {
     const host =
@@ -75,6 +87,7 @@ vi.mock('@bugsee/bugsee', () => ({ launch, relaunch: relaunchUmbrella }));
 vi.mock('@bugsee/core', () => ({
   getCarrier: (host: object = globalThis) => world.slot(host),
   getCarrierClient: (host: object = globalThis) => world.slot(host).client,
+  getCarrierPendingLaunch: (host: object = globalThis) => world.slot(host).pendingLaunch,
 }));
 vi.mock('./hydration', () => ({
   listenForAstroHydrationErrors: world.listen,
@@ -96,6 +109,7 @@ describe('registerClient', () => {
   });
 
   afterEach(() => {
+    delete (globalThis as { document?: unknown }).document;
     world.slots.clear();
     world.state.gate = undefined;
     world.state.failNext = undefined;
@@ -343,19 +357,135 @@ describe('registerClient', () => {
     await registerClient('tok', { document: doc('first') } as never);
     world.state.failNext = new Error('boom');
     await expect(relaunch({ document: doc('failed') } as never)).rejects.toThrow('boom');
-    expect(stop).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalledWith(doc('first'));
+    // ... but the document the failed launch had started listening on is released, not leaked
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('failed'));
   });
 
   it('a repeat registration (core ignores its document) leaves the old listener alone', async () => {
     await registerClient('tok', { document: doc('first') } as never);
     await registerClient('tok', { document: doc('repeat') } as never);
     expect(stop).not.toHaveBeenCalled();
+    // core ignored that document, so nothing listens on it: the listener stays on the document the client uses
+    expect(lastListen().target).toEqual(doc('first'));
+    expect(
+      listen.mock.calls.some(([passed]) => (passed as { target?: unknown }).target === undefined),
+    ).toBe(false);
   });
 
   it('a launch with no document at all leaves the old listener alone (it stays on its default target)', async () => {
     await registerClient('tok', { document: doc('first') } as never);
     world.slot(globalThis).client = undefined; // stopped
     await registerClient('tok');
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('the default page document counts as the launch document: default then explicit stops listening on it', async () => {
+    const page = doc('page');
+    (globalThis as { document?: unknown }).document = page;
+    await registerClient('tok'); // listens on globalThis.document by default
+    await relaunch({ document: doc('second') } as never);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(page);
+  });
+
+  it('explicit then default: the client is back on the page document, so the explicit one stops', async () => {
+    const page = doc('page');
+    (globalThis as { document?: unknown }).document = page;
+    await registerClient('tok', { document: doc('first') } as never);
+    world.slot(globalThis).client = undefined; // stopped
+    await registerClient('tok'); // no document: the default one
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('first'));
+  });
+
+  it('a failed first launch releases the listener it opened', async () => {
+    world.state.failNext = new Error('boom');
+    await expect(registerClient('tok', { document: doc('first') } as never)).rejects.toThrow(
+      'boom',
+    );
+    expect(stop).toHaveBeenCalledWith(doc('first'));
+  });
+
+  it("a relaunch waits for a launch in flight that Astro did not start (core's relaunchWith awaits the carrier's pending launch)", async () => {
+    let open: () => void = () => undefined;
+    world.state.gate = new Promise((resolve) => (open = resolve));
+    const external = world.coreLaunch('tok', { document: doc('umbrella') }); // through the umbrella, not registerClient
+    const relaunching = relaunch({ window: { document: doc('window') } } as never);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(relaunchUmbrella).not.toHaveBeenCalled(); // not started: it waits for the pending launch
+    open();
+    await Promise.all([external, relaunching]);
+    expect(listen).toHaveBeenLastCalledWith({ target: doc('umbrella') });
+  });
+
+  it('a pending launch that fails does not stop the relaunch from going ahead', async () => {
+    await registerClient('tok', { document: doc('explicit') } as never);
+    world.slot(globalThis).client = undefined;
+    let open: () => void = () => undefined;
+    world.state.gate = new Promise((resolve) => (open = resolve));
+    world.state.failNext = new Error('external failed');
+    const external = world.coreLaunch('tok', {}); // pending on the carrier, and about to fail
+    external.catch(() => undefined);
+    const relaunching = relaunch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(relaunchUmbrella).not.toHaveBeenCalled(); // it is waiting for the pending launch
+    world.state.gate = undefined;
+    open();
+    await expect(relaunching).resolves.toBeDefined();
+    expect(listen).toHaveBeenLastCalledWith({ target: doc('explicit') });
+  });
+
+  it('two carriers on two documents: a launch on one never stops the other (core keeps its state per carrier)', async () => {
+    const a = {};
+    const b = {};
+    await registerClient('tok', { carrier: a, document: doc('docA') } as never);
+    await registerClient('tok', { carrier: b, document: doc('docB') } as never);
+    expect(stop).not.toHaveBeenCalled();
+    await relaunch({ carrier: b, document: doc('docB2') } as never); // B moves; A is untouched
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('docB'));
+  });
+
+  it('two carriers sharing one document: it stops only when the last of them has left it', async () => {
+    const a = {};
+    const b = {};
+    const shared = doc('shared');
+    await registerClient('tok', { carrier: a, document: shared } as never);
+    await registerClient('tok', { carrier: b, document: shared } as never);
+    await relaunch({ carrier: b, document: doc('elsewhere') } as never); // A is still on it
+    expect(stop).not.toHaveBeenCalled();
+    await relaunch({ carrier: a, document: doc('also-elsewhere') } as never); // now nobody is
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(shared);
+  });
+
+  it('a failed launch on a carrier does not release a document another carrier still uses', async () => {
+    const a = {};
+    const b = {};
+    const shared = doc('shared');
+    await registerClient('tok', { carrier: a, document: shared } as never);
+    world.state.failNext = new Error('boom');
+    await expect(registerClient('tok', { carrier: b, document: shared } as never)).rejects.toThrow(
+      'boom',
+    );
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('a repeat that states onError undefined (core discarded it) keeps the recorded sink', async () => {
+    const sink = vi.fn();
+    await registerClient('tok', { onError: sink });
+    await registerClient('tok', { onError: undefined });
+    expect(lastListen()).toEqual({ onError: sink });
+    expect(lastListen().onError).toBe(sink);
+  });
+
+  it('a failed relaunch onto the document the host is already on does not stop it', async () => {
+    const same = doc('same');
+    await registerClient('tok', { document: same } as never);
+    world.state.failNext = new Error('boom');
+    await expect(relaunch({ document: same } as never)).rejects.toThrow('boom');
     expect(stop).not.toHaveBeenCalled();
   });
 });
