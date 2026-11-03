@@ -15,8 +15,10 @@ const w = window as unknown as E2EWindow;
 const bridge: E2EWindow['__E2E__'] = { state: 'running', sdkErrors: [] };
 w.__E2E__ = bridge;
 
+// NOT `return video.play()`: that is a tail call, and WebKit (proper tail calls) drops this very frame from the stack.
 function playFromReactMount(video: HTMLVideoElement): Promise<void> {
-  return video.play();
+  const playing = video.play();
+  return playing;
 }
 
 class Player extends Component {

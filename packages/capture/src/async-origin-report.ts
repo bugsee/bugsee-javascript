@@ -14,7 +14,30 @@ export function createAsyncOriginEnricher(
   recorder: AsyncOriginRecorder,
   parseStack: (stack: string) => StackFrame[],
 ): FrameEnricher {
-  return (error, frames) => {
+  // Where the wrapper calls the platform method: the frame just above `probeThrower` in the recorder's probe stack. Read once.
+  let site: StackFrame | undefined;
+  let siteRead = false;
+  const wrapperSite = (): StackFrame | undefined => {
+    if (!siteRead) {
+      siteRead = true;
+      try {
+        const frames = parseStack(recorder.probeStack ?? '');
+        const thrower = frames.findIndex((frame) => frame.function === 'probeThrower');
+        site = thrower >= 0 ? frames[thrower + 1] : undefined;
+      } catch {
+        site = undefined;
+      }
+    }
+    return site;
+  };
+  const isWrapper = (frame: StackFrame, at: StackFrame): boolean =>
+    frame.file === at.file && frame.line === at.line && frame.column === at.column;
+
+  return (error, given) => {
+    // An API that rejects with a stack of its own (argument validation) has the WRAPPER on top of it. That frame is the SDK's, and as
+    // the top `user` frame it would decide the issue's grouping location, so it goes.
+    const at = given.length > 0 ? wrapperSite() : undefined;
+    const frames = at === undefined ? given : dropWrapper(given, at, isWrapper);
     if (frames.length > 0) {
       return frames;
     }
@@ -22,15 +45,25 @@ export function createAsyncOriginEnricher(
       const origin = recorder.originOf(error);
       const stack = origin?.holder.stack;
       if (origin === undefined || typeof stack !== 'string') {
-        return frames;
+        return given;
       }
       return parseStack(stack)
         .slice(origin.skip)
         .map((frame) => ({ ...frame, origin: 'call' as const }));
     } catch {
-      return frames;
+      return given;
     }
   };
+}
+
+// The frames without the ones at `at`; the SAME array when none matched (callers compare identity).
+function dropWrapper(
+  frames: StackFrame[],
+  at: StackFrame,
+  isWrapper: (frame: StackFrame, at: StackFrame) => boolean,
+): StackFrame[] {
+  const kept = frames.filter((frame) => !isWrapper(frame, at));
+  return kept.length === frames.length ? frames : kept;
 }
 
 type Probe = Record<string, unknown>;

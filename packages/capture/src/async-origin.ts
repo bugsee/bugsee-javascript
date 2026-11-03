@@ -36,6 +36,8 @@ export interface AsyncOriginRecorder {
   originOfPromise(promise: unknown): AsyncOrigin | undefined;
   /** Install the `armed` rows. Called on the first stackless rejection nobody could locate; idempotent. */
   arm(): void;
+  /** The stack of a throwaway call through the wrapper: the frame just above `probeThrower` is the wrapper's call site. */
+  readonly probeStack?: string | undefined;
   /** `Interface.method` of every wrapper currently installed (targets named for mixins). */
   readonly installed: readonly string[];
   /** Restore every method this recorder wrapped (leaving one that another patcher has since wrapped on top). */
@@ -54,8 +56,10 @@ export interface InstallAsyncOriginsOptions {
   modes?: readonly AsyncOriginMode[];
   /** Per-method cap on captured call sites per minute; the call passes through untouched beyond it. Default 200. */
   maxCapturesPerMinute?: number;
-  /** A `then` known to be the engine's own. Default: the global one if still native, else a hidden iframe's. `null`: none. */
+  /** A `then` known to be the engine's own. Default: the engine intrinsic, else the global one if still native, else a hidden iframe's. `null`: none. */
   cleanThen?: ThenFn | null;
+  /** Where the engine-intrinsic promise prototype comes from. Default: the prototype of an async function's result. A test seam. */
+  intrinsicPromisePrototype?: () => unknown;
   /** `Error.captureStackTrace` where the engine has it (omits the wrapper frame, one capture). `null`: not available. */
   captureStackTrace?: CaptureStackTrace | null;
   setInterval?: ((fn: () => void, ms: number) => unknown) | undefined;
@@ -75,13 +79,48 @@ const isObjectLike = (value: unknown): value is object =>
 const isThenable = (value: unknown): value is { then: unknown } =>
   isObjectLike(value) && typeof (value as { then?: unknown }).then === 'function';
 
+/**
+ * Does a `stack` string carry FRAMES? Chromium's async DOMExceptions have a stack that is only the header line (`NotAllowedError: ...`),
+ * which is no more use than none, so a bare "is it a non-empty string" would leave the call site unrecorded for exactly those.
+ * V8 frames are `at ...`; Firefox and Safari frames are `name@url:line:col`.
+ */
+const hasFrames = (stack: unknown): boolean =>
+  typeof stack === 'string' &&
+  stack.split('\n').some((line) => /^\s*at\s+\S/.test(line) || /@\S*:\d+/.test(line));
+
 const isNative = (fn: unknown): boolean =>
   typeof fn === 'function' &&
   /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(fn));
 
-/** A `then` that is the engine's own, read once at install. See design §4.1a. Never throws: a hostile realm just has none. */
-function cleanThenOf(global: Record<string, unknown>): ThenFn | undefined {
+/**
+ * The engine's own `then`, from the prototype of a promise an async function returns: that promise is made by the engine, not by
+ * whatever now sits on `globalThis.Promise`, so no library can have swapped it. (A toString-based check on the GLOBAL cannot be
+ * trusted: core-js patches `Function.prototype.toString` so its own `Promise` and `then` read as `[native code]`, and calling its
+ * `then` on a native promise throws.)
+ */
+const defaultIntrinsicPromisePrototype = (): unknown =>
+  Object.getPrototypeOf((async () => undefined)());
+
+function intrinsicThen(prototypeOf: () => unknown): ThenFn | undefined {
   try {
+    const then = (prototypeOf() as { then?: unknown } | null | undefined)?.then;
+    return isNative(then) ? (then as ThenFn) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A `then` that is the engine's own, read once at install. See design §4.1a. Never throws: a hostile realm just has none. */
+function cleanThenOf(
+  global: Record<string, unknown>,
+  prototypeOf: () => unknown,
+): ThenFn | undefined {
+  try {
+    const intrinsic = intrinsicThen(prototypeOf);
+    if (intrinsic !== undefined) {
+      return intrinsic;
+    }
+    // Something patched the native prototype's `then` in place (zone.js does, and keeps the original on the promise: see ZONE_THEN).
     const own = (global.Promise as { prototype?: { then?: unknown } } | undefined)?.prototype?.then;
     if (isNative(global.Promise) && isNative(own)) {
       return own as ThenFn;
@@ -116,6 +155,53 @@ function cleanThenOf(global: Record<string, unknown>): ThenFn | undefined {
   }
 }
 
+type Observe = (promise: object, target: unknown, self: (...args: never[]) => unknown) => unknown;
+
+/**
+ * THE wrapper: every wrapped method (and the probe below) is one of these, so the `original.apply(...)` line is ONE source location.
+ * That location is what shows up as the top frame of a reason's own stack when the wrapped API rejects with a stack made inside the
+ * call (a TypeError from argument validation), and what `probeStack` lets a report recognise and drop.
+ */
+function createWrapper(
+  original: (...args: unknown[]) => unknown,
+  state: { active: boolean },
+  observe: Observe,
+): (this: unknown, ...args: unknown[]) => unknown {
+  return function wrapped(this: unknown, ...args: unknown[]): unknown {
+    const result = original.apply(this, args);
+    if (!state.active || !isThenable(result)) {
+      return result;
+    }
+    try {
+      return observe(result as object, this, wrapped as never);
+    } catch {
+      return result;
+    }
+  };
+}
+
+/** The stack of a throwaway call through {@link createWrapper}: the frame just above `probeThrower` is the wrapper's call site. */
+function probeStackOf(ErrorCtor: unknown): string | undefined {
+  let stack: unknown;
+  try {
+    const Ctor = (typeof ErrorCtor === 'function' ? ErrorCtor : Error) as new (
+      message: string,
+    ) => unknown;
+    const probe = createWrapper(
+      function probeThrower(): never {
+        throw new Ctor('probe');
+      },
+      { active: false },
+      /* v8 ignore next -- the thrower throws before the wrapper can reach observe */
+      (promise) => promise,
+    );
+    probe.call(undefined);
+  } catch (error) {
+    stack = (error as { stack?: unknown } | null)?.stack;
+  }
+  return typeof stack === 'string' ? stack : undefined;
+}
+
 interface Installed {
   key: string;
   owner: Record<string, unknown>;
@@ -132,7 +218,9 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
   const budget = options.maxCapturesPerMinute ?? DEFAULT_BUDGET;
   const onError = options.onError ?? (() => undefined);
   const cleanThen =
-    options.cleanThen === undefined ? cleanThenOf(global) : (options.cleanThen ?? undefined);
+    options.cleanThen === undefined
+      ? cleanThenOf(global, options.intrinsicPromisePrototype ?? defaultIntrinsicPromisePrototype)
+      : (options.cleanThen ?? undefined);
   const captureStackTrace: CaptureStackTrace | undefined =
     options.captureStackTrace === undefined
       ? (
@@ -148,6 +236,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       ? options.clearInterval
       : (global.clearInterval as typeof options.clearInterval);
 
+  const probeStack = probeStackOf(global.Error);
   const byReason = new WeakMap<object, AsyncOrigin>();
   const byPromise = new WeakMap<object, AsyncOrigin>();
   const counters: { used: number }[] = [];
@@ -187,11 +276,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
     const state = { active: true };
     const counter = { used: 0 };
 
-    const observe = (
-      promise: object,
-      target: unknown,
-      self: (...args: never[]) => unknown,
-    ): unknown => {
+    const observe: Observe = (promise, target, self) => {
       if (counter.used >= budget) {
         return promise;
       }
@@ -212,8 +297,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
             // Only a reason with no stack of its own is worth remembering, and the FIRST origin wins.
             try {
               if (isObjectLike(reason) && !byReason.has(reason)) {
-                const stack = (reason as { stack?: unknown }).stack;
-                if (typeof stack !== 'string' || stack === '') {
+                if (!hasFrames((reason as { stack?: unknown }).stack)) {
                   byReason.set(reason, origin);
                 }
               }
@@ -233,17 +317,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       return promise;
     };
 
-    const wrapper = function wrapped(this: unknown, ...args: unknown[]): unknown {
-      const result = (original as (...a: unknown[]) => unknown).apply(this, args);
-      if (!state.active || !isThenable(result)) {
-        return result;
-      }
-      try {
-        return observe(result as object, this, wrapped as never);
-      } catch {
-        return result;
-      }
-    };
+    const wrapper = createWrapper(original as (...args: unknown[]) => unknown, state, observe);
     Object.defineProperty(wrapper, 'name', {
       value: (original as { name: string }).name,
       configurable: true,
@@ -327,6 +401,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       }
       installRows((mode) => mode === 'armed');
     },
+    probeStack,
     get installed(): readonly string[] {
       return installed.filter((entry) => entry.state.active).map((entry) => entry.key);
     },

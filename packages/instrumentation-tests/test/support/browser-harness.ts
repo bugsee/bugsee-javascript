@@ -14,6 +14,7 @@ export interface BridgeState {
   state: 'running' | 'done' | 'failed';
   error?: string;
   sdkErrors: string[];
+  promiseIsNative?: boolean;
 }
 
 /** Bundle a scenario the way a customer's bundler would: real esbuild over the real workspace source, unminified (frame names matter). */
@@ -38,25 +39,32 @@ export async function bundleEntry(
 }
 
 /** The zone.js UMD from this package's own dependency. */
-export const zoneJsSource = (): string =>
-  readFileSync(
-    createRequire(import.meta.url).resolve('zone.js'), // the `require` condition is the UMD bundle
-    'utf8',
-  );
+export const zoneJsSource = (): string => libSource('zone.js');
+
+/** The source of a dependency's main file (its `require` condition, i.e. the UMD where there is one). */
+export const libSource = (specifier: string): string =>
+  readFileSync(createRequire(import.meta.url).resolve(specifier), 'utf8');
+
+/** A script on a served page: a URL of one of the `assets`, or inline code. */
+export type PageScript = string | { inline: string };
 
 /**
- * Serve the page: `/` is plain; `/zone` loads zone.js BEFORE the scenario (an Angular-style page); `/scenario.js` is the bundle.
- * `extraHead` is added to the head of every page (a custom Promise library, say).
+ * Serve the pages. `/scenario.js` is the bundle; `assets` are extra files by URL path (`/zone.js`); `pages` says which scripts the HTML
+ * at a path loads BEFORE the scenario, in order (any other path gets an empty page). A page that loads a library first is how an
+ * Angular (zone.js) or Bluebird page looks to the SDK.
  */
 export async function startPageServer(
   script: string,
-  options: { zoneJs?: string; extraHead?: Record<string, string> } = {},
+  options: { assets?: Record<string, string>; pages?: Record<string, PageScript[]> } = {},
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const server: Server = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0] as string;
-    if (path === '/scenario.js') {
+    const js = (body: string): void => {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
-      res.end(script);
+      res.end(body);
+    };
+    if (path === '/scenario.js') {
+      js(script);
       return;
     }
     if (path === '/broken.mp4') {
@@ -65,22 +73,18 @@ export async function startPageServer(
       res.end('this is not a video');
       return;
     }
-    if (path === '/zone.js' && options.zoneJs !== undefined) {
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
-      res.end(options.zoneJs);
+    const asset = options.assets?.[path];
+    if (asset !== undefined) {
+      js(asset);
       return;
     }
-    if (path.startsWith('/lib/') && options.extraHead?.[path] !== undefined) {
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
-      res.end(options.extraHead[path]);
-      return;
-    }
-    const head = [
-      path === '/zone' ? '<script src="/zone.js"></script>' : '',
-      ...Object.keys(options.extraHead ?? {})
-        .filter((key) => path === `/with${key.slice('/lib'.length).replace(/\.js$/, '')}`)
-        .map((key) => `<script src="${key}"></script>`),
-    ].join('');
+    const head = (options.pages?.[path] ?? [])
+      .map((entry) =>
+        typeof entry === 'string'
+          ? `<script src="${entry}"></script>`
+          : `<script>${entry.inline}</script>`,
+      )
+      .join('');
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(
       `<!doctype html><html><head><title>bugsee e2e</title>${head}</head><body></body></html>`,
@@ -106,7 +110,7 @@ export async function runPage(
   collectorUrl: string,
   // Awaited before the context closes: closing it cancels an upload still in flight.
   beforeClose: () => Promise<void> = async () => undefined,
-): Promise<{ sdkErrors: string[]; pageErrors: string[] }> {
+): Promise<{ sdkErrors: string[]; pageErrors: string[]; promiseIsNative: boolean | undefined }> {
   const context = await browser.newContext();
   const page: Page = await context.newPage();
   const pageErrors: string[] = [];
@@ -132,7 +136,7 @@ export async function runPage(
   if (bridge.state === 'failed') {
     throw new Error(`scenario failed: ${bridge.error ?? '(no error)'}`);
   }
-  return { sdkErrors: bridge.sdkErrors, pageErrors };
+  return { sdkErrors: bridge.sdkErrors, pageErrors, promiseIsNative: bridge.promiseIsNative };
 }
 
 /** Poll until the collector has received `count` uploads, or fail with what it did receive. */

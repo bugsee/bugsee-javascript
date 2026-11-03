@@ -502,3 +502,21 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   property-signature methods are not seen (none exist in the pinned lib.dom.d.ts); a mixin target is checked to be a real
   constructor, not to carry the method (a wrong target wraps nothing, silently).
 - **Path tokens.** `sanitizeUrl` redacts `key=value` and `;matrix` secrets, not a bare path segment such as `/signed/<token>/clip.mp4`.
+
+## 12. Found by running real engines (replacement Promise, platform-API batch, WebKit)
+
+- **core-js disguises its `Promise`.** It patches `Function.prototype.toString` so its own `Promise` and `then` read `[native code]`; a
+  toString check on the GLOBAL then trusts a `then` that throws on the engine's own promises, no reaction is attached, and the reason
+  is never recorded. The pristine `then` now comes first from the engine intrinsic (the prototype of an async function's result, which no
+  library can swap); the global one and the hidden iframe remain as fallbacks for a native `then` patched in place (zone.js).
+  native-promise-only is not supported at all (no `Promise.allSettled`, which the SDK itself needs).
+- **"Has a stack" means "has frames".** Chromium's async DOMExceptions for `Clipboard.readText` and `createImageBitmap` have a stack that is
+  only the header line, so a non-empty-string test skipped them. A stack counts only if it has an `at ...` or `name@url:line:col` line.
+- **The wrapper is on top of a reason's own stack.** An API that rejects with a stack made inside the call (a `TypeError` from argument
+  validation) has the SDK's wrapper as its top frame, and a top `user` frame decides issue grouping. Every wrapper (and a probe) is
+  created by one function, so the `original.apply` line is one source location; the recorder exposes the probe's stack, and the enricher
+  drops frames at that location (`probeThrower`'s caller).
+- **WebKit eliminates tail calls** (strict mode): `return video.play()` removes the calling function's own frame from the stack, so an
+  application function written that way is not in the call site on Safari. Nothing to fix; the e2e scenarios are non-tail on purpose.
+- **Arming is verified for real:** after one unlocated stackless rejection (which is itself reported without frames), `HTMLImageElement.decode`,
+  `FontFace.load` and `createImageBitmap` get call sites in Chromium, Firefox and WebKit.

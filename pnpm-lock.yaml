@@ -783,6 +783,12 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+      bluebird:
+        specifier: ^3.7.2
+        version: 3.7.2
+      core-js-bundle:
+        specifier: ^3.51.0
+        version: 3.51.0
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -798,6 +804,9 @@ importers:
       miniflare:
         specifier: ^4.20260730.0
         version: 4.20260730.0
+      native-promise-only:
+        specifier: ^0.8.1
+        version: 0.8.1
       playwright:
         specifier: ^1.64.1
         version: 1.64.1
@@ -5205,6 +5214,9 @@ packages:
   bl@4.1.0:
     resolution: {integrity: sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==}
 
+  bluebird@3.7.2:
+    resolution: {integrity: sha512-XpNj6GDQzdfW+r2Wnn7xiSAd7TM3jzkxGXBGTtWKuSXv1xUV+azxAm8jdWZN06QTQk+2N2XB9jRDkvbmQmcRtg==}
+
   body-parser@2.3.0:
     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
     engines: {node: '>=18'}
@@ -5512,6 +5524,9 @@ packages:
   cookies@0.9.1:
     resolution: {integrity: sha512-TG2hpqe4ELx54QER/S3HQ9SRVnQnGBtKUz5bLQWtYAQ+o6GpgMs6sYUvaiJjVxb+UXwhRhAEP3m7LbsIZ77Hmw==}
     engines: {node: '>= 0.8'}
+
+  core-js-bundle@3.51.0:
+    resolution: {integrity: sha512-4MBq7/i9ceGF7MQIGj6bpHsKTiuvEWJ3zeH2g/z//jvN9n/rGnVQdnil9agwoG3fJmu+nx6haRP6DMQLUDOGjw==}
 
   core-util-is@1.0.3:
     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
@@ -7239,6 +7254,9 @@ packages:
 
   nanotar@0.3.0:
     resolution: {integrity: sha512-Kv2JYYiCzt16Kt5QwAc9BFG89xfPNBx+oQL4GQXD9nLqPkZBiNaqaCWtwnbk/q7UVsTYevvM1b0UF8zmEI4pCg==}
+
+  native-promise-only@0.8.1:
+    resolution: {integrity: sha512-zkVhZUA3y8mbz652WrL5x0fB0ehrBkulWT3TomAQ9iDtyXZvzKeEA6GPxAItBYeNYl5yngKRX612qHOhvMkDeg==}
 
   negotiator@0.6.3:
     resolution: {integrity: sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg==}
@@ -14055,6 +14073,8 @@ snapshots:
       inherits: 2.0.4
       readable-stream: 3.6.2
 
+  bluebird@3.7.2: {}
+
   body-parser@2.3.0:
     dependencies:
       bytes: 3.1.2
@@ -14318,6 +14338,8 @@ snapshots:
     dependencies:
       depd: 2.0.0
       keygrip: 1.1.0
+
+  core-js-bundle@3.51.0: {}
 
   core-util-is@1.0.3: {}
 
@@ -16134,6 +16156,8 @@ snapshots:
       picocolors: 1.1.1
 
   nanotar@0.3.0: {}
+
+  native-promise-only@0.8.1: {}
 
   negotiator@0.6.3: {}
 

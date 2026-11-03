@@ -397,7 +397,7 @@ describe('installAsyncOrigins — a pristine then, never the global one', () => 
       documentElement: { appendChild: (n: unknown) => appended.push(n) },
     };
     const g: Fake = { ...fakeGlobal(() => real), Promise: class FakeZonePromise {}, document: doc };
-    const r = install(g);
+    const r = install(g, { intrinsicPromisePrototype: () => undefined }); // as if the native prototype's then had been patched in place
     const el = new (g.Media as new () => { play(): Promise<unknown> })();
     await expect(el.play()).rejects.toBe(reason);
     expect(r.originOf(reason)).toBeDefined();
@@ -431,7 +431,7 @@ describe('installAsyncOrigins — a pristine then, never the global one', () => 
     for (const document of docs) {
       const real = Promise.resolve(1);
       const g: Fake = { ...fakeGlobal(() => real), ...notNative, document };
-      const r = install(g);
+      const r = install(g, { intrinsicPromisePrototype: () => undefined });
       const el = new (g.Media as new () => { play(): unknown })();
       expect(el.play()).toBe(real);
       expect(r.originOfPromise(real)).toBeDefined(); // fallback mode: keyed by promise
@@ -740,5 +740,143 @@ describe('installAsyncOrigins - a reason that cannot be inspected', () => {
     const caught = await el.play().catch((e: unknown) => e);
     expect(caught).toBe(hostile);
     r.stop();
+  });
+});
+
+// core-js (forced) and similar polyfills replace `Promise` AND patch `Function.prototype.toString` so their own functions read as
+// `[native code]`: a toString-based "is this native" check trusts a `then` that throws on the engine's own promises.
+describe('installAsyncOrigins - a replacement Promise that disguises itself as native', () => {
+  it('still records the origin, using the engine intrinsic then instead of the replacement', async () => {
+    const reason = stackless();
+    const g = fakeGlobal(() => Promise.reject(reason));
+    function FakePromise(): void {}
+    FakePromise.prototype.then = function then(): never {
+      throw new TypeError('incompatible receiver');
+    };
+    g.Promise = FakePromise;
+    const realToString = Function.prototype.toString;
+    const liars = new Set<unknown>([FakePromise, FakePromise.prototype.then]);
+    Function.prototype.toString = function toString(this: unknown): string {
+      return liars.has(this) ? 'function () { [native code] }' : realToString.call(this);
+    };
+    try {
+      const r = install(g, { cleanThen: undefined });
+      const el = new (g.Media as new () => { play(): Promise<unknown> })();
+      const caught = await el.play().catch((e: unknown) => e);
+      expect(caught).toBe(reason);
+      expect(r.originOf(reason)).toBeDefined();
+      r.stop();
+    } finally {
+      Function.prototype.toString = realToString;
+    }
+  });
+});
+
+describe('installAsyncOrigins - the engine intrinsic then', () => {
+  const proto =
+    (then: unknown): (() => unknown) =>
+    () => ({ then });
+
+  it('is used when it is native, even though the global Promise is a replacement', async () => {
+    const reason = stackless();
+    const g: Fake = { ...fakeGlobal(() => Promise.reject(reason)), Promise: class Replacement {} };
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    await expect(el.play()).rejects.toBe(reason);
+    expect(r.originOf(reason)).toBeDefined();
+  });
+
+  it('is skipped when it is not native (patched in place), a provider throws, or it has no then; the next source is tried', () => {
+    for (const provider of [
+      proto(() => undefined),
+      () => {
+        throw new Error('x');
+      },
+      () => null,
+      proto(undefined),
+    ]) {
+      const real = Promise.resolve(1);
+      const g: Fake = { ...fakeGlobal(() => real), Promise: class NotNative {} };
+      const r = install(g, { intrinsicPromisePrototype: provider });
+      const el = new (g.Media as new () => { play(): unknown })();
+      expect(el.play()).toBe(real); // no clean then anywhere: untouched, keyed by promise
+      expect(r.originOfPromise(real)).toBeDefined();
+      r.stop();
+    }
+  });
+
+  it("falls back to the global then when the intrinsic is unavailable but the global Promise is the engine's own", async () => {
+    const reason = stackless();
+    const g: Fake = { ...fakeGlobal(() => Promise.reject(reason)), Promise };
+    const r = install(g, { intrinsicPromisePrototype: () => undefined });
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    await expect(el.play()).rejects.toBe(reason);
+    expect(r.originOf(reason)).toBeDefined();
+  });
+});
+
+// Chromium's async DOMExceptions (Clipboard.readText, createImageBitmap) carry a stack that is ONLY the header line, no frames.
+describe('installAsyncOrigins - a reason whose stack has no frames', () => {
+  const rejectWith = (stack: string | undefined) => {
+    const reason = Object.assign(new Error('x'), { name: 'NotAllowedError' });
+    Object.defineProperty(reason, 'stack', { value: stack, configurable: true });
+    const g = fakeGlobal(() => Promise.reject(reason));
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    return { reason, r, call: () => el.play().catch((e: unknown) => e) };
+  };
+
+  it('is recorded when the stack is only a header line (V8 DOMException), or blank', async () => {
+    for (const stack of [
+      'NotAllowedError: Failed to execute readText',
+      '  ',
+      'NotAllowedError: a\n',
+    ]) {
+      const { reason, r, call } = rejectWith(stack);
+      await call();
+      expect(r.originOf(reason), JSON.stringify(stack)).toBeDefined();
+      r.stop();
+    }
+  });
+
+  it('is NOT recorded when the stack has frames of its own (V8, Firefox/WebKit style)', async () => {
+    for (const stack of [
+      'TypeError: bad\n    at query (https://app.test/a.js:1:2)',
+      'query@https://app.test/a.js:1:2\nmain@https://app.test/a.js:5:6',
+    ]) {
+      const { reason, r, call } = rejectWith(stack);
+      await call();
+      expect(r.originOf(reason), stack).toBeUndefined();
+      r.stop();
+    }
+  });
+});
+
+// A wrapped API that rejects with its OWN stack (a TypeError from argument validation) has the wrapper on top of that stack. The
+// recorder exposes the stack of a throwaway call through the same wrapper code so the report can recognise and drop that frame.
+describe("installAsyncOrigins - the wrapper frame in a reason's own stack", () => {
+  const locationOf = (line: string | undefined): string | undefined =>
+    /(\S+:\d+:\d+)\)?\s*$/.exec(line ?? '')?.[1];
+  const frameLines = (stack: string): string[] =>
+    stack.split('\n').filter((line) => /^\s+at\s/.test(line));
+
+  it("probeStack names the wrapper call site: the frame just above the thrower is the one in a real reason's own stack", async () => {
+    const g = fakeGlobal(() => Promise.reject(new TypeError('bad argument'))); // stack made INSIDE the original: wrapper is on it
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    const reason = (await el.play().catch((e: unknown) => e)) as Error;
+    const probe = frameLines(r.probeStack ?? '');
+    const thrower = probe.findIndex((line) => line.includes('probeThrower'));
+    expect(thrower).toBeGreaterThanOrEqual(0);
+    const site = locationOf(probe[thrower + 1]);
+    expect(site).toBeDefined();
+    expect(frameLines(reason.stack ?? '').map(locationOf)).toContain(site);
+  });
+
+  it("has no probe stack when the realm's errors carry none", () => {
+    const g = fakeGlobal(() => Promise.resolve());
+    class NoStack {} // an Error constructor whose instances carry no .stack
+    const r = install(g, { global: { ...g, Error: NoStack } as never });
+    expect(r.probeStack).toBeUndefined();
   });
 });

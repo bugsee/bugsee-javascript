@@ -6,11 +6,25 @@
 import { launch } from '@bugsee/browser';
 
 interface E2EWindow extends Window {
-  __E2E__: { state: 'running' | 'done' | 'failed'; error?: string; sdkErrors: string[] };
+  __E2E__: {
+    state: 'running' | 'done' | 'failed';
+    error?: string;
+    sdkErrors: string[];
+    /** Whether `Promise` is still the engine's own when the scenario starts (false on a page that loaded a replacement first). */
+    promiseIsNative?: boolean;
+  };
   __E2E_COLLECTOR__?: string;
 }
 const w = window as unknown as E2EWindow;
-const bridge: E2EWindow['__E2E__'] = { state: 'running', sdkErrors: [] };
+const bridge: E2EWindow['__E2E__'] = {
+  state: 'running',
+  sdkErrors: [],
+  // Compared with the marker a fixture page sets BEFORE loading its library (`toString` cannot tell: core-js disguises its Promise).
+  promiseIsNative:
+    (w as unknown as { __nativePromise?: unknown }).__nativePromise === undefined
+      ? undefined
+      : (w as unknown as { __nativePromise?: unknown }).__nativePromise === Promise,
+};
 w.__E2E__ = bridge;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

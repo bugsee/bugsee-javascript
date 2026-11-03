@@ -11,7 +11,7 @@ import {
   readJson,
   startMockCollector,
 } from '@bugsee/e2e-kit';
-import { type Browser, chromium, firefox } from 'playwright';
+import { type Browser, chromium, firefox, webkit } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bundleEntry, runPage, startPageServer, waitForUploads } from './support/browser-harness';
 
@@ -29,6 +29,7 @@ const ADAPTERS = [
 const ENGINES = [
   { name: 'Chromium', launch: () => chromium.launch({ headless: true }) },
   { name: 'Firefox', launch: () => firefox.launch({ headless: true }) },
+  { name: 'WebKit', launch: () => webkit.launch() }, // headless by default
 ] as const;
 
 interface Crash {

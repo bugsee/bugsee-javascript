@@ -11,7 +11,7 @@ import {
   readJson,
   startMockCollector,
 } from '@bugsee/e2e-kit';
-import { type Browser, chromium, firefox } from 'playwright';
+import { type Browser, chromium, firefox, webkit } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   bundleEntry,
@@ -36,6 +36,7 @@ interface Crash {
 const ENGINES = [
   { name: 'Chromium', launch: () => chromium.launch({ headless: true }) },
   { name: 'Firefox', launch: () => firefox.launch({ headless: true }) },
+  { name: 'WebKit', launch: () => webkit.launch() }, // headless by default
 ] as const;
 
 describe.each(ENGINES)('async origin capture - real $name', (engine) => {
@@ -61,7 +62,10 @@ describe.each(ENGINES)('async origin capture - real $name', (engine) => {
 
     beforeAll(async () => {
       collector = await startMockCollector();
-      const pages = await startPageServer(script, { zoneJs: zoneJsSource() });
+      const pages = await startPageServer(script, {
+        assets: { '/zone.js': zoneJsSource() },
+        pages: { '/zone': ['/zone.js'] },
+      });
       try {
         sdkErrors = (
           await runPage(browser, pages.url, path, collector.url, () => waitForUploads(collector, 2))

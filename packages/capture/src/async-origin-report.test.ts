@@ -19,8 +19,9 @@ const origin = (over: Partial<AsyncOrigin> = {}): AsyncOrigin => ({
   ...over,
 });
 
-const recorderFor = (found: AsyncOrigin | undefined): AsyncOriginRecorder => ({
+const recorderFor = (found: AsyncOrigin | undefined, probeStack?: string): AsyncOriginRecorder => ({
   originOf: () => found,
+  probeStack,
   originOfPromise: () => undefined,
   arm: () => undefined,
   installed: [],
@@ -65,6 +66,64 @@ describe('createAsyncOriginEnricher', () => {
       throw new Error('parse');
     };
     expect(createAsyncOriginEnricher(recorderFor(origin()), boom)(reason, [])).toEqual([]);
+  });
+});
+
+describe("createAsyncOriginEnricher - the wrapper frame in an error's own stack", () => {
+  const reason = { name: 'TypeError' };
+  const probe =
+    'Error: probe\n    at probeThrower (https://app.test/sdk.js:50:9)\n    at Permissions.query (https://app.test/sdk.js:40:22)\n    at probeStackOf (https://app.test/sdk.js:60:5)';
+  const wrapperFrame: StackFrame = {
+    function: 'Permissions.query',
+    file: 'https://app.test/sdk.js',
+    line: 40,
+    column: 22,
+  };
+  const appFrame: StackFrame = {
+    function: 'startQuery',
+    file: 'https://app.test/app.js',
+    line: 7,
+    column: 3,
+  };
+
+  it('removes the frame at the wrapper call site, so the app frame is the top one (grouping location)', () => {
+    const enrich = createAsyncOriginEnricher(recorderFor(undefined, probe), parseV8Stack);
+    expect(enrich(reason, [wrapperFrame, appFrame])).toEqual([appFrame]);
+  });
+
+  it('keeps every frame when nothing sits at the wrapper site', () => {
+    // same file, line or column as the wrapper site but never all three
+    const own: StackFrame[] = [
+      appFrame,
+      { ...wrapperFrame, column: 99 },
+      { ...wrapperFrame, line: 41 },
+      { ...wrapperFrame, file: 'https://app.test/other.js' },
+    ];
+    expect(
+      createAsyncOriginEnricher(recorderFor(undefined, probe), parseV8Stack)(reason, own),
+    ).toBe(own);
+  });
+
+  it('a stack that was ONLY the wrapper falls back to the recorded call site', () => {
+    const enrich = createAsyncOriginEnricher(recorderFor(origin(), probe), parseV8Stack);
+    expect(enrich(reason, [wrapperFrame]).map((f) => f.origin)).toEqual(['call', 'call']);
+  });
+
+  it('leaves frames alone when the probe stack is missing, has no thrower frame, or does not parse', () => {
+    const own: StackFrame[] = [wrapperFrame, appFrame];
+    const boom = (): StackFrame[] => {
+      throw new Error('parse');
+    };
+    expect(
+      createAsyncOriginEnricher(recorderFor(undefined, undefined), parseV8Stack)(reason, own),
+    ).toBe(own);
+    expect(
+      createAsyncOriginEnricher(
+        recorderFor(undefined, 'Error\n    at other (a.js:1:1)'),
+        parseV8Stack,
+      )(reason, own),
+    ).toBe(own);
+    expect(createAsyncOriginEnricher(recorderFor(undefined, probe), boom)(reason, own)).toBe(own);
   });
 });
 
