@@ -87,17 +87,6 @@ describe('registerClient', () => {
     expect(listen).toHaveBeenLastCalledWith({ target: windowDoc, carrier });
   });
 
-  it('a repeat registration (core ignores it and returns the live client) leaves the remembered options alone', async () => {
-    const doc = { id: 'explicit' } as unknown as Document;
-    const client = { id: 1 };
-    launch.mockResolvedValue(client);
-    relaunchUmbrella.mockResolvedValue({ id: 2 });
-    await registerClient('tok', { document: doc } as never);
-    await registerClient('tok', { window: { document: { id: 'window' } } } as never);
-    await relaunch();
-    expect(listen).toHaveBeenLastCalledWith({ target: doc });
-  });
-
   it('a failed launch or relaunch does not become the remembered state (core records last-launch options only on success)', async () => {
     const doc = { id: 'explicit' } as unknown as Document;
     launch.mockResolvedValueOnce({ id: 1 });
@@ -233,25 +222,63 @@ describe('registerClient', () => {
     expect(listen).toHaveBeenLastCalledWith({ target: own });
   });
 
-  it('a registration while a client is already live (core ignores it) leaves the listener and the remembered options alone, wherever that client was launched', async () => {
+  it('a repeat registration (a client is live) merges only its DEFINED options onto the listener and remembers nothing, wherever the client was launched', async () => {
     const doc = { id: 'explicit' } as unknown as Document;
     const carrier = {};
-    const onError = vi.fn();
+    const sink = vi.fn();
     const live = { id: 'live' };
     launch.mockResolvedValueOnce(live);
     relaunchUmbrella.mockResolvedValue({ id: 2 });
-    await registerClient('tok', { document: doc, carrier, onError } as never);
-    listen.mockClear();
-    flush.mockClear();
+    await registerClient('tok', { document: doc, carrier } as never);
     liveClient.mockImplementation((host: unknown) => (host === carrier ? live : undefined));
     launch.mockResolvedValueOnce(live);
-    await registerClient('tok', { carrier } as never); // no sink, no document: core discards them
-    expect(launch).toHaveBeenLastCalledWith('tok', { carrier });
-    expect(listen).not.toHaveBeenCalled();
-    expect(flush).not.toHaveBeenCalled();
-    // nothing was remembered from the ignored call either
+    // the realistic late call: only a sink (functions cannot ride the injected script), a stated undefined is core-discarded
+    await registerClient('tok', { carrier, onError: sink, document: undefined } as never);
+    const passed = listen.mock.lastCall?.[0] as Record<string, unknown>;
+    expect(passed).toEqual({ target: doc, carrier, onError: sink });
+    expect(Object.hasOwn(passed, 'document')).toBe(false);
+    expect(flush).toHaveBeenLastCalledWith(passed); // the listen is settled at once: the client exists
+    expect(launch).toHaveBeenLastCalledWith('tok', { carrier, onError: sink, document: undefined });
+    // nothing was remembered from the repeat: a plain relaunch is back on the first launch's options
     await relaunch();
-    expect(listen).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
+    expect(listen).toHaveBeenLastCalledWith({ target: doc, carrier });
+    expect(
+      Object.hasOwn(listen.mock.lastCall?.[0] as object, 'onError') &&
+        (listen.mock.lastCall?.[0] as { onError?: unknown }).onError,
+    ).toBe(undefined);
+  });
+
+  it('a repeat registration with no options keeps the listener on the remembered carrier and sink (it never states undefined)', async () => {
+    const carrier = {};
+    const sink = vi.fn();
+    const live = { id: 'live' };
+    launch.mockResolvedValue(live);
+    await registerClient('tok', { carrier, onError: sink } as never);
+    liveClient.mockReturnValue(live);
+    await registerClient('tok', { carrier } as never);
+    expect(listen).toHaveBeenCalledTimes(2);
+    const passed = listen.mock.lastCall?.[0] as Record<string, unknown>;
+    expect(passed).toEqual({ carrier, onError: sink });
+    expect(Object.keys(passed).sort()).toEqual(['carrier', 'onError']);
+  });
+
+  it('registrations overlapping a launch in flight wait for it, then see the live client (the carrier is set only at the end of a launch)', async () => {
+    const carrier = {};
+    const sink = vi.fn();
+    const live = { id: 'live' };
+    let finish: (client: unknown) => void = () => undefined;
+    launch.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    launch.mockResolvedValueOnce(live);
+    const first = registerClient('tok', { carrier, onError: sink } as never);
+    const second = registerClient('tok', { carrier } as never);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(launch).toHaveBeenCalledTimes(1); // the second has not started: it waits
+    liveClient.mockReturnValue(live); // the first launch ends: the carrier now holds the client
+    finish(live);
+    await Promise.all([first, second]);
+    expect(launch).toHaveBeenCalledTimes(2);
+    const passed = listen.mock.lastCall?.[0] as Record<string, unknown>;
+    expect(passed).toEqual({ carrier, onError: sink }); // not wiped by the second call
   });
 
   it('asks the carrier the launch would use: the option, else the global', async () => {
