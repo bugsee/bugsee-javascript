@@ -48,7 +48,7 @@ was not part of this probe; it was run later in the e2e, §12):
 | `structuredClone` inside a `.then` | DataCloneError | 1 frame, **no user frame** | has call site |
 
 The pattern: **the more asynchronous the failure (media tasks, permission prompts, network/decoder work, workers), the less
-likely a stack exists, and Chromium is much worse than Firefox.** WebKit was measured later, in the e2e (§12): it behaves like Firefox for these rejections (no stack on the async ones), and eliminates tail calls.
+likely a stack exists, and Chromium is much worse than Firefox.** WebKit was measured later, in the e2e (§12): `HTMLMediaElement.play()` is stackless there too (Chromium-like: the e2e's call-site frames come from the wrapper, not from the engine), and WebKit also eliminates tail calls, which is why the e2e scenarios are non-tail on purpose. Do not read it as "like Firefox", whose `play()` row above has a call site.
 
 The last two rows are NOT part of the set the wrapper fixes: `structuredClone` is synchronous (its `DataCloneError` is thrown inside the
 caller's own `.then`, not from a platform task), and a `WebAssembly.*` failure has a frame, only none of the application's. Neither is
@@ -205,8 +205,7 @@ Plain `p.then` under zone is the regression to avoid: the native event is lost f
   rejection with no frames is reported.
 - Retained per origin: about 600 B (Chromium, depth 8). The origin is the VALUE of a `WeakMap` keyed by the reason, so it lives as long
   as the reason does (not only until the promise settles); the `target` it references (a media element) is kept alive the same way,
-  which matters to an app that keeps a rejected `DOMException` in a list. A `{when, target}` token with no stack is 36 B and is what hot rows
-  may use (§4.4).
+  which matters to an app that keeps a rejected `DOMException` in a list.
 - `remember` stores only a reason that is an object **without usable frames**; nothing is retained for a rejection that already
   has a stack. "Usable frames" means the browser's stack parser finds at least one frame (V8 indented `at` lines; Firefox/Safari
   `name@url:line:col`); a header-only stack (`NotAllowedError: msg`, Chromium's async DOMExceptions) is stackless, and header text that
@@ -284,7 +283,7 @@ successful ones, and the breaker trips exactly when failures begin.
 
 All patched methods go through ONE factory, `wrapPromiseMethod(prototype, name, options)`, which does the lookup, the guarded
 define, the idempotency mark, the `toString` delegation, the restore and the wrapper above. A new API is then one table row, not
-new code. The table row carries only data: `{ target, methods, hot?, why }`.
+new code. The table row carries only data: `{ iface, methods, mode, targets?, why }`, with `mode` one of `always` / `armed` / `off` (§4.4); `targets` names the constructors for a WebIDL mixin.
 
 Measured with `bench.mjs` (this directory) on a cheap real async call (`crypto.subtle.digest`, 20 000 calls, median of 5):
 
@@ -302,8 +301,8 @@ Measured with `bench.mjs` (this directory) on a cheap real async call (`crypto.s
   Firefox the derived `then` itself costs +2.4 µs and `new Error()` about +4 µs more, so a no-reaction mode is about 3x cheaper there
   (+0.7 µs). Reading `.stack` is paid only on a rejection that has no frames.
 - That is noise for `play`, `getUserMedia`, clipboard, `decode` (a few calls per page) and visible only for APIs called thousands of
-  times a second, which is exactly the `hot` list kept out of the default set. If one of those is ever wanted, the factory takes
-  `capture: false` (0.17 µs) or a sampling rate, so the choice is data, not code.
+  times a second, which is exactly why those rows are `armed` (§4.4) and not `always`. Moving a row between the three modes is a data change in the table,
+  not code.
 - Not measured: real-page effects of the extra microtask, and the retained-`Error` memory under very many pending promises.
 
 ### Which listed methods can sit in a tight loop
@@ -315,7 +314,7 @@ periodically, an `always` row): they pass through the wrapper like the applicati
 
 | Class | Methods | Where the loop comes from | Default |
 |---|---|---|---|
-| **Hot** (per frame / per chunk / per task) | `Scheduler.postTask`, `Scheduler.yield`; `FileSystemWritableFileStream.write/seek/truncate`; `GPUBuffer.mapAsync`, `GPUQueue.onSubmittedWorkDone`, `GPUDevice.popErrorScope`; `ImageCapture.grabFrame`, `ImageDecoder.decode`, `VideoFrame.copyTo`, `Video/AudioDecoder/Encoder.flush`; `OffscreenCanvas.convertToBlob`; `createImageBitmap` | frame-rate media/GPU pipelines, cooperative schedulers, chunked file writes | **off** (opt-in), except `createImageBitmap` (measured stackless in both engines), which is `armed` (§4.4) |
+| **Hot** (per frame / per chunk / per task) | `Scheduler.postTask`, `Scheduler.yield`; `FileSystemWritableFileStream.write/seek/truncate`; `GPUBuffer.mapAsync`, `GPUQueue.onSubmittedWorkDone`, `GPUDevice.popErrorScope`; `ImageCapture.grabFrame`, `ImageDecoder.decode`, `VideoFrame.copyTo`, `Video/AudioDecoder/Encoder.flush`; `OffscreenCanvas.convertToBlob`; `createImageBitmap` | frame-rate media/GPU pipelines, cooperative schedulers, chunked file writes | **`armed`** (§4.4): not wrapped until the first stackless rejection nobody could locate, then captured with the per-method budget (as built, every row in this class is `armed`, including `createImageBitmap`, measured stackless in both engines) |
 | **Hot in bulk** | `SubtleCrypto.*` (hashing/verifying many chunks or tokens), `Blob.arrayBuffer/bytes/text` and `Body.*` (`slice().arrayBuffer()` per chunk; `response.json()` per request on chatty apps), `Cache.*` / `CacheStorage.match` (a service worker's fetch handler runs per request) | loops over thousands of items | **off** (opt-in). `Body.json` is measured stackless on Firefox (§2) and is deliberately NOT wrapped: it is hot in bulk, so that one gap is accepted. `fetch` itself is covered by the network interceptor, never wrapped twice |
 | **Bursty** | `HTMLImageElement.decode` (galleries), `CustomElementRegistry.whenDefined`, `CSSStyleSheet.replace` (one per component at startup), `FontFaceSet.load` (per text measure in some canvas libs), `RTCPeerConnection.getStats/addIceCandidate/replaceTrack/setParameters`, `CookieStore.*`, `MediaStreamTrack.applyConstraints` (per slider tick) | hundreds in a burst, then quiet | `armed` (§4.4) for the measured-stackless ones (`decode`, `FontFace.load`, `addIceCandidate`) |
 | **Rare** | `HTMLMediaElement.play`, `Clipboard.*`, `WakeLock.request`, `getUserMedia`, `ServiceWorkerContainer.register`, `Permissions.query`, `FileSystem*Handle.get*Handle`, `Worklet.addModule`, `decodeAudioData`, picker APIs | user-driven, a few per page | **on** |
@@ -406,7 +405,7 @@ pass the origin through the same crash builder.
 | Bluebird | UMD replaces `window.Promise`; own untrusted event | `Bluebird.resolve(p)` handles `p`; its event carries the same reason, not `p` | lookup by reason |
 | es6-promise, RSVP | global replaced only if the app does it; **no DOM event** | silent for those chains (baseline gap: the SDK sees nothing) | none for the wrapper |
 | zone.js (0.14.10, 0.16.3) | `ZoneAwarePromise`; patches native `then`; reports to console and `NgZone.onError` | native `p` unhandled: fires. Zone chains: **never fires** (also for a derived promise made with plain `p.then`) | pristine then (§4.1a); lookup is by REASON, which a derived promise preserves (the promise identity changes, the reason does not) |
-| zone.js with `__zone_symbol__DISABLE_WRAPPING_UNCAUGHT_PROMISE_REJECTION=false` | wraps zone rejections | event fires for zone chains | pristine then |
+| zone.js with `__zone_symbol__DISABLE_WRAPPING_UNCAUGHT_PROMISE_REJECTION=false` | wraps zone rejections | event fires for zone chains, but `event.reason` is then a wrapper object `{rejection, promise, zone, task}` with the DOMException on `.rejection` | pristine then keeps the promise path working; the by-reason lookup on `event.reason` misses: **not recoverable, accepted** (opt-in zone flag; the default does not wrap) |
 | Vue 3 dev, with `errorHandler` | `callWithAsyncErrorHandling` runs `.catch` on handler/hook/watcher promises | **does not fire**; `errorHandler` gets the same reason | lookup by reason |
 | Vue 3 dev, no `errorHandler` | `logError` rethrows | fires, same reason | none |
 | Vue 3 prod, no `errorHandler` | `console.error` only | **does not fire → invisible** | the adapter is required |
