@@ -56,6 +56,16 @@ let inFlight: Promise<unknown> = Promise.resolve();
 // listening on the old one, unless another host still uses it.
 const activeTargets = new Map<object, EventTarget>();
 
+// Another host's client is already on this document, so its listener serves that client until this launch has actually succeeded.
+function usedByOther(target: EventTarget, host: object): boolean {
+  for (const [other, used] of activeTargets) {
+    if (other !== host && used === target) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function release(target: EventTarget): void {
   for (const used of activeTargets.values()) {
     if (used === target) {
@@ -146,17 +156,34 @@ async function openWindow(
     ...(target !== undefined ? { target } : {}),
   };
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
-  // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
-  listenForAstroHydrationErrors(hydration);
+  // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists. Not so on a document another host's client
+  // already listens on: merging this launch's carrier and sink onto that listener now would misroute the live client's errors if this launch
+  // then failed, so it waits for the launch to succeed (the live client's own listener covers the meantime).
+  let listened = tracked === undefined || !usedByOther(tracked, host);
+  if (listened) {
+    listenForAstroHydrationErrors(hydration);
+  }
   try {
     const client = await start();
+    if (!listened) {
+      listenForAstroHydrationErrors(hydration);
+      listened = true;
+    }
     if (tracked !== undefined) {
-      // The document this host's client is now on: for a repeat, the one core recorded (a client Astro did not launch, or one the umbrella
-      // moved), for a launch, the one it just started on.
-      const left = activeTargets.get(host);
-      activeTargets.set(host, tracked);
-      if (left !== undefined) {
-        release(left); // the page may have moved to another document (a no-op while any host is still on `left`)
+      // The document this client is now on, under the host it now lives on: a relaunch with `carrier: undefined` moves it to the global
+      // carrier (core's spread, then `setCarrierLastLaunch` clears `lastHost`), whichever host was looked up to find the OLD client.
+      // For a repeat, the one core recorded (a client Astro did not launch, or one the umbrella moved); for a launch, the one it started on.
+      const live = next.carrier ?? globalThis;
+      const lefts = [activeTargets.get(live)];
+      if (live !== host) {
+        lefts.push(activeTargets.get(host));
+        activeTargets.delete(host);
+      }
+      activeTargets.set(live, tracked);
+      for (const left of lefts) {
+        if (left !== undefined) {
+          release(left); // the page may have moved to another document (a no-op while any host is still on `left`)
+        }
       }
     }
     return client;
@@ -166,7 +193,9 @@ async function openWindow(
     }
     throw error;
   } finally {
-    flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
+    if (listened) {
+      flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
+    }
   }
 }
 

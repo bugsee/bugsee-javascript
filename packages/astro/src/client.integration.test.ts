@@ -135,4 +135,40 @@ describe('hydration listeners against the real registry', () => {
     umbrellaDoc.dispatchEvent(hydrationError(stale));
     expect(reported(client, stale)).toBe(false);
   });
+
+  it("a launch that fails on a document another carrier's client listens on leaves that client reporting", async () => {
+    const carrierA = {};
+    const carrierB = {};
+    const shared = page();
+    const sinkA = vi.fn();
+    const clientA = (await registerClient('tok', {
+      carrier: carrierA,
+      document: shared,
+      onError: sinkA,
+    } as never)) as never as (typeof clients)[number];
+    state.failNext = new Error('B failed');
+    await expect(
+      registerClient('tok', { carrier: carrierB, document: shared } as never),
+    ).rejects.toThrow('B failed');
+    const error = new Error('island');
+    shared.dispatchEvent(hydrationError(error));
+    expect(reported(clientA, error)).toBe(true); // not dropped: the listener still looks on A's carrier
+  });
+
+  it('after relaunch({ carrier: undefined }) a later move releases the document the client left', async () => {
+    const custom = {};
+    const docA = page();
+    await registerClient('tok', { carrier: custom, document: docA } as never);
+    await relaunch({ carrier: undefined } as never); // now on globalThis
+    const docB = page();
+    const client = (await relaunch({
+      document: docB,
+    } as never)) as unknown as (typeof clients)[number];
+    const stale = new Error('stale');
+    docA.dispatchEvent(hydrationError(stale));
+    expect(reported(client, stale)).toBe(false);
+    const fresh = new Error('fresh');
+    docB.dispatchEvent(hydrationError(fresh));
+    expect(reported(client, fresh)).toBe(true);
+  });
 });

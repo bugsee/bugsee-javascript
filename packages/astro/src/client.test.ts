@@ -516,4 +516,67 @@ describe('registerClient', () => {
     expect(stop).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenLastCalledWith(doc('first'));
   });
+
+  it('after relaunch({ carrier: undefined }) the client lives on the global carrier, so a later move releases the document it left', async () => {
+    const custom = {};
+    await registerClient('tok', { carrier: custom, document: doc('docA') } as never);
+    await relaunch({ carrier: undefined } as never); // core: the new client is on globalThis; lastHost is cleared
+    expect(world.slot(globalThis).client).toBeDefined();
+    await relaunch({ document: doc('docB') } as never); // looks up globalThis now
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('docA'));
+  });
+
+  it("a launch that fails on a document another host's live client listens on does not touch that listener", async () => {
+    const a = {};
+    const b = {};
+    const shared = doc('shared');
+    await registerClient('tok', { carrier: a, document: shared, onError: vi.fn() } as never);
+    listen.mockClear();
+    flush.mockClear();
+    world.state.failNext = new Error('boom');
+    await expect(registerClient('tok', { carrier: b, document: shared } as never)).rejects.toThrow(
+      'boom',
+    );
+    expect(listen).not.toHaveBeenCalled(); // B's carrier and sink never reached the live listener
+    expect(flush).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('the same launch, once it succeeds, listens on the shared document and settles that registration', async () => {
+    const a = {};
+    const b = {};
+    const shared = doc('shared');
+    await registerClient('tok', { carrier: a, document: shared } as never);
+    listen.mockClear();
+    flush.mockClear();
+    await registerClient('tok', { carrier: b, document: shared } as never);
+    expect(listen).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(lastListen()).toEqual({ target: shared, carrier: b });
+  });
+
+  it('a relaunch that changes the carrier AND the document releases the document the lookup host was on', async () => {
+    const custom = {};
+    await registerClient('tok', { carrier: custom, document: doc('docA') } as never);
+    await relaunch({ carrier: undefined, document: doc('docB') } as never);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('docA'));
+  });
+
+  it('a relaunch that stays on its own document still listens BEFORE the restart (errors during it are queued)', async () => {
+    const same = doc('same');
+    await registerClient('tok', { document: same } as never);
+    order.length = 0;
+    listen.mockImplementation(() => order.push('listen'));
+    relaunchUmbrella.mockImplementationOnce(async (options) => {
+      order.push('restart');
+      return await world.coreLaunch('tok', {
+        ...(world.slot(globalThis).lastLaunch?.options ?? {}),
+        ...(options as object),
+      });
+    });
+    await relaunch();
+    expect(order).toEqual(['listen', 'restart']);
+  });
 });
