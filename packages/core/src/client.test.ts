@@ -42,6 +42,7 @@ import {
   type ReportingRequest,
 } from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
+import type { StackFrame } from './stack';
 import {
   type Bundle,
   type UploadPipeline,
@@ -1400,6 +1401,81 @@ describe('createClient — capture-recovery markers', () => {
       description?: string;
     };
     expect(request.description).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+  });
+
+  describe('logException description with a call site (async platform rejection)', () => {
+    const callSite = (): StackFrame[] => [
+      {
+        function: 'startPlayback',
+        file: 'https://app.test/p.js',
+        line: 4,
+        column: 2,
+        origin: 'call',
+      },
+    ];
+    const run = async (
+      error: Error,
+      extra: { describeTarget?: (error: unknown) => string | undefined } = {},
+    ) => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        enrichFrames: (_error, frames) => (frames.length > 0 ? frames : callSite()),
+        ...extra,
+      });
+      await client.logException(error);
+      const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+      return (
+        JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as { description?: string }
+      ).description;
+    };
+    const withStack = (stack: string | undefined, name = 'NotSupportedError'): Error => {
+      const e = Object.assign(new Error('no sources'), { name });
+      Object.defineProperty(e, 'stack', { value: stack });
+      return e;
+    };
+
+    it('keeps the header of a header-only stack (Chromium DOMException) and adds the call site under it', async () => {
+      expect(await run(withStack('NotSupportedError: no sources'))).toBe(
+        'NotSupportedError: no sources\n    at startPlayback (https://app.test/p.js:4:2)',
+      );
+    });
+
+    it('an empty stack string is stackless too', async () => {
+      expect(await run(withStack(''))).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+    });
+
+    it('the call site comes BEFORE a linked cause (React linkComponentStack): the cause no longer suppresses it', async () => {
+      const error = withStack(undefined);
+      (error as { cause?: unknown }).cause = Object.assign(new Error('React component stack:'), {
+        stack: 'React component stack:\n    in Player\n    in BugseeErrorBoundary',
+      });
+      const description = (await run(error)) ?? '';
+      expect(description.startsWith('    at startPlayback (https://app.test/p.js:4:2)')).toBe(true);
+      expect(description).toContain('Caused by: React component stack:');
+      expect(description.indexOf('startPlayback')).toBeLessThan(description.indexOf('Caused by'));
+    });
+
+    it('appends the target description when one is supplied, and never fails the report because it threw', async () => {
+      expect(
+        await run(withStack(undefined), { describeTarget: () => 'Target: <video id="hero">' }),
+      ).toBe('    at startPlayback (https://app.test/p.js:4:2)\nTarget: <video id="hero">');
+      expect(
+        await run(withStack(undefined), {
+          describeTarget: () => {
+            throw new Error('describer failed');
+          },
+        }),
+      ).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+    });
+
+    it('leaves an error that has frames of its own exactly as before', async () => {
+      const own = 'NotSupportedError: x\n    at thrower (https://app.test/t.js:1:1)';
+      // (the real describer answers only for an error whose origin it recorded: none was, for an error with its own frames)
+      expect(await run(withStack(own), { describeTarget: () => undefined })).toBe(own);
+    });
   });
 
   it('adds no description to a stackless Error when nothing supplied frames', async () => {

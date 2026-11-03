@@ -972,3 +972,79 @@ describe('installAsyncOrigins - hostile environments', () => {
     expect(clearInterval).toHaveBeenCalledTimes(1);
   });
 });
+
+// The browser parses stacks with its own parser; the recorder must decide "has frames" the same way (one definition), or a stack
+// the parser reads as frameless could be skipped here, or a bogus frame suppress the call site.
+describe('installAsyncOrigins - hasFrames is injectable (one definition with the parser)', () => {
+  const play = async (g: Fake) => {
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    return el.play().catch((e: unknown) => e);
+  };
+  const reasonWith = (stack: string) => {
+    const reason = Object.assign(new Error('x'), { name: 'TypeError' });
+    Object.defineProperty(reason, 'stack', { value: stack, configurable: true });
+    return reason;
+  };
+
+  it('uses the supplied predicate instead of the built-in one', async () => {
+    const withFrames = reasonWith('TypeError: x\n    at f (a.js:1:1)');
+    const g1 = fakeGlobal(() => Promise.reject(withFrames));
+    const r1 = install(g1, { hasFrames: () => false }); // the parser says: no frames
+    await play(g1);
+    expect(r1.originOf(withFrames)).toBeDefined();
+    r1.stop();
+
+    const headerOnly = reasonWith('TypeError: x');
+    const g2 = fakeGlobal(() => Promise.reject(headerOnly));
+    const r2 = install(g2, { hasFrames: () => true }); // the parser says: frames
+    await play(g2);
+    expect(r2.originOf(headerOnly)).toBeUndefined();
+  });
+
+  it('treats a predicate that throws as "no frames" (the call site is kept, nothing escapes)', async () => {
+    const reason = reasonWith('TypeError: x\n    at f (a.js:1:1)');
+    const g = fakeGlobal(() => Promise.reject(reason));
+    const r = install(g, {
+      hasFrames: () => {
+        throw new Error('parser blew up');
+      },
+    });
+    await expect(play(g)).resolves.toBe(reason);
+    expect(r.originOf(reason)).toBeDefined();
+  });
+});
+
+// Fallback mode (no pristine then anywhere): nothing is attached to the promise, so the origin is keyed by the PROMISE. An
+// unhandledrejection event carries both the reason and the promise; the provider links them so the report can find it by reason.
+describe('installAsyncOrigins - adoptPromise (fallback mode, keyed by promise)', () => {
+  const bare = (reason: unknown) => {
+    const g = fakeGlobal(() => Promise.reject(reason));
+    const r = install(g, { cleanThen: null });
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    const promise = el.play();
+    promise.catch(() => undefined);
+    return { r, promise };
+  };
+
+  it('links the origin recorded for a promise to the reason it rejected with', () => {
+    const reason = stackless();
+    const { r, promise } = bare(reason);
+    expect(r.originOf(reason)).toBeUndefined();
+    r.adoptPromise(reason, promise);
+    expect(r.originOf(reason)).toBe(r.originOfPromise(promise));
+    expect(r.originOf(reason)).toBeDefined();
+  });
+
+  it('is a no-op for a reason that already has an origin, a promise with none, and a non-object reason', () => {
+    const reason = stackless();
+    const { r, promise } = bare(reason);
+    const known = r.originOfPromise(promise);
+    r.adoptPromise(reason, promise);
+    const second = stackless();
+    r.adoptPromise(reason, Promise.resolve()); // a promise it never saw: the first link stays
+    expect(r.originOf(reason)).toBe(known);
+    r.adoptPromise(second, Promise.resolve()); // nothing known for it
+    expect(r.originOf(second)).toBeUndefined();
+    expect(() => r.adoptPromise('a string', promise)).not.toThrow();
+  });
+});

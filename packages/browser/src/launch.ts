@@ -1031,6 +1031,8 @@ async function buildLaunch(
   const asyncOrigins = resolveFailOnBoolean(options.captureAsyncOrigins, true)
     ? installAsyncOrigins({
         global: win,
+        // One definition of "this stack has frames": the parser the report itself uses.
+        hasFrames: (stack) => parseStack(stack).length > 0,
         ...(options.onError !== undefined ? { onError: options.onError } : {}),
       })
     : undefined;
@@ -1061,7 +1063,13 @@ async function buildLaunch(
     // The browser's multi-engine (V8/SpiderMonkey/JavaScriptCore) stack parser → so logException's crash.json
     // parses non-V8 stacks too (the detection providers already use it directly).
     stackParser: parseStack,
-    ...(originReporting !== undefined ? { enrichFrames: originReporting.enrichFrames } : {}),
+    ...(originReporting !== undefined
+      ? {
+          enrichFrames: originReporting.enrichFrames,
+          // logException (so every framework adapter) gets the same Target line the detection providers do.
+          describeTarget: originReporting.describeTarget,
+        }
+      : {}),
     ...(fileEncoders !== undefined ? { fileEncoders } : {}),
     ...(streamEncoders !== undefined ? { streamEncoders } : {}),
     ...(reportSnapshots !== undefined ? { reportSnapshots } : {}),
@@ -1392,6 +1400,15 @@ async function buildLaunch(
   }
 
   // Detection providers: window error → crash, unhandledrejection → error.
+  // The recorder lives and dies with the capture machinery: stop() AND the collector's KILL_SDK transition both halt the detection
+  // providers, so one that releases the recorder covers both (the public stop() below stops it too; the recorder's stop is idempotent).
+  if (asyncOrigins !== undefined) {
+    client.addDetectionProvider({
+      name: 'async-origin-recorder',
+      start: () => undefined,
+      stop: () => asyncOrigins.stop(),
+    });
+  }
   client.addDetectionProvider(createWindowErrorProvider(win, originReporting));
   client.addDetectionProvider(createUnhandledRejectionProvider(win, originReporting));
   // fetch/xhr server errors (5xx) → `error` reports (mechanism http-error). Off unless `detectHttpErrors`.

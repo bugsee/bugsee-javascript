@@ -90,6 +90,33 @@ describe('buildCrashJson', () => {
     expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
   });
 
+  it('tells an enricher how deep in the cause chain it is (0 = the reported error), so it can act on the reported error only', () => {
+    const calls: Array<{ message: string; depth: number | undefined }> = [];
+    const inner = errorWith('Error', 'inner', 'Error: inner\n    at i (a.js:1:1)');
+    const outer = errorWith('Error', 'outer', 'Error: outer\n    at o (a.js:2:2)');
+    (outer as { cause?: unknown }).cause = inner;
+    buildCrashJson(outer, {
+      parseStack: parseV8Stack,
+      enrichFrames: (error, frames, info) => {
+        calls.push({ message: (error as Error).message, depth: info?.depth });
+        return frames;
+      },
+    });
+    expect(calls).toEqual([
+      { message: 'outer', depth: 0 },
+      { message: 'inner', depth: 1 },
+    ]);
+    const synthetic: Array<number | undefined> = [];
+    buildCrashJson('a string', {
+      syntheticFrames: [{ function: 'f', file: 'a.js', line: 1, column: 1 }],
+      enrichFrames: (_error, frames, info) => {
+        synthetic.push(info?.depth);
+        return frames;
+      },
+    });
+    expect(synthetic).toEqual([0]);
+  });
+
   it('recurses the cause chain', () => {
     const inner = errorWith('RangeError', 'inner', 'RangeError: inner\n    at f (a.js:2:2)');
     const outer = errorWith('Error', 'outer', 'Error: outer\n    at g (b.js:3:3)');
@@ -588,6 +615,15 @@ describe('toCrashFrame — call-site origin', () => {
 });
 
 describe('buildCrashJson with a hostile non-Error value', () => {
+  it('keeps the class name when the name getter throws', () => {
+    class Widget {
+      get name(): string {
+        throw new Error('name getter');
+      }
+    }
+    expect(buildCrashJson(new Widget()).exception.name).toBe('Widget');
+  });
+
   it("does not throw when the value's message getter throws", () => {
     const hostile = {
       get message(): string {
@@ -673,6 +709,25 @@ describe('describeThrown', () => {
       },
     };
     expect(describeThrown(bad)).toBe('Object: [object Object]');
+  });
+
+  it('keeps the 256-character limit when the engine tag itself is long (a hostile toStringTag)', () => {
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+      [Symbol.toStringTag]: 'x'.repeat(1000),
+    };
+    expect(describeThrown(hostile).length).toBeLessThanOrEqual(256);
+    // the OUTER catch: a function whose name getter throws, with a long tag
+    const fn = (): void => undefined;
+    Object.defineProperty(fn, 'name', {
+      get(): never {
+        throw new Error('name getter');
+      },
+    });
+    Object.defineProperty(fn, Symbol.toStringTag, { value: 'y'.repeat(1000) });
+    expect(describeThrown(fn).length).toBeLessThanOrEqual(256);
   });
 
   it('survives a function whose name getter throws', () => {

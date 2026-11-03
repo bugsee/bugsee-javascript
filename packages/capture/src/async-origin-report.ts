@@ -74,7 +74,10 @@ type Probe = Record<string, unknown>;
 const FIELD_LIMIT = 80;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069"]+/g;
-const field = (raw: string): string => raw.replace(UNSAFE, ' ').slice(0, FIELD_LIMIT);
+// Page-controlled text is redacted (`sanitizeErrorMessage`: emails, tokens, URL credentials) BEFORE it is clipped, so a secret cannot
+// survive by being cut in half, and then stripped of control characters.
+const field = (raw: string): string =>
+  sanitizeErrorMessage(raw).replace(UNSAFE, ' ').slice(0, FIELD_LIMIT);
 
 // A URL for a report: no query, no fragment (tokens live there), userinfo and path secrets redacted (`sanitizeUrl`), and a
 // data:/blob: URL is only its scheme (it can be megabytes).
@@ -171,6 +174,8 @@ export interface AsyncOriginReporting {
    * armed API is failing, so the armed rows are installed (they cost nothing until then, see `arm()`).
    */
   noteRejection(reason: unknown): void;
+  /** Link the origin recorded for `promise` (fallback mode) to `reason`; both come from an `unhandledrejection` event. Never throws. */
+  adoptPromise(reason: unknown, promise: unknown): void;
 }
 
 export function createAsyncOriginReporting(
@@ -186,7 +191,13 @@ export function createAsyncOriginReporting(
       if (typeof reason !== 'object' || reason === null) {
         return;
       }
-      const stack = (reason as { stack?: unknown }).stack;
+      // A `stack` getter that throws is a reason with no usable stack: stackless, so it may be the armed API failing.
+      let stack: unknown;
+      try {
+        stack = (reason as { stack?: unknown }).stack;
+      } catch {
+        stack = undefined;
+      }
       const hasOwnFrames = typeof stack === 'string' && parseStack(stack).length > 0;
       if (!hasOwnFrames && recorder.originOf(reason) === undefined) {
         recorder.arm();
@@ -199,9 +210,15 @@ export function createAsyncOriginReporting(
   return {
     // The enricher runs on EVERY report path (unhandledrejection, window error, logException: React boundary, Vue errorHandler and the
     // like never raise `unhandledrejection`), so arming from here covers all of them.
-    enrichFrames(error, frames) {
-      const enriched = enrich(error, frames);
-      if (frames.length === 0 && enriched.length === 0) {
+    // Only for the error being reported (depth 0), never for one found in its `cause` chain: a framework links a frameless Error there
+    // (React's component stack), which is not an armed API failing.
+    enrichFrames(error, frames, info) {
+      const enriched = enrich(error, frames, info);
+      if (
+        frames.length === 0 &&
+        enriched.length === 0 &&
+        (info === undefined || info.depth === 0)
+      ) {
         noteRejection(error);
       }
       return enriched;
@@ -215,5 +232,12 @@ export function createAsyncOriginReporting(
       }
     },
     noteRejection,
+    adoptPromise(reason, promise) {
+      try {
+        recorder.adoptPromise(reason, promise);
+      } catch {
+        // reporting must never fail because the recorder did
+      }
+    },
   };
 }

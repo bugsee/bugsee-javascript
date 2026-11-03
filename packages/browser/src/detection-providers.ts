@@ -44,10 +44,16 @@ function describeError(
     const located = describeOrigin(value, origins);
     return located === undefined ? { summary } : { summary, description: located };
   }
-  return { summary: describeThrown(value) };
+  // A value that is not an `Error` here may still be a platform rejection (a DOMException from another realm is not `instanceof Error`):
+  // the recorder keys by reason, so it answers for an object too.
+  const located =
+    typeof value === 'object' && value !== null ? describeOrigin(value, origins) : undefined;
+  return located === undefined
+    ? { summary: describeThrown(value) }
+    : { summary: describeThrown(value), description: located };
 }
 
-function describeOrigin(value: Error, origins?: AsyncOriginReporting): string | undefined {
+function describeOrigin(value: object, origins?: AsyncOriginReporting): string | undefined {
   if (origins === undefined) {
     return undefined;
   }
@@ -172,6 +178,8 @@ class WindowUnhandledRejectionProvider extends BrowserWindowDetectionProvider {
 
   protected onDetected(event: Event): void {
     const reason = (event as PromiseRejectionEvent).reason;
+    // With no pristine `then` the recorder could only key the origin by the PROMISE (the event carries it too): link it to the reason.
+    this.origins?.adoptPromise(reason, (event as PromiseRejectionEvent).promise);
     const { summary, description } = describeError(reason, this.origins);
     const crash = crashOf(reason, this.origins);
     this.handleReportingRequest(

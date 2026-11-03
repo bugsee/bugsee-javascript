@@ -168,7 +168,7 @@ const sleep = (ms: number): Promise<void> =>
 // non-Error cause ends the chain. Preserves the prior behaviour: a non-Error value, and an Error with no
 // stack and no cause, both yield `undefined` (no description).
 const MAX_CAUSE_DEPTH = 5;
-function describeError(error: unknown): string | undefined {
+function describeError(error: unknown, callSite: readonly string[] = []): string | undefined {
   if (!(error instanceof Error)) return undefined;
   const base = error.stack;
   const causes: string[] = [];
@@ -179,8 +179,10 @@ function describeError(error: unknown): string | undefined {
     causes.push(`Caused by: ${current.stack ?? current.message}`);
     current = (current as { cause?: unknown }).cause;
   }
-  if (base === undefined && causes.length === 0) return undefined;
-  return [base ?? '', ...causes].filter(Boolean).join('\n');
+  if (base === undefined && causes.length === 0 && callSite.length === 0) return undefined;
+  // The call site (frames an enricher supplied for an error with none of its own) reads as the trace: right under the header, before any
+  // linked cause (a React component stack must not push it out).
+  return [base ?? '', ...callSite, ...causes].filter(Boolean).join('\n');
 }
 
 /** Options for logException (a focused core subset of Android ExceptionOptions). */
@@ -583,6 +585,11 @@ export interface CreateClientOptions {
    * LOCAL VARIABLES through. Core defines it and never implements one: the inspector is node-only.
    */
   enrichFrames?: FrameEnricher;
+  /**
+   * A one-line description of what an async platform call was made ON, for a stackless Error whose call site an enricher recorded
+   * (async-origin capture: `Target: <video id=...> src=... error=4`). Appended to the `logException` description. Never throws into the report.
+   */
+  describeTarget?: (error: unknown) => string | undefined;
   /**
    * Called at the public boundary of {@link BugseeClient.logException}, with the value being reported,
    * while the CALLER's frames are still on the stack.
@@ -1747,7 +1754,6 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         onError(reportSiteError);
       }
       const message = error instanceof Error ? error.message : describeThrown(error);
-      let description = describeError(error); // stack + the `cause` chain (LinkedErrors)
       // Structured crash.json: built from the Error's stack + per-frame debug-ids. handled: true —
       // logException is a programmatically-logged (caught) exception. Undefined for non-Errors.
       // A thrown non-Error has no stack of its own, and shipping `frames: []` cost grouping, not just a
@@ -1769,12 +1775,22 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
         ...(options.enrichFrames !== undefined ? { enrichFrames: options.enrichFrames } : {}),
         ...(syntheticFrames !== undefined ? { syntheticFrames } : {}),
       });
-      // An Error with no stack of its own (an async platform rejection) has no description either, yet an enricher may have given
-      // it frames (the call site, async-origin capture): they ARE its trace, and the report should read like one.
-      if (description === undefined && error instanceof Error) {
-        const traces = crash?.exception.frames.map((frame) => `    ${frame.trace}`) ?? [];
-        if (traces.length > 0) {
-          description = traces.join('\n');
+      // An Error with no frames of its own (an async platform rejection) may have been given a call site by an enricher (async-origin
+      // capture): those frames ARE its trace, and the description reads like one. Stack + that + the `cause` chain (LinkedErrors).
+      const callSite =
+        crash?.exception.frames
+          .filter((frame) => frame.origin === 'call')
+          .map((frame) => `    ${frame.trace}`) ?? [];
+      let description = describeError(error, callSite);
+      // What the call was made ON (the media element, its source and error code): the root cause, which the call site is not.
+      if (error instanceof Error && options.describeTarget !== undefined) {
+        try {
+          const target = options.describeTarget(error);
+          if (target !== undefined && target !== '') {
+            description = description === undefined ? target : `${description}\n${target}`;
+          }
+        } catch (targetError) {
+          onError(targetError);
         }
       }
       const crashOptions: { domain?: string; skipFrames?: number } = {};

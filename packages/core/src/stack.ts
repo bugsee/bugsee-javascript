@@ -239,10 +239,12 @@ function parseFrame(site: string): StackFrame {
 export function parseV8Stack(stack: string): StackFrame[] {
   const frames: StackFrame[] = [];
   for (const raw of stack.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('at ')) {
-      frames.push(parseFrame(line.slice('at '.length)));
+    // A real frame line is INDENTED (`    at fn (loc)`); an unindented line that starts with "at " is message text (a multi-line
+    // message such as "at least one source is required"), not a frame.
+    if (!/^\s+at /.test(raw)) {
+      continue;
     }
+    frames.push(parseFrame(raw.trim().slice('at '.length)));
   }
   return frames;
 }

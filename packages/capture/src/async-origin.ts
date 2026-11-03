@@ -34,6 +34,12 @@ export interface AsyncOriginRecorder {
   originOf(reason: unknown): AsyncOrigin | undefined;
   /** The origin recorded against a promise, for the fallback mode that attaches no reaction (a bare call only). */
   originOfPromise(promise: unknown): AsyncOrigin | undefined;
+  /**
+   * Link the origin recorded for a PROMISE (the fallback mode, which attaches no reaction) to the reason that promise rejected with, so
+   * the report can find it by reason. An `unhandledrejection` event carries both. A no-op when the reason already has an origin, the
+   * promise has none, or the reason is not an object.
+   */
+  adoptPromise(reason: unknown, promise: unknown): void;
   /** Install the `armed` rows. Called on the first stackless rejection nobody could locate; idempotent. */
   arm(): void;
   /** The stack of a throwaway call through the wrapper: the frame just above `probeThrower` is the wrapper's call site. */
@@ -58,6 +64,11 @@ export interface InstallAsyncOriginsOptions {
   maxCapturesPerMinute?: number;
   /** A `then` known to be the engine's own. Default: the engine intrinsic, else the global one if still native, else a hidden iframe's. `null`: none. */
   cleanThen?: ThenFn | null;
+  /**
+   * Does a `stack` string carry frames? Default: a regex for V8 `at ...` and Firefox/Safari `name@url:line:col` lines. The browser passes
+   * its own parser (`parseStack(stack).length > 0`) so the recorder and the report decide "stackless" the same way (one definition).
+   */
+  hasFrames?: (stack: string) => boolean;
   /** Where the engine-intrinsic promise prototype comes from. Default: the prototype of an async function's result. A test seam. */
   intrinsicPromisePrototype?: () => unknown;
   /** `Error.captureStackTrace` where the engine has it (omits the wrapper frame, one capture). `null`: not available. */
@@ -90,8 +101,7 @@ const isThenable = (value: unknown): value is { then: unknown } => {
  * which is no more use than none, so a bare "is it a non-empty string" would leave the call site unrecorded for exactly those.
  * V8 frames are `at ...`; Firefox and Safari frames are `name@url:line:col`.
  */
-const hasFrames = (stack: unknown): boolean =>
-  typeof stack === 'string' &&
+const defaultHasFrames = (stack: string): boolean =>
   stack
     .split('\n')
     // V8: an INDENTED `at ...` line (a message line that merely starts with "at " is not indented). Firefox/Safari: a line that ENDS in
@@ -250,6 +260,15 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       : (global.clearInterval as typeof options.clearInterval);
 
   const probeStack = probeStackOf(global.Error);
+  const framesIn = options.hasFrames ?? defaultHasFrames;
+  // A non-string stack has none; a predicate that throws counts as "no frames" (keep the call site; nothing escapes into the page).
+  const reasonHasFrames = (stack: unknown): boolean => {
+    try {
+      return typeof stack === 'string' && framesIn(stack);
+    } catch {
+      return false;
+    }
+  };
   const byReason = new WeakMap<object, AsyncOrigin>();
   const byPromise = new WeakMap<object, AsyncOrigin>();
   const counters: { used: number }[] = [];
@@ -314,7 +333,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
             // Only a reason with no stack of its own is worth remembering, and the FIRST origin wins.
             try {
               if (isObjectLike(reason) && !byReason.has(reason)) {
-                if (!hasFrames((reason as { stack?: unknown }).stack)) {
+                if (!reasonHasFrames((reason as { stack?: unknown }).stack)) {
                   byReason.set(reason, origin);
                 }
               }
@@ -411,6 +430,15 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
     },
     originOfPromise(promise: unknown): AsyncOrigin | undefined {
       return isObjectLike(promise) ? byPromise.get(promise) : undefined;
+    },
+    adoptPromise(reason: unknown, promise: unknown): void {
+      if (!isObjectLike(reason) || byReason.has(reason) || !isObjectLike(promise)) {
+        return;
+      }
+      const found = byPromise.get(promise);
+      if (found !== undefined) {
+        byReason.set(reason, found);
+      }
     },
     arm(): void {
       if (stopped || !modes.has('armed')) {

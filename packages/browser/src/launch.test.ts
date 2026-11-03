@@ -2795,6 +2795,58 @@ describe('launch', () => {
       expect(m.Media.prototype.play).toBe(m.original);
     });
 
+    it('a header-only stack whose text contains an @ still gets the call site, not a bogus frame (recorder and parser agree)', async () => {
+      const m = mediaWindow();
+      Object.defineProperty(m.reason, 'stack', {
+        value: 'NotSupportedError: connect user@host:8080 failed',
+      });
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      const reason = await startPlayback().catch((e: unknown) => e);
+      await client.logException(reason);
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        exception: { frames: { trace: string; origin?: string }[] };
+      };
+      expect(crash.exception.frames.length).toBeGreaterThan(0);
+      expect(crash.exception.frames.every((f) => f.origin === 'call')).toBe(true);
+      expect(crash.exception.frames.some((f) => f.trace.includes('startPlayback'))).toBe(true);
+    });
+
+    it('logException (so every framework adapter) gets the Target line, and the call site before a linked cause', async () => {
+      const m = mediaWindow();
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      const reason = (await startPlayback().catch((e: unknown) => e)) as Error;
+      // what @bugsee/react's linkComponentStack does before it reports
+      (reason as { cause?: unknown }).cause = Object.assign(new Error('React component stack:'), {
+        stack: 'React component stack:\n    in Player',
+      });
+      await client.logException(reason);
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+        description?: string;
+      };
+      const description = request.description ?? '';
+      expect(description).toContain('startPlayback');
+      expect(description).toContain('Target: <video id="hero"> networkState=3 readyState=0');
+      expect(description.indexOf('startPlayback')).toBeLessThan(description.indexOf('Caused by'));
+    });
+
     it('arms the armed rows when a stackless error is reported through logException (no unhandledrejection involved)', async () => {
       const w = fakeWindow();
       const reason = Object.assign(new Error('The source image cannot be decoded.'), {
@@ -2815,6 +2867,31 @@ describe('launch', () => {
       expect(HTMLImageElement.prototype.decode).toBe(original); // an armed row costs nothing until the first failure
       await client.logException(reason);
       expect(HTMLImageElement.prototype.decode).not.toBe(original);
+    });
+
+    it('restores the platform methods when the collector switches the SDK off (KILL_SDK), not only on stop()', async () => {
+      const m = mediaWindow();
+      const transport = vi.fn<HttpTransport>(async (url: string) => {
+        if (url.endsWith('/v2/sessions')) {
+          return { status: 200, headers: {}, body: jsonBody({ access_token: 'access' }) };
+        }
+        // 99099 KillSdk, as the collector sends it: HTTP 200 and the verdict in the envelope
+        return {
+          status: 200,
+          headers: {},
+          body: jsonBody({
+            ok: false,
+            error: { type: 'KillSdk', message: 'switched off', code: 99099 },
+          }),
+        } satisfies HttpResponse;
+      });
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      expect(m.Media.prototype.play).not.toBe(m.original);
+      await client.logException(new Error('trips the kill verdict'));
+      expect(m.Media.prototype.play).toBe(m.original);
     });
 
     it('leaves the platform untouched when captureAsyncOrigins is false', async () => {

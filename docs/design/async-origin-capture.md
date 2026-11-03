@@ -491,8 +491,11 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   species). Inherent to keeping `unhandledrejection` alive (§4.1).
 - **`describeThrown` serialises the whole object before clipping** to 256 characters. Contents of a thrown object appear in the report
   summary as well as in `exception.reason` (where they already were); nothing redacts them beyond the existing report-level rules.
-- **Target line:** `logException` gets call-site frames but not the `Target:` line (core has no recorder); media error messages are
-  passed through the message sanitiser, source URLs through `sanitizeUrl` with the query and fragment dropped entirely.
+- **Target line:** the browser `launch()` passes the target describer to the core client (`describeTarget`), so `logException` (and every
+  framework adapter) gets the `Target:` line like the detection providers; media error messages go through the message sanitiser,
+  source URLs through `sanitizeUrl` with the query and fragment dropped entirely. Page-controlled text (element id, font family) goes
+  through `sanitizeErrorMessage`: token shapes are redacted; email addresses are not part of that shared definition and this does not add
+  a second one.
 - **The budget counts calls, not failures.** A method called more than 200 times in a minute stops being captured for the rest of that
   minute, so a later rejection of a bursty `always` method (`Permissions.query`, `decodeAudioData`) can lack an origin.
 - **Retention.** A recorded origin holds its target (a media element) and, on V8, a lazily formatted stack until `.stack` is read; an
@@ -543,3 +546,16 @@ things.
   for a consumer that wants to tell a call site from a throw site; the viewer change that renders a heading and a chip (viewer branch
   `feat/async-origin-call-frames`) is therefore NOT being pushed.
 - `skipFrames` hides the top N frames of whatever frames are reported, call site included; no SDK path or adapter passes it by default.
+
+## 14. Review round 4 (PR #176 threads)
+
+- **One definition of "has frames".** The `@`-dialect parser accepted any line containing `@`, so header text like
+  `NotAllowedError: connect user@host:8080 failed` became a bogus frame (and the grouping location); it now needs `:line:col` (or
+  Safari's `[native code]`). `parseV8Stack` ignores an unindented line that merely starts with "at " (message text). The recorder's
+  predicate is injectable (`hasFrames`), and the browser passes `parseStack(stack).length > 0`.
+- **Arming covers every report path and only the reported error.** The enricher (run by `unhandledrejection`, window `error`,
+  `logException`, framework error channels) arms; `FrameEnricher` gets `{ depth }`, so a frameless Error in a `cause` chain (React's
+  component stack) does not arm. The recorder is also released when the collector switches the SDK off (a detection provider whose
+  `stop()` releases it), and `event.promise` links a fallback-mode origin (keyed by promise) to the reason.
+- **`logException` description:** header, then the call site, then the `Caused by:` chain, then the `Target:` line; a linked cause no
+  longer suppresses the call site.

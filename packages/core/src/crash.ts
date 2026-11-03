@@ -88,7 +88,12 @@ export interface NativeCrashJson extends CrashProvenance {
  * Add to a parsed stack before it becomes wire frames. Given the error the frames came from, returns the
  * frames to use (typically the same array with `variables` filled in).
  */
-export type FrameEnricher = (error: unknown, frames: StackFrame[]) => StackFrame[];
+export type FrameEnricher = (
+  error: unknown,
+  frames: StackFrame[],
+  /** Where this error sits in the report: `depth` 0 is the error being reported, 1+ are the errors in its `cause` chain. */
+  info?: { depth: number },
+) => StackFrame[];
 
 /**
  * Chain frame enrichers left to right, each seeing what the previous added.
@@ -212,7 +217,7 @@ function buildException(
   // Runs per exception in the `cause` chain, not just the outermost: the frames that matter are often
   // the original cause's, and a chained error is exactly where "which value was it, three throws ago"
   // is hardest to answer from the stack alone.
-  const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed);
+  const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed, { depth });
   // Frames an enricher supplied (the call site of a stackless async rejection) were parsed after the stamp above. The worker
   // symbolicates by per-frame debug_id BEFORE it signs, so without one the grouping location is the minified position.
   if (frames !== parsed) {
@@ -272,7 +277,9 @@ function syntheticException(
   // are the CALLER's own and a report-site capture lines up with them exactly. Skipped when there are no
   // frames, so a bare non-Error costs nothing.
   const enriched =
-    enrichFrames !== undefined && frames.length > 0 ? enrichFrames(value, frames) : frames;
+    enrichFrames !== undefined && frames.length > 0
+      ? enrichFrames(value, frames, { depth: 0 })
+      : frames;
   if (enriched !== frames && stamp !== undefined) {
     applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
   }
@@ -290,9 +297,15 @@ function syntheticException(
 /** A display name for a thrown value: its own `name`, else its class, else its primitive type. Never throws. */
 function typeTag(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
+    // Two reads, each guarded on its own: a throwing `name` getter must not cost the class name.
+    let named: unknown;
     try {
-      const named = (value as { name?: unknown }).name;
-      if (typeof named === 'string' && named !== '') return named;
+      named = (value as { name?: unknown }).name;
+    } catch {
+      named = undefined;
+    }
+    if (typeof named === 'string' && named !== '') return named;
+    try {
       const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
       return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
     } catch {
@@ -367,7 +380,7 @@ export function describeThrown(value: unknown): string {
     }
     return clip(String(value));
   } catch {
-    return engineTag(value);
+    return clip(engineTag(value));
   }
 }
 

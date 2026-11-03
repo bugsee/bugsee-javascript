@@ -62,7 +62,12 @@ describe.each(ENGINES)('async origin through framework adapters - real $name', (
       const pages = await startPageServer(script);
       try {
         sdkErrors = (
-          await runPage(browser, pages.url, '/', collector.url, () => waitForUploads(collector, 1))
+          await runPage(browser, pages.url, '/', collector.url, async () => {
+            await waitForUploads(collector, 1);
+            // "Exactly once" needs a window in which a SECOND report (the framework channel AND unhandledrejection) could arrive:
+            // the context must not close the moment the first upload lands.
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          })
         ).sdkErrors;
       } finally {
         await pages.close();

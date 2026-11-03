@@ -27,6 +27,7 @@ const recorderFor = (
   originOf: () => found,
   probeStack,
   originOfPromise: () => undefined,
+  adoptPromise: () => undefined,
   arm,
   installed: [],
   stop: () => undefined,
@@ -210,6 +211,27 @@ describe('describeOriginTarget', () => {
     expect(font.length).toBeLessThan(200);
   });
 
+  // Page-controlled text goes through the SAME sanitiser as network error messages (`sanitizeErrorMessage`): token shapes (a JWT, a
+  // `sk_live_` key) are redacted. Email addresses are NOT part of that shared definition, and this does not add a second one.
+  it('redacts token shapes in page-controlled text: an element id or a font family can carry one', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyJ9.c2lnbmF0dXJlLXNpZ25hdHVyZS1zaWduYXR1cmU';
+    const text =
+      describeOriginTarget(
+        origin({
+          target: { tagName: 'VIDEO', id: `player sk_live_4eC39HqLyjWDarjtT1zdp7dc ${jwt}` },
+        }),
+      ) ?? '';
+    expect(text).not.toContain('sk_live_4eC39HqLyjWDarjtT1zdp7dc');
+    expect(text).not.toContain(jwt);
+    expect(text).toContain('<video id="player');
+    const font =
+      describeOriginTarget(
+        origin({ api: 'FontFace.load', target: { family: `Brand ${jwt}`, status: 'error' } }),
+      ) ?? '';
+    expect(font).not.toContain(jwt);
+  });
+
   it('omits what a media element does not have', () => {
     expect(
       describeOriginTarget(
@@ -372,6 +394,25 @@ describe('createAsyncOriginReporting - arming', () => {
     expect(located.arm).not.toHaveBeenCalled();
   });
 
+  it('arms for the reported error only, not for an error found in its cause chain (React links a frameless component-stack Error)', () => {
+    const { arm, reporting: r } = reporting(undefined);
+    r.enrichFrames(headerOnly, [], { depth: 1 }); // a cause
+    expect(arm).not.toHaveBeenCalled();
+    r.enrichFrames(headerOnly, [], { depth: 0 }); // the reported error
+    expect(arm).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing stack getter counts as stackless (it arms), instead of silently not arming', () => {
+    const { arm, reporting: r } = reporting(undefined);
+    const hostile = {
+      get stack(): string {
+        throw new Error('stack getter');
+      },
+    };
+    expect(() => r.noteRejection(hostile)).not.toThrow();
+    expect(arm).toHaveBeenCalledTimes(1);
+  });
+
   it('never fails the report because arming did', () => {
     const r = createAsyncOriginReporting(
       recorderFor(undefined, undefined, () => {
@@ -381,5 +422,29 @@ describe('createAsyncOriginReporting - arming', () => {
     );
     expect(() => r.enrichFrames(headerOnly, [])).not.toThrow();
     expect(() => r.noteRejection(headerOnly)).not.toThrow();
+  });
+});
+
+describe('createAsyncOriginReporting - adoptPromise', () => {
+  it('passes the reason and the promise to the recorder, and never fails the report because it threw', () => {
+    const adopt = vi.fn();
+    const r = createAsyncOriginReporting(
+      { ...recorderFor(undefined), adoptPromise: adopt },
+      parseV8Stack,
+    );
+    const reason = {};
+    const promise = Promise.resolve();
+    r.adoptPromise(reason, promise);
+    expect(adopt).toHaveBeenCalledWith(reason, promise);
+    const boom = createAsyncOriginReporting(
+      {
+        ...recorderFor(undefined),
+        adoptPromise: () => {
+          throw new Error('adopt failed');
+        },
+      },
+      parseV8Stack,
+    );
+    expect(() => boom.adoptPromise(reason, promise)).not.toThrow();
   });
 });
