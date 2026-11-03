@@ -420,6 +420,25 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     expect(arm).toHaveBeenCalled(); // idempotent in the recorder; the description and the crash JSON both enrich
   });
 
+  it('still arms for a rejected NON-Error object (describeError asks the recorder about it, and the enricher arms)', () => {
+    const arm = vi.fn();
+    const origins = createAsyncOriginReporting(
+      {
+        originOf: () => undefined,
+        originOfPromise: () => undefined,
+        adoptPromise: () => undefined,
+        arm,
+        installed: [],
+        stop: () => undefined,
+      },
+      parseStack,
+    );
+    const w = fakeWindow();
+    started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason: { name: 'NotSupportedError' } });
+    expect(arm).toHaveBeenCalled();
+  });
+
   it('arms for the window error event too (a React root with no boundary never raises unhandledrejection)', () => {
     const arm = vi.fn();
     const origins = createAsyncOriginReporting(
