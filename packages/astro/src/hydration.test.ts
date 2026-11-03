@@ -3,8 +3,10 @@ import { setCarrierClient } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import {
   flushQueuedAstroHydrationErrors,
+  holdAstroHydrationWindow,
   listenForAstroHydrationErrors,
   stopListeningForAstroHydrationErrors,
+  updateAstroHydrationOptions,
 } from './hydration';
 
 const clientWith = (logException = vi.fn(() => Promise.resolve(undefined))) =>
@@ -331,5 +333,56 @@ describe('stopListeningForAstroHydrationErrors', () => {
     expect(() => stopListeningForAstroHydrationErrors(new EventTarget())).not.toThrow();
     other.dispatchEvent(hydrationError(new Error('x')));
     expect(logException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('holding a launch window on a listener without merging options', () => {
+  it('reports false when nothing listens on the target', () => {
+    expect(holdAstroHydrationWindow(new EventTarget())).toBe(false);
+  });
+
+  it('opens the queueing window while the listener keeps its own options, and merges them later without opening another', () => {
+    const target = new EventTarget();
+    const first = vi.fn(() => Promise.resolve(undefined));
+    const second = vi.fn(() => Promise.resolve(undefined));
+    let current: Bugsee | undefined; // the first host's client: stopped for a relaunch
+    listenForAstroHydrationErrors({ target, getClient: () => current });
+    flushQueuedAstroHydrationErrors({ target }); // the first registration settled: the window is closed
+    const early = new Error('dropped');
+    target.dispatchEvent(hydrationError(early)); // no window, no client: dropped
+    expect(holdAstroHydrationWindow(target)).toBe(true); // a relaunch of that host begins
+    const during = new Error('during the restart');
+    target.dispatchEvent(hydrationError(during)); // queued, and the listener still looks where it did
+    current = clientWith(first);
+    const afterRestart = { target, getClient: () => clientWith(second) };
+    updateAstroHydrationOptions(afterRestart); // success: the new routing
+    flushQueuedAstroHydrationErrors(afterRestart);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect((second.mock.calls[0] as unknown[])[0]).toBe(during);
+    expect(first).not.toHaveBeenCalled();
+    target.dispatchEvent(hydrationError(new Error('later')));
+    expect(second).toHaveBeenCalledTimes(2); // routed to the merged options
+    // the hold was settled by that one flush: the window is closed again, so a later error with no client is dropped
+    expect(holdAstroHydrationWindow(new EventTarget())).toBe(false);
+  });
+
+  it('a held window that is settled WITHOUT merging leaves the routing untouched', () => {
+    const target = new EventTarget();
+    const owner = vi.fn(() => Promise.resolve(undefined));
+    const options = { target, getClient: () => clientWith(owner) };
+    listenForAstroHydrationErrors(options);
+    flushQueuedAstroHydrationErrors(options);
+    expect(holdAstroHydrationWindow(target)).toBe(true);
+    flushQueuedAstroHydrationErrors({ target, getClient: () => undefined }); // a failed sibling launch: settle only
+    const error = new Error('island');
+    target.dispatchEvent(hydrationError(error));
+    expect(owner).toHaveBeenCalledTimes(1);
+    expect((owner.mock.calls[0] as unknown[])[0]).toBe(error);
+  });
+
+  it('updating options for a target nobody listens on is a no-op', () => {
+    expect(() =>
+      updateAstroHydrationOptions({ target: new EventTarget(), getClient: () => undefined }),
+    ).not.toThrow();
   });
 });

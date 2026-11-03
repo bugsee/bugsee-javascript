@@ -13,8 +13,10 @@ import {
 import { getCarrier, getCarrierClient, getCarrierPendingLaunch } from '@bugsee/core';
 import {
   flushQueuedAstroHydrationErrors,
+  holdAstroHydrationWindow,
   listenForAstroHydrationErrors,
   stopListeningForAstroHydrationErrors,
+  updateAstroHydrationOptions,
 } from './hydration';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
@@ -156,18 +158,18 @@ async function openWindow(
     ...(target !== undefined ? { target } : {}),
   };
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
-  // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists. Not so on a document another host's client
-  // already listens on: merging this launch's carrier and sink onto that listener now would misroute the live client's errors if this launch
-  // then failed, so it waits for the launch to succeed (the live client's own listener covers the meantime).
-  let listened = tracked === undefined || !usedByOther(tracked, host);
-  if (listened) {
+  // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists. On a document another host's client already
+  // listens on, only the window is HELD: merging this launch's carrier and sink onto that listener now would misroute the live client's
+  // errors if this launch then failed, so they are merged once it has succeeded.
+  const held =
+    tracked !== undefined && usedByOther(tracked, host) && holdAstroHydrationWindow(tracked);
+  if (!held) {
     listenForAstroHydrationErrors(hydration);
   }
   try {
     const client = await start();
-    if (!listened) {
-      listenForAstroHydrationErrors(hydration);
-      listened = true;
+    if (held) {
+      updateAstroHydrationOptions(hydration);
     }
     if (tracked !== undefined) {
       // The document this client is now on, under the host it now lives on: a relaunch with `carrier: undefined` moves it to the global
@@ -193,9 +195,7 @@ async function openWindow(
     }
     throw error;
   } finally {
-    if (listened) {
-      flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
-    }
+    flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
   }
 }
 

@@ -79,10 +79,12 @@ const world = vi.hoisted(() => {
     listen: vi.fn(),
     flush: vi.fn(),
     stop: vi.fn(),
+    hold: vi.fn(() => true),
+    update: vi.fn(),
     order: [] as string[],
   };
 });
-const { launch, relaunchUmbrella, listen, flush, stop, order } = world;
+const { launch, relaunchUmbrella, listen, flush, stop, hold, update, order } = world;
 vi.mock('@bugsee/bugsee', () => ({ launch, relaunch: relaunchUmbrella }));
 vi.mock('@bugsee/core', () => ({
   getCarrier: (host: object = globalThis) => world.slot(host),
@@ -93,6 +95,8 @@ vi.mock('./hydration', () => ({
   listenForAstroHydrationErrors: world.listen,
   flushQueuedAstroHydrationErrors: world.flush,
   stopListeningForAstroHydrationErrors: world.stop,
+  holdAstroHydrationWindow: world.hold,
+  updateAstroHydrationOptions: world.update,
 }));
 
 const doc = (id: string) => ({ id }) as unknown as Document;
@@ -119,6 +123,9 @@ describe('registerClient', () => {
     listen.mockReset();
     flush.mockReset();
     stop.mockReset();
+    hold.mockReset();
+    hold.mockImplementation(() => true);
+    update.mockReset();
     order.length = 0;
   });
 
@@ -527,7 +534,7 @@ describe('registerClient', () => {
     expect(stop).toHaveBeenLastCalledWith(doc('docA'));
   });
 
-  it("a launch that fails on a document another host's live client listens on does not touch that listener", async () => {
+  it("a launch that fails on a document another host's live client listens on holds the window but never touches that listener's options", async () => {
     const a = {};
     const b = {};
     const shared = doc('shared');
@@ -539,11 +546,14 @@ describe('registerClient', () => {
       'boom',
     );
     expect(listen).not.toHaveBeenCalled(); // B's carrier and sink never reached the live listener
-    expect(flush).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenLastCalledWith(shared);
+    expect(flush).toHaveBeenCalledTimes(1); // the held window is settled
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it('the same launch, once it succeeds, listens on the shared document and settles that registration', async () => {
+  it('the same launch, once it succeeds, merges its options onto the shared listener and settles that window', async () => {
     const a = {};
     const b = {};
     const shared = doc('shared');
@@ -551,9 +561,21 @@ describe('registerClient', () => {
     listen.mockClear();
     flush.mockClear();
     await registerClient('tok', { carrier: b, document: shared } as never);
-    expect(listen).toHaveBeenCalledTimes(1);
+    expect(listen).not.toHaveBeenCalled();
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenLastCalledWith({ target: shared, carrier: b, onError: undefined });
     expect(flush).toHaveBeenCalledTimes(1);
-    expect(lastListen()).toEqual({ target: shared, carrier: b });
+  });
+
+  it('when nothing is held on a shared document after all, it listens as usual', async () => {
+    const shared = doc('shared');
+    await registerClient('tok', { carrier: {}, document: shared } as never);
+    hold.mockReturnValueOnce(false);
+    listen.mockClear();
+    await registerClient('tok', { carrier: {}, document: shared } as never);
+    expect(listen).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('a relaunch that changes the carrier AND the document releases the document the lookup host was on', async () => {

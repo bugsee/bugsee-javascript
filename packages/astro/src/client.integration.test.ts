@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // record on the real carrier the way core does. This is what the unit tests (mocked listen/stop) cannot see: which documents really
 // still have a listener, and where an error really goes.
 type Opts = Record<string, unknown> & { carrier?: object };
-const state = { failNext: undefined as Error | undefined };
+const state = {
+  failNext: undefined as Error | undefined,
+  gate: undefined as Promise<void> | undefined,
+};
 const clients: Array<{ logException: ReturnType<typeof vi.fn> }> = [];
 
 vi.mock('@bugsee/bugsee', () => {
@@ -15,6 +18,7 @@ vi.mock('@bugsee/bugsee', () => {
     if (existing !== undefined) {
       return existing;
     }
+    await state.gate;
     if (state.failNext !== undefined) {
       const failure = state.failNext;
       state.failNext = undefined;
@@ -59,6 +63,7 @@ describe('hydration listeners against the real registry', () => {
     delete (globalThis as { document?: unknown }).document;
     clients.length = 0;
     state.failNext = undefined;
+    state.gate = undefined;
   });
 
   const reported = (client: { logException: ReturnType<typeof vi.fn> }, error: unknown) =>
@@ -170,5 +175,23 @@ describe('hydration listeners against the real registry', () => {
     const fresh = new Error('fresh');
     docB.dispatchEvent(hydrationError(fresh));
     expect(reported(client, fresh)).toBe(true);
+  });
+
+  it("a relaunch of the host that owns a shared document's listener still queues errors during the restart", async () => {
+    const carrierA = {};
+    const carrierB = {};
+    const shared = page();
+    await registerClient('tok', { carrier: carrierB, document: shared } as never);
+    await registerClient('tok', { carrier: carrierA, document: shared } as never); // A merged last: the listener routes to A
+    let open: () => void = () => undefined;
+    state.gate = new Promise((resolve) => (open = resolve));
+    const relaunching = relaunch({ carrier: carrierA } as never); // A is stopped; its new client is not up yet
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const during = new Error('island, mid-restart');
+    shared.dispatchEvent(hydrationError(during));
+    state.gate = undefined;
+    open();
+    const restarted = (await relaunching) as unknown as (typeof clients)[number];
+    expect(reported(restarted, during)).toBe(true); // queued, then reported to the new client: not dropped
   });
 });
