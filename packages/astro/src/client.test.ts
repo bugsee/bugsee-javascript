@@ -187,6 +187,39 @@ describe('registerClient', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
+  it('always states the carrier and sink, so an explicit undefined replaces what the listener kept (core relaunches on the global carrier)', async () => {
+    launch.mockResolvedValue({ id: 1 });
+    relaunchUmbrella.mockResolvedValue({ id: 2 });
+    await registerClient('tok', { carrier: {}, onError: vi.fn() } as never);
+    await relaunch({ carrier: undefined, onError: undefined } as never);
+    const passed = listen.mock.lastCall?.[0] as Record<string, unknown>;
+    expect(Object.hasOwn(passed, 'carrier') && passed.carrier === undefined).toBe(true);
+    expect(Object.hasOwn(passed, 'onError') && passed.onError === undefined).toBe(true);
+  });
+
+  it('a relaunch started while a registration is still launching waits for it and builds on its options (core awaits the pending launch)', async () => {
+    const doc = { id: 'explicit' } as unknown as Document;
+    let finish: (client: unknown) => void = () => undefined;
+    launch.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    relaunchUmbrella.mockResolvedValue({ id: 2 });
+    const registering = registerClient('tok', { document: doc } as never);
+    const relaunching = relaunch();
+    finish({ id: 1 });
+    await Promise.all([registering, relaunching]);
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
+    await relaunch();
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
+  });
+
+  it('a relaunch still goes ahead when the launch it waited for failed', async () => {
+    launch.mockRejectedValue(new Error('nope'));
+    relaunchUmbrella.mockResolvedValue({ id: 2 });
+    const registering = registerClient('tok');
+    const relaunching = relaunch();
+    await expect(registering).rejects.toThrow('nope');
+    await expect(relaunching).resolves.toEqual({ id: 2 });
+  });
+
   it('passes the onError sink to the hydration listener, and a relaunch that gives none keeps it (core keeps onError)', async () => {
     const onError = vi.fn();
     launch.mockResolvedValue({ id: 1 });

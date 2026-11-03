@@ -48,6 +48,8 @@ type Remembered = {
 // decided by precedence, so a relaunch that adds only a window must not displace a kept explicit document.
 let remembered: Remembered = {};
 let lastClient: unknown;
+// The launch still in flight, which a relaunch waits for before reading `remembered` (core's `relaunchWith` awaits the pending launch).
+let inFlight: Promise<unknown> = Promise.resolve();
 
 function pick(options: HydrationInput): Remembered {
   const picked: Remembered = {};
@@ -68,16 +70,35 @@ function pick(options: HydrationInput): Remembered {
  * nothing over). The remembered state moves only once the start succeeded, and a repeat registration (core ignores it and returns the live
  * client, the same object) changes nothing.
  */
-async function withHydrationWindow(
+function withHydrationWindow(
+  options: HydrationInput,
+  base: () => Remembered,
+  start: () => Promise<Bugsee>,
+  afterPending = false,
+): Promise<Bugsee> {
+  const previous = inFlight;
+  const run = (async () => {
+    if (afterPending) {
+      await previous.then(undefined, () => undefined);
+    }
+    return await openWindow(options, base(), start);
+  })();
+  inFlight = run;
+  return run;
+}
+
+async function openWindow(
   options: HydrationInput,
   base: Remembered,
   start: () => Promise<Bugsee>,
 ): Promise<Bugsee> {
   const next = { ...base, ...pick(options) };
   const target = launchDocument(next.document, next.window);
+  // `onError` and `carrier` are ALWAYS stated: the listener merges what it is given over what it kept, so an absent key would bring back a
+  // carrier or sink that this launch no longer has.
   const hydration = {
-    ...(next.onError !== undefined ? { onError: next.onError } : {}),
-    ...(next.carrier !== undefined ? { carrier: next.carrier } : {}),
+    onError: next.onError,
+    carrier: next.carrier,
     ...(target !== undefined ? { target } : {}),
   };
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
@@ -103,7 +124,11 @@ export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
 ): Promise<Bugsee> {
-  return await withHydrationWindow(options, {}, () => launch(appToken, options));
+  return await withHydrationWindow(
+    options,
+    () => ({}),
+    () => launch(appToken, options),
+  );
 }
 
 /**
@@ -111,7 +136,12 @@ export async function registerClient(
  * drain before the new one is set, and an island that fails to hydrate meanwhile must not be lost.
  */
 export async function relaunch(options?: Parameters<typeof umbrellaRelaunch>[0]): Promise<Bugsee> {
-  return await withHydrationWindow(options, remembered, () => umbrellaRelaunch(options));
+  return await withHydrationWindow(
+    options,
+    () => remembered,
+    () => umbrellaRelaunch(options),
+    true,
+  );
 }
 
 // API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
