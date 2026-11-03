@@ -43,6 +43,9 @@ const hydrationOptions = (
   };
 };
 
+// The hydration options of the last registration (see `withHydrationWindow`).
+let lastHydration: ReturnType<typeof hydrationOptions> = {};
+
 /**
  * Open the hydration listener's launch window, run `start`, and close the window in a `finally`: an error dispatched while the client is
  * (re)starting is queued, and the flush runs whether the start succeeded or failed.
@@ -58,7 +61,10 @@ async function withHydrationWindow<T>(
     | undefined,
   start: () => Promise<T>,
 ): Promise<T> {
-  const hydration = hydrationOptions(options);
+  // Like core's `relaunchWith`, which keeps `document`, `window`, `carrier` and `onError` from the previous launch and lets an explicit one
+  // win: a plain `relaunch()` must watch the same document, on the same carrier, with the same sink.
+  const hydration = { ...lastHydration, ...hydrationOptions(options) };
+  lastHydration = hydration;
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
   // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
   listenForAstroHydrationErrors(hydration);

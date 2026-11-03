@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { launch, relaunchUmbrella, listen, flush, order } = vi.hoisted(() => ({
   launch: vi.fn(),
@@ -13,9 +13,16 @@ vi.mock('./hydration', () => ({
   flushQueuedAstroHydrationErrors: flush,
 }));
 
-import { registerClient, relaunch } from './client';
+// The client module remembers the last registration's hydration options (like core's relaunch keeps them), so each test gets a fresh one.
+let registerClient: typeof import('./client').registerClient;
+let relaunch: typeof import('./client').relaunch;
 
 describe('registerClient', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ registerClient, relaunch } = await import('./client'));
+  });
+
   afterEach(() => {
     launch.mockReset();
     relaunchUmbrella.mockReset();
@@ -77,7 +84,23 @@ describe('registerClient', () => {
       },
     };
     await registerClient('tok', { window: hostile } as never);
-    expect(listen).toHaveBeenLastCalledWith({}); // no document to select: the listener keeps its default
+    // nothing selectable this time: the earlier registration's document is KEPT (core's relaunch keeps `document` and `window` too)
+    expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
+  });
+
+  it('a plain relaunch() keeps the earlier document, carrier and onError (core keeps them), and an explicit one wins', async () => {
+    const doc = {} as Document;
+    const carrier = {};
+    const onError = vi.fn();
+    launch.mockResolvedValue({});
+    relaunchUmbrella.mockResolvedValue({});
+    await registerClient('tok', { document: doc, carrier, onError } as never);
+    await relaunch();
+    expect(listen).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
+    expect(flush).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
+    const other = {} as Document;
+    await relaunch({ document: other } as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: other, carrier, onError });
   });
 
   it('hands a custom carrier to the hydration listener, so it looks where the client lives', async () => {
@@ -95,12 +118,12 @@ describe('registerClient', () => {
     expect(flush).toHaveBeenCalledTimes(1);
   });
 
-  it('listens for astro:hydration-error after the launch, passing the onError sink along', async () => {
+  it('passes the onError sink to the hydration listener, and keeps it for a later call that gives none (core keeps onError)', async () => {
     const onError = vi.fn();
     await registerClient('tok', { onError });
     expect(listen).toHaveBeenCalledTimes(1);
     expect(listen).toHaveBeenCalledWith({ onError });
     await registerClient('tok');
-    expect(listen).toHaveBeenLastCalledWith({});
+    expect(listen).toHaveBeenLastCalledWith({ onError });
   });
 });
