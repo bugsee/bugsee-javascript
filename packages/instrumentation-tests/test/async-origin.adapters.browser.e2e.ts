@@ -74,9 +74,9 @@ describe.each(ENGINES)('async origin through framework adapters - real $name', (
       await collector?.close();
     });
 
-    it('reports without internal SDK errors', () => {
+    it('reports without internal SDK errors, and exactly once (the framework channel and unhandledrejection must not both report)', () => {
       expect(sdkErrors).toEqual([]);
-      expect(bundles.length).toBeGreaterThan(0);
+      expect(bundles).toHaveLength(1);
     });
 
     it('the report carries the call site of the failed play(), naming the app function', () => {

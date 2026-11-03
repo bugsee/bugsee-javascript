@@ -1,4 +1,4 @@
-// A batch of REAL platform APIs that reject asynchronously, each started from a named application function (non-tail: see the React
+// A batch of nine REAL platform APIs that reject asynchronously, each started from a named application function (non-tail: see the React
 // scenario), with the rejection handed to `logException`. Each case records whether the engine's reason has a stack of its own; the
 // test asserts the report found the call site for exactly those that do not. Armed rows (image.decode, FontFace.load, ...) only start
 // recording after the first stackless, unlocated rejection reaches the SDK, so one such rejection is left unhandled first.
@@ -26,7 +26,7 @@ const bridge: E2EWindow['__E2E__'] = { state: 'running', sdkErrors: [] };
 w.__E2E__ = bridge;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-const BROKEN_IMAGE = '/broken.png'; // not served as an image: 404 page
+const BROKEN_IMAGE = '/broken.png'; // the page server answers an unknown path with an HTML page: not decodable as an image
 const a = (promise: Promise<unknown>): Promise<unknown> => {
   const started = promise; // non-tail: keep the calling function's frame on WebKit
   return started;

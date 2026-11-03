@@ -15,6 +15,14 @@ export interface BridgeState {
   error?: string;
   sdkErrors: string[];
   promiseIsNative?: boolean;
+  /** The platform-API batch's per-case results (the apis scenario only). */
+  cases?: Array<{
+    name: string;
+    mode: string;
+    settled: string;
+    reasonName?: string;
+    hasOwnStack?: boolean;
+  }>;
 }
 
 /** Bundle a scenario the way a customer's bundler would: real esbuild over the real workspace source, unminified (frame names matter). */
@@ -69,6 +77,8 @@ export async function startPageServer(
     }
     if (path === '/broken.mp4') {
       // 200 and a video type, but not a video: the element fails to open it and `play()` rejects with NotSupportedError.
+      // (Any OTHER unknown path gets the empty HTML page below, so `/missing-sw.js`, `/broken.png` and the like fail as a wrong
+      // MIME type or an undecodable body, not as a network 404.)
       res.writeHead(200, { 'content-type': 'video/mp4' });
       res.end('this is not a video');
       return;
@@ -108,35 +118,45 @@ export async function runPage(
   pageUrl: string,
   path: string,
   collectorUrl: string,
-  // Awaited before the context closes: closing it cancels an upload still in flight.
-  beforeClose: () => Promise<void> = async () => undefined,
-): Promise<{ sdkErrors: string[]; pageErrors: string[]; promiseIsNative: boolean | undefined }> {
+  // Awaited with the finished bridge before the context closes: closing it cancels an upload still in flight.
+  beforeClose: (bridge: BridgeState) => Promise<void> = async () => undefined,
+): Promise<{
+  sdkErrors: string[];
+  pageErrors: string[];
+  promiseIsNative: boolean | undefined;
+  bridge: BridgeState;
+}> {
   const context = await browser.newContext();
-  const page: Page = await context.newPage();
-  const pageErrors: string[] = [];
-  page.on('pageerror', (err) => pageErrors.push(String(err)));
-  await page.goto(`${pageUrl}${path}`);
-  await page.evaluate((collector) => {
-    (window as unknown as { __E2E_COLLECTOR__: string }).__E2E_COLLECTOR__ = collector as string;
-  }, collectorUrl);
-  await page.addScriptTag({ url: `${pageUrl}/scenario.js` });
-  await page.waitForFunction(
-    () => (window as unknown as { __E2E__?: BridgeState }).__E2E__?.state !== 'running',
-    undefined,
-    { timeout: 45_000 },
-  );
-  const bridge = (await page.evaluate(
-    () => (window as unknown as { __E2E__: BridgeState }).__E2E__,
-  )) as BridgeState;
   try {
-    await beforeClose();
+    const page: Page = await context.newPage();
+    const pageErrors: string[] = [];
+    page.on('pageerror', (err) => pageErrors.push(String(err)));
+    await page.goto(`${pageUrl}${path}`);
+    await page.evaluate((collector) => {
+      (window as unknown as { __E2E_COLLECTOR__: string }).__E2E_COLLECTOR__ = collector as string;
+    }, collectorUrl);
+    await page.addScriptTag({ url: `${pageUrl}/scenario.js` });
+    await page.waitForFunction(
+      () => (window as unknown as { __E2E__?: BridgeState }).__E2E__?.state !== 'running',
+      undefined,
+      { timeout: 90_000 },
+    );
+    const bridge = (await page.evaluate(
+      () => (window as unknown as { __E2E__: BridgeState }).__E2E__,
+    )) as BridgeState;
+    if (bridge.state === 'failed') {
+      throw new Error(`scenario failed: ${bridge.error ?? '(no error)'}`);
+    }
+    await beforeClose(bridge);
+    return {
+      sdkErrors: bridge.sdkErrors,
+      pageErrors,
+      promiseIsNative: bridge.promiseIsNative,
+      bridge,
+    };
   } finally {
     await context.close();
   }
-  if (bridge.state === 'failed') {
-    throw new Error(`scenario failed: ${bridge.error ?? '(no error)'}`);
-  }
-  return { sdkErrors: bridge.sdkErrors, pageErrors, promiseIsNative: bridge.promiseIsNative };
 }
 
 /** Poll until the collector has received `count` uploads, or fail with what it did receive. */
