@@ -2,7 +2,7 @@
 // method, and what the SDK does with it. DATA ONLY — no behaviour; the wrapper factory (a later step) reads it.
 //
 // The candidate list is generated from TypeScript's `lib.dom.d.ts` (`pnpm async-origin:refresh` →
-// `spec/dom-promise-methods.snapshot.json`), and `async-origin-table.drift.test.ts` fails when this table and that list disagree,
+// `spec/dom-promise-methods.snapshot.json`), and `packages/instrumentation-tests/test/async-origin-drift.test.ts` fails when this table and that list disagree,
 // so a new TypeScript release that adds an API forces a decision here rather than silently going unwrapped.
 
 /**
@@ -375,8 +375,9 @@ export const ASYNC_ORIGIN_TABLE: readonly AsyncOriginRow[] = [
 ];
 
 /**
- * Real promise-returning APIs that `lib.dom.d.ts` does not declare (it lags the platform), added BY HAND. The drift test cannot see
- * these, so each carries its source. Kept to the ones the design measured or named; add more with a measurement.
+ * Real promise-returning APIs that `lib.dom.d.ts` does not declare (it lags the platform), added BY HAND. The generated snapshot cannot
+ * contain these, so each carries its source; the drift test only checks that each is STILL missing from lib.dom.d.ts (once TypeScript
+ * declares it, it is classified by the generated table and the extra goes). Kept to the ones the design measured or named; add more with a measurement.
  */
 export const ASYNC_ORIGIN_EXTRAS: readonly AsyncOriginRow[] = [
   {

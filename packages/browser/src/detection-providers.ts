@@ -33,13 +33,14 @@ function describeError(
 ): { summary: string; description?: string } {
   if (value instanceof Error) {
     const summary = value.message || value.name;
-    if (value.stack) {
-      const frames = parseStack(value.stack);
+    const frames = value.stack ? parseStack(value.stack) : [];
+    if (frames.length > 0) {
       // Stamp source-map debug-IDs (when a build injected them) so the report can symbolicate.
       applyDebugIds(frames, { parseStack });
       return { summary, description: formatStack(frames) };
     }
-    // No stack of its own: an async platform rejection (`video.play()`). Where the call was made, and on what, if the recorder saw it.
+    // No frames of its own (no stack, or only the `Name: message` header Chromium gives an async DOMException): an async platform
+    // rejection (`video.play()`). Where the call was made, and on what, if the recorder saw it.
     const located = describeOrigin(value, origins);
     return located === undefined ? { summary } : { summary, description: located };
   }
@@ -171,7 +172,6 @@ class WindowUnhandledRejectionProvider extends BrowserWindowDetectionProvider {
 
   protected onDetected(event: Event): void {
     const reason = (event as PromiseRejectionEvent).reason;
-    this.origins?.noteRejection(reason);
     const { summary, description } = describeError(reason, this.origins);
     const crash = crashOf(reason, this.origins);
     this.handleReportingRequest(

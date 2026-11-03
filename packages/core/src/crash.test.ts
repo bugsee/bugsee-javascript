@@ -588,6 +588,17 @@ describe('toCrashFrame — call-site origin', () => {
 });
 
 describe('buildCrashJson with a hostile non-Error value', () => {
+  it("does not throw when the value's message getter throws", () => {
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+    };
+    const crash = buildCrashJson(hostile);
+    expect(crash.exception.name).toBe('Object');
+    expect(crash.exception.reason).toBe('[object Object]');
+  });
+
   it('still produces an exception when the type name cannot be read', () => {
     const throwingName = {
       get name(): string {
@@ -600,6 +611,15 @@ describe('buildCrashJson with a hostile non-Error value', () => {
 });
 
 describe('describeThrown', () => {
+  it('titles built-ins by what they are, not by their JSON: a RegExp by its source, a collection or byte buffer by its class alone', () => {
+    expect(describeThrown(/foo/i)).toBe('RegExp: /foo/i');
+    expect(describeThrown(new Date(Number.NaN))).toBe('Date: Invalid Date');
+    expect(describeThrown(new Set([1, 2, 3]))).toBe('Set');
+    expect(describeThrown(new Map([[1, 2]]))).toBe('Map');
+    expect(describeThrown(new Uint8Array([69, 78, 79]))).toBe('Uint8Array');
+    expect(describeThrown(new ArrayBuffer(8))).toBe('ArrayBuffer');
+  });
+
   it('never throws for a revoked proxy or a hostile toStringTag', () => {
     const revoked = Proxy.revocable({}, {});
     revoked.revoke();
@@ -613,7 +633,7 @@ describe('describeThrown', () => {
       },
     };
     expect(() => describeThrown(hostile)).not.toThrow();
-    expect(describeThrown(hostile)).toBe('[object Object]');
+    expect(describeThrown(hostile)).toBe('Object: [object Object]');
   });
 
   it('keeps a string, number, boolean, null, undefined, symbol and bigint as their plain text', () => {
@@ -652,7 +672,17 @@ describe('describeThrown', () => {
         throw new Error('getter');
       },
     };
-    expect(describeThrown(bad)).toBe('[object Object]');
+    expect(describeThrown(bad)).toBe('Object: [object Object]');
+  });
+
+  it('survives a function whose name getter throws', () => {
+    const fn = (): void => undefined;
+    Object.defineProperty(fn, 'name', {
+      get(): never {
+        throw new Error('name getter');
+      },
+    });
+    expect(describeThrown(fn)).toBe('[object Function]');
   });
 
   it('does not print the source of a function', () => {

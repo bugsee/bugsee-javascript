@@ -2795,6 +2795,28 @@ describe('launch', () => {
       expect(m.Media.prototype.play).toBe(m.original);
     });
 
+    it('arms the armed rows when a stackless error is reported through logException (no unhandledrejection involved)', async () => {
+      const w = fakeWindow();
+      const reason = Object.assign(new Error('The source image cannot be decoded.'), {
+        name: 'EncodingError',
+      });
+      Object.defineProperty(reason, 'stack', { value: undefined });
+      class HTMLImageElement {
+        decode(): Promise<void> {
+          return Promise.reject(reason);
+        }
+      }
+      const win = Object.assign(w.win, { HTMLImageElement, Promise, Error });
+      const original = HTMLImageElement.prototype.decode;
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: win, captureStore: memStore() }),
+      );
+      expect(HTMLImageElement.prototype.decode).toBe(original); // an armed row costs nothing until the first failure
+      await client.logException(reason);
+      expect(HTMLImageElement.prototype.decode).not.toBe(original);
+    });
+
     it('leaves the platform untouched when captureAsyncOrigins is false', async () => {
       const m = mediaWindow();
       await launchTracked(

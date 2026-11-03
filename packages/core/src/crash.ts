@@ -314,12 +314,24 @@ const engineTag = (value: unknown): string => {
   }
 };
 
+// Values whose JSON says nothing (`{}` for a Set, a RegExp, a Map) or is pure noise (the bytes of a buffer): shown by class alone.
+const isOpaque = (value: object): boolean =>
+  ArrayBuffer.isView(value) ||
+  value instanceof ArrayBuffer ||
+  value instanceof Set ||
+  value instanceof Map ||
+  value instanceof WeakSet ||
+  value instanceof WeakMap;
+
 /** A bounded, never-throwing rendering of a thrown value for `exception.reason`. */
 function renderThrowable(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
-    const message = (value as { message?: unknown }).message;
-    if (typeof message === 'string' && message !== '') return message;
     try {
+      // The `message` read is inside the try too: a getter can throw, and so can a proxy.
+      const message = (value as { message?: unknown }).message;
+      if (typeof message === 'string' && message !== '') return message;
+      if (value instanceof RegExp || value instanceof Date) return String(value);
+      if (isOpaque(value)) return '';
       // A circular or getter-throwing object must not take the report down with it.
       return JSON.stringify(value) ?? String(value);
     } catch {

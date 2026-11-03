@@ -19,11 +19,15 @@ const origin = (over: Partial<AsyncOrigin> = {}): AsyncOrigin => ({
   ...over,
 });
 
-const recorderFor = (found: AsyncOrigin | undefined, probeStack?: string): AsyncOriginRecorder => ({
+const recorderFor = (
+  found: AsyncOrigin | undefined,
+  probeStack?: string,
+  arm: () => void = () => undefined,
+): AsyncOriginRecorder => ({
   originOf: () => found,
   probeStack,
   originOfPromise: () => undefined,
-  arm: () => undefined,
+  arm,
   installed: [],
   stop: () => undefined,
 });
@@ -315,5 +319,67 @@ describe('createAsyncOriginReporting', () => {
     const reporting = createAsyncOriginReporting(hostile, parseV8Stack);
     expect(() => reporting.noteRejection(stackless)).not.toThrow();
     expect(reporting.describeTarget(stackless)).toBeUndefined();
+  });
+});
+
+// `arm()` installs the armed rows. It must fire for EVERY report path that meets a stackless reason nobody could locate: a React
+// boundary, Vue's errorHandler, window `error` and `logException` never raise `unhandledrejection`.
+describe('createAsyncOriginReporting - arming', () => {
+  const headerOnly = Object.assign(new Error('x'), { name: 'NotAllowedError' });
+  Object.defineProperty(headerOnly, 'stack', { value: 'NotAllowedError: x' });
+  const withFrames = new Error('y');
+  Object.defineProperty(withFrames, 'stack', { value: 'Error: y\n    at f (a.js:1:1)' });
+
+  const reporting = (found: AsyncOrigin | undefined) => {
+    const arm = vi.fn();
+    return {
+      arm,
+      reporting: createAsyncOriginReporting(recorderFor(found, undefined, arm), parseV8Stack),
+    };
+  };
+
+  it('noteRejection arms for a reason with no stack or a header-only stack nobody located', () => {
+    const { arm, reporting: r } = reporting(undefined);
+    r.noteRejection({ name: 'NotSupportedError' });
+    r.noteRejection(headerOnly);
+    expect(arm).toHaveBeenCalledTimes(2);
+  });
+
+  it('noteRejection does not arm for a reason with frames, a located one, or a primitive', () => {
+    const none = reporting(undefined);
+    none.reporting.noteRejection(withFrames);
+    none.reporting.noteRejection('a string');
+    none.reporting.noteRejection(null);
+    const located = reporting(origin());
+    located.reporting.noteRejection({ name: 'NotSupportedError' });
+    expect(none.arm).not.toHaveBeenCalled();
+    expect(located.arm).not.toHaveBeenCalled();
+  });
+
+  it('the enricher itself arms when it meets an unlocated stackless reason (so logException and window error arm too)', () => {
+    const { arm, reporting: r } = reporting(undefined);
+    expect(r.enrichFrames(headerOnly, [])).toEqual([]);
+    expect(arm).toHaveBeenCalledTimes(1);
+  });
+
+  it('the enricher does not arm when the error has frames or its origin is known', () => {
+    const own: StackFrame[] = [{ function: 'f', file: 'a.js', line: 1, column: 1 }];
+    const none = reporting(undefined);
+    none.reporting.enrichFrames(withFrames, own);
+    const located = reporting(origin());
+    located.reporting.enrichFrames({ name: 'NotSupportedError' }, []);
+    expect(none.arm).not.toHaveBeenCalled();
+    expect(located.arm).not.toHaveBeenCalled();
+  });
+
+  it('never fails the report because arming did', () => {
+    const r = createAsyncOriginReporting(
+      recorderFor(undefined, undefined, () => {
+        throw new Error('arm failed');
+      }),
+      parseV8Stack,
+    );
+    expect(() => r.enrichFrames(headerOnly, [])).not.toThrow();
+    expect(() => r.noteRejection(headerOnly)).not.toThrow();
   });
 });

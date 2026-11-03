@@ -885,3 +885,90 @@ describe("installAsyncOrigins - the wrapper frame in a reason's own stack", () =
     expect(r.probeStack).toBeUndefined();
   });
 });
+
+// Review findings: nothing the recorder meets may throw into the page, leak a node, or strand a patch.
+describe('installAsyncOrigins - hostile environments', () => {
+  it('removes the probe iframe even when reading its Promise throws', () => {
+    const removed = vi.fn();
+    const frame = {
+      style: {} as Record<string, string>,
+      setAttribute: vi.fn(),
+      remove: removed,
+      get contentWindow(): never {
+        throw new Error('cross-origin');
+      },
+    };
+    const doc = {
+      createElement: () => frame,
+      documentElement: { appendChild: () => undefined },
+    };
+    const g: Fake = {
+      ...fakeGlobal(() => Promise.resolve()),
+      Promise: class NotNative {},
+      document: doc,
+    };
+    expect(() => install(g, { intrinsicPromisePrototype: () => undefined })).not.toThrow();
+    expect(removed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw out of install when the timer cannot be created; the wrappers still restore', () => {
+    const onError = vi.fn();
+    const g = fakeGlobal(() => Promise.resolve());
+    const original = media(g).prototype.play;
+    const r = install(g, {
+      onError,
+      setInterval: () => {
+        throw new Error('no timers');
+      },
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(media(g).prototype.play).not.toBe(original);
+    r.stop();
+    expect(media(g).prototype.play).toBe(original);
+  });
+
+  it('returns the platform result untouched when reading its then throws', () => {
+    const result = {
+      // biome-ignore lint/suspicious/noThenProperty: a platform result whose `then` getter throws is exactly what is under test
+      get then(): never {
+        throw new Error('hostile getter');
+      },
+    };
+    const g = fakeGlobal(() => result);
+    install(g);
+    const el = new (g.Media as new () => { play(): unknown })();
+    expect(el.play()).toBe(result);
+  });
+
+  it('keeps restoring and clears the timer when one wrapped method was replaced by a throwing accessor', () => {
+    const clearInterval = vi.fn();
+    class A {
+      a(): unknown {
+        return 1;
+      }
+    }
+    class B {
+      b(): unknown {
+        return 2;
+      }
+    }
+    const g: Fake = { A, B, Promise, Error };
+    const originalB = B.prototype.b;
+    const r = installAsyncOrigins({
+      global: g,
+      rows: [row({ iface: 'A', methods: ['a'] }), row({ iface: 'B', methods: ['b'] })],
+      setInterval: () => 1,
+      clearInterval,
+    });
+    // another patcher replaced A.a with an accessor whose getter throws
+    Object.defineProperty(A.prototype, 'a', {
+      configurable: true,
+      get(): never {
+        throw new Error('hostile');
+      },
+    });
+    expect(() => r.stop()).not.toThrow();
+    expect(B.prototype.b).toBe(originalB); // the later entry was still restored
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+  });
+});

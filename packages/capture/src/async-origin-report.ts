@@ -177,8 +177,35 @@ export function createAsyncOriginReporting(
   recorder: AsyncOriginRecorder,
   parseStack: (stack: string) => StackFrame[],
 ): AsyncOriginReporting {
+  const enrich = createAsyncOriginEnricher(recorder, parseStack);
+
+  // "Stackless" is decided by FRAMES, as everywhere else: no `.stack`, or one that parses to nothing (Chromium's async DOMExceptions
+  // carry only the `Name: message` header line).
+  const noteRejection = (reason: unknown): void => {
+    try {
+      if (typeof reason !== 'object' || reason === null) {
+        return;
+      }
+      const stack = (reason as { stack?: unknown }).stack;
+      const hasOwnFrames = typeof stack === 'string' && parseStack(stack).length > 0;
+      if (!hasOwnFrames && recorder.originOf(reason) === undefined) {
+        recorder.arm();
+      }
+    } catch {
+      // reporting must never fail because the recorder did
+    }
+  };
+
   return {
-    enrichFrames: createAsyncOriginEnricher(recorder, parseStack),
+    // The enricher runs on EVERY report path (unhandledrejection, window error, logException: React boundary, Vue errorHandler and the
+    // like never raise `unhandledrejection`), so arming from here covers all of them.
+    enrichFrames(error, frames) {
+      const enriched = enrich(error, frames);
+      if (frames.length === 0 && enriched.length === 0) {
+        noteRejection(error);
+      }
+      return enriched;
+    },
     describeTarget(reason) {
       try {
         const origin = recorder.originOf(reason);
@@ -187,21 +214,6 @@ export function createAsyncOriginReporting(
         return undefined;
       }
     },
-    noteRejection(reason) {
-      try {
-        if (typeof reason !== 'object' || reason === null) {
-          return;
-        }
-        const stack = (reason as { stack?: unknown }).stack;
-        if (
-          (typeof stack !== 'string' || stack === '') &&
-          recorder.originOf(reason) === undefined
-        ) {
-          recorder.arm();
-        }
-      } catch {
-        // reporting must never fail because the recorder did
-      }
-    },
+    noteRejection,
   };
 }

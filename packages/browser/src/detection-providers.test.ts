@@ -315,6 +315,21 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     recorder.stop();
   });
 
+  it('treats a header-only stack (Chromium async DOMException) as stackless: the description still names the call site and the target', async () => {
+    const reason = stacklessError();
+    Object.defineProperty(reason, 'stack', {
+      value: 'NotSupportedError: The element has no supported sources',
+    });
+    const { origins, recorder } = await located(reason);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    const req = requests[0] as ReportingRequest;
+    expect(req.report.description).toContain('startPlayback');
+    expect(req.report.description).toContain('Target: <video id="hero">');
+    recorder.stop();
+  });
+
   it('does the same for an error that reached the window error event (a React root with no boundary)', async () => {
     const reason = stacklessError();
     const { origins, recorder } = await located(reason);
@@ -344,7 +359,25 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     const w = fakeWindow();
     started(createUnhandledRejectionProvider(w.win, origins));
     w.emit('unhandledrejection', { reason: stacklessError() });
-    expect(arm).toHaveBeenCalledTimes(1);
+    expect(arm).toHaveBeenCalled(); // idempotent in the recorder; the description and the crash JSON both enrich
+  });
+
+  it('arms for the window error event too (a React root with no boundary never raises unhandledrejection)', () => {
+    const arm = vi.fn();
+    const origins = createAsyncOriginReporting(
+      {
+        originOf: () => undefined,
+        originOfPromise: () => undefined,
+        arm,
+        installed: [],
+        stop: () => undefined,
+      },
+      parseStack,
+    );
+    const w = fakeWindow();
+    started(createWindowErrorProvider(w.win, origins));
+    w.emit('error', { error: stacklessError(), message: 'x', filename: '', lineno: 0, colno: 0 });
+    expect(arm).toHaveBeenCalled();
   });
 
   it('reports exactly as before when no origin support is given, or the reason is unknown to it', () => {

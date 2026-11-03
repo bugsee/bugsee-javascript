@@ -76,8 +76,14 @@ const ZONE_THEN = '__zone_symbol__then';
 const isObjectLike = (value: unknown): value is object =>
   (typeof value === 'object' && value !== null) || typeof value === 'function';
 
-const isThenable = (value: unknown): value is { then: unknown } =>
-  isObjectLike(value) && typeof (value as { then?: unknown }).then === 'function';
+// Never throws: a platform result with a hostile `then` getter is simply not a thenable to us (the call must still return it).
+const isThenable = (value: unknown): value is { then: unknown } => {
+  try {
+    return isObjectLike(value) && typeof (value as { then?: unknown }).then === 'function';
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Does a `stack` string carry FRAMES? Chromium's async DOMExceptions have a stack that is only the header line (`NotAllowedError: ...`),
@@ -151,9 +157,12 @@ function cleanThenOf(
     }
     frame.setAttribute?.('aria-hidden', 'true');
     doc.documentElement.appendChild(frame);
-    const then = frame.contentWindow?.Promise?.prototype?.then;
-    frame.remove?.();
-    return isNative(then) ? (then as ThenFn) : undefined;
+    try {
+      const then = frame.contentWindow?.Promise?.prototype?.then;
+      return isNative(then) ? (then as ThenFn) : undefined;
+    } finally {
+      frame.remove?.(); // also when the read throws: never leave the probe in the page
+    }
   } catch {
     return undefined;
   }
@@ -254,12 +263,16 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       return;
     }
     timerStarted = true;
-    timer = setTimer(() => {
-      for (const counter of counters) {
-        counter.used = 0;
-      }
-    }, BUDGET_WINDOW_MS);
-    (timer as { unref?: () => void } | undefined)?.unref?.();
+    try {
+      timer = setTimer(() => {
+        for (const counter of counters) {
+          counter.used = 0;
+        }
+      }, BUDGET_WINDOW_MS);
+      (timer as { unref?: () => void } | undefined)?.unref?.();
+    } catch (error) {
+      onError(error); // no budget reset: the per-method cap then simply stays reached; the wrappers are installed and restorable
+    }
   };
 
   const thenOf = (promise: object): ThenFn | undefined => {
@@ -416,19 +429,20 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
       stopped = true;
       for (const entry of installed) {
         entry.state.active = false;
-        // Leave it alone when another patcher wrapped on top of ours: restoring would drop THEIR patch.
-        if (entry.owner[entry.name] === entry.wrapper) {
-          try {
+        // Leave it alone when another patcher wrapped on top of ours: restoring would drop THEIR patch. The read is inside the try: a
+        // replaced accessor can throw, and one bad entry must not strand the rest.
+        try {
+          if (entry.owner[entry.name] === entry.wrapper) {
             Object.defineProperty(entry.owner, entry.name, {
               ...Object.getOwnPropertyDescriptor(entry.owner, entry.name),
               value: entry.original,
             });
-          } catch (error) {
-            onError(error);
           }
+        } catch (error) {
+          onError(error);
         }
       }
-      if (timerStarted && clearTimer !== undefined) {
+      if (timerStarted && timer !== undefined && clearTimer !== undefined) {
         clearTimer(timer);
       }
     },

@@ -56,7 +56,7 @@ likely a stack exists, and Chromium is much worse than Firefox.** WebKit is unte
 ## 3. The complete candidate list
 
 Every promise-returning method declared in TypeScript's `lib.dom.d.ts` (6.0.3): **80 interfaces, 187 methods** (the generator also finds
-the stream readers/writers, `ReadableStream.cancel/pipeTo` and `LockManager.request`, which the hand-made list below omits; all ten are
+the stream readers/writers, `ReadableStream.cancel/pipeTo` and `LockManager.request`, which the hand-made list below omits; all eleven are
 classified `off`). The list below is the original hand-made one; the generated snapshot is `packages/capture/spec/dom-promise-methods.snapshot.json`
 and the classified table is `packages/capture/src/async-origin-table.ts`. A method that can
 reject without a stack is any of these whose failure is not argument validation. This list is the patch table's source of truth
@@ -314,7 +314,7 @@ the capture alone roughly doubles the per-call cost (1.2 to 2.3 µs in Chromium)
 
 ## 5. Keeping the table honest
 
-- (BUILT) `scripts/async-origin/extract.mjs` generates the candidate list from `lib.dom.d.ts` (`pnpm async-origin:refresh`); a WebIDL mixin is an interface with no `declare var`; the drift test is `packages/capture/src/async-origin-table.drift.test.ts`.
+- (BUILT) `scripts/async-origin/extract.mjs` generates the candidate list from `lib.dom.d.ts` (`pnpm async-origin:refresh`); a WebIDL mixin is an interface with no `declare var`; the drift test is `packages/instrumentation-tests/test/async-origin-drift.test.ts` (it lives there, not in capture, because it reads files and capture is runtime-portable).
 - Generate the candidate list from `lib.dom.d.ts` (or `@webref/idl`, the real WebIDL) in a script; mixins (`Body`,
   `WindowOrWorkerGlobalScope`) resolve to the concrete prototypes that expose them.
 - A **drift test** (same pattern as `spec-drift.test.ts`): generated list vs the committed table, so a new TypeScript release that
