@@ -1,4 +1,5 @@
 import type { Bugsee } from '@bugsee/bugsee';
+import { setCarrierClient } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
 
@@ -248,5 +249,17 @@ describe('listenForAstroHydrationErrors', () => {
     // the window is closed now: nothing is queued any more
     target.dispatchEvent(hydrationError(new Error('y')));
     expect(() => flushQueuedAstroHydrationErrors(options)).not.toThrow();
+  });
+
+  // `launch({ carrier })` keeps the client on a custom carrier object, not on globalThis: the listener must look there.
+  it('finds the client on a custom carrier', () => {
+    const target = new EventTarget();
+    const carrier = {};
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    setCarrierClient(clientWith(logException), carrier);
+    listenForAstroHydrationErrors({ target, carrier });
+    flushQueuedAstroHydrationErrors({ target, carrier });
+    target.dispatchEvent(hydrationError(new Error('on a custom carrier')));
+    expect(logException).toHaveBeenCalledTimes(1);
   });
 });

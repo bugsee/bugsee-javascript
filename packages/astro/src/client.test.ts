@@ -1,22 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { launch, listen, flush, order } = vi.hoisted(() => ({
+const { launch, relaunchUmbrella, listen, flush, order } = vi.hoisted(() => ({
   launch: vi.fn(),
+  relaunchUmbrella: vi.fn(),
   listen: vi.fn(),
   flush: vi.fn(),
   order: [] as string[],
 }));
-vi.mock('@bugsee/bugsee', () => ({ launch }));
+vi.mock('@bugsee/bugsee', () => ({ launch, relaunch: relaunchUmbrella }));
 vi.mock('./hydration', () => ({
   listenForAstroHydrationErrors: listen,
   flushQueuedAstroHydrationErrors: flush,
 }));
 
-import { registerClient } from './client';
+import { registerClient, relaunch } from './client';
 
 describe('registerClient', () => {
   afterEach(() => {
     launch.mockReset();
+    relaunchUmbrella.mockReset();
     listen.mockReset();
     flush.mockReset();
     order.length = 0;
@@ -43,6 +45,30 @@ describe('registerClient', () => {
     flush.mockImplementation(() => order.push('flush'));
     await registerClient('tok');
     expect(order).toEqual(['listen', 'launch', 'flush']);
+  });
+
+  it('relaunch() is wrapped in the same window: listen first, flush in a finally (the carrier client is cleared during the restart)', async () => {
+    listen.mockImplementation(() => order.push('listen'));
+    relaunchUmbrella.mockImplementation(async () => {
+      order.push('relaunch');
+      return {};
+    });
+    flush.mockImplementation(() => order.push('flush'));
+    await relaunch({ replay: false });
+    expect(order).toEqual(['listen', 'relaunch', 'flush']);
+    expect(relaunchUmbrella).toHaveBeenCalledWith({ replay: false });
+    relaunchUmbrella.mockRejectedValue(new Error('relaunch failed'));
+    order.length = 0;
+    await expect(relaunch()).rejects.toThrow('relaunch failed');
+    expect(order).toEqual(['listen', 'flush']);
+  });
+
+  it('hands a custom carrier to the hydration listener, so it looks where the client lives', async () => {
+    const carrier = {};
+    launch.mockResolvedValue({});
+    await registerClient('tok', { carrier } as never);
+    expect(listen).toHaveBeenCalledWith({ carrier });
+    expect(flush).toHaveBeenCalledWith({ carrier });
   });
 
   it('ends the queueing window even when the launch fails, and still rejects with the launch error', async () => {

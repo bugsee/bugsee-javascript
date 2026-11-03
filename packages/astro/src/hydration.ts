@@ -13,6 +13,8 @@ import { type AdapterClientOptions, reportError } from '@bugsee/web-adapter';
 export interface AstroHydrationOptions extends AdapterClientOptions {
   /** Where the event is dispatched: the page `document`. Default `globalThis.document`; absent during a server render. */
   target?: EventTarget | undefined;
+  /** The carrier object `launch({ carrier })` keeps the client on. Default: the process-global one (`globalThis`). */
+  carrier?: object | undefined;
 }
 
 // The client type the adapter kit resolves (astro does not depend on `@bugsee/browser` directly).
@@ -34,11 +36,13 @@ const targetOf = (options: AstroHydrationOptions): EventTarget | undefined =>
   'target' in options ? options.target : (globalThis as { document?: EventTarget }).document;
 
 const clientOf = (options: AstroHydrationOptions): Client =>
-  options.getClient !== undefined ? options.getClient() : getCarrierClient<NonNullable<Client>>();
+  options.getClient !== undefined
+    ? options.getClient()
+    : getCarrierClient<NonNullable<Client>>(options.carrier ?? globalThis);
 
 const report = (error: unknown, options: AstroHydrationOptions): void => {
   reportError(error, {
-    ...(options.getClient !== undefined ? { getClient: options.getClient } : {}),
+    getClient: () => clientOf(options), // the SAME lookup the listener used (a custom carrier is not the process-global one)
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
     labels: ['astro.hydration'],
   });
