@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { launch, relaunchUmbrella, listen, flush, order } = vi.hoisted(() => ({
+const { launch, relaunchUmbrella, listen, flush, order, liveClient } = vi.hoisted(() => ({
+  liveClient: vi.fn(),
   launch: vi.fn(),
   relaunchUmbrella: vi.fn(),
   listen: vi.fn(),
@@ -8,6 +9,7 @@ const { launch, relaunchUmbrella, listen, flush, order } = vi.hoisted(() => ({
   order: [] as string[],
 }));
 vi.mock('@bugsee/bugsee', () => ({ launch, relaunch: relaunchUmbrella }));
+vi.mock('@bugsee/core', () => ({ getCarrierClient: liveClient }));
 vi.mock('./hydration', () => ({
   listenForAstroHydrationErrors: listen,
   flushQueuedAstroHydrationErrors: flush,
@@ -28,6 +30,7 @@ describe('registerClient', () => {
     relaunchUmbrella.mockReset();
     listen.mockReset();
     flush.mockReset();
+    liveClient.mockReset();
     order.length = 0;
   });
 
@@ -220,7 +223,7 @@ describe('registerClient', () => {
     await expect(relaunching).resolves.toEqual({ id: 2 });
   });
 
-  it('only OWN option properties count, as in core\'s spread: an inherited document is not the launch\'s document', async () => {
+  it("only OWN option properties count, as in core's spread: an inherited document is not the launch's document", async () => {
     const own = { id: 'own' } as unknown as Document;
     const inherited = { id: 'inherited' } as unknown as Document;
     launch.mockResolvedValue({ id: 1 });
@@ -228,6 +231,36 @@ describe('registerClient', () => {
     await registerClient('tok', { document: own } as never);
     await relaunch(Object.create({ document: inherited }) as never);
     expect(listen).toHaveBeenLastCalledWith({ target: own });
+  });
+
+  it('a registration while a client is already live (core ignores it) leaves the listener and the remembered options alone, wherever that client was launched', async () => {
+    const doc = { id: 'explicit' } as unknown as Document;
+    const carrier = {};
+    const onError = vi.fn();
+    const live = { id: 'live' };
+    launch.mockResolvedValueOnce(live);
+    relaunchUmbrella.mockResolvedValue({ id: 2 });
+    await registerClient('tok', { document: doc, carrier, onError } as never);
+    listen.mockClear();
+    flush.mockClear();
+    liveClient.mockImplementation((host: unknown) => (host === carrier ? live : undefined));
+    launch.mockResolvedValueOnce(live);
+    await registerClient('tok', { carrier } as never); // no sink, no document: core discards them
+    expect(launch).toHaveBeenLastCalledWith('tok', { carrier });
+    expect(listen).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+    // nothing was remembered from the ignored call either
+    await relaunch();
+    expect(listen).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
+  });
+
+  it('asks the carrier the launch would use: the option, else the global', async () => {
+    const carrier = {};
+    launch.mockResolvedValue({ id: 1 });
+    await registerClient('tok', { carrier } as never);
+    expect(liveClient).toHaveBeenLastCalledWith(carrier);
+    await registerClient('tok');
+    expect(liveClient).toHaveBeenLastCalledWith(globalThis);
   });
 
   it('passes the onError sink to the hydration listener, and a relaunch that gives none keeps it (core keeps onError)', async () => {

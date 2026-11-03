@@ -10,6 +10,7 @@ import {
   launch,
   relaunch as umbrellaRelaunch,
 } from '@bugsee/bugsee';
+import { getCarrierClient } from '@bugsee/core';
 import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
@@ -48,8 +49,8 @@ type Remembered = {
 // decided by precedence, so a relaunch that adds only a window must not displace a kept explicit document.
 let remembered: Remembered = {};
 let lastClient: unknown;
-// Known limits (accepted): a repeat is recognised by the client Astro itself last saw, so a live client launched through the umbrella directly
-// is not known as one; and the hydration listener of a document the page has moved away from stays attached (as before this tracking).
+// Known limit (accepted): the hydration listener of a document the page has moved away from stays attached (as before this tracking).
+// `lastClient` still catches a repeat whose client has not reached the carrier yet (a launch in flight).
 // The launch still in flight, which a relaunch waits for before reading `remembered` (core's `relaunchWith` awaits the pending launch).
 let inFlight: Promise<unknown> = Promise.resolve();
 
@@ -126,6 +127,11 @@ export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
 ): Promise<Bugsee> {
+  // A client is already live on the carrier the launch would look at: core ignores this call and returns it, so there is nothing to
+  // listen for, remember or replace. Opening a window from nothing would overwrite the live listener's carrier and sink.
+  if (getCarrierClient(options.carrier ?? globalThis) !== undefined) {
+    return await launch(appToken, options);
+  }
   return await withHydrationWindow(
     options,
     () => ({}),
