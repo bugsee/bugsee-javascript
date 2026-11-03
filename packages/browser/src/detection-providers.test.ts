@@ -1,3 +1,4 @@
+import { createAsyncOriginReporting, installAsyncOrigins } from '@bugsee/capture';
 import type { Client, CrashJson, ReportingRequest } from '@bugsee/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -5,6 +6,7 @@ import {
   createWindowErrorProvider,
   type WindowEvents,
 } from './detection-providers';
+import { parseStack } from './stack';
 
 // A fake window event target: records listeners by type and can dispatch synthetic events.
 function fakeWindow() {
@@ -242,7 +244,7 @@ describe('createUnhandledRejectionProvider', () => {
     const w = fakeWindow();
     const requests = started(createUnhandledRejectionProvider(w.win));
     w.emit('unhandledrejection', { reason: { code: 42 } });
-    expect(requests[0]?.report.summary).toBe('[object Object]');
+    expect(requests[0]?.report.summary).toBe('Object: {"code":42}');
     expect(requests[0]?.report.description).toBeUndefined();
     // A rejected non-Error still gets a usable crash document.
     expect(requests[0]?.report.crash).toMatchObject({
@@ -259,5 +261,269 @@ describe('createUnhandledRejectionProvider', () => {
     expect(w.count('unhandledrejection')).toBe(1);
     provider.stop();
     expect(w.count('unhandledrejection')).toBe(0);
+  });
+});
+
+describe('async origin (a stackless platform rejection reported WITH its call site)', () => {
+  // A DOMException from an async media task: an Error, with no stack at all (BGSVIEWER-14).
+  const stacklessError = (): Error => {
+    const e = new Error('The element has no supported sources');
+    e.name = 'NotSupportedError';
+    Object.defineProperty(e, 'stack', { value: undefined });
+    return e;
+  };
+
+  // A recorder over a fake realm whose `play()` rejects with `reason`; returns the reason after it passed through the wrapper.
+  async function located(reason: Error) {
+    class Media {
+      tagName = 'VIDEO';
+      id = 'hero';
+      networkState = 3;
+      readyState = 0;
+      play(): Promise<void> {
+        return Promise.reject(reason);
+      }
+    }
+    const recorder = installAsyncOrigins({
+      global: { HTMLMediaElement: Media, Promise, Error },
+      rows: [{ iface: 'HTMLMediaElement', methods: ['play'], mode: 'always', why: 'test' }],
+    });
+    const origins = createAsyncOriginReporting(recorder, parseStack);
+    function startPlayback(): Promise<void> {
+      return new Media().play();
+    }
+    await startPlayback().catch(() => undefined);
+    return { origins, recorder };
+  }
+
+  it('puts the call-site frames in crash.json and the description, marked origin: call, with the target', async () => {
+    const reason = stacklessError();
+    const { origins, recorder } = await located(reason);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    const req = requests[0] as ReportingRequest;
+    const frames = (req.report.crash as CrashJson).exception.frames;
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.origin === 'call')).toBe(true);
+    expect(frames.some((f) => f.trace.includes('startPlayback'))).toBe(true);
+    expect(req.report.summary).toBe('The element has no supported sources');
+    expect(req.report.description).toContain('startPlayback');
+    expect(req.report.description).toContain(
+      'Target: <video id="hero"> networkState=3 readyState=0',
+    );
+    recorder.stop();
+  });
+
+  it('treats a header-only stack (Chromium async DOMException) as stackless: the description still names the call site and the target', async () => {
+    const reason = stacklessError();
+    Object.defineProperty(reason, 'stack', {
+      value: 'NotSupportedError: The element has no supported sources',
+    });
+    const { origins, recorder } = await located(reason);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    const req = requests[0] as ReportingRequest;
+    expect(req.report.description).toContain('startPlayback');
+    expect(req.report.description).toContain('Target: <video id="hero">');
+    recorder.stop();
+  });
+
+  it('does the same for an error that reached the window error event (a React root with no boundary)', async () => {
+    const reason = stacklessError();
+    const { origins, recorder } = await located(reason);
+    const w = fakeWindow();
+    const requests = started(createWindowErrorProvider(w.win, origins));
+    w.emit('error', { error: reason, message: 'x', filename: '', lineno: 0, colno: 0 });
+    const req = requests[0] as ReportingRequest;
+    const frames = (req.report.crash as CrashJson).exception.frames;
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.origin === 'call')).toBe(true);
+    expect(req.report.description).toContain('Target: <video');
+    recorder.stop();
+  });
+
+  it('also describes a NON-Error reason (a DOMException from another realm is not instanceof Error) by its recorded call site', async () => {
+    const reason = { name: 'NotSupportedError', message: 'cross-realm' }; // no stack, not an Error
+    class Media {
+      tagName = 'VIDEO';
+      id = 'hero';
+      play(): Promise<unknown> {
+        return Promise.reject(reason);
+      }
+    }
+    const recorder = installAsyncOrigins({
+      global: { HTMLMediaElement: Media, Promise, Error },
+      rows: [{ iface: 'HTMLMediaElement', methods: ['play'], mode: 'always', why: 'test' }],
+    });
+    const origins = createAsyncOriginReporting(recorder, parseStack);
+    function startPlayback(): Promise<unknown> {
+      return new Media().play();
+    }
+    await startPlayback().catch(() => undefined);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    const req = requests[0] as ReportingRequest;
+    expect(req.report.description).toContain('startPlayback');
+    expect(req.report.description).toContain('Target: <video id="hero">');
+    // The grouping signature comes from crash.json: no frames there means every occurrence is its own issue.
+    const frames = (req.report.crash as CrashJson).exception.frames;
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.origin === 'call')).toBe(true);
+    expect(frames[0]?.trace).toContain('startPlayback');
+    recorder.stop();
+  });
+
+  it('also describes a FUNCTION reason (the recorder keys by any object-like reason)', async () => {
+    const reason = () => undefined; // a function is an object for the recorder (it keys by any object-like reason)
+    class Media {
+      tagName = 'VIDEO';
+      id = 'hero';
+      play(): Promise<unknown> {
+        return Promise.reject(reason);
+      }
+    }
+    const recorder = installAsyncOrigins({
+      global: { HTMLMediaElement: Media, Promise, Error },
+      rows: [{ iface: 'HTMLMediaElement', methods: ['play'], mode: 'always', why: 'test' }],
+    });
+    const origins = createAsyncOriginReporting(recorder, parseStack);
+    function startPlayback(): Promise<unknown> {
+      return new Media().play();
+    }
+    await startPlayback().catch(() => undefined);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    expect((requests[0] as ReportingRequest).report.description).toContain('startPlayback');
+    recorder.stop();
+  });
+
+  it('uses event.promise when the recorder could attach no reaction (fallback mode keys the origin by promise)', async () => {
+    const reason = stacklessError();
+    class Media {
+      tagName = 'VIDEO';
+      id = 'hero';
+      play(): Promise<void> {
+        return Promise.reject(reason);
+      }
+    }
+    const recorder = installAsyncOrigins({
+      global: { HTMLMediaElement: Media, Promise, Error },
+      rows: [{ iface: 'HTMLMediaElement', methods: ['play'], mode: 'always', why: 'test' }],
+      cleanThen: null, // no pristine then anywhere: no reaction, the origin is keyed by the promise
+    });
+    const origins = createAsyncOriginReporting(recorder, parseStack);
+    function startPlayback(): Promise<void> {
+      return new Media().play();
+    }
+    const promise = startPlayback();
+    promise.catch(() => undefined);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason, promise });
+    const req = requests[0] as ReportingRequest;
+    const frames = (req.report.crash as CrashJson).exception.frames;
+    expect(frames.some((f) => f.trace.includes('startPlayback'))).toBe(true);
+    expect(req.report.description).toContain('startPlayback');
+    recorder.stop();
+  });
+
+  it('arms the recorder when a stackless rejection arrives that nobody could locate', () => {
+    const arm = vi.fn();
+    const origins = createAsyncOriginReporting(
+      {
+        originOf: () => undefined,
+        originOfPromise: () => undefined,
+        adoptPromise: () => undefined,
+        arm,
+        installed: [],
+        stop: () => undefined,
+      },
+      parseStack,
+    );
+    const w = fakeWindow();
+    started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason: stacklessError() });
+    expect(arm).toHaveBeenCalled(); // idempotent in the recorder; the description and the crash JSON both enrich
+  });
+
+  it('still arms for a rejected NON-Error object (describeError asks the recorder about it, and the enricher arms)', () => {
+    const arm = vi.fn();
+    const origins = createAsyncOriginReporting(
+      {
+        originOf: () => undefined,
+        originOfPromise: () => undefined,
+        adoptPromise: () => undefined,
+        arm,
+        installed: [],
+        stop: () => undefined,
+      },
+      parseStack,
+    );
+    const w = fakeWindow();
+    started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason: { name: 'NotSupportedError' } });
+    expect(arm).toHaveBeenCalled();
+  });
+
+  it('arms for the window error event too (a React root with no boundary never raises unhandledrejection)', () => {
+    const arm = vi.fn();
+    const origins = createAsyncOriginReporting(
+      {
+        originOf: () => undefined,
+        originOfPromise: () => undefined,
+        adoptPromise: () => undefined,
+        arm,
+        installed: [],
+        stop: () => undefined,
+      },
+      parseStack,
+    );
+    const w = fakeWindow();
+    started(createWindowErrorProvider(w.win, origins));
+    w.emit('error', { error: stacklessError(), message: 'x', filename: '', lineno: 0, colno: 0 });
+    expect(arm).toHaveBeenCalled();
+  });
+
+  it('reports exactly as before when no origin support is given, or the reason is unknown to it', () => {
+    const w = fakeWindow();
+    const plain = started(createUnhandledRejectionProvider(w.win));
+    w.emit('unhandledrejection', { reason: stacklessError() });
+    expect(plain[0]?.report.description).toBeUndefined();
+    expect((plain[0]?.report.crash as CrashJson).exception.frames).toEqual([]);
+    const w2 = fakeWindow();
+    const unknown = started(
+      createUnhandledRejectionProvider(
+        w2.win,
+        createAsyncOriginReporting(
+          {
+            originOf: () => undefined,
+            originOfPromise: () => undefined,
+            adoptPromise: () => undefined,
+            arm: () => undefined,
+            installed: [],
+            stop: () => undefined,
+          },
+          parseStack,
+        ),
+      ),
+    );
+    w2.emit('unhandledrejection', { reason: stacklessError() });
+    expect(unknown[0]?.report.description).toBeUndefined();
+  });
+
+  it('leaves a rejection that has its own stack alone', async () => {
+    const own = new Error('thrown');
+    own.stack = 'Error: thrown\n    at f (https://app.test/a.js:1:2)';
+    const { origins, recorder } = await located(own);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason: own });
+    expect((requests[0]?.report.crash as CrashJson).exception.frames[0]?.origin).toBeUndefined();
+    expect(requests[0]?.report.description).toBe('    at f (https://app.test/a.js:1:2)');
+    recorder.stop();
   });
 });

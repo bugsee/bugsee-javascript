@@ -102,6 +102,17 @@ interface RawEntry {
 }
 const RAW_STRICT: Record<string, RawEntry> = {
   'browser:recover': { safe: 'n/a', why: 'durability of already-persisted data' },
+  'browser:captureAsyncOrigins': {
+    safe: 'n/a',
+    why: 'default ON, not a privacy switch: it only adds the call site of a stackless platform rejection; only boolean false opts out',
+    check: ['browser', /resolveFailOnBoolean\(\s*options\.captureAsyncOrigins/],
+  },
+  'bugsee:captureAsyncOrigins': { safe: 'n/a', why: 'forwarded to the browser read above' },
+  'electron:captureAsyncOrigins': {
+    safe: 'n/a',
+    why: 'renderer option, forwarded to the browser read',
+  },
+  'nuxt:captureAsyncOrigins': { safe: 'n/a', why: 'forwarded to the browser read' },
   'browser:holdBlackout': {
     safe: 'on',
     why: 'INTERNAL silent hold (invalid => dark)',

@@ -1,8 +1,10 @@
+import type { AsyncOriginReporting } from '@bugsee/capture';
 import type { CrashJson, DetectionProvider } from '@bugsee/core';
 import {
   applyDebugIds,
   buildCrashJson,
   DetectionProviderBase,
+  describeThrown,
   formatStack,
   neverThrow,
   parseLocation,
@@ -25,24 +27,56 @@ export interface WindowEvents {
 
 // Describe a thrown value (the unhandledrejection `reason`, or an `error` event's `.error`): summary
 // from the message (or the error name), and a path-scrubbed, dialect-dispatched stack description.
-function describeError(value: unknown): { summary: string; description?: string } {
+function describeError(
+  value: unknown,
+  origins?: AsyncOriginReporting,
+): { summary: string; description?: string } {
   if (value instanceof Error) {
     const summary = value.message || value.name;
-    if (value.stack) {
-      const frames = parseStack(value.stack);
+    const frames = value.stack ? parseStack(value.stack) : [];
+    if (frames.length > 0) {
       // Stamp source-map debug-IDs (when a build injected them) so the report can symbolicate.
       applyDebugIds(frames, { parseStack });
       return { summary, description: formatStack(frames) };
     }
-    return { summary };
+    // No frames of its own (no stack, or only the `Name: message` header Chromium gives an async DOMException): an async platform
+    // rejection (`video.play()`). Where the call was made, and on what, if the recorder saw it.
+    const located = describeOrigin(value, origins);
+    return located === undefined ? { summary } : { summary, description: located };
   }
-  return { summary: String(value) };
+  // A value that is not an `Error` here may still be a platform rejection (a DOMException from another realm is not `instanceof Error`):
+  // the recorder keys by reason, so it answers for an object too.
+  const located =
+    (typeof value === 'object' && value !== null) || typeof value === 'function'
+      ? describeOrigin(value as object, origins)
+      : undefined;
+  return located === undefined
+    ? { summary: describeThrown(value) }
+    : { summary: describeThrown(value), description: located };
+}
+
+function describeOrigin(value: object, origins?: AsyncOriginReporting): string | undefined {
+  if (origins === undefined) {
+    return undefined;
+  }
+  const frames = origins.enrichFrames(value, []);
+  const text = [
+    frames.length > 0 ? formatStack(frames).trimEnd() : undefined,
+    origins.describeTarget(value),
+  ]
+    .filter((part) => part !== undefined)
+    .join('\n');
+  return text === '' ? undefined : text;
 }
 
 /** Structured crash.json from a thrown value — `handled: false` (uncaught). A non-Error gets a
  *  synthetic exception rather than nothing. Uses the browser's multi-engine stack parser. */
-function crashOf(value: unknown): CrashJson {
-  return buildCrashJson(value, { parseStack, handled: false });
+function crashOf(value: unknown, origins?: AsyncOriginReporting): CrashJson {
+  return buildCrashJson(value, {
+    parseStack,
+    handled: false,
+    ...(origins !== undefined ? { enrichFrames: origins.enrichFrames } : {}),
+  });
 }
 
 /**
@@ -51,9 +85,9 @@ function crashOf(value: unknown): CrashJson {
  * `filename:lineno:colno`) rather than from the absent value, whose synthetic form would say only
  * "Null". This is the same information the description already falls back to.
  */
-function crashOfErrorEvent(event: ErrorEvent): CrashJson {
+function crashOfErrorEvent(event: ErrorEvent, origins?: AsyncOriginReporting): CrashJson {
   if (event.error != null) {
-    return crashOf(event.error);
+    return crashOf(event.error, origins);
   }
   const crash = crashOf(new Error(event.message));
   crash.exception.name = 'Error';
@@ -72,9 +106,12 @@ function crashOfErrorEvent(event: ErrorEvent): CrashJson {
 // Describe an ErrorEvent: prefer the thrown value (`event.error`); when it's absent (a cross-origin
 // "Script error." carries none), fall back to the event message + a synthetic frame from
 // filename:lineno:colno (path-scrubbed via parseLocation), or no description when there is no filename.
-function describeErrorEvent(event: ErrorEvent): { summary: string; description?: string } {
+function describeErrorEvent(
+  event: ErrorEvent,
+  origins?: AsyncOriginReporting,
+): { summary: string; description?: string } {
   if (event.error != null) {
-    return describeError(event.error);
+    return describeError(event.error, origins);
   }
   const summary = event.message;
   if (event.filename) {
@@ -87,6 +124,7 @@ function describeErrorEvent(event: ErrorEvent): { summary: string; description?:
 abstract class BrowserWindowDetectionProvider extends DetectionProviderBase {
   protected abstract readonly event: 'error' | 'unhandledrejection';
   readonly #win: WindowEvents;
+  protected readonly origins: AsyncOriginReporting | undefined;
   // CONTAINED at the listener itself, which is where the browser calls in. `error` and
   // `unhandledrejection` fire exactly when the page is already in trouble, and the event is entirely
   // page-supplied — `ErrorEvent.error` is whatever the app threw (commonly not an Error), and a getter on
@@ -97,9 +135,10 @@ abstract class BrowserWindowDetectionProvider extends DetectionProviderBase {
     neverThrow(() => this.onDetected(event));
   };
 
-  constructor(win: WindowEvents) {
+  constructor(win: WindowEvents, origins?: AsyncOriginReporting) {
     super();
     this.#win = win;
+    this.origins = origins;
   }
 
   protected onStart(): void {
@@ -120,9 +159,9 @@ class WindowErrorProvider extends BrowserWindowDetectionProvider {
 
   protected onDetected(event: Event): void {
     const errorEvent = event as ErrorEvent;
-    const { summary, description } = describeErrorEvent(errorEvent);
+    const { summary, description } = describeErrorEvent(errorEvent, this.origins);
     // The thrown value (absent for a cross-origin "Script error." → no crash.json).
-    const crash = crashOfErrorEvent(errorEvent);
+    const crash = crashOfErrorEvent(errorEvent, this.origins);
     this.handleReportingRequest(
       this.createCrashReport({
         mechanism: 'uncaught',
@@ -141,8 +180,10 @@ class WindowUnhandledRejectionProvider extends BrowserWindowDetectionProvider {
 
   protected onDetected(event: Event): void {
     const reason = (event as PromiseRejectionEvent).reason;
-    const { summary, description } = describeError(reason);
-    const crash = crashOf(reason);
+    // With no pristine `then` the recorder could only key the origin by the PROMISE (the event carries it too): link it to the reason.
+    this.origins?.adoptPromise(reason, (event as PromiseRejectionEvent).promise);
+    const { summary, description } = describeError(reason, this.origins);
+    const crash = crashOf(reason, this.origins);
     this.handleReportingRequest(
       this.createErrorReport({
         mechanism: 'unhandledrejection',
@@ -155,11 +196,17 @@ class WindowUnhandledRejectionProvider extends BrowserWindowDetectionProvider {
 }
 
 /** Detect a window `error` event and report it as a crash. */
-export function createWindowErrorProvider(win: WindowEvents = window): DetectionProvider {
-  return new WindowErrorProvider(win);
+export function createWindowErrorProvider(
+  win: WindowEvents = window,
+  origins?: AsyncOriginReporting,
+): DetectionProvider {
+  return new WindowErrorProvider(win, origins);
 }
 
 /** Detect a window `unhandledrejection` event and report it as an error. */
-export function createUnhandledRejectionProvider(win: WindowEvents = window): DetectionProvider {
-  return new WindowUnhandledRejectionProvider(win);
+export function createUnhandledRejectionProvider(
+  win: WindowEvents = window,
+  origins?: AsyncOriginReporting,
+): DetectionProvider {
+  return new WindowUnhandledRejectionProvider(win, origins);
 }

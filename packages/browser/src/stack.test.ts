@@ -54,6 +54,21 @@ describe('parseStack — SpiderMonkey / JavaScriptCore dialect (fn@location)', (
     ]);
   });
 
+  // Header text is not a frame: a header-only V8 stack (Chromium's async DOMExceptions) has no `at ` line, so it reaches this parser, and
+  // anything containing an `@` used to become a bogus frame (and the grouping location).
+  it('does not mistake header text containing an @ for a frame', () => {
+    expect(parseStack('NotAllowedError: connect user@host:8080 failed')).toEqual([]);
+    expect(parseStack('Error: user@host:8080')).toEqual([]); // a line but no column: not a frame
+    expect(parseStack('TypeError: mail me@example.com')).toEqual([]);
+  });
+
+  it('keeps a native frame (Safari: fn@[native code]) and a frame with line and column', () => {
+    expect(parseStack('query@[native code]\nmain@https://app.test/a.js:5:6')).toEqual([
+      { function: 'query', file: '[native code]' },
+      { function: 'main', file: 'https://app.test/a.js', line: 5, column: 6 },
+    ]);
+  });
+
   it('ignores an @ line with an empty location', () => {
     expect(parseStack('weird@')).toEqual([]);
   });

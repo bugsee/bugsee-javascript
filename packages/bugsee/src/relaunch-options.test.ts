@@ -175,6 +175,7 @@ const RESET_OPTIONS: readonly string[] = [
   'crashReporter',
   'crashReporterExtra',
   'detectCrashes',
+  'captureAsyncOrigins',
   'detectHangs',
   'detectHttpErrors',
   'diskStatfs',

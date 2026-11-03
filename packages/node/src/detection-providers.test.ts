@@ -141,7 +141,7 @@ describe('createUnhandledRejectionProvider', () => {
     const p = fakeProcess();
     const requests = started(createUnhandledRejectionProvider(p.proc));
     p.emit('unhandledRejection', { code: 42 });
-    expect(requests[0]?.report.summary).toBe('[object Object]');
+    expect(requests[0]?.report.summary).toBe('Object: {"code":42}');
     expect(requests[0]?.report.description).toBeUndefined();
     expect(requests[0]?.report.crash).toMatchObject({
       handled: false,

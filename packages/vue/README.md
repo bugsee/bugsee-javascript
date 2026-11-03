@@ -38,6 +38,8 @@ app.mount("#app");
 
 `installBugseeErrorHandler(app)` hooks `app.config.errorHandler` so Vue errors are reported to the launched client.
 
+**Required in production.** Vue swallows errors thrown in components, hooks, watchers and event handlers: a production build only `console.error`s them and never rethrows, and in any build an async hook's rejection is caught by Vue itself, so neither `window.onerror` nor `unhandledrejection` sees it. Without `installBugseeErrorHandler(app)` (or your own `app.config.errorHandler` that reports them) Bugsee receives nothing from those errors. A Nuxt app gets it from `@bugsee/nuxt`.
+
 ### Route naming (vue-router)
 
 Name the active navigation after the matched route pattern instead of the concrete URL. Call once after `createRouter(...)`:

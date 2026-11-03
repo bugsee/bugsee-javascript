@@ -14,7 +14,9 @@ function parseAtSignFrame(line: string): StackFrame | undefined {
     return undefined;
   }
   const location = line.slice(at + 1);
-  if (location === '') {
+  // A frame's location ends in `:line:col` (or is Safari's `[native code]`). Without that it is header text that happens to contain an
+  // `@` (`NotAllowedError: connect user@host:8080 failed`), which a header-only V8 stack puts on its one line.
+  if (location !== '[native code]' && !/:\d+:\d+$/.test(location)) {
     return undefined;
   }
   const frame = parseLocation(location);

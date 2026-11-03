@@ -3,6 +3,7 @@ import type { CrashJson, DetectionProvider } from '@bugsee/core';
 import {
   buildCrashJson,
   DetectionProviderBase,
+  describeThrown,
   type FrameEnricher,
   formatStack,
   parseV8Stack,
@@ -33,7 +34,7 @@ function describeError(value: unknown): { summary: string; description?: string 
     }
     return { summary };
   }
-  return { summary: String(value) };
+  return { summary: describeThrown(value) };
 }
 
 /**

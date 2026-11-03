@@ -42,6 +42,7 @@ import {
   type ReportingRequest,
 } from './reporting';
 import { ContextProviderToken, type RequestContext } from './request-context';
+import type { StackFrame } from './stack';
 import {
   type Bundle,
   type UploadPipeline,
@@ -1093,6 +1094,17 @@ describe('createClient — crash.json', () => {
     expect(crash.exception).toMatchObject({ name: 'String', reason: 'just a string' });
     expect(crash.handled).toBe(true); // logException is a caught exception
   });
+
+  it('summarises a non-Error object by its class and contents, never "[object Object]"', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    await client.logException({ code: 'E_QUOTA' });
+    const files = unzipSync((enqueue.mock.calls[0]?.[0] as Bundle).body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      summary: string;
+    };
+    expect(request.summary).toBe('Object: {"code":"E_QUOTA"}');
+  });
 });
 
 describe('createClient — report identity is snapshotted at submit time', () => {
@@ -1360,6 +1372,156 @@ describe('createClient — capture-recovery markers', () => {
       exception: { frames: Array<{ variables?: Record<string, string> }> };
     };
     expect(crash.exception.frames[0]?.variables).toEqual({ a: '1' });
+  });
+
+  it('describes a stackless Error by the frames an enricher supplied (an async platform rejection)', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({
+      uploadPipeline,
+      appToken: 'tok',
+      getEnvironment,
+      enrichFrames: (_error, frames) =>
+        frames.length > 0
+          ? frames
+          : [
+              {
+                function: 'startPlayback',
+                file: 'https://app.test/p.js',
+                line: 4,
+                column: 2,
+                origin: 'call',
+              },
+            ],
+    });
+    const stackless = new Error('The element has no supported sources');
+    Object.defineProperty(stackless, 'stack', { value: undefined });
+    await client.logException(stackless);
+    const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      description?: string;
+    };
+    expect(request.description).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+  });
+
+  describe('logException description with a call site (async platform rejection)', () => {
+    const callSite = (): StackFrame[] => [
+      {
+        function: 'startPlayback',
+        file: 'https://app.test/p.js',
+        line: 4,
+        column: 2,
+        origin: 'call',
+      },
+    ];
+    const run = async (
+      error: Error,
+      extra: { describeTarget?: (error: unknown) => string | undefined } = {},
+    ) => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        enrichFrames: (_error, frames) => (frames.length > 0 ? frames : callSite()),
+        ...extra,
+      });
+      await client.logException(error);
+      const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+      return (
+        JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as { description?: string }
+      ).description;
+    };
+    const withStack = (stack: string | undefined, name = 'NotSupportedError'): Error => {
+      const e = Object.assign(new Error('no sources'), { name });
+      Object.defineProperty(e, 'stack', { value: stack });
+      return e;
+    };
+
+    it('keeps the header of a header-only stack (Chromium DOMException) and adds the call site under it', async () => {
+      expect(await run(withStack('NotSupportedError: no sources'))).toBe(
+        'NotSupportedError: no sources\n    at startPlayback (https://app.test/p.js:4:2)',
+      );
+    });
+
+    it('an empty stack string is stackless too', async () => {
+      expect(await run(withStack(''))).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+    });
+
+    it('the call site comes BEFORE a linked cause (React linkComponentStack): the cause no longer suppresses it', async () => {
+      const error = withStack(undefined);
+      (error as { cause?: unknown }).cause = Object.assign(new Error('React component stack:'), {
+        stack: 'React component stack:\n    in Player\n    in BugseeErrorBoundary',
+      });
+      const description = (await run(error)) ?? '';
+      expect(description.startsWith('    at startPlayback (https://app.test/p.js:4:2)')).toBe(true);
+      expect(description).toContain('Caused by: React component stack:');
+      expect(description.indexOf('startPlayback')).toBeLessThan(description.indexOf('Caused by'));
+    });
+
+    it('appends the target description when one is supplied, and never fails the report because it threw', async () => {
+      expect(
+        await run(withStack(undefined), { describeTarget: () => 'Target: <video id="hero">' }),
+      ).toBe('    at startPlayback (https://app.test/p.js:4:2)\nTarget: <video id="hero">');
+      expect(
+        await run(withStack(undefined), {
+          describeTarget: () => {
+            throw new Error('describer failed');
+          },
+        }),
+      ).toBe('    at startPlayback (https://app.test/p.js:4:2)');
+    });
+
+    it('a non-Error reason (a cross-realm DOMException) gets the Target line too', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        describeTarget: () => 'Target: <video id="hero">',
+      });
+      await client.logException({ name: 'NotSupportedError', message: 'cross-realm' });
+      const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+      const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+        description?: string;
+      };
+      expect(request.description).toBe('Target: <video id="hero">');
+    });
+
+    it('a describeTarget that throws, with an onError that also throws, never stops the report', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        onError: () => {
+          throw new Error('sink failed');
+        },
+        describeTarget: () => {
+          throw new Error('describer failed');
+        },
+      });
+      await expect(client.logException({ name: 'X' })).resolves.toBeDefined();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves an error that has frames of its own exactly as before', async () => {
+      const own = 'NotSupportedError: x\n    at thrower (https://app.test/t.js:1:1)';
+      // (the real describer answers only for an error whose origin it recorded: none was, for an error with its own frames)
+      expect(await run(withStack(own), { describeTarget: () => undefined })).toBe(own);
+    });
+  });
+
+  it('adds no description to a stackless Error when nothing supplied frames', async () => {
+    const { uploadPipeline, enqueue } = fakeUpload();
+    const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+    const stackless = new Error('x');
+    Object.defineProperty(stackless, 'stack', { value: undefined });
+    await client.logException(stackless);
+    const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+    const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+      description?: string;
+    };
+    expect(request.description).toBeUndefined();
   });
 
   it('calls onReportSite at the boundary of logException, before the crash is built', async () => {

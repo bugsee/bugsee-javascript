@@ -26,6 +26,12 @@ export interface CrashFrame {
   variables?: Record<string, string>;
   /** Source lines around this frame, when the platform read them. */
   context?: FrameContext;
+  /**
+   * `'call'` marks the frame where a platform API was CALLED, not where an exception was thrown: an async
+   * rejection (`video.play()`, clipboard, …) has no stack of its own, so the SDK records the call site.
+   * Absent on every thrown frame; a viewer that does not know the field ignores it.
+   */
+  origin?: 'call';
 }
 
 /**
@@ -82,7 +88,12 @@ export interface NativeCrashJson extends CrashProvenance {
  * Add to a parsed stack before it becomes wire frames. Given the error the frames came from, returns the
  * frames to use (typically the same array with `variables` filled in).
  */
-export type FrameEnricher = (error: unknown, frames: StackFrame[]) => StackFrame[];
+export type FrameEnricher = (
+  error: unknown,
+  frames: StackFrame[],
+  /** Where this error sits in the report: `depth` 0 is the error being reported, 1+ are the errors in its `cause` chain. */
+  info?: { depth: number },
+) => StackFrame[];
 
 /**
  * Chain frame enrichers left to right, each seeing what the previous added.
@@ -96,7 +107,8 @@ export function composeFrameEnrichers(
   if (enrichers.length === 0) {
     return undefined;
   }
-  return (error, frames) => enrichers.reduce((current, enrich) => enrich(error, current), frames);
+  return (error, frames, info) =>
+    enrichers.reduce((current, enrich) => enrich(error, current, info), frames);
 }
 
 export interface BuildCrashOptions {
@@ -165,6 +177,9 @@ function toCrashFrame(frame: StackFrame): CrashFrame {
   if (frame.context !== undefined) {
     crashFrame.context = frame.context;
   }
+  if (frame.origin !== undefined) {
+    crashFrame.origin = frame.origin;
+  }
   return crashFrame;
 }
 
@@ -203,7 +218,12 @@ function buildException(
   // Runs per exception in the `cause` chain, not just the outermost: the frames that matter are often
   // the original cause's, and a chained error is exactly where "which value was it, three throws ago"
   // is hardest to answer from the stack alone.
-  const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed);
+  const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed, { depth });
+  // Frames an enricher supplied (the call site of a stackless async rejection) were parsed after the stamp above. The worker
+  // symbolicates by per-frame debug_id BEFORE it signs, so without one the grouping location is the minified position.
+  if (frames !== parsed) {
+    applyDebugIds(frames, { globalObject, parseStack });
+  }
 
   const exception: CrashException = {
     name: error.name || 'Error',
@@ -251,13 +271,17 @@ function syntheticException(
   value: unknown,
   frames: StackFrame[] = [],
   enrichFrames?: FrameEnricher,
+  stamp?: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
 ): CrashException {
   // The enricher runs here too. It used to run only on the Error path, so `logException('payment
   // failed')` shipped frames with neither locals nor source context — on the one path where the frames
-  // are the CALLER's own and a report-site capture lines up with them exactly. Skipped when there are no
-  // frames, so a bare non-Error costs nothing.
-  const enriched =
-    enrichFrames !== undefined && frames.length > 0 ? enrichFrames(value, frames) : frames;
+  // are the CALLER's own and a report-site capture lines up with them exactly. Offered even with NO frames: an enricher may SUPPLY them
+  // (async-origin capture gives a cross-realm DOMException, which is not `instanceof Error`, its call site), and a frameless report has
+  // no grouping signature at all. An enricher with nothing for a bare value returns it unchanged.
+  const enriched = enrichFrames !== undefined ? enrichFrames(value, frames, { depth: 0 }) : frames;
+  if (enriched !== frames && stamp !== undefined) {
+    applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
+  }
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
   // same way.
@@ -269,13 +293,23 @@ function syntheticException(
   return exception;
 }
 
-/** A display name for a thrown value: its own `name`, else its class, else its primitive type. */
+/** A display name for a thrown value: its own `name`, else its class, else its primitive type. Never throws. */
 function typeTag(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
-    const named = (value as { name?: unknown }).name;
+    // Two reads, each guarded on its own: a throwing `name` getter must not cost the class name.
+    let named: unknown;
+    try {
+      named = (value as { name?: unknown }).name;
+    } catch {
+      named = undefined;
+    }
     if (typeof named === 'string' && named !== '') return named;
-    const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
-    return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
+    try {
+      const ctor = (value as { constructor?: { name?: unknown } }).constructor?.name;
+      return typeof ctor === 'string' && ctor !== '' ? ctor : 'Object';
+    } catch {
+      return 'Object'; // a revoked proxy or a throwing getter
+    }
   }
   if (value === null) return 'Null';
   // 'string' -> 'String', matching how the mobile SDKs label a thrown primitive.
@@ -283,19 +317,70 @@ function typeTag(value: unknown): string {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
+// The engine's own tag; a revoked proxy or a throwing `Symbol.toStringTag` getter makes even that throw.
+const engineTag = (value: unknown): string => {
+  try {
+    return Object.prototype.toString.call(value);
+  } catch {
+    return '[object Object]';
+  }
+};
+
+// Values whose JSON says nothing (`{}` for a Set, a RegExp, a Map) or is pure noise (the bytes of a buffer): shown by class alone.
+const isOpaque = (value: object): boolean =>
+  ArrayBuffer.isView(value) ||
+  value instanceof ArrayBuffer ||
+  value instanceof Set ||
+  value instanceof Map ||
+  value instanceof WeakSet ||
+  value instanceof WeakMap;
+
 /** A bounded, never-throwing rendering of a thrown value for `exception.reason`. */
 function renderThrowable(value: unknown): string {
   if (typeof value === 'object' && value !== null) {
-    const message = (value as { message?: unknown }).message;
-    if (typeof message === 'string' && message !== '') return message;
     try {
+      // The `message` read is inside the try too: a getter can throw, and so can a proxy.
+      const message = (value as { message?: unknown }).message;
+      if (typeof message === 'string' && message !== '') return message;
+      if (value instanceof RegExp || value instanceof Date) return String(value);
+      if (isOpaque(value)) return '';
       // A circular or getter-throwing object must not take the report down with it.
       return JSON.stringify(value) ?? String(value);
     } catch {
-      return Object.prototype.toString.call(value);
+      return engineTag(value);
     }
   }
   return String(value);
+}
+
+const DESCRIBE_LIMIT = 256;
+
+const clip = (text: string): string =>
+  text.length > DESCRIBE_LIMIT ? `${text.slice(0, DESCRIBE_LIMIT - 1)}…` : text;
+
+/**
+ * One line for a thrown or rejected value, for a report SUMMARY. `String(value)` printed a plain object
+ * as "[object Object]" and a class instance the same way, so `reject({ code: 'E1' })` produced an issue
+ * titled with nothing. An object is shown as `Class: <message, else JSON>`; a primitive keeps its plain
+ * text (a thrown string IS its own message); a function is named, never printed (its source is the
+ * application's). Bounded to 256 characters, and never throws: a hostile getter or a circular object
+ * falls back to the engine's own tag.
+ */
+export function describeThrown(value: unknown): string {
+  try {
+    if (typeof value === 'function') {
+      const name = (value as { name?: unknown }).name;
+      return typeof name === 'string' && name !== '' ? `Function: ${clip(name)}` : 'Function';
+    }
+    if (typeof value === 'object' && value !== null) {
+      const reason = renderThrowable(value);
+      const tag = typeTag(value);
+      return clip(reason === '' ? tag : `${tag}: ${reason}`);
+    }
+    return clip(String(value));
+  } catch {
+    return clip(engineTag(value));
+  }
 }
 
 /**
@@ -335,7 +420,10 @@ export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}):
       exception_type: 'error',
       ndkCrash: false,
       handled: options.handled ?? false,
-      exception: syntheticException(error, options.syntheticFrames, options.enrichFrames),
+      exception: syntheticException(error, options.syntheticFrames, options.enrichFrames, {
+        globalObject: options.globalObject ?? (globalThis as unknown),
+        parseStack: options.parseStack ?? parseV8Stack,
+      }),
     };
   }
   const parseStack = options.parseStack ?? parseV8Stack;

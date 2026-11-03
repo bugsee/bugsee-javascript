@@ -3,6 +3,7 @@ import {
   type CrashJson,
   type DetectionProvider,
   DetectionProviderBase,
+  describeThrown,
   formatStack,
   parseV8Stack,
 } from '@bugsee/core';
@@ -31,7 +32,7 @@ function describeError(value: unknown): { summary: string; description?: string 
       ? { summary, description: formatStack(parseV8Stack(value.stack)) }
       : { summary };
   }
-  return { summary: String(value) };
+  return { summary: describeThrown(value) };
 }
 
 /** Structured crash.json (SC3) from a rejection reason — `handled: false`. Undefined for non-Errors. Edge is

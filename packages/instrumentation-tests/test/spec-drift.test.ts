@@ -75,6 +75,11 @@ const NOT_A_WIRE_NAME: Readonly<
     reason: "the sanitizer's 'url' kind",
     literals: { url: 1 },
   },
+  'capture/src/async-origin-table.ts': {
+    reason:
+      "the Web Audio method name 'resume' (AudioContext / OfflineAudioContext), a platform API name",
+    literals: { resume: 2 },
+  },
   'electron/src/main-control.ts': {
     reason: "the control-channel command 'resume'",
     literals: { resume: 1 },

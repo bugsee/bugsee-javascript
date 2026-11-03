@@ -7,7 +7,13 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!samples", "!.local-registry", "!packages/protocol/spec"]
+    "includes": [
+      "**",
+      "!samples",
+      "!.local-registry",
+      "!packages/protocol/spec",
+      "!docs/design/async-origin-capture/**"
+    ]
   },
   "formatter": {
     "enabled": true,

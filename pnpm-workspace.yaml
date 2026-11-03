@@ -11,6 +11,8 @@ allowBuilds:
   # @parcel/watcher (transitive via @nuxt/kit, a @bugsee/nuxt devDep) is only for dev file-watching —
   # not needed for build-time module code or tests, so skip its native-binary build.
   '@parcel/watcher': false
+  # core-js-bundle (a @bugsee/instrumentation-tests devDep, loaded as a replacement-Promise fixture): its postinstall only prints a donation notice.
+  core-js-bundle: false
   esbuild: true
   # sharp (Astro's image optimization, transitive via astro — a @bugsee/astro devDep) isn't needed for the
   # adapter code or tests; skip its native-binary build.

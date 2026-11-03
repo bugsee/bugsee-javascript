@@ -38,6 +38,12 @@ export interface StackFrame {
    * the platform read it (node's opt-in source-context capture).
    */
   context?: FrameContext;
+  /**
+   * `'call'` when this frame is where a platform API was CALLED rather than where anything was thrown —
+   * recorded for an async rejection (`video.play()`, `navigator.clipboard.*`) whose own error carries no
+   * stack. Absent on every ordinary thrown frame.
+   */
+  origin?: 'call';
 }
 
 // Strip file:// URLs; normalize webpack:/// (and friends) to a friendly path; and keep the
@@ -233,10 +239,12 @@ function parseFrame(site: string): StackFrame {
 export function parseV8Stack(stack: string): StackFrame[] {
   const frames: StackFrame[] = [];
   for (const raw of stack.split('\n')) {
-    const line = raw.trim();
-    if (line.startsWith('at ')) {
-      frames.push(parseFrame(line.slice('at '.length)));
+    // A real frame line is INDENTED (`    at fn (loc)`); an unindented line that starts with "at " is message text (a multi-line
+    // message such as "at least one source is required"), not a frame.
+    if (!/^\s+at /.test(raw)) {
+      continue;
     }
+    frames.push(parseFrame(raw.trim().slice('at '.length)));
   }
   return frames;
 }
