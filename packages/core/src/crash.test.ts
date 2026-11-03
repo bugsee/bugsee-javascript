@@ -512,11 +512,31 @@ describe('buildCrashJson — the frame enrichment seam', () => {
     expect(crash?.exception.name).toBe('String'); // and it is still the synthetic exception
   });
 
-  it('leaves a non-Error with no frames alone rather than inventing an enrichment pass', () => {
+  it('offers a non-Error with no frames to the enricher, so it can SUPPLY them (the call site of a cross-realm DOMException)', () => {
+    // Async-origin capture exists to supply frames where there are none, and no frames means no grouping signature at all.
+    const callSite: StackFrame[] = [
+      { function: 'startPlayback', file: 'a.js', line: 4, column: 2, origin: 'call' },
+    ];
+    const seen: Array<{ frames: number; depth: number | undefined }> = [];
+    const crash = buildCrashJson(
+      { name: 'NotSupportedError' },
+      {
+        enrichFrames: (_e, frames, info) => {
+          seen.push({ frames: frames.length, depth: info?.depth });
+          return frames.length > 0 ? frames : callSite;
+        },
+      },
+    );
+    expect(seen).toEqual([{ frames: 0, depth: 0 }]);
+    expect(crash.exception.frames.map((f) => [f.trace, f.origin])).toEqual([
+      ['at startPlayback (a.js:4:2)', 'call'],
+    ]);
+  });
+
+  it('a non-Error the enricher has nothing for stays frameless', () => {
     const enrich = vi.fn((_e: unknown, frames: StackFrame[]) => frames);
-    const crash = buildCrashJson('bare', { enrichFrames: enrich });
-    expect(crash?.exception.frames).toEqual([]);
-    expect(enrich).not.toHaveBeenCalled();
+    expect(buildCrashJson('bare', { enrichFrames: enrich }).exception.frames).toEqual([]);
+    expect(enrich).toHaveBeenCalledTimes(1);
   });
 
   it("runs the enricher for each exception in the CAUSE chain, with that link's own error", () => {
@@ -550,6 +570,22 @@ describe('composeFrameEnrichers', () => {
     expect(enrich?.(new Error('x'), [{ file: 'a.js', line: 1 }])).toEqual([
       { file: 'a.js', line: 1, variables: { a: '1' }, context: { line: '1' } },
     ]);
+  });
+
+  it('forwards the report position (depth) to every enricher, so an enricher composed with others still knows a cause from the reported error', () => {
+    const depths: Array<number | undefined> = [];
+    const enrich = composeFrameEnrichers([
+      (_e, f, info) => {
+        depths.push(info?.depth);
+        return f;
+      },
+      (_e, f, info) => {
+        depths.push(info?.depth);
+        return f;
+      },
+    ]);
+    enrich?.(new Error('x'), [], { depth: 2 });
+    expect(depths).toEqual([2, 2]);
   });
 
   it('passes the same error to every enricher', () => {

@@ -1,6 +1,6 @@
 import type { Bugsee } from '@bugsee/bugsee';
 import { describe, expect, it, vi } from 'vitest';
-import { listenForAstroHydrationErrors } from './hydration';
+import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
 
 const clientWith = (logException = vi.fn(() => Promise.resolve(undefined))) =>
   ({ logException }) as unknown as Bugsee;
@@ -81,5 +81,84 @@ describe('listenForAstroHydrationErrors', () => {
     } finally {
       (globalThis as { document?: unknown }).document = undefined;
     }
+  });
+
+  // The listener is attached BEFORE launch() resolves (the carrier client is set after an async device-id read), so an island error
+  // dispatched in that window must not be dropped.
+  it('queues an error that arrives before the client exists, and reports it on flush', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let client: Bugsee | undefined;
+    const options = { target, getClient: () => client };
+    listenForAstroHydrationErrors(options);
+    const early = new Error('during launch');
+    target.dispatchEvent(hydrationError(early));
+    expect(logException).not.toHaveBeenCalled();
+    client = clientWith(logException);
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).toHaveBeenCalledTimes(1);
+    expect((logException.mock.calls[0] as unknown as [unknown])[0]).toBe(early);
+    flushQueuedAstroHydrationErrors(options); // the queue is emptied: nothing is reported twice
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the queue bounded (the newest errors survive)', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let client: Bugsee | undefined;
+    const options = { target, getClient: () => client };
+    listenForAstroHydrationErrors(options);
+    for (let i = 0; i < 25; i += 1) {
+      target.dispatchEvent(hydrationError(new Error(`e${i}`)));
+    }
+    client = clientWith(logException);
+    flushQueuedAstroHydrationErrors(options);
+    const reported = logException.mock.calls.map((c) => (c as unknown as [Error])[0].message);
+    expect(reported).toHaveLength(20);
+    expect(reported[0]).toBe('e5');
+    expect(reported[19]).toBe('e24');
+  });
+
+  it('a later registration (relaunch) replaces the onError the listener uses; flush with nothing queued or no document is a no-op', () => {
+    const target = new EventTarget();
+    const first = vi.fn();
+    const second = vi.fn();
+    const boom = vi.fn(() => {
+      throw new Error('sdk down');
+    });
+    const getClient = () => clientWith(boom as never);
+    listenForAstroHydrationErrors({ target, getClient, onError: first });
+    const again = listenForAstroHydrationErrors({ target, getClient, onError: second }); // relaunch: the new options win
+    again(); // the second registration's stop is a no-op: the first registration owns the listener
+    target.dispatchEvent(hydrationError(new Error('x')));
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(() => flushQueuedAstroHydrationErrors({ target, getClient })).not.toThrow();
+    expect(() => flushQueuedAstroHydrationErrors({ target: undefined })).not.toThrow();
+    expect(() => flushQueuedAstroHydrationErrors({ target: new EventTarget() })).not.toThrow(); // never listened
+  });
+
+  it('a client lookup that throws is reported to onError and the error is queued, not lost', () => {
+    const target = new EventTarget();
+    const onError = vi.fn();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let healthy = false;
+    const options = {
+      target,
+      onError,
+      getClient: () => {
+        if (!healthy) {
+          throw new Error('carrier unavailable');
+        }
+        return clientWith(logException);
+      },
+    };
+    listenForAstroHydrationErrors(options);
+    target.dispatchEvent(hydrationError(new Error('x')));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(logException).not.toHaveBeenCalled();
+    healthy = true;
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).toHaveBeenCalledTimes(1);
   });
 });

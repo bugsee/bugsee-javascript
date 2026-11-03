@@ -99,7 +99,10 @@ async function main(): Promise<void> {
         const reason = outcome.reason as { name?: string; stack?: unknown };
         result.settled = 'rejected';
         result.reasonName = reason?.name;
-        result.hasOwnStack = typeof reason?.stack === 'string' && reason.stack !== '';
+        // "Has a stack" means has FRAMES: Chromium's async DOMExceptions (clipboard, createImageBitmap) carry only the `Name: message` header.
+        result.hasOwnStack =
+          typeof reason?.stack === 'string' &&
+          /^\s+at\s+\S|^[^\n]*@\S+:\d+:\d+\s*$/m.test(reason.stack);
         await client.logException(outcome.reason, { labels: [`case:${entry.name}`] } as never);
       } else if (outcome.kind === 'resolved') {
         result.settled = 'resolved';

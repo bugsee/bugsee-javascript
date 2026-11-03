@@ -91,7 +91,7 @@ describe.each(ENGINES)('async origin across platform APIs - real $name', (engine
 
   it('most APIs reject without a usable stack in a real engine (so this test is not vacuous)', () => {
     const rejected = cases.filter((c) => c.settled === 'rejected');
-    // Measured on macOS (9 of 9 reject; 6-7 without a usable stack). Looser here because a headless Linux runner can answer
+    // Measured on macOS (9 of 9 reject; 8 without frames, 1 with its own: Permissions.query's TypeError). Looser here because a headless Linux runner can answer
     // clipboard/getUserMedia differently (a permission prompt that never settles lands as 'unsupported'); still far from vacuous.
     expect(rejected.length).toBeGreaterThanOrEqual(6);
     expect(rejected.filter((c) => c.hasOwnStack !== true).length).toBeGreaterThanOrEqual(4);

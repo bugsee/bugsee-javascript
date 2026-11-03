@@ -5,7 +5,7 @@
 //
 // Browser-only → behind the `@bugsee/astro/client` subpath, never the portable `.`/`./middleware` entries.
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
-import { listenForAstroHydrationErrors } from './hydration';
+import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from './hydration';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
 export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {}
@@ -18,9 +18,12 @@ export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
 ): Promise<Bugsee> {
+  const hydration = options.onError !== undefined ? { onError: options.onError } : {};
+  // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
+  // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
+  listenForAstroHydrationErrors(hydration);
   const client = await launch(appToken, options);
-  // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it.
-  listenForAstroHydrationErrors(options.onError !== undefined ? { onError: options.onError } : {});
+  flushQueuedAstroHydrationErrors(hydration);
   return client;
 }
 

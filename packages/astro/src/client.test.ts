@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { launch, listen } = vi.hoisted(() => ({ launch: vi.fn(), listen: vi.fn() }));
+const { launch, listen, flush, order } = vi.hoisted(() => ({
+  launch: vi.fn(),
+  listen: vi.fn(),
+  flush: vi.fn(),
+  order: [] as string[],
+}));
 vi.mock('@bugsee/bugsee', () => ({ launch }));
-vi.mock('./hydration', () => ({ listenForAstroHydrationErrors: listen }));
+vi.mock('./hydration', () => ({
+  listenForAstroHydrationErrors: listen,
+  flushQueuedAstroHydrationErrors: flush,
+}));
 
 import { registerClient } from './client';
 
@@ -10,6 +18,8 @@ describe('registerClient', () => {
   afterEach(() => {
     launch.mockReset();
     listen.mockReset();
+    flush.mockReset();
+    order.length = 0;
   });
 
   it('launches the browser SDK with the appToken + options, returns the client', async () => {
@@ -22,6 +32,17 @@ describe('registerClient', () => {
   it('defaults options to an empty object', async () => {
     await registerClient('tok');
     expect(launch).toHaveBeenCalledWith('tok', {});
+  });
+
+  it('listens BEFORE the launch (an island error during launch is queued) and flushes the queue once the client exists', async () => {
+    listen.mockImplementation(() => order.push('listen'));
+    launch.mockImplementation(async () => {
+      order.push('launch');
+      return {};
+    });
+    flush.mockImplementation(() => order.push('flush'));
+    await registerClient('tok');
+    expect(order).toEqual(['listen', 'launch', 'flush']);
   });
 
   it('listens for astro:hydration-error after the launch, passing the onError sink along', async () => {

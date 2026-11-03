@@ -368,6 +368,11 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     const req = requests[0] as ReportingRequest;
     expect(req.report.description).toContain('startPlayback');
     expect(req.report.description).toContain('Target: <video id="hero">');
+    // The grouping signature comes from crash.json: no frames there means every occurrence is its own issue.
+    const frames = (req.report.crash as CrashJson).exception.frames;
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.origin === 'call')).toBe(true);
+    expect(frames[0]?.trace).toContain('startPlayback');
     recorder.stop();
   });
 

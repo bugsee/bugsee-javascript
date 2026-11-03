@@ -526,9 +526,8 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   non-native frame of the probe stack; the thrower's name does not survive a minifier. `hasFrames` is anchored so header text like
   `user@host:8080` or a message line starting "at least" does not count as a frame.
 - **Limits left alone:** a consumer that downlevels `async`/`await` to the global Promise defeats the intrinsic `then` (the global is then
-  the only source, and a core-js `then` that disguises itself would be trusted); the Astro listener's stop function is not kept, so
-  a relaunch keeps the first listener's `onError`, and an error during `launch()` itself is missed because the listener attaches after
-  the `await`.
+  the only source, and a core-js `then` that disguises itself would be trusted); the Astro listener's stop function is not kept (it lives
+  as long as the page).
 
 ## 13. Grouping signature and presentation (owner, 2026-11-03)
 
@@ -559,3 +558,7 @@ things.
   `stop()` releases it), and `event.promise` links a fallback-mode origin (keyed by promise) to the reason.
 - **`logException` description:** header, then the call site, then the `Caused by:` chain, then the `Target:` line; a linked cause no
   longer suppresses the call site.
+- **A frameless non-Error reaches the enricher too** (`syntheticException` used to skip it), so a cross-realm `DOMException` (not
+  `instanceof Error`) gets its call site in `crash.json` and therefore a grouping signature; `composeFrameEnrichers` forwards `info`.
+- **Astro:** the hydration listener attaches before `launch()` resolves and queues (newest 20) what arrives before the client exists;
+  a later registration (relaunch) replaces the `onError` it uses.

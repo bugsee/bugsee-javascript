@@ -107,7 +107,8 @@ export function composeFrameEnrichers(
   if (enrichers.length === 0) {
     return undefined;
   }
-  return (error, frames) => enrichers.reduce((current, enrich) => enrich(error, current), frames);
+  return (error, frames, info) =>
+    enrichers.reduce((current, enrich) => enrich(error, current, info), frames);
 }
 
 export interface BuildCrashOptions {
@@ -274,12 +275,10 @@ function syntheticException(
 ): CrashException {
   // The enricher runs here too. It used to run only on the Error path, so `logException('payment
   // failed')` shipped frames with neither locals nor source context — on the one path where the frames
-  // are the CALLER's own and a report-site capture lines up with them exactly. Skipped when there are no
-  // frames, so a bare non-Error costs nothing.
-  const enriched =
-    enrichFrames !== undefined && frames.length > 0
-      ? enrichFrames(value, frames, { depth: 0 })
-      : frames;
+  // are the CALLER's own and a report-site capture lines up with them exactly. Offered even with NO frames: an enricher may SUPPLY them
+  // (async-origin capture gives a cross-realm DOMException, which is not `instanceof Error`, its call site), and a frameless report has
+  // no grouping signature at all. An enricher with nothing for a bare value returns it unchanged.
+  const enriched = enrichFrames !== undefined ? enrichFrames(value, frames, { depth: 0 }) : frames;
   if (enriched !== frames && stamp !== undefined) {
     applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
   }
