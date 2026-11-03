@@ -22,9 +22,11 @@ export async function registerClient(
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
   // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
   listenForAstroHydrationErrors(hydration);
-  const client = await launch(appToken, options);
-  flushQueuedAstroHydrationErrors(hydration);
-  return client;
+  try {
+    return await launch(appToken, options);
+  } finally {
+    flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
+  }
 }
 
 // API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.

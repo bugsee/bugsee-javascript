@@ -161,4 +161,33 @@ describe('listenForAstroHydrationErrors', () => {
     flushQueuedAstroHydrationErrors(options);
     expect(logException).toHaveBeenCalledTimes(1);
   });
+
+  // The queue covers ONLY the launch window: after the flush that ends it, an error with no client (a stopped or killed SDK) is dropped,
+  // not queued for ever and not reported by a later, unrelated flush.
+  it('stops queueing once the launch window has been flushed', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let client: Bugsee | undefined;
+    const options = { target, getClient: () => client };
+    listenForAstroHydrationErrors(options);
+    flushQueuedAstroHydrationErrors(options); // launch resolved (or failed): the window is over
+    target.dispatchEvent(hydrationError(new Error('after the SDK went away'))); // no client
+    client = clientWith(logException);
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).not.toHaveBeenCalled();
+  });
+
+  it('a relaunch opens a new queueing window', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let client: Bugsee | undefined;
+    const options = { target, getClient: () => client };
+    listenForAstroHydrationErrors(options);
+    flushQueuedAstroHydrationErrors(options);
+    listenForAstroHydrationErrors(options); // registerClient again (relaunch)
+    target.dispatchEvent(hydrationError(new Error('during the relaunch')));
+    client = clientWith(logException);
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
 });

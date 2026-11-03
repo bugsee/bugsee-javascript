@@ -25,6 +25,8 @@ interface Listening {
   listener: EventListener;
   options: AstroHydrationOptions;
   queue: unknown[];
+  /** True only while a launch is resolving: from a registration until its flush. Outside that window a missing client drops the error. */
+  queueing: boolean;
 }
 const listening = new WeakMap<EventTarget, Listening>();
 
@@ -54,12 +56,14 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
   }
   const existing = listening.get(target);
   if (existing !== undefined) {
-    existing.options = options; // relaunch: the new getClient / onError replace the first ones
+    existing.options = options; // relaunch: the new getClient / onError replace the first ones, and a new launch window opens
+    existing.queueing = true;
     return () => undefined;
   }
   const state: Listening = {
     options,
     queue: [],
+    queueing: true,
     listener: (event) => {
       const error = (event as CustomEvent<{ error?: unknown } | undefined>).detail?.error;
       if (error === undefined) {
@@ -71,7 +75,7 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
       } catch (clientError) {
         state.options.onError?.(clientError);
       }
-      if (client === undefined) {
+      if (client === undefined && state.queueing) {
         state.queue.push(error);
         if (state.queue.length > MAX_QUEUED) {
           state.queue.shift(); // the newest survive
@@ -89,11 +93,18 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
   };
 }
 
-/** Report what was queued while no client existed (call once the launch has resolved), with the options of the latest registration. Never throws. */
+/**
+ * Report what was queued while no client existed and END the launch window (call once the launch has settled, success or failure), with
+ * the options of the latest registration. Afterwards an error with no client is dropped, not queued. Never throws.
+ */
 export function flushQueuedAstroHydrationErrors(options: AstroHydrationOptions = {}): void {
   const target = targetOf(options);
   const state = target === undefined ? undefined : listening.get(target);
-  if (state === undefined || state.queue.length === 0) {
+  if (state === undefined) {
+    return;
+  }
+  state.queueing = false; // the launch window is over, whether it succeeded or failed
+  if (state.queue.length === 0) {
     return;
   }
   for (const error of state.queue.splice(0)) {

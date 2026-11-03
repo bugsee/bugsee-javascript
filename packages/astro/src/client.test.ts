@@ -45,6 +45,13 @@ describe('registerClient', () => {
     expect(order).toEqual(['listen', 'launch', 'flush']);
   });
 
+  it('ends the queueing window even when the launch fails, and still rejects with the launch error', async () => {
+    const failure = new Error('launch failed');
+    launch.mockRejectedValue(failure);
+    await expect(registerClient('tok')).rejects.toBe(failure);
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
   it('listens for astro:hydration-error after the launch, passing the onError sink along', async () => {
     const onError = vi.fn();
     await registerClient('tok', { onError });
