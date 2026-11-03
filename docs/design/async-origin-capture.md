@@ -1,6 +1,6 @@
 # Async origin capture — giving stackless rejections a call site
 
-Status: IMPLEMENTED (PR #176); this is the design that was built, and §11-§14 record where building it differed and what real engines taught. Trigger: staging report BGSVIEWER-14 — an `unhandledrejection` whose
+Status: IMPLEMENTED in PR #176; this is the design that was built, and §11-§14 record where building it differed and what real engines taught. The as-built parts cite files (`packages/capture/...`, `scripts/async-origin/...`, `packages/astro/src/hydration.ts`, and so on) that exist once #176 has merged; this document and #176 are meant to land together, #176 first. Trigger: staging report BGSVIEWER-14 — an `unhandledrejection` whose
 reason is `NotSupportedError: The element has no supported sources.` with `crash.json.exception.frames = []`.
 
 ## 1. The problem is real, and it is not in the SDK's parsing
@@ -48,7 +48,7 @@ was not part of this probe; it was run later in the e2e, §12):
 | `structuredClone` inside a `.then` | DataCloneError | 1 frame, **no user frame** | has call site |
 
 The pattern: **the more asynchronous the failure (media tasks, permission prompts, network/decoder work, workers), the less
-likely a stack exists, and Chromium is much worse than Firefox.** WebKit is untested; assume it behaves like one of the two.
+likely a stack exists, and Chromium is much worse than Firefox.** WebKit was measured later, in the e2e (§12): it behaves like Firefox for these rejections (no stack on the async ones), and eliminates tail calls.
 
 The last two rows are NOT part of the set the wrapper fixes: `structuredClone` is synchronous (its `DataCloneError` is thrown inside the
 caller's own `.then`, not from a platform task), and a `WebAssembly.*` failure has a frame, only none of the application's. Neither is
@@ -258,7 +258,7 @@ successful ones, and the breaker trips exactly when failures begin.
 - Add an `asyncOriginEnricher: FrameEnricher` that returns the origin's frames when `parsed.length === 0` (and the reason has an
   origin), tagged `origin: 'call'` (DECIDED, §8; carried by `StackFrame`, `CrashFrame` and `toCrashFrame`). Frames an enricher supplies get their `debug_id` in `buildCrashJson`, because the worker symbolicates before it signs (§13).
 - Thread it into the **browser** `crashOf` the way node already does (`packages/node/src/detection-providers.ts:44-54` passes
-  `enrichFrames`); the browser provider passes neither today (`packages/browser/src/detection-providers.ts:44-46`).
+  `enrichFrames`); as built, the browser providers pass `enrichFrames` (`packages/browser/src/detection-providers.ts`), as does the browser `launch()` for `logException`.
 - There are TWO `describeError`s and both need the fallback (origin frames + the §4.3 target description) or the report has frames but a
   bare description: the browser provider's (`packages/browser/src/detection-providers.ts`, for `unhandledrejection` and window `error`) and
   core's (`packages/core/src/client.ts`, which `logException` uses and so every framework adapter, §10.3). The core one also takes the target
@@ -474,7 +474,7 @@ there). Two kinds of extra handling emerge, neither library-specific code:
 | SWR 2.5.1 | run | catches into hook state | none unless unhandled (`mutate(key, p)`, `trigger()`, `preload` fire) | yes (`onError`, `error`, Suspense) | `packages/react` |
 | React Router 7.18.5 | run | data router catches loader/action/lazy errors | none | yes (`useRouteError`, `useAsyncError`, `onError`) | `packages/remix` (`bugseeOnError`) |
 | React Router 6.30.4 / Remix 2.17.5 | router run; Remix runtime source only | as RR7; **no `onError` prop in v6** | none (console.error only without an `ErrorBoundary`) | yes | **GAP** (needs a route `ErrorBoundary`) |
-| Astro 7.4.4 | source, not run | island hydration errors are caught and re-dispatched as a cancelable `astro:hydration-error` `CustomEvent` (`detail.error` is the same object) plus `console.error` | none | yes (`detail.error`) | **GAP** — nothing in `packages/` listens for it |
+| Astro 7.4.4 | source, not run | island hydration errors are caught and re-dispatched as a cancelable `astro:hydration-error` `CustomEvent` (`detail.error` is the same object) plus `console.error` | none | yes (`detail.error`) | **FIXED** (§10.5): `packages/astro` listens for it |
 | Q 1.5.1 / 2.0.3 | run | Q-owned chains; adopts `p` on `Q.resolve` | none for `Q.resolve(p)`+`.then` (v2: `Q.resolve(p)` alone fires) | yes (`.fail`, `.done`, `Q.onerror`) | **GAP** |
 | NPO 0.8.1 | run | no-op if native exists; with native deleted it installs its own `Promise` | normal with native; silent with native deleted (`.catch` gets the reason) | yes | **GAP** |
 | Alpine 3.17.5 | run | evaluator catches, warns, rethrows via window `error` | window `error` (and `unhandledrejection` for a returned promise), same reason | yes | `crashOfErrorEvent`; the two events for one reason are not deduped (§10.5) |
@@ -499,7 +499,7 @@ documented requirement:
 ### 10.6 Unverified
 Ember routes (`Route#model()`, router_js) ran as source only, not in a full Ember app; the Remix v2 browser runtime (`RemixBrowser`,
 single-fetch) is source-read only; Astro, Qwik, Stencil and Marko were not run in a browser (Marko `<await>`/`<try>` only skimmed).
-Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit untested.
+Angular itself was not run in a browser (the zone paths were measured, Angular source read). WebKit was measured later in the e2e (§12).
 
 ## 11. Known limitations of the first build (review round 1, accepted)
 
@@ -541,7 +541,7 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
 - **The wrapper is on top of a reason's own stack.** An API that rejects with a stack made inside the call (a `TypeError` from argument
   validation) has the SDK's wrapper as its top frame, and a top `user` frame decides issue grouping. Every wrapper (and a probe) is
   created by one function, so the `original.apply` line is one source location; the recorder exposes the probe's stack, and the enricher
-  drops frames at that location (`probeThrower`'s caller).
+  drops frames at that location (the first non-native frame after the probe's thrower, found by position, not by name).
 - **WebKit eliminates tail calls** (strict mode): `return video.play()` removes the calling function's own frame from the stack, so an
   application function written that way is not in the call site on Safari. Nothing to fix; the e2e scenarios are non-tail on purpose.
 - **Arming is verified for real:** after one unlocated stackless rejection (which is itself reported without frames), `HTMLImageElement.decode`,
@@ -584,5 +584,7 @@ things.
   longer suppresses the call site.
 - **A frameless non-Error reaches the enricher too** (`syntheticException` used to skip it), so a cross-realm `DOMException` (not
   `instanceof Error`) gets its call site in `crash.json` and therefore a grouping signature; `composeFrameEnrichers` forwards `info`.
-- **Astro:** the hydration listener attaches before `launch()` resolves and queues (newest 20) what arrives before the client exists;
-  a later registration (relaunch) replaces the `onError` it uses.
+- **Astro:** the hydration listener attaches before `launch()` resolves and queues (newest 20) what arrives in the LAUNCH WINDOW only: the
+  window opens at a registration and is closed by the flush `registerClient` runs in a `finally` (so a failed `launch()` ends it too);
+  afterwards an error with no client is dropped, not queued. A later registration (relaunch) opens a new window and replaces the
+  `onError` the listener uses.

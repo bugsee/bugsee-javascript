@@ -42,7 +42,7 @@ export interface AsyncOriginRecorder {
   adoptPromise(reason: unknown, promise: unknown): void;
   /** Install the `armed` rows. Called on the first stackless rejection nobody could locate; idempotent. */
   arm(): void;
-  /** The stack of a throwaway call through the wrapper: the frame just above `probeThrower` is the wrapper's call site. */
+  /** The stack of a throwaway call through the wrapper: the wrapper's call site is the first non-native frame after the first (the thrower's own) frame; found by position because a minifier renames the thrower. */
   readonly probeStack?: string | undefined;
   /** `Interface.method` of every wrapper currently installed (targets named for mixins). */
   readonly installed: readonly string[];
@@ -203,7 +203,7 @@ function createWrapper(
   };
 }
 
-/** The stack of a throwaway call through {@link createWrapper}: the frame just above `probeThrower` is the wrapper's call site. */
+/** The stack of a throwaway call through {@link createWrapper}: the wrapper's call site is the first non-native frame after the first (the thrower's own) frame; found by position because a minifier renames the thrower. */
 function probeStackOf(ErrorCtor: unknown): string | undefined {
   let stack: unknown;
   try {
