@@ -267,6 +267,9 @@ importers:
       '@bugsee/vercel-edge':
         specifier: workspace:*
         version: link:../vercel-edge
+      '@bugsee/web-adapter':
+        specifier: workspace:*
+        version: link:../web-adapter
     devDependencies:
       '@bugsee/node':
         specifier: workspace:*

@@ -424,7 +424,7 @@ Every one of these is a route by which a stackless reason arrives; each must rea
 | Angular `BugseeErrorHandler` (`reportError` → `logException`) | `packages/angular/src/error.ts` |
 | Solid `solidErrorHandler`; SvelteKit `handleErrorWithBugsee` | `packages/solid`, `packages/sveltekit` |
 
-**Vue is the one that needs a documented requirement:** in production with no `app.config.errorHandler`, Vue only `console.error`s and
+**Vue is the one that needs a documented requirement (now in `packages/vue/README.md`):** in production with no `app.config.errorHandler`, Vue only `console.error`s and
 the SDK sees nothing, with or without this work; the adapter must be installed.
 
 ### 10.4 The remaining frameworks and libraries (measured: headless Chromium 156, ~17 key cases also Firefox 151)
@@ -468,8 +468,7 @@ These swallow the error so the SDK sees nothing today; the origin work does not 
 documented requirement:
 - **Lit `@lit/task`** with no `render({error})`/`onError`; **SWR** with no `onError`; **React Router 6 / Remix v2** with no `ErrorBoundary`
   (`console.error` only); **Mithril `onmatch`**; **Q**; **Stencil** async lifecycle; **Vue production** without `errorHandler` (§10.3).
-- **Astro:** the cancelable `astro:hydration-error` event carries the same reason and nothing listens for it — a small, cheap listener in
-  `packages/astro`.
+- **Astro:** the cancelable `astro:hydration-error` event carries the same reason and nothing listened for it. **FIXED:** `listenForAstroHydrationErrors` in `packages/astro/src/hydration.ts`, installed by `registerClient`; it reports the event's error (same object) without cancelling it.
 - **Ember:** the default `RSVP.on('error')` throws before later handlers run; `Ember.onerror` is the usable channel.
 - **Preact-iso `lazy`:** double `unhandledrejection` on derived promises with the same reason → the SDK's dedupe must key on reason identity.
 

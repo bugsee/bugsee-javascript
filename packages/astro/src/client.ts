@@ -5,6 +5,7 @@
 //
 // Browser-only → behind the `@bugsee/astro/client` subpath, never the portable `.`/`./middleware` entries.
 import { type Bugsee, type BugseeLaunchOptionsWithPerformance, launch } from '@bugsee/bugsee';
+import { listenForAstroHydrationErrors } from './hydration';
 
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
 export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {}
@@ -17,7 +18,10 @@ export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
 ): Promise<Bugsee> {
-  return await launch(appToken, options);
+  const client = await launch(appToken, options);
+  // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it.
+  listenForAstroHydrationErrors(options.onError !== undefined ? { onError: options.onError } : {});
+  return client;
 }
 
 // API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
