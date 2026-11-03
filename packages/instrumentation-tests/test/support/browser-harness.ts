@@ -17,7 +17,10 @@ export interface BridgeState {
 }
 
 /** Bundle a scenario the way a customer's bundler would: real esbuild over the real workspace source, unminified (frame names matter). */
-export async function bundleEntry(entry: string): Promise<string> {
+export async function bundleEntry(
+  entry: string,
+  define: Record<string, string> = {},
+): Promise<string> {
   const result = await build({
     entryPoints: [entry],
     bundle: true,
@@ -25,7 +28,7 @@ export async function bundleEntry(entry: string): Promise<string> {
     platform: 'browser',
     target: 'chrome110',
     write: false,
-    define: { 'process.env.NODE_ENV': '"production"' },
+    define: { 'process.env.NODE_ENV': '"production"', ...define },
   });
   const out = result.outputFiles[0];
   if (out === undefined) {
