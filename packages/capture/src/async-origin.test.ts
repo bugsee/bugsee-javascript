@@ -750,13 +750,14 @@ describe('installAsyncOrigins - a replacement Promise that disguises itself as n
     const reason = stackless();
     const g = fakeGlobal(() => Promise.reject(reason));
     function FakePromise(): void {}
-    FakePromise.prototype.then = function then(): never {
+    // biome-ignore lint/suspicious/noThenProperty: the point is a replacement Promise whose `then` is incompatible with native promises
+    FakePromise.prototype.then = function incompatibleThen(): never {
       throw new TypeError('incompatible receiver');
     };
     g.Promise = FakePromise;
     const realToString = Function.prototype.toString;
     const liars = new Set<unknown>([FakePromise, FakePromise.prototype.then]);
-    Function.prototype.toString = function toString(this: unknown): string {
+    Function.prototype.toString = function lyingToString(this: unknown): string {
       return liars.has(this) ? 'function () { [native code] }' : realToString.call(this);
     };
     try {
