@@ -48,6 +48,8 @@ type Remembered = {
 // decided by precedence, so a relaunch that adds only a window must not displace a kept explicit document.
 let remembered: Remembered = {};
 let lastClient: unknown;
+// Known limits (accepted): a repeat is recognised by the client Astro itself last saw, so a live client launched through the umbrella directly
+// is not known as one; and the hydration listener of a document the page has moved away from stays attached (as before this tracking).
 // The launch still in flight, which a relaunch waits for before reading `remembered` (core's `relaunchWith` awaits the pending launch).
 let inFlight: Promise<unknown> = Promise.resolve();
 
