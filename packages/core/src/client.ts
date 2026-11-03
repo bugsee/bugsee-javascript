@@ -1790,7 +1790,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
             description = description === undefined ? target : `${description}\n${target}`;
           }
         } catch (targetError) {
-          onError(targetError);
+          onErrorSafe(targetError); // a failing sink must not stop the report either
         }
       }
       const crashOptions: { domain?: string; skipFrames?: number } = {};

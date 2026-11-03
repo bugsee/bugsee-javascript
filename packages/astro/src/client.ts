@@ -17,18 +17,45 @@ export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {
 
 // The hydration listener's options: where to report a failing sink, and which carrier the client lives on (a custom one is not on `globalThis`).
 const hydrationOptions = (
-  options: { onError?: (error: unknown) => void; carrier?: object } | undefined,
-) => ({
-  ...(options?.onError !== undefined ? { onError: options.onError } : {}),
-  ...(options?.carrier !== undefined ? { carrier: options.carrier } : {}),
-});
+  options:
+    | {
+        onError?: (error: unknown) => void;
+        carrier?: object;
+        document?: Document;
+        window?: unknown;
+      }
+    | undefined,
+) => {
+  // The page document the launch itself uses: an explicit `document`, else the bound window's. Omitted when neither yields one, which
+  // keeps the listener's default (`globalThis.document`). A hostile `window.document` getter (a sandboxed frame) counts as none.
+  let target: Document | undefined = options?.document;
+  if (target === undefined) {
+    try {
+      target = (options?.window as { document?: Document } | undefined)?.document;
+    } catch {
+      target = undefined;
+    }
+  }
+  return {
+    ...(options?.onError !== undefined ? { onError: options.onError } : {}),
+    ...(options?.carrier !== undefined ? { carrier: options.carrier } : {}),
+    ...(target !== undefined ? { target } : {}),
+  };
+};
 
 /**
  * Open the hydration listener's launch window, run `start`, and close the window in a `finally`: an error dispatched while the client is
  * (re)starting is queued, and the flush runs whether the start succeeded or failed.
  */
 async function withHydrationWindow<T>(
-  options: { onError?: (error: unknown) => void; carrier?: object } | undefined,
+  options:
+    | {
+        onError?: (error: unknown) => void;
+        carrier?: object;
+        document?: Document;
+        window?: unknown;
+      }
+    | undefined,
   start: () => Promise<T>,
 ): Promise<T> {
   const hydration = hydrationOptions(options);

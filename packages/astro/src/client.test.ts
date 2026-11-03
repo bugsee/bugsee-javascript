@@ -63,6 +63,23 @@ describe('registerClient', () => {
     expect(order).toEqual(['listen', 'flush']);
   });
 
+  it("hands the page document the launch uses (an explicit one, else the bound window's) to the hydration listener as its target", async () => {
+    launch.mockResolvedValue({});
+    const doc = {} as Document;
+    await registerClient('tok', { document: doc } as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
+    const windowDoc = {} as Document;
+    await registerClient('tok', { window: { document: windowDoc } } as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
+    const hostile = {
+      get document(): never {
+        throw new Error('sandboxed');
+      },
+    };
+    await registerClient('tok', { window: hostile } as never);
+    expect(listen).toHaveBeenLastCalledWith({}); // no document to select: the listener keeps its default
+  });
+
   it('hands a custom carrier to the hydration listener, so it looks where the client lives', async () => {
     const carrier = {};
     launch.mockResolvedValue({});

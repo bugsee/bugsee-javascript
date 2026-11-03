@@ -284,4 +284,20 @@ describe('listenForAstroHydrationErrors', () => {
     expect(explicit).toHaveBeenCalledTimes(1);
     expect(kept).not.toHaveBeenCalled();
   });
+
+  it('after the launch window a failing client lookup notifies onError ONCE (no second lookup through reportError)', () => {
+    const target = new EventTarget();
+    const onError = vi.fn();
+    const getClient = vi.fn(() => {
+      throw new Error('carrier unavailable');
+    });
+    const options = { target, getClient, onError };
+    listenForAstroHydrationErrors(options);
+    flushQueuedAstroHydrationErrors(options); // the window is closed
+    getClient.mockClear();
+    onError.mockClear();
+    target.dispatchEvent(hydrationError(new Error('x')));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(getClient).toHaveBeenCalledTimes(1);
+  });
 });

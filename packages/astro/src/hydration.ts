@@ -32,6 +32,17 @@ interface Listening {
 }
 const listening = new WeakMap<EventTarget, Listening>();
 
+// Queue an error that has no client to go to yet, but only inside the launch window; the newest MAX_QUEUED survive.
+function queue(state: Listening, error: unknown): void {
+  if (state.pending <= 0) {
+    return;
+  }
+  state.queue.push(error);
+  if (state.queue.length > MAX_QUEUED) {
+    state.queue.shift();
+  }
+}
+
 const targetOf = (options: AstroHydrationOptions): EventTarget | undefined =>
   'target' in options ? options.target : (globalThis as { document?: EventTarget }).document;
 
@@ -78,17 +89,18 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
       try {
         client = clientOf(state.options);
       } catch (clientError) {
+        // The lookup itself failed: tell onError ONCE, and queue only inside the launch window. Never fall through to `report`, whose own
+        // lookup would throw again and notify a second time.
         try {
           state.options.onError?.(clientError);
         } catch {
           // a failing sink must not escape into Astro's event dispatch
         }
+        queue(state, error);
+        return;
       }
-      if (client === undefined && state.pending > 0) {
-        state.queue.push(error);
-        if (state.queue.length > MAX_QUEUED) {
-          state.queue.shift(); // the newest survive
-        }
+      if (client === undefined) {
+        queue(state, error);
         return;
       }
       report(error, state.options);

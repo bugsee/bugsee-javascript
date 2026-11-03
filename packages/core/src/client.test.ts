@@ -1487,6 +1487,23 @@ describe('createClient — capture-recovery markers', () => {
       expect(request.description).toBe('Target: <video id="hero">');
     });
 
+    it('a describeTarget that throws, with an onError that also throws, never stops the report', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        onError: () => {
+          throw new Error('sink failed');
+        },
+        describeTarget: () => {
+          throw new Error('describer failed');
+        },
+      });
+      await expect(client.logException({ name: 'X' })).resolves.toBeDefined();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    });
+
     it('leaves an error that has frames of its own exactly as before', async () => {
       const own = 'NotSupportedError: x\n    at thrower (https://app.test/t.js:1:1)';
       // (the real describer answers only for an error whose origin it recorded: none was, for an error with its own frames)
