@@ -37,32 +37,43 @@ function launchDocument(document: Document | undefined, win: unknown): Document 
   }
 }
 
-// What the last registration handed in. `document` and `window` stay RAW: which one the launch uses is decided by precedence, so a
-// relaunch that adds only a window must not displace a kept explicit document.
-let last: {
+type Remembered = {
   document?: Document;
   window?: unknown;
   onError?: (e: unknown) => void;
   carrier?: object;
-} = {};
+};
+
+// What the last SUCCESSFUL launch handed in, like core's `lastLaunch`. `document` and `window` stay RAW: which one the launch uses is
+// decided by precedence, so a relaunch that adds only a window must not displace a kept explicit document.
+let remembered: Remembered = {};
+let lastClient: unknown;
+
+function pick(options: HydrationInput): Remembered {
+  const picked: Remembered = {};
+  for (const key of ['document', 'window', 'onError', 'carrier'] as const) {
+    if (options !== undefined && key in options) {
+      (picked as Record<string, unknown>)[key] = options[key];
+    }
+  }
+  return picked;
+}
 
 /**
  * Open the hydration listener's launch window, run `start`, and close the window in a `finally`: an error dispatched while the client is
  * (re)starting is queued, and the flush runs whether the start succeeded or failed.
  *
- * Mirrors core's `relaunchWith`, which keeps `document`, `window`, `carrier` and `onError` from the previous launch and lets an explicit
- * one win: a plain `relaunch()` must watch the same document, on the same carrier, with the same sink.
+ * `base` is what the launch builds on: a relaunch starts from the remembered options (core's `relaunchWith` keeps `document`, `window`,
+ * `carrier` and `onError`; an explicit key wins, even an explicit `undefined`), a fresh launch from nothing (core's plain launch carries
+ * nothing over). The remembered state moves only once the start succeeded, and a repeat registration (core ignores it and returns the live
+ * client, the same object) changes nothing.
  */
-async function withHydrationWindow<T>(
+async function withHydrationWindow(
   options: HydrationInput,
-  start: () => Promise<T>,
-): Promise<T> {
-  const next = { ...last };
-  if (options?.document !== undefined) next.document = options.document;
-  if (options?.window !== undefined) next.window = options.window;
-  if (options?.onError !== undefined) next.onError = options.onError;
-  if (options?.carrier !== undefined) next.carrier = options.carrier;
-  last = next;
+  base: Remembered,
+  start: () => Promise<Bugsee>,
+): Promise<Bugsee> {
+  const next = { ...base, ...pick(options) };
   const target = launchDocument(next.document, next.window);
   const hydration = {
     ...(next.onError !== undefined ? { onError: next.onError } : {}),
@@ -73,7 +84,12 @@ async function withHydrationWindow<T>(
   // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
   listenForAstroHydrationErrors(hydration);
   try {
-    return await start();
+    const client = await start();
+    if (client !== lastClient) {
+      remembered = next;
+      lastClient = client;
+    }
+    return client;
   } finally {
     flushQueuedAstroHydrationErrors(hydration); // success: report what queued; failure: end the window, nothing to report to
   }
@@ -87,7 +103,7 @@ export async function registerClient(
   appToken: string,
   options: AstroClientOptions = {},
 ): Promise<Bugsee> {
-  return await withHydrationWindow(options, () => launch(appToken, options));
+  return await withHydrationWindow(options, {}, () => launch(appToken, options));
 }
 
 /**
@@ -95,7 +111,7 @@ export async function registerClient(
  * drain before the new one is set, and an island that fails to hydrate meanwhile must not be lost.
  */
 export async function relaunch(options?: Parameters<typeof umbrellaRelaunch>[0]): Promise<Bugsee> {
-  return await withHydrationWindow(options, () => umbrellaRelaunch(options));
+  return await withHydrationWindow(options, remembered, () => umbrellaRelaunch(options));
 }
 
 // API parity with the umbrella entries: the same VALUE surface, thin re-exports of the same functions.
