@@ -103,6 +103,16 @@ describe('registerClient', () => {
     expect(listen).toHaveBeenLastCalledWith({ target: other, carrier, onError });
   });
 
+  it("a plain relaunch() after a bound WINDOW listens and flushes on that window's document (the same EventTarget as registerClient)", async () => {
+    const windowDoc = {} as Document;
+    launch.mockResolvedValue({});
+    relaunchUmbrella.mockResolvedValue({});
+    await registerClient('tok', { window: { document: windowDoc } } as never);
+    await relaunch({ replay: false });
+    expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
+    expect(flush).toHaveBeenLastCalledWith({ target: windowDoc });
+  });
+
   it('hands a custom carrier to the hydration listener, so it looks where the client lives', async () => {
     const carrier = {};
     launch.mockResolvedValue({});
