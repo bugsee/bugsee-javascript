@@ -72,12 +72,13 @@ describe('registerClient', () => {
 
   it("hands the page document the launch uses (an explicit one, else the bound window's) to the hydration listener as its target", async () => {
     launch.mockResolvedValue({});
-    const doc = {} as Document;
+    const doc = { id: 'explicit' } as unknown as Document;
     await registerClient('tok', { document: doc } as never);
     expect(listen).toHaveBeenLastCalledWith({ target: doc });
-    const windowDoc = {} as Document;
+    // launch prefers an explicit `document`, so a later window alone does not displace it
+    const windowDoc = { id: 'window' } as unknown as Document;
     await registerClient('tok', { window: { document: windowDoc } } as never);
-    expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
     const hostile = {
       get document(): never {
         throw new Error('sandboxed');
@@ -85,11 +86,22 @@ describe('registerClient', () => {
     };
     await registerClient('tok', { window: hostile } as never);
     // nothing selectable this time: the earlier registration's document is KEPT (core's relaunch keeps `document` and `window` too)
-    expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
+  });
+
+  it('a sandboxed window whose document getter throws leaves the listener on its default target', async () => {
+    launch.mockResolvedValue({});
+    const hostile = {
+      get document(): never {
+        throw new Error('sandboxed');
+      },
+    };
+    await registerClient('tok', { window: hostile } as never);
+    expect(listen).toHaveBeenLastCalledWith({});
   });
 
   it('a plain relaunch() keeps the earlier document, carrier and onError (core keeps them), and an explicit one wins', async () => {
-    const doc = {} as Document;
+    const doc = { id: 'explicit' } as unknown as Document;
     const carrier = {};
     const onError = vi.fn();
     launch.mockResolvedValue({});
@@ -98,7 +110,7 @@ describe('registerClient', () => {
     await relaunch();
     expect(listen).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
     expect(flush).toHaveBeenLastCalledWith({ target: doc, carrier, onError });
-    const other = {} as Document;
+    const other = { id: 'other' } as unknown as Document;
     await relaunch({ document: other } as never);
     expect(listen).toHaveBeenLastCalledWith({ target: other, carrier, onError });
   });
@@ -111,6 +123,21 @@ describe('registerClient', () => {
     await relaunch({ replay: false });
     expect(listen).toHaveBeenLastCalledWith({ target: windowDoc });
     expect(flush).toHaveBeenLastCalledWith({ target: windowDoc });
+  });
+
+  it("a relaunch({ window }) after an explicit document keeps that document, because launch prefers `document` over the window's", async () => {
+    const doc = { id: 'explicit' } as unknown as Document;
+    const windowDoc = { id: 'window' } as unknown as Document;
+    launch.mockResolvedValue({});
+    relaunchUmbrella.mockResolvedValue({});
+    await registerClient('tok', { document: doc } as never);
+    await relaunch({ window: { document: windowDoc } } as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: doc });
+    expect(flush).toHaveBeenLastCalledWith({ target: doc });
+    // and an explicit document on the relaunch still wins over the kept one
+    const other = { id: 'other' } as unknown as Document;
+    await relaunch({ document: other } as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: other });
   });
 
   it('hands a custom carrier to the hydration listener, so it looks where the client lives', async () => {

@@ -15,56 +15,60 @@ import { flushQueuedAstroHydrationErrors, listenForAstroHydrationErrors } from '
 /** Options for the Astro client (browser) composition — the batteries-included browser umbrella options. */
 export interface AstroClientOptions extends BugseeLaunchOptionsWithPerformance {}
 
-// The hydration listener's options: where to report a failing sink, and which carrier the client lives on (a custom one is not on `globalThis`).
-const hydrationOptions = (
-  options:
-    | {
-        onError?: (error: unknown) => void;
-        carrier?: object;
-        document?: Document;
-        window?: unknown;
-      }
-    | undefined,
-) => {
-  // The page document the launch itself uses: an explicit `document`, else the bound window's. Omitted when neither yields one, which
-  // keeps the listener's default (`globalThis.document`). A hostile `window.document` getter (a sandboxed frame) counts as none.
-  let target: Document | undefined = options?.document;
-  if (target === undefined) {
-    try {
-      target = (options?.window as { document?: Document } | undefined)?.document;
-    } catch {
-      target = undefined;
+type HydrationInput =
+  | {
+      onError?: (error: unknown) => void;
+      carrier?: object;
+      document?: Document;
+      window?: unknown;
     }
-  }
-  return {
-    ...(options?.onError !== undefined ? { onError: options.onError } : {}),
-    ...(options?.carrier !== undefined ? { carrier: options.carrier } : {}),
-    ...(target !== undefined ? { target } : {}),
-  };
-};
+  | undefined;
 
-// The hydration options of the last registration (see `withHydrationWindow`).
-let lastHydration: ReturnType<typeof hydrationOptions> = {};
+// The page document the launch itself uses: an explicit `document`, else the bound window's. Undefined when neither yields one, which
+// keeps the listener's default (`globalThis.document`). A hostile `window.document` getter (a sandboxed frame) counts as none.
+function launchDocument(document: Document | undefined, win: unknown): Document | undefined {
+  if (document !== undefined) {
+    return document;
+  }
+  try {
+    return (win as { document?: Document } | undefined)?.document;
+  } catch {
+    return undefined;
+  }
+}
+
+// What the last registration handed in. `document` and `window` stay RAW: which one the launch uses is decided by precedence, so a
+// relaunch that adds only a window must not displace a kept explicit document.
+let last: {
+  document?: Document;
+  window?: unknown;
+  onError?: (e: unknown) => void;
+  carrier?: object;
+} = {};
 
 /**
  * Open the hydration listener's launch window, run `start`, and close the window in a `finally`: an error dispatched while the client is
  * (re)starting is queued, and the flush runs whether the start succeeded or failed.
+ *
+ * Mirrors core's `relaunchWith`, which keeps `document`, `window`, `carrier` and `onError` from the previous launch and lets an explicit
+ * one win: a plain `relaunch()` must watch the same document, on the same carrier, with the same sink.
  */
 async function withHydrationWindow<T>(
-  options:
-    | {
-        onError?: (error: unknown) => void;
-        carrier?: object;
-        document?: Document;
-        window?: unknown;
-      }
-    | undefined,
+  options: HydrationInput,
   start: () => Promise<T>,
 ): Promise<T> {
-  // Like core's `relaunchWith`, which keeps `document`, `window`, `carrier` and `onError` from the previous launch and lets an explicit one
-  // win: a plain `relaunch()` must watch the same document, on the same carrier, with the same sink.
-  const hydration = { ...lastHydration, ...hydrationOptions(options) };
-  lastHydration = hydration;
+  const next = { ...last };
+  if (options?.document !== undefined) next.document = options.document;
+  if (options?.window !== undefined) next.window = options.window;
+  if (options?.onError !== undefined) next.onError = options.onError;
+  if (options?.carrier !== undefined) next.carrier = options.carrier;
+  last = next;
+  const target = launchDocument(next.document, next.window);
+  const hydration = {
+    ...(next.onError !== undefined ? { onError: next.onError } : {}),
+    ...(next.carrier !== undefined ? { carrier: next.carrier } : {}),
+    ...(target !== undefined ? { target } : {}),
+  };
   // Astro swallows an island's hydration failure into an `astro:hydration-error` event; nothing else would see it. Listen BEFORE the
   // launch resolves (an error dispatched meanwhile is queued) and flush once the client exists.
   listenForAstroHydrationErrors(hydration);
