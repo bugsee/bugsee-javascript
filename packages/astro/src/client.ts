@@ -150,14 +150,13 @@ async function openWindow(
   listenForAstroHydrationErrors(hydration);
   try {
     const client = await start();
-    if (repeat && tracked !== undefined && !activeTargets.has(host)) {
-      activeTargets.set(host, tracked); // a client Astro did not launch: remember where its listener is, so a later move can release it
-    }
-    if (!repeat && tracked !== undefined) {
+    if (tracked !== undefined) {
+      // The document this host's client is now on: for a repeat, the one core recorded (a client Astro did not launch, or one the umbrella
+      // moved), for a launch, the one it just started on.
       const left = activeTargets.get(host);
       activeTargets.set(host, tracked);
-      if (left !== undefined && left !== tracked) {
-        release(left); // the page moved to another document
+      if (left !== undefined) {
+        release(left); // the page may have moved to another document (a no-op while any host is still on `left`)
       }
     }
     return client;

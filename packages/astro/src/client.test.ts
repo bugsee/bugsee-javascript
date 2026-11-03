@@ -504,4 +504,16 @@ describe('registerClient', () => {
     await relaunch(); // still the first document: nothing stops
     expect(stop).not.toHaveBeenCalled();
   });
+
+  it('a repeat after the umbrella moved the client to another document releases the one Astro knew', async () => {
+    await registerClient('tok', { document: doc('first') } as never);
+    world.slot(globalThis).lastLaunch = {
+      appToken: 'tok',
+      options: { document: doc('moved-by-umbrella') },
+    };
+    await registerClient('tok'); // a repeat: the live client is now recorded on another document
+    expect(lastListen().target).toEqual(doc('moved-by-umbrella'));
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenLastCalledWith(doc('first'));
+  });
 });
