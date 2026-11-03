@@ -213,6 +213,11 @@ function buildException(
   // the original cause's, and a chained error is exactly where "which value was it, three throws ago"
   // is hardest to answer from the stack alone.
   const frames = enrichFrames === undefined ? parsed : enrichFrames(error, parsed);
+  // Frames an enricher supplied (the call site of a stackless async rejection) were parsed after the stamp above. The worker
+  // symbolicates by per-frame debug_id BEFORE it signs, so without one the grouping location is the minified position.
+  if (frames !== parsed) {
+    applyDebugIds(frames, { globalObject, parseStack });
+  }
 
   const exception: CrashException = {
     name: error.name || 'Error',
@@ -260,6 +265,7 @@ function syntheticException(
   value: unknown,
   frames: StackFrame[] = [],
   enrichFrames?: FrameEnricher,
+  stamp?: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
 ): CrashException {
   // The enricher runs here too. It used to run only on the Error path, so `logException('payment
   // failed')` shipped frames with neither locals nor source context — on the one path where the frames
@@ -267,6 +273,9 @@ function syntheticException(
   // frames, so a bare non-Error costs nothing.
   const enriched =
     enrichFrames !== undefined && frames.length > 0 ? enrichFrames(value, frames) : frames;
+  if (enriched !== frames && stamp !== undefined) {
+    applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
+  }
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
   // same way.
@@ -387,7 +396,10 @@ export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}):
       exception_type: 'error',
       ndkCrash: false,
       handled: options.handled ?? false,
-      exception: syntheticException(error, options.syntheticFrames, options.enrichFrames),
+      exception: syntheticException(error, options.syntheticFrames, options.enrichFrames, {
+        globalObject: options.globalObject ?? (globalThis as unknown),
+        parseStack: options.parseStack ?? parseV8Stack,
+      }),
     };
   }
   const parseStack = options.parseStack ?? parseV8Stack;

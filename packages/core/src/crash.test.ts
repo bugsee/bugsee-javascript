@@ -53,6 +53,43 @@ describe('buildCrashJson', () => {
     expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
   });
 
+  // The worker symbolicates by per-frame debug_id BEFORE it signs, so frames an enricher supplies (the call site of a stackless async
+  // rejection) must carry the debug_id too: without it the grouping location is the MINIFIED position, which changes every deploy.
+  it('stamps debug_id onto frames an enricher supplies, on the Error path', () => {
+    const registrationStack = 'Error\n    at app.min.js:1:1';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-uuid' } };
+    const err = errorWith('NotSupportedError', 'no sources', undefined as never);
+    Object.defineProperty(err, 'stack', { value: undefined });
+    const callSite: StackFrame[] = [
+      { function: 'startPlayback', file: 'app.min.js', line: 1, column: 2345, origin: 'call' },
+      { function: 'other', file: 'unregistered.js', line: 3, column: 4, origin: 'call' },
+    ];
+    const crash = buildCrashJson(err, {
+      parseStack: parseV8Stack,
+      globalObject,
+      enrichFrames: () => callSite,
+    });
+    expect(crash?.exception.frames.map((f) => f.debug_id)).toEqual(['dbg-uuid', undefined]);
+    expect(crash?.exception.frames[0]?.origin).toBe('call');
+  });
+
+  it('stamps debug_id onto frames an enricher supplies, on the non-Error path', () => {
+    const registrationStack = 'Error\n    at app.min.js:1:1';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-uuid' } };
+    const crash = buildCrashJson(
+      { code: 7 },
+      {
+        parseStack: parseV8Stack,
+        globalObject,
+        syntheticFrames: [{ function: 'caller', file: 'unregistered.js', line: 1, column: 1 }],
+        enrichFrames: () => [
+          { function: 'startPlayback', file: 'app.min.js', line: 1, column: 2345 },
+        ],
+      },
+    );
+    expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
+  });
+
   it('recurses the cause chain', () => {
     const inner = errorWith('RangeError', 'inner', 'RangeError: inner\n    at f (a.js:2:2)');
     const outer = errorWith('Error', 'outer', 'Error: outer\n    at g (b.js:3:3)');

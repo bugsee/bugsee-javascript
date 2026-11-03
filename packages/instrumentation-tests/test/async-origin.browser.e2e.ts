@@ -30,7 +30,10 @@ interface Request {
   description?: string;
 }
 interface Crash {
-  exception: { name: string; frames: Array<{ trace: string; origin?: string }> };
+  exception: {
+    name: string;
+    frames: Array<{ trace: string; origin?: string; user?: boolean; hidden?: boolean }>;
+  };
 }
 
 const ENGINES = [
@@ -103,6 +106,9 @@ describe.each(ENGINES)('async origin capture - real $name', (engine) => {
       expect(crash.exception.frames.length).toBeGreaterThan(0);
       expect(crash.exception.frames.every((f) => f.origin === 'call')).toBe(true);
       expect(crash.exception.frames[0]?.trace).toContain('ignoredPlayFromHeroClick');
+      // The worker signs on name + reason + the FIRST non-hidden `user` frame's trace (worker/crash/managed/common.py): this frame is it.
+      expect(crash.exception.frames[0]?.user).toBe(true);
+      expect(crash.exception.frames[0]?.hidden).not.toBe(true);
       expect(request.description ?? '').toContain('Target: <video id="hero">');
       expect(request.description ?? '').toContain('/broken.mp4'); // the element's source, query-free
     });

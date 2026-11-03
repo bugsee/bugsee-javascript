@@ -526,3 +526,20 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   the only source, and a core-js `then` that disguises itself would be trusted); the Astro listener's stop function is not kept, so
   a relaunch keeps the first listener's `onError`, and an error during `launch()` itself is missed because the listener attaches after
   the `await`.
+
+## 13. Grouping signature and presentation (owner, 2026-11-03)
+
+The captured call site is the report's PRIMARY exception data: `exception.frames` of `crash.json`, not a side channel. That settles two
+things.
+
+- **Signature.** The worker signs on `name` + `reason` + the first non-hidden `user` frame's trace (`worker/crash/managed/common.py`),
+  after symbolicating each frame by its `debug_id` (`worker/crash/javascript.py`). A report with no frames had no signature at all (the
+  location is `None`), so every BGSVIEWER-14 event was its own issue. With the call site as the frames: the top frame is `user` and not
+  `hidden`; the same call site gives the same signature and a different call site a different one (run through the worker's own
+  `get_crash_signatures` on `crash.json` from real Chromium, Firefox and WebKit). Frames an enricher supplies get their `debug_id` in
+  `buildCrashJson` (both the Error and the non-Error path), because they are parsed after the stamp; without it a minified production
+  build would sign on the minified position, which changes every deploy.
+- **Presentation.** Nothing to change in the viewer: the frames render as any stack. `origin: 'call'` stays on the frame as information
+  for a consumer that wants to tell a call site from a throw site; the viewer change that renders a heading and a chip (viewer branch
+  `feat/async-origin-call-frames`) is therefore NOT being pushed.
+- `skipFrames` hides the top N frames of whatever frames are reported, call site included; no SDK path or adapter passes it by default.
