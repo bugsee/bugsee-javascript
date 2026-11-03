@@ -211,8 +211,7 @@ never at call time): tag/id, scrubbed `currentSrc`, `networkState`, `readyState`
 small table next to the method table (media element, image, font face, audio context, service worker container, ...); an API with
 no describer reports the call site only.
 
-A zero-cost complement, independent of any wrapping: one capture-phase `error` listener on `document` that records the element,
-its `src` and the error code of a failing media/image load as a system event (it misses detached elements).
+~~A zero-cost complement: one capture-phase `error` listener on `document` recording failing media/image loads as a system event.~~ Dropped (see §7, step 6): it would need a new spec event name and adds timeline noise for little over the Target line.
 
 ### 4.4 Gating: arm on first failure, not a rate breaker
 
@@ -346,7 +345,7 @@ bounded JSON preview) in the summary/description instead of `String(value)`; (b)
    `launch`.
 4. **`asyncOriginEnricher`** + browser `crashOf` + `describeError` + `logException` (§4.5), and the per-API target describers (§4.3).
 5. **Framework adapters** (§10): route the enricher through every adapter path that captures a rejection itself.
-6. `document` capture-phase `error` listener → system event.
+6. ~~`document` capture-phase `error` listener → system event.~~ **DROPPED (owner, 2026-11-03):** it needs a new `events.system` name in the platform spec for a timeline-only signal; the call site and the Target line (steps 1-5) already cover the failing `play()`/decode case.
 7. e2e (§5) - **BUILT for `HTMLMediaElement.play()`** (`test/async-origin.browser.e2e.ts`: headless Chromium AND Firefox, plain page and zone.js-first page; unhandled and `logException` paths). Not yet: the other always-on APIs, the custom-Promise-library compositions, WebKit. Viewer: render origin frames distinctly and show the target description (viewer repo; needs the protocol decision below).
 
 ## 8. Open questions
@@ -503,21 +502,3 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   property-signature methods are not seen (none exist in the pinned lib.dom.d.ts); a mixin target is checked to be a real
   constructor, not to carry the method (a wrong target wraps nothing, silently).
 - **Path tokens.** `sanitizeUrl` redacts `key=value` and `;matrix` secrets, not a bare path segment such as `/signed/<token>/clip.mp4`.
-
-## 12. Step 6 - spec proposal (blocked on the platform spec)
-
-Step 6 is the capture-phase `document` `error` listener (§4.3). It emits a **system event**, and every `events.system` name must exist
-in the platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) before it is registered here (`pnpm spec:refresh`, then
-`EventName`/`EVENT_PARAMS`). None of the current events fits, so this is the entry to add to the spec:
-
-| name | families | params | when |
-|---|---|---|---|
-| `resource_load_failed` | web (browser, Electron renderer) | `tag`, `src?`, `id?`, `code?`, `message?` | a `<video>`, `<audio>`, `<img>`, `<source>`, `<script>` or `<link>` in the document fails to load |
-
-- `tag`: lower-case element name. `src`: the element's `currentSrc` or `src`/`href`, through `sanitizeUrl` with query and fragment
-  dropped, `data:`/`blob:` reduced to the scheme. `id`: the element id, control characters stripped, clipped to 80. `code`/`message`:
-  `MediaError.code`/`message` for media elements (message through the message sanitiser).
-- Listener: one `{ capture: true }` `error` listener on `document` (`error` does not bubble, so capture is the only way to see it). It
-  misses detached elements and shadow-DOM content. A budget of 20 events per minute bounds a page that fails in a loop.
-- Held/emit style follows the other DOM events (`online`/`offline`); the spec owner decides the column.
-- Until the entry exists, step 6 is not built. The call-site + Target line (steps 1-5) already covers `play()`/decode failures.
