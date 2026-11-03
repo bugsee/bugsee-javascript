@@ -12,7 +12,7 @@
       "!samples",
       "!.local-registry",
       "!packages/protocol/spec",
-      "!docs/design/async-origin-capture"
+      "!docs/design/async-origin-capture/**"
     ]
   },
   "formatter": {

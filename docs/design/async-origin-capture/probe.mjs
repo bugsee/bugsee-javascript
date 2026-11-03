@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import http from 'node:http';
-const require = createRequire('/Volumes/External2TB/Projects/Bugsee/javascript/packages/instrumentation-tests/package.json');
+const require = createRequire(new URL('../../../packages/instrumentation-tests/package.json', import.meta.url));
 const pw = require('playwright');
 const srv = http.createServer((q,s)=>{ if(q.url==='/'){s.setHeader('content-type','text/html');s.end('<!doctype html><body></body>');} else if(q.url==='/bad.js'){s.setHeader('content-type','text/javascript');s.end('syntax error here(');} else if(q.url==='/bad.json'){s.setHeader('content-type','application/json');s.end('{oops');} else {s.statusCode=404;s.end('nf');}});
 await new Promise(r=>srv.listen(0,'127.0.0.1',r));
@@ -68,7 +68,7 @@ const PAGE = () => {
     }
     await sleep(5000);
     const seen = new Set(out.map((o) => o.id));
-    for (const id of started) if (!seen.has(id)) out.push({ id, noUnhandledRejection: true });
+    for (const id of started) if (!seen.has(id)) out.push({ id, noEventWithin5s: true });
     resolve(out);
   });
 };

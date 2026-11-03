@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import http from 'node:http';
-const require = createRequire('/Volumes/External2TB/Projects/Bugsee/javascript/packages/instrumentation-tests/package.json');
+const require = createRequire(new URL('../../../packages/instrumentation-tests/package.json', import.meta.url));
 const pw = require('playwright');
 const srv = http.createServer((q,s)=>{s.setHeader('content-type','text/html');s.end('<!doctype html><body></body>');});
 await new Promise(r=>srv.listen(0,'127.0.0.1',r));
