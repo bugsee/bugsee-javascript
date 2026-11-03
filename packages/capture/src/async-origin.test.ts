@@ -832,6 +832,10 @@ describe('installAsyncOrigins - a reason whose stack has no frames', () => {
       'NotAllowedError: Failed to execute readText',
       '  ',
       'NotAllowedError: a\n',
+      // header text that LOOKS like a frame must not hide the call site
+      'NotAllowedError: connect user@host:8080 failed',
+      'NotAllowedError: need\nat least one source',
+      'Error: x\nfoo@bar:1',
     ]) {
       const { reason, r, call } = rejectWith(stack);
       await call();

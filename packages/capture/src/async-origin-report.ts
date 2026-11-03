@@ -14,16 +14,18 @@ export function createAsyncOriginEnricher(
   recorder: AsyncOriginRecorder,
   parseStack: (stack: string) => StackFrame[],
 ): FrameEnricher {
-  // Where the wrapper calls the platform method: the frame just above `probeThrower` in the recorder's probe stack. Read once.
+  // Where the wrapper calls the platform method: the frame after the thrower (the first frame) in the recorder's probe stack. Read once.
   let site: StackFrame | undefined;
   let siteRead = false;
   const wrapperSite = (): StackFrame | undefined => {
     if (!siteRead) {
       siteRead = true;
       try {
+        // The probe throws from its own first frame, so the wrapper's call site is the next frame that is not engine-native
+        // (JavaScriptCore may show `apply@[native code]` between them). Found by POSITION, not by the thrower's name: a minifier
+        // renames it.
         const frames = parseStack(recorder.probeStack ?? '');
-        const thrower = frames.findIndex((frame) => frame.function === 'probeThrower');
-        site = thrower >= 0 ? frames[thrower + 1] : undefined;
+        site = frames.slice(1).find((frame) => !/native code/.test(frame.file ?? ''));
       } catch {
         site = undefined;
       }

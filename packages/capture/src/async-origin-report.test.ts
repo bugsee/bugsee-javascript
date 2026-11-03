@@ -109,6 +109,28 @@ describe("createAsyncOriginEnricher - the wrapper frame in an error's own stack"
     expect(enrich(reason, [wrapperFrame]).map((f) => f.origin)).toEqual(['call', 'call']);
   });
 
+  it('finds the wrapper site WITHOUT relying on the thrower being named (a minifier renames it)', () => {
+    const minified =
+      'Error: probe\n    at t (https://app.test/sdk.min.js:1:500)\n    at e (https://app.test/sdk.js:40:22)\n    at n (https://app.test/sdk.min.js:1:900)';
+    const enrich = createAsyncOriginEnricher(recorderFor(undefined, minified), parseV8Stack);
+    expect(enrich(reason, [wrapperFrame, appFrame])).toEqual([appFrame]);
+  });
+
+  it('skips a native frame between the thrower and the wrapper (apply@[native code] in JavaScriptCore)', () => {
+    const jsc =
+      'probeThrower@https://app.test/sdk.js:50:9\napply@[native code]\nwrapped@https://app.test/sdk.js:40:22';
+    const enrich = createAsyncOriginEnricher(recorderFor(undefined, jsc), (stack) =>
+      stack.split('\n').map((line) => {
+        const [fn, rest] = line.split('@') as [string, string];
+        const m = /^(.*):(\d+):(\d+)$/.exec(rest);
+        return m
+          ? { function: fn, file: m[1] as string, line: Number(m[2]), column: Number(m[3]) }
+          : { function: fn, file: rest };
+      }),
+    );
+    expect(enrich(reason, [wrapperFrame, appFrame])).toEqual([appFrame]);
+  });
+
   it('leaves frames alone when the probe stack is missing, has no thrower frame, or does not parse', () => {
     const own: StackFrame[] = [wrapperFrame, appFrame];
     const boom = (): StackFrame[] => {

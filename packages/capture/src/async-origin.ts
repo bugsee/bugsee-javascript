@@ -86,7 +86,11 @@ const isThenable = (value: unknown): value is { then: unknown } =>
  */
 const hasFrames = (stack: unknown): boolean =>
   typeof stack === 'string' &&
-  stack.split('\n').some((line) => /^\s*at\s+\S/.test(line) || /@\S*:\d+/.test(line));
+  stack
+    .split('\n')
+    // V8: an INDENTED `at ...` line (a message line that merely starts with "at " is not indented). Firefox/Safari: a line that ENDS in
+    // `url:line:col` after an `@` (header text such as `user@host:8080` has no line and column).
+    .some((line) => /^\s+at\s+\S/.test(line) || /^[^\n]*@\S+:\d+:\d+\s*$/.test(line));
 
 const isNative = (fn: unknown): boolean =>
   typeof fn === 'function' &&

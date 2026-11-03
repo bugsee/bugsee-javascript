@@ -519,3 +519,10 @@ Angular itself was not run in a browser (the zone paths were measured, Angular s
   application function written that way is not in the call site on Safari. Nothing to fix; the e2e scenarios are non-tail on purpose.
 - **Arming is verified for real:** after one unlocated stackless rejection (which is itself reported without frames), `HTMLImageElement.decode`,
   `FontFace.load` and `createImageBitmap` get call sites in Chromium, Firefox and WebKit.
+- **The wrapper site is found by position, not by name.** The probe throws from its own first frame, so the wrapper's call site is the next
+  non-native frame of the probe stack; the thrower's name does not survive a minifier. `hasFrames` is anchored so header text like
+  `user@host:8080` or a message line starting "at least" does not count as a frame.
+- **Limits left alone:** a consumer that downlevels `async`/`await` to the global Promise defeats the intrinsic `then` (the global is then
+  the only source, and a core-js `then` that disguises itself would be trusted); the Astro listener's stop function is not kept, so
+  a relaunch keeps the first listener's `onError`, and an error during `launch()` itself is missed because the listener attaches after
+  the `await`.
