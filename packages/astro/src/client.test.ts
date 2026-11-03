@@ -220,6 +220,16 @@ describe('registerClient', () => {
     await expect(relaunching).resolves.toEqual({ id: 2 });
   });
 
+  it('only OWN option properties count, as in core\'s spread: an inherited document is not the launch\'s document', async () => {
+    const own = { id: 'own' } as unknown as Document;
+    const inherited = { id: 'inherited' } as unknown as Document;
+    launch.mockResolvedValue({ id: 1 });
+    relaunchUmbrella.mockResolvedValue({ id: 2 });
+    await registerClient('tok', { document: own } as never);
+    await relaunch(Object.create({ document: inherited }) as never);
+    expect(listen).toHaveBeenLastCalledWith({ target: own });
+  });
+
   it('passes the onError sink to the hydration listener, and a relaunch that gives none keeps it (core keeps onError)', async () => {
     const onError = vi.fn();
     launch.mockResolvedValue({ id: 1 });

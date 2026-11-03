@@ -56,7 +56,7 @@ let inFlight: Promise<unknown> = Promise.resolve();
 function pick(options: HydrationInput): Remembered {
   const picked: Remembered = {};
   for (const key of ['document', 'window', 'onError', 'carrier'] as const) {
-    if (options !== undefined && key in options) {
+    if (options !== undefined && Object.hasOwn(options, key)) {
       (picked as Record<string, unknown>)[key] = options[key];
     }
   }
