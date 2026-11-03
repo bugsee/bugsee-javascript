@@ -155,10 +155,12 @@ jobs:
 
       # Playwright ships a downloader, not the browsers: `pnpm install` does not fetch them, so
       # `browser.e2e.ts` fails with "Executable doesn't exist at .../chrome-headless-shell".
-      # Scoped to chromium — it is the only engine the browser harness drives.
+      # Chromium drives the browser harness; Firefox and WebKit join it for the async-origin e2e (the engines differ in WHEN the media error
+      # event fires, in the stack format, and WebKit eliminates tail calls, which is exactly what that feature depends on). WebKit needs
+      # its system libraries, hence --with-deps.
       # On a fresh hosted VM this always downloads; it is a few seconds, not a failure.
-      - name: Install Playwright's Chromium
-        run: pnpm --filter @bugsee/instrumentation-tests exec playwright install chromium
+      - name: Install Playwright's browsers (Chromium, Firefox, WebKit)
+        run: pnpm --filter @bugsee/instrumentation-tests exec playwright install --with-deps chromium firefox webkit
 
       # The nuxt/sveltekit/astro harnesses each boot a real dev server on a FIXED port. A fresh hosted VM
       # starts clean, so this only guards a hung harness within one run (and a developer's machine, where

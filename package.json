@@ -29,6 +29,7 @@
     "test:mutation": "node scripts/mutation.mjs",
     "ci:local": "bash scripts/ci-local.sh",
     "spec:refresh": "node scripts/spec-snapshot/refresh.mjs",
+    "async-origin:refresh": "node scripts/async-origin/refresh.mjs",
     "spec:check": "node scripts/spec-snapshot/refresh.mjs --check"
   },
   "devDependencies": {

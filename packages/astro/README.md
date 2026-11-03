@@ -53,6 +53,10 @@ bugsee({
 });
 ```
 
+## Island hydration errors
+
+Astro catches an island's hydration failure itself and re-dispatches it as a cancelable `astro:hydration-error` event (plus a `console.error`); nothing is rethrown, so the page's error handlers never see it. The browser launch listens for that event and reports the error, without cancelling the event, so Astro's own console output is unchanged. For component errors during rendering, also add the matching island adapter (`@bugsee/react`, `@bugsee/vue`, ...).
+
 ## Links
 
 - Repository: https://github.com/bugsee/bugsee-javascript/tree/main/packages/astro

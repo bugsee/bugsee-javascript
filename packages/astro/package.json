@@ -103,10 +103,11 @@
   },
   "dependencies": {
     "@bugsee/adapter-kit": "workspace:*",
+    "@bugsee/bugsee": "workspace:*",
     "@bugsee/core": "workspace:*",
     "@bugsee/protocol": "workspace:*",
     "@bugsee/vercel-edge": "workspace:*",
-    "@bugsee/bugsee": "workspace:*"
+    "@bugsee/web-adapter": "workspace:*"
   },
   "devDependencies": {
     "@bugsee/node": "workspace:*",

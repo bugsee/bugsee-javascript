@@ -80,6 +80,13 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     expect('description' in (requests[0]?.report ?? {})).toBe(false); // omitted, not present-as-undefined
   });
 
+  it('describes a non-Error object rejection by its class and contents', () => {
+    const t = fakeTarget();
+    const requests = start(createEdgeUnhandledRejectionProvider(t.target));
+    t.emit('unhandledrejection', { reason: { code: 42 } });
+    expect(requests[0]?.report.summary).toBe('Object: {"code":42}');
+  });
+
   it('reports a non-Error rejection via String(value), description key absent', () => {
     const t = fakeTarget();
     const requests = start(createEdgeUnhandledRejectionProvider(t.target));

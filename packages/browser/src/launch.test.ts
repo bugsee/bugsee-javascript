@@ -2766,6 +2766,214 @@ describe('launch', () => {
     expect(w.count('unhandledrejection')).toBe(0);
   });
 
+  describe('async origin capture (captureAsyncOrigins)', () => {
+    // A page window with a media element whose play() rejects with a stackless NotSupportedError (BGSVIEWER-14).
+    const mediaWindow = () => {
+      const w = fakeWindow();
+      const reason = Object.assign(new Error('The element has no supported sources'), {
+        name: 'NotSupportedError',
+      });
+      Object.defineProperty(reason, 'stack', { value: undefined });
+      class HTMLMediaElement {
+        tagName = 'VIDEO';
+        id = 'hero';
+        networkState = 3;
+        readyState = 0;
+        play(): Promise<void> {
+          return Promise.reject(reason);
+        }
+      }
+      const win = Object.assign(w.win, { HTMLMediaElement, Promise, Error });
+      return { w, win, reason, original: HTMLMediaElement.prototype.play, Media: HTMLMediaElement };
+    };
+
+    it('wraps the always-on platform methods of the page window by default, and restores them on stop', async () => {
+      const m = mediaWindow();
+      const client = await launch('tok', baseOptions({ window: m.win, captureStore: memStore() }));
+      expect(m.Media.prototype.play).not.toBe(m.original);
+      await client.stop();
+      expect(m.Media.prototype.play).toBe(m.original);
+    });
+
+    it('a header-only stack whose text contains an @ still gets the call site, not a bogus frame (recorder and parser agree)', async () => {
+      const m = mediaWindow();
+      Object.defineProperty(m.reason, 'stack', {
+        value: 'NotSupportedError: connect user@host:8080 failed',
+      });
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      const reason = await startPlayback().catch((e: unknown) => e);
+      await client.logException(reason);
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        exception: { frames: { trace: string; origin?: string }[] };
+      };
+      expect(crash.exception.frames.length).toBeGreaterThan(0);
+      expect(crash.exception.frames.every((f) => f.origin === 'call')).toBe(true);
+      expect(crash.exception.frames.some((f) => f.trace.includes('startPlayback'))).toBe(true);
+    });
+
+    it('logException (so every framework adapter) gets the Target line, and the call site before a linked cause', async () => {
+      const m = mediaWindow();
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      const reason = (await startPlayback().catch((e: unknown) => e)) as Error;
+      // what @bugsee/react's linkComponentStack does before it reports
+      (reason as { cause?: unknown }).cause = Object.assign(new Error('React component stack:'), {
+        stack: 'React component stack:\n    in Player',
+      });
+      await client.logException(reason);
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+        description?: string;
+      };
+      const description = request.description ?? '';
+      expect(description).toContain('startPlayback');
+      expect(description).toContain('Target: <video id="hero"> networkState=3 readyState=0');
+      expect(description.indexOf('startPlayback')).toBeLessThan(description.indexOf('Caused by'));
+    });
+
+    it('arms the armed rows when a stackless error is reported through logException (no unhandledrejection involved)', async () => {
+      const w = fakeWindow();
+      const reason = Object.assign(new Error('The source image cannot be decoded.'), {
+        name: 'EncodingError',
+      });
+      Object.defineProperty(reason, 'stack', { value: undefined });
+      class HTMLImageElement {
+        decode(): Promise<void> {
+          return Promise.reject(reason);
+        }
+      }
+      const win = Object.assign(w.win, { HTMLImageElement, Promise, Error });
+      const original = HTMLImageElement.prototype.decode;
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: win, captureStore: memStore() }),
+      );
+      expect(HTMLImageElement.prototype.decode).toBe(original); // an armed row costs nothing until the first failure
+      await client.logException(reason);
+      expect(HTMLImageElement.prototype.decode).not.toBe(original);
+    });
+
+    it('restores the platform methods when the collector switches the SDK off (KILL_SDK), not only on stop()', async () => {
+      const m = mediaWindow();
+      const transport = vi.fn<HttpTransport>(async (url: string) => {
+        if (url.endsWith('/v2/sessions')) {
+          return { status: 200, headers: {}, body: jsonBody({ access_token: 'access' }) };
+        }
+        // 99099 KillSdk, as the collector sends it: HTTP 200 and the verdict in the envelope
+        return {
+          status: 200,
+          headers: {},
+          body: jsonBody({
+            ok: false,
+            error: { type: 'KillSdk', message: 'switched off', code: 99099 },
+          }),
+        } satisfies HttpResponse;
+      });
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      expect(m.Media.prototype.play).not.toBe(m.original);
+      await client.logException(new Error('trips the kill verdict'));
+      expect(m.Media.prototype.play).toBe(m.original);
+    });
+
+    it('leaves the platform untouched when captureAsyncOrigins is false', async () => {
+      const m = mediaWindow();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, captureStore: memStore(), captureAsyncOrigins: false }),
+      );
+      expect(m.Media.prototype.play).toBe(m.original);
+    });
+
+    it('puts the call site of a stackless platform rejection into the logException crash.json', async () => {
+      const m = mediaWindow();
+      const transport = uploadTransport();
+      const client = await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      const reason = await startPlayback().catch((e: unknown) => e);
+      await client.logException(reason);
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        exception: { name: string; frames: { trace: string; origin?: string }[] };
+      };
+      expect(crash.exception.name).toBe('NotSupportedError');
+      expect(crash.exception.frames.length).toBeGreaterThan(0);
+      expect(crash.exception.frames.every((f) => f.origin === 'call')).toBe(true);
+      expect(crash.exception.frames.some((f) => f.trace.includes('startPlayback'))).toBe(true);
+    });
+
+    it('reports a stackless error that reaches the window error event (a React root with no boundary) with its call site', async () => {
+      const m = mediaWindow();
+      const transport = uploadTransport();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      await startPlayback().catch(() => undefined);
+      m.w.emit('error', { error: m.reason, message: 'x', filename: '', lineno: 0, colno: 0 });
+      await vi.waitFor(() => {
+        expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true);
+      });
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        exception: { frames: { origin?: string }[] };
+      };
+      expect(crash.exception.frames[0]?.origin).toBe('call');
+    });
+
+    it('reports a stackless rejection that reaches the window with its call site', async () => {
+      const m = mediaWindow();
+      const transport = uploadTransport();
+      await launchTracked(
+        'tok',
+        baseOptions({ window: m.win, transport, captureStore: memStore() }),
+      );
+      function startPlayback(): Promise<void> {
+        return new m.Media().play();
+      }
+      await startPlayback().catch(() => undefined);
+      m.w.emit('unhandledrejection', { reason: m.reason });
+      await vi.waitFor(() => {
+        expect(transport.mock.calls.some(([url]) => url === 'https://s3.test/put')).toBe(true);
+      });
+      const put = transport.mock.calls.find(([url]) => url === 'https://s3.test/put');
+      const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+      const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array)) as {
+        exception: { frames: { origin?: string }[] };
+      };
+      expect(crash.exception.frames.length).toBeGreaterThan(0);
+      expect(crash.exception.frames[0]?.origin).toBe('call');
+    });
+  });
+
   it('removes the detection listeners on stop', async () => {
     const w = fakeWindow();
     const client = await launch('tok', baseOptions({ window: w.win, captureStore: memStore() }));

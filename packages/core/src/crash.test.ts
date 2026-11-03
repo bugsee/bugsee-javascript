@@ -5,6 +5,7 @@ import {
   buildCrashJson,
   type CrashJson,
   composeFrameEnrichers,
+  describeThrown,
   type NativeCrashJson,
   stampCrashProvenance,
 } from './crash';
@@ -50,6 +51,70 @@ describe('buildCrashJson', () => {
     const err = errorWith('Error', 'boom', 'Error: boom\n    at handleClick (app.min.js:1:2345)');
     const crash = buildCrashJson(err, { parseStack: parseV8Stack, globalObject });
     expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
+  });
+
+  // The worker symbolicates by per-frame debug_id BEFORE it signs, so frames an enricher supplies (the call site of a stackless async
+  // rejection) must carry the debug_id too: without it the grouping location is the MINIFIED position, which changes every deploy.
+  it('stamps debug_id onto frames an enricher supplies, on the Error path', () => {
+    const registrationStack = 'Error\n    at app.min.js:1:1';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-uuid' } };
+    const err = errorWith('NotSupportedError', 'no sources', undefined as never);
+    Object.defineProperty(err, 'stack', { value: undefined });
+    const callSite: StackFrame[] = [
+      { function: 'startPlayback', file: 'app.min.js', line: 1, column: 2345, origin: 'call' },
+      { function: 'other', file: 'unregistered.js', line: 3, column: 4, origin: 'call' },
+    ];
+    const crash = buildCrashJson(err, {
+      parseStack: parseV8Stack,
+      globalObject,
+      enrichFrames: () => callSite,
+    });
+    expect(crash?.exception.frames.map((f) => f.debug_id)).toEqual(['dbg-uuid', undefined]);
+    expect(crash?.exception.frames[0]?.origin).toBe('call');
+  });
+
+  it('stamps debug_id onto frames an enricher supplies, on the non-Error path', () => {
+    const registrationStack = 'Error\n    at app.min.js:1:1';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-uuid' } };
+    const crash = buildCrashJson(
+      { code: 7 },
+      {
+        parseStack: parseV8Stack,
+        globalObject,
+        syntheticFrames: [{ function: 'caller', file: 'unregistered.js', line: 1, column: 1 }],
+        enrichFrames: () => [
+          { function: 'startPlayback', file: 'app.min.js', line: 1, column: 2345 },
+        ],
+      },
+    );
+    expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
+  });
+
+  it('tells an enricher how deep in the cause chain it is (0 = the reported error), so it can act on the reported error only', () => {
+    const calls: Array<{ message: string; depth: number | undefined }> = [];
+    const inner = errorWith('Error', 'inner', 'Error: inner\n    at i (a.js:1:1)');
+    const outer = errorWith('Error', 'outer', 'Error: outer\n    at o (a.js:2:2)');
+    (outer as { cause?: unknown }).cause = inner;
+    buildCrashJson(outer, {
+      parseStack: parseV8Stack,
+      enrichFrames: (error, frames, info) => {
+        calls.push({ message: (error as Error).message, depth: info?.depth });
+        return frames;
+      },
+    });
+    expect(calls).toEqual([
+      { message: 'outer', depth: 0 },
+      { message: 'inner', depth: 1 },
+    ]);
+    const synthetic: Array<number | undefined> = [];
+    buildCrashJson('a string', {
+      syntheticFrames: [{ function: 'f', file: 'a.js', line: 1, column: 1 }],
+      enrichFrames: (_error, frames, info) => {
+        synthetic.push(info?.depth);
+        return frames;
+      },
+    });
+    expect(synthetic).toEqual([0]);
   });
 
   it('recurses the cause chain', () => {
@@ -447,11 +512,31 @@ describe('buildCrashJson — the frame enrichment seam', () => {
     expect(crash?.exception.name).toBe('String'); // and it is still the synthetic exception
   });
 
-  it('leaves a non-Error with no frames alone rather than inventing an enrichment pass', () => {
+  it('offers a non-Error with no frames to the enricher, so it can SUPPLY them (the call site of a cross-realm DOMException)', () => {
+    // Async-origin capture exists to supply frames where there are none, and no frames means no grouping signature at all.
+    const callSite: StackFrame[] = [
+      { function: 'startPlayback', file: 'a.js', line: 4, column: 2, origin: 'call' },
+    ];
+    const seen: Array<{ frames: number; depth: number | undefined }> = [];
+    const crash = buildCrashJson(
+      { name: 'NotSupportedError' },
+      {
+        enrichFrames: (_e, frames, info) => {
+          seen.push({ frames: frames.length, depth: info?.depth });
+          return frames.length > 0 ? frames : callSite;
+        },
+      },
+    );
+    expect(seen).toEqual([{ frames: 0, depth: 0 }]);
+    expect(crash.exception.frames.map((f) => [f.trace, f.origin])).toEqual([
+      ['at startPlayback (a.js:4:2)', 'call'],
+    ]);
+  });
+
+  it('a non-Error the enricher has nothing for stays frameless', () => {
     const enrich = vi.fn((_e: unknown, frames: StackFrame[]) => frames);
-    const crash = buildCrashJson('bare', { enrichFrames: enrich });
-    expect(crash?.exception.frames).toEqual([]);
-    expect(enrich).not.toHaveBeenCalled();
+    expect(buildCrashJson('bare', { enrichFrames: enrich }).exception.frames).toEqual([]);
+    expect(enrich).toHaveBeenCalledTimes(1);
   });
 
   it("runs the enricher for each exception in the CAUSE chain, with that link's own error", () => {
@@ -485,6 +570,22 @@ describe('composeFrameEnrichers', () => {
     expect(enrich?.(new Error('x'), [{ file: 'a.js', line: 1 }])).toEqual([
       { file: 'a.js', line: 1, variables: { a: '1' }, context: { line: '1' } },
     ]);
+  });
+
+  it('forwards the report position (depth) to every enricher, so an enricher composed with others still knows a cause from the reported error', () => {
+    const depths: Array<number | undefined> = [];
+    const enrich = composeFrameEnrichers([
+      (_e, f, info) => {
+        depths.push(info?.depth);
+        return f;
+      },
+      (_e, f, info) => {
+        depths.push(info?.depth);
+        return f;
+      },
+    ]);
+    enrich?.(new Error('x'), [], { depth: 2 });
+    expect(depths).toEqual([2, 2]);
   });
 
   it('passes the same error to every enricher', () => {
@@ -525,5 +626,170 @@ describe('applyExceptionOptions skipFrames clamp', () => {
     expect(sink).toHaveBeenCalledTimes(1);
     applyExceptionOptions(crashWith(3), { skipFrames: 2 }, sink);
     expect(sink).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('toCrashFrame — call-site origin', () => {
+  const crashFrames = (frames: StackFrame[]) =>
+    buildCrashJson(errorWith('Error', 'boom', 'Error: boom\n    at x (a.js:1:1)'), {
+      parseStack: () => frames,
+    }).exception.frames;
+
+  it("carries a frame's `origin: 'call'` onto the wire", () => {
+    // An async platform rejection has no thrown stack; the SDK records where the API was CALLED. The
+    // viewer must be able to tell that frame from a thrown one, so the marker rides the wire frame.
+    const [frame] = crashFrames([
+      { file: 'a.js', line: 3, column: 5, function: 'play', origin: 'call' },
+    ]);
+    expect(frame?.origin).toBe('call');
+  });
+
+  it('leaves the field off an ordinary thrown frame', () => {
+    const [frame] = crashFrames([{ file: 'a.js', line: 3, column: 5 }]);
+    expect(frame).not.toHaveProperty('origin');
+  });
+});
+
+describe('buildCrashJson with a hostile non-Error value', () => {
+  it('keeps the class name when the name getter throws', () => {
+    class Widget {
+      get name(): string {
+        throw new Error('name getter');
+      }
+    }
+    expect(buildCrashJson(new Widget()).exception.name).toBe('Widget');
+  });
+
+  it("does not throw when the value's message getter throws", () => {
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+    };
+    const crash = buildCrashJson(hostile);
+    expect(crash.exception.name).toBe('Object');
+    expect(crash.exception.reason).toBe('[object Object]');
+  });
+
+  it('still produces an exception when the type name cannot be read', () => {
+    const throwingName = {
+      get name(): string {
+        throw new Error('boom');
+      },
+    };
+    const crash = buildCrashJson(throwingName);
+    expect(crash.exception.name).toBe('Object');
+  });
+});
+
+describe('describeThrown', () => {
+  it('titles built-ins by what they are, not by their JSON: a RegExp by its source, a collection or byte buffer by its class alone', () => {
+    expect(describeThrown(/foo/i)).toBe('RegExp: /foo/i');
+    expect(describeThrown(new Date(Number.NaN))).toBe('Date: Invalid Date');
+    expect(describeThrown(new Set([1, 2, 3]))).toBe('Set');
+    expect(describeThrown(new Map([[1, 2]]))).toBe('Map');
+    expect(describeThrown(new Uint8Array([69, 78, 79]))).toBe('Uint8Array');
+    expect(describeThrown(new ArrayBuffer(8))).toBe('ArrayBuffer');
+  });
+
+  it('never throws for a revoked proxy or a hostile toStringTag', () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    expect(() => describeThrown(revoked.proxy)).not.toThrow();
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+      get [Symbol.toStringTag](): string {
+        throw new Error('boom');
+      },
+    };
+    expect(() => describeThrown(hostile)).not.toThrow();
+    expect(describeThrown(hostile)).toBe('Object: [object Object]');
+  });
+
+  it('keeps a string, number, boolean, null, undefined, symbol and bigint as their plain text', () => {
+    expect(describeThrown('just a string')).toBe('just a string');
+    expect(describeThrown(42)).toBe('42');
+    expect(describeThrown(false)).toBe('false');
+    expect(describeThrown(null)).toBe('null');
+    expect(describeThrown(undefined)).toBe('undefined');
+    expect(describeThrown(Symbol('s'))).toBe('Symbol(s)');
+    expect(describeThrown(10n)).toBe('10');
+  });
+
+  it('describes a plain object by its class and a JSON preview, never "[object Object]"', () => {
+    expect(describeThrown({ code: 42 })).toBe('Object: {"code":42}');
+  });
+
+  it("prefers an object's own message over its JSON", () => {
+    expect(describeThrown({ name: 'HttpError', message: 'not found', status: 404 })).toBe(
+      'HttpError: not found',
+    );
+  });
+
+  it('names a class instance by its constructor', () => {
+    class Quota {
+      left = 0;
+    }
+    expect(describeThrown(new Quota())).toBe('Quota: {"left":0}');
+  });
+
+  it('survives a circular object and a throwing getter', () => {
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    expect(describeThrown(loop)).toBe('Object: [object Object]');
+    const bad = {
+      get message(): string {
+        throw new Error('getter');
+      },
+    };
+    expect(describeThrown(bad)).toBe('Object: [object Object]');
+  });
+
+  it('keeps the 256-character limit when the engine tag itself is long (a hostile toStringTag)', () => {
+    const hostile = {
+      get message(): string {
+        throw new Error('boom');
+      },
+      [Symbol.toStringTag]: 'x'.repeat(1000),
+    };
+    expect(describeThrown(hostile).length).toBeLessThanOrEqual(256);
+    // the OUTER catch: a function whose name getter throws, with a long tag
+    const fn = (): void => undefined;
+    Object.defineProperty(fn, 'name', {
+      get(): never {
+        throw new Error('name getter');
+      },
+    });
+    Object.defineProperty(fn, Symbol.toStringTag, { value: 'y'.repeat(1000) });
+    expect(describeThrown(fn).length).toBeLessThanOrEqual(256);
+  });
+
+  it('survives a function whose name getter throws', () => {
+    const fn = (): void => undefined;
+    Object.defineProperty(fn, 'name', {
+      get(): never {
+        throw new Error('name getter');
+      },
+    });
+    expect(describeThrown(fn)).toBe('[object Function]');
+  });
+
+  it('does not print the source of a function', () => {
+    function secretNamedThing(): string {
+      return 'api-key-123';
+    }
+    expect(describeThrown(secretNamedThing)).toBe('Function: secretNamedThing');
+    expect(describeThrown(() => 1)).toBe('Function');
+  });
+
+  it('truncates a long value to 256 characters with an ellipsis', () => {
+    const out = describeThrown({ blob: 'x'.repeat(1000) });
+    expect(out).toHaveLength(256);
+    expect(out.endsWith('…')).toBe(true);
+    expect(describeThrown('y'.repeat(1000))).toHaveLength(256);
+    expect(describeThrown('z'.repeat(256))).toBe('z'.repeat(256)); // exactly the limit is not clipped
+    expect(describeThrown('z'.repeat(257))).toBe(`${'z'.repeat(255)}…`);
   });
 });

@@ -2,6 +2,25 @@
 // runtime-agnostic CaptureProviders consume those hubs. Platform packages compose this and add only
 // their runtime-specific sources (XHR, node:http, error/rejection globals).
 
+export {
+  type AsyncOrigin,
+  type AsyncOriginRecorder,
+  type InstallAsyncOriginsOptions,
+  installAsyncOrigins,
+} from './async-origin';
+export {
+  type AsyncOriginReporting,
+  createAsyncOriginEnricher,
+  createAsyncOriginReporting,
+  describeOriginTarget,
+} from './async-origin-report';
+export {
+  ASYNC_ORIGIN_EXTRAS,
+  ASYNC_ORIGIN_TABLE,
+  type AsyncOriginMode,
+  type AsyncOriginRow,
+  rowTargets,
+} from './async-origin-table';
 export { type CaptureStateName, CaptureStateProducer } from './capture-state-producer';
 // `absolutizeUrl`/`resolveBaseUrl`/`UrlBaseGlobals` (./absolutize-url) are an internal helper of
 // network-provider.ts (imported directly, not via this barrel) — no external consumer, not re-exported

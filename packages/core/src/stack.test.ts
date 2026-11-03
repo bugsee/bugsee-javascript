@@ -974,3 +974,11 @@ describe('setStackAppRoot — application paths must not carry the machine', () 
     expect(formatted).not.toContain('/Users/jane');
   });
 });
+
+describe('parseV8Stack — message text is not a frame', () => {
+  it('ignores an unindented line that merely starts with "at " (a multi-line message), keeps indented frames', () => {
+    const stack = 'NotSupportedError: need\nat least one source is required\n    at f (a.js:1:2)';
+    expect(parseV8Stack(stack).map((f) => f.function)).toEqual(['f']);
+    expect(parseV8Stack('NotSupportedError: need\nat least one source')).toEqual([]);
+  });
+});

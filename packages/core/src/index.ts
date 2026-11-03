@@ -168,6 +168,7 @@ export {
   type CrashJson,
   type CrashProvenance,
   composeFrameEnrichers,
+  describeThrown,
   type FrameEnricher,
   isUserFrame,
   type NativeCrashJson,
