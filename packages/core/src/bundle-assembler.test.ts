@@ -515,15 +515,15 @@ describe('assembleBundle — binary file encoders (replay)', () => {
 });
 
 describe('assembleBundle — the video entry names its container', () => {
-  // `video.webm` is a WebM file, but a manifest entry with no attrs is read by the worker and the viewer as
-  // the default (an h264 MP4): the worker skipped the transcode a WebM needs and the viewer labelled it
-  // `video/mp4`. The format is stated on the entry, taken from the file's own extension.
+  // The container is stated on the manifest entry, taken from the file's own extension, rather than left to a reader default
+  // (an entry with no attrs is read by the worker and the viewer as an h264 MP4, and a WebM mislabelled that way skipped the
+  // transcode it needs). `video.mp4` is the mobile-canonical name, so the default needs no transcode.
   const manifestOf = (bundle: ReturnType<typeof assembleBundle>) =>
     JSON.parse(strFromU8(unzipSync(bundle.body)['manifest.json'] as Uint8Array)) as {
       files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
     };
 
-  it('puts format "webm" on the video entry', () => {
+  it('puts format "mp4" on the video entry', () => {
     const map = new Map<FileType, CaptureDataEntry[]>([
       ['video', [entry('video', 1, new Uint8Array([1, 2, 3]))]],
     ]);
@@ -534,8 +534,8 @@ describe('assembleBundle — the video entry names its container', () => {
     );
 
     const video = manifestOf(bundle).files.find((f) => f.type === 'video');
-    expect(video?.filename).toBe('video.webm');
-    expect(video?.attrs).toEqual({ format: 'webm' });
+    expect(video?.filename).toBe('video.mp4');
+    expect(video?.attrs).toEqual({ format: 'mp4' });
   });
 
   it('leaves every other entry without attrs', () => {

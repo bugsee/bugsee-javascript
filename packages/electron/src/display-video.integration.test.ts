@@ -22,6 +22,9 @@ const win = (id: number, bounds: ReturnType<typeof rect>, focused = false): Wind
   webContents: { capturePage: async () => ({ toJPEG: () => new Uint8Array([id]) }) },
 });
 
+// A box size, `ftyp`, a brand: the smallest bytes the pixel-video controller accepts as MP4 (it drops anything else).
+const MP4_HEAD = [0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d];
+
 describe('a two-display session, end to end', () => {
   it('ships one video member per display, each holding only its own display frames, named by attrs.displayId', async () => {
     const windows = [win(1, rect(10, 10, 100, 100), true), win(2, rect(1100, 10, 100, 100))];
@@ -40,7 +43,7 @@ describe('a two-display session, end to end', () => {
         // "compose": the first layer's bytes stand for the composed frame of the display
         compose: async (display, layers) =>
           new Uint8Array([display.id, ...layers.map((l) => l.bytes?.[0] as number)]),
-        encode: (frames) => Uint8Array.from(frames.flatMap((f) => [...f.bytes])),
+        encode: (frames) => Uint8Array.from([...MP4_HEAD, ...frames.flatMap((f) => [...f.bytes])]),
         scheduler: {
           setInterval: (cb) => {
             tick = cb;
@@ -77,16 +80,16 @@ describe('a two-display session, end to end', () => {
     );
     const files = unzipSync(await bundle.body.bytes());
     // display 0 = the focused window's display (native 30, window 1); display 1 = native 70 (window 2)
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([0, 1]);
-    expect([...(files['video.1.webm'] as Uint8Array)]).toEqual([1, 2]);
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([...MP4_HEAD, 0, 1]);
+    expect([...(files['video.1.mp4'] as Uint8Array)]).toEqual([...MP4_HEAD, 1, 2]);
     const manifest = JSON.parse(strFromU8(files['manifest.json'] as Uint8Array)) as {
       files: Array<{ filename: string; type: string; attrs?: Record<string, unknown> }>;
     };
     expect(
       manifest.files.filter((f) => f.type === 'video').map((f) => [f.filename, f.attrs]),
     ).toEqual([
-      ['video.webm', { format: 'webm', displayId: 0 }],
-      ['video.1.webm', { format: 'webm', displayId: 1 }],
+      ['video.mp4', { format: 'mp4', displayId: 0 }],
+      ['video.1.mp4', { format: 'mp4', displayId: 1 }],
     ]);
   });
 });

@@ -205,8 +205,9 @@ Found by the same audit; each is a change in this repo:
   allowed-headers list; Firefox is expected to fail the preflight.
 - An unrecognised OS is sent as `platform.type: ''`, which the session endpoint rejects as missing
   (permanent); send `'unknown'`.
-- Electron video is WebM, but the manifest carries no codec/format attributes, so the worker and
-  viewer label it `video/mp4`.
+- ~~Electron video is WebM, but the manifest carries no codec/format attributes, so the worker and
+  viewer label it `video/mp4`.~~ Resolved: the Electron pixel video is `video.mp4` (H.264) with `format: "mp4"`, and the SDK drops
+  (and reports) any video entry whose bytes are not MP4, so a WebM can no longer be labelled MP4 (`docs/design/electron.md` §5).
 - A cross-origin "Script error." with no filename sends zero frames, so each occurrence is its own
   issue.
 - The performance uploader sends no `x-bugsee-internal` header and ignores `{ok:false}`.

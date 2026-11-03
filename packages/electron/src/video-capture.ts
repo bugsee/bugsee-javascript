@@ -41,7 +41,11 @@ export interface CapturePageVideoSourceOptions {
   capturePage: () => Promise<Uint8Array>;
   /** Periodic sampler (real: the node global-timer scheduler). */
   scheduler: Scheduler;
-  /** Mux the frame ring into the final container bytes (real: a webm/mjpeg muxer; injected seam). */
+  /**
+   * Encode the JPEG frame ring into MP4 (H.264) container bytes (real: an H.264 encoder PLUS an MP4 muxer; a muxer alone does not make
+   * H.264 out of JPEG frames; injected seam). Anything that is not MP4 (a WebM or Motion-JPEG muxer) is dropped and reported by the
+   * pixel-video controller, never shipped as `video.mp4`.
+   */
   encode: (frames: readonly VideoFrame[], fps: number) => Uint8Array;
   /** Frames per second (default 1). */
   fps?: number;
@@ -119,7 +123,11 @@ export interface MediaRecorderLike {
 }
 
 export interface MediaRecorderVideoSourceOptions {
-  /** Build a `MediaRecorder` over the capture stream (real: `() => new MediaRecorder(stream, { mimeType })`). */
+  /**
+   * Build a `MediaRecorder` over the capture stream (real: `() => new MediaRecorder(stream, { mimeType })`). The `mimeType` MUST ask for
+   * MP4 (for example `video/mp4;codecs=avc1`; Chromium's default, with none given, is WebM). Output that is not MP4 is dropped and
+   * reported by the pixel-video controller, never shipped as `video.mp4`.
+   */
   recorderFactory: () => MediaRecorderLike;
   /** Concatenate the recorded chunks into the final bytes (real: join Blob `arrayBuffer()`s). */
   toBytes: (chunks: unknown[]) => Uint8Array | Promise<Uint8Array>;

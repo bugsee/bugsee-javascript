@@ -1213,7 +1213,7 @@ describe('assembleBundleStream — one stream-encoded member per visual source l
       files: Array<{ type: string; attrs?: Record<string, unknown> }>;
     };
     expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({
-      format: 'webm',
+      format: 'mp4',
       displayId: 1,
     });
   });
@@ -1244,27 +1244,27 @@ describe('assembleBundleStream — one member per display for a buffered-encoder
 
   it('writes each display its own video member, encoded on its own, with attrs.displayId', async () => {
     const { files, manifest } = await run([video('0', [1, 2]), video('1', [3, 4])]);
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([1, 2]);
-    expect([...(files['video.1.webm'] as Uint8Array)]).toEqual([3, 4]);
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([1, 2]);
+    expect([...(files['video.1.mp4'] as Uint8Array)]).toEqual([3, 4]);
     expect(manifest.files.filter((f) => f.type === 'video')).toEqual([
-      expect.objectContaining({ filename: 'video.webm', attrs: { format: 'webm', displayId: 0 } }),
+      expect.objectContaining({ filename: 'video.mp4', attrs: { format: 'mp4', displayId: 0 } }),
       expect.objectContaining({
-        filename: 'video.1.webm',
-        attrs: { format: 'webm', displayId: 1 },
+        filename: 'video.1.mp4',
+        attrs: { format: 'mp4', displayId: 1 },
       }),
     ]);
   });
 
   it('an unkeyed video stays the one canonical member with no displayId', async () => {
     const { files, manifest } = await run([video(undefined, [9])]);
-    expect([...(files['video.webm'] as Uint8Array)]).toEqual([9]);
-    expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({ format: 'webm' });
+    expect([...(files['video.mp4'] as Uint8Array)]).toEqual([9]);
+    expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({ format: 'mp4' });
   });
 
   it('a lane that is not a number is recorded as a window, not a display', async () => {
     const { manifest } = await run([video('win-a', [1])]);
     expect(manifest.files.find((f) => f.type === 'video')?.attrs).toEqual({
-      format: 'webm',
+      format: 'mp4',
       window: 'win-a',
     });
   });

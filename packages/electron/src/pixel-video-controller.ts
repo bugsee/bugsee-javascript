@@ -1,7 +1,7 @@
 // The pixel-video controller — wraps a VideoCaptureSource behind a permission gate and exposes the
 // report-time snapshot the bundle assembler pulls. The source is a single VideoCaptureSource; the
 // "capturePage + MediaRecorder" combination is composed INTO one source by the adapter (capturePage frames
-// → canvas → MediaRecorder → webm), so the controller stays source-agnostic. `snapshot` is the
+// → canvas → MediaRecorder → mp4), so the controller stays source-agnostic. `snapshot` is the
 // ReportSnapshotSource contract: given the report's wall-clock time, return the buffered `video` entries.
 import type { BlackoutGate, CaptureDataEntry } from '@bugsee/core';
 import type { VideoCaptureSource } from './video-capture';
@@ -33,6 +33,29 @@ export interface PixelVideoController {
   stop(): void;
   /** The ReportSnapshotSource: the buffered video as `video` entries (or [] when inert / empty). */
   snapshot(now: number): Promise<CaptureDataEntry[]>;
+}
+
+// `ftyp` at bytes 4..8 is the ISO base-media (MP4) signature; WebM/Matroska starts with the EBML magic 1A 45 DF A3.
+const FTYP = [0x66, 0x74, 0x79, 0x70];
+const EBML = [0x1a, 0x45, 0xdf, 0xa3];
+const startsWith = (bytes: Uint8Array, at: number, magic: readonly number[]): boolean =>
+  bytes.length >= at + magic.length && magic.every((byte, i) => bytes[at + i] === byte);
+
+/**
+ * Why `data` cannot go into the bundle as `video.mp4`, or `undefined` when it is MP4. The manifest names the entry `format: "mp4"`
+ * from the file TYPE alone and the worker skips its transcode for an MP4, so bytes that are really WebM must not get through: they
+ * would be served as `video/mp4` and not play, with no error anywhere.
+ */
+function notMp4(data: unknown): string | undefined {
+  if (!(data instanceof Uint8Array)) {
+    return 'the payload is not bytes';
+  }
+  if (startsWith(data, 4, FTYP)) {
+    return undefined;
+  }
+  return startsWith(data, 0, EBML)
+    ? 'the container is WebM'
+    : 'the container is not MP4 (no ftyp box)';
 }
 
 /** Build the permission-gated pixel-video controller over a single capture source. */
@@ -123,7 +146,16 @@ export function createPixelVideoController(
       }
       const epoch = blackoutEpoch;
       try {
-        const entries = await options.source.snapshot(now);
+        const produced = await options.source.snapshot(now);
+        // Only MP4 leaves: a `video` entry that is anything else (a host `encode` or MediaRecorder that still yields WebM) is dropped and
+        // reported, so the bundle still builds and is never mislabelled. Checked here, not in the encoder, which the assembler does not guard.
+        const entries = produced.filter((entry) => {
+          const why = entry.type === 'video' ? notMp4(entry.data) : undefined;
+          if (why !== undefined) {
+            report(new Error(`pixel video dropped: ${why}; the SDK ships video.mp4 (H.264) only`));
+          }
+          return why === undefined;
+        });
         // A blackout began while the source was encoding: its result may hold pre-blackout frames.
         return epoch === blackoutEpoch && options.blackout?.isActive() !== true ? entries : [];
       } catch (error) {
@@ -136,7 +168,7 @@ export function createPixelVideoController(
 
 /**
  * The `video` file encoder: the source already produced encoded container bytes, so the common single-entry
- * case is verbatim. Multiple `video` entries (belt-and-braces — there is only one `video.webm`) are
+ * case is verbatim. Multiple `video` entries (belt-and-braces — there is only one `video.mp4`) are
  * concatenated.
  */
 export function encodePixelVideo(payloads: readonly unknown[]): Uint8Array {

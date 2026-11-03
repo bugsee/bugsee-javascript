@@ -53,7 +53,7 @@ export type FileType =
 export const DEFAULT_FILENAMES: Readonly<Record<Exclude<FileType, 'attachment'>, string>> = {
   replay: 'replay.bin',
   screenshot: 'screenshot.png',
-  video: 'video.webm', // encoded pixel-capture video — Electron opt-in
+  video: 'video.mp4', // encoded pixel-capture video (H.264 in MP4, as mobile writes it) — Electron opt-in
   // The geometry of the recording over time: the frame each `input` coordinate was measured in, and
   // (web) what part of it the person could see. Version 2 of the stream is one shape for every
   // platform. Named `video.aux` because mobile emits it

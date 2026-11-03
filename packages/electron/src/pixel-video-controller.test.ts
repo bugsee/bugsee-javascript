@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPixelVideoController, encodePixelVideo } from './pixel-video-controller';
 import type { VideoCaptureSource } from './video-capture';
 
-function fakeSource(entriesData: Uint8Array[] = [new Uint8Array([1])]) {
+// The smallest thing the controller accepts as MP4: a box size, then `ftyp`, then a brand.
+const mp4 = (marker = 1): Uint8Array =>
+  new Uint8Array([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, marker]);
+
+function fakeSource(entriesData: Uint8Array[] = [mp4()]) {
   const source: VideoCaptureSource & { started: boolean; stopped: boolean; cleared: number } = {
     started: false,
     stopped: false,
@@ -51,9 +55,76 @@ describe('createPixelVideoController — isActive', () => {
   });
 });
 
+// Nothing downstream checks the container: the manifest names the entry `video.mp4` / `format: "mp4"` from the file TYPE, and the worker
+// skips its transcode for an MP4. A host `encode` / MediaRecorder that still yields WebM must be dropped, never labelled MP4.
+describe('createPixelVideoController - only MP4 leaves the SDK', () => {
+  const webm = new Uint8Array([
+    0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 1, 0x42, 0xf7, 0x81,
+  ]);
+
+  it('passes MP4 bytes through untouched', async () => {
+    const bytes = mp4(5);
+    const controller = createPixelVideoController({ source: fakeSource([bytes]) });
+    await controller.start();
+    const entries = await controller.snapshot(1);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.data).toBe(bytes);
+  });
+
+  it('drops WebM bytes and says so through onError, naming the container', async () => {
+    const onError = vi.fn();
+    const controller = createPixelVideoController({ source: fakeSource([webm]), onError });
+    await controller.start();
+    expect(await controller.snapshot(1)).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String((onError.mock.calls[0] as [Error])[0].message)).toMatch(/WebM/);
+  });
+
+  it('drops anything else that is not MP4 (too short, wrong box, not bytes), and keeps the MP4 beside it', async () => {
+    const onError = vi.fn();
+    const good = mp4(3);
+    const source = fakeSource([new Uint8Array([1]), good]);
+    const original = source.snapshot;
+    source.snapshot = vi.fn(async (now: number) => [
+      ...(await original(now)),
+      new CaptureDataEntryBase('video', now, 'not bytes'),
+      new CaptureDataEntryBase('video', now, new Uint8Array(16)),
+    ]);
+    const controller = createPixelVideoController({ source, onError });
+    await controller.start();
+    const entries = await controller.snapshot(1);
+    expect(entries.map((e) => e.data)).toEqual([good]);
+    expect(onError).toHaveBeenCalledTimes(3);
+    const reasons = onError.mock.calls.map(([error]) => (error as Error).message);
+    expect(reasons[0]).toMatch(/not MP4 \(no ftyp box\)/); // one byte
+    expect(reasons[1]).toMatch(/not bytes/); // a string payload
+    expect(reasons[2]).toMatch(/not MP4 \(no ftyp box\)/); // 16 zero bytes: not WebM either
+  });
+
+  it('leaves entries of other file types alone', async () => {
+    const source = fakeSource([]);
+    const other = new CaptureDataEntryBase('console' as never, 1, { not: 'bytes' });
+    source.snapshot = vi.fn(async () => [other]);
+    const controller = createPixelVideoController({ source });
+    await controller.start();
+    expect(await controller.snapshot(1)).toEqual([other]);
+  });
+
+  it('still never throws into the report when onError itself throws', async () => {
+    const controller = createPixelVideoController({
+      source: fakeSource([webm]),
+      onError: () => {
+        throw new Error('sink failed');
+      },
+    });
+    await controller.start();
+    await expect(controller.snapshot(1)).resolves.toEqual([]);
+  });
+});
+
 describe('createPixelVideoController', () => {
   it('starts the source and pulls its entries on snapshot when permission is granted', async () => {
-    const source = fakeSource([new Uint8Array([0x9])]);
+    const source = fakeSource([mp4(9)]);
     const controller = createPixelVideoController({ source, hasPermission: () => true });
     await controller.start();
     expect(source.started).toBe(true);
@@ -242,7 +313,7 @@ describe('createPixelVideoController - blackout (privacy: fail closed)', () => {
     source.snapshot = vi.fn(
       () =>
         new Promise<CaptureDataEntry[]>((resolve) => {
-          release = () => resolve([new CaptureDataEntryBase('video', 1, new Uint8Array([7]))]);
+          release = () => resolve([new CaptureDataEntryBase('video', 1, mp4(7))]);
         }),
     );
     const controller = createPixelVideoController({ source, blackout: gate });
@@ -420,7 +491,7 @@ describe('createPixelVideoController - blackout (privacy: fail closed)', () => {
     source.snapshot = vi.fn(
       () =>
         new Promise<CaptureDataEntry[]>((resolve) => {
-          release = () => resolve([new CaptureDataEntryBase('video', 1, new Uint8Array([7]))]);
+          release = () => resolve([new CaptureDataEntryBase('video', 1, mp4(7))]);
         }),
     );
     const controller = createPixelVideoController({ source, blackout: gate });
@@ -482,7 +553,7 @@ describe('encodePixelVideo (the video fileEncoder)', () => {
     expect(encodePixelVideo([bytes])).toBe(bytes);
   });
 
-  it('concatenates multiple payloads (defensive — the single video.webm contract)', () => {
+  it('concatenates multiple payloads (defensive — the single video.mp4 contract)', () => {
     expect(encodePixelVideo([new Uint8Array([1, 2]), new Uint8Array([3])])).toEqual(
       new Uint8Array([1, 2, 3]),
     );

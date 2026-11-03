@@ -151,20 +151,25 @@ backend symbolicates. App native-module symbols upload at build time via `bugsee
   (renderer replay is on by default, E1/E3) and needs no slice; this is the OPT-IN pixel path, built as a report-time snapshot
   source (the CPU-profile pattern — pulled at report assembly, never streamed). Landed across three packages:
   - **protocol**: the mobile-canonical `'video'` FileType (now also JS-emitted) + `DEFAULT_FILENAMES.video =
-    'video.webm'`.
+    'video.mp4'`.
   - **node**: `launchCore` forwards `reportSnapshots` + `fileEncoders` from the launch options into `createClient`
     (concatenated AFTER the internal profiling snapshot) — the generic extension seam for an async-produced
     report-time artifact + its binary encoder.
   - **electron**: two pluggable `VideoCaptureSource`s behind injected seams — `createCapturePageVideoSource` (MAIN,
     periodic `webContents.capturePage()` → bounded frame ring → injected muxer; own-window, no TCC) and
-    `createMediaRecorderVideoSource` (RENDERER, `MediaRecorder` over a MediaStream → webm). **Per the user, the two
+    `createMediaRecorderVideoSource` (RENDERER, `MediaRecorder` over a MediaStream → MP4, H.264). **Per the user, the two
     combine**: capturePage supplies frames (no Screen-Recording permission) that a canvas→`MediaRecorder` encodes to
-    webm — composed into ONE source by the adapter, so `createPixelVideoController` stays source-agnostic. The
+    MP4 — composed into ONE source by the adapter, so `createPixelVideoController` stays source-agnostic. The
     controller is permission-gated (`hasPermission` TCC seam → inert when denied) and exposes the `ReportSnapshotSource`;
     `encodePixelVideo` is the `video` file encoder. `launchMain` accepts `video: { source, hasPermission? }`, builds the
     controller, forwards its snapshot + encoder into the node launch, starts it (async permission), and stops it on
-    `client.stop`. The real Electron/DOM capturers + webm muxer are the app-/adapter-supplied injected seams (no
-    electron/DOM dependency in the package). The e2e proves an opt-in `video.webm` lands in the SAME merged bundle.
+    `client.stop`. The real Electron/DOM capturers + MP4 muxer are the app-/adapter-supplied injected seams (no
+    electron/DOM dependency in the package). The e2e proves an opt-in `video.mp4` lands in the SAME merged bundle.
+    **Contract (breaking for a host that supplied WebM):** the member is `video.mp4` with `format: "mp4"` taken from the file TYPE,
+    and the worker skips its transcode for an MP4, so the bytes MUST be MP4 (H.264): the `encode` seam and the `MediaRecorder` `mimeType`
+    must produce it. The pixel-video controller checks the `ftyp` box of every video entry and DROPS one that is not MP4 (a WebM is named
+    in the message), reporting through `onError`; the bundle still builds, without the video. Chromium's `MediaRecorder` default is WebM,
+    so a host must ask for an MP4 mime type explicitly.
 
 ## 6. Open questions / to confirm at slice time
 - **Minidump upload path** — `crashReporter.submitURL` posting directly to a Bugsee collector minidump endpoint vs

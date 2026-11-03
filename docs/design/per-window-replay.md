@@ -25,7 +25,7 @@ base across windows, and a byte-cap reset restarts every recorder. The replay of
 | `CaptureDataEntry` | `lane?: string` copied from the stored record by the reifier. |
 | Export | members are grouped by `(type, lane)`. The first lane (by first record) keeps the canonical name (`replay.bin`); later lanes get `replay.<n>.bin` with a manifest entry `{type: 'replay', attrs: {window: <lane>}}`. Each member has its own stream encoder session (orphan trim and clamp are per window). A viewer that reads only `replay.bin` still gets a coherent single-window replay. |
 | Electron main | tags each renderer record with its window id as `lane`; `onVisualReset(lane)` restarts ONLY that window's recorder (`checkout` carries the window id; the gate paces per lane). |
-| Pixel video | separate slice: main composes the windows of a display with `getBounds()` and z-order into one frame per tick; one `video` member per display (`video.<n>.webm`, attrs `{display: id}`). |
+| Pixel video | separate slice: main composes the windows of a display with `getBounds()` and z-order into one frame per tick; one `video` member per display (`video.<n>.mp4`, attrs `{display: id}`). |
 
 ## Slices
 
