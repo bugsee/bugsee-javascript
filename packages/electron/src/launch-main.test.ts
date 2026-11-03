@@ -524,7 +524,12 @@ describe('launchMain', () => {
       },
       clear() {},
       snapshot: vi.fn(async (now: number) => [
-        new CaptureDataEntryBase('video', now, new Uint8Array([1])),
+        // MP4-shaped (a box size, `ftyp`, a brand): the controller drops any other container
+        new CaptureDataEntryBase(
+          'video',
+          now,
+          new Uint8Array([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 1, 2, 3, 4]),
+        ),
       ]),
     };
     const client = launchMain('tok', {
