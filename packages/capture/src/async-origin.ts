@@ -261,9 +261,11 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
 
   const probeStack = probeStackOf(global.Error);
   const framesIn = options.hasFrames ?? defaultHasFrames;
-  // A non-string stack has none; a predicate that throws counts as "no frames" (keep the call site; nothing escapes into the page).
-  const reasonHasFrames = (stack: unknown): boolean => {
+  // A non-string stack has none; a stack GETTER that throws, or a predicate that throws, counts as "no frames" (keep the call site;
+  // nothing escapes into the page).
+  const reasonHasFrames = (reason: object): boolean => {
     try {
+      const stack = (reason as { stack?: unknown }).stack;
       return typeof stack === 'string' && framesIn(stack);
     } catch {
       return false;
@@ -333,7 +335,7 @@ export function installAsyncOrigins(options: InstallAsyncOriginsOptions = {}): A
             // Only a reason with no stack of its own is worth remembering, and the FIRST origin wins.
             try {
               if (isObjectLike(reason) && !byReason.has(reason)) {
-                if (!reasonHasFrames((reason as { stack?: unknown }).stack)) {
+                if (!reasonHasFrames(reason)) {
                   byReason.set(reason, origin);
                 }
               }

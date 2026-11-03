@@ -190,4 +190,63 @@ describe('listenForAstroHydrationErrors', () => {
     flushQueuedAstroHydrationErrors(options);
     expect(logException).toHaveBeenCalledTimes(1);
   });
+
+  it('a throwing onError never escapes the listener (and the error is still queued)', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let healthy = false;
+    const options = {
+      target,
+      onError: () => {
+        throw new Error('sink failed');
+      },
+      getClient: () => {
+        if (!healthy) {
+          throw new Error('carrier unavailable');
+        }
+        return clientWith(logException);
+      },
+    };
+    listenForAstroHydrationErrors(options);
+    expect(() => target.dispatchEvent(hydrationError(new Error('x')))).not.toThrow();
+    healthy = true;
+    flushQueuedAstroHydrationErrors(options);
+    expect(logException).toHaveBeenCalledTimes(1);
+  });
+
+  // Two overlapping registrations: one fails (no client) while the other is still resolving. The window stays open until the LAST settles.
+  it('keeps the launch window open while another registration is still pending', () => {
+    const target = new EventTarget();
+    const logException = vi.fn(() => Promise.resolve(undefined));
+    let client: Bugsee | undefined;
+    const options = { target, getClient: () => client };
+    listenForAstroHydrationErrors(options); // registration A
+    listenForAstroHydrationErrors(options); // registration B, overlapping
+    target.dispatchEvent(hydrationError(new Error('during both')));
+    flushQueuedAstroHydrationErrors(options); // A fails: no client, B still pending
+    expect(logException).not.toHaveBeenCalled();
+    target.dispatchEvent(hydrationError(new Error('while B resolves'))); // must still queue
+    client = clientWith(logException);
+    flushQueuedAstroHydrationErrors(options); // B succeeds
+    expect(logException).toHaveBeenCalledTimes(2);
+    target.dispatchEvent(hydrationError(new Error('after both'))); // window closed, client exists: reported directly
+    expect(logException).toHaveBeenCalledTimes(3);
+  });
+
+  it('a client lookup that throws while flushing drops the queue only once the last registration has settled, and never throws', () => {
+    const target = new EventTarget();
+    const options = {
+      target,
+      getClient: () => {
+        throw new Error('carrier unavailable');
+      },
+      onError: () => undefined,
+    };
+    listenForAstroHydrationErrors(options);
+    target.dispatchEvent(hydrationError(new Error('x')));
+    expect(() => flushQueuedAstroHydrationErrors(options)).not.toThrow();
+    // the window is closed now: nothing is queued any more
+    target.dispatchEvent(hydrationError(new Error('y')));
+    expect(() => flushQueuedAstroHydrationErrors(options)).not.toThrow();
+  });
 });

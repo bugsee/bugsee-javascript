@@ -25,8 +25,8 @@ interface Listening {
   listener: EventListener;
   options: AstroHydrationOptions;
   queue: unknown[];
-  /** True only while a launch is resolving: from a registration until its flush. Outside that window a missing client drops the error. */
-  queueing: boolean;
+  /** Registrations whose launch has not settled yet. The window is open while it is above zero; outside it a missing client drops the error. */
+  pending: number;
 }
 const listening = new WeakMap<EventTarget, Listening>();
 
@@ -57,13 +57,13 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
   const existing = listening.get(target);
   if (existing !== undefined) {
     existing.options = options; // relaunch: the new getClient / onError replace the first ones, and a new launch window opens
-    existing.queueing = true;
+    existing.pending += 1;
     return () => undefined;
   }
   const state: Listening = {
     options,
     queue: [],
-    queueing: true,
+    pending: 1,
     listener: (event) => {
       const error = (event as CustomEvent<{ error?: unknown } | undefined>).detail?.error;
       if (error === undefined) {
@@ -73,9 +73,13 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
       try {
         client = clientOf(state.options);
       } catch (clientError) {
-        state.options.onError?.(clientError);
+        try {
+          state.options.onError?.(clientError);
+        } catch {
+          // a failing sink must not escape into Astro's event dispatch
+        }
       }
-      if (client === undefined && state.queueing) {
+      if (client === undefined && state.pending > 0) {
         state.queue.push(error);
         if (state.queue.length > MAX_QUEUED) {
           state.queue.shift(); // the newest survive
@@ -94,8 +98,9 @@ export function listenForAstroHydrationErrors(options: AstroHydrationOptions = {
 }
 
 /**
- * Report what was queued while no client existed and END the launch window (call once the launch has settled, success or failure), with
- * the options of the latest registration. Afterwards an error with no client is dropped, not queued. Never throws.
+ * Settle one registration's launch window (call once its launch has settled, success or failure): report what was queued if a client
+ * exists now, and close the window once the last pending registration has settled (afterwards an error with no client is dropped, not
+ * queued), with the options of the latest registration. Never throws.
  */
 export function flushQueuedAstroHydrationErrors(options: AstroHydrationOptions = {}): void {
   const target = targetOf(options);
@@ -103,11 +108,21 @@ export function flushQueuedAstroHydrationErrors(options: AstroHydrationOptions =
   if (state === undefined) {
     return;
   }
-  state.queueing = false; // the launch window is over, whether it succeeded or failed
-  if (state.queue.length === 0) {
-    return;
+  // One registration has settled (launch resolved or failed). With a client, report what queued (even if another registration is still
+  // resolving); the window closes, and the rest is dropped, only when the LAST pending registration has settled.
+  state.pending = Math.max(0, state.pending - 1);
+  let client: Client;
+  try {
+    client = clientOf(state.options);
+  } catch {
+    client = undefined;
   }
-  for (const error of state.queue.splice(0)) {
-    report(error, state.options);
+  if (client !== undefined) {
+    for (const error of state.queue.splice(0)) {
+      report(error, state.options);
+    }
+  }
+  if (state.pending === 0) {
+    state.queue.length = 0;
   }
 }

@@ -1783,7 +1783,7 @@ export function createClient(options: CreateClientOptions = {}): CreatedClient {
           .map((frame) => `    ${frame.trace}`) ?? [];
       let description = describeError(error, callSite);
       // What the call was made ON (the media element, its source and error code): the root cause, which the call site is not.
-      if (error instanceof Error && options.describeTarget !== undefined) {
+      if (options.describeTarget !== undefined) {
         try {
           const target = options.describeTarget(error);
           if (target !== undefined && target !== '') {

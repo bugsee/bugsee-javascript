@@ -1471,6 +1471,22 @@ describe('createClient — capture-recovery markers', () => {
       ).toBe('    at startPlayback (https://app.test/p.js:4:2)');
     });
 
+    it('a non-Error reason (a cross-realm DOMException) gets the Target line too', async () => {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({
+        uploadPipeline,
+        appToken: 'tok',
+        getEnvironment,
+        describeTarget: () => 'Target: <video id="hero">',
+      });
+      await client.logException({ name: 'NotSupportedError', message: 'cross-realm' });
+      const files = unzipSync(enqueue.mock.calls[0]?.[0]?.body as Uint8Array);
+      const request = JSON.parse(strFromU8(files['request.json'] as Uint8Array)) as {
+        description?: string;
+      };
+      expect(request.description).toBe('Target: <video id="hero">');
+    });
+
     it('leaves an error that has frames of its own exactly as before', async () => {
       const own = 'NotSupportedError: x\n    at thrower (https://app.test/t.js:1:1)';
       // (the real describer answers only for an error whose origin it recorded: none was, for an error with its own frames)

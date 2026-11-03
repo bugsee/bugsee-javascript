@@ -1048,3 +1048,24 @@ describe('installAsyncOrigins - adoptPromise (fallback mode, keyed by promise)',
     expect(() => r.adoptPromise('a string', promise)).not.toThrow();
   });
 });
+
+describe('installAsyncOrigins - a stack getter that throws', () => {
+  it('counts as stackless: the origin is still recorded', async () => {
+    const reason = new Proxy(
+      { name: 'NotSupportedError' },
+      {
+        get(target, key): unknown {
+          if (key === 'stack') {
+            throw new Error('stack getter');
+          }
+          return (target as Record<PropertyKey, unknown>)[key];
+        },
+      },
+    );
+    const g = fakeGlobal(() => Promise.reject(reason));
+    const r = install(g);
+    const el = new (g.Media as new () => { play(): Promise<unknown> })();
+    await el.play().catch(() => undefined);
+    expect(r.originOf(reason)).toBeDefined();
+  });
+});

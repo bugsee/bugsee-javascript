@@ -376,6 +376,31 @@ describe('async origin (a stackless platform rejection reported WITH its call si
     recorder.stop();
   });
 
+  it('also describes a FUNCTION reason (the recorder keys by any object-like reason)', async () => {
+    const reason = () => undefined; // a function is an object for the recorder (it keys by any object-like reason)
+    class Media {
+      tagName = 'VIDEO';
+      id = 'hero';
+      play(): Promise<unknown> {
+        return Promise.reject(reason);
+      }
+    }
+    const recorder = installAsyncOrigins({
+      global: { HTMLMediaElement: Media, Promise, Error },
+      rows: [{ iface: 'HTMLMediaElement', methods: ['play'], mode: 'always', why: 'test' }],
+    });
+    const origins = createAsyncOriginReporting(recorder, parseStack);
+    function startPlayback(): Promise<unknown> {
+      return new Media().play();
+    }
+    await startPlayback().catch(() => undefined);
+    const w = fakeWindow();
+    const requests = started(createUnhandledRejectionProvider(w.win, origins));
+    w.emit('unhandledrejection', { reason });
+    expect((requests[0] as ReportingRequest).report.description).toContain('startPlayback');
+    recorder.stop();
+  });
+
   it('uses event.promise when the recorder could attach no reaction (fallback mode keys the origin by promise)', async () => {
     const reason = stacklessError();
     class Media {

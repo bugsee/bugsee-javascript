@@ -47,7 +47,9 @@ function describeError(
   // A value that is not an `Error` here may still be a platform rejection (a DOMException from another realm is not `instanceof Error`):
   // the recorder keys by reason, so it answers for an object too.
   const located =
-    typeof value === 'object' && value !== null ? describeOrigin(value, origins) : undefined;
+    (typeof value === 'object' && value !== null) || typeof value === 'function'
+      ? describeOrigin(value as object, origins)
+      : undefined;
   return located === undefined
     ? { summary: describeThrown(value) }
     : { summary: describeThrown(value), description: located };
