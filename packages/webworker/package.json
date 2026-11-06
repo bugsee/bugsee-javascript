@@ -54,6 +54,6 @@
   },
   "devDependencies": {
     "@bugsee/util": "workspace:*",
-    "fake-indexeddb": "^6.2.6"
+    "fake-indexeddb": "^6.2.7"
   }
 }
