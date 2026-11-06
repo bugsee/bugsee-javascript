@@ -137,7 +137,7 @@ export interface ProcessEnv {
   readsVmStat?: boolean;
   /** Replaces the `vm_stat` sampler (it is stopped when the memory stage loses its last listener). */
   vmStat?: VmStatSource;
-  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`)). */
+  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`). */
   vmStatExecFile?: ExecFileLike;
   /**
    * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:

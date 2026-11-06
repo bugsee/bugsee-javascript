@@ -343,25 +343,4 @@ describe('createVmStatSampler: cadence, streaks, silent misses', () => {
     expect(h.sampler.peek()).toBe(10_000 * PAGE);
     expect(h.calls).toHaveLength(1);
   });
-
-  it('canSpawn:false neither spawns nor reports; true spawns', () => {
-    let allowed = false;
-    const calls: unknown[] = [];
-    const errors: unknown[] = [];
-    const sampler = createVmStatSampler({
-      execFile: () => {
-        calls.push(1);
-        return { kill: () => true };
-      },
-      canSpawn: () => allowed,
-      onError: (e) => errors.push(e),
-      now: () => 0,
-    });
-    expect(sampler.read()).toBeUndefined();
-    expect(calls).toHaveLength(0);
-    expect(errors).toHaveLength(0);
-    allowed = true;
-    sampler.read();
-    expect(calls).toHaveLength(1);
-  });
 });

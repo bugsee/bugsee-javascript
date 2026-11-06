@@ -58,8 +58,6 @@ export interface VmStatOptions {
   now?: () => number;
   /** Minimum gap between reads (default 10 000 ms). A value is served for at most two intervals. */
   intervalMs?: number;
-  /** Return false to skip spawning (and answer nothing, without an error) (e.g. a spawn policy that is not granted). */
-  canSpawn?: () => boolean;
   /** Receives the first failure of each failure streak. */
   onError?: (error: unknown) => void;
 }
@@ -127,11 +125,7 @@ export function createVmStatSampler(options: VmStatOptions = {}): VmStatSource {
   return {
     read() {
       const t = now();
-      if (
-        child === undefined &&
-        (lastStart === undefined || t - lastStart >= intervalMs) &&
-        (options.canSpawn?.() ?? true)
-      ) {
+      if (child === undefined && (lastStart === undefined || t - lastStart >= intervalMs)) {
         start();
       }
       return fresh(t);

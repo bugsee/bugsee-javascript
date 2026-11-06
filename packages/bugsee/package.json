@@ -25,6 +25,10 @@
         "types": "./src/index.bun.ts",
         "import": "./src/index.bun.ts"
       },
+      "deno": {
+        "types": "./src/index.deno.ts",
+        "import": "./src/index.deno.ts"
+      },
       "worker": {
         "types": "./src/index.worker.ts",
         "import": "./src/index.worker.ts"
@@ -49,6 +53,10 @@
     "./bun": {
       "types": "./src/index.bun.ts",
       "import": "./src/index.bun.ts"
+    },
+    "./deno": {
+      "types": "./src/index.deno.ts",
+      "import": "./src/index.deno.ts"
     },
     "./workerd": {
       "types": "./src/index.workerd.ts",
@@ -107,6 +115,16 @@
           "require": {
             "types": "./dist/index.bun.d.cts",
             "default": "./dist/index.bun.cjs"
+          }
+        },
+        "deno": {
+          "import": {
+            "types": "./dist/index.deno.d.ts",
+            "default": "./dist/index.deno.js"
+          },
+          "require": {
+            "types": "./dist/index.deno.d.cts",
+            "default": "./dist/index.deno.cjs"
           }
         },
         "worker": {
@@ -168,6 +186,16 @@
         "require": {
           "types": "./dist/index.bun.d.cts",
           "default": "./dist/index.bun.cjs"
+        }
+      },
+      "./deno": {
+        "import": {
+          "types": "./dist/index.deno.d.ts",
+          "default": "./dist/index.deno.js"
+        },
+        "require": {
+          "types": "./dist/index.deno.d.cts",
+          "default": "./dist/index.deno.cjs"
         }
       },
       "./workerd": {

@@ -97,6 +97,8 @@ describe('the umbrella resolves the right entry per runtime', () => {
     },
     { runtime: 'a Web Worker build', conditions: ['worker', 'browser'], entry: 'index.worker.ts' },
     { runtime: 'Bun', conditions: ['bun', 'node'], entry: 'index.bun.ts' },
+    // Deno is unsupported, but keeps its condition so it hits a throwing stub rather than the node build.
+    { runtime: 'Deno (unsupported: throws)', conditions: ['deno', 'node'], entry: 'index.deno.ts' },
     // The two canaries: without them, "the specific runtimes win" is satisfied by a map that never
     // resolves the general ones at all.
     { runtime: 'plain node', conditions: ['node'], entry: 'index.node.ts' },
@@ -111,7 +113,7 @@ describe('the umbrella resolves the right entry per runtime', () => {
 
   it('every declared condition resolves to a DISTINCT entry', () => {
     // A duplicate would mean a condition silently aliases another runtime's composition — the exact shape
-    // of the original defect, where bun resolved the node entry.
+    // of the original defect, where bun and deno both resolved the node entry.
     const entries = CASES.map((c) => c.entry);
     expect(new Set(entries).size).toBe(entries.length);
   });
