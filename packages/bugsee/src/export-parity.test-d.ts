@@ -5,7 +5,6 @@
 
 import type * as Browser from './index';
 import type * as Bun from './index.bun';
-import type * as Deno from './index.deno';
 import type * as EdgeLight from './index.edge-light';
 import type * as Node from './index.node';
 import type * as Worker from './index.worker';
@@ -15,7 +14,6 @@ type Entry =
   | typeof Browser
   | typeof Node
   | typeof Bun
-  | typeof Deno
   | typeof EdgeLight
   | typeof Worker
   | typeof Workerd;
@@ -50,16 +48,6 @@ export type BunTypes = [
   Bun.LifecycleEventsListener,
   Bun.LifecycleEventType,
   Bun.ReportAttachmentInput,
-];
-export type DenoTypes = [
-  Deno.DefaultNetworkSanitizer,
-  Deno.Span,
-  Deno.Transaction,
-  Deno.PerformanceFacade,
-  Deno.PerformanceApi,
-  Deno.LifecycleEventsListener,
-  Deno.LifecycleEventType,
-  Deno.ReportAttachmentInput,
 ];
 export type EdgeLightTypes = [
   EdgeLight.DefaultNetworkSanitizer,
@@ -108,7 +96,6 @@ export type LifecycleListenerOptions = [
   ListenerOption<typeof Browser>,
   ListenerOption<typeof Node>,
   ListenerOption<typeof Bun>,
-  ListenerOption<typeof Deno>,
   ListenerOption<typeof EdgeLight>,
   ListenerOption<typeof Worker>,
   ListenerOption<typeof Workerd>,

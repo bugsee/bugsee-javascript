@@ -794,7 +794,7 @@ export function attachLocals(
  * The real `node:inspector` session, or undefined where there isn't one.
  *
  * Loaded through `createRequire` rather than a static import ON PURPOSE: `@bugsee/node`'s composition is
- * reused verbatim by the Bun and Deno tiers, and Bun's debugger support is not the same as Node's. A
+ * reused verbatim by the Bun tier, and Bun's debugger support is not the same as Node's. A
  * static import would make the whole package fail to load on a runtime that lacks the module, to
  * deliver a feature that is off by default.
  */
@@ -833,7 +833,7 @@ export function createInspectorSession(
     return new inspector.Session();
   } catch {
     /* v8 ignore next -- unreachable on Node, where these tests run: `node:inspector` is a builtin, so
-       this is the Bun/Deno degradation path and reaching it would mean faking `createRequire` itself. */
+       this is the Bun degradation path and reaching it would mean faking `createRequire` itself. */
     return undefined; // no inspector here — the capture degrades to inert
   }
 }

@@ -3,12 +3,12 @@ import type { PerformanceFacade } from '@bugsee/performance';
 import { withPerformanceFacade } from './performance-facade';
 import { type UmbrellaExtensionOptions, wireUmbrella } from './wire';
 
-// The shared umbrella launch() for every SERVER runtime — node, bun and deno.
+// The shared umbrella launch() for every SERVER runtime — node and bun.
 //
-// All three run the same composition: a platform `launchCore`, then the on-by-default extensions via
+// Both run the same composition: a platform `launchCore`, then the on-by-default extensions via
 // `wireUmbrella`. Only the `launchCore` differs, and only in its defaults — Bun swaps in the Bun identity
-// probe, a guarded perf_hooks sampler and the `Bun.serve` interceptor; Deno the equivalents for `Deno.serve`.
-// Factoring it here is what keeps the three entries from drifting, which matters because the drift is
+// probe, a guarded perf_hooks sampler and the `Bun.serve` interceptor.
+// Factoring it here is what keeps the entries from drifting, which matters because the drift is
 // invisible: they are selected by `exports` conditions, so only the runtime that resolves a given entry
 // ever executes it.
 //
@@ -33,8 +33,8 @@ export function createServerLaunch(
     // No internals → a prior launch already owns the process singleton (and already wired the extensions).
     if (internals === undefined) return withPerformanceFacade(client);
     // Process start = now − uptime. Reached via globalThis (no node:process import → no node types needed);
-    // these entries only run on server runtimes, where process.uptime always exists (Bun and Deno both
-    // provide it through their node-compat layers).
+    // these entries only run on server runtimes, where process.uptime always exists (Bun
+    // provides it through its node-compat layer).
     const startupAtMs =
       options.appStartTimeMs ??
       Date.now() -

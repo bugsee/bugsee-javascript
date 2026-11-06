@@ -1,7 +1,7 @@
 import type { RingConsumer } from './capture-ring';
 
 // RingDrainer — the worker-side core of the write path. It drains the shared CaptureRing
-// (peek → writev → consume) to per-file fds the WORKER owns (deno can't inherit the main's fds, so the worker
+// (peek → writev → consume) to per-file fds the WORKER owns (the main's fds can't be inherited, so the worker
 // opens them itself), demuxing by `pathId`. Kept PURE over injected fs ops so it is fully unit-testable; the
 // thin worker_threads glue (the real openSync-by-derived-path / writevSync / closeSync + the Atomics loop)
 // wraps it and is validated by the adverse-I/O e2e (the ANR-worker precedent).

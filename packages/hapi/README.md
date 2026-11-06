@@ -1,6 +1,6 @@
 # @bugsee/hapi
 
-hapi adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for @hapi/hapi servers on Node.js, Bun and Deno.
+hapi adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for @hapi/hapi servers on Node.js and Bun.
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 

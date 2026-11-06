@@ -1,6 +1,6 @@
 // Cross-runtime end-to-end instrumentation harness.
 //
-// For each available runtime (node via tsx, bun, deno) this boots the REAL SDK in a REAL separate
+// For each available runtime (node via tsx, bun) this boots the REAL SDK in a REAL separate
 // process — no fakes, real timers, the real V8 CPU profiler, the real worker-thread hang watchdog, a
 // real outgoing fetch — pointed at a local mock collector, and asserts the actual uploaded bundle:
 //   • one session carrying the runtime's platform identity,
@@ -82,7 +82,7 @@ if (targets.find((t) => t.name === 'node')?.bin === undefined) {
   );
 }
 
-// bun/deno run only where installed.
+// bun runs only where installed.
 describe.each(
   targets.filter((t): t is RuntimeTarget & { bin: string } => t.bin !== undefined),
 )('instrumentation e2e — $name', (target) => {
@@ -142,7 +142,7 @@ describe.each(
         app: { uptime_s?: number };
       };
       // C14: process uptime at session start is a whole-second snapshot in environment.app (replaces the
-      // retired per-second `process_uptime_s` trace); process.uptime() answers on real node, bun and deno.
+      // retired per-second `process_uptime_s` trace); process.uptime() answers on real node and bun.
       expect(Number.isInteger(env.app.uptime_s)).toBe(true);
       expect(env.app.uptime_s).toBeGreaterThanOrEqual(0);
       expect(env.runtime.type).toBe(target.name);
@@ -152,14 +152,6 @@ describe.each(
       expect(env.platform.type).not.toBe(target.name);
       expect(['macos', 'linux', 'windows']).toContain(env.platform.type);
       expect(env.platform.version.length).toBeGreaterThan(0);
-      if (target.name === 'deno') {
-        // Proves the e2e reads the REAL Deno version (Deno.version.deno → a small major) and NOT the
-        // node-compat process.versions.node (major ≥ 18) — the milestone's headline gotcha, verified
-        // end-to-end on the real Deno runtime (the unit tests run under node and cannot reach this).
-        const major = Number(env.runtime.version.split('.')[0]);
-        expect(major).toBeGreaterThanOrEqual(1);
-        expect(major).toBeLessThan(18);
-      }
     });
 
     it('captured the real outgoing /echo request', () => {

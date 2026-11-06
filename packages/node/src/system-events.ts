@@ -26,7 +26,7 @@ import { markOwnHandler, releaseSignalToDefault } from './process-policy';
 // GC (`gc`, JS-specific, params {count, pauseMs, maxPauseMs}): one event per sampling interval that had at least one
 // collection; a quiet interval writes NOTHING (omit, never zero). The tracker OWNS the single GC observer and arms
 // it only while a `gc` listener exists, so this source subscribes LAZILY (first event subscriber) and releases on
-// stop: with `captureSystemEvents:false` nothing is ever attached. Bun/Deno gate the tracker's gc source off
+// stop: with `captureSystemEvents:false` nothing is ever attached. Bun gates the tracker's gc source off
 // (`measuresGc:false`: their observer is blind), so the stage never emits there.
 
 const DEFAULT_SIGNALS = ['SIGTERM', 'SIGINT'] as const;

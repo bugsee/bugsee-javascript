@@ -11,9 +11,9 @@ This is an internal building block of the Bugsee SDK, not intended to be install
 - The `Client` and the launch-option resolver.
 - The capture aggregator, capture stores, bundle writer and durable bundle queue.
 - Trigger and upload pipelines, plus the interceptor and event-emitter base classes.
-- Runtime-portable: it reaches runtime globals only through injected seams, so the same code runs in browsers, Node.js, Bun, Deno and edge runtimes.
+- Runtime-portable: it reaches runtime globals only through injected seams, so the same code runs in browsers, Node.js, Bun and edge runtimes.
 
-Every platform and adapter package (`@bugsee/browser`, `@bugsee/node`, `@bugsee/bun`, `@bugsee/deno`, `@bugsee/electron`, the framework adapters and others) depends on it. Its API is internal and may change between releases.
+Every platform and adapter package (`@bugsee/browser`, `@bugsee/node`, `@bugsee/bun`, `@bugsee/electron`, the framework adapters and others) depends on it. Its API is internal and may change between releases.
 
 ## Links
 

@@ -3,7 +3,6 @@ import {
   isBrowser,
   isBun,
   isCloudflareWorker,
-  isDeno,
   isElectronMain,
   isElectronRenderer,
   isNode,
@@ -24,22 +23,10 @@ describe('isBun', () => {
   });
 });
 
-describe('isDeno', () => {
-  it('is false without a Deno global', () => expect(isDeno()).toBe(false));
-  it('is true with a Deno global', () => {
-    vi.stubGlobal('Deno', {});
-    expect(isDeno()).toBe(true);
-  });
-});
-
 describe('isNode', () => {
   it('is true in a Node process (default test env)', () => expect(isNode()).toBe(true));
   it('is false when Bun is present', () => {
     vi.stubGlobal('Bun', {});
-    expect(isNode()).toBe(false);
-  });
-  it('is false when Deno is present', () => {
-    vi.stubGlobal('Deno', {});
     expect(isNode()).toBe(false);
   });
   it('is false without a process global', () => {

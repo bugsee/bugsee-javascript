@@ -498,11 +498,7 @@ describe('ProcessTracker', () => {
     });
 
     it.each([
-      [
-        'eventLoop (Deno: measuresEventLoopDelay:false)',
-        'eventLoop',
-        { measuresEventLoopDelay: false },
-      ],
+      ['eventLoop (measuresEventLoopDelay:false)', 'eventLoop', { measuresEventLoopDelay: false }],
       ['v8Heap (Bun: measuresV8Heap:false)', 'v8Heap', { measuresV8Heap: false }],
       [
         'memoryLimit (measuresConstrainedMemory:false)',
@@ -592,7 +588,7 @@ describe('ProcessTracker', () => {
         mk({ systemMemory: undefined, platform: 'linux', ...over }).tracker.current('systemMemory');
       const meminfo = () => 'MemAvailable: 2 kB\n';
 
-      it('default: os.freemem(), and /proc/meminfo is never read (Deno must not trigger a permission prompt)', () => {
+      it('default: os.freemem(), and /proc/meminfo is never read', () => {
         let reads = 0;
         const got = free({ freeMemory: () => 7, meminfo: () => (reads++, 'MemAvailable: 2 kB\n') });
         expect(got?.free).toBe(7);
@@ -606,7 +602,7 @@ describe('ProcessTracker', () => {
         ).toBe(7);
       });
 
-      it('a native source (Electron/Deno) wins over every other; it falls through when it has no answer', () => {
+      it('a native source (Electron) wins over every other; it falls through when it has no answer', () => {
         const base = { freeMemory: () => 7, readsProcMeminfo: true, meminfo };
         expect(free({ ...base, nativeAvailableMemory: () => 5 })?.free).toBe(5);
         expect(free({ ...base, nativeAvailableMemory: () => undefined })?.free).toBe(2048);
@@ -713,92 +709,6 @@ describe('ProcessTracker', () => {
           expect(reads).toBe(2);
         });
 
-        describe('on Deno (never prompts)', () => {
-          const withDeno = (
-            state: string,
-            run: (spawned: () => number, asked: () => number) => void,
-          ) => {
-            const g = globalThis as { Deno?: unknown };
-            const had = 'Deno' in g;
-            const prev = g.Deno;
-            let spawned = 0;
-            let asked = 0;
-            g.Deno = {
-              Command: class {
-                constructor() {
-                  spawned += 1;
-                }
-                output() {
-                  return new Promise(() => {});
-                }
-              },
-              permissions: {
-                querySync: () => {
-                  asked += 1;
-                  return { state };
-                },
-              },
-              systemMemoryInfo: () => ({ available: 999 }),
-            };
-            try {
-              run(
-                () => spawned,
-                () => asked,
-              );
-            } finally {
-              if (had) g.Deno = prev;
-              else delete g.Deno;
-            }
-          };
-          const tickFree = (over: Partial<ProcessEnv> = {}) => {
-            const { tracker, fs } = mk({ systemMemory: undefined, platform: 'darwin', ...over });
-            const events: ProcessEvents['systemMemory'][] = [];
-            tracker.on('systemMemory', (e) => void events.push(e));
-            fs.tick();
-            tracker.reset();
-            return events.at(-1);
-          };
-
-          it('run permission GRANTED: spawns through Deno.Command and does not mix in the larger estimate', () => {
-            withDeno('granted', (spawned) => {
-              const got = tickFree();
-              expect(spawned()).toBe(1);
-              expect(got).not.toHaveProperty('free'); // async: no value on the first tick, never the 999 estimate
-            });
-          });
-
-          it.each([
-            'prompt',
-            'denied',
-          ])('run permission %s: no spawn (so no prompt), Deno systemMemoryInfo answers', (state) => {
-            withDeno(state, (spawned, asked) => {
-              expect(tickFree()?.free).toBe(999);
-              expect(spawned()).toBe(0);
-              expect(asked()).toBeGreaterThan(0);
-            });
-          });
-
-          it('an injected spawn function is honoured on Deno regardless of the permission (test seam)', () => {
-            withDeno('prompt', (spawned) => {
-              let injected = 0;
-              const vmStatExecFile = (() => {
-                injected += 1;
-                return { kill: () => {} };
-              }) as never;
-              tickFree({ vmStatExecFile });
-              expect(injected).toBe(1);
-              expect(spawned()).toBe(0);
-            });
-          });
-
-          it('readsVmStat:false on Deno: estimate only, permission never even queried for a spawn', () => {
-            withDeno('granted', (spawned) => {
-              expect(tickFree({ readsVmStat: false })?.free).toBe(999);
-              expect(spawned()).toBe(0);
-            });
-          });
-        });
-
         it.each([
           1000, 10_000, 30_000, 120_000,
         ])('the value read on one tick is still served on the next at tracker intervalMs=%i (cache life follows the tick)', (intervalMs) => {
@@ -885,22 +795,14 @@ describe('ProcessTracker', () => {
         );
       });
 
-      it('default native sources: Electron process.getSystemMemoryInfo() on this process object, Deno systemMemoryInfo on macOS', () => {
+      it('default native sources: Electron process.getSystemMemoryInfo() on this process object', () => {
         const proc = nodeProcessForTest as { getSystemMemoryInfo?: unknown };
-        const g = globalThis as { Deno?: unknown };
-        const hadDeno = 'Deno' in g;
-        const prevDeno = g.Deno;
         try {
           proc.getSystemMemoryInfo = () => ({ available: 3 }); // KiB, linux
           expect(free({ platform: 'linux', freeMemory: () => 7 })?.free).toBe(3072);
           delete proc.getSystemMemoryInfo;
-          g.Deno = { systemMemoryInfo: () => ({ available: 4096 }) };
-          expect(free({ platform: 'darwin' })?.free).toBe(4096);
-          expect(free({ platform: 'linux', freeMemory: () => 7 })?.free).toBe(7); // Deno source is macOS-only
         } finally {
           delete proc.getSystemMemoryInfo;
-          if (hadDeno) g.Deno = prevDeno;
-          else delete g.Deno;
         }
       });
 
@@ -966,7 +868,7 @@ describe('ProcessTracker', () => {
       });
     });
 
-    it('guarded ELU: a fresh baseline per arming, and Bun/Deno-style flat zeros are omitted, never reported as 0%', () => {
+    it('guarded ELU: a fresh baseline per arming, and Bun-style flat zeros are omitted, never reported as 0%', () => {
       let calls = 0;
       const fs = fakeScheduler();
       const tracker = new ProcessTracker({

@@ -1,7 +1,6 @@
 ---
 '@bugsee/node': minor
 '@bugsee/bun': minor
-'@bugsee/deno': minor
 '@bugsee/electron': minor
 '@bugsee/trackers': minor
 ---

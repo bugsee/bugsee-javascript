@@ -68,7 +68,7 @@ describe('upload-contract.schema.json ↔ TypeScript wire contract', () => {
 
   it('declares the browser block, and does NOT require it — only browser tiers have one', () => {
     // The backend has had `environment.browser` declared for far longer than this SDK filled it
-    // (appserver _environment.js). The web tier fills it now; node/bun/deno/edge must keep omitting
+    // (appserver _environment.js). The web tier fills it now; node/bun/edge must keep omitting
     // it, so it is a declared-but-optional property rather than a required one.
     const env = schema.definitions.environmentEnvelope as {
       required: string[];

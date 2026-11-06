@@ -560,7 +560,7 @@ describe('createInspectorSession — refusing to fight another debugger', () => 
 describe('createInspectorSession', () => {
   it('returns a usable session on a runtime that has node:inspector', () => {
     // Loaded lazily rather than by static import, because @bugsee/node's composition is reused verbatim
-    // by the Bun and Deno tiers and a missing module must not break package load for a feature that is
+    // by the Bun tier and a missing module must not break package load for a feature that is
     // off by default.
     const session = createInspectorSession();
     expect(session).toBeDefined();

@@ -79,7 +79,7 @@ const applyReturnHeaders = (span: ServerRequestSpan, res: ServerResponseLike): v
 
 /** An installable server instrumentation — `install()`/`uninstall()` are idempotent and driven by
  * launch/stop. The shared shape for the node:http patch AND the per-runtime native serve wraps
- * (Bun.serve/Deno.serve) that platforms inject via the launch seam. */
+ * (Bun.serve) that platforms inject via the launch seam. */
 export interface ServerInstallable {
   install(): void;
   uninstall(): void;

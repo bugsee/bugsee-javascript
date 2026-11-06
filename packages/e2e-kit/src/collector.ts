@@ -2,7 +2,7 @@
 // It implements just enough of the control plane (session → issue → signed PUT) for the SDK's upload
 // pipeline to deliver a bundle, plus an /echo endpoint the app fetches so the network interceptor has a
 // real outgoing request to capture. Runs IN the test (runner) process; the app runs in a separate
-// node/bun/deno process and reaches it over loopback HTTP — so the captured uploads ARE the assertion
+// node/bun process and reaches it over loopback HTTP — so the captured uploads ARE the assertion
 // channel (no IPC needed).
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';

@@ -1,6 +1,6 @@
 # @bugsee/elysia
 
-Elysia adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Elysia apps on Bun, Node.js and Deno.
+Elysia adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Elysia apps on Bun and Node.js.
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 

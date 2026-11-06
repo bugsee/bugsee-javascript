@@ -14,7 +14,7 @@ import {
 // one per chunk (names zero-padded so a lexical listing sorts numerically), each holding a `meta` file
 // plus one append-only data file per source/FileType. Owner-only (0o600/0o700) via fs-storage; deleting
 // a chunk or generation is a single recursive `remove` of its directory. @bugsee/node passes this to
-// createFileCaptureStore; bun and electron-main reuse it (deno ships a Deno.* equivalent).
+// createFileCaptureStore; bun and electron-main reuse it.
 
 const GEN_PAD = 13;
 const CHUNK_PAD = 12;

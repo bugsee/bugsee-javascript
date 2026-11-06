@@ -436,7 +436,7 @@ describe('gc system event (C15)', () => {
     expect(tick).toBeUndefined();
   });
 
-  it('measuresGc:false on the tracker (Bun/Deno): the observer is never constructed and no gc event is ever emitted', () => {
+  it('measuresGc:false on the tracker (Bun): the observer is never constructed and no gc event is ever emitted', () => {
     let constructed = 0;
     class Counting {
       constructor() {

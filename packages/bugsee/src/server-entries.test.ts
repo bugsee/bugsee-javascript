@@ -2,18 +2,17 @@ import type { Clock, HttpRequestOptions, HttpResponse, HttpTransport } from '@bu
 import type { Bugsee, NodeRuntime } from '@bugsee/node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { launch as launchBun, relaunch as relaunchBun } from './bun';
-import { launch as launchDeno, relaunch as relaunchDeno } from './deno';
 import { launch as launchNode, relaunch as relaunchNode } from './node';
 import { BugseeStatus, getStatus } from './status';
 
 // WAVE 3b.1 / 4.1 — the umbrella's three SERVER entries.
 //
-// The umbrella had only `browser` / `node` / `default` conditions, so Bun and Deno — which set `node` too —
+// The umbrella had only `browser` / `node` / `default` conditions, so Bun — which sets `node` too —
 // resolved to `@bugsee/node`. A customer on the documented single-install path silently lost every
 // runtime-specific default: `@bugsee/bun` supplies the `Bun.serve` interceptor (idiomatic
 // `Bun.serve({fetch})` apps bypass node:http entirely, so they were NOT instrumented at all), a guarded
 // perf_hooks metrics sampler, and the runtime identity. Measured through the real e2e harness before the
-// fix: Bun 1.3.14 reported as `node` 24.3.0, Deno 2.8.3 as `node` 24.15.0.
+// fix: Bun 1.3.14 reported as `node` 24.3.0.
 //
 // These run under Node — which is exactly the point of a condition-selected entry: only the runtime that
 // resolves it ever executes it, so nothing else in the suite would ever load these two files. They assert
@@ -100,17 +99,13 @@ describe('the umbrella server entries bind their OWN runtime', () => {
     expect((await runtimeFromWire(launchBun)).type).toBe('bun');
   });
 
-  it('the deno entry runs @bugsee/deno’s composition root', async () => {
-    expect((await runtimeFromWire(launchDeno)).type).toBe('deno');
-  });
-
   it('the node entry still runs @bugsee/node’s — the canary', async () => {
     // Without this, "each entry binds its own" would also be satisfied by all three binding to bun.
     expect((await runtimeFromWire(launchNode)).type).toBe('node');
   });
 
   it('every entry returns a usable client', () => {
-    for (const launch of [launchBun, launchDeno, launchNode]) {
+    for (const launch of [launchBun, launchNode]) {
       const client = track(launch('tok', base(recordingTransport().fn)));
       expect(typeof client.logException).toBe('function');
       expect(typeof client.stop).toBe('function');
@@ -122,7 +117,6 @@ describe('the umbrella server entries relaunch through their OWN composition roo
   it.each([
     ['node', launchNode, relaunchNode],
     ['bun', launchBun, relaunchBun],
-    ['deno', launchDeno, relaunchDeno],
   ] as const)('%s: relaunch returns a fresh client of the same runtime and status follows', async (type, launch, relaunch) => {
     const { fn, sessions } = recordingTransport();
     const carrier = {};

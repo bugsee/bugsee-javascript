@@ -2,7 +2,6 @@ import { addReportAttachment, BugseeStatus, LifecycleEvents } from '@bugsee/core
 import { describe, expect, it } from 'vitest';
 import * as browserEntry from './index';
 import * as bunEntry from './index.bun';
-import * as denoEntry from './index.deno';
 import * as edgeEntry from './index.edge-light';
 import * as nodeEntry from './index.node';
 import * as workerEntry from './index.worker';
@@ -15,7 +14,6 @@ describe('LifecycleEvents is re-exported from every umbrella entry', () => {
     browser: browserEntry,
     node: nodeEntry,
     bun: bunEntry,
-    deno: denoEntry,
     'edge-light': edgeEntry,
     worker: workerEntry,
     workerd: workerdEntry,
@@ -31,7 +29,6 @@ const entries = {
   browser: browserEntry,
   node: nodeEntry,
   bun: bunEntry,
-  deno: denoEntry,
   'edge-light': edgeEntry,
   worker: workerEntry,
   workerd: workerdEntry,

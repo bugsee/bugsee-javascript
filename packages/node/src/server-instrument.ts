@@ -282,7 +282,7 @@ const safeGetClient = (getClient: () => BugseeClient | undefined): BugseeClient 
 
 // `http.url` is the inbound request target and rides into reports and the `http.server` span. It carries
 // whatever the client sent — including `?api_key=…` — so it is redacted here, at the one point every
-// server path (node/bun/deno http, and the express/fastify/koa/hapi/elysia adapters) funnels through.
+// server path (node/bun http, and the express/fastify/koa/hapi/elysia adapters) funnels through.
 const buildContext = (info: ServerRequestInfo, newContextId: () => string): RequestContext => ({
   contextId: newContextId(),
   attributes: { 'http.method': info.method, 'http.url': sanitizeUrl(info.url) },
@@ -413,7 +413,7 @@ export function runServerRequest<T>(
     }
     // The sink itself is host-supplied and may throw. Unguarded it re-opened the exact hole this function
     // exists to close: the throw escaped into the request AND `dispatch` below never ran. Reproduced
-    // through the public `wrapFetchHandler` (Bun/Deno): `handlerRan=0`.
+    // through the public `wrapFetchHandler` (Bun): `handlerRan=0`.
     try {
       options.onError?.(error);
     } catch {

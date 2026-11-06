@@ -1,6 +1,6 @@
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 
-// Guarded, LAZY event-loop sources for node-family runtimes with PARTIAL perf_hooks (Bun, Deno). Nothing is
+// Guarded, LAZY event-loop sources for node-family runtimes with PARTIAL perf_hooks (Bun). Nothing is
 // constructed or enabled until start(): a source that is never started costs nothing, and a runtime whose
 // monitorEventLoopDelay throws degrades to "lag omitted" rather than aborting SDK startup.
 
@@ -31,7 +31,7 @@ export interface Elu {
   idle?: number;
   active?: number;
 }
-/** The two perf_hooks primitives the event-loop metrics need (partial on Bun/Deno, so injected). */
+/** The two perf_hooks primitives the event-loop metrics need (partial on Bun, so injected). */
 export interface PerfHooks {
   monitorEventLoopDelay: () => DelayHistogram;
   eventLoopUtilization: (a?: Elu, b?: Elu) => Elu;
@@ -46,9 +46,9 @@ export const realPerfHooks: PerfHooks = {
 /**
  * Does this delta mean "the runtime does not implement ELU" rather than "the loop was idle"?
  *
- * `performance.eventLoopUtilization()` exists on Bun and Deno and does not throw — it simply answers
+ * `performance.eventLoopUtilization()` exists on Bun and does not throw — it simply answers
  * `{idle:0, active:0, utilization:0}` for ever. Measured 2026-09-01, after a 120ms CPU burn and a 60ms
- * sleep: node reported `{idle:61.0, active:0.118}` while Bun and Deno both reported zeros. A throw-guard
+ * sleep: node reported `{idle:61.0, active:0.118}` while Bun reported zeros. A throw-guard
  * cannot see that, so the SDK shipped a confident 0% utilization — which reads, to whoever opens the
  * report, exactly like a perfectly healthy idle process.
  *
@@ -120,7 +120,7 @@ export function createGuardedEventLoopSource(monitor: () => DelayHistogram): Eve
 
 // A utilization reader returning PERCENT 0-100 of the window the loop was not idle, one decimal (perf_hooks reports a
 // 0..1 fraction; the wire unit is percent, like `cpu_usage_process`). `undefined` — NOT zero — whenever the runtime cannot give a real
-// reading: it threw, or it answered the Bun/Deno way (idle and active both zero for ever).
+// reading: it threw, or it answered the Bun way (idle and active both zero for ever).
 export function createGuardedElu(elu: PerfHooks['eventLoopUtilization']): () => number | undefined {
   const toPercent = (fraction: number): number => Math.round(fraction * 1000) / 10;
   let prev: Elu;

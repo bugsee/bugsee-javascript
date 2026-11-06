@@ -1,5 +1,5 @@
 // The instrumentation battery the app runs under each real runtime. One scenario module, three runtime
-// entries (entry-node/bun/deno) inject their own runtime's launch(). Everything here is plain portable
+// entries (entry-node/bun) inject their own runtime's launch(). Everything here is plain portable
 // JS the SDK's public surface drives — no fakes, no injected seams: a real process, real timers, a real
 // outgoing fetch, real console output, the real V8 CPU profiler, and the real worker-thread hang
 // watchdog. The only "mock" is the upload destination (the collector), exactly as a customer's backend
@@ -189,7 +189,7 @@ async function runCrashScenario(launch: LaunchFn, collectorUrl: string): Promise
 
 /**
  * Incoming-server battery: launch with the default-on `instrumentIncomingRequests`, stand up a REAL
- * `node:http` server (works on node/bun/deno via their node:http compat — the slice-4 spikes proved the
+ * `node:http` server (works on node/bun via their node:http compat — the slice-4 spikes proved the
  * emit patch fires on all three), hit it once with a real request, and report FROM the handler. The proof:
  * the node:http emit patch opens a per-request context for the in-flight request, so (a) the handler's log
  * line and (b) the handler-raised error report both carry the SAME request `context_id`. (The `http.server`
@@ -321,7 +321,7 @@ async function runDiskRecoveryScenario(launch: LaunchFn, collectorUrl: string): 
  * producing); the error report then drains the capture window, which reads the OFF-THREAD-written chunks
  * back off disk — so the delivered bundle's logs.json + network.json are the end-to-end proof that the
  * off-thread path produces correct bundles on the runtime. (If a runtime lacked worker_threads the writer
- * would degrade to the on-thread drainer and still be correct — but node/bun/deno all have it.) Exits 0.
+ * would degrade to the on-thread drainer and still be correct — but node/bun both have it.) Exits 0.
  */
 async function runWorkerWriterScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   const dataDir = process.env.BUGSEE_E2E_DATADIR ?? '';
@@ -526,11 +526,11 @@ async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promis
 }
 
 /**
- * The NATIVE server path — `Bun.serve` / `Deno.serve`.
+ * The NATIVE server path — `Bun.serve`.
  *
  * Every other server scenario goes through `node:http.createServer`, which is exactly the path idiomatic
- * Bun and Deno apps do NOT take: `Bun.serve({fetch})` and `Deno.serve()` bypass node:http entirely, which
- * is why `@bugsee/bun` and `@bugsee/deno` ship interceptors for them. Nothing in the suite exercised those
+ * Bun apps do NOT take: `Bun.serve({fetch})` bypasses node:http entirely, which
+ * is why `@bugsee/bun` ships an interceptor for it. Nothing in the suite exercised those
  * interceptors, so an umbrella that resolved to `@bugsee/node` — losing them completely — was invisible.
  *
  * On node there is no native serve to instrument, so the scenario reports that and exits cleanly rather
@@ -539,9 +539,6 @@ async function runRejectScenario(launch: LaunchFn, collectorUrl: string): Promis
 async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): Promise<void> {
   const g = globalThis as {
     Bun?: { serve(o: unknown): { port: number; stop(): void } };
-    Deno?: {
-      serve(o: unknown, h?: unknown): { addr: { port: number }; shutdown(): Promise<void> };
-    };
   };
   const client = await launch('e2e-app-token', {
     endpoint: collectorUrl,
@@ -565,10 +562,6 @@ async function runNativeServerScenario(launch: LaunchFn, collectorUrl: string): 
     const server = g.Bun.serve({ port: 0, fetch: handler });
     port = server.port;
     stop = () => server.stop();
-  } else if (g.Deno !== undefined) {
-    const server = g.Deno.serve({ port: 0, onListen: () => {} }, handler);
-    port = server.addr.port;
-    stop = () => server.shutdown();
   } else {
     console.log('[e2e] no native serve on this runtime — nothing to instrument');
     await client.flush(20_000);

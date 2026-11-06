@@ -283,7 +283,7 @@ describe('createGuardedElu', () => {
     expect(createGuardedElu(fakeElu(0.0004))()).toBe(0);
   });
 
-  it('is undefined on the Bun/Deno shape (idle and active both 0)', () => {
+  it('is undefined on the Bun shape (idle and active both 0)', () => {
     expect(createGuardedElu(() => ({ idle: 0, active: 0, utilization: 0 }))()).toBeUndefined();
   });
 

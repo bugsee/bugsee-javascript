@@ -2,7 +2,7 @@
 //
 // The umbrella had three conditions (browser / node / default). Every runtime that set none of them fell
 // through to `default`, i.e. the BROWSER entry — IndexedDB, DOM, a page lifecycle — none of which exists on
-// workerd, Vercel Edge, or in a Web Worker. Bun and Deno were worse than that: they set `node`, so they
+// workerd, Vercel Edge, or in a Web Worker. Bun was worse than that: it sets `node`, so it
 // resolved the Node SDK and silently lost their own composition (measured through the real runtimes: Bun 1.3.14 reporting as `node` 24.3.0, and `Bun.serve` left uninstrumented entirely).
 //
 // The lesson from that is why this file exists: an `exports` entry is only as good as the resolution that
@@ -12,7 +12,7 @@
 //
 // ORDER is the substance of the contract: every one of these runtimes sets SEVERAL conditions, and
 // resolution takes the FIRST match in the map. `workerd` sets `worker` and `browser` too; `edge-light` the
-// same; Bun sets `node`; Deno sets `node`. Get the order wrong and the map still "has" the condition while
+// same; Bun sets `node`. Get the order wrong and the map still "has" the condition while
 // resolving to something else entirely — which is precisely the failure this suite exists to catch.
 import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
@@ -97,7 +97,6 @@ describe('the umbrella resolves the right entry per runtime', () => {
     },
     { runtime: 'a Web Worker build', conditions: ['worker', 'browser'], entry: 'index.worker.ts' },
     { runtime: 'Bun', conditions: ['bun', 'node'], entry: 'index.bun.ts' },
-    { runtime: 'Deno', conditions: ['deno', 'node'], entry: 'index.deno.ts' },
     // The two canaries: without them, "the specific runtimes win" is satisfied by a map that never
     // resolves the general ones at all.
     { runtime: 'plain node', conditions: ['node'], entry: 'index.node.ts' },
@@ -112,7 +111,7 @@ describe('the umbrella resolves the right entry per runtime', () => {
 
   it('every declared condition resolves to a DISTINCT entry', () => {
     // A duplicate would mean a condition silently aliases another runtime's composition — the exact shape
-    // of the original defect, where bun and deno both resolved the node entry.
+    // of the original defect, where bun resolved the node entry.
     const entries = CASES.map((c) => c.entry);
     expect(new Set(entries).size).toBe(entries.length);
   });

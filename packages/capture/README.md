@@ -13,7 +13,7 @@ This is an internal building block of the Bugsee SDK, not intended to be install
 - The default network sanitizer and the outgoing-request decorator registry (used for trace propagation).
 - Runtime-agnostic: platform packages add the runtime-specific sources (XHR, `node:http`, global error handlers).
 
-It is used by `@bugsee/browser`, `@bugsee/node`, `@bugsee/bun`, `@bugsee/deno`, `@bugsee/webworker`, `@bugsee/vercel-edge`, `@bugsee/webview`, the backend adapters and the umbrella. Its API is internal and may change between releases.
+It is used by `@bugsee/browser`, `@bugsee/node`, `@bugsee/bun`, `@bugsee/webworker`, `@bugsee/vercel-edge`, `@bugsee/webview`, the backend adapters and the umbrella. Its API is internal and may change between releases.
 
 ## Links
 

@@ -2,8 +2,6 @@
 // through a different real runtime binary, importing that runtime's own SDK package:
 //   node → tsx (TS loader) + entry-node (@bugsee/node)
 //   bun  → bun (native TS)  + entry-bun  (@bugsee/bun)
-//   deno → deno (native TS) + entry-deno (@bugsee/deno); needs --node-modules-dir=manual to use pnpm's
-//          node_modules and --sloppy-imports for our extensionless relative imports.
 // A runtime whose binary is absent is reported unavailable so the runner can skip (and log) it rather
 // than fail — node (via the always-present tsx devDep) is the one guaranteed target.
 import { execFileSync, spawn } from 'node:child_process';
@@ -12,7 +10,7 @@ import { join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-export type RuntimeName = 'node' | 'bun' | 'deno';
+export type RuntimeName = 'node' | 'bun';
 
 export interface RuntimeTarget {
   name: RuntimeName;
@@ -66,7 +64,7 @@ export function resolveTsx(): string | undefined {
   ]);
 }
 
-/** All three targets, with availability resolved. */
+/** Both targets, with availability resolved. */
 export function runtimeTargets(): RuntimeTarget[] {
   return [
     {
@@ -83,20 +81,13 @@ export function runtimeTargets(): RuntimeTarget[] {
       entry: entryPath('entry-bun.ts'),
       umbrellaEntry: entryPath('entry-umbrella.ts'),
     },
-    {
-      name: 'deno',
-      bin: resolveBin(['deno', join(homedir(), '.deno', 'bin', 'deno')]),
-      baseArgs: ['run', '-A', '--node-modules-dir=manual', '--sloppy-imports'],
-      entry: entryPath('entry-deno.ts'),
-      umbrellaEntry: entryPath('entry-umbrella.ts'),
-    },
   ];
 }
 
 /**
  * The runtime's OWN version, read from its binary.
  *
- * Needed because Bun and Deno both expose a `process.versions.node` for compatibility, so "not the node
+ * Needed because Bun exposes a `process.versions.node` for compatibility, so "not the node
  * version" is not a usable assertion — comparing against the HARNESS's node version passes by accident
  * whenever the compat version merely differs from it. This gives the exact value to expect.
  */
@@ -106,7 +97,7 @@ export function runtimeOwnVersion(target: RuntimeTarget): string {
   }
   const bin = target.bin as string;
   const out = execFileSync(bin, ['--version'], { encoding: 'utf8' });
-  // bun prints `1.3.14`; deno prints `deno 2.8.3 (stable, …)` across several lines.
+  // bun prints `1.3.14`.
   const first = out.split('\n')[0] ?? '';
   return (/(\d+\.\d+\.\d+[^\s(]*)/.exec(first)?.[1] ?? first).trim();
 }

@@ -576,7 +576,7 @@ export interface CreateClientOptions {
   /**
    * Runtime stack parser used to build the structured `crash.json` from a thrown Error's stack. The
    * browser tier injects its multi-engine (V8 + SpiderMonkey + JavaScriptCore) parser; V8 runtimes
-   * (node/bun/deno + Chromium) get the default {@link parseV8Stack}. Absent → crash.json still builds via
+   * (node/bun + Chromium) get the default {@link parseV8Stack}. Absent → crash.json still builds via
    * the V8 default.
    */
   stackParser?: (stack: string) => StackFrame[];

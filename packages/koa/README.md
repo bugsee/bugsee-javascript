@@ -1,6 +1,6 @@
 # @bugsee/koa
 
-Koa adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Koa apps on Node.js, Bun and Deno.
+Koa adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Koa apps on Node.js and Bun.
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 

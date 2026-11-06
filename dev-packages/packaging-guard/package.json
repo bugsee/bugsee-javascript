@@ -20,7 +20,6 @@
     "@bugsee/capture": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/deno": "workspace:*",
     "@bugsee/electron": "workspace:*",
     "@bugsee/elysia": "workspace:*",
     "@bugsee/express": "workspace:*",

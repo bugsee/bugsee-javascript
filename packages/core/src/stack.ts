@@ -1,5 +1,5 @@
 // V8 stack-trace parsing (frame-path scrubbing). Pure string work, so it lives
-// in core and is shared by every V8 runtime (node/bun/deno + chromium browsers); the browser tier
+// in core and is shared by every V8 runtime (node/bun + chromium browsers); the browser tier
 // adds SpiderMonkey/JavaScriptCore parsers and a runtime-dispatching parseStack on top. The other
 // report-path steps (ignoreErrors / denyUrls / shape-redaction on the message / errorMessageFilter) are
 // config-driven and belong to the report path, not this pure parser.

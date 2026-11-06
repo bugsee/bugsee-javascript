@@ -66,7 +66,7 @@ function asBase(value: unknown): string | undefined {
  *  2. `location.href` — a DEDICATED or SERVICE worker, which has no `document`. There, `location.href`
  *     is the worker SCRIPT's URL, and that is genuinely what the worker's own relative `fetch()` calls
  *     resolve against.
- *  3. `undefined` — node/bun/deno and any other location-less host. No origin is invented; the caller
+ *  3. `undefined` — node/bun and any other location-less host. No origin is invented; the caller
  *     keeps the raw string. This is what keeps SERVER capture honest: an incoming request target is
  *     captured as `/api/x` and stays `/api/x`, because there is no client origin to attach to it.
  *

@@ -51,22 +51,9 @@ import type {
   UmbrellaExtensionOptions as BunUmbrella,
 } from './index.bun';
 import type {
-  BugseeServerLaunchOptions as DenoServerOptions,
-  UmbrellaExtensionOptions as DenoUmbrella,
-} from './index.deno';
-import type {
   BugseeServerLaunchOptions as NodeServerOptions,
   UmbrellaExtensionOptions as NodeUmbrella,
 } from './index.node';
 
-export const nameableServerOptions: [NodeServerOptions, BunServerOptions, DenoServerOptions] = [
-  {},
-  {},
-  {},
-];
-export const nameableUmbrellaOptions: [BrowserUmbrella, NodeUmbrella, BunUmbrella, DenoUmbrella] = [
-  {},
-  {},
-  {},
-  {},
-];
+export const nameableServerOptions: [NodeServerOptions, BunServerOptions] = [{}, {}];
+export const nameableUmbrellaOptions: [BrowserUmbrella, NodeUmbrella, BunUmbrella] = [{}, {}, {}];

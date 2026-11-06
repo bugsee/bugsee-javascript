@@ -12,7 +12,7 @@
 #   scripts/test-matrix.sh --full 20 22 24 # ALSO run the full unit suite (pnpm test) on each Node >= 20
 #
 # Complementary gates (run separately): `pnpm test` (full unit suite, host Node) and `pnpm test:e2e`
-# (cross-RUNTIME node/bun/deno). This script is the cross-VERSION axis.
+# (cross-RUNTIME node/bun). This script is the cross-VERSION axis.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -68,5 +68,5 @@ done
 echo
 echo "===================== Node-version matrix ====================="
 printf '%s' "$SUMMARY"
-echo "(cross-runtime bun/deno: 'pnpm test:e2e'  |  full unit suite on host Node: 'pnpm test')"
+echo "(cross-runtime node/bun: 'pnpm test:e2e'  |  full unit suite on host Node: 'pnpm test')"
 exit "$overall"

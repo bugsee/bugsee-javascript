@@ -1,5 +1,5 @@
-// `@bugsee/trackers/node` entry. Platform tracker implementations that need node:* APIs (shared by Node, Bun and
-// Deno, which expose a node-compatible surface) live under src/node/ and are exported from here. The portable root
+// `@bugsee/trackers/node` entry. Platform tracker implementations that need node:* APIs (shared by Node and
+// Bun, which expose a node-compatible surface) live under src/node/ and are exported from here. The portable root
 // entry and the browser entry must never import from this directory.
 export {
   createGcSource,
@@ -29,7 +29,6 @@ export {
   resetProcessTracker,
 } from './process-tracker';
 export {
-  createDenoMemoryReader,
   createElectronMemoryReader,
   createMemoryLimitReader,
   createProcMeminfoReader,

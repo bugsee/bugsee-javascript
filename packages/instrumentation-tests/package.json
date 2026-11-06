@@ -2,7 +2,7 @@
   "name": "@bugsee/instrumentation-tests",
   "version": "0.1.0",
   "private": true,
-  "description": "Cross-runtime end-to-end instrumentation harness: boots the real SDK under node/bun/deno against a mock collector and asserts the uploaded bundle.",
+  "description": "Cross-runtime end-to-end instrumentation harness: boots the real SDK under node/bun against a mock collector and asserts the uploaded bundle.",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -19,7 +19,6 @@
     "@bugsee/bundler-plugin-core": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/deno": "workspace:*",
     "@bugsee/e2e-kit": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",

@@ -45,7 +45,6 @@ const INTERFACES: Array<[string, string, string]> = [
   ['cloudflare', 'src/launch-config.ts', 'BugseeWorkerConfig'],
   ['cloudflare', 'src/launch.ts', 'launch'],
   ['bun', 'src/launch.ts', 'launch'],
-  ['deno', 'src/launch.ts', 'launch'],
 ];
 
 function optionKeys(pkg: string, file: string, name: string): string[] {
@@ -122,7 +121,7 @@ function optionKeys(pkg: string, file: string, name: string): string[] {
  *    so a relaunch builds a fresh one;
  *  - `captureNonce`, `controlNonce`, `otelExportHeaders` and `otelExportUrl` are secrets or per-launch
  *    credentials: never kept (`setCarrierLastLaunch` stores only the kept list);
- *  - `systemTraceProducers` (node/bun/deno) holds STATEFUL producer instances: a producer's `start()` is a
+ *  - `systemTraceProducers` (node/bun) holds STATEFUL producer instances: a producer's `start()` is a
  *    no-op while it is already started, so an instance still running on another client would silently no-op
  *    on the new one, and its trackers stay bound to the scheduler/onError of the launch that built them. A
  *    relaunch therefore builds the runtime's fresh default set;
@@ -268,13 +267,13 @@ describe('relaunch() option classification', {
     }
   });
 
-  it('reaches the framework adapters and the Bun / Deno / Cloudflare launches', () => {
+  it('reaches the framework adapters and the Bun / Cloudflare launches', () => {
     expect(all.get('onSpanProcessor')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('setupOtelProvider')).toContain('nextjs:NextjsServerOptions');
     expect(all.get('injectTraceMeta')).toContain('nuxt:InstallBugseeNitroOptions');
     expect(all.get('flushTimeoutMs')).toContain('nuxt:InstallBugseeNitroEdgeOptions');
     expect(all.get('appToken')).toContain('cloudflare:BugseeWorkerConfig');
-    expect(all.get('transport')).toEqual(expect.arrayContaining(['bun:launch', 'deno:launch']));
+    expect(all.get('transport')).toEqual(expect.arrayContaining(['bun:launch']));
     expect(all.get('transport')).toContain('cloudflare:launch');
     expect(all.get('endpoint')).toEqual(
       expect.arrayContaining(['astro:AstroServerOptions', 'remix:RemixServerOptions']),

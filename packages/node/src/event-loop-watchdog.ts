@@ -91,7 +91,7 @@ export interface EventLoopWatchdog {
 // the loop resumes. The escalation/dedup logic is on the main thread (see the message handler below).
 //
 // worker_threads is loaded in a way that works whether the eval'd worker runs in a CJS context (Node:
-// `require` is a function) or an ESM context (Deno's node-compat data:-URL worker: only dynamic `import`).
+// `require` is a function) or an ESM context (a data:-URL worker where only dynamic `import` works).
 // A failed load is swallowed (`.catch`) so an unsupported runtime degrades to a silent no-op rather than
 // throwing an UNHANDLED worker error into the host app.
 const WORKER_SCRIPT = `

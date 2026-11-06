@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as browserEntry from './index';
 import * as bunEntry from './index.bun';
-import * as denoEntry from './index.deno';
 import * as edgeEntry from './index.edge-light';
 import * as nodeEntry from './index.node';
 import * as workerEntry from './index.worker';
 import * as workerdEntry from './index.workerd';
 
-// EXPORT PARITY across the seven umbrella entries (review O5). Which entry a user gets depends on a bundler
+// EXPORT PARITY across the six umbrella entries (review O5). Which entry a user gets depends on a bundler
 // condition they never see, so a name that exists on one entry and not another is a runtime-only surprise
 // ("works on node, `undefined is not a function` on the edge"). Every name below is part of the public API
 // every runtime must expose. Type-only exports cannot be seen here; they are pinned in
@@ -16,7 +15,6 @@ const entries = {
   browser: browserEntry,
   node: nodeEntry,
   bun: bunEntry,
-  deno: denoEntry,
   'edge-light': edgeEntry,
   worker: workerEntry,
   workerd: workerdEntry,
@@ -51,7 +49,7 @@ describe('public API export parity across the umbrella entries', () => {
   });
 
   it('the server-side entries expose the same lifecycle surface as the browser entry', () => {
-    for (const entry of [nodeEntry, bunEntry, denoEntry]) {
+    for (const entry of [nodeEntry, bunEntry]) {
       expect(entry.getStatus).toBe(browserEntry.getStatus);
       expect(entry.BugseeStatus).toBe(browserEntry.BugseeStatus);
     }

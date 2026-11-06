@@ -11,7 +11,6 @@
 | **Node.js** | **22.18+, 24.11+ or ≥26** (not 23, not 24.0-24.10) | Development tooling runtime (tsup 9 engine range: pnpm, Vitest, Rollup, tsup, lint, type-check, builds). The *SDK runtime* floor is unchanged: Node ≥18 (see Tier-1 below) |
 | **pnpm** | **≥9** | Package manager (strict node_modules, monorepo workspaces) |
 | Bun | ≥1.1.13 | Building/smoke-testing `@bugsee/bun`; optional otherwise |
-| Deno | ≥1.36 | Smoke-testing `@bugsee/deno` (`--allow-net`, `--allow-write`) |
 | Wrangler (Cloudflare) | current | Smoke-testing `@bugsee/cloudflare` (`wrangler dev`) |
 | Vercel CLI | current | Smoke-testing `@bugsee/vercel-edge` |
 | Playwright browsers | current | Browser e2e (`npx playwright install`) |
@@ -20,7 +19,7 @@ Node + pnpm are the only hard requirements for general development; the others a
 
 ## Target runtimes
 
-Tooling runs on Node; the SDK is **built for and smoke-tested on** each target runtime separately (coverage is measured per runtime — see Testing). Tier-1: browsers, Node ≥18, Bun ≥1.1.13, Deno ≥1.36. Tier-2: Cloudflare Workers, Vercel Edge, Web/Service Workers. Electron ships in v1 (`@bugsee/electron`, main + renderer + native). Module format: **ESM-only** for tier-0; **ESM+CJS** for core/platform/framework/umbrella (design §12.5).
+Tooling runs on Node; the SDK is **built for and smoke-tested on** each target runtime separately (coverage is measured per runtime — see Testing). Tier-1: browsers, Node ≥18, Bun ≥1.1.13. Tier-2: Cloudflare Workers, Vercel Edge, Web/Service Workers. Electron ships in v1 (`@bugsee/electron`, main + renderer + native). Module format: **ESM-only** for tier-0; **ESM+CJS** for core/platform/framework/umbrella (design §12.5).
 
 ## Package manager & monorepo
 
@@ -60,7 +59,7 @@ Methodology (test-first TDD + per-entity **mutator loop** + integration tests at
 | **Vitest + v8 coverage** | Coverage gate **100% line / ≥90% branch, per runtime** (CI-blocking); exclusions only via annotated `/* v8 ignore */` + justification |
 | **Stryker Mutator** (Vitest runner) | Mutation testing — **opt-in** (on-demand/nightly), not a blocking gate |
 | **Playwright** | Browser e2e |
-| Per-runtime smoke harnesses | `bun test` / `deno test` / `wrangler dev` / Vercel CLI, under `dev-packages/` |
+| Per-runtime smoke harnesses | `bun test` / `wrangler dev` / Vercel CLI, under `dev-packages/` |
 | **Verdaccio** + ~10 fixture apps | Framework e2e |
 | Bundler tests (`dev-packages/bundler-tests/`) | Tree-shake regression across webpack/rollup/vite/esbuild/turbopack/parcel |
 | **size-limit** + **bundlemon** | Bundle-size budgets (CI-blocking); PR comments |
@@ -90,7 +89,7 @@ Package manager: **pnpm 11.3.0** (declared in root `package.json` `packageManage
 
 ```bash
 pnpm ci:local                 # the `check` job: lint → typecheck → cycles → coverage → unit  (~35 s)
-pnpm ci:local --e2e           # also the `e2e` job: node · bun · deno · real frameworks       (~4 min)
+pnpm ci:local --e2e           # also the `e2e` job: node · bun · real frameworks       (~4 min)
 pnpm ci:local --force         # ignore the turbo cache so every package really re-runs
 ```
 
@@ -189,7 +188,7 @@ pnpm mutation                             # turbo run mutation (per-package Stry
 
 ### Per-runtime smoke + Node-version matrix
 
-- **Cross-runtime e2e:** `pnpm test:e2e` (`@bugsee/instrumentation-tests`) boots the REAL SDK in separate node (via tsx) / bun / deno processes against a mock collector and asserts the uploaded bundles (logs/network/profile/ANR/crash/server-context/disk-recovery/off-thread-worker). A runtime whose binary is absent is skipped.
+- **Cross-runtime e2e:** `pnpm test:e2e` (`@bugsee/instrumentation-tests`) boots the REAL SDK in separate node (via tsx) / bun processes against a mock collector and asserts the uploaded bundles (logs/network/profile/ANR/crash/server-context/disk-recovery/off-thread-worker). A runtime whose binary is absent is skipped.
 - **Cross-Node-version matrix:** `pnpm test:matrix` (`scripts/test-matrix.sh`, nvm-based, CI-agnostic) runs a vitest-free scenario smoke (`smoke.ts`) via `tsx` under each installed Node version — covering **Node 18**, where vitest 4 cannot load (`rolldown`'s `node:util.styleText`). `pnpm test:matrix 18 20` picks a subset; `--full` also runs `pnpm test` on each Node ≥ 20. (Complementary axes: `pnpm test` is the host-Node unit suite; `pnpm test:e2e` is the cross-runtime axis.)
 - The Node SDK's in-process e2e coverage is also in `packages/node/src/launch.integration.test.ts` (real loopback `http.createServer`, full session → issue → signed PUT → durable-queue recovery).
 

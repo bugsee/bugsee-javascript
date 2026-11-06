@@ -13,7 +13,6 @@ export {
   isBrowser,
   isBun,
   isCloudflareWorker,
-  isDeno,
   isElectronMain,
   isElectronRenderer,
   isNode,

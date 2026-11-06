@@ -13,11 +13,11 @@
 // any package's own checked-in `dist/`.
 //
 // COVERAGE: the original guard checked exactly one specifier (`node:async_hooks`) in exactly one
-// package (`@bugsee/cloudflare`) — narrow enough that a regression confined to, say, `@bugsee/deno`'s
+// package (`@bugsee/cloudflare`) — narrow enough that a regression confined to, say, `@bugsee/bun`'s
 // `node:process` import would sail through green. This is table-driven across EVERY package verified
 // to import a `node:`-prefixed builtin — statically OR dynamically — from its own (non-test,
 // non-string-embedded) source AND built via tsup + `baseConfig` (i.e. published, not a dev-only/no-build
-// package): `@bugsee/cloudflare`, `@bugsee/node`, `@bugsee/node-utils`, `@bugsee/bun`, `@bugsee/deno`,
+// package): `@bugsee/cloudflare`, `@bugsee/node`, `@bugsee/node-utils`, `@bugsee/bun`,
 // `@bugsee/electron`, `@bugsee/bundler-plugin-core`, `@bugsee/nestjs`, `@bugsee/remix`.
 //
 // The population was derived by scanning every `packages/*/src` tree (excluding `.test.`/`.fuzz.`/
@@ -125,11 +125,6 @@ const targets: readonly NodeProtocolTarget[] = [
   {
     label: '@bugsee/bun',
     pkgDir: 'packages/bun',
-    specifiers: ['node:process'],
-  },
-  {
-    label: '@bugsee/deno',
-    pkgDir: 'packages/deno',
     specifiers: ['node:process'],
   },
   {

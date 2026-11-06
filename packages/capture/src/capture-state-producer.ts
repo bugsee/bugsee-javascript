@@ -16,7 +16,7 @@ import { TraceProducerBase } from './trace-producer';
 // states, because a held `low_disk_space` for a capture that never started would be re-recorded as if it were true.
 //
 // WHO BUILDS IT. Only a host that HAS visual capture: the browser with rrweb replay on, Electron main with pixel
-// video. Node/Bun/Deno never build one (an `active` there would assert a capture that is not running), and WebViews and
+// video. Node/Bun never build one (an `active` there would assert a capture that is not running), and WebViews and
 // Electron renderers must not (the native host / main writes it). `active`/`blackout` are written only after
 // `setVisualCapture(true)` (the host says the recorder really started), and so do the disk states.
 //

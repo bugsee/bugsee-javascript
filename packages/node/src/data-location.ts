@@ -1,7 +1,7 @@
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-// Where the Node SDK stores captured data (server write-path). On servers (node/bun/deno) durable
+// Where the Node SDK stores captured data (server write-path). On servers (node/bun) durable
 // disk capture is the DEFAULT — opt-out, not opt-in — so a crash/OOM that beats the bundle assembly still
 // delivers the last recording window on the next launch. `'memory'` opts out to the legacy in-RAM path.
 // When disk is on but no `dataDir` was given, the data lives under `os.tmpdir()/bugsee/<appTokenHash>`

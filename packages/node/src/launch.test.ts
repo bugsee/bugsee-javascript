@@ -1672,7 +1672,7 @@ describe('launch — system trace producers', () => {
 
   it.each([
     { label: 'lag measured', over: {} },
-    { label: 'lag opted out (Deno)', over: { measuresEventLoopDelay: false } },
+    { label: 'lag opted out', over: { measuresEventLoopDelay: false } },
   ])('the producers ($label) attach nothing when captureSystemTraces is false, and release everything on stop()', async ({
     over,
   }) => {
@@ -3695,7 +3695,7 @@ describe('launch — local variables (opt-in)', () => {
   it('lets a seam passed INSIDE the option beat the one launch supplies', () => {
     // Spread order decides this, and getting it backwards is silent: the caller's clock would be
     // overwritten by launch's and the option would look accepted while doing nothing. It is the same
-    // hazard that made `captureLocalVariables: false` have to go AFTER `...options` on deno and bun.
+    // hazard that made `captureLocalVariables: false` have to go AFTER `...options` on bun.
     const inspector = fakeInspector();
     const intervals: Array<() => void> = [];
     let ownNow = 0;
