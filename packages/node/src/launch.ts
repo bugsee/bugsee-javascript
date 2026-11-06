@@ -384,7 +384,7 @@ export interface BugseeLaunchOptions {
   /** Max captured data kept in the rolling buffer, in megabytes (memory/disk bound). Default 50. */
   maxDataSize?: number;
   /**
-   * Where the rolling capture buffer lives: `'disk'` (the default on node/bun/deno — durable capture out of
+   * Where the rolling capture buffer lives: `'disk'` (the default on node/bun — durable capture out of
    * the box, so a crash/OOM that beats bundle assembly still delivers the recording on the next launch) or
    * `'memory'` (the legacy in-RAM path, no disk/recovery). On disk with no `dataDir`, data lives under
    * `os.tmpdir()/bugsee`.
@@ -477,8 +477,8 @@ export interface BugseeLaunchOptions {
    * PER-LAUNCH ONLY: producers are stateful — a producer's `start()` is a no-op while it is already started —
    * so build a fresh set for each launch (it is RESET on relaunch). A producer instance already owned by another
    * running client is skipped and reported through `onError` when one is supplied (first owner wins; ownership is released on stop).
-   * On Bun/Deno a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
-   * default set, including its gates (e.g. Deno's event-loop-lag opt-out), so pass
+   * On Bun a caller-supplied `systemTraceProducers` (or `systemMetricsSampler`) REPLACES the runtime's
+   * default set, including its gates (e.g. an event-loop-lag opt-out), so pass
    * `createNodeSystemTraceProducers({ measuresEventLoopDelay: false, … })` yourself there.
    */
   systemTraceProducers?: readonly TraceProducer[];
@@ -522,8 +522,8 @@ export interface BugseeLaunchOptions {
   instrumentIncomingRequests?: boolean;
   /**
    * Additional server instrumentations installed (when `instrumentIncomingRequests` is on) AFTER node's own
-   * node:http interceptor — the seam `@bugsee/bun` / `@bugsee/deno` use to inject their native Bun.serve /
-   * Deno.serve wraps. Concatenated (not spread-replaced), so a caller's array never drops the platform's.
+   * node:http interceptor — the seam `@bugsee/bun` uses to inject its native Bun.serve
+   * wrap. Concatenated (not spread-replaced), so a caller's array never drops the platform's.
    */
   serverInstrumentations?: ServerInstallable[];
   /** The node:http server interceptor (advanced / tests — avoids patching the real prototype). Default the real one. */
@@ -695,7 +695,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // The PUT checksum digest. Core's default is @bugsee/util's WebCrypto-only `sha256Hex` (util ships in
   // browser/edge bundles, so it cannot name `node:crypto`); where this runtime has no `crypto.subtle`
   // (unflagged Node 18, Electron mains on it) node supplies the `node:crypto` digest instead. Inherited by
-  // bun, deno and electron main, which all compose this launch.
+  // bun and electron main, which all compose this launch.
   const baseUploadPipeline = createUploadPipeline({
     api,
     uploader,
@@ -1088,7 +1088,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
     });
   // Opt-in disk space: the volume the SDK's data dir lives on, so only when there IS one (an in-memory or
   // degraded launch has none, and never falls back to `/` or the cwd). Appended to caller-supplied producers
-  // too: the option is an explicit request, and Bun/Deno build their own producer list. NOT built when the legacy
+  // too: the option is an explicit request, and Bun builds its own producer list. NOT built when the legacy
   // `systemMetricsSampler` replaces the producer list: it would never be started, and merely building it touches
   // the shared per-volume tracker.
   const traceProducers =
@@ -1117,9 +1117,9 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   );
   // The `gc` event rides the SAME per-process tracker as the traces (it owns the one GC observer and arms it only
   // while a `gc` listener exists). Merely resolving it is free; the source subscribes only once events are captured.
-  // Bun/Deno's `measuresGc:false` (set when their producer set was built) lives in that shared tracker.
+  // Bun's `measuresGc:false` (set when its producer set was built) lives in that shared tracker.
   const nodeEventsSource = createNodeSystemEventsSource(proc, {
-    // No seams handed over here: the producer set (built above, or by Bun/Deno) already bound this launch's, and a
+    // No seams handed over here: the producer set (built above, or by Bun) already bound this launch's, and a
     // second bind would clobber a producer set's own timer seam.
     processTracker: processTrackerFor({}, options.onError),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
@@ -1404,7 +1404,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   }
 
   // Incoming-server auto-instrumentation (ON BY DEFAULT; `instrumentIncomingRequests: false` opts out). When on, install the node:http emit patch + any injected native serve
-  // wraps (bun/deno). getClient is lazy (the carrier client, resolved per request, so install order vs
+  // wraps (bun). getClient is lazy (the carrier client, resolved per request, so install order vs
   // setCarrierClient does not matter). One patch per process — launch is a per-process singleton, so this
   // install runs once; uninstalled on stop(). The framework adapters coexist via first-owner-wins
   // re-entrancy (the owner here run-scopes the context + http.server txn; an adapter refines it).
@@ -1561,7 +1561,7 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       }
       chunkStorage?.dispose?.(); // flush + close the batched writer's handles
       for (const installable of serverInstallables) {
-        installable.uninstall(); // restore http.Server.prototype / Bun.serve / Deno.serve
+        installable.uninstall(); // restore http.Server.prototype / Bun.serve
       }
       clearCarrierClient(publicClient, carrier);
       const stopping = stopCore(timeout)

@@ -15,7 +15,7 @@ import { ensureDir, listFiles, readFileBytes, remove, writeFileSecure } from './
 // CaptureRingWriter — the ChunkStorage over the shared CaptureRing + a RingWorker.
 // It is a drop-in for the Phase-1 batched writer (identical on-disk layout + tab-frame), but the per-entry
 // HOT path encodes the frame IN PLACE into the shared ring (zero-copy) and a WORKER drains it to disk off
-// the host thread. The worker OWNS all data-file fds (deno can't inherit the main's fds), so the main talks
+// the host thread. The worker OWNS all data-file fds (the main's fds can't be inherited), so the main talks
 // to it by path-derived `pathId` (in the ring) + a tiny control surface (flushAndWait / closeChunk / closeAll
 // / stop). The infrequent main-thread parts — meta writes, reads, directory listing/removal — stay on the
 // main thread; reads/seals first flush-and-ack so the worker's writes are on disk.

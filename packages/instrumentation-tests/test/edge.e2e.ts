@@ -107,7 +107,7 @@ describe('real-edge VM smoke (@edge-runtime/vm, a WinterCG isolate)', () => {
 
   // Runs last, so it covers every upload the three smokes above produced. The collector schema-validates
   // each session/issue/manifest/request.json and RECORDS failures; that recording is inert unless a suite
-  // reads it, and until now only the node/bun/deno suite did. A wire break on the EDGE assembler — a
+  // reads it, and until now only the node/bun suite did. A wire break on the EDGE assembler — a
   // different assembler from the node one — would have been recorded and silently discarded.
   it('none of the edge upload paths violate the upload contract', () => {
     assertNoContractViolations(collector);

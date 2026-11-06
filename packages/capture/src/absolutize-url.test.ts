@@ -68,7 +68,7 @@ describe('resolveBaseUrl — the base is the one the RUNTIME itself would use', 
     expect(resolveBaseUrl({ location: { href: '' } })).toBeUndefined();
   });
 
-  it('returns undefined in a bare realm (node/bun/deno: no document, no location)', () => {
+  it('returns undefined in a bare realm (node/bun: no document, no location)', () => {
     expect(resolveBaseUrl(bareRealm())).toBeUndefined();
   });
 
@@ -170,7 +170,7 @@ describe('absolutizeUrl — safety valve: a WRONG origin is worse than a missing
   it('does not even construct a URL when there is no base', () => {
     // The `base === undefined` guard is NOT redundant with the catch below it, even though both yield
     // the raw string: without the guard, `new URL(url, undefined)` THROWS on every call, and the
-    // location-less hosts (node/bun/deno) are the ones where every single captured request takes this
+    // location-less hosts (node/bun) are the ones where every single captured request takes this
     // path. Constructing-and-throwing per request is a cost that never shows up in an output assertion,
     // so it is asserted directly here.
     type Ctor = new (url: string, base?: string) => { href: string };
@@ -319,7 +319,7 @@ describe('absolutizeUrl — the default probe reads the real globals', () => {
   });
 
   it('returns the raw url on a bare host (node: no document, no location)', () => {
-    // Guards the server tiers: node/bun/deno define neither global, so an incoming request target
+    // Guards the server tiers: node/bun define neither global, so an incoming request target
     // captured as `/api/x` must stay `/api/x` — there is no client origin to attach to it.
     expect((globalThis as unknown as { document?: unknown }).document).toBeUndefined();
     expect((globalThis as unknown as { location?: unknown }).location).toBeUndefined();

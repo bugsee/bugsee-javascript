@@ -4,7 +4,7 @@ The Bugsee JavaScript SDK: one package that captures crashes, errors, logs, netw
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
-This is the main entry point. Install it directly. It resolves to the right build for your runtime through package `exports` conditions (browser, Node.js, Bun, Deno, Cloudflare Workers, Vercel Edge, Web Workers), and it turns on performance monitoring (web vitals and transactions) by default.
+This is the main entry point. Install it directly. It resolves to the right build for your runtime through package `exports` conditions (browser, Node.js, Bun, Cloudflare Workers, Vercel Edge, Web Workers), and it turns on performance monitoring (web vitals and transactions) by default.
 
 ## Install
 
@@ -44,7 +44,6 @@ bugsee.logException(new Error('payment failed'));
 | --- | --- | --- |
 | Browser, Node.js | `@bugsee/bugsee` | `@bugsee/bugsee` |
 | Bun | `@bugsee/bun` | `@bugsee/bun` |
-| Deno | `@bugsee/deno` (`deno add npm:@bugsee/deno`) | `@bugsee/deno` |
 | Electron | `@bugsee/electron` | `@bugsee/electron/main`, `/preload`, `/renderer` |
 | Cloudflare Workers | `@bugsee/cloudflare` | `@bugsee/cloudflare` |
 | Vercel Edge | `@bugsee/vercel-edge` | `@bugsee/vercel-edge` |
@@ -54,7 +53,7 @@ bugsee.logException(new Error('payment failed'));
 | Next.js, Nuxt, Remix, SvelteKit, Astro | `@bugsee/nextjs`, `@bugsee/nuxt`, `@bugsee/remix`, `@bugsee/sveltekit`, `@bugsee/astro` | the adapter package |
 | Express, Fastify, NestJS, Hono, Koa, hapi, Elysia | `@bugsee/bugsee` and `@bugsee/express`, `@bugsee/fastify`, `@bugsee/nestjs`, `@bugsee/hono`, `@bugsee/koa`, `@bugsee/hapi`, `@bugsee/elysia` | `@bugsee/bugsee` |
 
-The umbrella also ships explicit subpath entries (`@bugsee/bugsee/node`, `/bun`, `/deno`, `/workerd`, `/edge-light`, `/worker`) for tools that do not honor `exports` conditions.
+The umbrella also ships explicit subpath entries (`@bugsee/bugsee/node`, `/bun`, `/workerd`, `/edge-light`, `/worker`) for tools that do not honor `exports` conditions.
 
 `@bugsee/browser` and `@bugsee/node` are the platform builds this package wraps. You do not need to install them.
 

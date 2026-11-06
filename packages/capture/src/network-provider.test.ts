@@ -832,7 +832,7 @@ describe('network URL absolutization', () => {
     expect(captured.url).toBe('https://app.example.com/api/x');
   });
 
-  it('leaves the URL relative on a location-less host (node/bun/deno server capture)', async () => {
+  it('leaves the URL relative on a location-less host (node/bun server capture)', async () => {
     // node:http incoming requests fold into this same provider via `additionalSources` and carry a
     // path-only target. There is no client origin on a server, and inventing one would be a worse
     // defect than the missing one — so `/api/x` must stay `/api/x`.

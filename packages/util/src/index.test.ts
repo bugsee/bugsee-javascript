@@ -17,7 +17,6 @@ describe('@bugsee/util public surface', () => {
       'isBrowser',
       'isBun',
       'isCloudflareWorker',
-      'isDeno',
       'isElectronMain',
       'isElectronRenderer',
       'isNode',

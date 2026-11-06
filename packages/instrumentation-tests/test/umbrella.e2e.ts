@@ -1,7 +1,6 @@
 // WAVE 3b.1 — the SDK installed the way customers install it.
 //
-// Every other e2e entry imports its runtime's platform package directly (`@bugsee/node`, `@bugsee/bun`,
-// `@bugsee/deno`). No customer does that. The documented single-install path is `@bugsee/bugsee`, and which
+// Every other e2e entry imports its runtime's platform package directly (`@bugsee/node`, `@bugsee/bun`). No customer does that. The documented single-install path is `@bugsee/bugsee`, and which
 // implementation they get is decided by the umbrella's `exports` conditions ON THEIR RUNTIME. Nothing in
 // the suite exercised that decision — which is precisely why a runtime resolving to the wrong
 // implementation stayed invisible to all 109 e2e tests.
@@ -87,8 +86,8 @@ describe('the umbrella install path', () => {
       });
 
       it('reports the runtime’s OWN version', async () => {
-        // Asserted against the value the BINARY reports, not merely "different from node's". Bun and Deno
-        // each expose a `process.versions.node` for compatibility, so a not-equal check passes by accident
+        // Asserted against the value the BINARY reports, not merely "different from node's". Bun
+        // exposes a `process.versions.node` for compatibility, so a not-equal check passes by accident
         // whenever that compat version happens to differ from the harness's own node — which is exactly how
         // my first version of this test passed on Bun while the defect was present.
         const bundles = await runUmbrella(target);
@@ -110,9 +109,9 @@ describe('the umbrella install path', () => {
 // WAVE 3b.1/3b.5 — the native server path, through the umbrella.
 //
 // The identity assertions above prove the umbrella resolves the right PACKAGE. This proves the thing that
-// actually costs a customer data when it does not: `Bun.serve({fetch})` and `Deno.serve()` bypass node:http
-// entirely, which is why @bugsee/bun and @bugsee/deno ship interceptors for them — and why an umbrella that
-// resolved to @bugsee/node left idiomatic Bun and Deno servers completely uninstrumented.
+// actually costs a customer data when it does not: `Bun.serve({fetch})` bypasses node:http
+// entirely, which is why @bugsee/bun ships an interceptor for it — and why an umbrella that
+// resolved to @bugsee/node left idiomatic Bun servers completely uninstrumented.
 //
 // Nothing in the suite exercised those interceptors on any entry, so this is the first coverage they have.
 describe('the umbrella instruments the NATIVE server', () => {
@@ -126,7 +125,7 @@ describe('the umbrella instruments the NATIVE server', () => {
   });
 
   for (const target of available.filter((t) => t.name !== 'node')) {
-    it(`${target.name}: a request to ${target.name === 'bun' ? 'Bun.serve' : 'Deno.serve'} is captured`, async () => {
+    it(`${target.name}: a request to Bun.serve is captured`, async () => {
       collector.uploads.length = 0;
       const result = await runScenarioProcess(
         target,

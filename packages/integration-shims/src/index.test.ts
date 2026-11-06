@@ -59,9 +59,9 @@ describe('createNoopCaptureProvider', () => {
     });
     expect(p.name).toBe('X');
     expect(p.controllingOption).toBe('com.bugsee.option.capture.x');
-    expect(
-      createNoopCaptureProvider({ name: 'Y', runtime: 'deno', logger }).controllingOption,
-    ).toBe(undefined);
+    expect(createNoopCaptureProvider({ name: 'Y', runtime: 'bun', logger }).controllingOption).toBe(
+      undefined,
+    );
   });
 
   it('warns once with the runtime message when started, keyed by name', () => {
@@ -149,12 +149,12 @@ describe('named convenience shims', () => {
 
   it('xhrInterceptor shim fixes its name', () => {
     const logger = fakeLogger();
-    const i = createXhrInterceptorShim({ runtime: 'deno', logger });
+    const i = createXhrInterceptorShim({ runtime: 'bun', logger });
     expect(i.name).toBe('xhrInterceptor');
     i.start();
     expect(logger.warnOnce).toHaveBeenCalledWith(
       'shim:xhrInterceptor',
-      'xhrInterceptor is a no-op on deno; ignored',
+      'xhrInterceptor is a no-op on bun; ignored',
     );
   });
 });

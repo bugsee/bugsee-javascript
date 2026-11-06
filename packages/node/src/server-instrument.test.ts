@@ -140,7 +140,7 @@ describe('openServerRequest', () => {
   it('redacts secrets in the request URL before they reach `http.url`', () => {
     // `info.url` is the raw request target, and its own doc comment claimed "the redaction
     // pipeline scrubs query secrets" — it did not. This is
-    // the shared core behind node/bun/deno http AND express/fastify/koa/hapi/elysia, so it is the one
+    // the shared core behind node/bun http AND express/fastify/koa/hapi/elysia, so it is the one
     // place that has to be right.
     const store = fakeStore();
     const client = fakeClient({ store, perf: { startTransaction: vi.fn(() => fakeTxn()) } });

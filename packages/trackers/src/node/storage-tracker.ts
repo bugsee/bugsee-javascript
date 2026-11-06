@@ -4,7 +4,7 @@ import nodeProcess from 'node:process';
 import { InterceptorBase } from '../interceptor-base';
 import { createTrackerRegistry } from '../tracker-registry';
 
-// Node/Bun/Deno STORAGE tracker (domain tracker, design §15.2; Android reference: BugseeTrackerStorage). It owns the
+// Node/Bun STORAGE tracker (domain tracker, design §15.2; Android reference: BugseeTrackerStorage). It owns the
 // disk-space read for ONE directory's volume (the launch's effective data dir, NOT `/` or the cwd) through
 // `fs.promises.statfs`, and polls it sparsely off the event loop. One stage:
 //

@@ -1310,6 +1310,10 @@ recorded" was false.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
+### 2026-11-06 — Deno support dropped (owner decision)
+
+Removed `@bugsee/deno` and everything that existed only for it: the umbrella's working `deno` entry (the `deno` condition + `./deno` subpath are KEPT as a stub that throws "Deno is no longer supported", because Deno also sets `node` and would otherwise silently resolve the Node build), the `deno` e2e target and `entry-deno.ts`, the `Deno.serve` branch of the native-server scenario, the CI `Setup Deno` step and `deno --version` check, the `isDeno` util, the Deno-only tracker code (`createDenoMemoryReader`, `createDenoExecFile`/`denoVmStatGranted`, the `Deno.Command` vm_stat spawn) with their tests, sample `pnpm-workspace` overrides, and the `@bugsee/deno` lines in pending changesets (plus the Deno-only `omit-unmeasurable-event-loop-lag` changeset). KEPT on purpose: the protocol `RuntimeType` `'deno'` value (backend wire contract; historical data) and the generic launch seams (`measuresEventLoopDelay`, `measuresGc`, …). `docs/review/`, `docs/research/` and the older design docs still describe Deno as it was; they are history, not as-built. Entries below that mention Deno are superseded by this one.
+
 ### 2026-10-27 — Spec-conformance guard for the system traces and events (spec items C17 + C24)
 
 The JavaScript platform spec (`bugsee/specs` `sdk/reporting/platforms/javascript.md`) is now enforced by a test, and every

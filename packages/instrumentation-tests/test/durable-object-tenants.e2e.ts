@@ -108,7 +108,7 @@ describe('Durable Object tenant isolation (real workerd via miniflare)', () => {
 
   it('the edge upload path emits nothing that violates the upload contract', () => {
     // The collector schema-validates every session/issue/manifest/request.json and RECORDS failures. That
-    // recording is inert unless a suite reads it — and until now only the node/bun/deno suite did, so a
+    // recording is inert unless a suite reads it — and until now only the node/bun suite did, so a
     // wire break on the EDGE assembler (a different assembler, and the one this session built) would have
     // been recorded and silently discarded.
     assertNoContractViolations(collector);

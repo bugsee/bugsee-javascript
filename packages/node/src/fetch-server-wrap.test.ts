@@ -231,7 +231,7 @@ describe('wrapFetchHandler', () => {
     expect(txn.finish).toHaveBeenCalledWith('OK');
   });
 
-  it('forwards extra runtime args (the Bun server / Deno info 2nd arg) to the handler', async () => {
+  it('forwards extra runtime args (the Bun server 2nd arg) to the handler', async () => {
     const client = fakeClient({ perf: { startTransaction: vi.fn(() => fakeTxn()) } });
     const sentinel = { runtimeArg: true };
     let received: unknown;

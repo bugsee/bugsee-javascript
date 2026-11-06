@@ -9,7 +9,6 @@ import * as bun from '@bugsee/bun';
 import { getDefaultNetworkSanitizer } from '@bugsee/capture';
 import * as cloudflare from '@bugsee/cloudflare';
 import { addReportAttachment, BugseeStatus, LifecycleEvents } from '@bugsee/core';
-import * as deno from '@bugsee/deno';
 import * as electronMain from '@bugsee/electron/main';
 import * as electronRenderer from '@bugsee/electron/renderer';
 import * as nextClient from '@bugsee/nextjs/client';
@@ -61,7 +60,6 @@ const targets: Record<
   '@bugsee/browser': { entry: browser },
   '@bugsee/node': { entry: node },
   '@bugsee/bun': { entry: bun },
-  '@bugsee/deno': { entry: deno },
   '@bugsee/vercel-edge': { entry: vercelEdge },
   '@bugsee/cloudflare': { entry: cloudflare },
   '@bugsee/webworker': { entry: webworker },
@@ -146,11 +144,10 @@ describe('the re-exports are the SAME functions, not look-alikes', () => {
   });
 
   it('the umbrella-based adapters keep relaunch off the plain-launch path where their launch differs', () => {
-    // Cloudflare / Bun / Deno / Next.js server run a launch that adds defaults on top of the shared one; the
+    // Cloudflare / Bun / Next.js server run a launch that adds defaults on top of the shared one; the
     // package-level `relaunch` must be THEIR relaunch, not the one re-exported from the layer below.
     expect(cloudflare.relaunch).not.toBe(vercelEdge.relaunch);
     expect(bun.relaunch).not.toBe(node.relaunch);
-    expect(deno.relaunch).not.toBe(node.relaunch);
     expect(nextServer.relaunch).not.toBe(umbrellaNode.relaunch);
   });
 });

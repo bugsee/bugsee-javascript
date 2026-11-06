@@ -1,6 +1,6 @@
 # @bugsee/hono
 
-Hono adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Hono apps hosted on Node.js, Bun or Deno.
+Hono adapter for the Bugsee SDK: per-request context, `http.server` tracing and error reporting for Hono apps hosted on Node.js or Bun.
 
 Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 

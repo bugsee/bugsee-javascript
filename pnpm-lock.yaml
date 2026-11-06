@@ -110,9 +110,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@bugsee/deno':
-        specifier: workspace:*
-        version: link:../../packages/deno
       '@bugsee/electron':
         specifier: workspace:*
         version: link:../../packages/electron
@@ -379,9 +376,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/deno':
-        specifier: workspace:*
-        version: link:../deno
       '@bugsee/node':
         specifier: workspace:*
         version: link:../node
@@ -483,28 +477,6 @@ importers:
       '@bugsee/util':
         specifier: workspace:*
         version: link:../util
-
-  packages/deno:
-    dependencies:
-      '@bugsee/capture':
-        specifier: workspace:*
-        version: link:../capture
-      '@bugsee/core':
-        specifier: workspace:*
-        version: link:../core
-      '@bugsee/node':
-        specifier: workspace:*
-        version: link:../node
-      '@bugsee/node-utils':
-        specifier: workspace:*
-        version: link:../node-utils
-    devDependencies:
-      '@bugsee/util':
-        specifier: workspace:*
-        version: link:../util
-      '@types/node':
-        specifier: ^22.20.5
-        version: 22.20.5
 
   packages/e2e-kit:
     dependencies:
@@ -716,9 +688,6 @@ importers:
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
-      '@bugsee/deno':
-        specifier: workspace:*
-        version: link:../deno
       '@bugsee/e2e-kit':
         specifier: workspace:*
         version: link:../e2e-kit

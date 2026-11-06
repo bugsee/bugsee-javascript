@@ -62,7 +62,7 @@ export type ReportingTriggerType =
 export interface EnvironmentEnvelope {
   /**
    * The OS the runtime is hosted on. `type` is the OS name and `version` its release — the pair the
-   * backend reads as the platform key and `os_version`. Runtimes with real OS access (node/bun/deno,
+   * backend reads as the platform key and `os_version`. Runtimes with real OS access (node/bun,
    * Electron main) fill these from `os`; the WEB tier derives them in-browser from
    * `navigator.userAgentData.platform` plus a user-agent parse (see @bugsee/browser's user-agent.ts).
    * Only the EDGE tiers have no OS to name at all and keep the isolate's own tag ('workers', …).

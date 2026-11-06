@@ -259,7 +259,7 @@ kill-and-restart cycle given the time already spent on the disk-store path. **Un
 **valid OTLP/JSON**: correct `resourceSpans[].resource.attributes` (including the configured
 `otelExportResource: {'service.name': 'bugsee-sample-node-service'}` and the required
 `otelExportHeaders`), correct `scopeSpans[].scope.name` (`com.bugsee.nodejs/performance` — the
-node/bun/deno SDK-language token per Profile v1 §4/§5), and well-formed spans (`traceId`/`spanId`/
+node/bun SDK-language token per Profile v1 §4/§5), and well-formed spans (`traceId`/`spanId`/
 `startTimeUnixNano`/`endTimeUnixNano`/`attributes`) for both the `app.start` startup transaction and
 the manual S9 transaction with its 5 child spans. This is entirely independent of F-1 (a completely
 separate code path from the Bugsee upload) — proof the produce direction works with zero caveats.

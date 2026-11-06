@@ -1,7 +1,7 @@
 # @bugsee/instrumentation-tests
 
 Cross-runtime **end-to-end instrumentation harness**. It boots the *real* SDK in a *real* separate
-`node` / `bun` / `deno` process — no fakes, real timers, a real outgoing `fetch`, the real V8 CPU
+`node` / `bun` process — no fakes, real timers, a real outgoing `fetch`, the real V8 CPU
 profiler, the real worker-thread hang watchdog — pointed at a local **mock collector**, and asserts the
 actual uploaded bundle. This is the layer the in-process unit tests (which run under Node with injected
 fakes) cannot reach: it proves the *assembled* SDK runs and produces the right wire output on each
@@ -14,7 +14,7 @@ pnpm --filter @bugsee/instrumentation-tests test:e2e
 
 The `*.e2e.ts` suites are **not** part of `pnpm test` (the root globs `*.test.ts`) and have no coverage
 gate — they spawn real processes. Since 2026-07-27 they **do run in CI**, in their own `e2e` job with
-`bun` and `deno` installed (`.github/workflows/ci.yml`). Before that they were outside the gate
+`bun` installed (`.github/workflows/ci.yml`). Before that they were outside the gate
 entirely, which the adversarial review identified as the reason most of its ~90 findings survived
 ~100% unit coverage.
 
@@ -25,18 +25,17 @@ the `check` job. They ran in NO CI job until 2026-07-28: this package had no `te
 
 ## What runs
 
-One scenario module (`app/scenario.ts`) drives the SDK's public surface; three thin entries inject each
-runtime's own launch (`@bugsee/node` / `@bugsee/bun` / `@bugsee/deno`). The runner (`test/`) starts the
+One scenario module (`app/scenario.ts`) drives the SDK's public surface; two thin entries inject each
+runtime's own launch (`@bugsee/node` / `@bugsee/bun`). The runner (`test/`) starts the
 mock collector, spawns each entry as a child process, and asserts the captured uploads.
 
 | Runtime | Launched via | Resolves the workspace TS source by |
 | --- | --- | --- |
 | node | `tsx` (a devDep — the guaranteed target) | tsx's TS loader |
 | bun  | `bun` (native TS) | bun's node_modules resolution |
-| deno | `deno run -A --node-modules-dir=manual --sloppy-imports` | pnpm's node_modules + sloppy (extensionless) imports |
 
-A runtime whose binary is absent is logged and skipped (so CI without bun/deno still runs the node
-suite). bun/deno are probed on `PATH` and at `~/.bun/bin` / `~/.deno/bin`.
+A runtime whose binary is absent is logged and skipped (so CI without bun still runs the node
+suite). bun is probed on `PATH` and at `~/.bun/bin`.
 
 ### Scenarios asserted per runtime
 - **main** (exits 0): console logs → `logs.json`; a captured outgoing `/echo` → `network.json`; a

@@ -1,41 +1,14 @@
-// bugsee — the DENO entry (selected via the package `exports` "deno" condition, listed BEFORE "node"
-// because Deno sets both). Re-exports the server SDK surface + the umbrella launch() bound to
-// @bugsee/deno's composition root, so the Deno-specific defaults are not silently lost. See ./deno.
+// bugsee — the DENO entry. Deno is NOT supported (dropped 2026-11-06), and this file exists ONLY to fail loudly.
+//
+// Deno sets BOTH the `deno` and `node` export conditions. With the `deno` condition removed, a Deno app on
+// the single-install path would silently resolve `index.node.ts`: runtime reported as `node`, `Deno.serve`
+// uninstrumented, a blind event-loop-lag trace, and `captureLocalVariables` free to freeze the process at
+// launch (all measured on the old `@bugsee/deno`). Keeping the condition and throwing here turns that silent
+// misbehaviour into an immediate, explained error. It must stay listed BEFORE `node` in package.json
+// `exports` (see `test/umbrella-conditions.e2e.ts`).
+export {};
 
-// The built-in network redaction, for composing with a custom `setNetworkEventFilter` (which REPLACES the
-// default sanitizer rather than layering on it).
-export { type DefaultNetworkSanitizer, getDefaultNetworkSanitizer } from '@bugsee/capture';
-// Manual-instrumentation argument types — the curated public surface every adapter re-exports so users
-// can type their own event()/addBreadcrumb()/logException() calls without reaching into @bugsee/core.
-export type {
-  AttributeValue,
-  Breadcrumb,
-  BreadcrumbInput,
-  LogExceptionOptions,
-  ReportAttachmentInput,
-  UploadOptions,
-} from '@bugsee/core';
-// Lifecycle events: the listener type + the event-name constants for `setLifecycleEventsListener`.
-// Helper form of writing `report.userAttachments` from `ReportHandler.before` (Android `Report.addAttachment`).
-export {
-  addReportAttachment,
-  LifecycleEvents,
-  type LifecycleEventsListener,
-  type LifecycleEventType,
-} from '@bugsee/core';
-export type { BugseeSpanProcessor } from '@bugsee/opentelemetry';
-// The performance facade types (the top-level startTransaction/startSpan/getActiveSpan calls exist on every
-// entry, so their types must too).
-export type {
-  PerformanceApi,
-  PerformanceFacade,
-  Span,
-  SpanStatus,
-  StartTransactionOptions,
-  Transaction,
-  TransactionNameSource,
-} from '@bugsee/performance';
-export { type BugseeDenoLaunchOptions, launch, relaunch } from './deno';
-export type { Bugsee, BugseeServerLaunchOptions } from './server-launch';
-export { BugseeStatus, getStatus } from './status';
-export type { UmbrellaExtensionOptions } from './wire';
+throw new Error(
+  '@bugsee/bugsee: Deno is no longer supported. Use Node.js, Bun or a browser. ' +
+    'Pin an earlier @bugsee/bugsee version if you must stay on Deno.',
+);

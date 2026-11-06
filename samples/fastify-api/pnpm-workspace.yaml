@@ -19,7 +19,6 @@ overrides:
   '@bugsee/capture': 'file:../../.local-registry/bugsee-capture.tgz'
   '@bugsee/cloudflare': 'file:../../.local-registry/bugsee-cloudflare.tgz'
   '@bugsee/core': 'file:../../.local-registry/bugsee-core.tgz'
-  '@bugsee/deno': 'file:../../.local-registry/bugsee-deno.tgz'
   '@bugsee/electron': 'file:../../.local-registry/bugsee-electron.tgz'
   '@bugsee/elysia': 'file:../../.local-registry/bugsee-elysia.tgz'
   '@bugsee/express': 'file:../../.local-registry/bugsee-express.tgz'

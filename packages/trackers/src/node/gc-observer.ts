@@ -1,8 +1,8 @@
 import { PerformanceObserver } from 'node:perf_hooks';
 
 // Lazy GC source: a `PerformanceObserver({entryTypes:['gc']})` that exists only between start() and stop().
-// Measured 2026-09: real entries on Node; BLIND on Bun and Deno (0 entries after heavy churn and forced GC),
-// so those runtimes gate it off (`measuresGc: false`) and never even construct the observer — a quiet-looking
+// Measured 2026-09: real entries on Node; BLIND on Bun (0 entries after heavy churn and forced GC),
+// so that runtime gates it off (`measuresGc: false`) and never even construct the observer — a quiet-looking
 // zero there would be a lie.
 
 export interface GcEntry {

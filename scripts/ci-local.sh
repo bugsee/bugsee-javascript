@@ -2,7 +2,7 @@
 # Run the GitHub Actions CI gate locally, step for step.
 #
 #   pnpm ci:local            # the `check` job (lint → typecheck → cycles → coverage → unit)
-#   pnpm ci:local --e2e      # also the `e2e` job (node · bun · deno · real frameworks), ~5 min
+#   pnpm ci:local --e2e      # also the `e2e` job (node · bun · real frameworks), ~5 min
 #   pnpm ci:local --force    # ignore the turbo cache, so every package really re-runs
 #   pnpm ci:local --no-install
 #
@@ -83,11 +83,11 @@ step "Test + per-package coverage gate (vitest)" pnpm exec turbo run test:covera
 step "Harness unit tests (vitest)" pnpm exec turbo run test:unit $FORCE
 
 if [ "$RUN_E2E" -eq 1 ]; then
-  # The harness SKIPS a runtime whose binary is absent, so a missing bun/deno would quietly test
+  # The harness SKIPS a runtime whose binary is absent, so a missing bun would quietly test
   # less rather than fail — same reason the workflow verifies the matrix before running.
   bold "── Verify the runtime matrix is complete"
   MISSING=0
-  for bin in node bun deno; do
+  for bin in node bun; do
     if command -v "$bin" >/dev/null 2>&1; then
       printf '   %-5s %s\n' "$bin" "$("$bin" --version 2>&1 | head -1)"
     else

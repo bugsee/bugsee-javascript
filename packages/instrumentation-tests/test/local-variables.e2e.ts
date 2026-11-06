@@ -64,7 +64,7 @@ describe.each(targets)('local variables + source context — $name', (target) =>
   });
 
   it('degrades CLEANLY where the runtime cannot pause — no half-captured frames', () => {
-    // Bun and Deno reuse this composition verbatim and their debugger support is not Node's: Bun's
+    // Bun reuses this composition verbatim and its debugger support is not Node's: Bun's
     // `session.connect()` succeeds and then `Debugger.enable` throws. What must hold everywhere is that
     // the crash is still reported and the frames are either fully captured or not captured at all —
     // never partially, which would be a report that looks enriched and is not.

@@ -5,13 +5,12 @@ import {
 } from './server-instrument';
 
 // Shared fetch-style server instrumentation.
-// A `Request → Response` handler is the native server shape on Bun (`Bun.serve({fetch})`) and Deno
-// (`Deno.serve(handler)`) — and a future edge/Workers runtime. `wrapFetchHandler` decorates such a handler
+// A `Request → Response` handler is the native server shape on Bun (`Bun.serve({fetch})`) — and a future edge/Workers runtime. `wrapFetchHandler` decorates such a handler
 // so it opens a per-request context + an http.server transaction via the shared `runServerRequest` core
 // (run-scoped), finishes from the returned Response's status, and — unlike the node:http emit path — CAN
-// capture a thrown handler error (it round-trips through this wrap; verified on Bun 1.3 + Deno 2.0+). The
+// capture a thrown handler error (it round-trips through this wrap; verified on Bun 1.3). The
 // error is re-thrown so the runtime's own handling (a 500, or the user's error/onError callback) still
-// runs. @bugsee/bun and @bugsee/deno reuse this; they only differ in how they reach + replace their global.
+// runs. @bugsee/bun reuses this; it only differs in how it reaches + replaces its global.
 
 /** The minimal structural `Request` the wrap reads (no DOM/undici import). */
 export interface FetchRequestLike {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createDenoMemoryReader,
   createElectronMemoryReader,
   createMemoryLimitReader,
   createProcMeminfoReader,
@@ -231,24 +230,6 @@ describe('createElectronMemoryReader (KiB -> bytes)', () => {
     expect(read('linux', undefined)).toBeUndefined();
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
       expect(read('linux', { available: bad })).toBeUndefined();
-    }
-  });
-});
-
-describe('createDenoMemoryReader (bytes)', () => {
-  const deno = { systemMemoryInfo: () => ({ available: 4096 }) };
-  it('reports available on macOS only', () => {
-    expect(createDenoMemoryReader(deno, 'darwin')()).toBe(4096);
-    expect(createDenoMemoryReader(deno, 'linux')()).toBeUndefined();
-    expect(createDenoMemoryReader(deno, 'win32')()).toBeUndefined();
-  });
-  it('is undefined without Deno/the API or for implausible values', () => {
-    expect(createDenoMemoryReader(undefined, 'darwin')()).toBeUndefined();
-    expect(createDenoMemoryReader({}, 'darwin')()).toBeUndefined();
-    for (const bad of [Number.NaN, -1, '5']) {
-      expect(
-        createDenoMemoryReader({ systemMemoryInfo: () => ({ available: bad }) }, 'darwin')(),
-      ).toBeUndefined();
     }
   });
 });

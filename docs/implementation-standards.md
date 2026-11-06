@@ -57,12 +57,12 @@ Integration tests follow the **same mutator discipline (§2)** — inject bugs a
 
 ## 4. Coverage gate (CI)
 
-- **100% line, ≥90% branch**, enforced in CI and **measured per target runtime** (browser/node/bun/deno/workers/…), since platform branches only execute on their own runtime. Coverage is the union/per-package view appropriate to each package's runtime(s).
+- **100% line, ≥90% branch**, enforced in CI and **measured per target runtime** (browser/node/bun/workers/…), since platform branches only execute on their own runtime. Coverage is the union/per-package view appropriate to each package's runtime(s).
 - Tooling: Vitest coverage (v8 provider).
 - **Exclusions are the only escape hatch and require justification.** Unreachable defensive branches or platform-guarded code may be excluded with an explicit annotation **and a one-line reason**:
   ```ts
-  /* v8 ignore next 3 -- platform guard: only reachable on Deno, covered in deno smoke suite */
-  if (isDeno) { ... }
+  /* v8 ignore next 3 -- platform guard: only reachable on Bun, covered in bun smoke suite */
+  if (isBun) { ... }
   ```
   No blanket file-level ignores without review. Excluded lines are still expected to be covered by the relevant per-runtime smoke suite where possible.
 
@@ -79,7 +79,7 @@ Integration tests follow the **same mutator discipline (§2)** — inject bugs a
 |---|---|
 | Unit + integration | Vitest (`--typecheck` for type-level contracts) |
 | Browser e2e | Playwright |
-| Per-runtime smoke | `bun test` / `deno test` / `wrangler dev` / Vercel CLI harnesses (`dev-packages/`) |
+| Per-runtime smoke | `bun test` / `wrangler dev` / Vercel CLI harnesses (`dev-packages/`) |
 | Coverage | Vitest + v8 provider (100% line / ≥90% branch, per runtime) |
 | Mutation (opt-in) | Stryker Mutator (Vitest runner) |
 | Wire-format | Vitest snapshots in `dev-packages/wire-snapshots/` (snapshot update requires a `backend-ref:` commit line — design §13) |

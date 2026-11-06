@@ -95,7 +95,7 @@ jobs:
           # RUN here. With this set, a too-old Node fails that suite instead of skipping it silently.
           BUGSEE_REQUIRE_OTEL3: '1'
 
-  # End-to-end harnesses: the REAL SDK booted in real node/bun/deno processes against a
+  # End-to-end harnesses: the REAL SDK booted in real node/bun processes against a
   # mock collector, plus the real-framework suites (nuxt / sveltekit / astro / next).
   #
   # These existed but were OUTSIDE the gate until 2026-07-27: the `check` job runs
@@ -104,13 +104,13 @@ jobs:
   # identified that as the root cause of most of its ~90 severe findings surviving ~100% unit coverage.
   #
   # Separate job so it runs alongside `check` and so its extra runtime setup
-  # (bun, deno) is isolated. Bun and Deno are installed deliberately: the harness SKIPS
+  # (bun) is isolated. Bun is installed deliberately: the harness SKIPS
   # a runtime whose binary is absent (packages/instrumentation-tests/test/runtimes.ts),
   # so without them CI would go green while testing strictly less.
   #
   # Hosted runners are provisioned per job, so the two jobs run in parallel.
   e2e:
-    name: E2E (node · bun · deno · real frameworks)
+    name: E2E (node · bun · real frameworks)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -127,11 +127,6 @@ jobs:
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -151,7 +146,6 @@ jobs:
         run: |
           node --version
           bun --version
-          deno --version
 
       # Playwright ships a downloader, not the browsers: `pnpm install` does not fetch them, so
       # `browser.e2e.ts` fails with "Executable doesn't exist at .../chrome-headless-shell".

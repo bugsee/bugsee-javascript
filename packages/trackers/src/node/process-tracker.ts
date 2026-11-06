@@ -14,27 +14,18 @@ import {
   realPerfHooks,
 } from './guarded-event-loop';
 import {
-  createDenoMemoryReader,
   createElectronMemoryReader,
   createMemoryLimitReader,
   createProcMeminfoReader,
   createSystemFreeReader,
   createV8HeapReader,
-  type DenoMemoryInfoLike,
   type ElectronMemoryInfoLike,
   firstAnswer,
   type V8HeapStats,
 } from './runtime-readers';
-import {
-  createDenoExecFile,
-  createVmStatSampler,
-  type DenoRunLike,
-  denoVmStatGranted,
-  type ExecFileLike,
-  type VmStatSource,
-} from './vm-stat';
+import { createVmStatSampler, type ExecFileLike, type VmStatSource } from './vm-stat';
 
-// Node/Bun/Deno PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
+// Node/Bun PROCESS tracker (domain tracker, design §15.2/§15.3; Android reference: BugseeTrackerProcess). It
 // owns everything the runtime can say about its own process, as EIGHT independent stages:
 //
 //   memory          process.memoryUsage()                          -> { rss, heapTotal, heapUsed, external, arrayBuffers }
@@ -54,16 +45,16 @@ import {
 // `start()`/`stop()` (InterceptorBase) therefore do nothing here. Every tick reads each armed stage on its own and
 // emits it; a stage whose read throws is reported and drops ONLY itself for that tick.
 //
-// ABSENCE IS NEVER ZERO. A stage whose runtime cannot answer emits nothing: ELU on Bun/Deno (flat idle/active zeros),
-// the event-loop histogram when it has no sample yet or when the platform gated it off (Deno's never sees a blocked
-// loop), the GC observer where it is blind (Bun/Deno) or refused, the heap/limit/available-memory readers when their
+// ABSENCE IS NEVER ZERO. A stage whose runtime cannot answer emits nothing: ELU on Bun (flat idle/active zeros),
+// the event-loop histogram when it has no sample yet or when the platform gated it off (a histogram that never sees a blocked
+// loop), the GC observer where it is blind (Bun) or refused, the heap/limit/available-memory readers when their
 // numbers are not true. The platform GATES (`measures*`) are runtime-identity facts the composition root passes in;
 // the tracker only honours them. An injected source/reader always wins over its gate.
 //
 // SINGLETON per key object (see `processTrackerFor`: the `process` object by default). SEAMS MERGE, NEVER DROP: the
 // tracker outlives launches, so a later launch that omits `scheduler`/`onError`/a reader KEEPS the previous launch's
 // (it can replace a seam, never shed one). Merely BUILDING a producer set (`createNodeSystemTraceProducers`) rebinds
-// the shared tracker, so a Bun/Deno default set built before `...options` in their launch.ts already hands its seams over.
+// the shared tracker, so a Bun default set built before `...options` in their launch.ts already hands its seams over.
 // Tests that inject fakes must use a private `key` or call `resetProcessTracker()`. RETENTION rule — what survives
 // a stage's last unsubscribe: ONLY the resolved seams, and the "this runtime refused" memory inside the guarded
 // sources (a refusing histogram/observer is not hammered again until a rebind swaps the seams). Everything windowed
@@ -141,32 +132,27 @@ export interface ProcessEnv {
   freeMemory?: () => number;
   /**
    * macOS only: read memory available to new work from `/usr/bin/vm_stat` (a rare async read; see ./vm-stat) when no
-   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun, and
-   * Deno uses its larger `systemMemoryInfo().available` estimate). On DENO the spawn is made through `Deno.Command`
-   * and ONLY when `Deno.permissions.querySync({name:'run', command:'/usr/bin/vm_stat'})` is already `granted` (it never
-   * prompts); otherwise Deno answers `systemMemoryInfo().available` (free + inactive: a larger estimate than the
-   * vm_stat definition).
+   * native source answers. Default `true`; `false` is the opt-out (the trace is then omitted on macOS Node/Bun).
    */
   readsVmStat?: boolean;
   /** Replaces the `vm_stat` sampler (it is stopped when the memory stage loses its last listener). */
   vmStat?: VmStatSource;
-  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`, or `Deno.Command` on Deno). */
+  /** The spawn function for the default `vm_stat` sampler (test seam; default `child_process.execFile`). */
   vmStatExecFile?: ExecFileLike;
   /**
    * A runtime-native memory-available-to-new-work reader (bytes), tried before every other free-memory source. Default:
-   * Electron's `process.getSystemMemoryInfo()` when the `process` object has it, else `Deno.systemMemoryInfo()`
-   * on macOS (feature-detected; absent on plain Node/Bun).
+   * Electron's `process.getSystemMemoryInfo()` when the `process` object has it (absent on plain Node/Bun).
    */
   nativeAvailableMemory?: () => number | undefined;
   /** `process.platform` for the free-memory source choice. Default the real one. */
   platform?: string;
-  /** perf_hooks primitives for the event-loop metrics (partial on Bun/Deno). Default node:perf_hooks. */
+  /** perf_hooks primitives for the event-loop metrics (partial on Bun). Default node:perf_hooks. */
   perfHooks?: PerfHooks;
   /** Test seam for the GC observer constructor. Default `node:perf_hooks`. */
   performanceObserver?: ObserverCtor;
   /**
-   * Does this runtime's `monitorEventLoopDelay` observe a BLOCKED loop? Default `true`. Deno's does not (answers,
-   * never throws, never registers a stall), so `@bugsee/deno` passes `false` and the histogram is never constructed.
+   * Does this runtime's `monitorEventLoopDelay` observe a BLOCKED loop? Default `true`. A runtime whose histogram
+   * answers but never registers a stall passes `false`, and the histogram is never constructed.
    */
   measuresEventLoopDelay?: boolean;
   /**
@@ -175,19 +161,18 @@ export interface ProcessEnv {
    */
   measuresV8Heap?: boolean;
   /**
-   * Can this runtime truthfully answer `process.constrainedMemory()`? Default `true`. `@bugsee/bun` / `@bugsee/deno`
-   * pass `false` off Linux, the only platform where a cgroup cap exists and where their answer was measured real
-   * (Bun 1.4.4 and Deno 2.8.3 in `docker -m`: the cap; unconstrained: Bun total RAM, Deno `0`, Node the 2^64 sentinel).
+   * Can this runtime truthfully answer `process.constrainedMemory()`? Default `true`. `@bugsee/bun`
+   * passes `false` off Linux, the only platform where a cgroup cap exists and where its answer was measured real
+   * (Bun 1.4.4 in `docker -m`: the cap; unconstrained: Bun total RAM, Node the 2^64 sentinel).
    * The value filter alone decided before; this makes the platform answer explicit, so the trace is omitted, not guessed.
    */
   measuresConstrainedMemory?: boolean;
   /**
    * Read `/proc/meminfo` MemAvailable before `os.freemem()` on Linux? Default `false`. Only `@bugsee/bun` sets it
-   * (Bun < 1.3.13's `os.freemem()` is not MemAvailable). Deno must NOT: its `os.freemem()` already is, and the extra
-   * read triggers an interactive permission prompt under a scoped `--allow-read`.
+   * (Bun < 1.3.13's `os.freemem()` is not MemAvailable).
    */
   readsProcMeminfo?: boolean;
-  /** Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`; blind on Bun/Deno. */
+  /** Does `PerformanceObserver({entryTypes:['gc']})` see collections? Default `true`; blind on Bun. */
   measuresGc?: boolean;
   /** Drives the shared sampling timer; default the global timers, unref'd so the tracker never holds a process alive. */
   scheduler?: ProcessTimers;
@@ -449,35 +434,20 @@ export class ProcessTracker extends InterceptorBase<ProcessEvents> {
     // `??` / explicit gates (never a spread over defaults): an injected source wins; otherwise the default is wired
     // only where the runtime can give a true value, and an unwired source means the stage is ABSENT.
     const platform = env.platform ?? nodeProcess.platform;
-    // macOS free memory. On Deno the spawn needs the `run` permission and node:child_process would PROMPT for it, so it is
-    // made through Deno.Command and only when already granted; otherwise Deno's own (larger) estimate answers.
-    const deno = (globalThis as { Deno?: DenoRunLike & DenoMemoryInfoLike }).Deno;
-    const injectedSpawn = env.vmStat !== undefined || env.vmStatExecFile !== undefined;
+    // macOS free memory: the rare async `vm_stat` read (an injected sampler or spawn function wins).
     const vmStat =
       platform === 'darwin' && env.readsVmStat !== false
         ? (env.vmStat ??
           createVmStatSampler({
-            ...(env.vmStatExecFile !== undefined
-              ? { execFile: env.vmStatExecFile }
-              : deno !== undefined && typeof deno.Command === 'function'
-                ? { execFile: createDenoExecFile(deno) }
-                : {}),
+            ...(env.vmStatExecFile !== undefined ? { execFile: env.vmStatExecFile } : {}),
             // A value read on one tick must still be fresh (<= 2 sampler intervals) on the next tick, so the cache life
             // follows a slower tracker interval; never faster than 10 s (the spawn cadence).
             intervalMs: Math.max(VM_STAT_MIN_INTERVAL_MS, env.intervalMs ?? DEFAULT_INTERVAL_MS),
             onError: (error) => this.#onError(error),
           }))
         : undefined;
-    const denoEstimate = createDenoMemoryReader(deno, platform);
-    const macFree = (): number | undefined => {
-      if (
-        vmStat !== undefined &&
-        (deno === undefined || injectedSpawn || denoVmStatGranted(deno))
-      ) {
-        return this.#peekOnly ? vmStat.peek() : vmStat.read();
-      }
-      return denoEstimate();
-    };
+    const macFree = (): number | undefined =>
+      vmStat === undefined ? undefined : this.#peekOnly ? vmStat.peek() : vmStat.read();
     const resolved: Resolved = {
       vmStat,
       eventLoop:

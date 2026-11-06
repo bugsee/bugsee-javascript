@@ -1,5 +1,5 @@
 // The battery the browser harness runs inside a REAL Chromium page (`test/browser.e2e.ts` bundles this
-// file with esbuild and serves it). The node/bun/deno entries spawn a real process; this is the same idea
+// file with esbuild and serves it). The node/bun entries spawn a real process; this is the same idea
 // for the web tier — the real `@bugsee/browser` launch, a real DOM, a real rrweb recorder, real
 // `window.onerror`, real `fetch`, and (in the `persist` scenario) real IndexedDB.
 //

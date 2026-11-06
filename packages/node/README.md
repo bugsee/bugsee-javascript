@@ -6,7 +6,7 @@ Part of the Bugsee JavaScript SDK (public beta, 0.1.0-beta.x).
 
 This is an internal building block of the Bugsee SDK, not intended to be installed directly. Install `@bugsee/bugsee` instead. It selects this build automatically on Node.js and adds performance monitoring, trace propagation and OpenTelemetry on top of it.
 
-The backend adapters (`@bugsee/express`, `@bugsee/fastify`, `@bugsee/nestjs`, `@bugsee/hono`, `@bugsee/koa`, `@bugsee/hapi`, `@bugsee/elysia`), the Next.js and other meta-framework adapters, `@bugsee/bun`, `@bugsee/deno` and `@bugsee/electron` also build on it. Requires Node.js 18 or newer.
+The backend adapters (`@bugsee/express`, `@bugsee/fastify`, `@bugsee/nestjs`, `@bugsee/hono`, `@bugsee/koa`, `@bugsee/hapi`, `@bugsee/elysia`), the Next.js and other meta-framework adapters, `@bugsee/bun` and `@bugsee/electron` also build on it. Requires Node.js 18 or newer.
 
 What it contains:
 

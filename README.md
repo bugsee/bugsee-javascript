@@ -1,6 +1,6 @@
 # Bugsee JavaScript SDK
 
-A single SDK targeting every JavaScript runtime — browsers, Node.js, Bun, Deno, Electron, Cloudflare Workers, Vercel Edge, and Web/Service Workers.
+A single SDK targeting every JavaScript runtime — browsers, Node.js, Bun, Electron, Cloudflare Workers, Vercel Edge, and Web/Service Workers.
 
 > **Status:** implemented. Runnable SDKs exist for every target runtime, plus frontend, meta-framework and
 > backend adapters, session replay, APM, OpenTelemetry and source-map tooling. Development follows test-first

@@ -237,7 +237,6 @@
     "@bugsee/capture": "workspace:*",
     "@bugsee/cloudflare": "workspace:*",
     "@bugsee/core": "workspace:*",
-    "@bugsee/deno": "workspace:*",
     "@bugsee/node": "workspace:*",
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*",

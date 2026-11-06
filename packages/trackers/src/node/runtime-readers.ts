@@ -139,27 +139,6 @@ export function createElectronMemoryReader(
   };
 }
 
-/** The slice of Deno's namespace we read. `systemMemoryInfo()` reports BYTES. */
-export interface DenoMemoryInfoLike {
-  systemMemoryInfo?: () => { available?: unknown };
-}
-
-/**
- * `Deno.systemMemoryInfo().available`, on macOS ONLY (free + inactive pages: the quantity `os.freemem()` lacks there).
- * (If it is unavailable, the `vm_stat` source covers macOS.)
- * On Linux and Windows Deno's `os.freemem()` is already the available figure, so this source is not consulted.
- */
-export function createDenoMemoryReader(
-  deno: DenoMemoryInfoLike | undefined,
-  platform: string,
-): () => number | undefined {
-  return () => {
-    if (platform !== 'darwin' || typeof deno?.systemMemoryInfo !== 'function') return undefined;
-    const value = deno.systemMemoryInfo().available;
-    return isCount(value) && value >= 0 ? value : undefined;
-  };
-}
-
 /** The first of several optional readers that answers; a reader that throws is skipped. */
 export function firstAnswer(
   readers: readonly (() => number | undefined)[],
@@ -180,7 +159,7 @@ export function firstAnswer(
 export interface SystemFreeSources {
   /** `process.platform`. On `darwin` `os.freemem()` is NOT a source (see {@link createSystemFreeReader}). */
   platform: string;
-  /** A runtime-native "available to new work" figure in BYTES (Electron, Deno on macOS), tried first. */
+  /** A runtime-native "available to new work" figure in BYTES (Electron), tried first. */
   native?: () => number | undefined;
   /** Raw `/proc/meminfo` text, only supplied for a runtime whose `os.freemem()` is not MemAvailable (Bun < 1.3.13). */
   meminfo?: () => string | undefined;
@@ -194,16 +173,15 @@ export interface SystemFreeSources {
 /**
  * `ram_system_free`: memory available to new work, as Android reports it (`availMem`), never merely free pages.
  * Sources in order, first plausible value (finite, >= 0, <= total) wins:
- *  1. `native`: Electron `process.getSystemMemoryInfo()`; Deno `systemMemoryInfo().available` on macOS.
+ *  1. `native`: Electron `process.getSystemMemoryInfo()`.
  *  2. `meminfo`: `MemAvailable` from `/proc/meminfo` (Bun only).
  *  3. `vmStat`, on macOS only: free + file-backed + purgeable pages from a RARE async `/usr/bin/vm_stat` read (the
  *     same definition as Electron's `getSystemMemoryInfo`; see ./vm-stat). When it has no fresh value the trace is
  *     omitted for that tick, it never falls back to `os.freemem()`.
- *  4. `os.freemem()`, except on macOS. libuv reads `MemAvailable` on Linux (since 1.43, Node >= 16.14; Deno since
- *     2023) and `ullAvailPhys` on Windows. On macOS it is only free pages (measured 0.2-0.7% of RAM on a 64 GB Mac
+ *  4. `os.freemem()`, except on macOS. libuv reads `MemAvailable` on Linux (since 1.43, Node >= 16.14) and `ullAvailPhys` on Windows. On macOS it is only free pages (measured 0.2-0.7% of RAM on a 64 GB Mac
  *     while the vm_stat available estimate was ~29%), so it is not a source there.
  * `process.availableMemory()` is never used: it equals `os.freemem()` without a cgroup limit, reads lower inside one,
- * is 0 on Windows Deno and includes inactive pages on macOS Deno. Inside a container the value is the HOST's
+ * is lower inside a cgroup. Inside a container the value is the HOST's
  * figure; the cgroup cap is carried by `process_memory_limit`.
  * A source that throws or answers an implausible value is skipped; none answering means undefined (omitted).
  */

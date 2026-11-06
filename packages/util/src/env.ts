@@ -4,7 +4,6 @@
 
 interface RuntimeGlobals {
   Bun?: unknown;
-  Deno?: unknown;
   process?: { versions?: { node?: unknown; electron?: unknown }; type?: unknown };
   window?: { document?: unknown };
   importScripts?: unknown;
@@ -17,10 +16,7 @@ const g = globalThis as unknown as RuntimeGlobals;
 
 export const isBun = (): boolean => typeof g.Bun !== 'undefined';
 
-export const isDeno = (): boolean => typeof g.Deno !== 'undefined';
-
-export const isNode = (): boolean =>
-  typeof g.process?.versions?.node === 'string' && !isBun() && !isDeno();
+export const isNode = (): boolean => typeof g.process?.versions?.node === 'string' && !isBun();
 
 export const isBrowser = (): boolean => typeof g.window?.document !== 'undefined';
 

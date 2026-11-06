@@ -9,7 +9,7 @@
 // one. Every APM batch in every previous e2e 404'd into `onError`, unseen.
 //
 // Node only, deliberately. The subject here is the OTel wiring, which is runtime-independent; running the
-// same battery under bun and deno would re-test their `@opentelemetry/*` module resolution rather than
+// same battery under bun would re-test its `@opentelemetry/*` module resolution rather than
 // anything about the bridge. The runtime matrix is covered by `instrumentation.e2e.ts`.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
