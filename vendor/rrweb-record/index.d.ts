@@ -8,5 +8,10 @@ import type { eventWithTime, listenerHandler } from '@rrweb/types';
 export declare function record<T = eventWithTime>(
   options?: recordOptions<T> & {
     maskAttributeFn?: (key: string, value: string, element: HTMLElement) => string;
+    maskAllText?: boolean;
+    unmaskTextClass?: string | RegExp | null;
+    unmaskTextSelector?: string | null;
+    unblockSelector?: string | null;
+    unmaskInputSelector?: string | null;
   },
 ): listenerHandler | undefined;

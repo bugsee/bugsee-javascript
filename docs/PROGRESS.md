@@ -1316,7 +1316,7 @@ Fork `bugsee-port-2.2.1` (merge of rrweb-io/rrweb tag `rrweb@2.2.1` into `bugsee
 textual conflict in `rrweb-snapshot/src/snapshot.ts`: upstream #1964 gated the iframe-load branch with
 `_isBlockedElement(n, blockClass, blockSelector)`; P4 already uses `!isBlockedNode` plus an
 `_isBlockedInContext` re-check, so P4 was kept) → record-only bundle 198322 B / 62407 B gzip (2.2.0-iframe-block
-987d0765: 188191 / 59269). Recipe unchanged: vite `dist/rrweb-record.js` via `vite.config.entries.js`, then
+987d0765: 188191 / 59348). Recipe unchanged: vite `dist/rrweb-record.js` via `vite.config.entries.js`, then
 `esbuild --bundle --minify --format=esm`; two clean rebuilds byte-identical.
 
 2.2.1 record/snapshot notes and how they land here:
