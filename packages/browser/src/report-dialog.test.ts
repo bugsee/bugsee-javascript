@@ -511,6 +511,32 @@ describe('sending', () => {
     expect(await pending).toEqual({ ok: false });
   });
 
+  it('dims the form and shows the infinity loader over it while sending', async () => {
+    let finish: (value: UploadResult) => void = () => {};
+    const { show, upload } = harness();
+    upload.mockImplementation(() => new Promise<UploadResult>((resolve) => (finish = resolve)));
+    const pending = show();
+    const busy = q('[data-busy-overlay]');
+    const card = q('form');
+    expect(busy.hasAttribute('hidden')).toBe(true);
+    expect(card.hasAttribute('data-busy')).toBe(false);
+
+    send();
+
+    expect(busy.hasAttribute('hidden')).toBe(false);
+    expect(busy.getAttribute('role')).toBe('status');
+    expect(busy.getAttribute('aria-label')).toBe('Sending…');
+    expect(card.hasAttribute('data-busy')).toBe(true);
+    // the viewer's loader: a faint track and a travelling bar on the same lemniscate path
+    const paths = busy.querySelectorAll('svg path');
+    expect(paths).toHaveLength(2);
+    expect(paths[0]?.getAttribute('d')).toBe(paths[1]?.getAttribute('d'));
+    expect(paths[1]?.getAttribute('class')).toContain('infinity-bar');
+
+    finish({ ok: true });
+    await pending;
+  });
+
   it('closes and resolves a failed result rather than hanging when the upload throws', async () => {
     const { show, upload } = harness();
     upload.mockRejectedValue(new Error('boom'));
