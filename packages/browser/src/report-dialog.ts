@@ -167,6 +167,7 @@ interface Refs {
   close: HTMLButtonElement;
   confirm: HTMLElement;
   busyOverlay: HTMLElement;
+  footer: HTMLElement;
   keep: HTMLButtonElement;
   discard: HTMLButtonElement;
   fields: Partial<Record<FieldName, HTMLInputElement | HTMLTextAreaElement>>;
@@ -270,6 +271,9 @@ function showDialog(
     refs.close.disabled = value;
     // Dim the form and cover it with the loader, so a send in flight is visible (not just a greyed button).
     refs.form.toggleAttribute('data-busy', value);
+    refs.form.setAttribute('aria-busy', String(value));
+    // The powered-by link is the one control left enabled: keep it out of the tab order while sending.
+    refs.footer.toggleAttribute('inert', value);
     refs.busyOverlay.toggleAttribute('hidden', !value);
   };
 
@@ -717,7 +721,10 @@ function build(
     hook(path, name);
     loader.append(path);
   }
-  busyOverlay.append(loader);
+  // The announced part of the live region: screen readers read a status region's TEXT, not its label.
+  const busyText = make('span', {}, strings.sending);
+  hook(busyText, 'busy-text');
+  busyOverlay.append(loader, busyText);
 
   form.append(bar, body, footerRow, confirm, busyOverlay);
   dialog.append(form);
@@ -731,6 +738,7 @@ function build(
     close,
     confirm,
     busyOverlay,
+    footer: footerRow,
     keep,
     discard,
     fields: fields as Refs['fields'],

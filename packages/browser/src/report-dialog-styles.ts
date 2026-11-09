@@ -309,8 +309,21 @@ textarea.${p}input { min-height: 8.2em; resize: vertical; }
   animation: ${p}infinity-travel 1.6s linear infinite;
 }
 @keyframes ${p}infinity-travel { to { stroke-dashoffset: -100; } }
+/* Reduced motion means no motion (as with the card entry below): a static track with a part-drawn bar. */
 @media (prefers-reduced-motion: reduce) {
-  .${p}infinity-bar { animation-duration: 4s; }
+  .${p}infinity-bar { animation: none; }
+}
+/* Visually hidden, still announced: the live region's text. */
+.${p}busy-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* On a phone-sized viewport the card is the mobile SDKs' full-screen form. */

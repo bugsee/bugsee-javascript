@@ -533,6 +533,24 @@ describe('sending', () => {
     expect(paths[0]?.getAttribute('d')).toBe(paths[1]?.getAttribute('d'));
     expect(paths[1]?.getAttribute('class')).toContain('infinity-bar');
 
+    // announced by screen readers from TEXT content (not the accessible name), and the card says it is busy
+    expect(busy.textContent).toBe('Sending…');
+    expect(card.getAttribute('aria-busy')).toBe('true');
+    // the powered-by link is out of the tab order while the form is locked
+    expect(q('[data-powered]').closest('[inert]')).not.toBeNull();
+    // the sections are dimmed by the stylesheet (jsdom does not cascade shadow-root styles, so read the rule)
+    const css = REPORT_DIALOG_CSS.replace(/\s+/g, ' ');
+    for (const section of ['bar', 'body', 'footer-row']) {
+      expect(css).toContain(
+        `.bugsee-reporting-dialog-card[data-busy] .bugsee-reporting-dialog-${section}`,
+      );
+    }
+    expect(css).toMatch(/\[data-busy\] \.bugsee-reporting-dialog-footer-row \{ opacity: 0\.45/);
+    // reduced motion turns the travelling bar off
+    expect(css).toMatch(
+      /prefers-reduced-motion: reduce\) \{ \.bugsee-reporting-dialog-infinity-bar \{ animation: none; \}/,
+    );
+
     finish({ ok: true });
     await pending;
   });
