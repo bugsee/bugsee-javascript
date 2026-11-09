@@ -10,6 +10,7 @@
     "includes": [
       "**",
       "!samples",
+      "!vendor",
       "!.local-registry",
       "!packages/protocol/spec",
       "!docs/design/async-origin-capture/**"

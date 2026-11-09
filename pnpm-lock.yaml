@@ -769,7 +769,7 @@ importers:
         version: 0.8.3
       html-webpack-plugin:
         specifier: ^5.6.8
-        version: 5.6.8(webpack@5.112.2(esbuild@0.28.2))
+        version: 5.6.8(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -796,16 +796,16 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.3.5
-        version: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(terser@5.51.2)(tsx@4.23.15)
+        version: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)
       vue:
         specifier: ^3.5.0
         version: 3.5.44(typescript@6.0.3)
       webpack:
         specifier: ^5.112.2
-        version: 5.112.2(esbuild@0.28.2)
+        version: 5.112.2(esbuild@0.28.2)(postcss@8.5.32)
       webpack-subresource-integrity:
         specifier: ^5.1.0
-        version: 5.1.0(html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)))(webpack@5.112.2(esbuild@0.28.2))
+        version: 5.1.0(html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)))(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
       zone.js:
         specifier: 0.16.3
         version: 0.16.3
@@ -1182,15 +1182,15 @@ importers:
   packages/rrweb:
     dependencies:
       '@rrweb/types':
-        specifier: ^2.2.0
-        version: 2.2.0
+        specifier: ^2.2.1
+        version: 2.2.1
       rrweb:
-        specifier: ^2.2.0
-        version: 2.2.0
+        specifier: ^2.2.1
+        version: 2.2.1
     devDependencies:
       '@bugsee/rrweb-record':
-        specifier: github:bugsee/rrweb#987d0765a76607f81767b3bde2d65a8382caf7fa
-        version: https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa(@rrweb/types@2.2.0)(rrweb@2.2.0)
+        specifier: file:../../vendor/rrweb-record
+        version: file:vendor/rrweb-record(@rrweb/types@2.2.1)(rrweb@2.2.1)
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -2010,12 +2010,11 @@ packages:
     deprecated: Exits 0 when the binary is killed by a signal. Upgrade to 0.8.2 or use @bugsee/cli.
     hasBin: true
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa':
-    resolution: {gitHosted: true, integrity: sha512-a7Z4HHZO2VwFgIHQxWC96i4fuyaSY3RZz+M6goeXeKZHiDmIrUxo29u4wdXQdOyCQcyMmPptwgZADGZbxGcWlw==, tarball: https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa}
-    version: 2.2.0
+  '@bugsee/rrweb-record@file:vendor/rrweb-record':
+    resolution: {directory: vendor/rrweb-record, type: directory}
     peerDependencies:
-      '@rrweb/types': ^2.2.0
-      rrweb: ^2.2.0
+      '@rrweb/types': ^2.2.1
+      rrweb: ^2.2.1
     peerDependenciesMeta:
       '@rrweb/types':
         optional: true
@@ -4175,11 +4174,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@rrweb/types@2.2.0':
-    resolution: {integrity: sha512-2gTA/pRpIbuET123oSdX5ZUDZfWCOIMYBvpSai3fr5pk9LcbccPqqaXflX+roP4oKenLjNtJPGpFK3BfYeBKnA==}
+  '@rrweb/types@2.2.1':
+    resolution: {integrity: sha512-GGUGQXekOJ35Ab644SO6iWU7vWpXiGPz1B5egTsPEwNTHv+syXWOoe2rXwB1NQOs64XirHzHqYX6SSYaJme3Cg==}
 
-  '@rrweb/utils@2.2.0':
-    resolution: {integrity: sha512-e8FEp8wLswqgjDHpQNUUVfEXeDsrRMOVouvqIGKvnPxKYonjLlh0mU3O/17QNvCixFG5eUFR1B2jgTdiLlZxeQ==}
+  '@rrweb/utils@2.2.1':
+    resolution: {integrity: sha512-aRubNFue2PeI6ZlesjNfAJeXE2okDEiIpspvC03aotTRgbmJ0SXSsrBbYcWVCM6o7E5aNolmb7m7SKmUyCLDnQ==}
 
   '@rushstack/node-core-library@5.25.1':
     resolution: {integrity: sha512-ozoRDwIx3jStOYpx86rFyXH4SaUR+DVT6HubQ59avLplJkWXSm5InztYH7RrOzzq9PJXTdq9/+lKX06SfkLVsA==}
@@ -8123,8 +8122,8 @@ packages:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
 
-  rrdom@2.2.0:
-    resolution: {integrity: sha512-gxcBJWVtS/Xz+Ys8xcjPoWqr+C7wz/MS8NgmKw136I47Xygy17FYOGZqoGwEyvBn724jRDK1ljS+8w9FsZStOg==}
+  rrdom@2.2.1:
+    resolution: {integrity: sha512-nUrhXH2DyD62+9hru7mrPhtbF0CVobMdJzhl0uIgoMtaLS2vN4mNrRL/DmC/gpEH4EO0JlmWH7lzdqaY90fGgA==}
 
   rrweb-cssom@0.7.1:
     resolution: {integrity: sha512-TrEMa7JGdVm0UThDJSx7ddw5nVm3UJS9o9CCIZ72B1vSyEZoziDqBYP3XIoi/12lKrJR8rE3jeFHMok2F/Mnsg==}
@@ -8132,11 +8131,11 @@ packages:
   rrweb-cssom@0.8.0:
     resolution: {integrity: sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==}
 
-  rrweb-snapshot@2.2.0:
-    resolution: {integrity: sha512-Tg/PiCLy+zV9C0Jfb4IAGABtt5l/UOvwW5xjFk41ZQhBfUjeqPP1rZ9HMDrFPc7cawCUEenWw54+g/4vluO5lg==}
+  rrweb-snapshot@2.2.1:
+    resolution: {integrity: sha512-BkpFnPYoSKjSGe9rWnSo5ZQH0OnIzubTl7Lk3vyX6ktM1NaXkkPQwx3SNhdhrDS0Ja+ndlvYaNF0I1WG0exCtQ==}
 
-  rrweb@2.2.0:
-    resolution: {integrity: sha512-ofVzPq11/yIQ7WhVb++rJGI2LoPPrxdqu0QAvRA4KGeXJ7LH52jQ0VlRH4+VXn5PA/7pz85/rRkQyBUqT1LraQ==}
+  rrweb@2.2.1:
+    resolution: {integrity: sha512-+6DFkxeHakI7180j/AtJU6cP41aZxUm/lK1zMjTNsRG6IWFLSYco3IK3Yl2llCcPAbeLoNL9V6p178DgL99ZvQ==}
 
   run-applescript@7.1.0:
     resolution: {integrity: sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q==}
@@ -10360,10 +10359,10 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  '@bugsee/rrweb-record@https://codeload.github.com/bugsee/rrweb/tar.gz/987d0765a76607f81767b3bde2d65a8382caf7fa(@rrweb/types@2.2.0)(rrweb@2.2.0)':
+  '@bugsee/rrweb-record@file:vendor/rrweb-record(@rrweb/types@2.2.1)(rrweb@2.2.1)':
     optionalDependencies:
-      '@rrweb/types': 2.2.0
-      rrweb: 2.2.0
+      '@rrweb/types': 2.2.1
+      rrweb: 2.2.1
 
   '@capsizecss/unpack@4.0.1':
     dependencies:
@@ -12733,9 +12732,9 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.65.1':
     optional: true
 
-  '@rrweb/types@2.2.0': {}
+  '@rrweb/types@2.2.1': {}
 
-  '@rrweb/utils@2.2.0': {}
+  '@rrweb/utils@2.2.1': {}
 
   '@rushstack/node-core-library@5.25.1(@types/node@22.20.5)':
     dependencies:
@@ -15282,7 +15281,7 @@ snapshots:
 
   html-void-elements@3.0.0: {}
 
-  html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)):
+  html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)):
     dependencies:
       '@types/html-minifier-terser': 6.1.0
       html-minifier-terser: 6.1.0
@@ -15290,7 +15289,7 @@ snapshots:
       pretty-error: 4.0.0
       tapable: 2.3.3
     optionalDependencies:
-      webpack: 5.112.2(esbuild@0.28.2)
+      webpack: 5.112.2(esbuild@0.28.2)(postcss@8.5.32)
 
   htmlparser2@6.1.0:
     dependencies:
@@ -16032,15 +16031,16 @@ snapshots:
       postcss: 8.5.32
     optional: true
 
-  minimizer-webpack-plugin@5.13.1(esbuild@0.28.2)(webpack@5.112.2(esbuild@0.28.2)):
+  minimizer-webpack-plugin@5.13.1(esbuild@0.28.2)(postcss@8.5.32)(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       jest-worker: 27.5.1
-      schema-utils: 4.8.1(webpack@5.112.2(esbuild@0.28.2))
+      schema-utils: 4.8.1(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
       terser: 5.51.2
-      webpack: 5.112.2(esbuild@0.28.2)
+      webpack: 5.112.2(esbuild@0.28.2)(postcss@8.5.32)
     optionalDependencies:
       esbuild: 0.28.2
+      postcss: 8.5.32
 
   minipass@7.1.3: {}
 
@@ -17553,28 +17553,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  rrdom@2.2.0:
+  rrdom@2.2.1:
     dependencies:
-      rrweb-snapshot: 2.2.0
+      rrweb-snapshot: 2.2.1
 
   rrweb-cssom@0.7.1: {}
 
   rrweb-cssom@0.8.0: {}
 
-  rrweb-snapshot@2.2.0:
+  rrweb-snapshot@2.2.1:
     dependencies:
       postcss: 8.5.32
 
-  rrweb@2.2.0:
+  rrweb@2.2.1:
     dependencies:
-      '@rrweb/types': 2.2.0
-      '@rrweb/utils': 2.2.0
+      '@rrweb/types': 2.2.1
+      '@rrweb/utils': 2.2.1
       '@types/css-font-loading-module': 0.0.7
       '@xstate/fsm': 1.6.5
       base64-arraybuffer: 1.0.2
       mitt: 3.0.1
-      rrdom: 2.2.0
-      rrweb-snapshot: 2.2.0
+      rrdom: 2.2.1
+      rrweb-snapshot: 2.2.1
 
   run-applescript@7.1.0: {}
 
@@ -17642,14 +17642,14 @@ snapshots:
       webpack: 5.112.2(esbuild@0.28.2)(lightningcss@1.33.0)(postcss@8.5.32)
     optional: true
 
-  schema-utils@4.8.1(webpack@5.112.2(esbuild@0.28.2)):
+  schema-utils@4.8.1(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)):
     dependencies:
       '@types/json-schema': 7.0.15
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       ajv-keywords: 5.1.0(ajv@8.20.0)
     optionalDependencies:
-      webpack: 5.112.2(esbuild@0.28.2)
+      webpack: 5.112.2(esbuild@0.28.2)(postcss@8.5.32)
 
   scule@1.3.0: {}
 
@@ -18831,20 +18831,6 @@ snapshots:
       tsx: 4.23.15
       yaml: 2.9.1
 
-  vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(terser@5.51.2)(tsx@4.23.15):
-    dependencies:
-      lightningcss: 1.33.0
-      picomatch: 4.0.7
-      postcss: 8.5.32
-      rolldown: 1.2.15
-      tinyglobby: 0.2.17
-    optionalDependencies:
-      '@types/node': 22.20.5
-      esbuild: 0.28.2
-      fsevents: 2.3.3
-      terser: 5.51.2
-      tsx: 4.23.15
-
   vitefu@1.1.3(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)):
     optionalDependencies:
       vite: 8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -19000,51 +18986,14 @@ snapshots:
 
   webpack-sources@3.6.0: {}
 
-  webpack-subresource-integrity@5.1.0(html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)))(webpack@5.112.2(esbuild@0.28.2)):
+  webpack-subresource-integrity@5.1.0(html-webpack-plugin@5.6.8(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)))(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32)):
     dependencies:
       typed-assert: 1.0.9
-      webpack: 5.112.2(esbuild@0.28.2)
+      webpack: 5.112.2(esbuild@0.28.2)(postcss@8.5.32)
     optionalDependencies:
-      html-webpack-plugin: 5.6.8(webpack@5.112.2(esbuild@0.28.2))
+      html-webpack-plugin: 5.6.8(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
 
   webpack-virtual-modules@0.6.2: {}
-
-  webpack@5.112.2(esbuild@0.28.2):
-    dependencies:
-      '@types/estree': 1.0.9
-      '@types/json-schema': 7.0.15
-      '@webassemblyjs/ast': 1.14.1
-      '@webassemblyjs/wasm-edit': 1.14.1
-      '@webassemblyjs/wasm-parser': 1.14.1
-      browserslist: 4.29.4
-      chrome-trace-event: 1.0.4
-      enhanced-resolve: 5.26.0
-      es-module-lexer: 2.3.2
-      events: 3.3.0
-      graceful-fs: 4.2.11
-      mime-db: 1.54.0
-      minimizer-webpack-plugin: 5.13.1(esbuild@0.28.2)(webpack@5.112.2(esbuild@0.28.2))
-      schema-utils: 4.8.1(webpack@5.112.2(esbuild@0.28.2))
-      tapable: 2.3.3
-      watchpack: 2.6.3
-      webpack-sources: 3.6.0
-    transitivePeerDependencies:
-      - '@minify-html/node'
-      - '@napi-rs/image'
-      - '@swc/core'
-      - '@swc/css'
-      - '@swc/html'
-      - clean-css
-      - cssnano
-      - csso
-      - esbuild
-      - html-minifier-terser
-      - imagemin
-      - lightningcss
-      - postcss
-      - sharp
-      - svgo
-      - uglify-js
 
   webpack@5.112.2(esbuild@0.28.2)(lightningcss@1.33.0)(postcss@8.5.32):
     dependencies:
@@ -19083,6 +19032,43 @@ snapshots:
       - svgo
       - uglify-js
     optional: true
+
+  webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32):
+    dependencies:
+      '@types/estree': 1.0.9
+      '@types/json-schema': 7.0.15
+      '@webassemblyjs/ast': 1.14.1
+      '@webassemblyjs/wasm-edit': 1.14.1
+      '@webassemblyjs/wasm-parser': 1.14.1
+      browserslist: 4.29.4
+      chrome-trace-event: 1.0.4
+      enhanced-resolve: 5.26.0
+      es-module-lexer: 2.3.2
+      events: 3.3.0
+      graceful-fs: 4.2.11
+      mime-db: 1.54.0
+      minimizer-webpack-plugin: 5.13.1(esbuild@0.28.2)(postcss@8.5.32)(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
+      schema-utils: 4.8.1(webpack@5.112.2(esbuild@0.28.2)(postcss@8.5.32))
+      tapable: 2.3.3
+      watchpack: 2.6.3
+      webpack-sources: 3.6.0
+    transitivePeerDependencies:
+      - '@minify-html/node'
+      - '@napi-rs/image'
+      - '@swc/core'
+      - '@swc/css'
+      - '@swc/html'
+      - clean-css
+      - cssnano
+      - csso
+      - esbuild
+      - html-minifier-terser
+      - imagemin
+      - lightningcss
+      - postcss
+      - sharp
+      - svgo
+      - uglify-js
 
   whatwg-encoding@3.1.1:
     dependencies:

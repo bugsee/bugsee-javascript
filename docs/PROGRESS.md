@@ -1310,6 +1310,31 @@ recorded" was false.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
+### 2026-11-09 — Replay moves onto upstream rrweb 2.2.1 → `krassx/rrweb-2.2.1-a625`
+
+Fork `bugsee-port-2.2.1` (merge of rrweb-io/rrweb tag `rrweb@2.2.1` into `bugsee-port-2.2.0-iframe-block`; one
+textual conflict in `rrweb-snapshot/src/snapshot.ts`: upstream #1964 gated the iframe-load branch with
+`_isBlockedElement(n, blockClass, blockSelector)`; P4 already uses `!isBlockedNode` plus an
+`_isBlockedInContext` re-check, so P4 was kept) → record-only bundle 198322 B / 62407 B gzip (2.2.0-iframe-block
+987d0765: 188191 / 59269). Recipe unchanged: vite `dist/rrweb-record.js` via `vite.config.entries.js`, then
+`esbuild --bundle --minify --format=esm`; two clean rebuilds byte-identical.
+
+2.2.1 record/snapshot notes and how they land here:
+
+- Media play/pause/seek on non-media (#1673): upstream used `instanceof HTMLMediaElement`, which is false for a
+  `<video>` in an iframe (other realm) and broke the P4 control test. The bundle uses the player's `AUDIO`/`VIDEO`
+  `nodeName` check instead.
+- Blocked iframe documents (#1964): subsumed by P4.
+- Fragment-only (`url(#filter)`) and `blob:` css `url()` absolutify (#1993, #1956).
+- Inlined postcss 8.5.32 (CVE-2026-41305).
+- Iframe-navigation tests (#1977) only; the source fix shipped in 2.2.0.
+
+This Cloud Agent cannot push to `bugsee/rrweb` (GitHub App is installed only on `bugsee/bugsee-javascript`). The
+rebuilt bundle is vendored at `vendor/rrweb-record` and `@bugsee/rrweb` depends on `file:../../vendor/rrweb-record`.
+Intended git pin once the fork is pushed: `github:bugsee/rrweb#5a46e7db3c97c1e87ded58e1b83c6f5ef43fec34`
+(`bugsee-dist-2.2.1`). Port tip `69633fc17909ab68ff473b2de4ec30316a9c90a8`. `rrweb` / `@rrweb/types` bumped to
+`^2.2.1`. Public type surface unchanged (`@rrweb/types@2.2.1` is a version bump).
+
 ### 2026-11-06 — Deno support dropped (owner decision)
 
 Removed `@bugsee/deno` and everything that existed only for it: the umbrella's working `deno` entry (the `deno` condition + `./deno` subpath are KEPT as a stub that throws "Deno is no longer supported", because Deno also sets `node` and would otherwise silently resolve the Node build), the `deno` e2e target and `entry-deno.ts`, the `Deno.serve` branch of the native-server scenario, the CI `Setup Deno` step and `deno --version` check, the `isDeno` util, the Deno-only tracker code (`createDenoMemoryReader`, `createDenoExecFile`/`denoVmStatGranted`, the `Deno.Command` vm_stat spawn) with their tests, sample `pnpm-workspace` overrides, and the `@bugsee/deno` lines in pending changesets (plus the Deno-only `omit-unmeasurable-event-loop-lag` changeset). KEPT on purpose: the protocol `RuntimeType` `'deno'` value (backend wire contract; historical data) and the generic launch seams (`measuresEventLoopDelay`, `measuresGc`, …). `docs/review/`, `docs/research/` and the older design docs still describe Deno as it was; they are history, not as-built. Entries below that mention Deno are superseded by this one.
