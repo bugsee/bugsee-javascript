@@ -313,8 +313,8 @@ textarea.${p}input { min-height: 8.2em; resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   .${p}infinity-bar { animation: none; }
 }
-/* Visually hidden, still announced: the live region's text. */
-.${p}busy-text {
+/* Visually hidden, still announced: the live region that speaks "Sending…". */
+.${p}announcer {
   position: absolute;
   width: 1px;
   height: 1px;

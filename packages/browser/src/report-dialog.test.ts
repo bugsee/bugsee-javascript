@@ -517,6 +517,8 @@ describe('sending', () => {
     upload.mockImplementation(() => new Promise<UploadResult>((resolve) => (finish = resolve)));
     const pending = show();
     const busy = q('[data-busy-overlay]');
+    const announcer = q('[data-announcer]');
+    expect(announcer.textContent).toBe('');
     const card = q('form');
     expect(busy.hasAttribute('hidden')).toBe(true);
     expect(card.hasAttribute('data-busy')).toBe(false);
@@ -524,18 +526,18 @@ describe('sending', () => {
     send();
 
     expect(busy.hasAttribute('hidden')).toBe(false);
-    expect(busy.getAttribute('role')).toBe('status');
-    expect(busy.getAttribute('aria-label')).toBe('Sending…');
-    expect(card.hasAttribute('data-busy')).toBe(true);
+    expect(busy.getAttribute('aria-hidden')).toBe('true'); // visual only; the spoken state is the announcer
     // the viewer's loader: a faint track and a travelling bar on the same lemniscate path
     const paths = busy.querySelectorAll('svg path');
     expect(paths).toHaveLength(2);
     expect(paths[0]?.getAttribute('d')).toBe(paths[1]?.getAttribute('d'));
     expect(paths[1]?.getAttribute('class')).toContain('infinity-bar');
 
-    // announced by screen readers from TEXT content (not the accessible name), and the card says it is busy
-    expect(busy.textContent).toBe('Sending…');
-    expect(card.getAttribute('aria-busy')).toBe('true');
+    // spoken from an always-rendered live region OUTSIDE the form (no busy ancestor), its text set on send
+    expect(announcer.textContent).toBe('Sending…');
+    expect(announcer.getAttribute('role')).toBe('status');
+    expect(card.contains(announcer)).toBe(false);
+    expect(card.hasAttribute('aria-busy')).toBe(false);
     // the powered-by link is out of the tab order while the form is locked
     expect(q('[data-powered]').closest('[inert]')).not.toBeNull();
     // the sections are dimmed by the stylesheet (jsdom does not cascade shadow-root styles, so read the rule)

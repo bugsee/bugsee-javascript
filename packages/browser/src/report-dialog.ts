@@ -167,6 +167,7 @@ interface Refs {
   close: HTMLButtonElement;
   confirm: HTMLElement;
   busyOverlay: HTMLElement;
+  announcer: HTMLElement;
   footer: HTMLElement;
   keep: HTMLButtonElement;
   discard: HTMLButtonElement;
@@ -271,7 +272,7 @@ function showDialog(
     refs.close.disabled = value;
     // Dim the form and cover it with the loader, so a send in flight is visible (not just a greyed button).
     refs.form.toggleAttribute('data-busy', value);
-    refs.form.setAttribute('aria-busy', String(value));
+    refs.announcer.textContent = value ? strings.sending : '';
     // The powered-by link is the one control left enabled: keep it out of the tab order while sending.
     refs.footer.toggleAttribute('inert', value);
     refs.busyOverlay.toggleAttribute('hidden', !value);
@@ -703,11 +704,8 @@ function build(
 
   // The "sending" cover: the viewer's infinity-sign loader (a faint track with a bar travelling along the
   // same lemniscate; see the `infinity-bar` animation in the styles), shown over the dimmed form.
-  const busyOverlay = make('div', {
-    role: 'status',
-    'aria-label': strings.sending,
-    hidden: '',
-  });
+  // Purely visual (`aria-hidden`): the spoken state is the persistent live region below, outside the form.
+  const busyOverlay = make('div', { 'aria-hidden': 'true', hidden: '' });
   hook(busyOverlay, 'busy');
   busyOverlay.setAttribute('data-busy-overlay', '');
   const loader = doc.createElementNS(SVG_NS, 'svg');
@@ -721,13 +719,17 @@ function build(
     hook(path, name);
     loader.append(path);
   }
-  // The announced part of the live region: screen readers read a status region's TEXT, not its label.
-  const busyText = make('span', {}, strings.sending);
-  hook(busyText, 'busy-text');
-  busyOverlay.append(loader, busyText);
+  busyOverlay.append(loader);
+
+  // The announcement: an always-rendered, initially EMPTY live region OUTSIDE the form (so nothing busy is
+  // its ancestor), whose text is set when a send starts — screen readers announce a text change in an
+  // exposed region far more reliably than a region that is merely unhidden. Visually hidden.
+  const announcer = make('div', { role: 'status', 'aria-live': 'polite' });
+  hook(announcer, 'announcer');
+  announcer.setAttribute('data-announcer', '');
 
   form.append(bar, body, footerRow, confirm, busyOverlay);
-  dialog.append(form);
+  dialog.append(form, announcer);
   shadow.append(dialog);
 
   return {
@@ -738,6 +740,7 @@ function build(
     close,
     confirm,
     busyOverlay,
+    announcer,
     footer: footerRow,
     keep,
     discard,
