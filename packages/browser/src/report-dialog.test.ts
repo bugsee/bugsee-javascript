@@ -557,6 +557,17 @@ describe('sending', () => {
     await pending;
   });
 
+  it('speaks the localized "sending" string', async () => {
+    const { show, upload } = harness();
+    upload.mockImplementation(() => new Promise<UploadResult>(() => {}));
+    void show({ strings: { sending: 'Wird gesendet…' } });
+
+    send();
+
+    expect(q('[data-announcer]').textContent).toBe('Wird gesendet…');
+    expect(q('[data-action="send"]').getAttribute('aria-label')).toBe('Wird gesendet…');
+  });
+
   it('closes and resolves a failed result rather than hanging when the upload throws', async () => {
     const { show, upload } = harness();
     upload.mockRejectedValue(new Error('boom'));
