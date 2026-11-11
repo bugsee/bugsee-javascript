@@ -27,7 +27,9 @@ setDebugIdRegistrationVerifier(createStampedBundleVerifier({ appRoot }));
 const require = createRequire(import.meta.url);
 const bundlePath = process.env.BUNDLE_PATH as string;
 const app = (
-  bundlePath.endsWith('.mjs') ? await import(pathToFileURL(bundlePath).href) : require(bundlePath)
+  bundlePath.endsWith('.mjs')
+    ? await import(pathToFileURL(bundlePath).href + (process.env.IMPORT_QUERY ?? ''))
+    : require(bundlePath)
 ) as { fail: () => never };
 if (mode === 'late') setMaps(true);
 let thrown: unknown;

@@ -73,6 +73,14 @@ const FLAG = '--enable-source-maps';
 export function runtimeMapsStacks(
   proc: unknown = (globalThis as unknown as { process?: unknown }).process,
 ): boolean {
+  try {
+    return probe(proc);
+  } catch {
+    return false; // a hostile / exotic `process` shim (a throwing getter) is "not mapping"
+  }
+}
+
+function probe(proc: unknown): boolean {
   if (typeof proc !== 'object' || proc === null) {
     return false;
   }
@@ -86,11 +94,18 @@ export function runtimeMapsStacks(
   }
   // Older Node (< 18.19 / 20.7) maps stacks under the flag but has no `process.sourceMapsEnabled`: read the launch flags.
   // Wrongly true here is harmless (the verifier then checks each registration); wrongly false is the #185 bug.
+  // A runtime `process.setSourceMapsEnabled(true)` on those versions cannot be observed (documented limit).
   if (Array.isArray(execArgv) && execArgv.includes(FLAG)) {
     return true;
   }
   const options = env?.NODE_OPTIONS;
-  return typeof options === 'string' && options.split(/\s+/).includes(FLAG);
+  return (
+    typeof options === 'string' &&
+    options
+      .split(/\s+/)
+      .map((token) => token.replace(/^["']|["']$/g, ''))
+      .includes(FLAG)
+  );
 }
 
 /** Does this registration (its top-frame file + debug-id) really belong to the stamped bundle? */
@@ -135,6 +150,11 @@ export function applyDebugIds(
   }
   const parseStack = options.parseStack ?? parseV8Stack;
   const verifier = options.verifyRegistration ?? installedVerifier;
-  const verify = (options.runtimeMapsStacks ?? runtimeMapsStacks()) ? verifier : undefined;
+  // No verifier (browsers, Electron renderers, a node process that never launched): exactly the pre-#185 join, and the
+  // runtime is not even probed.
+  const verify =
+    verifier !== undefined && (options.runtimeMapsStacks ?? runtimeMapsStacks())
+      ? verifier
+      : undefined;
   attachDebugIds(frames, buildDebugIdMap(debugIds, parseStack, verify));
 }

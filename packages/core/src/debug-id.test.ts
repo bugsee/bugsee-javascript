@@ -129,6 +129,30 @@ describe('runtimeMapsStacks', () => {
     ).toBe(false);
   });
 
+  it('reads NODE_OPTIONS the way Node tokenizes it: any whitespace, optionally quoted', () => {
+    const opts = (NODE_OPTIONS: string) => runtimeMapsStacks({ env: { NODE_OPTIONS } });
+    expect(opts('--x\t--enable-source-maps')).toBe(true);
+    expect(opts('--x   --enable-source-maps')).toBe(true);
+    expect(opts('"--enable-source-maps"')).toBe(true);
+    expect(opts("--x '--enable-source-maps'")).toBe(true);
+    expect(opts('"--enable-source-maps-extra"')).toBe(false);
+  });
+
+  it('never throws: a hostile process object answers false', () => {
+    const hostile = {
+      get sourceMapsEnabled(): never {
+        throw new Error('getter');
+      },
+    };
+    expect(runtimeMapsStacks(hostile)).toBe(false);
+    const envThrows = {
+      get env(): never {
+        throw new Error('env getter');
+      },
+    };
+    expect(runtimeMapsStacks(envThrows)).toBe(false);
+  });
+
   it('is false without a process object (browsers, workers, edge)', () => {
     expect(runtimeMapsStacks(undefined)).toBe(false);
     expect(runtimeMapsStacks(null)).toBe(false);
@@ -237,6 +261,33 @@ describe('applyDebugIds under runtime source-map support (#185)', () => {
       runtimeMapsStacks: true,
     });
     expect(f.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
+  });
+
+  it('with no verifier at all, never even probes the runtime (identical to the pre-#185 path)', () => {
+    const g = globalThis as unknown as {
+      process?: unknown;
+      _bugseeDebugIds?: Record<string, string>;
+    };
+    const real = g.process;
+    const prev = g._bugseeDebugIds;
+    let probed = 0;
+    g._bugseeDebugIds = registry;
+    g.process = {
+      get sourceMapsEnabled(): boolean {
+        probed++;
+        return true;
+      },
+    };
+    try {
+      const f = frames();
+      applyDebugIds(f);
+      expect(f.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
+      expect(probed).toBe(0);
+    } finally {
+      g.process = real;
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
   });
 
   it('uses the installed process-wide verifier by default, and the live process probe', () => {

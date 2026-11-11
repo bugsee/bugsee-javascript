@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseV8Stack } from '@bugsee/core';
+import { parseV8Stack, setStackAppRoot } from '@bugsee/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStampedBundleVerifier, readStampedDebugId } from './debug-id-verifier';
 
@@ -29,7 +29,7 @@ describe('createStampedBundleVerifier', () => {
     dir = undefined;
   });
   const fixture = (): string => {
-    dir = mkdtempSync(join(tmpdir(), 'bugsee-verify-'));
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'bugsee-verify-')));
     mkdirSync(join(dir, 'dist'));
     mkdirSync(join(dir, 'src'));
     writeFileSync(join(dir, 'dist', 'app.js'), `console.log(1);\n//# debugId=${ID}\n`);
@@ -182,6 +182,109 @@ describe('createStampedBundleVerifier', () => {
     });
   });
 
+  describe('ESM frames UNDER the app root (scrubbed to `./…`, still percent-encoded)', () => {
+    afterEach(() => setStackAppRoot(undefined));
+    // The common case: launch() sets appRoot = cwd, so core rewrites `file:///<root>/dist/x.mjs` to `./dist/x.mjs`
+    // WITHOUT decoding. Every test here feeds the verifier the real output of parseV8Stack with that root set.
+    const frameFile = (root: string, rel: string, suffix = ''): string => {
+      setStackAppRoot(root);
+      const url = `${pathToFileURL(join(root, rel)).href}${suffix}`;
+      return parseV8Stack(`Error\n    at <anonymous> (${url}:1:479)`)[0]?.file as string;
+    };
+    const stamped = (root: string, rel: string): void => {
+      mkdirSync(join(root, rel, '..'), { recursive: true });
+      writeFileSync(join(root, rel), `export {};\n//# debugId=${ID}\n`);
+    };
+
+    it('decodes a space in the file name', () => {
+      const root = fixture();
+      stamped(root, 'dist/my chunk.mjs');
+      const file = frameFile(root, 'dist/my chunk.mjs');
+      expect(file).toBe('./dist/my%20chunk.mjs');
+      expect(createStampedBundleVerifier({ appRoot: root })(file, ID)).toBe(true);
+    });
+
+    it('decodes braces / brackets / percent-encoded characters', () => {
+      const root = fixture();
+      stamped(root, 'dist/[id]-{x}.mjs');
+      const file = frameFile(root, 'dist/[id]-{x}.mjs');
+      expect(createStampedBundleVerifier({ appRoot: root })(file, ID)).toBe(true);
+    });
+
+    it('strips an import query and a hash', () => {
+      const root = fixture();
+      stamped(root, 'dist/a.mjs');
+      for (const suffix of ['?v=1', '#h', '?v=1#h']) {
+        const file = frameFile(root, 'dist/a.mjs', suffix);
+        expect(file).toBe(`./dist/a.mjs${suffix}`);
+        expect(createStampedBundleVerifier({ appRoot: root })(file, ID)).toBe(true);
+      }
+    });
+
+    it('decodes AND strips together; rejects an unstamped file', () => {
+      const root = fixture();
+      stamped(root, 'dist/my chunk.mjs');
+      const file = frameFile(root, 'dist/my chunk.mjs', '?v=2');
+      expect(createStampedBundleVerifier({ appRoot: root })(file, ID)).toBe(true);
+      writeFileSync(join(root, 'dist', 'plain.mjs'), 'export {};\n');
+      expect(
+        createStampedBundleVerifier({ appRoot: root })(
+          frameFile(root, 'dist/plain.mjs', '?v=1'),
+          ID,
+        ),
+      ).toBe(false);
+    });
+
+    it('a relative path that is not a valid percent-encoding stays literal', () => {
+      const root = fixture();
+      stamped(root, 'dist/100%.mjs');
+      expect(createStampedBundleVerifier({ appRoot: root })('./dist/100%.mjs', ID)).toBe(true);
+    });
+  });
+
+  it('after stripping a query, tries the literal stripped path (a file really named with a percent)', () => {
+    const root = fixture();
+    writeFileSync(join(root, 'dist', 'a%20b.mjs'), `//# debugId=${ID}\n`);
+    const verify = createStampedBundleVerifier({ appRoot: root });
+    // literal `…/a%20b.mjs?v=1` and decoded `…/a b.mjs` do not exist; only the stripped literal does
+    expect(verify(`${join(root, 'dist', 'a%20b.mjs')}?v=1`, ID)).toBe(true);
+    expect(verify('./dist/a%20b.mjs?v=1', ID)).toBe(true);
+  });
+
+  describe('NODE_OPTIONS token handling is delegated to core; verifier cache', () => {
+    it('caches a definitive miss for every no-such-file code, including EINVAL (the win32 `/C:/` literal)', () => {
+      for (const code of ['ENOENT', 'ENOTDIR', 'ENAMETOOLONG', 'EISDIR', 'EINVAL']) {
+        let reads = 0;
+        const verify = createStampedBundleVerifier({
+          appRoot: '/x',
+          readTail: () => {
+            reads++;
+            throw Object.assign(new Error(code), { code });
+          },
+        });
+        expect(verify('/x/a.js', ID)).toBe(false);
+        const first = reads;
+        expect(verify('/x/a.js', ID)).toBe(false);
+        expect(reads).toBe(first);
+      }
+    });
+
+    it('holds a realistic number of registrations without evicting (no re-reads at 1000 chunks)', () => {
+      let reads = 0;
+      const verify = createStampedBundleVerifier({
+        appRoot: '/x',
+        readTail: () => {
+          reads++;
+          return `//# debugId=${ID}`;
+        },
+      });
+      for (let i = 0; i < 1000; i++) verify(`/x/c${i}.js`, ID);
+      const before = reads;
+      for (let i = 0; i < 1000; i++) verify(`/x/c${i}.js`, ID);
+      expect(reads).toBe(before);
+    });
+  });
+
   describe('cache', () => {
     it('answers a repeated (file, id) with no further I/O, and caches rejections too', () => {
       let reads = 0;
@@ -214,9 +317,9 @@ describe('createStampedBundleVerifier', () => {
           return `//# debugId=${ID}`;
         },
       });
-      for (let i = 0; i < 600; i++) expect(verify(`/x/f${i}.js`, ID)).toBe(true);
+      for (let i = 0; i < 5000; i++) expect(verify(`/x/f${i}.js`, ID)).toBe(true);
       const before = reads;
-      expect(verify('/x/f599.js', ID)).toBe(true); // recent: still cached
+      expect(verify('/x/f4999.js', ID)).toBe(true); // recent: still cached
       expect(reads).toBe(before);
       expect(verify('/x/f0.js', ID)).toBe(true); // evicted: re-read, same answer
       expect(reads).toBe(before + 1);

@@ -10,7 +10,7 @@
 // not mean frames are mapped: the plugin deletes `*.map` after upload by default (then Node cannot map anything), and
 // `process.setSourceMapsEnabled(true)` only affects modules loaded afterwards. Those cases must stay stamped.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +37,10 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
   let noMap: string;
   let esmMap: string;
   let esmNoMap: string;
+  let underSpace: string;
+  let underQuery: string;
 
-  function build(root: string, keepMap: boolean, esm = false): void {
+  function build(root: string, keepMap: boolean, esm = false, name?: string): void {
     mkdirSync(join(root, 'src'), { recursive: true });
     mkdirSync(join(root, 'dist'));
     writeFileSync(
@@ -49,7 +51,7 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
       join(root, 'src', 'main.js'),
       "import { boom } from './a.js';\nexport function fail() {\n  boom();\n}\n",
     );
-    const bundle = join(root, 'dist', esm ? 'app.mjs' : 'app.js');
+    const bundle = join(root, 'dist', name ?? (esm ? 'app.mjs' : 'app.js'));
     execFileSync(
       join(pkgRoot, 'node_modules', '.bin', 'esbuild'),
       [
@@ -70,7 +72,9 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
   }
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'bugsee-sm-rt-'));
+    // realpath: macOS tmpdir is a symlink; Node would map frames to a nonexistent `/private/private/...` path and the
+    // verifier would reject for 'file missing' rather than 'no stamp', which makes the map-present cases tautological.
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'bugsee-sm-rt-')));
     withMap = join(dir, 'with-map');
     noMap = join(dir, 'no-map');
     mkdirSync(withMap);
@@ -84,6 +88,14 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
     mkdirSync(esmNoMap, { recursive: true });
     build(esmMap, true, true);
     build(esmNoMap, false, true);
+    // ESM bundles UNDER the app root (the common case: appRoot = cwd). Core scrubs the frame to `./dist/...` WITHOUT
+    // decoding it, so a space in the file name stays `%20`, and an import query stays in the path.
+    underSpace = join(dir, 'under-space');
+    underQuery = join(dir, 'under-query');
+    mkdirSync(underSpace);
+    mkdirSync(underQuery);
+    build(underSpace, false, true, 'my chunk.mjs');
+    build(underQuery, false, true);
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -92,12 +104,19 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
     root: string,
     args: string[],
     sourceMaps: 'on' | 'off' | 'late',
+    bundleName?: string,
+    importQuery = '',
   ): Result {
     const out = execFileSync(bin, [...args, SCENARIO], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        BUNDLE_PATH: join(root, 'dist', root.includes('esm') ? 'app.mjs' : 'app.js'),
+        BUNDLE_PATH: join(
+          root,
+          'dist',
+          bundleName ?? (root.includes('esm') ? 'app.mjs' : 'app.js'),
+        ),
+        IMPORT_QUERY: importQuery,
         APP_ROOT: root,
         SOURCE_MAPS: sourceMaps,
       },
@@ -105,7 +124,7 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
     return JSON.parse(out.trim().split('\n').at(-1) as string) as Result;
   }
 
-  const bundleFrames = (r: Result) => r.frames.filter((f) => f.at.includes('dist/app.'));
+  const bundleFrames = (r: Result) => r.frames.filter((f) => f.at.includes('dist/'));
   const originalFrames = (r: Result) => r.frames.filter((f) => f.at.includes('src/'));
 
   for (const target of runtimeTargets()) {
@@ -117,6 +136,30 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
         // Node prints the ESM frame as a percent-encoded file URL; Bun prints the plain path.
         expect(r.registrationTopFrames[0]).toContain(name === 'node' ? 'my%20app' : 'my app');
         expect(originalFrames(r)).toHaveLength(0);
+        expect(bundleFrames(r).length).toBeGreaterThan(0);
+        for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+      },
+    );
+
+    it.skipIf(bin === undefined)(
+      `${name}: ESM bundle UNDER the app root with a space in its NAME, flag on, map deleted -> stays stamped`,
+      () => {
+        const r = run(bin as string, underSpace, ['--enable-source-maps'], 'on', 'my chunk.mjs');
+        // Node: the frame is scrubbed to `./dist/my%20chunk.mjs` (relative, still encoded); Bun: the plain relative path.
+        expect(bundleFrames(r)[0]?.at).toContain(
+          name === 'node' ? './dist/my%20chunk.mjs' : './dist/my chunk.mjs',
+        );
+        expect(originalFrames(r)).toHaveLength(0);
+        expect(bundleFrames(r).length).toBeGreaterThan(0);
+        for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+      },
+    );
+
+    it.skipIf(bin === undefined)(
+      `${name}: ESM bundle UNDER the app root imported with a ?v=1 query, flag on, map deleted -> stays stamped`,
+      () => {
+        const r = run(bin as string, underQuery, ['--enable-source-maps'], 'on', 'app.mjs', '?v=1');
+        expect(bundleFrames(r)[0]?.at).toContain('./dist/app.mjs');
         expect(bundleFrames(r).length).toBeGreaterThan(0);
         for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
       },

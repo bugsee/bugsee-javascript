@@ -14,7 +14,7 @@ const MARKER = '//# debugId=';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAIL_BYTES = 16 * 1024;
 /** A registration's file does not change during a process, so answers are cached (bounded; emptied when full). */
-const CACHE_MAX = 256;
+const CACHE_MAX = 4096;
 
 /** The LAST `//# debugId=` stamp in `content` when it is a UUID (the bundler plugin's `readDebugId` rule). */
 export function readStampedDebugId(content: string): string | undefined {
@@ -46,25 +46,32 @@ function readTail(path: string): string {
 /**
  * The filesystem paths a scrubbed frame `file` may denote, most literal first.
  *
- * Core's scrubber strips `file://` by slicing WITHOUT URL-decoding, so an ESM frame arrives as `/…/my%20app/dist/a.mjs`
- * (posix), `/C:/app/dist/a.mjs` (Windows) and may carry the import's `?v=1` / `#hash`. Application frames under the
- * app root arrive as `./x`. The literal path is tried first (a file really named `a%20b`), then the decoded URL form.
+ * Core's scrubber strips `file://` by slicing WITHOUT URL-decoding, so an ESM frame arrives percent-encoded and may
+ * carry the import's `?v=1` / `#hash`: `/…/my%20app/dist/a.mjs` (posix), `/C:/app/dist/a.mjs` (Windows), and, for the
+ * common case of a file UNDER the app root, `./dist/my%20chunk.mjs?v=1`. The literal path is tried first (a file
+ * really named `a%20b`), then the decoded reading with the query/hash stripped, then the stripped literal.
  */
 function candidatePaths(file: string, appRoot: string): string[] {
   if (file.startsWith('file://')) {
     return [fileURLToPath(file)];
   }
   const candidates = [resolveFramePath(file, appRoot)];
-  if (file.startsWith('/')) {
-    const bare = file.replace(/[?#].*$/, '');
-    try {
-      candidates.push(fileURLToPath(`file://${bare}`));
-    } catch {
-      // a literal `%` / `%2F` in a real directory name is not a valid file-URL reading; the literal path stands
-    }
-    if (bare !== file) {
-      candidates.push(bare);
-    }
+  const bare = file.replace(/[?#].*$/, '');
+  let decoded: string | undefined;
+  try {
+    // An absolute posix/`/C:/` path goes through the file-URL reading (it also yields `C:\…` on a win32 host); a
+    // relative one is a plain percent-decode.
+    decoded = file.startsWith('/')
+      ? fileURLToPath(`file://${bare}`)
+      : resolveFramePath(decodeURIComponent(bare), appRoot);
+  } catch {
+    // a literal `%` / `%2F` in a real name is not a valid encoding; the literal path stands
+  }
+  if (decoded !== undefined) {
+    candidates.push(decoded);
+  }
+  if (bare !== file) {
+    candidates.push(resolveFramePath(bare, appRoot));
   }
   return candidates;
 }

@@ -1318,7 +1318,7 @@ key's top frame to `src/main.js`, so a frame at `src/main.js:3:3` was stamped wi
 backend remaps). A global skip on the flag was rejected (review): with the plugin-default deleted maps, or the flag
 enabled after load, nothing is mapped and the join is correct. Fix: `applyDebugIds` validates each registration while
 `process.sourceMapsEnabled` through an injected verifier (`setDebugIdRegistrationVerifier`; `@bugsee/node` installs
-`createStampedBundleVerifier`, which requires the top-frame file's tail to carry `//# debugId=<id>`). Bun does not map
+`createStampedBundleVerifier`, which requires the top-frame file's tail to carry `//# debugId=<id>`). The verifier decodes the percent-encoded ESM frames core leaves (`./dist/my%20chunk.mjs`, `?v=1`), caches verdicts (4096), and old Node (no `process.sourceMapsEnabled`) falls back to `--enable-source-maps` in `execArgv`/`NODE_OPTIONS`. Bun does not map
 `Error.stack` (measured), unaffected. Design: `docs/design/source-maps.md` §7.2.
 
 ### 2026-11-09 — Replay moves onto upstream rrweb 2.2.1 → `krassx/rrweb-2.2.1-a625`

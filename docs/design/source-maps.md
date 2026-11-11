@@ -213,10 +213,17 @@ carry `//# debugId=<the registered id>` (the same marker `bundler-plugin-core` r
 Core stays runtime-portable: no `node:fs`, the verifier is injected (`setDebugIdRegistrationVerifier` / the
 `verifyRegistration` option). With no verifier (browsers, Electron renderers: Chromium does not map `Error.stack`
 even where `process.sourceMapsEnabled` reads true) every registration is kept, i.e. the previous behaviour.
-The verifier reads the path the way core scrubs it, which is not always a plain path: ESM frames arrive as `/…/my%20app/dist/app.mjs`
-(core strips `file://` without URL-decoding), possibly with an import `?v=1`/`#hash`, and on Windows as `/C:/…`; the
-verifier tries the literal path first, then the decoded URL form with the query stripped. Answers are cached per
-(file, id) (bounded), so reports cost no file I/O after the first. Known limits: a path scrubbed to
+The verifier reads the path the way core scrubs it, which is not always a plain path: ESM frames arrive
+percent-encoded (core strips `file://` without URL-decoding): `/…/my%20app/dist/app.mjs` outside the app root,
+`./dist/my%20chunk.mjs` UNDER it (the common case: `launch()` sets the app root to the cwd), possibly with an import
+`?v=1`/`#hash`, and on Windows as `/C:/…`. It tries the literal path first, then the decoded form with the query
+stripped, then the stripped literal. Answers are cached per (file, id), bounded to 4096 registrations (reports cost no
+file I/O after the first for any realistic build; a build with more stamped chunks than that re-reads). Old Node
+(18.0-18.18, 20.0-20.6) has no `process.sourceMapsEnabled`, so the probe falls back to `--enable-source-maps` in
+`execArgv` / `NODE_OPTIONS` (tokenized on whitespace, quotes stripped); an explicit property always wins. A runtime
+`process.setSourceMapsEnabled(true)` on those old versions cannot be observed. With no verifier installed the runtime is
+not probed at all. Not handled: a FIFO-backed path (`/dev/fd/N`) would block the synchronous open; a bundle rewritten in
+place during a deploy keeps its cached verdict until restart. Known limits: a path scrubbed to
 `node_modules/...` has no `./` prefix and is resolved against `process.cwd()`, not the app root, so it verifies when
 the first `node_modules` sits in the cwd and is not joined (flag on) in a hoisted monorepo or when `appRoot` differs
 from the cwd. Separately (pre-existing): encoded ESM paths never match the app root, so they ship as absolute paths.
