@@ -12,6 +12,7 @@ import {
   UNBAKEABLE_IDENTITY,
 } from './app-identity';
 import { bakeIdentity, type ParseChunk } from './bake-identity';
+import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -198,7 +199,12 @@ function webpackBuild(mode: string | undefined): BundlerBuildContext {
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
   options = {},
 ) => {
-  const resolved = resolvePluginOptions(options, process.env);
+  // Lookup order for every BUGSEE_* setting: plugin option, process environment, then the nearest
+  // `.env.bugsee-build-plugin` (env-file.ts; it only fills variables the environment does not set). The
+  // baseline looks from the working directory; a bundler that reports its project directory (Vite `root`,
+  // webpack `context`, esbuild `absWorkingDir`) re-resolves from there, below.
+  let env = mergeBuildPluginEnv(process.env, loadBuildPluginEnv(undefined));
+  let resolved = resolvePluginOptions(options, env);
   const name = 'bugsee';
 
   // The app identity comes from the BUNDLER's project directory (Vite `root`, webpack `context`, esbuild
@@ -214,7 +220,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     fixed: FixedIdentity,
     userDefines: Record<string, unknown>,
   ): ResolvedIdentity => {
-    bundlerIdentity = resolveIdentity(options, process.env, root, {}, fixed);
+    if (root !== undefined) {
+      env = mergeBuildPluginEnv(process.env, loadBuildPluginEnv(root));
+      resolved = resolvePluginOptions(options, env);
+    }
+    bundlerIdentity = resolveIdentity(options, env, root, {}, fixed);
     if (resolved.enabled) {
       unreadableIdentityNotices(fixed, bundlerIdentity.identityDefines, userDefines).forEach(
         notify(resolved),
@@ -231,7 +241,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     let identity = identityByOutDir.get(outDir);
     if (identity === undefined) {
       // Starting inside build output, a `{"type":"commonjs"}` marker there is not the app's manifest.
-      identity = resolveIdentity(options, process.env, outDir, { skipMarkers: true });
+      identity = resolveIdentity(options, env, outDir, { skipMarkers: true });
       identityByOutDir.set(outDir, identity);
     }
     return identity;

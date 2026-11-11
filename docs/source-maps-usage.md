@@ -29,11 +29,22 @@ Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unpl
 `bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. These transitively cover **Angular 17+**
 (esbuild builder), **Vite/meta-framework internals** (Rollup), and **Rspack/Next-webpack**.
 
-**Options** (all optional except a token, which may also come from env):
+**Where the settings come from.** For every `BUGSEE_*` setting the lookup order is: the **plugin option**, then
+the **process environment**, then the **`.env.bugsee-build-plugin`** file. The setup wizard writes the app token
+to that file (kept out of version control) in your project root, as Sentry's plugin does with
+`.env.sentry-build-plugin`. The plugin uses the nearest copy at or above the bundler's project directory (Vite
+`root`, webpack/Rspack `context`, esbuild `absWorkingDir`; the working directory for Rollup, which reports
+none). Only `BUGSEE_*` keys are read (`KEY=value`, optional `export`, quotes and `#` comments). The file only
+fills gaps: a variable already set in the environment is never overridden (even if set to an empty string), and
+`process.env` is never written to. A missing, unreadable or malformed file is ignored and never fails the
+build; without a token the plugin simply no-ops. `bugsee-cli` run by hand (§2) does NOT read this file: export
+`BUGSEE_APP_TOKEN` there.
+
+**Options** (all optional except a token, which may also come from env or that file):
 
 | option | env fallback | default | meaning |
 |---|---|---|---|
-| `appToken` | `BUGSEE_APP_TOKEN` | — | required to upload; absent ⇒ the plugin no-ops |
+| `appToken` | `BUGSEE_APP_TOKEN` (then `.env.bugsee-build-plugin`) | — | required to upload; absent ⇒ the plugin no-ops |
 | `appVersion` | `BUGSEE_APP_VERSION`, then the `version` of the nearest `package.json` at or above the bundler's project directory (Vite `root`, webpack `context`, esbuild `absWorkingDir`; a nearest manifest with no version means none) | `0.0.0` | recorded on the symbol; a fallback join key. Blank or whitespace-only values count as unset. A real value is also baked into the bundle, so the app's SDK reports it (Vite, esbuild, webpack 5, Rspack and Rollup; on webpack 4 nothing can be baked, so only an explicit value is recorded). A `define` you set for `__BUGSEE_APP_VERSION__` is used as the recorded value when it is a plain string; for an expression (or on webpack 4 with no explicit value) the recorded value is left at the default and the plugin warns through `onNotice` until you set `appVersion` too |
 | `appBuild` | `BUGSEE_APP_BUILD`, then the CI commit id (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`, `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`) | `0` | recorded on the symbol; a fallback join key. A real value is also baked into the bundle, so the app's SDK reports it (same bundler coverage and `define` rule as `appVersion`) |
 | `endpoint` | `BUGSEE_ENDPOINT` | `https://api.bugsee.com` | API endpoint |
