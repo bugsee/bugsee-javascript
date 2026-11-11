@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@bugsee/rrweb-record": "file:../../vendor/rrweb-record",
+    "esbuild": "^0.28.2",
     "jsdom": "^25.0.1"
   },
   "publishConfig": {

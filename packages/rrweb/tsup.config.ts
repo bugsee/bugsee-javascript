@@ -1,5 +1,7 @@
+import { readFileSync, writeFileSync } from 'node:fs';
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
+import { dedupeTrailingSourceMap, stripInlineSourceMapPlugin } from './src/strip-inline-sourcemap';
 
 // @bugsee/rrweb: the thin record-path wrapper.
 //
@@ -13,4 +15,13 @@ export default defineConfig({
   ...baseConfig,
   entry: ['src/index.ts'],
   noExternal: ['@bugsee/rrweb-record'],
+  // The vendored bundle inlines a worker as a template literal ending in a sourceMappingURL comment; see
+  // strip-inline-sourcemap.ts (Angular's esbuild builder would otherwise cut the closing backtick).
+  esbuildPlugins: [stripInlineSourceMapPlugin()],
+  // tsup writes the trailing `//# sourceMappingURL=` twice; keep one so the file has exactly one, last.
+  onSuccess: async () => {
+    for (const f of ['dist/index.js', 'dist/index.cjs']) {
+      writeFileSync(f, dedupeTrailingSourceMap(readFileSync(f, 'utf8')));
+    }
+  },
 });
