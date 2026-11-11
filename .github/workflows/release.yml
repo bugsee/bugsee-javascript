@@ -61,6 +61,10 @@ jobs:
       - name: Build
         run: pnpm exec turbo run build
 
+      # Every freshly built dist must survive Angular-style source-map-comment stripping (beta.6 regression).
+      - name: Dist survives source-map-comment stripping
+        run: pnpm check:dist-sourcemaps
+
       # Inputs go in through the environment, never interpolated into the script text: a `${{ }}` inside
       # `run:` is textually pasted into the shell, so a crafted tag could execute commands with the
       # job's id-token.
