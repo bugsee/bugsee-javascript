@@ -63,6 +63,8 @@ export function attachDebugIds(frames: StackFrame[], debugIdMap: Map<string, str
   }
 }
 
+const FLAG = '--enable-source-maps';
+
 /**
  * Does the runtime already rewrite `Error.stack` through source maps (`node --enable-source-maps`,
  * `process.setSourceMapsEnabled(true)`)? Reads `process.sourceMapsEnabled` ONLY through a `globalThis` cast, so this
@@ -74,7 +76,21 @@ export function runtimeMapsStacks(
   if (typeof proc !== 'object' || proc === null) {
     return false;
   }
-  return (proc as { sourceMapsEnabled?: unknown }).sourceMapsEnabled === true;
+  const { sourceMapsEnabled, execArgv, env } = proc as {
+    sourceMapsEnabled?: unknown;
+    execArgv?: unknown;
+    env?: { NODE_OPTIONS?: unknown } | null;
+  };
+  if (sourceMapsEnabled !== undefined) {
+    return sourceMapsEnabled === true;
+  }
+  // Older Node (< 18.19 / 20.7) maps stacks under the flag but has no `process.sourceMapsEnabled`: read the launch flags.
+  // Wrongly true here is harmless (the verifier then checks each registration); wrongly false is the #185 bug.
+  if (Array.isArray(execArgv) && execArgv.includes(FLAG)) {
+    return true;
+  }
+  const options = env?.NODE_OPTIONS;
+  return typeof options === 'string' && options.split(/\s+/).includes(FLAG);
 }
 
 /** Does this registration (its top-frame file + debug-id) really belong to the stamped bundle? */

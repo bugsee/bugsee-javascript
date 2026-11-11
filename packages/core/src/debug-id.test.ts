@@ -110,6 +110,25 @@ describe('runtimeMapsStacks', () => {
     expect(runtimeMapsStacks({ sourceMapsEnabled: 'yes' })).toBe(false);
   });
 
+  it('falls back to the launch flags where `sourceMapsEnabled` does not exist (Node < 18.19 / 20.7)', () => {
+    expect(runtimeMapsStacks({ execArgv: ['--no-warnings', '--enable-source-maps'] })).toBe(true);
+    expect(
+      runtimeMapsStacks({ env: { NODE_OPTIONS: '--max-old-space-size=4 --enable-source-maps' } }),
+    ).toBe(true);
+    expect(runtimeMapsStacks({ execArgv: ['--no-warnings'], env: { NODE_OPTIONS: '--x' } })).toBe(
+      false,
+    );
+    expect(
+      runtimeMapsStacks({ env: { NODE_OPTIONS: '--enable-source-maps-extra --enable' } }),
+    ).toBe(false);
+    expect(runtimeMapsStacks({ execArgv: 'nope', env: null })).toBe(false);
+    expect(runtimeMapsStacks({ env: { NODE_OPTIONS: 7 } })).toBe(false);
+    // an explicit answer always wins over the launch flags (setSourceMapsEnabled(false) after start)
+    expect(
+      runtimeMapsStacks({ sourceMapsEnabled: false, execArgv: ['--enable-source-maps'] }),
+    ).toBe(false);
+  });
+
   it('is false without a process object (browsers, workers, edge)', () => {
     expect(runtimeMapsStacks(undefined)).toBe(false);
     expect(runtimeMapsStacks(null)).toBe(false);

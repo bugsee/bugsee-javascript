@@ -57,7 +57,11 @@ function candidatePaths(file: string, appRoot: string): string[] {
   const candidates = [resolveFramePath(file, appRoot)];
   if (file.startsWith('/')) {
     const bare = file.replace(/[?#].*$/, '');
-    candidates.push(fileURLToPath(`file://${bare}`));
+    try {
+      candidates.push(fileURLToPath(`file://${bare}`));
+    } catch {
+      // a literal `%` / `%2F` in a real directory name is not a valid file-URL reading; the literal path stands
+    }
     if (bare !== file) {
       candidates.push(bare);
     }
@@ -65,27 +69,37 @@ function candidatePaths(file: string, appRoot: string): string[] {
   return candidates;
 }
 
+/** Errors that mean "there is no such file" (a stable answer), as opposed to a transient EMFILE / EACCES / EIO. */
+const NO_SUCH_FILE = new Set(['ENOENT', 'ENOTDIR', 'ENAMETOOLONG', 'EISDIR', 'EINVAL']);
+
 /**
  * A {@link RegistrationVerifier}: true only when `file` (a scrubbed frame path: absolute, app-relative `./x`, a
  * URL-encoded ESM path or a `file://` URL) exists and ends with the registered debug-id stamp. Any failure (missing
- * file, bad URL) is a rejection, never a throw: a registration that cannot be proven is not joined on. Answers are
- * cached per (file, id), so a report costs no file I/O after the first.
+ * file, bad URL) is a rejection, never a throw: a registration that cannot be proven is not joined on. Definitive
+ * answers are cached per (file, id), so a report costs no file I/O after the first; an INCONCLUSIVE one (a transient
+ * read error such as EMFILE) is not cached and is asked again next time.
  */
 export function createStampedBundleVerifier(
   options: { appRoot?: string; readTail?: (path: string) => string } = {},
 ): RegistrationVerifier {
   const read = options.readTail ?? readTail;
   const cache = new Map<string, boolean>();
-  const check = (file: string, debugId: string): boolean => {
+  /** true / false when definitive, undefined when a transient error stopped the check. */
+  const check = (file: string, debugId: string): boolean | undefined => {
     const wanted = debugId.toLowerCase();
+    let transient = false;
     for (const path of candidatePaths(file, options.appRoot ?? process.cwd())) {
       try {
         return readStampedDebugId(read(path)) === wanted;
-      } catch {
+      } catch (error) {
         // not openable under this reading; try the next
+        const code = (error as { code?: unknown }).code;
+        if (typeof code !== 'string' || !NO_SUCH_FILE.has(code)) {
+          transient = true;
+        }
       }
     }
-    return false;
+    return transient ? undefined : false;
   };
   return (file, debugId) => {
     const key = `${file}\0${debugId}`;
@@ -93,11 +107,14 @@ export function createStampedBundleVerifier(
     if (hit !== undefined) {
       return hit;
     }
-    let verdict: boolean;
+    let verdict: boolean | undefined;
     try {
       verdict = check(file, debugId);
     } catch {
-      verdict = false; // a malformed URL / cwd failure
+      verdict = undefined; // a malformed file URL / cwd failure: reject now, ask again later
+    }
+    if (verdict === undefined) {
+      return false;
     }
     if (cache.size >= CACHE_MAX) {
       cache.clear();

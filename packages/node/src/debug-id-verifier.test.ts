@@ -9,6 +9,7 @@ import { createStampedBundleVerifier, readStampedDebugId } from './debug-id-veri
 // Hex LETTERS on purpose: an all-digit id cannot tell a case-folding mutation from the original.
 const ID = 'abcdef12-2222-5ABC-8444-55555555dEaD';
 const LOWER = ID.toLowerCase();
+const enoent = (): Error => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
 
 describe('readStampedDebugId', () => {
   it('returns the LAST stamp, lower-cased, only when it is a UUID', () => {
@@ -122,7 +123,7 @@ describe('createStampedBundleVerifier', () => {
         readTail: (path) => {
           opened.push(path);
           if (path.includes('my app')) return `//# debugId=${ID}`;
-          throw new Error('ENOENT');
+          throw enoent();
         },
       });
       expect(verify(file, ID)).toBe(true);
@@ -130,6 +131,54 @@ describe('createStampedBundleVerifier', () => {
       expect(opened[0]).toBe('/C:/my%20app/dist/app.mjs');
       expect(opened[1]).toContain('C:');
       expect(opened[1]).toContain('my app');
+    });
+  });
+
+  it('falls back to the literal path when a real directory name is not a valid file-URL reading', () => {
+    const root = fixture();
+    for (const name of ['100%', 'a%2Fb']) {
+      mkdirSync(join(root, name, 'dist'), { recursive: true });
+      writeFileSync(join(root, name, 'dist', 'app.js'), `//# debugId=${ID}\n`);
+      expect(
+        createStampedBundleVerifier({ appRoot: root })(join(root, name, 'dist', 'app.js'), ID),
+      ).toBe(true);
+    }
+  });
+
+  describe('transient read errors', () => {
+    it('are rejected but NOT cached: the next call asks again', () => {
+      let reads = 0;
+      let failing = true;
+      const verify = createStampedBundleVerifier({
+        appRoot: '/x',
+        readTail: () => {
+          reads++;
+          if (failing) throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+          return `//# debugId=${ID}`;
+        },
+      });
+      expect(verify('/x/a.js', ID)).toBe(false);
+      expect(verify('/x/a.js', ID)).toBe(false);
+      expect(reads).toBe(4); // two readings per ask (literal + decoded), asked twice
+      failing = false;
+      expect(verify('/x/a.js', ID)).toBe(true);
+      expect(verify('/x/a.js', ID)).toBe(true);
+      expect(reads).toBe(5); // the success is cached
+    });
+
+    it('an error without a code is transient too; a malformed URL is rejected uncached', () => {
+      let reads = 0;
+      const verify = createStampedBundleVerifier({
+        appRoot: '/x',
+        readTail: () => {
+          reads++;
+          throw new Error('mystery');
+        },
+      });
+      expect(verify('/x/a.js', ID)).toBe(false);
+      expect(verify('/x/a.js', ID)).toBe(false);
+      expect(reads).toBe(4);
+      expect(verify('file://bad host/x', ID)).toBe(false);
     });
   });
 
@@ -141,7 +190,7 @@ describe('createStampedBundleVerifier', () => {
         readTail: (path) => {
           reads++;
           if (path.endsWith('good.js')) return `//# debugId=${ID}`;
-          throw new Error('ENOENT');
+          throw enoent();
         },
       });
       expect(verify('/x/good.js', ID)).toBe(true);
