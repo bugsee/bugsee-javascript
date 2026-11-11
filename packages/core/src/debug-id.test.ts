@@ -154,6 +154,23 @@ describe('buildDebugIdMap with an accept predicate', () => {
   });
 });
 
+describe('buildDebugIdMap with a throwing predicate', () => {
+  it('treats a throw as a rejection of that registration only', () => {
+    const map = buildDebugIdMap(
+      {
+        [bundleStack('/app/dist/bad.js')]: 'bad-id',
+        [bundleStack('/app/dist/good.js')]: 'good-id',
+      },
+      parseV8Stack,
+      (file) => {
+        if (file.includes('bad')) throw new Error('verifier blew up');
+        return true;
+      },
+    );
+    expect([...map]).toEqual([['/app/dist/good.js', 'good-id']]);
+  });
+});
+
 describe('applyDebugIds under runtime source-map support (#185)', () => {
   // With `node --enable-source-maps` AND a map on disk, the registration key's top frame is mapped to an
   // ORIGINAL file (`src/main.js`). Joining on it stamps the bundle's id onto already-mapped frames -> the

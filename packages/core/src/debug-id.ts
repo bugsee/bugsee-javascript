@@ -19,6 +19,19 @@ export function readDebugIds(globalObject: unknown): Record<string, string> {
   return typeof ids === 'object' && ids !== null ? (ids as Record<string, string>) : {};
 }
 
+/** An injected predicate must never take a report down: a throw is a rejection. */
+function accepts(
+  accept: (file: string, debugId: string) => boolean,
+  file: string,
+  debugId: string,
+): boolean {
+  try {
+    return accept(file, debugId);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build a `file → debugId` map from the registration map: parse each registered stack and key the debug-ID
  * by its TOP frame's file (the bundle that registered it).
@@ -31,7 +44,7 @@ export function buildDebugIdMap(
   const map = new Map<string, string>();
   for (const [stack, debugId] of Object.entries(debugIds)) {
     const file = parseStack(stack)[0]?.file;
-    if (file !== undefined && (accept === undefined || accept(file, debugId))) {
+    if (file !== undefined && (accept === undefined || accepts(accept, file, debugId))) {
       map.set(file, debugId);
     }
   }

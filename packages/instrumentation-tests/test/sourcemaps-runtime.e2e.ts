@@ -35,8 +35,10 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
   /** Build roots: one keeps `app.js.map` on disk, one has it deleted (the plugin's default after upload). */
   let withMap: string;
   let noMap: string;
+  let esmMap: string;
+  let esmNoMap: string;
 
-  function build(root: string, keepMap: boolean): void {
+  function build(root: string, keepMap: boolean, esm = false): void {
     mkdirSync(join(root, 'src'), { recursive: true });
     mkdirSync(join(root, 'dist'));
     writeFileSync(
@@ -47,14 +49,14 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
       join(root, 'src', 'main.js'),
       "import { boom } from './a.js';\nexport function fail() {\n  boom();\n}\n",
     );
-    const bundle = join(root, 'dist', 'app.js');
+    const bundle = join(root, 'dist', esm ? 'app.mjs' : 'app.js');
     execFileSync(
       join(pkgRoot, 'node_modules', '.bin', 'esbuild'),
       [
         join(root, 'src', 'main.js'),
         '--bundle',
         '--platform=node',
-        '--format=cjs',
+        `--format=${esm ? 'esm' : 'cjs'}`,
         '--sourcemap',
         `--outfile=${bundle}`,
         '--log-level=warning',
@@ -75,6 +77,13 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
     mkdirSync(noMap);
     build(withMap, true);
     build(noMap, false);
+    // ESM bundles under a directory with a SPACE: Node prints the frame as `file:///…/my%20app/dist/app.mjs`.
+    esmMap = join(dir, 'my app', 'esm-map');
+    esmNoMap = join(dir, 'my app', 'esm-no-map');
+    mkdirSync(esmMap, { recursive: true });
+    mkdirSync(esmNoMap, { recursive: true });
+    build(esmMap, true, true);
+    build(esmNoMap, false, true);
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -88,7 +97,7 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
-        BUNDLE_PATH: join(root, 'dist', 'app.js'),
+        BUNDLE_PATH: join(root, 'dist', root.includes('esm') ? 'app.mjs' : 'app.js'),
         APP_ROOT: root,
         SOURCE_MAPS: sourceMaps,
       },
@@ -96,11 +105,36 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
     return JSON.parse(out.trim().split('\n').at(-1) as string) as Result;
   }
 
-  const bundleFrames = (r: Result) => r.frames.filter((f) => f.at.includes('dist/app.js'));
+  const bundleFrames = (r: Result) => r.frames.filter((f) => f.at.includes('dist/app.'));
   const originalFrames = (r: Result) => r.frames.filter((f) => f.at.includes('src/'));
 
   for (const target of runtimeTargets()) {
     const { bin, name } = target;
+    it.skipIf(bin === undefined)(
+      `${name}: ESM bundle under a path with a space, flag on, map deleted -> stays stamped`,
+      () => {
+        const r = run(bin as string, esmNoMap, ['--enable-source-maps'], 'on');
+        // Node prints the ESM frame as a percent-encoded file URL; Bun prints the plain path.
+        expect(r.registrationTopFrames[0]).toContain(name === 'node' ? 'my%20app' : 'my app');
+        expect(originalFrames(r)).toHaveLength(0);
+        expect(bundleFrames(r).length).toBeGreaterThan(0);
+        for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+      },
+    );
+
+    it.skipIf(bin === undefined)(
+      `${name}: ESM bundle under a path with a space, flag on, map present -> mapped frames are not stamped`,
+      () => {
+        const r = run(bin as string, esmMap, ['--enable-source-maps'], 'on');
+        if (name === 'node') {
+          expect(originalFrames(r).length).toBeGreaterThanOrEqual(2);
+          expect(r.frames.map((f) => f.debug_id)).not.toContain(DEBUG_ID);
+        } else {
+          for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID); // Bun does not map
+        }
+      },
+    );
+
     const flag = ['--enable-source-maps'];
 
     it.skipIf(bin === undefined)(`${name}: source maps off -> bundle frames are stamped`, () => {

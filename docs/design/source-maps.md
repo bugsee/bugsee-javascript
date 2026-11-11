@@ -213,8 +213,14 @@ carry `//# debugId=<the registered id>` (the same marker `bundler-plugin-core` r
 Core stays runtime-portable: no `node:fs`, the verifier is injected (`setDebugIdRegistrationVerifier` / the
 `verifyRegistration` option). With no verifier (browsers, Electron renderers: Chromium does not map `Error.stack`
 even where `process.sourceMapsEnabled` reads true) every registration is kept, i.e. the previous behaviour.
-Known limit: a registration whose top-frame path was scrubbed to `node_modules/...` (a stamped bundle shipped inside
-a dependency) cannot be resolved and is not joined while the flag is on. Bun does not map `Error.stack` and has no
+The verifier reads the path the way core scrubs it, which is not always a plain path: ESM frames arrive as `/…/my%20app/dist/app.mjs`
+(core strips `file://` without URL-decoding), possibly with an import `?v=1`/`#hash`, and on Windows as `/C:/…`; the
+verifier tries the literal path first, then the decoded URL form with the query stripped. Answers are cached per
+(file, id) (bounded), so reports cost no file I/O after the first. Known limits: a path scrubbed to
+`node_modules/...` has no `./` prefix and is resolved against `process.cwd()`, not the app root, so it verifies when
+the first `node_modules` sits in the cwd and is not joined (flag on) in a hoisted monorepo or when `appRoot` differs
+from the cwd. Separately (pre-existing): encoded ESM paths never match the app root, so they ship as absolute paths.
+Windows hosts were not run. Bun does not map `Error.stack` and has no
 `process.sourceMapsEnabled` (Bun 1.4.4, measured), so it keeps stamping, which is correct.
 
 ---

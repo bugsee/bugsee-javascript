@@ -4,6 +4,7 @@
 // bundle loaded (Node only maps modules loaded afterwards); unset leaves the process flags alone.
 import { createRequire } from 'node:module';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { buildCrashJson, setDebugIdRegistrationVerifier, setStackAppRoot } from '@bugsee/core';
 // Internal to @bugsee/node (installed by its launch); imported by path so the public export surface stays unchanged.
 import { createStampedBundleVerifier } from '../../node/src/debug-id-verifier';
@@ -24,7 +25,10 @@ setStackAppRoot(appRoot);
 setDebugIdRegistrationVerifier(createStampedBundleVerifier({ appRoot }));
 
 const require = createRequire(import.meta.url);
-const app = require(process.env.BUNDLE_PATH as string) as { fail: () => never };
+const bundlePath = process.env.BUNDLE_PATH as string;
+const app = (
+  bundlePath.endsWith('.mjs') ? await import(pathToFileURL(bundlePath).href) : require(bundlePath)
+) as { fail: () => never };
 if (mode === 'late') setMaps(true);
 let thrown: unknown;
 try {
