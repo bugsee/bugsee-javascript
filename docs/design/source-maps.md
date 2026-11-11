@@ -133,13 +133,18 @@ unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 (an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
 uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
-esbuild builds work on **per-build file lists**: the plugin sets `metafile: true`, takes the build's own `.js`/`.mjs`/
-`.cjs` and `.map` outputs from `result.metafile` in `onEnd`, and runs `sourcemaps inject <those files>` then
-`debug-files upload <those maps>` (200 paths per CLI call), deleting exactly those maps after a confirmed upload.
+esbuild builds work on **per-build file lists**: the plugin sets `metafile: true` and, in `onEnd`, takes the build's own
+outputs from `result.metafile`: the `.js`/`.mjs`/`.cjs` scripts and the maps OF THOSE SCRIPTS. It runs
+`sourcemaps inject <scripts + their maps>` then `debug-files upload <those maps>` (200 paths per CLI call). Stylesheet
+maps (`.css.map`) are withheld from the CLI (named as explicit paths they have no debug-id and fail the whole call) and
+are deleted together with the script maps, only after a confirmed upload. Deleting is limited to exactly those files.
 Invariants: a build only touches files it wrote, so nothing is deleted without being uploaded, nothing is uploaded
 under another build's options, nested/concurrent builds never wait for each other, and there is no per-directory
-state (watch mode needs none). Under `failOnError` a build with no `.map` among its own outputs fails. Build
-registration reads only the build's own bundles. (An earlier design serialised and retried uploads per directory;
+state (watch mode needs none). A build that emits JavaScript the plugin cannot upload must not pass silently: under
+`failOnError` it fails, otherwise it is a notice (once per message). That covers a build with scripts but no script map
+(`sourcemap: 'inline'`/`false`), a result with no metafile (another plugin turned it off), and maps whose bundle has an
+extension `inject` does not stamp (`outExtension: '.bundle.jsx'`). A stylesheet-only build (metafile present, no
+scripts, no stray maps) is a quiet no-op. Build registration reads only the build's own bundles. (An earlier design serialised and retried uploads per directory;
 four review rounds each found a new race in it, and per-build file lists remove the whole class.) Rspack/webpack
 keep the directory-wide `afterEmit` path, whose delete step is limited to the maps that existed when the upload
 started and fails closed if they cannot be listed; a Rspack `MultiCompiler` whose compilers share one `output.path`

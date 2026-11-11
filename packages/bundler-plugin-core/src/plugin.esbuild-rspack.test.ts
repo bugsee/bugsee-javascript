@@ -191,16 +191,44 @@ describe("esbuild: upload of the build's own files at the end of the build", () 
       expect(notices.filter((m) => m.includes('emitted no .map files'))).toHaveLength(1);
     });
 
-    it('a build with no scripts at all (stylesheet-only, or no metafile) is a quiet no-op, even under failOnError', async () => {
+    it('a stylesheet-only build (metafile present, no scripts) is a quiet no-op, even under failOnError', async () => {
       const notices: string[] = [];
       const run = esbuildRun(
         { appToken: 'tok', failOnError: true, onNotice: (m) => notices.push(m) },
         { outdir: 'dist' },
       );
       await run.end(outputsOf('dist/only.css', 'dist/only.css.map'));
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(notices.filter((m) => m.includes('esbuild'))).toEqual([]);
+    });
+
+    it('no metafile at all (another plugin turned it off) fails under failOnError, else one notice per build', async () => {
+      await expect(
+        esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: 'dist' }).end({ errors: [] }),
+      ).rejects.toThrow(/no metafile/);
+      const notices: string[] = [];
+      const run = esbuildRun(
+        { appToken: 'tok', onNotice: (m) => notices.push(m) },
+        { outdir: 'dist' },
+      );
+      await run.end({ errors: [] });
       await run.end({ errors: [] });
       expect(uploadSpy).not.toHaveBeenCalled();
-      expect(notices.filter((m) => m.includes('emitted no .map files'))).toEqual([]);
+      expect(notices.filter((m) => m.includes('no metafile'))).toHaveLength(1);
+    });
+
+    it('maps without a recognised script (outExtension .bundle.jsx) are the same misconfiguration', async () => {
+      const jsx = outputsOf('dist/index.bundle.jsx', 'dist/index.bundle.jsx.map');
+      await expect(
+        esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: 'dist' }).end(jsx),
+      ).rejects.toThrow(/unrecognised|\.js, \.mjs or \.cjs/);
+      const notices: string[] = [];
+      await esbuildRun(
+        { appToken: 'tok', onNotice: (m) => notices.push(m) },
+        { outdir: 'dist' },
+      ).end(jsx);
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(notices.some((m) => m.includes('.js, .mjs or .cjs'))).toBe(true);
     });
 
     it('scripts whose only maps are stylesheet maps still count as no maps', async () => {

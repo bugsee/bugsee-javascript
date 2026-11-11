@@ -40,7 +40,9 @@ touches files it wrote: nothing is deleted without having been uploaded, nothing
 options or another plugin instance's, builds sharing an output directory (an ESM + CJS pair, a worker sub-build,
 two plugin instances) never wait for or affect each other, and watch mode keeps no state between rebuilds. Under
 `failOnError`, a build whose own outputs contain no `.map` (for example `sourcemap: 'inline'`) fails, judged on that
-build alone; without `failOnError` it is a notice. A stylesheet-only build is a quiet no-op, and `.css.map` files are
+build alone; without `failOnError` it is a notice. The same goes for a build whose result carries no metafile (another
+plugin set `metafile: false`) and for maps of outputs that are not `.js`/`.mjs`/`.cjs` (an `outExtension` such as
+`.bundle.jsx`, which the CLI does not stamp). A stylesheet-only build is a quiet no-op, and `.css.map` files are
 never sent (they are deleted with the script maps after a successful upload). The upload never walks the output
 directory (the one read-only exception is the Subresource-Integrity check, which looks at the `.html` files under it).
 `outfile` and `outdir` behave alike, wherever they point.

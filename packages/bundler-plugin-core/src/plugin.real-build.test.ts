@@ -675,3 +675,89 @@ describeReal('builds that emit stylesheet maps (.css.map)', () => {
     }
   });
 });
+
+describeReal(
+  'a build with JS output the plugin cannot upload must not pass silently under failOnError',
+  () => {
+    const run = (name: string, options: object, more: object) => {
+      const app = makeApp(name);
+      return {
+        app,
+        build: esbuild({
+          entryPoints: [app.entry],
+          bundle: true,
+          outdir: app.out,
+          absWorkingDir: app.dir,
+          sourcemap: 'external',
+          logLevel: 'silent',
+          plugins: [bugseeEsbuildPlugin({ ...pluginOptions, endpoint, ...options })],
+          ...more,
+        }),
+      };
+    };
+
+    it('another plugin turning the metafile off', async () => {
+      const turnOff: Plugin = {
+        name: 'metafile-off',
+        setup(b) {
+          b.initialOptions.metafile = false;
+        },
+      };
+      const before = requests.length;
+      const strict = run('esbuild-nometa-strict', { failOnError: true }, {});
+      // the second plugin comes AFTER ours, so it wins
+      strict.build.catch(() => undefined);
+      await expect(
+        esbuild({
+          entryPoints: [strict.app.entry],
+          bundle: true,
+          outdir: strict.app.out,
+          absWorkingDir: strict.app.dir,
+          sourcemap: 'external',
+          logLevel: 'silent',
+          plugins: [
+            bugseeEsbuildPlugin({ ...pluginOptions, endpoint, failOnError: true }),
+            turnOff,
+          ],
+        }),
+      ).rejects.toThrow();
+      const notices: string[] = [];
+      const lax = makeApp('esbuild-nometa-lax');
+      await esbuild({
+        entryPoints: [lax.entry],
+        bundle: true,
+        outdir: lax.out,
+        absWorkingDir: lax.dir,
+        sourcemap: 'external',
+        logLevel: 'silent',
+        plugins: [
+          bugseeEsbuildPlugin({
+            ...pluginOptions,
+            endpoint,
+            failOnError: false,
+            onNotice: (m) => notices.push(m),
+          }),
+          turnOff,
+        ],
+      });
+      expect(requests.length).toBe(before);
+      expect(notices.some((m) => m.includes('no metafile'))).toBe(true);
+    });
+
+    it('outExtension .bundle.jsx (an extension inject does not stamp)', async () => {
+      const before = requests.length;
+      await expect(
+        run('esbuild-jsx-strict', { failOnError: true }, { outExtension: { '.js': '.bundle.jsx' } })
+          .build,
+      ).rejects.toThrow();
+      const notices: string[] = [];
+      await run(
+        'esbuild-jsx-lax',
+        { failOnError: false, onNotice: (m: string) => notices.push(m) },
+        { outExtension: { '.js': '.bundle.jsx' } },
+      ).build;
+      expect(requests.length).toBe(before);
+      expect(notices.some((m) => m.includes('.js, .mjs or .cjs'))).toBe(true);
+    });
+  },
+);

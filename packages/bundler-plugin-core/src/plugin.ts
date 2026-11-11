@@ -219,7 +219,7 @@ interface EsbuildEndResult {
 function esbuildOwnFiles(
   result: EsbuildEndResult,
   base: string,
-): { scripts: string[]; maps: string[]; stylesheetMaps: string[] } {
+): { scripts: string[]; maps: string[]; stylesheetMaps: string[]; strayMaps: string[] } {
   const outputs = Object.keys(result.metafile?.outputs ?? {}).map((file) => resolve(base, file));
   const scripts = outputs.filter((file) => /\.[cm]?js$/.test(file));
   const owned = new Set(scripts);
@@ -230,6 +230,12 @@ function esbuildOwnFiles(
     maps: outputs.filter((file) => file.endsWith('.map') && owned.has(file.slice(0, -4))),
     // Deleted with the rest after a confirmed upload (they embed the source too), never sent.
     stylesheetMaps: outputs.filter((file) => file.endsWith('.css.map')),
+    // Maps whose bundle is not a recognised script (an `outExtension` like `.bundle.jsx`, which `inject` does not
+    // stamp): the build emitted maps the plugin cannot upload, which is not the same as having none.
+    strayMaps: outputs.filter(
+      (file) =>
+        file.endsWith('.map') && !file.endsWith('.css.map') && !owned.has(file.slice(0, -4)),
+    ),
   };
 }
 
@@ -516,22 +522,38 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild') || !resolved.enabled) {
             return;
           }
-          const files = esbuildOwnFiles(result, esbuildBase(build.initialOptions));
-          if (files.scripts.length === 0) {
-            return; // a stylesheet-only build has nothing to symbolicate
-          }
-          if (files.maps.length === 0) {
-            // No map among this build's own outputs (`sourcemap: 'inline'` / `false`): the misconfiguration
-            // `failOnError` exists to stop. It is judged on THIS build's outputs, so another build's maps
-            // can never excuse it.
-            const message = `esbuild build into ${outDir} emitted no .map files, so there is nothing to upload (sourcemap: 'inline' or false?). Use sourcemap: 'external' or 'linked'.`;
+          // A problem that means this build's JavaScript is NOT being symbolicated: the misconfiguration
+          // `failOnError` exists to stop (else one notice). Judged on THIS build's outputs only.
+          const problem = (message: string): void => {
             if (resolved.failOnError) {
               throw new Error(message);
             }
             say(message);
+          };
+          if (result.metafile === undefined) {
+            // The plugin asks for it, but another plugin (or esbuild itself) may have turned it off.
+            problem(
+              `esbuild build into ${outDir} returned no metafile (did another plugin set metafile: false?), so the build's own files are unknown and nothing was uploaded.`,
+            );
             return;
           }
-          await runPluginUpload(forOutput(outDir), outDir, { bundler: {}, files });
+          const files = esbuildOwnFiles(result, esbuildBase(build.initialOptions));
+          if (files.scripts.length === 0) {
+            if (files.strayMaps.length > 0) {
+              problem(
+                `esbuild build into ${outDir} emitted maps for outputs that are not .js, .mjs or .cjs (outExtension?), which bugsee-cli cannot stamp, so nothing was uploaded.`,
+              );
+            }
+            return; // otherwise a stylesheet-only build: nothing to symbolicate
+          }
+          if (files.maps.length === 0) {
+            problem(
+              `esbuild build into ${outDir} emitted no .map files, so there is nothing to upload (sourcemap: 'inline' or false?). Use sourcemap: 'external' or 'linked'.`,
+            );
+            return;
+          }
+          const { strayMaps: _stray, ...own } = files;
+          await runPluginUpload(forOutput(outDir), outDir, { bundler: {}, files: own });
         });
       },
     },
