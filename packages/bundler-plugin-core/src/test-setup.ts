@@ -2,7 +2,7 @@
 // developer's real file in this repo (or any parent) would flip every test that expects "no token => disabled".
 // Every test therefore sees NO file, except the files that exercise the lookup itself and opt in with
 // `globalThis.__BUGSEE_REAL_ENV_FILE__ = true`.
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 
 vi.mock('./env-file', async (importOriginal) => {
   const real = await importOriginal<typeof import('./env-file')>();
@@ -13,4 +13,9 @@ vi.mock('./env-file', async (importOriginal) => {
         ? real.loadBuildPluginEnv(...args)
         : { values: {} },
   };
+});
+
+// NODE_ENV decides whether esbuild counts as a development build; pin it so a developer's shell cannot flip tests.
+beforeEach(() => {
+  vi.stubEnv('NODE_ENV', 'test');
 });

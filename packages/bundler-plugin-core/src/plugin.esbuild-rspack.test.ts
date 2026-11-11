@@ -408,3 +408,67 @@ describe('esbuild: a bare outfile in the project directory is refused', () => {
     expect(uploadSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('review follow-ups', () => {
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
+
+  it("rspack: mode 'none' is a release setting and still uploads", async () => {
+    const c = rspackCompiler('/out', 'none');
+    applyRspack({ appToken: 'tok' }, c.compiler);
+    await c.taps[0]?.fn();
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('esbuild: a development build does not force maps on (unless it uploads in dev)', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      const dev: FakeBuild['initialOptions'] = { outdir: '/abs/dist' };
+      esbuildRun({ appToken: 'tok' }, dev);
+      expect(dev.sourcemap).toBeUndefined();
+      const optIn: FakeBuild['initialOptions'] = { outdir: '/abs/dist' };
+      esbuildRun({ appToken: 'tok', uploadInDevelopment: true }, optIn);
+      expect(optIn.sourcemap).toBe('external');
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
+  });
+
+  it('esbuild: an outfile ABOVE the project is refused too, and gets one notice, not two', async () => {
+    const notices: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outfile: '/proj/bundle.js', absWorkingDir: '/proj/app' },
+    ).end();
+    expect(uploadSpy).not.toHaveBeenCalled();
+    const ours = notices.filter((m) => m.includes('outfile'));
+    expect(ours).toHaveLength(1);
+    expect(ours[0]).toContain('Nothing was uploaded');
+  });
+
+  it('esbuild: a development outfile build gets only the development notice', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      const notices: string[] = [];
+      await esbuildRun(
+        { appToken: 'tok', onNotice: (m) => notices.push(m) },
+        { outfile: '/abs/public/app.js' },
+      ).end();
+      expect(notices.filter((m) => m.includes('outfile'))).toEqual([]);
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
+  });
+
+  it('esbuild: a sibling outfile directory (not an ancestor of the project) still uploads', async () => {
+    await esbuildRun(
+      { appToken: 'tok', onNotice: () => undefined },
+      { outfile: '/proj/app2/out.js', absWorkingDir: '/proj/app' },
+    ).end();
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+  });
+});

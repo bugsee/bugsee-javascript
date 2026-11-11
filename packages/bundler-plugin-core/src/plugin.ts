@@ -2,7 +2,7 @@
 // vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
 import {
   APP_BUILD_DEFINE,
@@ -460,7 +460,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         // deleted after upload, leaving a shipped bundle that points at a missing file. The CLI pairs a
         // bundle with its sibling `<file>.map` without the comment. An explicit `false` (or any other
         // value) is the user's choice and is left alone; with `false` the empty-maps warning explains.
-        if (resolved.enabled && initialOptions.sourcemap === undefined) {
+        // Not for a development build (NODE_ENV=development) that will not upload: it would pay for maps
+        // nothing references. `uploadInDevelopment` keeps them.
+        if (
+          resolved.enabled &&
+          initialOptions.sourcemap === undefined &&
+          (resolved.uploadInDevelopment || resolved.nodeEnv !== 'development')
+        ) {
           initialOptions.sourcemap = 'external';
         }
       },
@@ -476,29 +482,28 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           const outDir = esbuildOutputDir(build.initialOptions);
           if (outDir !== undefined) {
             const { outdir, outfile } = build.initialOptions;
+            // esbuild states no mode: only NODE_ENV=development marks a dev build.
+            if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
+              return;
+            }
             if (
               resolved.enabled &&
               (outdir === undefined || outdir === '') &&
               outfile !== undefined
             ) {
+              // A bare `outfile` in the project directory (or above it) would make the WHOLE project the
+              // output directory (inject + map deletion walk it): refuse rather than touch unrelated files.
+              const project = resolve(build.initialOptions.absWorkingDir ?? process.cwd());
+              const up = relative(outDir, project);
+              if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) {
+                say(
+                  `esbuild \`outfile\` ${outfile} is in the project directory itself (or above it), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` (a dedicated output directory).`,
+                );
+                return;
+              }
               say(
                 `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`,
               );
-            }
-            // esbuild states no mode: only NODE_ENV=development marks a dev build.
-            if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
-              return;
-            }
-            // A bare `outfile` in the project directory would make the WHOLE project the output
-            // directory (inject + map deletion walk it): refuse rather than touch unrelated files.
-            if (
-              (outdir === undefined || outdir === '') &&
-              outDir === resolve(build.initialOptions.absWorkingDir ?? process.cwd())
-            ) {
-              say(
-                `esbuild \`outfile\` ${outfile} is in the project directory itself, so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` (a dedicated output directory).`,
-              );
-              return;
             }
             await serialUpload(outDir, () =>
               runPluginUpload(forOutput(outDir), outDir, { bundler: {} }),
@@ -522,10 +527,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         const bundler = webpackBuild(compiler.options.mode);
+        // Only `development` is skipped: `mode: 'none'` is a legitimate release setting (own minification).
         if (
           typeof dir === 'string' &&
           dir !== '' &&
-          !skipDevelopment(bundler.isProduction, 'Rspack')
+          !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
         ) {
           await runPluginUpload(forOutput(dir), dir, { bundler });
         }
