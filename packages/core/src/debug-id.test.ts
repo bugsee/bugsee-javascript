@@ -129,13 +129,22 @@ describe('runtimeMapsStacks', () => {
     ).toBe(false);
   });
 
-  it('reads NODE_OPTIONS the way Node tokenizes it: any whitespace, optionally quoted', () => {
+  it('reads NODE_OPTIONS like Node: whitespace-separated tokens, DOUBLE quotes only (single quotes are not stripped)', () => {
     const opts = (NODE_OPTIONS: string) => runtimeMapsStacks({ env: { NODE_OPTIONS } });
     expect(opts('--x\t--enable-source-maps')).toBe(true);
     expect(opts('--x   --enable-source-maps')).toBe(true);
     expect(opts('"--enable-source-maps"')).toBe(true);
-    expect(opts("--x '--enable-source-maps'")).toBe(true);
+    expect(opts("--x '--enable-source-maps'")).toBe(false);
     expect(opts('"--enable-source-maps-extra"')).toBe(false);
+  });
+
+  it('recognizes the `=true` form of the flag, and not `=false`/`=0`, in execArgv and NODE_OPTIONS', () => {
+    expect(runtimeMapsStacks({ execArgv: ['--enable-source-maps=true'] })).toBe(true);
+    expect(runtimeMapsStacks({ env: { NODE_OPTIONS: '--enable-source-maps=true' } })).toBe(true);
+    expect(runtimeMapsStacks({ env: { NODE_OPTIONS: '"--enable-source-maps=1"' } })).toBe(true);
+    expect(runtimeMapsStacks({ execArgv: ['--enable-source-maps=false'] })).toBe(false);
+    expect(runtimeMapsStacks({ env: { NODE_OPTIONS: '--enable-source-maps=0' } })).toBe(false);
+    expect(runtimeMapsStacks({ env: { NODE_OPTIONS: '--enable-source-maps=maybe' } })).toBe(false);
   });
 
   it('never throws: a hostile process object answers false', () => {

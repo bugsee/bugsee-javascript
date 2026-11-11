@@ -80,6 +80,11 @@ export function runtimeMapsStacks(
   }
 }
 
+/** `--enable-source-maps`, or its `=true` / `=1` form; `=false` / `=0` / anything else is not on. */
+function isFlagOn(token: unknown): boolean {
+  return token === FLAG || token === `${FLAG}=true` || token === `${FLAG}=1`;
+}
+
 function probe(proc: unknown): boolean {
   if (typeof proc !== 'object' || proc === null) {
     return false;
@@ -95,7 +100,7 @@ function probe(proc: unknown): boolean {
   // Older Node (< 18.19 / 20.7) maps stacks under the flag but has no `process.sourceMapsEnabled`: read the launch flags.
   // Wrongly true here is harmless (the verifier then checks each registration); wrongly false is the #185 bug.
   // A runtime `process.setSourceMapsEnabled(true)` on those versions cannot be observed (documented limit).
-  if (Array.isArray(execArgv) && execArgv.includes(FLAG)) {
+  if (Array.isArray(execArgv) && execArgv.some(isFlagOn)) {
     return true;
   }
   const options = env?.NODE_OPTIONS;
@@ -103,8 +108,8 @@ function probe(proc: unknown): boolean {
     typeof options === 'string' &&
     options
       .split(/\s+/)
-      .map((token) => token.replace(/^["']|["']$/g, ''))
-      .includes(FLAG)
+      .map((token) => token.replace(/^"|"$/g, '')) // Node strips double quotes only
+      .some(isFlagOn)
   );
 }
 

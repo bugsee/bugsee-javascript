@@ -159,11 +159,11 @@ describe('createStampedBundleVerifier', () => {
       });
       expect(verify('/x/a.js', ID)).toBe(false);
       expect(verify('/x/a.js', ID)).toBe(false);
-      expect(reads).toBe(4); // two readings per ask (literal + decoded), asked twice
+      expect(reads).toBe(2); // one distinct reading per ask, asked twice
       failing = false;
       expect(verify('/x/a.js', ID)).toBe(true);
       expect(verify('/x/a.js', ID)).toBe(true);
-      expect(reads).toBe(5); // the success is cached
+      expect(reads).toBe(3); // the success is cached
     });
 
     it('an error without a code is transient too; a malformed URL is rejected uncached', () => {
@@ -177,7 +177,7 @@ describe('createStampedBundleVerifier', () => {
       });
       expect(verify('/x/a.js', ID)).toBe(false);
       expect(verify('/x/a.js', ID)).toBe(false);
-      expect(reads).toBe(4);
+      expect(reads).toBe(2);
       expect(verify('file://bad host/x', ID)).toBe(false);
     });
   });
@@ -249,6 +249,43 @@ describe('createStampedBundleVerifier', () => {
     // literal `…/a%20b.mjs?v=1` and decoded `…/a b.mjs` do not exist; only the stripped literal does
     expect(verify(`${join(root, 'dist', 'a%20b.mjs')}?v=1`, ID)).toBe(true);
     expect(verify('./dist/a%20b.mjs?v=1', ID)).toBe(true);
+  });
+
+  it('keeps trying later candidates when an UNRELATED file sits at the literal reading', () => {
+    const root = fixture();
+    // the stamped bundle is `a b.mjs`; an unrelated, unstamped file is literally named `a%20b.mjs`
+    writeFileSync(join(root, 'dist', 'a b.mjs'), `export {};\n//# debugId=${ID}\n`);
+    writeFileSync(join(root, 'dist', 'a%20b.mjs'), 'export {};\n');
+    // likewise an unrelated file literally named `q.mjs?v=1` next to the stamped `q.mjs`
+    writeFileSync(join(root, 'dist', 'q.mjs'), `export {};\n//# debugId=${ID}\n`);
+    writeFileSync(join(root, 'dist', 'q.mjs?v=1'), 'export {};\n');
+    const verify = createStampedBundleVerifier({ appRoot: root });
+    expect(verify('./dist/a%20b.mjs', ID)).toBe(true);
+    expect(verify('./dist/q.mjs?v=1', ID)).toBe(true);
+    // ...and a file that is genuinely not stamped under any reading is still rejected
+    expect(verify('./dist/plain-missing%20x.mjs', ID)).toBe(false);
+  });
+
+  it('opens each distinct reading once (deduped), and treats NUL / invalid-arg paths as a definitive miss', () => {
+    const opened: string[] = [];
+    let reads = 0;
+    const verify = createStampedBundleVerifier({
+      appRoot: '/x',
+      readTail: (path) => {
+        reads++;
+        opened.push(path);
+        throw Object.assign(new Error('bad path'), { code: 'ERR_INVALID_ARG_VALUE' });
+      },
+    });
+    expect(verify('/x/plain.js', ID)).toBe(false);
+    expect(opened).toEqual(['/x/plain.js']); // literal === decoded: opened once
+    const after = reads;
+    expect(verify('/x/plain.js', ID)).toBe(false);
+    expect(reads).toBe(after); // cached as definitive
+    expect(verify('./dist/a%00b.mjs', ID)).toBe(false);
+    const nul = reads;
+    expect(verify('./dist/a%00b.mjs', ID)).toBe(false);
+    expect(reads).toBe(nul);
   });
 
   describe('NODE_OPTIONS token handling is delegated to core; verifier cache', () => {

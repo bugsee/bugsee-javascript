@@ -77,7 +77,14 @@ function candidatePaths(file: string, appRoot: string): string[] {
 }
 
 /** Errors that mean "there is no such file" (a stable answer), as opposed to a transient EMFILE / EACCES / EIO. */
-const NO_SUCH_FILE = new Set(['ENOENT', 'ENOTDIR', 'ENAMETOOLONG', 'EISDIR', 'EINVAL']);
+const NO_SUCH_FILE = new Set([
+  'ENOENT',
+  'ENOTDIR',
+  'ENAMETOOLONG',
+  'EISDIR',
+  'EINVAL',
+  'ERR_INVALID_ARG_VALUE', // a NUL byte (a decoded `%00`) in the path
+]);
 
 /**
  * A {@link RegistrationVerifier}: true only when `file` (a scrubbed frame path: absolute, app-relative `./x`, a
@@ -95,9 +102,14 @@ export function createStampedBundleVerifier(
   const check = (file: string, debugId: string): boolean | undefined => {
     const wanted = debugId.toLowerCase();
     let transient = false;
-    for (const path of candidatePaths(file, options.appRoot ?? process.cwd())) {
+    // Every distinct reading is tried and ANY carrying the id accepts: a mapped original file never carries the
+    // stamp, so a wrong accept is impossible, while an unrelated file sitting at the literal reading (`a%20b.mjs`
+    // next to the stamped `a b.mjs`) must not hide the genuine one.
+    for (const path of new Set(candidatePaths(file, options.appRoot ?? process.cwd()))) {
       try {
-        return readStampedDebugId(read(path)) === wanted;
+        if (readStampedDebugId(read(path)) === wanted) {
+          return true;
+        }
       } catch (error) {
         // not openable under this reading; try the next
         const code = (error as { code?: unknown }).code;
