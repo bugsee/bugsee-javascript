@@ -126,12 +126,16 @@ are conveniences, not the mechanism: `bugsee-cli` operates on a finished output 
 deploy). See `docs/source-maps-usage.md §2`. To widen the zero-config plugin experience cheaply, `@bugsee/bundler-plugin-core`
 also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core). Their end-of-build hooks
 are Rollup `writeBundle`, esbuild `onEnd` (registered through unplugin's `esbuild.setup`; skipped on a failed build
-or `write: false`; the plugin also turns `sourcemap` on when unset/`false`) and Rspack `afterEmit`, each calling
+or `write: false`, which is what tsup always sets, with a notice; the plugin sets `sourcemap: 'external'` only when it is
+unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 `runPluginUpload` with the same SRI guard as Vite and webpack (#184; real esbuild and Rspack builds are exercised in
 `plugin.real-build.test.ts`). Rspack has no in-compilation stamp stage wired, so it takes the post-emit inject path
 (an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
-uses the webpack plugin. Bun/`tsc`/`swc` stay CLI-post-build.
+uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
+Concurrent esbuild builds into one directory: uploads are serialised per directory, a run waits until no build of
+that directory is in flight, deletes only the maps that existed when it started, and a failure that coincides with
+another build starting is retried (up to 3 attempts) rather than reported.
 
 **Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
 debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,

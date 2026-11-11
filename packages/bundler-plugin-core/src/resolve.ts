@@ -231,7 +231,9 @@ export function resolvePluginOptions(
   env: EnvRecord,
   deps: AppIdentityDeps = {},
 ): ResolvedPluginOptions {
-  const appToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  // A whitespace-only token (an `export BUGSEE_APP_TOKEN=" "` left in a CI template) is no token.
+  const rawToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  const appToken = rawToken.trim() === '' ? '' : rawToken;
   // The BASELINE identity, from the working directory; never throws (see `projectRoot` on
   // ResolvedPluginOptions). The bundler hooks refine it from the bundler's own project directory.
   return {

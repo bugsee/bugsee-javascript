@@ -31,18 +31,28 @@ type FakeBuild = {
     sourcemap?: boolean | string;
     define?: Record<string, string>;
   };
+  onStart: (cb: () => void) => void;
   onEnd: (cb: (result: EndResult) => Promise<void>) => void;
 };
 function esbuildRun(options: BugseePluginOptions, initialOptions: FakeBuild['initialOptions']) {
   const ends: Array<(result: EndResult) => Promise<void>> = [];
-  const build: FakeBuild = { initialOptions, onEnd: (cb) => ends.push(cb) };
+  const starts: Array<() => void> = [];
+  const build: FakeBuild = {
+    initialOptions,
+    onStart: (cb) => starts.push(cb),
+    onEnd: (cb) => ends.push(cb),
+  };
   const hooks = makePlugin(options).esbuild as unknown as {
     config: (o: FakeBuild['initialOptions']) => void;
     setup: (b: FakeBuild) => void;
   };
   hooks.config(initialOptions);
   hooks.setup(build);
-  return { ends, end: (result: EndResult = { errors: [] }) => ends[0]?.(result) };
+  return {
+    ends,
+    start: () => starts[0]?.(),
+    end: (result: EndResult = { errors: [] }) => ends[0]?.(result),
+  };
 }
 
 const bundlerOf = (call: number) =>
@@ -118,10 +128,41 @@ describe('esbuild: upload at the end of the build', () => {
     expect(quiet).toEqual([]);
   });
 
-  it('does nothing for a build that writes nothing (no outdir/outfile, or write:false)', async () => {
+  it('does nothing for a build with no outdir/outfile', async () => {
     await esbuildRun({ appToken: 'tok' }, {}).end();
-    await esbuildRun({ appToken: 'tok' }, { outdir: '/abs/dist', write: false }).end();
     expect(uploadSpy).not.toHaveBeenCalled();
+  });
+
+  it('write:false (tsup always sets it): nothing is uploaded, and a notice says why, once', async () => {
+    const notices: string[] = [];
+    const run = esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outdir: '/abs/dist', write: false },
+    );
+    await run.end();
+    await run.end();
+    expect(uploadSpy).not.toHaveBeenCalled();
+    const ours = notices.filter((m) => m.includes('write: false'));
+    expect(ours).toHaveLength(1);
+    expect(ours[0]).toContain('tsup');
+    expect(ours[0]).toContain('onSuccess');
+  });
+
+  it('an explicit sourcemap:false is left alone but explained', () => {
+    const notices: string[] = [];
+    const own: FakeBuild['initialOptions'] = { outdir: '/abs/dist', sourcemap: false };
+    esbuildRun({ appToken: 'tok', onNotice: (m) => notices.push(m) }, own);
+    expect(own.sourcemap).toBe(false);
+    expect(notices.some((m) => m.includes('sourcemap: false'))).toBe(true);
+    const quiet: string[] = [];
+    esbuildRun(
+      { appToken: 'tok', disabled: true, onNotice: (m) => quiet.push(m) },
+      {
+        outdir: '/abs/dist',
+        sourcemap: false,
+      },
+    );
+    expect(quiet).toEqual([]);
   });
 
   it('does not upload a FAILED build', async () => {
@@ -181,6 +222,7 @@ describe('esbuild: upload at the end of the build', () => {
         plugin.config(initialOptions);
         plugin.setup({
           initialOptions,
+          onStart: () => undefined,
           onEnd: (cb) => ends.push(() => cb({ errors: [] })),
         });
       }
@@ -210,6 +252,7 @@ describe('esbuild: upload at the end of the build', () => {
       for (let i = 0; i < 2; i++) {
         plugin.setup({
           initialOptions: { outdir: '/abs/failing' },
+          onStart: () => undefined,
           onEnd: (cb) => ends.push(() => cb({ errors: [] })),
         });
       }
@@ -232,6 +275,7 @@ describe('esbuild: upload at the end of the build', () => {
       for (const outdir of ['/abs/a', '/abs/b']) {
         plugin.setup({
           initialOptions: { outdir },
+          onStart: () => undefined,
           onEnd: (cb) => ends.push(() => cb({ errors: [] })),
         });
       }
@@ -399,13 +443,19 @@ describe('esbuild: a bare outfile in the project directory is refused', () => {
     expect(uploadSpy).not.toHaveBeenCalled();
   });
 
-  it('an outfile in a SUBdirectory, and any outdir (even the project dir), still upload', async () => {
+  it('an outfile in a SUBdirectory still uploads; outdir "." (the whole project) is refused too', async () => {
     await esbuildRun(
       { appToken: 'tok', onNotice: () => undefined },
       { outfile: 'dist/bundle.js', absWorkingDir: '/proj/app' },
     ).end();
-    await esbuildRun({ appToken: 'tok' }, { outdir: '.', absWorkingDir: '/proj/app' }).end();
-    expect(uploadSpy).toHaveBeenCalledTimes(2);
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+    const notices: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outdir: '.', absWorkingDir: '/proj/app' },
+    ).end();
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+    expect(notices.some((m) => m.includes('Nothing was uploaded'))).toBe(true);
   });
 });
 
@@ -444,7 +494,7 @@ describe('review follow-ups', () => {
       { outfile: '/proj/bundle.js', absWorkingDir: '/proj/app' },
     ).end();
     expect(uploadSpy).not.toHaveBeenCalled();
-    const ours = notices.filter((m) => m.includes('outfile'));
+    const ours = notices.filter((m) => m.includes('project directory itself'));
     expect(ours).toHaveLength(1);
     expect(ours[0]).toContain('Nothing was uploaded');
   });
@@ -470,5 +520,144 @@ describe('review follow-ups', () => {
       { outfile: '/proj/app2/out.js', absWorkingDir: '/proj/app' },
     ).end();
     expect(uploadSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('esbuild: builds into one directory settle before and while an upload runs', () => {
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
+
+  /** A run whose captured onError is fed `error` on its first `failures` calls. */
+  const failing = (failures: number, error = new Error('exit 11: map has no debug_id')) => {
+    let calls = 0;
+    uploadSpy.mockImplementation(async (resolved: unknown) => {
+      calls++;
+      if (calls <= failures) {
+        (resolved as ResolvedPluginOptions).onError?.(error);
+      }
+      return undefined;
+    });
+  };
+
+  it('a failure while another build started is retried, not reported', async () => {
+    const a = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/race1' });
+    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race1' });
+    a.start();
+    const pending: Array<Promise<void> | undefined> = [];
+    let calls = 0;
+    uploadSpy.mockImplementation(async (resolved: unknown) => {
+      calls++;
+      if (calls === 1) {
+        // Build B starts writing while A's inject -> upload is running, and A trips over its map.
+        b.start();
+        (resolved as ResolvedPluginOptions).onError?.(new Error('exit 11'));
+        pending.push(b.end());
+      }
+      return undefined;
+    });
+    await a.end();
+    await Promise.all(pending);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a failure with NO concurrent build is reported as configured: thrown with failOnError', async () => {
+    failing(1);
+    const run = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/race2' });
+    run.start();
+    await expect(run.end()).rejects.toThrow('exit 11');
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('... or sent to onError otherwise, and to the default warning when there is none', async () => {
+    failing(1);
+    const seen: unknown[] = [];
+    const run = esbuildRun(
+      { appToken: 'tok', onError: (e) => seen.push(e) },
+      { outdir: '/abs/race3' },
+    );
+    run.start();
+    await run.end();
+    expect(String(seen[0])).toContain('exit 11');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      failing(1);
+      const quiet = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race4' });
+      quiet.start();
+      await quiet.end();
+      expect(warn.mock.calls.join()).toContain('source-map upload skipped');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('retries are bounded: a failure that keeps coinciding with new builds is finally reported', async () => {
+    const seen: unknown[] = [];
+    const run = esbuildRun(
+      { appToken: 'tok', onError: (e) => seen.push(e) },
+      { outdir: '/abs/race5' },
+    );
+    const other = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race5' });
+    run.start();
+    const pending: Array<Promise<void> | undefined> = [];
+    let ownCalls = 0;
+    uploadSpy.mockImplementation(async (resolved: unknown) => {
+      // Only the owning run's attempts are counted; the other build's own run succeeds.
+      if ((resolved as ResolvedPluginOptions).onError !== undefined && ownCalls < 3) {
+        ownCalls++;
+        other.start();
+        (resolved as ResolvedPluginOptions).onError?.(new Error('exit 11'));
+        pending.push(other.end());
+      }
+      return undefined;
+    });
+    await run.end();
+    await Promise.all(pending);
+    expect(ownCalls).toBe(3);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a run waits for a build that is still in flight before it scans', async () => {
+    const a = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race6' });
+    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race6' });
+    a.start();
+    b.start();
+    const first = a.end();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(uploadSpy).not.toHaveBeenCalled();
+    await b.end();
+    await first;
+    expect(uploadSpy).toHaveBeenCalled();
+  });
+
+  it('three overlapping builds stay strictly one after another (the queue tail guard)', async () => {
+    const gates: Array<() => void> = [];
+    const order: string[] = [];
+    uploadSpy.mockImplementation(async () => {
+      const n = gates.length;
+      order.push(`start${n}`);
+      await new Promise<void>((r) => gates.push(r));
+      order.push(`end${n}`);
+      return undefined;
+    });
+    const runs = [1, 2, 3].map(() => esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race7' }));
+    const done = [runs[0]?.end(), runs[1]?.end()];
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(['start0']);
+    gates[0]?.();
+    await done[0];
+    await new Promise((r) => setTimeout(r, 20));
+    // Build 1's queue slot has settled but build 2 is still running: build 3 must queue behind build 2.
+    expect(order).toEqual(['start0', 'end0', 'start1']);
+    const third = runs[2]?.end();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(['start0', 'end0', 'start1']);
+    gates[1]?.();
+    await done[1];
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(['start0', 'end0', 'start1', 'end1', 'start2']);
+    gates[2]?.();
+    await third;
   });
 });

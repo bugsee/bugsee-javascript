@@ -138,8 +138,15 @@ describe('loadBuildPluginEnv', () => {
     file(h, 'BUGSEE_APP_TOKEN=home\n');
     const proj = mk('home', 'work', 'proj');
     expect(loadBuildPluginEnv(proj, { home: () => h })).toEqual({ values: {} });
-    // ...and a project that IS the home directory reads nothing either.
-    expect(loadBuildPluginEnv(h, { home: () => h })).toEqual({ values: {} });
+    // ...and a project that IS the home directory (a container WORKDIR of /root) reads nothing, but says why.
+    const atHome = loadBuildPluginEnv(h, { home: () => h });
+    expect(atHome.values).toEqual({});
+    expect(atHome.problem).toContain('home directory');
+    expect(atHome.problem).not.toContain('home\n');
+    // With no file there, nothing is said.
+    expect(loadBuildPluginEnv(mk('home2'), { home: () => join(base, 'home2') })).toEqual({
+      values: {},
+    });
     // A project directory ABOVE home (home inside it) reads nothing.
     expect(loadBuildPluginEnv(base, { home: () => h })).toEqual({ values: {} });
   });
@@ -163,6 +170,15 @@ describe('loadBuildPluginEnv', () => {
     expect(result.problem).toContain('holds no usable');
     expect(result.problem).toContain(join(proj, BUILD_PLUGIN_ENV_FILE));
     expect(result.problem).not.toContain('secret.test');
+  });
+
+  it('reports a file whose only entry has an EMPTY value (it would silently disable the plugin)', () => {
+    const proj = mk('proj');
+    file(proj, 'BUGSEE_APP_TOKEN=\nBUGSEE_APP_BUILD=   \n');
+    const result = loadBuildPluginEnv(proj, { home });
+    expect(result.problem).toContain('non-empty value');
+    file(proj, 'BUGSEE_APP_TOKEN=\nBUGSEE_APP_BUILD=5\n');
+    expect(loadBuildPluginEnv(proj, { home }).problem).toBeUndefined();
   });
 
   it('reports a UTF-16 / binary file as such', () => {

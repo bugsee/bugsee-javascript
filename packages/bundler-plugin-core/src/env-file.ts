@@ -105,10 +105,18 @@ export function loadBuildPluginEnv(
     }
   }
   for (let current = dir; ; current = dirname(current)) {
-    if (atOrAbove(current, home)) {
-      return { values: {} };
-    }
     const path = join(current, BUILD_PLUGIN_ENV_FILE);
+    if (atOrAbove(current, home)) {
+      // A project that IS the home directory (a container WORKDIR of /root) is never searched: say so
+      // rather than silently ignoring a file the user put there on purpose.
+      return current === dir && existsSync(path)
+        ? {
+            values: {},
+            path,
+            problem: `${path} is in your home directory, which is never searched for ${BUILD_PLUGIN_ENV_FILE}; it was ignored. Set the variables in the environment, or build from a project subdirectory.`,
+          }
+        : { values: {} };
+    }
     if (existsSync(path)) {
       return readEnvFile(path);
     }
@@ -134,13 +142,15 @@ function readEnvFile(path: string): EnvFileResult {
     };
   }
   const values = parseEnvFile(text);
-  if (Object.keys(values).length === 0) {
+  // An empty value (`BUGSEE_APP_TOKEN=`) is not usable either: it would silently disable the plugin.
+  const usable = Object.values(values).some((value) => value.trim() !== '');
+  if (!usable) {
     return {
       values,
       path,
       problem:
         `${path} was found but holds no usable ${[...FILE_KEYS].join(' / ')} entry ` +
-        '(expected UTF-8 `KEY=value` lines); it was ignored.',
+        '(expected UTF-8 `KEY=value` lines with a non-empty value); it was ignored.',
     };
   }
   return { values, path };

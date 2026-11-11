@@ -66,6 +66,18 @@ describe('resolvePluginOptions app identity', () => {
 });
 
 describe('resolvePluginOptions', () => {
+  it('a whitespace-only token (option or environment) is no token: the plugin stays off', () => {
+    for (const r of [
+      resolvePluginOptions({}, { BUGSEE_APP_TOKEN: '  ' }),
+      resolvePluginOptions({ appToken: '\t' }, {}),
+    ]) {
+      expect(r.appToken).toBe('');
+      expect(r.enabled).toBe(false);
+    }
+    // A real token is kept verbatim.
+    expect(resolvePluginOptions({}, { BUGSEE_APP_TOKEN: ' t ' }).appToken).toBe(' t ');
+  });
+
   it('uses explicit options, preferring them over env vars', () => {
     const r = resolvePluginOptions(
       { appToken: 'opt-tok', appVersion: '2.0.0', appBuild: '9', endpoint: 'https://opt.test' },

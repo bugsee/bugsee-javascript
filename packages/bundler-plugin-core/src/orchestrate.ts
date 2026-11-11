@@ -155,6 +155,11 @@ export async function defaultDeleteMapFiles(
   return deleted;
 }
 
+/** Where a contained upload failure goes when the user gave no `onError`. */
+export function defaultUploadErrorHandler(error: unknown): void {
+  console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
+}
+
 /** Drive `bugsee-cli`: inject debug-IDs into the build, upload the source-maps, then delete the client maps. */
 export async function uploadSourcemaps(
   options: UploadSourcemapsOptions,
@@ -171,11 +176,7 @@ export async function uploadSourcemaps(
   const deleteMaps = options.deleteMaps ?? true;
   const dryFlag = dryRun ? ['--dry-run'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
-  const onError =
-    options.onError ??
-    ((error: unknown): void => {
-      console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
-    });
+  const onError = options.onError ?? defaultUploadErrorHandler;
 
   try {
     if (options.preStamped === true) {

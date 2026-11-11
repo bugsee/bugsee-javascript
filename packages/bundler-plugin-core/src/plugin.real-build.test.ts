@@ -5,6 +5,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rspack } from '@rspack/core';
 import { build as esbuild } from 'esbuild';
+import { build as tsupBuild } from 'tsup';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bugseeEsbuildPlugin, bugseeRspackPlugin } from './plugin';
 import { resolveBugseeCli } from './run-cli';
@@ -272,5 +274,106 @@ describeReal('real Rspack build', () => {
     expect(requests.length).toBe(before);
     // Rspack emits nothing for a broken production build, so there is no output to stamp.
     expect(existsSync(app.out)).toBe(false);
+  });
+});
+
+describeReal('real tsup build (tsup always runs esbuild with write:false)', () => {
+  it('uploads nothing, leaves the maps, and says why instead of silently doing nothing', async () => {
+    const app = makeApp('tsup-app');
+    const notices: string[] = [];
+    const before = requests.length;
+    await tsupBuild({
+      config: false,
+      entry: [app.entry],
+      format: ['esm', 'cjs'],
+      outDir: app.out,
+      sourcemap: true,
+      silent: true,
+      dts: false,
+      clean: true,
+      esbuildPlugins: [
+        bugseeEsbuildPlugin({
+          ...pluginOptions,
+          endpoint,
+          onNotice: (m) => notices.push(m),
+        }),
+      ],
+    });
+    expect(requests.length).toBe(before);
+    expect(notices.filter((m) => m.includes('write: false'))).toHaveLength(1);
+    const files = readdirSync(app.out);
+    expect(files.filter((f) => f.endsWith('.map')).length).toBeGreaterThan(0);
+    expect(files.filter((f) => f.endsWith('.js') || f.endsWith('.cjs'))).not.toEqual([]);
+    for (const f of files.filter((f) => /\.c?js$/.test(f))) {
+      expect(readFileSync(join(app.out, f), 'utf8')).not.toContain('debugId');
+    }
+  });
+});
+
+describeReal("a build writing while another build's upload is between inject and upload", () => {
+  it('is retried, not reported as a failed upload (slow-inject CLI wrapper)', async () => {
+    const app = makeApp('esbuild-inject-race');
+    writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
+    // A BUGSEE_CLI_PATH wrapper: run the real CLI, then (for `sourcemaps inject` only) dwell, so a second
+    // build can write AFTER inject scanned but BEFORE the upload scans. Without the retry, the upload trips
+    // over the second build's map (no debug_id, exit 11) and reports a failure.
+    const wrapper = join(app.dir, 'slow-inject.js');
+    writeFileSync(
+      wrapper,
+      `const { spawnSync } = require('node:child_process');
+const r = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...process.argv.slice(2)], { stdio: 'inherit' });
+if (process.argv[2] === 'sourcemaps') { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); }
+process.exit(r.status ?? 1);
+`,
+    );
+    chmodSync(wrapper, 0o755);
+    const errors: unknown[] = [];
+    const plugin = bugseeEsbuildPlugin({
+      ...pluginOptions,
+      endpoint,
+      failOnError: false,
+      onError: (e) => errors.push(e),
+    });
+    const saved = process.env.BUGSEE_CLI_PATH;
+    process.env.BUGSEE_CLI_PATH = wrapper;
+    try {
+      await Promise.all([
+        esbuild({
+          entryPoints: [app.entry],
+          bundle: true,
+          outdir: app.out,
+          absWorkingDir: app.dir,
+          format: 'esm',
+          outExtension: { '.js': '.mjs' },
+          logLevel: 'silent',
+          plugins: [plugin],
+        }),
+        // Starts only after A's inject has scanned, so its files land between A's inject and A's upload.
+        new Promise((r) => setTimeout(r, 700)).then(() =>
+          esbuild({
+            entryPoints: [join(app.dir, 'second.js')],
+            bundle: true,
+            outdir: app.out,
+            absWorkingDir: app.dir,
+            format: 'cjs',
+            outExtension: { '.js': '.cjs' },
+            logLevel: 'silent',
+            plugins: [plugin],
+          }),
+        ),
+      ]);
+    } finally {
+      if (saved === undefined) {
+        delete process.env.BUGSEE_CLI_PATH;
+      } else {
+        process.env.BUGSEE_CLI_PATH = saved;
+      }
+    }
+    expect(errors).toEqual([]);
+    const files = readdirSync(app.out);
+    for (const bundle of ['index.mjs', 'second.cjs']) {
+      expect(readFileSync(join(app.out, bundle), 'utf8')).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
+    }
+    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });

@@ -13,11 +13,13 @@ import {
 } from './app-identity';
 import { bakeIdentity, type ParseChunk } from './bake-identity';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
+import { defaultUploadErrorHandler } from './orchestrate';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
   notify,
   type ResolvedIdentity,
+  type ResolvedPluginOptions,
   resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
@@ -199,6 +201,7 @@ function webpackBuild(mode: string | undefined): BundlerBuildContext {
 /** The slice of esbuild's plugin `build` object the end-of-build upload reads. */
 interface EsbuildBuildLike {
   initialOptions: { outdir?: string; outfile?: string; absWorkingDir?: string; write?: boolean };
+  onStart(callback: () => void): void;
   onEnd(callback: (result: { errors: readonly unknown[] }) => void | Promise<void>): void;
 }
 
@@ -224,6 +227,64 @@ function serialUpload<T>(outDir: string, run: () => Promise<T>): Promise<T> {
     }
   });
   return result;
+}
+
+/**
+ * What the esbuild builds writing into one directory are doing. Serialising uploads is not enough on its own:
+ * a run is `inject` then `upload`, each scanning the whole directory, so a build that WRITES between the two
+ * leaves a map without a debug-id for the upload to trip over (exit 11). So a run first waits until no build
+ * of the directory is in flight, and a failure while another build started or ended in the meantime is
+ * retried (the later scan sees finished files) instead of being reported.
+ */
+interface DirActivity {
+  inflight: number;
+  /** Bumped at every build start: lets a run tell that the directory was touched while it ran. */
+  starts: number;
+}
+const dirActivity = new Map<string, DirActivity>();
+const activityOf = (outDir: string): DirActivity => {
+  let activity = dirActivity.get(outDir);
+  if (activity === undefined) {
+    activity = { inflight: 0, starts: 0 };
+    dirActivity.set(outDir, activity);
+  }
+  return activity;
+};
+const MAX_UPLOAD_ATTEMPTS = 3;
+const IDLE_WAIT_MS = 60_000;
+const IDLE_POLL_MS = 25;
+
+async function uploadWhenSettled(base: ResolvedPluginOptions, outDir: string): Promise<void> {
+  const activity = activityOf(outDir);
+  for (let attempt = 1; ; attempt++) {
+    for (let waited = 0; activity.inflight > 0 && waited < IDLE_WAIT_MS; waited += IDLE_POLL_MS) {
+      await new Promise((r) => setTimeout(r, IDLE_POLL_MS));
+    }
+    const startsBefore = activity.starts;
+    const errors: unknown[] = [];
+    // The run's own failure handling is replaced by a capture, so a failure caused by a concurrent build
+    // can be retried; whatever remains is reported exactly as the user configured (failOnError / onError).
+    await runPluginUpload(
+      { ...base, failOnError: false, onError: (error) => errors.push(error) },
+      outDir,
+      { bundler: {} },
+    );
+    const [first] = errors;
+    if (first === undefined) {
+      return;
+    }
+    if (
+      (activity.starts !== startsBefore || activity.inflight > 0) &&
+      attempt < MAX_UPLOAD_ATTEMPTS
+    ) {
+      continue;
+    }
+    if (base.failOnError) {
+      throw first;
+    }
+    (base.onError ?? defaultUploadErrorHandler)(first);
+    return;
+  }
 }
 
 /** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
@@ -459,9 +520,14 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         // `external`, not `true`, because `true` appends a `//# sourceMappingURL` comment and the map is
         // deleted after upload, leaving a shipped bundle that points at a missing file. The CLI pairs a
         // bundle with its sibling `<file>.map` without the comment. An explicit `false` (or any other
-        // value) is the user's choice and is left alone; with `false` the empty-maps warning explains.
+        // value) is the user's choice and is left alone; with `false` there is nothing to upload, and a notice says so.
         // Not for a development build (NODE_ENV=development) that will not upload: it would pay for maps
         // nothing references. `uploadInDevelopment` keeps them.
+        if (resolved.enabled && initialOptions.sourcemap === false) {
+          say(
+            'esbuild `sourcemap: false` emits no source maps, so there is nothing to upload (the plugin leaves an explicit false alone). Remove it, or use `sourcemap: "external"`, to symbolicate this build.',
+          );
+        }
         if (
           resolved.enabled &&
           initialOptions.sourcemap === undefined &&
@@ -474,41 +540,54 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // `writeBundle` mapping carries no esbuild result, so the hook is registered here; it runs on every
       // watch rebuild.
       setup(build: EsbuildBuildLike) {
+        const outDir = esbuildOutputDir(build.initialOptions);
+        const activity = outDir === undefined ? undefined : activityOf(outDir);
+        build.onStart(() => {
+          if (activity !== undefined) {
+            activity.inflight++;
+            activity.starts++;
+          }
+        });
         build.onEnd(async (result) => {
-          // A failed build wrote nothing worth uploading; `write: false` wrote nothing at all.
-          if (result.errors.length > 0 || build.initialOptions.write === false) {
+          if (activity !== undefined) {
+            activity.inflight = Math.max(0, activity.inflight - 1);
+          }
+          // A failed build wrote nothing worth uploading.
+          if (result.errors.length > 0 || outDir === undefined) {
             return;
           }
-          const outDir = esbuildOutputDir(build.initialOptions);
-          if (outDir !== undefined) {
-            const { outdir, outfile } = build.initialOptions;
-            // esbuild states no mode: only NODE_ENV=development marks a dev build.
-            if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
+          // `write: false`: esbuild hands the files to the caller, who writes them later (tsup ALWAYS does
+          // this), so they are not on disk when this hook runs. Say so instead of doing nothing silently.
+          if (build.initialOptions.write === false) {
+            say(
+              'esbuild runs with `write: false` (tsup always does), so the output is not on disk when the plugin runs and nothing was uploaded. Run the bugsee-cli post-build step instead (`bugsee-cli sourcemaps inject <outDir>` then `bugsee-cli debug-files upload <outDir> --type sourcemaps`, e.g. from tsup `onSuccess`); see docs/source-maps-usage.md section 2.',
+            );
+            return;
+          }
+          const { outdir, outfile } = build.initialOptions;
+          // esbuild states no mode: only NODE_ENV=development marks a dev build.
+          if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
+            return;
+          }
+          if (resolved.enabled) {
+            // An output directory that is the project directory (or above it: a bare `outfile: 'bundle.js'`,
+            // `outdir: '.'`) would make the WHOLE project the output directory, and inject plus the map
+            // deletion walk all of it: refuse rather than touch unrelated files.
+            const project = resolve(build.initialOptions.absWorkingDir ?? process.cwd());
+            const up = relative(outDir, project);
+            if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) {
+              say(
+                `esbuild output ${outfile ?? outdir} is the project directory itself (or above it), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` pointing at a dedicated output directory.`,
+              );
               return;
             }
-            if (
-              resolved.enabled &&
-              (outdir === undefined || outdir === '') &&
-              outfile !== undefined
-            ) {
-              // A bare `outfile` in the project directory (or above it) would make the WHOLE project the
-              // output directory (inject + map deletion walk it): refuse rather than touch unrelated files.
-              const project = resolve(build.initialOptions.absWorkingDir ?? process.cwd());
-              const up = relative(outDir, project);
-              if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) {
-                say(
-                  `esbuild \`outfile\` ${outfile} is in the project directory itself (or above it), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` (a dedicated output directory).`,
-                );
-                return;
-              }
+            if ((outdir === undefined || outdir === '') && outfile !== undefined) {
               say(
                 `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`,
               );
             }
-            await serialUpload(outDir, () =>
-              runPluginUpload(forOutput(outDir), outDir, { bundler: {} }),
-            );
           }
+          await serialUpload(outDir, () => uploadWhenSettled(forOutput(outDir), outDir));
         });
       },
     },
