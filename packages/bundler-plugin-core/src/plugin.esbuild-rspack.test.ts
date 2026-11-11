@@ -148,6 +148,15 @@ describe('esbuild: upload at the end of the build', () => {
     expect(ours[0]).toContain('onSuccess');
   });
 
+  it('write:false says nothing for a disabled or token-less plugin', async () => {
+    const notices: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', disabled: true, onNotice: (m) => notices.push(m) },
+      { outdir: '/abs/dist', write: false },
+    ).end();
+    expect(notices).toEqual([]);
+  });
+
   it('an explicit sourcemap:false is left alone but explained', () => {
     const notices: string[] = [];
     const own: FakeBuild['initialOptions'] = { outdir: '/abs/dist', sourcemap: false };

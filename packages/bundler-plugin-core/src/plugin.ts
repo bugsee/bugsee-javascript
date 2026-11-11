@@ -559,9 +559,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           // `write: false`: esbuild hands the files to the caller, who writes them later (tsup ALWAYS does
           // this), so they are not on disk when this hook runs. Say so instead of doing nothing silently.
           if (build.initialOptions.write === false) {
-            say(
-              'esbuild runs with `write: false` (tsup always does), so the output is not on disk when the plugin runs and nothing was uploaded. Run the bugsee-cli post-build step instead (`bugsee-cli sourcemaps inject <outDir>` then `bugsee-cli debug-files upload <outDir> --type sourcemaps`, e.g. from tsup `onSuccess`); see docs/source-maps-usage.md section 2.',
-            );
+            if (resolved.enabled) {
+              say(
+                'esbuild runs with `write: false` (tsup always does), so the output is not on disk when the plugin runs and nothing was uploaded. Run the bugsee-cli post-build step instead (`bugsee-cli sourcemaps inject <outDir>` then `bugsee-cli debug-files upload <outDir> --type sourcemaps`, e.g. from tsup `onSuccess`); see docs/source-maps-usage.md section 2.',
+              );
+            }
             return;
           }
           const { outdir, outfile } = build.initialOptions;
