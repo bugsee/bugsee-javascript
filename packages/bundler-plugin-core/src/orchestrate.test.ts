@@ -208,7 +208,8 @@ describe('uploadSourcemaps', () => {
       return ['/build/dist/app.js.map'];
     });
     const result = await uploadSourcemaps({ ...base, run: runOrdered, deleteMapFiles });
-    expect(deleteMapFiles).toHaveBeenCalledWith('/build/dist');
+    // The snapshot lister failed on the nonexistent dir, so the deleter falls back to "every map".
+    expect(deleteMapFiles).toHaveBeenCalledWith('/build/dist', undefined);
     expect(result.deletedMaps).toEqual(['/build/dist/app.js.map']);
     expect(order).toEqual(['sourcemaps', 'debug-files', 'delete']); // delete is last
     void run;
@@ -280,6 +281,47 @@ describe('defaultDeleteMapFiles', () => {
   it('returns an empty list when there are no maps', async () => {
     await writeFile(join(dir, 'app.js'), 'x');
     expect(await defaultDeleteMapFiles(dir)).toEqual([]);
+  });
+
+  it('with `only`, deletes just those maps and tolerates one already gone', async () => {
+    const a = join(dir, 'a.js.map');
+    const b = join(dir, 'b.js.map');
+    await writeFile(a, '{}');
+    await writeFile(b, '{}');
+    const deleted = await defaultDeleteMapFiles(dir, [a, join(dir, 'gone.js.map')]);
+    expect(deleted).toEqual([a]);
+    expect(await readdir(dir)).toEqual(['b.js.map']);
+  });
+
+  it('rethrows an unlink failure that is not ENOENT', async () => {
+    // A directory named like a map: unlink fails with EISDIR/EPERM, not ENOENT.
+    const notAFile = join(dir, 'x.map');
+    await mkdir(notAFile);
+    await expect(defaultDeleteMapFiles(dir, [notAFile])).rejects.toThrow();
+  });
+});
+
+describe('deletes only the maps that existed when the upload started', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-snap-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('a map another build writes while the upload is in flight survives', async () => {
+    await writeFile(join(dir, 'first.js.map'), '{}');
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[0] === 'debug-files') {
+        // The upload is in flight: a second build into the same directory writes its map now.
+        await writeFile(join(dir, 'second.js.map'), '{}');
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const result = await uploadSourcemaps({ ...base, outDir: dir, run });
+    expect(result.deletedMaps.map((p) => p.split('/').pop())).toEqual(['first.js.map']);
+    expect(await readdir(dir)).toEqual(['second.js.map']);
   });
 });
 

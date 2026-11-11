@@ -49,7 +49,10 @@ const bundlerOf = (call: number) =>
   (uploadSpy.mock.calls[call]?.[2] as { bundler?: unknown } | undefined)?.bundler;
 
 describe('esbuild: upload at the end of the build', () => {
-  beforeEach(() => uploadSpy.mockClear());
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
 
   it('registers ONE onEnd and uploads the outdir once the build is on disk', async () => {
     const run = esbuildRun({ appToken: 'tok', appVersion: '3.0.0' }, { outdir: '/abs/dist' });
@@ -91,6 +94,30 @@ describe('esbuild: upload at the end of the build', () => {
     expect(uploadSpy).not.toHaveBeenCalled();
   });
 
+  it('an `outfile` build says, once, that the whole directory is uploaded', async () => {
+    const notices: string[] = [];
+    const run = esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outfile: '/abs/public/app.js' },
+    );
+    await run.end();
+    await run.end();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('/abs/public');
+    expect(notices[0]).toContain('outdir');
+    // outdir builds, and disabled plugins, say nothing.
+    const quiet: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', onNotice: (m) => quiet.push(m) },
+      { outdir: '/abs/dist' },
+    ).end();
+    await esbuildRun(
+      { appToken: 'tok', disabled: true, onNotice: (m) => quiet.push(m) },
+      { outfile: '/abs/public/app.js' },
+    ).end();
+    expect(quiet).toEqual([]);
+  });
+
   it('does nothing for a build that writes nothing (no outdir/outfile, or write:false)', async () => {
     await esbuildRun({ appToken: 'tok' }, {}).end();
     await esbuildRun({ appToken: 'tok' }, { outdir: '/abs/dist', write: false }).end();
@@ -115,17 +142,15 @@ describe('esbuild: upload at the end of the build', () => {
     expect(uploadSpy.mock.calls[0]?.[0]).toMatchObject({ enabled: false });
   });
 
-  it('makes the build EMIT maps when the user has not asked for any', () => {
+  it('makes the build EMIT external maps when the user said nothing', () => {
+    // `external`, not `true`: the map is deleted after upload, so a sourceMappingURL comment would dangle.
     const own: FakeBuild['initialOptions'] = { outdir: '/abs/dist' };
     esbuildRun({ appToken: 'tok' }, own);
-    expect(own.sourcemap).toBe(true);
-    const off: FakeBuild['initialOptions'] = { outdir: '/abs/dist', sourcemap: false };
-    esbuildRun({ appToken: 'tok' }, off);
-    expect(off.sourcemap).toBe(true);
+    expect(own.sourcemap).toBe('external');
   });
 
-  it("leaves a deliberate sourcemap choice ('external', 'inline', …) and a disabled plugin alone", () => {
-    for (const choice of ['external', 'linked', 'inline', 'both']) {
+  it("leaves any explicit sourcemap choice (false, 'external', 'inline', ...) and a disabled plugin alone", () => {
+    for (const choice of [false, true, 'external', 'linked', 'inline', 'both']) {
       const own: FakeBuild['initialOptions'] = { outdir: '/abs/dist', sourcemap: choice };
       esbuildRun({ appToken: 'tok' }, own);
       expect(own.sourcemap).toBe(choice);
@@ -133,6 +158,89 @@ describe('esbuild: upload at the end of the build', () => {
     const disabled: FakeBuild['initialOptions'] = { outdir: '/abs/dist' };
     esbuildRun({ appToken: 'tok', disabled: true }, disabled);
     expect(disabled.sourcemap).toBeUndefined();
+  });
+
+  describe('builds sharing one outdir run their uploads one after another', () => {
+    it('the second build waits for the first upload and then runs its own', async () => {
+      const gates: Array<() => void> = [];
+      const order: string[] = [];
+      uploadSpy.mockImplementation(async () => {
+        const n = gates.length;
+        order.push(`start${n}`);
+        await new Promise<void>((r) => gates.push(r));
+        order.push(`end${n}`);
+        return undefined;
+      });
+      const plugin = makePlugin({ appToken: 'tok' }).esbuild as unknown as {
+        config: (o: FakeBuild['initialOptions']) => void;
+        setup: (b: FakeBuild) => void;
+      };
+      const ends: Array<() => Promise<void> | undefined> = [];
+      for (let i = 0; i < 2; i++) {
+        const initialOptions = { outdir: '/abs/shared' };
+        plugin.config(initialOptions);
+        plugin.setup({
+          initialOptions,
+          onEnd: (cb) => ends.push(() => cb({ errors: [] })),
+        });
+      }
+      const first = ends[0]?.();
+      const second = ends[1]?.();
+      await new Promise((r) => setTimeout(r, 10));
+      // Only the first has started: the second must not join it and must not run yet.
+      expect(order).toEqual(['start0']);
+      gates[0]?.();
+      await first;
+      await new Promise((r) => setTimeout(r, 10));
+      expect(order).toEqual(['start0', 'end0', 'start1']);
+      gates[1]?.();
+      await second;
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('a failed upload does not block the next build, and rejects only its own', async () => {
+      uploadSpy.mockImplementationOnce(async () => {
+        throw new Error('boom');
+      });
+      uploadSpy.mockImplementationOnce(async () => undefined);
+      const plugin = makePlugin({ appToken: 'tok' }).esbuild as unknown as {
+        setup: (b: FakeBuild) => void;
+      };
+      const ends: Array<() => Promise<void> | undefined> = [];
+      for (let i = 0; i < 2; i++) {
+        plugin.setup({
+          initialOptions: { outdir: '/abs/failing' },
+          onEnd: (cb) => ends.push(() => cb({ errors: [] })),
+        });
+      }
+      const first = ends[0]?.();
+      const second = ends[1]?.();
+      await expect(first).rejects.toThrow('boom');
+      await expect(second).resolves.toBeUndefined();
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('different output directories do not wait for each other', async () => {
+      let release: () => void = () => undefined;
+      uploadSpy.mockImplementationOnce(
+        () => new Promise<undefined>((r) => (release = () => r(undefined))),
+      );
+      const plugin = makePlugin({ appToken: 'tok' }).esbuild as unknown as {
+        setup: (b: FakeBuild) => void;
+      };
+      const ends: Array<() => Promise<void> | undefined> = [];
+      for (const outdir of ['/abs/a', '/abs/b']) {
+        plugin.setup({
+          initialOptions: { outdir },
+          onEnd: (cb) => ends.push(() => cb({ errors: [] })),
+        });
+      }
+      const slow = ends[0]?.();
+      await ends[1]?.();
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+      release();
+      await slow;
+    });
   });
 });
 

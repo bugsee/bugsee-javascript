@@ -202,6 +202,30 @@ interface EsbuildBuildLike {
   onEnd(callback: (result: { errors: readonly unknown[] }) => void | Promise<void>): void;
 }
 
+/**
+ * Run uploads for one output directory ONE AFTER ANOTHER. `runPluginUpload` makes a concurrent caller JOIN the
+ * in-flight run, which is right for one build with several outputs but wrong for esbuild builds that share an
+ * outdir (tsup's esm + cjs): the in-flight run scanned the directory BEFORE the second build wrote its files,
+ * and its delete-maps step then removes the second build's maps unuploaded. Each build's own run therefore
+ * starts only once the previous one has settled, and scans what is on disk by then. A failure in an earlier
+ * run does not block the next, and is reported to the build that owned it.
+ */
+const uploadTails = new Map<string, Promise<unknown>>();
+function serialUpload<T>(outDir: string, run: () => Promise<T>): Promise<T> {
+  const result = (uploadTails.get(outDir) ?? Promise.resolve()).then(run);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  uploadTails.set(outDir, tail);
+  void tail.then(() => {
+    if (uploadTails.get(outDir) === tail) {
+      uploadTails.delete(outDir);
+    }
+  });
+  return result;
+}
+
 /** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
 function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string | undefined {
   const out = resolveOutputDir({ dir: options.outdir, file: options.outfile });
@@ -223,8 +247,24 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // `.env.bugsee-build-plugin` (env-file.ts; it only fills variables the environment does not set). The
   // baseline looks from the working directory; a bundler that reports its project directory (Vite `root`,
   // webpack `context`, esbuild `absWorkingDir`) re-resolves from there, below.
-  let env = mergeBuildPluginEnv(process.env, loadBuildPluginEnv(undefined));
-  let resolved = resolvePluginOptions(options, env);
+  // A file that WAS found but gave nothing is said once (never its contents), so a UTF-16 or empty file is
+  // not a silent "no token".
+  const reported = new Set<string>();
+  const loadFile = (root: string | undefined): Record<string, string> => {
+    if (options.disabled) {
+      return {};
+    }
+    const { values, problem } = loadBuildPluginEnv(root);
+    if (problem !== undefined && !reported.has(problem)) {
+      reported.add(problem);
+      notify(resolved)(problem);
+    }
+    return values;
+  };
+  // `resolved` is assigned right below; `loadFile` only reads it after that (it is `let` for the hook refresh).
+  let resolved = resolvePluginOptions(options, process.env);
+  let env = mergeBuildPluginEnv(process.env, loadFile(undefined));
+  resolved = resolvePluginOptions(options, env);
   const name = 'bugsee';
 
   // The app identity comes from the BUNDLER's project directory (Vite `root`, webpack `context`, esbuild
@@ -241,7 +281,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     userDefines: Record<string, unknown>,
   ): ResolvedIdentity => {
     if (root !== undefined) {
-      env = mergeBuildPluginEnv(process.env, loadBuildPluginEnv(root));
+      env = mergeBuildPluginEnv(process.env, loadFile(root));
       resolved = resolvePluginOptions(options, env);
     }
     bundlerIdentity = resolveIdentity(options, env, root, {}, fixed);
@@ -398,13 +438,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         if (Object.keys(define).length > 0) {
           initialOptions.define = define;
         }
-        // Like Vite: make the build EMIT the maps this plugin exists to upload. Only the default and an
-        // explicit `false` are overridden; `external`/`linked`/`inline`/`both` are deliberate choices.
-        if (
-          resolved.enabled &&
-          (initialOptions.sourcemap === undefined || initialOptions.sourcemap === false)
-        ) {
-          initialOptions.sourcemap = true;
+        // Make the build EMIT the maps this plugin exists to upload. Only when the user said nothing:
+        // `external`, not `true`, because `true` appends a `//# sourceMappingURL` comment and the map is
+        // deleted after upload, leaving a shipped bundle that points at a missing file. The CLI pairs a
+        // bundle with its sibling `<file>.map` without the comment. An explicit `false` (or any other
+        // value) is the user's choice and is left alone; with `false` the empty-maps warning explains.
+        if (resolved.enabled && initialOptions.sourcemap === undefined) {
+          initialOptions.sourcemap = 'external';
         }
       },
       // End of the build (#184): upload what esbuild wrote, as Vite/Rollup `writeBundle` do. unplugin's own
@@ -418,7 +458,21 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           }
           const outDir = esbuildOutputDir(build.initialOptions);
           if (outDir !== undefined) {
-            await runPluginUpload(forOutput(outDir), outDir, { bundler: {} });
+            const { outdir, outfile } = build.initialOptions;
+            if (
+              resolved.enabled &&
+              (outdir === undefined || outdir === '') &&
+              outfile !== undefined
+            ) {
+              const note = `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`;
+              if (!reported.has(note)) {
+                reported.add(note);
+                notify(resolved)(note);
+              }
+            }
+            await serialUpload(outDir, () =>
+              runPluginUpload(forOutput(outDir), outDir, { bundler: {} }),
+            );
           }
         });
       },

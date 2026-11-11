@@ -15,6 +15,8 @@ vi.mock('./resolve', async (importOriginal) => ({
   runPluginUpload: uploadSpy,
 }));
 
+(globalThis as { __BUGSEE_REAL_ENV_FILE__?: boolean }).__BUGSEE_REAL_ENV_FILE__ = true;
+
 const { bugseeUnpluginFactory } = await import('./plugin');
 const makePlugin = (options?: BugseePluginOptions): UnpluginOptions =>
   bugseeUnpluginFactory(options, { framework: 'vite' }) as UnpluginOptions;
@@ -55,6 +57,7 @@ describe('plugin reads .env.bugsee-build-plugin', () => {
 
   it('finds the nearest file above a nested project dir', async () => {
     writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_APP_TOKEN=outer\n');
+    mkdirSync(join(root, '.git'));
     const app = join(root, 'apps', 'web');
     mkdirSync(app, { recursive: true });
     const plugin = makePlugin();
@@ -73,14 +76,15 @@ describe('plugin reads .env.bugsee-build-plugin', () => {
   it('the plugin option beats the environment, which beats the file', async () => {
     writeFileSync(
       join(root, BUILD_PLUGIN_ENV_FILE),
-      'BUGSEE_APP_TOKEN=file\nBUGSEE_ENDPOINT=file-ep\n',
+      'BUGSEE_APP_TOKEN=file\nBUGSEE_ENDPOINT=https://evil.test\n',
     );
     vi.stubEnv('BUGSEE_APP_TOKEN', 'env-token');
 
     const fromEnv = makePlugin();
     vite(fromEnv).config({ root });
     await vite(fromEnv).writeBundle({ dir: '/out' });
-    expect(uploaded()).toMatchObject({ appToken: 'env-token', endpoint: 'file-ep' });
+    // The file cannot redirect the upload: BUGSEE_ENDPOINT is never read from it.
+    expect(uploaded()).toMatchObject({ appToken: 'env-token', endpoint: undefined });
 
     uploadSpy.mockClear();
     const fromOption = makePlugin({ appToken: 'option-token' });
@@ -117,5 +121,48 @@ describe('plugin reads .env.bugsee-build-plugin', () => {
     writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_APP_TOKEN=file-token\n');
     const result = vite(makePlugin()).config({ root }) as { build?: { sourcemap?: boolean } };
     expect(result.build?.sourcemap).toBe(true);
+  });
+
+  it('a blank token in the environment counts as unset, so the file supplies it', async () => {
+    writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_APP_TOKEN=file-token\n');
+    vi.stubEnv('BUGSEE_APP_TOKEN', '  ');
+    const plugin = makePlugin();
+    vite(plugin).config({ root });
+    await vite(plugin).writeBundle({ dir: '/out' });
+    expect(uploaded().appToken).toBe('file-token');
+  });
+
+  it('a stray file above the repository root gives no token', async () => {
+    writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_APP_TOKEN=stray\n');
+    const repo = join(root, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    const plugin = makePlugin();
+    vite(plugin).config({ root: repo });
+    await vite(plugin).writeBundle({ dir: '/out' });
+    expect(uploaded().enabled).toBe(false);
+  });
+
+  it('says ONCE, without the contents, that a found file held nothing usable', () => {
+    writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_ENDPOINT=https://secret.test\n');
+    const notices: string[] = [];
+    const plugin = makePlugin({ onNotice: (m) => notices.push(m) });
+    vite(plugin).config({ root });
+    vite(plugin).config({ root });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('holds no usable');
+    expect(notices[0]).not.toContain('secret.test');
+  });
+
+  it('says nothing for a good file, a missing file, or a disabled plugin', () => {
+    const notices: string[] = [];
+    writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'BUGSEE_APP_TOKEN=t\n');
+    vite(makePlugin({ onNotice: (m) => notices.push(m) })).config({ root });
+    expect(notices).toEqual([]);
+    const empty = mkdtempSync(join(tmpdir(), 'bugsee-plugin-empty-'));
+    vite(makePlugin({ onNotice: (m) => notices.push(m) })).config({ root: empty });
+    rmSync(empty, { recursive: true, force: true });
+    writeFileSync(join(root, BUILD_PLUGIN_ENV_FILE), 'nothing useful\n');
+    vite(makePlugin({ disabled: true, onNotice: (m) => notices.push(m) })).config({ root });
+    expect(notices).toEqual([]);
   });
 });

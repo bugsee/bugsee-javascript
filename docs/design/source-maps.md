@@ -41,7 +41,7 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
   the plugin option `stripSourcesContent` (default off), uploads each map without its embedded source: file,
   line and column symbolication are unaffected, the snippet beside a frame is what is lost, and the maps on disk
   are untouched. Same release refuses to inject into an SRI build from the CLI side too, so a user driving
-  `bugsee-cli` directly (Angular, esbuild, Deno) gets the guard the plugin already had.
+  `bugsee-cli` directly (Angular, Bun) gets the guard the plugin already had.
 - **Since v0.7.10** (bugsee-cli #42) the maps upload SEVERAL AT A TIME — `--concurrency N` is a ceiling that, left
   unset, scales with the batch (one per 8 maps, min 4, max 8). Measured against a mock with 50 ms of latency: 200 maps
   took 23.58 s serially and 4.10 s scaled. The cap is deliberately modest because a CI box on a thin uplink is
@@ -120,7 +120,7 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 
 ## 7. Coverage across targets + map identity (analysis)
 
-**Targets without a plugin hook (Bun's built-in bundler, Deno, `tsc`/`swc`, Angular, custom pipelines).** The plugins
+**Targets without a plugin hook (Bun's built-in bundler, `tsc`/`swc`, Angular, custom pipelines).** The plugins
 are conveniences, not the mechanism: `bugsee-cli` operates on a finished output dir independent of the bundler, so the
 **universal path is the standalone CLI post-build step** (`sourcemaps inject` → `debug-files upload`; run before
 deploy). See `docs/source-maps-usage.md §2`. To widen the zero-config plugin experience cheaply, `@bugsee/bundler-plugin-core`
@@ -177,8 +177,9 @@ still runs, `{injected: false, uploaded: false}`.
   an inline script with no `src`.
 - **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
   `writeBundle` for vite and rollup, `afterEmit` for webpack and Rspack, and `onEnd` for esbuild. Users driving
-  `bugsee-cli` directly — Angular 17+, Deno — get no guard from the plugin, and Angular's `subresourceIntegrity: true` is exactly the config this protects
-  against. Tracked: the same check belongs in `sourcemaps inject` itself.
+  `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no guard from the plugin, but the CLI has its own as of
+  0.7.13: `sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed. Angular's
+  `subresourceIntegrity: true` is exactly the config this protects against.
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
 in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded

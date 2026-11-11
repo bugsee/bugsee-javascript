@@ -35,8 +35,14 @@ export interface UploadSourcemapsOptions {
   stripSourcesContent?: boolean;
   /** Injectable `bugsee-cli` runner (default {@link runBugseeCli}). */
   run?: RunFn;
-  /** Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). */
-  deleteMapFiles?: (dir: string) => Promise<string[]>;
+  /**
+   * Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). `only` is the set of maps that existed
+   * when the upload started: maps another build wrote into the same directory while the upload was in flight
+   * were never sent and must not be deleted.
+   */
+  deleteMapFiles?: (dir: string, only?: readonly string[]) => Promise<string[]>;
+  /** Injectable `.map` lister for that snapshot (default {@link listMapFiles}). */
+  listMapFiles?: (dir: string) => Promise<string[]>;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
   findSri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -103,12 +109,12 @@ const NEVER_WALK = new Set([
  */
 const MAX_DELETE_DEPTH = 6;
 
-/** Recursively delete every build `*.map` under `dir`; returns the deleted paths. */
-export async function defaultDeleteMapFiles(dir: string, depth = 0): Promise<string[]> {
+/** Recursively list every build `*.map` under `dir`. */
+export async function listMapFiles(dir: string, depth = 0): Promise<string[]> {
   if (depth > MAX_DELETE_DEPTH) {
     return [];
   }
-  const deleted: string[] = [];
+  const found: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = join(dir, entry.name);
@@ -118,10 +124,32 @@ export async function defaultDeleteMapFiles(dir: string, depth = 0): Promise<str
       if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
         continue;
       }
-      deleted.push(...(await defaultDeleteMapFiles(full, depth + 1)));
+      found.push(...(await listMapFiles(full, depth + 1)));
     } else if (entry.isFile() && entry.name.endsWith('.map')) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+/**
+ * Delete build `*.map` files under `dir`; returns the deleted paths. With `only`, just those (already
+ * listed, so the same exclusions applied); a file that is already gone is not an error.
+ */
+export async function defaultDeleteMapFiles(
+  dir: string,
+  only?: readonly string[],
+): Promise<string[]> {
+  const targets = only ?? (await listMapFiles(dir));
+  const deleted: string[] = [];
+  for (const full of targets) {
+    try {
       await unlink(full);
       deleted.push(full);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
     }
   }
   return deleted;
@@ -212,6 +240,9 @@ export async function uploadSourcemaps(
     // the CLI otherwise exits 10 on it. Under `failOnError` it is NOT passed: a team that asked for
     // strictness wants "this build produced no maps at all" to stop the build, which is exactly the
     // misconfiguration that silently costs them symbolication later.
+    // The maps that exist NOW are the ones this upload covers. Another build into the same directory (tsup's
+    // esm + cjs) may write more while the upload is in flight; deleting those would lose them unsent.
+    const uploadedSet = await (options.listMapFiles ?? listMapFiles)(outDir).catch(() => undefined);
     const emptyFlag = options.failOnError === true ? [] : ['--allow-empty'];
     await run(
       [
@@ -240,7 +271,7 @@ export async function uploadSourcemaps(
     // 3. Delete the client .map files (privacy) — only after a CONFIRMED upload. Deleting after a failure
     //    would destroy the only copy of the mapping while the symbols were never delivered.
     const deletedMaps = deleteMaps
-      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir)
+      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, uploadedSet)
       : [];
     return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {
