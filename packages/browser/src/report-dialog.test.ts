@@ -511,6 +511,63 @@ describe('sending', () => {
     expect(await pending).toEqual({ ok: false });
   });
 
+  it('dims the form and shows the infinity loader over it while sending', async () => {
+    let finish: (value: UploadResult) => void = () => {};
+    const { show, upload } = harness();
+    upload.mockImplementation(() => new Promise<UploadResult>((resolve) => (finish = resolve)));
+    const pending = show();
+    const busy = q('[data-busy-overlay]');
+    const announcer = q('[data-announcer]');
+    expect(announcer.textContent).toBe('');
+    const card = q('form');
+    expect(busy.hasAttribute('hidden')).toBe(true);
+    expect(card.hasAttribute('data-busy')).toBe(false);
+
+    send();
+
+    expect(busy.hasAttribute('hidden')).toBe(false);
+    expect(busy.getAttribute('aria-hidden')).toBe('true'); // visual only; the spoken state is the announcer
+    // the viewer's loader: a faint track and a travelling bar on the same lemniscate path
+    const paths = busy.querySelectorAll('svg path');
+    expect(paths).toHaveLength(2);
+    expect(paths[0]?.getAttribute('d')).toBe(paths[1]?.getAttribute('d'));
+    expect(paths[1]?.getAttribute('class')).toContain('infinity-bar');
+
+    // spoken from an always-rendered live region OUTSIDE the form (no busy ancestor), its text set on send
+    expect(announcer.textContent).toBe('Sending…');
+    expect(announcer.getAttribute('role')).toBe('status');
+    expect(card.contains(announcer)).toBe(false);
+    expect(card.hasAttribute('aria-busy')).toBe(false);
+    // the powered-by link is out of the tab order while the form is locked
+    expect(q('[data-powered]').closest('[inert]')).not.toBeNull();
+    // the sections are dimmed by the stylesheet (jsdom does not cascade shadow-root styles, so read the rule)
+    const css = REPORT_DIALOG_CSS.replace(/\s+/g, ' ');
+    for (const section of ['bar', 'body', 'footer-row']) {
+      expect(css).toContain(
+        `.bugsee-reporting-dialog-card[data-busy] .bugsee-reporting-dialog-${section}`,
+      );
+    }
+    expect(css).toMatch(/\[data-busy\] \.bugsee-reporting-dialog-footer-row \{ opacity: 0\.45/);
+    // reduced motion turns the travelling bar off
+    expect(css).toMatch(
+      /prefers-reduced-motion: reduce\) \{ \.bugsee-reporting-dialog-infinity-bar \{ animation: none; \}/,
+    );
+
+    finish({ ok: true });
+    await pending;
+  });
+
+  it('speaks the localized "sending" string', async () => {
+    const { show, upload } = harness();
+    upload.mockImplementation(() => new Promise<UploadResult>(() => {}));
+    void show({ strings: { sending: 'Wird gesendet…' } });
+
+    send();
+
+    expect(q('[data-announcer]').textContent).toBe('Wird gesendet…');
+    expect(q('[data-action="send"]').getAttribute('aria-label')).toBe('Wird gesendet…');
+  });
+
   it('closes and resolves a failed result rather than hanging when the upload throws', async () => {
     const { show, upload } = harness();
     upload.mockRejectedValue(new Error('boom'));

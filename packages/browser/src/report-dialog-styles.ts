@@ -278,6 +278,54 @@ textarea.${p}input { min-height: 8.2em; resize: vertical; }
 }
 .${p}confirm-discard { color: ${v('accent')}; }
 
+/* While a send is in flight the form is dimmed and the viewer's infinity loader sits over it. */
+.${p}card[data-busy] .${p}bar,
+.${p}card[data-busy] .${p}body,
+.${p}card[data-busy] .${p}footer-row { opacity: 0.45; transition: opacity 120ms; }
+.${p}busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: progress;
+}
+.${p}busy[hidden] { display: none; }
+.${p}infinity { width: 80px; height: 40px; overflow: visible; display: block; }
+.${p}infinity-track {
+  fill: none;
+  stroke: ${v('field-border')};
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.5;
+}
+.${p}infinity-bar {
+  fill: none;
+  stroke: ${v('accent')};
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 25 75;
+  stroke-dashoffset: 0;
+  animation: ${p}infinity-travel 1.6s linear infinite;
+}
+@keyframes ${p}infinity-travel { to { stroke-dashoffset: -100; } }
+/* Reduced motion means no motion (as with the card entry below): a static track with a part-drawn bar. */
+@media (prefers-reduced-motion: reduce) {
+  .${p}infinity-bar { animation: none; }
+}
+/* Visually hidden, still announced: the live region that speaks "Sending…". */
+.${p}announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* On a phone-sized viewport the card is the mobile SDKs' full-screen form. */
 @media (max-width: 480px) {
   .${p}overlay { padding: 0; }

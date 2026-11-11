@@ -103,6 +103,10 @@ export interface ReportDialogDeps {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// The viewer's loading mark: one closed lemniscate (infinity sign) in a 100×50 box.
+const INFINITY_PATH =
+  'M20,25 C20,5 35,5 50,25 C65,45 80,45 80,25 C80,5 65,5 50,25 C35,45 20,45 20,25 Z';
 // Material "bug_report" and "close" glyphs (Apache-2.0).
 const BUG_PATH =
   'M20 8h-2.81a5.985 5.985 0 0 0-1.82-1.96L17 4.41 15.59 3l-2.17 2.17a6.002 6.002 0 0 0-2.83 0L8.41 3 7 4.41l1.62 1.63C7.88 6.55 7.26 7.22 6.81 8H4v2h2.09c-.05.33-.09.66-.09 1v1H4v2h2v1c0 .34.04.67.09 1H4v2h2.81c1.04 1.79 2.97 3 5.19 3s4.15-1.21 5.19-3H20v-2h-2.09c.05-.33.09-.66.09-1v-1h2v-2h-2v-1c0-.34-.04-.67-.09-1H20V8zm-6 8h-4v-2h4v2zm0-4h-4v-2h4v2z';
@@ -162,6 +166,9 @@ interface Refs {
   send: HTMLButtonElement;
   close: HTMLButtonElement;
   confirm: HTMLElement;
+  busyOverlay: HTMLElement;
+  announcer: HTMLElement;
+  footer: HTMLElement;
   keep: HTMLButtonElement;
   discard: HTMLButtonElement;
   fields: Partial<Record<FieldName, HTMLInputElement | HTMLTextAreaElement>>;
@@ -263,6 +270,12 @@ function showDialog(
       radio.disabled = value;
     }
     refs.close.disabled = value;
+    // Dim the form and cover it with the loader, so a send in flight is visible (not just a greyed button).
+    refs.form.toggleAttribute('data-busy', value);
+    refs.announcer.textContent = value ? strings.sending : '';
+    // The powered-by link is the one control left enabled: keep it out of the tab order while sending.
+    refs.footer.toggleAttribute('inert', value);
+    refs.busyOverlay.toggleAttribute('hidden', !value);
   };
 
   const showConfirm = (visible: boolean): void => {
@@ -689,8 +702,34 @@ function build(
   hook(discardBody, 'confirm-body');
   confirm.append(discardTitle, discardBody, actions);
 
-  form.append(bar, body, footerRow, confirm);
-  dialog.append(form);
+  // The "sending" cover: the viewer's infinity-sign loader (a faint track with a bar travelling along the
+  // same lemniscate; see the `infinity-bar` animation in the styles), shown over the dimmed form.
+  // Purely visual (`aria-hidden`): the spoken state is the persistent live region below, outside the form.
+  const busyOverlay = make('div', { 'aria-hidden': 'true', hidden: '' });
+  hook(busyOverlay, 'busy');
+  busyOverlay.setAttribute('data-busy-overlay', '');
+  const loader = doc.createElementNS(SVG_NS, 'svg');
+  loader.setAttribute('viewBox', '0 0 100 50');
+  loader.setAttribute('aria-hidden', 'true');
+  hook(loader, 'infinity');
+  for (const name of ['infinity-track', 'infinity-bar']) {
+    const path = doc.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', INFINITY_PATH);
+    path.setAttribute('pathLength', '100');
+    hook(path, name);
+    loader.append(path);
+  }
+  busyOverlay.append(loader);
+
+  // The announcement: an always-rendered, initially EMPTY live region OUTSIDE the form (so nothing busy is
+  // its ancestor), whose text is set when a send starts — screen readers announce a text change in an
+  // exposed region far more reliably than a region that is merely unhidden. Visually hidden.
+  const announcer = make('div', { role: 'status', 'aria-live': 'polite' });
+  hook(announcer, 'announcer');
+  announcer.setAttribute('data-announcer', '');
+
+  form.append(bar, body, footerRow, confirm, busyOverlay);
+  dialog.append(form, announcer);
   shadow.append(dialog);
 
   return {
@@ -700,6 +739,9 @@ function build(
     send,
     close,
     confirm,
+    busyOverlay,
+    announcer,
+    footer: footerRow,
     keep,
     discard,
     fields: fields as Refs['fields'],
