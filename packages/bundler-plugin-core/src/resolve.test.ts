@@ -245,6 +245,54 @@ describe('one pipeline per output directory', () => {
     expect(await a).toEqual(await b); // …and the joiner gets the same result, not `undefined`
   });
 
+  it("a run over the build's own files neither joins nor is joined, and registers from those bundles only", async () => {
+    const h = held();
+    const files = { scripts: ['dist/a.mjs'], maps: ['dist/a.mjs.map'] };
+    const seen: Array<{ files?: unknown }> = [];
+    const upload = async (opts: { outDir: string; files?: unknown }) => {
+      seen.push(opts);
+      return h.uploadSourcemaps(opts);
+    };
+    const collected: Array<() => Promise<string[]>> = [];
+    const registerJsBuild = vi.fn(async (o: { collectDebugIds?: () => Promise<string[]> }) => {
+      if (o.collectDebugIds) {
+        collected.push(o.collectDebugIds);
+      }
+      return { registered: false as const, reason: 'not-release' as const };
+    });
+    const a = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      registerJsBuild: registerJsBuild as never,
+      files,
+      ...noVcs,
+    });
+    const b = runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: upload as never,
+      registerJsBuild: registerJsBuild as never,
+      files: { scripts: ['dist/b.cjs'], maps: ['dist/b.cjs.map'] },
+      ...noVcs,
+    });
+    await tick();
+    expect(h.started).toEqual(['dist', 'dist']); // two pipelines at once
+    expect(seen.map((o) => o.files)).toEqual([
+      files,
+      { scripts: ['dist/b.cjs'], maps: ['dist/b.cjs.map'] },
+    ]);
+    h.release();
+    await Promise.all([a, b]);
+    // The slot map was never used: a later directory-wide run is not blocked or joined.
+    const later = held();
+    later.release();
+    await runPluginUpload(resolved, 'dist', {
+      uploadSourcemaps: later.uploadSourcemaps as never,
+      ...noVcs,
+    });
+    expect(later.started).toEqual(['dist']);
+    // Registration was handed a reader scoped to the build's own bundles (absent files: nothing, no throw).
+    expect(collected).toHaveLength(2);
+    expect(await collected[0]?.()).toEqual([]);
+  });
+
   it('still runs a second pipeline for a DIFFERENT directory — the canary', async () => {
     const h = held();
     const a = runPluginUpload(resolved, 'dist-a', {

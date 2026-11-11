@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultDeleteMapFiles, uploadSourcemaps } from './orchestrate';
+import {
+  defaultDeleteMapFiles,
+  listMapFiles,
+  MAX_PATHS_PER_CALL,
+  uploadSourcemaps,
+} from './orchestrate';
 import type { RunBugseeCliOptions, SpawnResult } from './run-cli';
 
 /** A fake `run` that records (args, options) in order and returns success. */
@@ -20,6 +25,8 @@ const base = {
   appToken: 'tok',
   appVersion: '1.0.0',
   appBuild: '7',
+  // The directory does not exist: the delete snapshot is injected (the real lister is tested below).
+  listMapFiles: async () => [] as string[],
 };
 
 describe('uploadSourcemaps', () => {
@@ -58,18 +65,6 @@ describe('uploadSourcemaps', () => {
   // …unless the caller asked for strictness. `failOnError` is for teams who would rather the build
   // stopped than ship un-symbolicatable crashes, and "this build produced no maps at all" is exactly
   // the misconfiguration they want it to catch.
-  it('allowEmpty keeps --allow-empty under failOnError (maps another run already uploaded)', async () => {
-    const { run, calls } = fakeRun();
-    await uploadSourcemaps({
-      ...base,
-      failOnError: true,
-      allowEmpty: true,
-      run,
-      deleteMapFiles: async () => [],
-    });
-    expect(calls[1]?.args).toContain('--allow-empty');
-  });
-
   it('omits --allow-empty under failOnError, so an empty build still fails loudly', async () => {
     const { run, calls } = fakeRun();
     await uploadSourcemaps({ ...base, failOnError: true, run, deleteMapFiles: async () => [] });
@@ -219,9 +214,14 @@ describe('uploadSourcemaps', () => {
       order.push('delete');
       return ['/build/dist/app.js.map'];
     });
-    const result = await uploadSourcemaps({ ...base, run: runOrdered, deleteMapFiles });
-    // The snapshot lister failed on the nonexistent dir, so the deleter falls back to "every map".
-    expect(deleteMapFiles).toHaveBeenCalledWith('/build/dist', undefined);
+    const result = await uploadSourcemaps({
+      ...base,
+      run: runOrdered,
+      deleteMapFiles,
+      listMapFiles: async () => ['/build/dist/app.js.map'],
+    });
+    // Only the maps that existed when the upload started (the snapshot) may be deleted.
+    expect(deleteMapFiles).toHaveBeenCalledWith('/build/dist', ['/build/dist/app.js.map']);
     expect(result.deletedMaps).toEqual(['/build/dist/app.js.map']);
     expect(order).toEqual(['sourcemaps', 'debug-files', 'delete']); // delete is last
     void run;
@@ -331,7 +331,7 @@ describe('deletes only the maps that existed when the upload started', () => {
       }
       return { code: 0, stdout: '', stderr: '' };
     });
-    const result = await uploadSourcemaps({ ...base, outDir: dir, run });
+    const result = await uploadSourcemaps({ ...base, outDir: dir, run, listMapFiles });
     expect(result.deletedMaps.map((p) => p.split('/').pop())).toEqual(['first.js.map']);
     expect(await readdir(dir)).toEqual(['second.js.map']);
   });
@@ -724,5 +724,120 @@ describe('uploadSourcemaps — already stamped in the build', () => {
       deleteMapFiles: async () => [],
     });
     expect(verifySri).not.toHaveBeenCalled();
+  });
+});
+
+describe('the delete snapshot fails CLOSED', () => {
+  const failingList = async (): Promise<string[]> => {
+    throw new Error('EACCES: cannot list');
+  };
+
+  it('if the maps cannot be listed, nothing is deleted and the problem is reported', async () => {
+    const { run } = fakeRun();
+    const deleteMapFiles = vi.fn(async () => ['x']);
+    const onError = vi.fn();
+    const result = await uploadSourcemaps({
+      ...base,
+      run,
+      deleteMapFiles,
+      onError,
+      listMapFiles: failingList,
+    });
+    expect(deleteMapFiles).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ uploaded: true, deletedMaps: [] });
+    expect(String(onError.mock.calls[0]?.[0])).toContain('none were deleted');
+    expect(String(onError.mock.calls[0]?.[0])).toContain('EACCES');
+  });
+
+  it('under failOnError it throws instead', async () => {
+    const { run } = fakeRun();
+    const deleteMapFiles = vi.fn(async () => ['x']);
+    await expect(
+      uploadSourcemaps({
+        ...base,
+        failOnError: true,
+        run,
+        deleteMapFiles,
+        listMapFiles: failingList,
+      }),
+    ).rejects.toThrow('none were deleted');
+    expect(deleteMapFiles).not.toHaveBeenCalled();
+  });
+
+  it('is not even attempted when nothing will be deleted (deleteMaps false, or a dry run)', async () => {
+    const { run } = fakeRun();
+    const list = vi.fn(failingList);
+    await uploadSourcemaps({ ...base, run, deleteMaps: false, listMapFiles: list });
+    await uploadSourcemaps({ ...base, run, dryRun: true, listMapFiles: list });
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe("a run over the build's own files", () => {
+  const scripts = ['/b/a.js', '/b/b.mjs'];
+  const maps = ['/b/a.js.map', '/b/b.mjs.map'];
+
+  it('hands the CLI exactly those paths (never the directory), and deletes exactly those maps', async () => {
+    const { run, calls } = fakeRun();
+    const deleteMapFiles = vi.fn(async (_d: string, only?: readonly string[]) => [...(only ?? [])]);
+    const list = vi.fn(async () => ['/b/foreign.js.map']);
+    const result = await uploadSourcemaps({
+      ...base,
+      outDir: '/b',
+      files: { scripts, maps },
+      run,
+      deleteMapFiles,
+      listMapFiles: list,
+    });
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', ...scripts, ...maps]);
+    expect(calls[1]?.args.slice(0, 4)).toEqual(['debug-files', 'upload', ...maps]);
+    expect(calls[1]?.args).not.toContain('/b');
+    expect(deleteMapFiles).toHaveBeenCalledWith('/b', maps);
+    expect(result.deletedMaps).toEqual(maps);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('batches paths per CLI call, and deletes only after every batch uploaded', async () => {
+    const many = Array.from({ length: 450 }, (_, i) => `/b/c${i}.js`);
+    const manyMaps = many.map((f) => `${f}.map`);
+    const { run, calls } = fakeRun();
+    const deleteMapFiles = vi.fn(async (_d: string, only?: readonly string[]) => [...(only ?? [])]);
+    await uploadSourcemaps({
+      ...base,
+      files: { scripts: many, maps: manyMaps },
+      run,
+      deleteMapFiles,
+    });
+    const injects = calls.filter((c) => c.args[1] === 'inject');
+    const uploads = calls.filter((c) => c.args[0] === 'debug-files');
+    expect(injects).toHaveLength(5); // 900 paths / 200
+    expect(uploads).toHaveLength(3); // 450 maps / 200
+    expect(injects.every((c) => c.args.length - 2 <= MAX_PATHS_PER_CALL)).toBe(true);
+    expect(uploads.flatMap((c) => c.args.filter((a) => a.endsWith('.map')))).toEqual(manyMaps);
+    expect(deleteMapFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes nothing when a batch fails to upload', async () => {
+    const { calls } = fakeRun();
+    let uploads = 0;
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      calls.push({ args, options: {} });
+      if (args[0] === 'debug-files' && ++uploads === 2) {
+        throw new Error('network down');
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const manyMaps = Array.from({ length: 300 }, (_, i) => `/b/c${i}.js.map`);
+    const deleteMapFiles = vi.fn(async () => ['x']);
+    const onError = vi.fn();
+    await uploadSourcemaps({
+      ...base,
+      files: { scripts: [], maps: manyMaps },
+      run,
+      deleteMapFiles,
+      onError,
+    });
+    expect(deleteMapFiles).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 });

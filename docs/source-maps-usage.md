@@ -32,14 +32,15 @@ deletes them at the end of the build, exactly as the Vite/webpack plugins do (Ro
 `afterEmit`), with the same SRI guard. With esbuild the plugin sets `sourcemap: 'external'` when you did not set `sourcemap` at all (external, so the
 shipped bundle carries no `//# sourceMappingURL` comment pointing at a map that is deleted after upload; the CLI
 pairs a bundle with its sibling `.map` anyway). An explicit value, including `false`, is left alone: with
-`false` there are no maps to upload, and the plugin says so through `onNotice`. esbuild builds that share one output directory
-(an ESM + CJS pair) are uploaded one after another, and each upload deletes only the maps that existed when it
-started. Use `outdir`: with `outfile` the plugin uploads the whole directory the file is in (every `.js` and
-`.map` there, not just yours) and says so in a notice; an `outfile` in the project directory itself or above it (a bare
-`outfile: 'bundle.js'`), or directly in a package root (a `package.json` with a `name`, or next to `src/` or
-`node_modules/`), is refused, with a notice, because that would make the whole project the output directory (a
-`dist/cjs/package.json` marker is fine). Under `failOnError`, a build that finds no maps because another build into
-the same directory already uploaded (and deleted) them is not a failure; a lone build that emitted no maps still is.
+`false` there are no maps to upload, and the plugin says so through `onNotice`.
+
+**The esbuild plugin works on the files THIS build wrote.** It asks esbuild for the metafile and hands the CLI
+exactly the build's own bundles and maps (in batches of 200 paths), never the directory. So a build only ever
+touches files it wrote: nothing is deleted without having been uploaded, nothing is uploaded under another build's
+options or another plugin instance's, builds sharing an output directory (an ESM + CJS pair, a worker sub-build,
+two plugin instances) never wait for or affect each other, and watch mode keeps no state between rebuilds. Under
+`failOnError`, a build whose own outputs contain no `.map` (for example `sourcemap: 'inline'`) fails, judged on that
+build alone; without `failOnError` it is a notice. `outfile` and `outdir` behave alike, wherever they point.
 Development builds do not upload and leave the local maps alone unless you set `uploadInDevelopment: true`:
 Rspack states its mode (only `development` is skipped; `none` and `production` upload), esbuild states none, so only `NODE_ENV=development` marks a
 dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Rspack stamps after emit rather than inside the compilation,

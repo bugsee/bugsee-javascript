@@ -149,6 +149,7 @@ describe('uploadSourcemaps — deletion happens IFF an upload was confirmed', ()
             deleteMaps,
             run,
             deleteMapFiles,
+            listMapFiles: async () => ['/out/app.js.map'],
             onError: () => undefined,
           });
           const uploaded = !failing && !dryRun;

@@ -11,13 +11,14 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rspack } from '@rspack/core';
-import { build as esbuild, type Plugin } from 'esbuild';
+import { build as esbuild, context as esbuildContext, type Plugin } from 'esbuild';
 import { build as tsupBuild } from 'tsup';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bugseeEsbuildPlugin, bugseeRspackPlugin } from './plugin';
@@ -115,66 +116,6 @@ describeReal('real esbuild build', () => {
     expect(readFileSync(join(app.out, 'index.js'), 'utf8')).not.toContain(
       'sourceMappingURL=index.js.map',
     );
-  });
-
-  it('two OVERLAPPING builds into one outdir (tsup esm+cjs) both get stamped, uploaded and cleaned', async () => {
-    // One plugin object shared by both builds, as tsup does. The collector is slow, so the first build's
-    // upload is still in flight when the second build writes its files. Joining that in-flight upload
-    // (it had already scanned the directory) used to delete the second build's maps, never uploaded.
-    const app = makeApp('esbuild-race');
-    writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
-    const errors: unknown[] = [];
-    const plugin = bugseeEsbuildPlugin({
-      ...pluginOptions,
-      endpoint,
-      failOnError: false,
-      onError: (e) => errors.push(e),
-    });
-    const before = requests.length;
-    delayMs = 600;
-    try {
-      await Promise.all([
-        esbuild({
-          entryPoints: [app.entry],
-          bundle: true,
-          outdir: app.out,
-          absWorkingDir: app.dir,
-          format: 'esm',
-          outExtension: { '.js': '.mjs' },
-          logLevel: 'silent',
-          plugins: [plugin],
-        }),
-        esbuild({
-          entryPoints: [join(app.dir, 'second.js')],
-          bundle: true,
-          outdir: app.out,
-          absWorkingDir: app.dir,
-          format: 'cjs',
-          outExtension: { '.js': '.cjs' },
-          logLevel: 'silent',
-          // Finishes while the first build's (slow) upload is in flight.
-          plugins: [
-            plugin,
-            {
-              name: 'delay',
-              setup: (b) => {
-                b.onStart(() => new Promise<void>((r) => setTimeout(r, 250)));
-              },
-            },
-          ],
-        }),
-      ]);
-    } finally {
-      delayMs = 0;
-    }
-    expect(errors).toEqual([]);
-    const files = readdirSync(app.out);
-    for (const bundle of ['index.mjs', 'second.cjs']) {
-      expect(readFileSync(join(app.out, bundle), 'utf8')).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
-    }
-    expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
-    // Each build's maps were actually uploaded: at least one request per build.
-    expect(requests.length - before).toBeGreaterThanOrEqual(2);
   });
 
   it('a disabled plugin leaves the build untouched', async () => {
@@ -360,7 +301,7 @@ async function withCliPath<T>(wrapper: string, run: () => Promise<T>): Promise<T
   }
 }
 
-const esmBuild = (app: { dir: string; entry: string; out: string }, plugins: Plugin[]) =>
+const esmBuild = (app: { dir: string; entry: string; out: string }, plugins: Plugin[], more = {}) =>
   esbuild({
     entryPoints: [app.entry],
     bundle: true,
@@ -370,8 +311,9 @@ const esmBuild = (app: { dir: string; entry: string; out: string }, plugins: Plu
     outExtension: { '.js': '.mjs' },
     logLevel: 'silent',
     plugins,
+    ...more,
   });
-const cjsBuild = (app: { dir: string; out: string }, plugins: Plugin[]) =>
+const cjsBuild = (app: { dir: string; out: string }, plugins: Plugin[], more = {}) =>
   esbuild({
     entryPoints: [join(app.dir, 'second.js')],
     bundle: true,
@@ -381,23 +323,26 @@ const cjsBuild = (app: { dir: string; out: string }, plugins: Plugin[]) =>
     outExtension: { '.js': '.cjs' },
     logLevel: 'silent',
     plugins,
+    ...more,
   });
 
-function expectBothStamped(out: string): void {
-  for (const bundle of ['index.mjs', 'second.cjs']) {
-    expect(readFileSync(join(out, bundle), 'utf8')).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
-  }
-  expect(readdirSync(out).filter((f) => f.endsWith('.map'))).toEqual([]);
-}
+const STAMP = /\/\/# debugId=[0-9a-f-]{36}/;
+const stamped = (path: string): boolean => STAMP.test(readFileSync(path, 'utf8'));
+const mapsIn = (dir: string): string[] => readdirSync(dir).filter((f) => f.endsWith('.map'));
+const withSecond = (name: string) => {
+  const app = makeApp(name);
+  writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
+  return app;
+};
 
-describeReal("a build writing while another build's upload is between inject and upload", () => {
+describeReal('esm + cjs builds into one outdir (tsup-style, one shared plugin)', () => {
   it.each([
-    false,
-    true,
-  ])('is retried, not reported as a failed upload (failOnError: %s; CLI wrapper pauses after inject)', async (failOnError) => {
-    const app = makeApp(`esbuild-inject-race-${failOnError}`);
-    writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
-    const { wrapper, injected, proceed } = pauseAfterInjectWrapper(app.dir);
+    [true, 0],
+    [false, 0],
+    [true, 400],
+    [false, 400],
+  ])('both are stamped, uploaded and cleaned (failOnError %s, collector delay %s ms)', async (failOnError, delay) => {
+    const app = withSecond(`esbuild-dual-${failOnError}-${delay}`);
     const errors: unknown[] = [];
     const plugin = bugseeEsbuildPlugin({
       ...pluginOptions,
@@ -405,96 +350,147 @@ describeReal("a build writing while another build's upload is between inject and
       failOnError,
       onError: (e) => errors.push(e),
     });
-    await withCliPath(wrapper, async () => {
-      const first = esmBuild(app, [plugin]);
-      await waitForFile(injected);
-      // Starts only after A's inject has scanned: its files land between A's inject and A's upload.
-      const second = cjsBuild(app, [plugin]);
-      await waitForFile(join(app.out, 'second.cjs.map'));
-      writeFileSync(proceed, '1');
-      await Promise.all([first, second]);
-    });
-    expect(errors).toEqual([]);
-    expectBothStamped(app.out);
-  });
-
-  it('also when the other build was ALREADY in flight when the run began (it finishes between inject and upload)', async () => {
-    const app = makeApp('esbuild-inject-race-inflight');
-    writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
-    const { wrapper, injected, proceed } = pauseAfterInjectWrapper(app.dir);
-    const errors: unknown[] = [];
-    const plugin = bugseeEsbuildPlugin({
-      ...pluginOptions,
-      endpoint,
-      failOnError: false,
-      onError: (e) => errors.push(e),
-    });
-    let reached: () => void = () => undefined;
-    const gateReached = new Promise<void>((r) => {
-      reached = r;
-    });
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    const gatePlugin: Plugin = {
-      name: 'gate',
-      setup(b) {
-        b.onLoad({ filter: /second\.js$/ }, async () => {
-          reached();
-          await gate;
-          return undefined;
-        });
-      },
-    };
-    await withCliPath(wrapper, async () => {
-      const second = cjsBuild(app, [plugin, gatePlugin]); // in flight, held at its first file
-      await gateReached;
-      const first = esmBuild(app, [plugin]); // its run starts while the second build is in flight
-      await waitForFile(injected);
-      release(); // the second build now writes and ends, between the first run's inject and upload
-      await waitForFile(join(app.out, 'second.cjs.map'));
-      writeFileSync(proceed, '1');
-      await Promise.all([first, second]);
-    });
-    expect(errors).toEqual([]);
-    expectBothStamped(app.out);
-  });
-});
-
-describeReal('two concurrent builds into one outdir under failOnError: true', () => {
-  it.each([
-    0, 400,
-  ])("both succeed, though the first run sweeps the second build's maps too (collector delay %s ms)", async (delay) => {
-    const app = makeApp(`esbuild-dual-strict-${delay}`);
-    writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
-    const plugin = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, failOnError: true });
+    const before = requests.length;
     delayMs = delay;
     try {
       await Promise.all([esmBuild(app, [plugin]), cjsBuild(app, [plugin])]);
     } finally {
       delayMs = 0;
     }
-    expectBothStamped(app.out);
-  });
-
-  it('a lone build with no maps still fails under failOnError (the sweep rule does not weaken it)', async () => {
-    const app = makeApp('esbuild-dual-strict-lone');
-    const plugin = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, failOnError: true });
-    await expect(
-      esbuild({
-        entryPoints: [app.entry],
-        bundle: true,
-        outdir: app.out,
-        absWorkingDir: app.dir,
-        sourcemap: 'inline',
-        logLevel: 'silent',
-        plugins: [plugin],
-      }),
-    ).rejects.toThrow();
+    expect(errors).toEqual([]);
+    expect(stamped(join(app.out, 'index.mjs'))).toBe(true);
+    expect(stamped(join(app.out, 'second.cjs'))).toBe(true);
+    expect(mapsIn(app.out)).toEqual([]);
+    expect(requests.length - before).toBeGreaterThanOrEqual(2); // one upload per build
   });
 });
 
+describeReal('a build only touches the files it wrote', () => {
+  it("foreign files appearing between the run's inject and upload are left exactly as they are", async () => {
+    const app = withSecond('esbuild-foreign');
+    const { wrapper, injected, proceed } = pauseAfterInjectWrapper(app.dir);
+    const errors: unknown[] = [];
+    const plugin = bugseeEsbuildPlugin({
+      ...pluginOptions,
+      endpoint,
+      failOnError: true,
+      onError: (e) => errors.push(e),
+    });
+    mkdirSync(app.out, { recursive: true });
+    await withCliPath(wrapper, async () => {
+      const first = esmBuild(app, [plugin]);
+      await waitForFile(injected);
+      // A foreign build (no plugin) writes an unstamped bundle and map between inject and upload.
+      const foreign = cjsBuild(app, [], { sourcemap: 'external' });
+      await foreign;
+      writeFileSync(proceed, '1');
+      await first;
+    });
+    expect(errors).toEqual([]);
+    expect(stamped(join(app.out, 'index.mjs'))).toBe(true);
+    expect(mapsIn(app.out)).toEqual(['second.cjs.map']); // not uploaded, not deleted
+    expect(stamped(join(app.out, 'second.cjs'))).toBe(false); // not stamped
+  });
+
+  it('two plugin instances over one outdir each upload only their own build, with their own options', async () => {
+    const app = withSecond('esbuild-two-instances');
+    const a = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, deleteMaps: true });
+    const b = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, deleteMaps: false });
+    const before = requests.length;
+    await Promise.all([esmBuild(app, [a]), cjsBuild(app, [b])]);
+    expect(requests.length - before).toBeGreaterThanOrEqual(2);
+    expect(stamped(join(app.out, 'index.mjs'))).toBe(true);
+    expect(stamped(join(app.out, 'second.cjs'))).toBe(true);
+    // A deleted its build's map; B (deleteMaps: false) kept its own, and neither touched the other's.
+    expect(mapsIn(app.out)).toEqual(['second.cjs.map']);
+  });
+
+  it('an external-maps build and an inline-maps build together under failOnError: the inline one FAILS', async () => {
+    const app = withSecond('esbuild-ext-and-inline');
+    const plugin = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, failOnError: true });
+    const results = await Promise.allSettled([
+      esmBuild(app, [plugin], { sourcemap: 'external' }),
+      cjsBuild(app, [plugin], { sourcemap: 'inline' }),
+    ]);
+    expect(results[0]?.status).toBe('fulfilled');
+    expect(results[1]?.status).toBe('rejected');
+    expect(stamped(join(app.out, 'index.mjs'))).toBe(true);
+  });
+});
+
+describeReal('watch mode (a long-lived esbuild context)', () => {
+  it("uploads each rebuild's own outputs", async () => {
+    const app = makeApp('esbuild-watch');
+    const plugin = bugseeEsbuildPlugin({ ...pluginOptions, endpoint });
+    const ctx = await esbuildContext({
+      entryPoints: [app.entry],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [plugin],
+    });
+    try {
+      const before = requests.length;
+      await ctx.rebuild();
+      expect(requests.length).toBeGreaterThan(before);
+      expect(mapsIn(app.out)).toEqual([]);
+      const afterFirst = requests.length;
+      writeFileSync(app.entry, "console.log('changed');\n");
+      await ctx.rebuild();
+      expect(requests.length).toBeGreaterThan(afterFirst);
+      expect(mapsIn(app.out)).toEqual([]);
+      expect(stamped(join(app.out, 'index.js'))).toBe(true);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
+describeReal('paths and sizes', () => {
+  it('an outdir reached through a symlink works (nothing compares directories)', async () => {
+    const app = makeApp('esbuild-symlink');
+    const real = join(app.dir, 'real-out');
+    mkdirSync(real, { recursive: true });
+    const link = join(app.dir, 'linked-out');
+    symlinkSync(real, link);
+    await esbuild({
+      entryPoints: [app.entry],
+      bundle: true,
+      outdir: link,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [bugseeEsbuildPlugin({ ...pluginOptions, endpoint })],
+    });
+    expect(stamped(join(real, 'index.js'))).toBe(true);
+    expect(mapsIn(real)).toEqual([]);
+  });
+
+  it('a build with more outputs than fit in one CLI call is batched and fully uploaded', async () => {
+    const app = makeApp('esbuild-many');
+    const entries: string[] = [];
+    for (let i = 0; i < 250; i++) {
+      const f = join(app.dir, `e${i}.js`);
+      writeFileSync(f, `console.log(${i});\n`);
+      entries.push(f);
+    }
+    const before = requests.length;
+    await esbuild({
+      entryPoints: entries,
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [bugseeEsbuildPlugin({ ...pluginOptions, endpoint })],
+    });
+    expect(mapsIn(app.out)).toEqual([]);
+    expect(readdirSync(app.out).filter((f) => f.endsWith('.js'))).toHaveLength(250);
+    for (const f of readdirSync(app.out)) {
+      expect(stamped(join(app.out, f))).toBe(true);
+    }
+    expect(requests.length - before).toBeGreaterThanOrEqual(2);
+  });
+});
 describeReal('failOnError with an esbuild build that emitted no maps', () => {
   const build = (name: string, options: object) => {
     const app = makeApp(name);

@@ -2,8 +2,7 @@
 // vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
 import {
   APP_BUILD_DEFINE,
@@ -14,10 +13,6 @@ import {
 } from './app-identity';
 import { bakeIdentity, type ParseChunk } from './bake-identity';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
-import {
-  defaultUploadErrorHandler,
-  uploadSourcemaps as defaultUploadSourcemaps,
-} from './orchestrate';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -28,7 +23,6 @@ import {
   runPluginUpload,
 } from './resolve';
 import { type AssetStore, stampAssets } from './stamp-assets';
-import { uploadTuning } from './upload-tuning';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -205,143 +199,37 @@ function webpackBuild(mode: string | undefined): BundlerBuildContext {
 /** The slice of esbuild's plugin `build` object the end-of-build upload reads. */
 interface EsbuildBuildLike {
   initialOptions: { outdir?: string; outfile?: string; absWorkingDir?: string; write?: boolean };
-  onStart(callback: () => void): void;
-  onEnd(callback: (result: { errors: readonly unknown[] }) => void | Promise<void>): void;
+  onEnd(callback: (result: EsbuildEndResult) => void | Promise<void>): void;
+}
+
+/** What esbuild hands `onEnd`: the errors, and (we ask for it) the metafile listing the build's own outputs. */
+interface EsbuildEndResult {
+  errors: readonly unknown[];
+  metafile?: { outputs: Record<string, unknown> };
 }
 
 /**
- * Run uploads for one output directory ONE AFTER ANOTHER. `runPluginUpload` makes a concurrent caller JOIN the
- * in-flight run, which is right for one build with several outputs but wrong for esbuild builds that share an
- * outdir (tsup's esm + cjs): the in-flight run scanned the directory BEFORE the second build wrote its files,
- * and its delete-maps step then removes the second build's maps unuploaded. Each build's own run therefore
- * starts only once the previous one has settled, and scans what is on disk by then. A failure in an earlier
- * run does not block the next, and is reported to the build that owned it.
+ * The files THIS build wrote, from its metafile (paths are relative to `absWorkingDir`), split into the bundles
+ * `sourcemaps inject` stamps and the maps it uploads. The whole esbuild upload runs on these lists and nothing
+ * else, which is what keeps it correct with no coordination at all: a build only touches files it wrote, so
+ * nothing is deleted without having been uploaded, nothing is uploaded under another build's options (or
+ * another plugin instance's), a nested or concurrent build never waits for anything, and watch mode needs no
+ * state between rebuilds.
  */
-const uploadTails = new Map<string, Promise<unknown>>();
-function serialUpload<T>(outDir: string, run: () => Promise<T>): Promise<T> {
-  const result = (uploadTails.get(outDir) ?? Promise.resolve()).then(run);
-  const tail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  uploadTails.set(outDir, tail);
-  void tail.then(() => {
-    if (uploadTails.get(outDir) === tail) {
-      uploadTails.delete(outDir);
-    }
-  });
-  return result;
-}
-
-/**
- * What the esbuild builds writing into one directory are doing. Serialising uploads is not enough on its own:
- * a run is `inject` then `upload`, each scanning the whole directory, so a build that WRITES between the two
- * leaves a map without a debug-id for the upload to trip over (exit 11). So a failure while another build started or ended in the meantime is
- * retried (the later scan sees finished files) instead of being reported. The first attempt never waits (a build
- * nested in another cannot finish until its own upload has).
- */
-interface DirActivity {
-  inflight: number;
-  /** Bumped at every build start: lets a run tell that the directory was touched while it ran. */
-  starts: number;
-  /** Runs that uploaded and deleted maps: a later run of a build that began earlier may find nothing left. */
-  sweeps: number;
-}
-const dirActivity = new Map<string, DirActivity>();
-const activityOf = (outDir: string): DirActivity => {
-  let activity = dirActivity.get(outDir);
-  if (activity === undefined) {
-    activity = { inflight: 0, starts: 0, sweeps: 0 };
-    dirActivity.set(outDir, activity);
-  }
-  return activity;
-};
-/** Wait (bounded) until no build of the directory is in flight: only a RETRY waits, see `uploadTuning`. */
-async function waitForIdle(activity: DirActivity): Promise<void> {
-  for (
-    let waited = 0;
-    activity.inflight > 0 && waited < uploadTuning.idleWaitMs;
-    waited += uploadTuning.pollMs
-  ) {
-    await new Promise((r) => setTimeout(r, uploadTuning.pollMs));
-  }
-}
-
-/**
- * The upload step for one esbuild output directory, with the retry for a build that wrote while it ran.
- *
- * It wraps ONLY `uploadSourcemaps` (handed to `runPluginUpload` as a dependency), so everything else keeps its
- * own handling: the user's `failOnError` still reaches the step (it also decides `--allow-empty`, so a build
- * that emitted no maps still fails under `failOnError`), and a build-REGISTRATION failure is reported as
- * itself and never retried. A failure is captured; if another build started while the step ran (or one is
- * still running) it is retried after a bounded wait, otherwise it is reported as configured.
- */
-function settledUpload(outDir: string, sweepsAtStart: number): typeof defaultUploadSourcemaps {
-  const activity = activityOf(outDir);
-  return async (options) => {
-    for (let attempt = 1; ; attempt++) {
-      const startsBefore = activity.starts;
-      // A build that was already running when this attempt began may write between inject and upload too.
-      const busyBefore = activity.inflight > 0;
-      const captured: unknown[] = [];
-      let thrown: { error: unknown } | undefined;
-      let result: Awaited<ReturnType<typeof defaultUploadSourcemaps>> | undefined;
-      try {
-        result = await defaultUploadSourcemaps({
-          ...options,
-          // An earlier run of this directory already swept (uploaded and deleted) maps since this build began,
-          // this build's among them (dual-format builds into one outdir): finding none is then success, even
-          // under failOnError. A lone map-less build has no such sweep and still fails.
-          allowEmpty: activity.sweeps > sweepsAtStart ? true : options.allowEmpty,
-          onError: (error) => captured.push(error),
-        });
-      } catch (error) {
-        thrown = { error };
-      }
-      if (thrown === undefined && captured.length === 0) {
-        if ((result?.deletedMaps.length ?? 0) > 0) {
-          activity.sweeps++;
-        }
-        return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
-      }
-      if (
-        (busyBefore || activity.starts !== startsBefore || activity.inflight > 0) &&
-        attempt < uploadTuning.attempts
-      ) {
-        await waitForIdle(activity);
-        continue;
-      }
-      if (thrown !== undefined) {
-        throw thrown.error;
-      }
-      (options.onError ?? defaultUploadErrorHandler)(captured[0]);
-      return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
-    }
+function esbuildOwnFiles(
+  result: EsbuildEndResult,
+  base: string,
+): { scripts: string[]; maps: string[] } {
+  const outputs = Object.keys(result.metafile?.outputs ?? {}).map((file) => resolve(base, file));
+  return {
+    scripts: outputs.filter((file) => /\.[cm]?js$/.test(file)),
+    maps: outputs.filter((file) => file.endsWith('.map')),
   };
 }
 
-/**
- * Whether `dir` looks like a package's root rather than an output folder: a package.json with a `name`, or a
- * `src/` or `node_modules/` next to it. (A `dist/cjs/package.json` holding only `{"type":"commonjs"}` is a marker.)
- */
-function isPackageRoot(dir: string): boolean {
-  try {
-    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
-      name?: unknown;
-    };
-    if (typeof manifest.name === 'string' && manifest.name !== '') {
-      return true;
-    }
-    return existsSync(join(dir, 'src')) || existsSync(join(dir, 'node_modules'));
-  } catch {
-    return false;
-  }
-}
-
-/** Whether `dir` is `project` or one of its ancestors (a segment-aware test: `..cache` is not `..`). */
-function isSameOrAbove(dir: string, project: string): boolean {
-  const rel = relative(dir, project);
-  return rel === '' || !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
+/** The directory esbuild's metafile paths are relative to. */
+function esbuildBase(options: EsbuildBuildLike['initialOptions']): string {
+  return resolve(options.absWorkingDir ?? process.cwd());
 }
 
 /** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
@@ -351,7 +239,7 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
     return undefined;
   }
   try {
-    return resolve(options.absWorkingDir ?? process.cwd(), out);
+    return resolve(esbuildBase(options), out);
   } catch {
     // The working directory is gone (`process.cwd()` throws) and the path is relative: nothing to upload.
     return undefined;
@@ -563,6 +451,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         define?: Record<string, string>;
         absWorkingDir?: string;
         sourcemap?: boolean | string;
+        metafile?: boolean;
       }) {
         const { identityDefines } = identityFromRoot(
           initialOptions.absWorkingDir,
@@ -592,25 +481,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         ) {
           initialOptions.sourcemap = 'external';
         }
+        // The metafile is how the plugin learns which files THIS build wrote (see `esbuildOwnFiles`).
+        if (resolved.enabled) {
+          initialOptions.metafile = true;
+        }
       },
       // End of the build (#184): upload what esbuild wrote, as Vite/Rollup `writeBundle` do. unplugin's own
       // `writeBundle` mapping carries no esbuild result, so the hook is registered here; it runs on every
       // watch rebuild.
       setup(build: EsbuildBuildLike) {
         const outDir = esbuildOutputDir(build.initialOptions);
-        const activity = outDir === undefined ? undefined : activityOf(outDir);
-        let sweepsAtStart = 0;
-        build.onStart(() => {
-          if (activity !== undefined) {
-            activity.inflight++;
-            activity.starts++;
-            sweepsAtStart = activity.sweeps;
-          }
-        });
         build.onEnd(async (result) => {
-          if (activity !== undefined) {
-            activity.inflight = Math.max(0, activity.inflight - 1);
-          }
           // A failed build wrote nothing worth uploading.
           if (result.errors.length > 0 || outDir === undefined) {
             return;
@@ -625,40 +506,23 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
             }
             return;
           }
-          const { outdir, outfile } = build.initialOptions;
           // esbuild states no mode: only NODE_ENV=development marks a dev build.
-          if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
+          if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild') || !resolved.enabled) {
             return;
           }
-          if (resolved.enabled) {
-            // An output directory that is the project directory (or above it: a bare `outfile: 'bundle.js'`,
-            // `outdir: '.'`) would make the WHOLE project the output directory, and inject plus the map
-            // deletion walk all of it: refuse rather than touch unrelated files.
-            const project = resolve(build.initialOptions.absWorkingDir ?? process.cwd());
-            const outfileOnly = (outdir === undefined || outdir === '') && outfile !== undefined;
-            // An `outfile` directly inside a package root (it holds a package.json) is the same hazard seen
-            // from a monorepo root: the whole package would be the output directory.
-            if (isSameOrAbove(outDir, project) || (outfileOnly && isPackageRoot(outDir))) {
-              say(
-                `esbuild output ${outfile ?? outdir} is the project directory itself (or above it, or a package root), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` pointing at a dedicated output directory.`,
-              );
-              return;
+          const files = esbuildOwnFiles(result, esbuildBase(build.initialOptions));
+          if (files.maps.length === 0) {
+            // No map among this build's own outputs (`sourcemap: 'inline'` / `false`): the misconfiguration
+            // `failOnError` exists to stop. It is judged on THIS build's outputs, so another build's maps
+            // can never excuse it.
+            const message = `esbuild build into ${outDir} emitted no .map files, so there is nothing to upload (sourcemap: 'inline' or false?). Use sourcemap: 'external' or 'linked'.`;
+            if (resolved.failOnError) {
+              throw new Error(message);
             }
-            if (outfileOnly) {
-              say(
-                `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`,
-              );
-            }
-          }
-          if (!resolved.enabled) {
+            say(message);
             return;
           }
-          await serialUpload(outDir, () =>
-            runPluginUpload(forOutput(outDir), outDir, {
-              bundler: {},
-              uploadSourcemaps: settledUpload(outDir, sweepsAtStart),
-            }),
-          );
+          await runPluginUpload(forOutput(outDir), outDir, { bundler: {}, files });
         });
       },
     },

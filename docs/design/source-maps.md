@@ -133,11 +133,17 @@ unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 (an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
 uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
-Concurrent esbuild builds into one directory: uploads are serialised per directory; the delete step removes only the
-maps that existed when the upload started; and a failure that coincides with another build starting (or one still in
-flight) is retried (up to 3 attempts, each retry waiting a bounded time for the other builds) rather than reported.
-The first attempt never waits, because a build nested inside another cannot finish until its own upload has. A
-disabled plugin queues nothing. Registration failures are reported as themselves and not retried.
+esbuild builds work on **per-build file lists**: the plugin sets `metafile: true`, takes the build's own `.js`/`.mjs`/
+`.cjs` and `.map` outputs from `result.metafile` in `onEnd`, and runs `sourcemaps inject <those files>` then
+`debug-files upload <those maps>` (200 paths per CLI call), deleting exactly those maps after a confirmed upload.
+Invariants: a build only touches files it wrote, so nothing is deleted without being uploaded, nothing is uploaded
+under another build's options, nested/concurrent builds never wait for each other, and there is no per-directory
+state (watch mode needs none). Under `failOnError` a build with no `.map` among its own outputs fails. Build
+registration reads only the build's own bundles. (An earlier design serialised and retried uploads per directory;
+four review rounds each found a new race in it, and per-build file lists remove the whole class.) Rspack/webpack
+keep the directory-wide `afterEmit` path, whose delete step is limited to the maps that existed when the upload
+started and fails closed if they cannot be listed; a Rspack `MultiCompiler` whose compilers share one `output.path`
+keeps the webpack behaviour of joining the in-flight run for that directory.
 
 **Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
 debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,
