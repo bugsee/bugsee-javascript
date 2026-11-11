@@ -11,10 +11,10 @@ export default defineConfig({
     // this reason; this extends the same convention to the rest.
     testTimeout: 30_000,
     environment: 'jsdom',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'build/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.ts'],
+      include: ['src/**/*.ts', 'build/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/**/*.test-d.ts', 'src/**/*.d.ts'],
       thresholds: { lines: 100, functions: 100, statements: 100, branches: 90 },
     },
