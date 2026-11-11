@@ -220,7 +220,7 @@ percent-encoded (core strips `file://` without URL-decoding): `/…/my%20app/dis
 stripped, then the stripped literal. Answers are cached per (file, id), bounded to 4096 registrations (reports cost no
 file I/O after the first for any realistic build; a build with more stamped chunks than that re-reads). Old Node
 (18.0-18.18, 20.0-20.6) has no `process.sourceMapsEnabled`, so the probe falls back to `--enable-source-maps` in
-`execArgv` / `NODE_OPTIONS` (tokenized on whitespace, quotes stripped); an explicit property always wins. A runtime
+`execArgv` / `NODE_OPTIONS` (tokenized on whitespace, double quotes stripped as Node does; `=true`/`=1` forms count, `=false`/`=0` do not); an explicit property always wins. A runtime
 `process.setSourceMapsEnabled(true)` on those old versions cannot be observed. With no verifier installed the runtime is
 not probed at all. Not handled: a FIFO-backed path (`/dev/fd/N`) would block the synchronous open; a bundle rewritten in
 place during a deploy keeps its cached verdict until restart. Known limits: a path scrubbed to
