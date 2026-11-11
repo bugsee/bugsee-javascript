@@ -81,6 +81,8 @@ describe("esbuild: upload of the build's own files at the end of the build", () 
         'dist/b.mjs.map',
         'dist/c.cjs',
         'dist/style.css',
+        'dist/style.css.map',
+        'dist/orphan.txt.map',
       ),
     );
     expect(uploadSpy).toHaveBeenCalledTimes(1);
@@ -89,7 +91,10 @@ describe("esbuild: upload of the build's own files at the end of the build", () 
     expect(resolved).toMatchObject({ enabled: true, appToken: 'tok', appVersion: '3.0.0' });
     expect(filesOf(0)).toEqual({
       scripts: ['dist/a.js', 'dist/b.mjs', 'dist/c.cjs'].map((f) => resolve('/proj/app', f)),
+      // Only the maps of the build's own scripts are named to the CLI: a stylesheet map has no debug-id and would
+      // fail the whole call; it is deleted with the rest instead.
       maps: ['dist/a.js.map', 'dist/b.mjs.map'].map((f) => resolve('/proj/app', f)),
+      stylesheetMaps: [resolve('/proj/app', 'dist/style.css.map')],
     });
     // esbuild states nothing about production, so the run falls back to NODE_ENV.
     expect(bundlerOf(0)).toEqual({});
@@ -100,13 +105,14 @@ describe("esbuild: upload of the build's own files at the end of the build", () 
     expect(filesOf(0)?.maps).toEqual([resolve('dist/a.js.map')]);
   });
 
-  it('works for an outfile in ANY directory, including the project directory: nothing walks it', async () => {
+  it('works for an outfile in ANY directory, including the project directory: only its own files are named', async () => {
     await esbuildRun({ appToken: 'tok' }, { outfile: 'bundle.js', absWorkingDir: '/proj/app' }).end(
       outputsOf('bundle.js', 'bundle.js.map'),
     );
     expect(filesOf(0)).toEqual({
       scripts: [resolve('/proj/app', 'bundle.js')],
       maps: [resolve('/proj/app', 'bundle.js.map')],
+      stylesheetMaps: [],
     });
   });
 
@@ -185,13 +191,23 @@ describe("esbuild: upload of the build's own files at the end of the build", () 
       expect(notices.filter((m) => m.includes('emitted no .map files'))).toHaveLength(1);
     });
 
-    it('also when the result carries no metafile at all', async () => {
-      await esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: 'dist' })
-        .end({ errors: [] })
-        ?.then(
-          () => expect.unreachable('should have thrown'),
-          (e: Error) => expect(e.message).toContain('no .map files'),
-        );
+    it('a build with no scripts at all (stylesheet-only, or no metafile) is a quiet no-op, even under failOnError', async () => {
+      const notices: string[] = [];
+      const run = esbuildRun(
+        { appToken: 'tok', failOnError: true, onNotice: (m) => notices.push(m) },
+        { outdir: 'dist' },
+      );
+      await run.end(outputsOf('dist/only.css', 'dist/only.css.map'));
+      await run.end({ errors: [] });
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(notices.filter((m) => m.includes('emitted no .map files'))).toEqual([]);
+    });
+
+    it('scripts whose only maps are stylesheet maps still count as no maps', async () => {
+      const run = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: 'dist' });
+      await expect(run.end(outputsOf('dist/a.js', 'dist/b.css', 'dist/b.css.map'))).rejects.toThrow(
+        /emitted no \.map files/,
+      );
     });
   });
 

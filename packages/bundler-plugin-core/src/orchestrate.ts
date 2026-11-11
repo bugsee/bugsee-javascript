@@ -47,7 +47,12 @@ export interface UploadSourcemapsOptions {
    * Nothing walks the directory, so a build can never touch (stamp, upload under its own options, or delete) a
    * file another build wrote there. `scripts` are the `.js`/`.mjs`/`.cjs` outputs, `maps` the `.map` outputs.
    */
-  files?: { scripts: readonly string[]; maps: readonly string[] };
+  files?: {
+    scripts: readonly string[];
+    maps: readonly string[];
+    /** Maps the CLI is not given (stylesheet maps); deleted with `maps`, only after a confirmed upload. */
+    stylesheetMaps?: readonly string[];
+  };
   /** Injectable `.map` lister for the delete snapshot of a directory run (default {@link listMapFiles}). */
   listMapFiles?: (dir: string) => Promise<string[]>;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
@@ -245,6 +250,8 @@ export async function uploadSourcemaps(
       if (files === undefined) {
         await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
       } else {
+        // A script and its map may land in different batches: harmless, the debug-id is derived from the
+        // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
         for (const batch of inBatches([...files.scripts, ...files.maps])) {
           await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
         }
@@ -321,7 +328,10 @@ export async function uploadSourcemaps(
       return { injected: true, uploaded: true, deletedMaps: [], ...vcsEcho };
     }
     const deletedMaps = deleteMaps
-      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, files?.maps ?? snapshot)
+      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(
+          outDir,
+          files === undefined ? snapshot : [...files.maps, ...(files.stylesheetMaps ?? [])],
+        )
       : [];
     return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {

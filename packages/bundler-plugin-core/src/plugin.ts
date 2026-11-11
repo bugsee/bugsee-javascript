@@ -219,11 +219,17 @@ interface EsbuildEndResult {
 function esbuildOwnFiles(
   result: EsbuildEndResult,
   base: string,
-): { scripts: string[]; maps: string[] } {
+): { scripts: string[]; maps: string[]; stylesheetMaps: string[] } {
   const outputs = Object.keys(result.metafile?.outputs ?? {}).map((file) => resolve(base, file));
+  const scripts = outputs.filter((file) => /\.[cm]?js$/.test(file));
+  const owned = new Set(scripts);
   return {
-    scripts: outputs.filter((file) => /\.[cm]?js$/.test(file)),
-    maps: outputs.filter((file) => file.endsWith('.map')),
+    scripts,
+    // Only the maps of the build's own SCRIPTS are named to the CLI: it skips a `.css.map` when scanning a
+    // directory, but a stylesheet map named as an explicit path has no debug-id and fails the whole call.
+    maps: outputs.filter((file) => file.endsWith('.map') && owned.has(file.slice(0, -4))),
+    // Deleted with the rest after a confirmed upload (they embed the source too), never sent.
+    stylesheetMaps: outputs.filter((file) => file.endsWith('.css.map')),
   };
 }
 
@@ -511,6 +517,9 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
             return;
           }
           const files = esbuildOwnFiles(result, esbuildBase(build.initialOptions));
+          if (files.scripts.length === 0) {
+            return; // a stylesheet-only build has nothing to symbolicate
+          }
           if (files.maps.length === 0) {
             // No map among this build's own outputs (`sourcemap: 'inline'` / `false`): the misconfiguration
             // `failOnError` exists to stop. It is judged on THIS build's outputs, so another build's maps

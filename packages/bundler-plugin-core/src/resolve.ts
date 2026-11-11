@@ -281,7 +281,11 @@ export async function runPluginUpload(
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
      */
-    files?: { scripts: readonly string[]; maps: readonly string[] };
+    files?: {
+      scripts: readonly string[];
+      maps: readonly string[];
+      stylesheetMaps?: readonly string[];
+    };
   } = {},
 ): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {

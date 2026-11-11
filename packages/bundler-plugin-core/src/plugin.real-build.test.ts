@@ -580,3 +580,98 @@ describeReal('a build nested inside another into the same outdir (worker bundlin
     expect(readdirSync(app.out).filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });
+
+describeReal('builds that emit stylesheet maps (.css.map)', () => {
+  // The CLI skips a `.css.map` it finds while scanning a directory, but a map named as an explicit path that has no
+  // debug-id fails the whole call (exit 11). The plugin therefore sends only the maps of the build's own scripts.
+  const cssApp = (name: string) => {
+    const app = makeApp(name);
+    writeFileSync(join(app.dir, 'a.css'), 'body { color: red; }\n');
+    writeFileSync(join(app.dir, 'lazy.js'), "export const lazy = () => 'lazy';\n");
+    writeFileSync(
+      app.entry,
+      "import './a.css';\nimport('./lazy.js').then((m) => console.log(m.lazy()));\n",
+    );
+    return app;
+  };
+
+  it.each([
+    true,
+    false,
+  ])('splitting + hashed names + css uploads the script maps and removes every map (failOnError %s)', async (failOnError) => {
+    const app = cssApp(`esbuild-css-${failOnError}`);
+    const errors: unknown[] = [];
+    const before = requests.length;
+    await esbuild({
+      entryPoints: [app.entry],
+      bundle: true,
+      splitting: true,
+      format: 'esm',
+      entryNames: '[name]-[hash]',
+      chunkNames: '[name]-[hash]',
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [
+        bugseeEsbuildPlugin({
+          ...pluginOptions,
+          endpoint,
+          failOnError,
+          onError: (e) => errors.push(e),
+        }),
+      ],
+    });
+    expect(errors).toEqual([]);
+    expect(requests.length).toBeGreaterThan(before);
+    const files = readdirSync(app.out);
+    expect(files.some((f) => f.endsWith('.css'))).toBe(true);
+    for (const f of files.filter((f) => f.endsWith('.js'))) {
+      expect(stamped(join(app.out, f))).toBe(true);
+    }
+    expect(mapsIn(app.out)).toEqual([]); // including the .css.map, as the directory path did
+  });
+
+  it.each([
+    true,
+    false,
+  ])('a css-only build (no scripts) is a quiet no-op, even under failOnError (%s)', async (failOnError) => {
+    const app = makeApp(`esbuild-css-only-${failOnError}`);
+    writeFileSync(join(app.dir, 'only.css'), 'a { color: blue; }\n');
+    const before = requests.length;
+    await esbuild({
+      entryPoints: [join(app.dir, 'only.css')],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [bugseeEsbuildPlugin({ ...pluginOptions, endpoint, failOnError })],
+    });
+    expect(requests.length).toBe(before);
+  });
+
+  it('watch rebuilds of an app that imports css keep uploading', async () => {
+    const app = cssApp('esbuild-css-watch');
+    const errors: unknown[] = [];
+    const ctx = await esbuildContext({
+      entryPoints: [app.entry],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      logLevel: 'silent',
+      plugins: [
+        bugseeEsbuildPlugin({ ...pluginOptions, endpoint, onError: (e) => errors.push(e) }),
+      ],
+    });
+    try {
+      await ctx.rebuild();
+      const afterFirst = requests.length;
+      writeFileSync(join(app.dir, 'a.css'), 'body { color: green; }\n');
+      await ctx.rebuild();
+      expect(requests.length).toBeGreaterThan(afterFirst);
+      expect(errors).toEqual([]);
+      expect(mapsIn(app.out)).toEqual([]);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});

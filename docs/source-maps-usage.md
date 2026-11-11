@@ -40,7 +40,10 @@ touches files it wrote: nothing is deleted without having been uploaded, nothing
 options or another plugin instance's, builds sharing an output directory (an ESM + CJS pair, a worker sub-build,
 two plugin instances) never wait for or affect each other, and watch mode keeps no state between rebuilds. Under
 `failOnError`, a build whose own outputs contain no `.map` (for example `sourcemap: 'inline'`) fails, judged on that
-build alone; without `failOnError` it is a notice. `outfile` and `outdir` behave alike, wherever they point.
+build alone; without `failOnError` it is a notice. A stylesheet-only build is a quiet no-op, and `.css.map` files are
+never sent (they are deleted with the script maps after a successful upload). The upload never walks the output
+directory (the one read-only exception is the Subresource-Integrity check, which looks at the `.html` files under it).
+`outfile` and `outdir` behave alike, wherever they point.
 Development builds do not upload and leave the local maps alone unless you set `uploadInDevelopment: true`:
 Rspack states its mode (only `development` is skipped; `none` and `production` upload), esbuild states none, so only `NODE_ENV=development` marks a
 dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Rspack stamps after emit rather than inside the compilation,

@@ -797,6 +797,21 @@ describe("a run over the build's own files", () => {
     expect(list).not.toHaveBeenCalled();
   });
 
+  it('stylesheet maps are never given to the CLI but are deleted with the rest after the upload', async () => {
+    const { run, calls } = fakeRun();
+    const deleteMapFiles = vi.fn(async (_d: string, only?: readonly string[]) => [...(only ?? [])]);
+    const css = ['/b/a.css.map'];
+    await uploadSourcemaps({
+      ...base,
+      outDir: '/b',
+      files: { scripts, maps, stylesheetMaps: css },
+      run,
+      deleteMapFiles,
+    });
+    expect(calls.flatMap((c) => c.args)).not.toContain('/b/a.css.map');
+    expect(deleteMapFiles).toHaveBeenCalledWith('/b', [...maps, ...css]);
+  });
+
   it('batches paths per CLI call, and deletes only after every batch uploaded', async () => {
     const many = Array.from({ length: 450 }, (_, i) => `/b/c${i}.js`);
     const manyMaps = many.map((f) => `${f}.map`);
