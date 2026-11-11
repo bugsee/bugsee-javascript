@@ -1,6 +1,8 @@
-import { resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import type { UnpluginOptions } from 'unplugin';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BugseePluginOptions, ResolvedPluginOptions } from './resolve';
 
 // #184 hook wiring: esbuild `onEnd` and Rspack `afterEmit` reach `runPluginUpload` exactly as Vite/Rollup
@@ -15,6 +17,20 @@ vi.mock('./resolve', async (importOriginal) => ({
   runPluginUpload: uploadSpy,
 }));
 
+// The upload STEP (the CLI driver) is stubbed separately so the retry around it can be driven precisely.
+const { orchSpy } = vi.hoisted(() => ({
+  orchSpy: vi.fn(async (_options: unknown) => ({
+    injected: true,
+    uploaded: true,
+    deletedMaps: [] as string[],
+  })),
+}));
+vi.mock('./orchestrate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./orchestrate')>()),
+  uploadSourcemaps: orchSpy,
+}));
+
+const { uploadTuning } = await import('./upload-tuning');
 const { bugseeUnpluginFactory } = await import('./plugin');
 const makePlugin = (options?: BugseePluginOptions, framework = 'esbuild'): UnpluginOptions =>
   bugseeUnpluginFactory(options, { framework } as never) as UnpluginOptions;
@@ -186,10 +202,18 @@ describe('esbuild: upload at the end of the build', () => {
     expect(uploadSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('a disabled or token-less plugin hands the run on, where it is a no-op', async () => {
-    // The enabled/disabled decision lives in runPluginUpload, as for webpack's afterEmit.
+  it('a disabled or token-less plugin does not even queue the upload', async () => {
     await esbuildRun({ appToken: 'tok', disabled: true }, { outdir: '/abs/dist' }).end();
-    expect(uploadSpy.mock.calls[0]?.[0]).toMatchObject({ enabled: false });
+    const saved = process.env.BUGSEE_APP_TOKEN;
+    delete process.env.BUGSEE_APP_TOKEN;
+    try {
+      await esbuildRun({}, { outdir: '/abs/dist' }).end();
+    } finally {
+      if (saved !== undefined) {
+        process.env.BUGSEE_APP_TOKEN = saved;
+      }
+    }
+    expect(uploadSpy).not.toHaveBeenCalled();
   });
 
   it('makes the build EMIT external maps when the user said nothing', () => {
@@ -532,67 +556,117 @@ describe('review follow-ups', () => {
   });
 });
 
-describe('esbuild: builds into one directory settle before and while an upload runs', () => {
+describe('esbuild: builds into one directory settle around an upload', () => {
+  const failure = () => new Error('exit 11: map has no debug_id');
+  const failed = { injected: false, uploaded: false, deletedMaps: [] as string[] };
+  const ok = { injected: true, uploaded: true, deletedMaps: [] as string[] };
+
   beforeEach(() => {
     uploadSpy.mockReset();
-    uploadSpy.mockImplementation(async () => undefined);
-  });
-
-  /** A run whose captured onError is fed `error` on its first `failures` calls. */
-  const failing = (failures: number, error = new Error('exit 11: map has no debug_id')) => {
-    let calls = 0;
-    uploadSpy.mockImplementation(async (resolved: unknown) => {
-      calls++;
-      if (calls <= failures) {
-        (resolved as ResolvedPluginOptions).onError?.(error);
-      }
+    orchSpy.mockReset();
+    orchSpy.mockImplementation(async () => ok);
+    // `runPluginUpload` is replaced by one that drives the dependency it is handed, as the real one does.
+    uploadSpy.mockImplementation(async (resolved: unknown, outDir: string, deps: unknown) => {
+      const r = resolved as ResolvedPluginOptions;
+      await (deps as { uploadSourcemaps: (o: unknown) => Promise<unknown> }).uploadSourcemaps({
+        outDir,
+        appToken: 't',
+        appVersion: '1',
+        appBuild: '1',
+        endpoint: undefined,
+        deleteMaps: true,
+        dryRun: false,
+        stripSourcesContent: false,
+        failOnError: r.failOnError,
+        onError: r.onError,
+      });
       return undefined;
     });
+    uploadTuning.idleWaitMs = 200;
+    uploadTuning.pollMs = 5;
+  });
+  afterEach(() => {
+    uploadTuning.idleWaitMs = 5000;
+    uploadTuning.pollMs = 25;
+  });
+
+  /** An upload step that fails with `error` (contained, or thrown under failOnError), as the real one does. */
+  const failWith = (error: Error, before?: () => void) => async (o: unknown) => {
+    before?.();
+    const options = o as { failOnError?: boolean; onError: (e: unknown) => void };
+    if (options.failOnError === true) {
+      throw error;
+    }
+    options.onError(error);
+    return failed;
   };
 
-  it('a failure while another build started is retried, not reported', async () => {
-    const a = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/race1' });
-    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race1' });
-    a.start();
-    const pending: Array<Promise<void> | undefined> = [];
-    let calls = 0;
-    uploadSpy.mockImplementation(async (resolved: unknown) => {
-      calls++;
-      if (calls === 1) {
-        // Build B starts writing while A's inject -> upload is running, and A trips over its map.
-        b.start();
-        (resolved as ResolvedPluginOptions).onError?.(new Error('exit 11'));
-        pending.push(b.end());
-      }
-      return undefined;
-    });
-    await a.end();
-    await Promise.all(pending);
-    expect(calls).toBeGreaterThanOrEqual(2);
-  });
-
-  it('a failure with NO concurrent build is reported as configured: thrown with failOnError', async () => {
-    failing(1);
-    const run = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/race2' });
-    run.start();
-    await expect(run.end()).rejects.toThrow('exit 11');
-    expect(uploadSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('... or sent to onError otherwise, and to the default warning when there is none', async () => {
-    failing(1);
-    const seen: unknown[] = [];
-    const run = esbuildRun(
-      { appToken: 'tok', onError: (e) => seen.push(e) },
-      { outdir: '/abs/race3' },
-    );
+  it('the user failOnError reaches the upload step (it also decides --allow-empty)', async () => {
+    const run = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/fo' });
     run.start();
     await run.end();
+    expect((orchSpy.mock.calls[0]?.[0] as { failOnError?: boolean }).failOnError).toBe(true);
+    const lax = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/fo2' });
+    lax.start();
+    await lax.end();
+    expect((orchSpy.mock.calls[1]?.[0] as { failOnError?: boolean }).failOnError).toBe(false);
+  });
+
+  it('a failure while another build started is retried, not reported', async () => {
+    const seen: unknown[] = [];
+    const a = esbuildRun({ appToken: 'tok', onError: (e) => seen.push(e) }, { outdir: '/abs/r1' });
+    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r1' });
+    a.start();
+    orchSpy.mockImplementationOnce(
+      failWith(failure(), () => {
+        b.start();
+        setTimeout(() => void b.end(), 30);
+      }),
+    );
+    await a.end();
+    expect(orchSpy).toHaveBeenCalledTimes(3); // a: fail + retry ok; b's own run
+    expect(seen).toEqual([]);
+  });
+
+  it('a retry WAITS for the other build to finish before scanning again', async () => {
+    const order: string[] = [];
+    const a = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r2' });
+    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r2' });
+    a.start();
+    orchSpy.mockImplementationOnce(
+      failWith(failure(), () => {
+        b.start();
+        setTimeout(() => {
+          order.push('b-ended');
+          void b.end();
+        }, 60);
+      }),
+    );
+    orchSpy.mockImplementationOnce(async () => {
+      order.push('retry');
+      return ok;
+    });
+    await a.end();
+    expect(order).toEqual(['b-ended', 'retry']);
+  });
+
+  it('a failure with NO concurrent build is reported as configured', async () => {
+    orchSpy.mockImplementation(failWith(failure()));
+    const strict = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/r3' });
+    strict.start();
+    await expect(strict.end()).rejects.toThrow('exit 11');
+    const seen: unknown[] = [];
+    const lax = esbuildRun(
+      { appToken: 'tok', onError: (e) => seen.push(e) },
+      { outdir: '/abs/r4' },
+    );
+    lax.start();
+    await lax.end();
     expect(String(seen[0])).toContain('exit 11');
+    expect(orchSpy).toHaveBeenCalledTimes(2); // no retry in either case
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      failing(1);
-      const quiet = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race4' });
+      const quiet = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r5' });
       quiet.start();
       await quiet.end();
       expect(warn.mock.calls.join()).toContain('source-map upload skipped');
@@ -601,43 +675,58 @@ describe('esbuild: builds into one directory settle before and while an upload r
     }
   });
 
-  it('retries are bounded: a failure that keeps coinciding with new builds is finally reported', async () => {
+  it('exactly three attempts for a lone run whose failures keep coinciding with new builds', async () => {
     const seen: unknown[] = [];
-    const run = esbuildRun(
-      { appToken: 'tok', onError: (e) => seen.push(e) },
-      { outdir: '/abs/race5' },
-    );
-    const other = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race5' });
-    run.start();
-    const pending: Array<Promise<void> | undefined> = [];
-    let ownCalls = 0;
-    uploadSpy.mockImplementation(async (resolved: unknown) => {
-      // Only the owning run's attempts are counted; the other build's own run succeeds.
-      if ((resolved as ResolvedPluginOptions).onError !== undefined && ownCalls < 3) {
-        ownCalls++;
-        other.start();
-        (resolved as ResolvedPluginOptions).onError?.(new Error('exit 11'));
-        pending.push(other.end());
-      }
-      return undefined;
+    let calls = 0;
+    const a = esbuildRun({ appToken: 'tok', onError: (e) => seen.push(e) }, { outdir: '/abs/r7' });
+    a.start();
+    const bump = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r7' });
+    orchSpy.mockImplementation(async (o: unknown) => {
+      calls++;
+      bump.start(); // another build starts during every attempt...
+      (o as { onError: (e: unknown) => void }).onError(failure());
+      return failed;
     });
-    await run.end();
-    await Promise.all(pending);
-    expect(ownCalls).toBe(3);
+    await a.end();
+    expect(calls).toBe(3);
     expect(seen).toHaveLength(1);
   });
 
-  it('a run waits for a build that is still in flight before it scans', async () => {
-    const a = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race6' });
-    const b = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/race6' });
+  it('a build that started BEFORE the run and never ends (hung) still lets the failure be retried, after the cap', async () => {
+    const hung = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r8' });
+    hung.start(); // never ends
+    const a = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r8' });
     a.start();
-    b.start();
-    const first = a.end();
-    await new Promise((r) => setTimeout(r, 60));
-    expect(uploadSpy).not.toHaveBeenCalled();
-    await b.end();
-    await first;
-    expect(uploadSpy).toHaveBeenCalled();
+    orchSpy.mockImplementationOnce(failWith(failure()));
+    const t0 = Date.now();
+    await a.end();
+    expect(orchSpy).toHaveBeenCalledTimes(2);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(uploadTuning.idleWaitMs - 50);
+  });
+
+  it('a build nested inside another (outer still in flight) is not stalled waiting for it', async () => {
+    const outer = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r9' });
+    const inner = esbuildRun({ appToken: 'tok' }, { outdir: '/abs/r9' });
+    outer.start();
+    inner.start();
+    uploadTuning.idleWaitMs = 60_000;
+    const t0 = Date.now();
+    await inner.end();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(orchSpy).toHaveBeenCalledTimes(1);
+    await outer.end();
+  });
+
+  it('a disabled plugin in a nested build does not stall either', async () => {
+    const outer = esbuildRun({ disabled: true }, { outdir: '/abs/r10' });
+    const inner = esbuildRun({ disabled: true }, { outdir: '/abs/r10' });
+    outer.start();
+    inner.start();
+    const t0 = Date.now();
+    await inner.end();
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(orchSpy).not.toHaveBeenCalled();
   });
 
   it('three overlapping builds stay strictly one after another (the queue tail guard)', async () => {
@@ -668,5 +757,63 @@ describe('esbuild: builds into one directory settle before and while an upload r
     expect(order).toEqual(['start0', 'end0', 'start1', 'end1', 'start2']);
     gates[2]?.();
     await third;
+  });
+});
+
+describe('guards and notices (review round 3)', () => {
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
+
+  it('an outfile directly in a PACKAGE root (monorepo root build) is refused', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bugsee-pkgroot-'));
+    try {
+      mkdirSync(join(root, 'packages', 'a'), { recursive: true });
+      writeFileSync(join(root, 'packages', 'a', 'package.json'), '{}');
+      const notices: string[] = [];
+      await esbuildRun(
+        { appToken: 'tok', onNotice: (m) => notices.push(m) },
+        { outfile: 'packages/a/index.js', absWorkingDir: root },
+      ).end();
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(notices.some((m) => m.includes('Nothing was uploaded'))).toBe(true);
+      // The same directory is fine as an `outdir` target (a package may hold a dist with its own package.json).
+      await esbuildRun({ appToken: 'tok' }, { outdir: 'packages/a', absWorkingDir: root }).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+      // And an outfile in a package-free subdirectory still uploads.
+      mkdirSync(join(root, 'out'), { recursive: true });
+      await esbuildRun(
+        { appToken: 'tok', onNotice: () => undefined },
+        { outfile: 'out/bundle.js', absWorkingDir: root },
+      ).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the project-directory test is segment-aware: a project named "..cache" is below its parent', async () => {
+    const notices: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outfile: '/proj/bundle.js', absWorkingDir: '/proj/..cache' },
+    ).end();
+    expect(uploadSpy).not.toHaveBeenCalled();
+    expect(notices.some((m) => m.includes('Nothing was uploaded'))).toBe(true);
+  });
+
+  it('rspack: a build with devtool off says nothing is emitted (once, only when enabled)', () => {
+    const notices: string[] = [];
+    const off = rspackCompiler('/out', 'production');
+    applyRspack({ appToken: 'tok', onNotice: (m) => notices.push(m) }, off.compiler);
+    applyRspack({ appToken: 'tok', onNotice: (m) => notices.push(m) }, off.compiler);
+    expect(notices.filter((m) => m.includes('devtool'))).toHaveLength(2); // one per plugin instance
+    const withMaps = rspackCompiler('/out', 'production');
+    (withMaps.compiler.options as { devtool?: string }).devtool = 'source-map';
+    const quiet: string[] = [];
+    applyRspack({ appToken: 'tok', onNotice: (m) => quiet.push(m) }, withMaps.compiler);
+    applyRspack({ appToken: 'tok', disabled: true, onNotice: (m) => quiet.push(m) }, off.compiler);
+    expect(quiet.filter((m) => m.includes('devtool'))).toEqual([]);
   });
 });

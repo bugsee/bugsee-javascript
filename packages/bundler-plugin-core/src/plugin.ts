@@ -2,7 +2,8 @@
 // vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
 import {
   APP_BUILD_DEFINE,
@@ -13,18 +14,21 @@ import {
 } from './app-identity';
 import { bakeIdentity, type ParseChunk } from './bake-identity';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
-import { defaultUploadErrorHandler } from './orchestrate';
+import {
+  defaultUploadErrorHandler,
+  uploadSourcemaps as defaultUploadSourcemaps,
+} from './orchestrate';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
   notify,
   type ResolvedIdentity,
-  type ResolvedPluginOptions,
   resolveIdentity,
   resolvePluginOptions,
   runPluginUpload,
 } from './resolve';
 import { type AssetStore, stampAssets } from './stamp-assets';
+import { uploadTuning } from './upload-tuning';
 
 /** The subset of a rollup/vite output-options object we read. */
 export interface OutputLike {
@@ -61,7 +65,7 @@ interface WebpackCompilationLike {
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
 interface WebpackCompilerLike {
-  options: { output?: { path?: string }; mode?: string; plugins?: unknown[] };
+  options: { output?: { path?: string }; mode?: string; plugins?: unknown[]; devtool?: unknown };
   /** The base directory of the build (webpack's `context`, default the cwd). */
   context?: string;
   hooks: {
@@ -232,9 +236,9 @@ function serialUpload<T>(outDir: string, run: () => Promise<T>): Promise<T> {
 /**
  * What the esbuild builds writing into one directory are doing. Serialising uploads is not enough on its own:
  * a run is `inject` then `upload`, each scanning the whole directory, so a build that WRITES between the two
- * leaves a map without a debug-id for the upload to trip over (exit 11). So a run first waits until no build
- * of the directory is in flight, and a failure while another build started or ended in the meantime is
- * retried (the later scan sees finished files) instead of being reported.
+ * leaves a map without a debug-id for the upload to trip over (exit 11). So a failure while another build started or ended in the meantime is
+ * retried (the later scan sees finished files) instead of being reported. The first attempt never waits (a build
+ * nested in another cannot finish until its own upload has).
  */
 interface DirActivity {
   inflight: number;
@@ -250,41 +254,65 @@ const activityOf = (outDir: string): DirActivity => {
   }
   return activity;
 };
-const MAX_UPLOAD_ATTEMPTS = 3;
-const IDLE_WAIT_MS = 60_000;
-const IDLE_POLL_MS = 25;
-
-async function uploadWhenSettled(base: ResolvedPluginOptions, outDir: string): Promise<void> {
-  const activity = activityOf(outDir);
-  for (let attempt = 1; ; attempt++) {
-    for (let waited = 0; activity.inflight > 0 && waited < IDLE_WAIT_MS; waited += IDLE_POLL_MS) {
-      await new Promise((r) => setTimeout(r, IDLE_POLL_MS));
-    }
-    const startsBefore = activity.starts;
-    const errors: unknown[] = [];
-    // The run's own failure handling is replaced by a capture, so a failure caused by a concurrent build
-    // can be retried; whatever remains is reported exactly as the user configured (failOnError / onError).
-    await runPluginUpload(
-      { ...base, failOnError: false, onError: (error) => errors.push(error) },
-      outDir,
-      { bundler: {} },
-    );
-    const [first] = errors;
-    if (first === undefined) {
-      return;
-    }
-    if (
-      (activity.starts !== startsBefore || activity.inflight > 0) &&
-      attempt < MAX_UPLOAD_ATTEMPTS
-    ) {
-      continue;
-    }
-    if (base.failOnError) {
-      throw first;
-    }
-    (base.onError ?? defaultUploadErrorHandler)(first);
-    return;
+/** Wait (bounded) until no build of the directory is in flight: only a RETRY waits, see `uploadTuning`. */
+async function waitForIdle(activity: DirActivity): Promise<void> {
+  for (
+    let waited = 0;
+    activity.inflight > 0 && waited < uploadTuning.idleWaitMs;
+    waited += uploadTuning.pollMs
+  ) {
+    await new Promise((r) => setTimeout(r, uploadTuning.pollMs));
   }
+}
+
+/**
+ * The upload step for one esbuild output directory, with the retry for a build that wrote while it ran.
+ *
+ * It wraps ONLY `uploadSourcemaps` (handed to `runPluginUpload` as a dependency), so everything else keeps its
+ * own handling: the user's `failOnError` still reaches the step (it also decides `--allow-empty`, so a build
+ * that emitted no maps still fails under `failOnError`), and a build-REGISTRATION failure is reported as
+ * itself and never retried. A failure is captured; if another build started while the step ran (or one is
+ * still running) it is retried after a bounded wait, otherwise it is reported as configured.
+ */
+function settledUpload(outDir: string): typeof defaultUploadSourcemaps {
+  const activity = activityOf(outDir);
+  return async (options) => {
+    for (let attempt = 1; ; attempt++) {
+      const startsBefore = activity.starts;
+      const captured: unknown[] = [];
+      let thrown: { error: unknown } | undefined;
+      let result: Awaited<ReturnType<typeof defaultUploadSourcemaps>> | undefined;
+      try {
+        result = await defaultUploadSourcemaps({
+          ...options,
+          onError: (error) => captured.push(error),
+        });
+      } catch (error) {
+        thrown = { error };
+      }
+      if (thrown === undefined && captured.length === 0) {
+        return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
+      }
+      if (
+        (activity.starts !== startsBefore || activity.inflight > 0) &&
+        attempt < uploadTuning.attempts
+      ) {
+        await waitForIdle(activity);
+        continue;
+      }
+      if (thrown !== undefined) {
+        throw thrown.error;
+      }
+      (options.onError ?? defaultUploadErrorHandler)(captured[0]);
+      return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
+    }
+  };
+}
+
+/** Whether `dir` is `project` or one of its ancestors (a segment-aware test: `..cache` is not `..`). */
+function isSameOrAbove(dir: string, project: string): boolean {
+  const rel = relative(dir, project);
+  return rel === '' || !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 }
 
 /** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
@@ -335,7 +363,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       return false;
     }
     say(
-      `${bundlerName} development build: source maps were not uploaded and were left in place. Set \`uploadInDevelopment: true\` to upload from dev builds too.`,
+      `${bundlerName} development build: nothing was uploaded, and any source maps on disk were left in place. Set \`uploadInDevelopment: true\` to upload from dev builds too.`,
     );
     return true;
   };
@@ -576,20 +604,33 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
             // `outdir: '.'`) would make the WHOLE project the output directory, and inject plus the map
             // deletion walk all of it: refuse rather than touch unrelated files.
             const project = resolve(build.initialOptions.absWorkingDir ?? process.cwd());
-            const up = relative(outDir, project);
-            if (up === '' || (!up.startsWith('..') && !isAbsolute(up))) {
+            const outfileOnly = (outdir === undefined || outdir === '') && outfile !== undefined;
+            // An `outfile` directly inside a package root (it holds a package.json) is the same hazard seen
+            // from a monorepo root: the whole package would be the output directory.
+            if (
+              isSameOrAbove(outDir, project) ||
+              (outfileOnly && existsSync(join(outDir, 'package.json')))
+            ) {
               say(
-                `esbuild output ${outfile ?? outdir} is the project directory itself (or above it), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` pointing at a dedicated output directory.`,
+                `esbuild output ${outfile ?? outdir} is the project directory itself (or above it, or a package root), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` pointing at a dedicated output directory.`,
               );
               return;
             }
-            if ((outdir === undefined || outdir === '') && outfile !== undefined) {
+            if (outfileOnly) {
               say(
                 `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`,
               );
             }
           }
-          await serialUpload(outDir, () => uploadWhenSettled(forOutput(outDir), outDir));
+          if (!resolved.enabled) {
+            return;
+          }
+          await serialUpload(outDir, () =>
+            runPluginUpload(forOutput(outDir), outDir, {
+              bundler: {},
+              uploadSourcemaps: settledUpload(outDir),
+            }),
+          );
         });
       },
     },
@@ -605,6 +646,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // End of the build (#184): upload after emit, as webpack does. Rspack's in-build stamp stage is not
       // wired, so the post-emit inject path runs and keeps the SRI guard that refuses a build whose
       // integrity hashes the stamp would invalidate.
+      // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
+      // nothing. Said once, like esbuild's `sourcemap: false`.
+      if (resolved.enabled && !compiler.options.devtool) {
+        say(
+          'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
+        );
+      }
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
         const bundler = webpackBuild(compiler.options.mode);
@@ -691,7 +739,8 @@ export const bugseeUnplugin: UnpluginInstance<BugseePluginOptions | undefined> =
 
 // Convenience per-bundler factories over the same core. `@bugsee/vite-plugin` / `@bugsee/webpack-plugin`
 // ship the two most common ones as their own packages; these cover plain esbuild builds (the esbuild JS API,
-// tsup, any tool that accepts esbuild plugins), Rollup, and Rspack. Angular's builder does NOT accept esbuild
+// any tool that accepts esbuild plugins and lets esbuild write the files; NOT tsup, which sets
+// `write: false`), Rollup, and Rspack. Angular's builder does NOT accept esbuild
 // plugins, and Bun/tsc/swc have no usable hook: those use the standalone `bugsee-cli` post-build step
 // (`sourcemaps inject` then `debug-files upload`) instead.
 export const bugseeRollupPlugin = bugseeUnplugin.rollup;

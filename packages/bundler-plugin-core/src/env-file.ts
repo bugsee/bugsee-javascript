@@ -15,7 +15,7 @@
 //    `~/.env.bugsee-build-plugin` cannot give a token to every project below it.
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { EnvRecord } from './run-cli';
 
 export const BUILD_PLUGIN_ENV_FILE = '.env.bugsee-build-plugin';
@@ -74,7 +74,7 @@ const isBoundary = (dir: string): boolean =>
 /** True for the home directory and everything above it: never searched. */
 const atOrAbove = (dir: string, home: string): boolean => {
   const rel = relative(dir, home);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return rel === '' || !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 };
 
 /**

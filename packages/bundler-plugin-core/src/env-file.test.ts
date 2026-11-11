@@ -158,6 +158,13 @@ describe('loadBuildPluginEnv', () => {
     expect(loadBuildPluginEnv(proj, { home: () => h }).values).toEqual({ BUGSEE_APP_TOKEN: 'own' });
   });
 
+  it('the home test is segment-aware: a directory ABOVE a home called "..cache" is above it', () => {
+    const above = mk('above');
+    file(above, 'BUGSEE_APP_TOKEN=stray\n');
+    const result = loadBuildPluginEnv(above, { home: () => join(above, '..cache') });
+    expect(result.values).toEqual({});
+  });
+
   it('stops at the filesystem root', () => {
     expect(loadBuildPluginEnv('/', { home })).toEqual({ values: {} });
   });

@@ -444,6 +444,9 @@ importers:
       rollup:
         specifier: ^4.65.1
         version: 4.65.1
+      tsup:
+        specifier: ^9.0.0
+        version: 9.0.0(@microsoft/api-extractor@7.59.4(@types/node@22.20.5))(jiti@2.7.0)(postcss@8.5.32)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)
 
   packages/capture:
     dependencies:
@@ -18386,8 +18389,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.4)
-      picomatch: 4.0.4
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
 
   tinyps@0.5.1: {}
 

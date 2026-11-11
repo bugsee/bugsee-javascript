@@ -198,7 +198,11 @@ describe('an identity constant the plugin cannot read is REPORTED, not silently 
     };
     const compiler = {
       context: web,
-      options: { plugins: [{ definitions: { [VERSION]: 'process.env.V' } }], output: {} },
+      options: {
+        plugins: [{ definitions: { [VERSION]: 'process.env.V' } }],
+        output: {},
+        devtool: 'source-map',
+      },
       hooks: { afterEmit: { tapPromise: () => undefined } },
       [bundler]: { DefinePlugin },
     };

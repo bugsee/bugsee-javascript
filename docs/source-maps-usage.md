@@ -44,10 +44,24 @@ so an Rspack build that adds Subresource Integrity hashes is refused, not stampe
 
 **tsup is not covered by the esbuild plugin.** tsup always runs esbuild with `write: false` and writes the files
 itself afterwards, so nothing is on disk when the plugin's end-of-build hook runs. The plugin then uploads nothing
-and says so through `onNotice`. Use the CLI after the build instead, e.g. in `tsup.config.ts`:
-`onSuccess: 'bugsee-cli sourcemaps inject dist && bugsee-cli debug-files upload dist --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"'`
-(with `sourcemap: true`, and `BUGSEE_APP_TOKEN` exported). The same applies to any tool that calls esbuild with
+and says so through `onNotice`. Use the CLI after the build instead, e.g. in `tsup.config.ts` (with
+`sourcemap: true` and `BUGSEE_APP_TOKEN` exported):
+
+```ts
+onSuccess:
+  'bugsee-cli sourcemaps inject dist && ' +
+  'bugsee-cli debug-files upload dist --type sourcemaps ${APP_VERSION:+--version "$APP_VERSION"} ${APP_BUILD:+--build "$APP_BUILD"} && ' +
+  'find dist -name "*.map" -delete',
+```
+
+The `${VAR:+...}` parts leave the flag out when the variable is unset (an empty `--version ""` would be sent
+otherwise). The last step deletes the maps after a successful upload, which is what the plugins do by default; the
+shipped bundles keep their `//# sourceMappingURL` comment, which then points at a file that is not there
+(harmless; drop the line if you want the maps to ship). The same applies to any tool that calls esbuild with
 `write: false`.
+
+For **Rspack**, set `devtool: 'source-map'`: its production default is `devtool: false`, which emits no maps, so
+there is nothing to upload (the plugin says so through `onNotice`).
 
 **What these do not cover.** **Angular's builder does not accept esbuild plugins**, so `bugseeEsbuildPlugin`
 cannot be used with `ng build`: use the post-build recipe in §2. Bun's bundler, `tsc` and `swc` have no hook

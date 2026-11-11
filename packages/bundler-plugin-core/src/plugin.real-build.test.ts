@@ -5,7 +5,6 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -311,22 +310,37 @@ describeReal('real tsup build (tsup always runs esbuild with write:false)', () =
 });
 
 describeReal("a build writing while another build's upload is between inject and upload", () => {
-  it('is retried, not reported as a failed upload (slow-inject CLI wrapper)', async () => {
+  it('is retried, not reported as a failed upload (CLI wrapper that pauses after inject)', async () => {
     const app = makeApp('esbuild-inject-race');
     writeFileSync(join(app.dir, 'second.js'), "console.log('second');\n");
-    // A BUGSEE_CLI_PATH wrapper: run the real CLI, then (for `sourcemaps inject` only) dwell, so a second
-    // build can write AFTER inject scanned but BEFORE the upload scans. Without the retry, the upload trips
-    // over the second build's map (no debug_id, exit 11) and reports a failure.
-    const wrapper = join(app.dir, 'slow-inject.js');
+    // A BUGSEE_CLI_PATH wrapper: run the real CLI, then (for the FIRST `sourcemaps inject` only) signal via
+    // a file and pause until the test says go. The test starts the second build only after that signal and
+    // releases the pause only after the second build's map is on disk, so the second build's files land
+    // exactly between A's inject and A's upload: no timing involved. Without the retry the upload trips over
+    // that map (no debug_id, exit 11) and reports a failure.
+    const injected = join(app.dir, 'injected.flag');
+    const proceed = join(app.dir, 'proceed.flag');
+    const wrapper = join(app.dir, 'pause-after-inject.js');
     writeFileSync(
       wrapper,
       `const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const r = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...process.argv.slice(2)], { stdio: 'inherit' });
-if (process.argv[2] === 'sourcemaps') { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); }
+if (process.argv[2] === 'sourcemaps' && !fs.existsSync(${JSON.stringify(injected)})) {
+  fs.writeFileSync(${JSON.stringify(injected)}, '1');
+  for (let i = 0; i < 2000 && !fs.existsSync(${JSON.stringify(proceed)}); i++) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
 process.exit(r.status ?? 1);
 `,
     );
-    chmodSync(wrapper, 0o755);
+    const waitFor = async (path: string): Promise<void> => {
+      for (let i = 0; i < 2000 && !existsSync(path); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(existsSync(path)).toBe(true);
+    };
     const errors: unknown[] = [];
     const plugin = bugseeEsbuildPlugin({
       ...pluginOptions,
@@ -337,31 +351,30 @@ process.exit(r.status ?? 1);
     const saved = process.env.BUGSEE_CLI_PATH;
     process.env.BUGSEE_CLI_PATH = wrapper;
     try {
-      await Promise.all([
-        esbuild({
-          entryPoints: [app.entry],
-          bundle: true,
-          outdir: app.out,
-          absWorkingDir: app.dir,
-          format: 'esm',
-          outExtension: { '.js': '.mjs' },
-          logLevel: 'silent',
-          plugins: [plugin],
-        }),
-        // Starts only after A's inject has scanned, so its files land between A's inject and A's upload.
-        new Promise((r) => setTimeout(r, 700)).then(() =>
-          esbuild({
-            entryPoints: [join(app.dir, 'second.js')],
-            bundle: true,
-            outdir: app.out,
-            absWorkingDir: app.dir,
-            format: 'cjs',
-            outExtension: { '.js': '.cjs' },
-            logLevel: 'silent',
-            plugins: [plugin],
-          }),
-        ),
-      ]);
+      const first = esbuild({
+        entryPoints: [app.entry],
+        bundle: true,
+        outdir: app.out,
+        absWorkingDir: app.dir,
+        format: 'esm',
+        outExtension: { '.js': '.mjs' },
+        logLevel: 'silent',
+        plugins: [plugin],
+      });
+      await waitFor(injected);
+      const second = esbuild({
+        entryPoints: [join(app.dir, 'second.js')],
+        bundle: true,
+        outdir: app.out,
+        absWorkingDir: app.dir,
+        format: 'cjs',
+        outExtension: { '.js': '.cjs' },
+        logLevel: 'silent',
+        plugins: [plugin],
+      });
+      await waitFor(join(app.out, 'second.cjs.map'));
+      writeFileSync(proceed, '1');
+      await Promise.all([first, second]);
     } finally {
       if (saved === undefined) {
         delete process.env.BUGSEE_CLI_PATH;
@@ -375,5 +388,95 @@ process.exit(r.status ?? 1);
       expect(readFileSync(join(app.out, bundle), 'utf8')).toMatch(/\/\/# debugId=[0-9a-f-]{36}/);
     }
     expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+  });
+});
+
+describeReal('failOnError with an esbuild build that emitted no maps', () => {
+  const build = (name: string, options: object) => {
+    const app = makeApp(name);
+    return esbuild({
+      entryPoints: [app.entry],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      sourcemap: 'inline',
+      logLevel: 'silent',
+      plugins: [bugseeEsbuildPlugin({ ...pluginOptions, endpoint, ...options })],
+    });
+  };
+
+  it('fails the build under failOnError (no maps at all is the misconfiguration it exists to stop)', async () => {
+    const before = requests.length;
+    await expect(build('esbuild-inline-strict', { failOnError: true })).rejects.toThrow();
+    expect(requests.length).toBe(before);
+  });
+
+  it('does not fail the build without failOnError', async () => {
+    const before = requests.length;
+    await expect(build('esbuild-inline-lax', { failOnError: false })).resolves.toBeDefined();
+    expect(requests.length).toBe(before);
+  });
+});
+
+describeReal('a build nested inside another into the same outdir (worker bundling)', () => {
+  const nested = async (name: string, options: object) => {
+    const app = makeApp(name);
+    writeFileSync(join(app.dir, 'worker.js'), "console.log('worker');\n");
+    const plugin = bugseeEsbuildPlugin({ ...pluginOptions, endpoint, ...options });
+    const inner = {
+      entryPoints: [join(app.dir, 'worker.js')],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      format: 'cjs' as const,
+      outExtension: { '.js': '.cjs' },
+      logLevel: 'silent' as const,
+    };
+    const t0 = Date.now();
+    await esbuild({
+      entryPoints: [app.entry],
+      bundle: true,
+      outdir: app.out,
+      absWorkingDir: app.dir,
+      format: 'esm',
+      outExtension: { '.js': '.mjs' },
+      logLevel: 'silent',
+      plugins: [
+        plugin,
+        {
+          // The pattern: a plugin runs a sub-build from onResolve, reusing the same plugins array.
+          name: 'worker-subbuild',
+          setup: (b) => {
+            let done = false;
+            b.onStart(async () => {
+              if (!done) {
+                done = true;
+                await esbuild({ ...inner, plugins: [plugin] });
+              }
+            });
+          },
+        },
+      ],
+    });
+    return { app, elapsed: Date.now() - t0 };
+  };
+
+  it('does not stall a build with no token (plugin effectively disabled)', async () => {
+    const saved = process.env.BUGSEE_APP_TOKEN;
+    delete process.env.BUGSEE_APP_TOKEN;
+    try {
+      const { elapsed } = await nested('esbuild-nested-notoken', { appToken: undefined });
+      expect(elapsed).toBeLessThan(10_000);
+    } finally {
+      if (saved !== undefined) {
+        process.env.BUGSEE_APP_TOKEN = saved;
+      }
+    }
+  });
+
+  it('does not stall an enabled plugin either, and uploads both outputs', async () => {
+    const { app, elapsed } = await nested('esbuild-nested-enabled', {});
+    expect(elapsed).toBeLessThan(10_000);
+    expect(readdirSync(app.out).filter((f) => f.endsWith('.map'))).toEqual([]);
   });
 });

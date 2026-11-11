@@ -133,9 +133,11 @@ unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
 (an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
 plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
 uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
-Concurrent esbuild builds into one directory: uploads are serialised per directory, a run waits until no build of
-that directory is in flight, deletes only the maps that existed when it started, and a failure that coincides with
-another build starting is retried (up to 3 attempts) rather than reported.
+Concurrent esbuild builds into one directory: uploads are serialised per directory; the delete step removes only the
+maps that existed when the upload started; and a failure that coincides with another build starting (or one still in
+flight) is retried (up to 3 attempts, each retry waiting a bounded time for the other builds) rather than reported.
+The first attempt never waits, because a build nested inside another cannot finish until its own upload has. A
+disabled plugin queues nothing. Registration failures are reported as themselves and not retried.
 
 **Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
 debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,
