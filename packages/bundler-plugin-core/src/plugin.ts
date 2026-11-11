@@ -1,5 +1,5 @@
 // SM-A3 — the unplugin factory. Wires each bundler's "output written" hook to the guarded upload:
-// vite/rollup `writeBundle` and webpack `afterEmit`. The per-bundler entry points (@bugsee/vite-plugin,
+// vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
 import { dirname, resolve } from 'node:path';
@@ -196,6 +196,26 @@ function webpackBuild(mode: string | undefined): BundlerBuildContext {
   return { isProduction: effective === 'production', configuration: effective };
 }
 
+/** The slice of esbuild's plugin `build` object the end-of-build upload reads. */
+interface EsbuildBuildLike {
+  initialOptions: { outdir?: string; outfile?: string; absWorkingDir?: string; write?: boolean };
+  onEnd(callback: (result: { errors: readonly unknown[] }) => void | Promise<void>): void;
+}
+
+/** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
+function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string | undefined {
+  const out = resolveOutputDir({ dir: options.outdir, file: options.outfile });
+  if (out === undefined) {
+    return undefined;
+  }
+  try {
+    return resolve(options.absWorkingDir ?? process.cwd(), out);
+  } catch {
+    // The working directory is gone (`process.cwd()` throws) and the path is relative: nothing to upload.
+    return undefined;
+  }
+}
+
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
   options = {},
 ) => {
@@ -364,7 +384,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     },
     esbuild: {
       // esbuild's `define` is a plain string map; a key the user already set is kept.
-      config(initialOptions: { define?: Record<string, string>; absWorkingDir?: string }) {
+      config(initialOptions: {
+        define?: Record<string, string>;
+        absWorkingDir?: string;
+        sourcemap?: boolean | string;
+      }) {
         const { identityDefines } = identityFromRoot(
           initialOptions.absWorkingDir,
           fixedIdentityFromDefines(initialOptions.define),
@@ -374,6 +398,29 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         if (Object.keys(define).length > 0) {
           initialOptions.define = define;
         }
+        // Like Vite: make the build EMIT the maps this plugin exists to upload. Only the default and an
+        // explicit `false` are overridden; `external`/`linked`/`inline`/`both` are deliberate choices.
+        if (
+          resolved.enabled &&
+          (initialOptions.sourcemap === undefined || initialOptions.sourcemap === false)
+        ) {
+          initialOptions.sourcemap = true;
+        }
+      },
+      // End of the build (#184): upload what esbuild wrote, as Vite/Rollup `writeBundle` do. unplugin's own
+      // `writeBundle` mapping carries no esbuild result, so the hook is registered here; it runs on every
+      // watch rebuild.
+      setup(build: EsbuildBuildLike) {
+        build.onEnd(async (result) => {
+          // A failed build wrote nothing worth uploading; `write: false` wrote nothing at all.
+          if (result.errors.length > 0 || build.initialOptions.write === false) {
+            return;
+          }
+          const outDir = esbuildOutputDir(build.initialOptions);
+          if (outDir !== undefined) {
+            await runPluginUpload(forOutput(outDir), outDir, { bundler: {} });
+          }
+        });
       },
     },
     rspack(compiler: WebpackCompilerLike) {
@@ -385,6 +432,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
+      // End of the build (#184): upload after emit, as webpack does. Rspack's in-build stamp stage is not
+      // wired, so the post-emit inject path runs and keeps the SRI guard that refuses a build whose
+      // integrity hashes the stamp would invalidate.
+      compiler.hooks.afterEmit.tapPromise(name, async () => {
+        const dir = compiler.options.output?.path;
+        if (typeof dir === 'string' && dir !== '') {
+          await runPluginUpload(forOutput(dir), dir, {
+            bundler: webpackBuild(compiler.options.mode),
+          });
+        }
+      });
     },
     webpack(compiler: WebpackCompilerLike) {
       const DefinePlugin = compiler.webpack?.DefinePlugin;
@@ -458,9 +516,10 @@ export const bugseeUnplugin: UnpluginInstance<BugseePluginOptions | undefined> =
   createUnplugin(bugseeUnpluginFactory);
 
 // Convenience per-bundler factories over the same core. `@bugsee/vite-plugin` / `@bugsee/webpack-plugin`
-// ship the two most common ones as their own packages; these cover the esbuild-based toolchains (Angular 17+,
-// Bun where its plugin hooks suffice), Rollup (Vite/meta-frameworks internals), and Rspack. Any other target
-// (Deno, tsc/swc, or a build with no plugin hook) uses the standalone `bugsee-cli` post-build step instead.
+// ship the two most common ones as their own packages; these cover plain esbuild builds (the esbuild JS API,
+// tsup, any tool that accepts esbuild plugins), Rollup, and Rspack. Angular's builder does NOT accept esbuild
+// plugins, and Bun/tsc/swc have no usable hook: those use the standalone `bugsee-cli` post-build step
+// (`sourcemaps inject` then `debug-files upload`) instead.
 export const bugseeRollupPlugin = bugseeUnplugin.rollup;
 export const bugseeEsbuildPlugin = bugseeUnplugin.esbuild;
 export const bugseeRspackPlugin = bugseeUnplugin.rspack;

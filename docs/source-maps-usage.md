@@ -26,8 +26,16 @@ module.exports = { devtool: 'source-map', plugins: [bugseeWebpackPlugin({ appTok
 ```
 
 Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unplugin`-based):
-`bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. These transitively cover **Angular 17+**
-(esbuild builder), **Vite/meta-framework internals** (Rollup), and **Rspack/Next-webpack**.
+`bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. Each injects debug-IDs, uploads the maps and
+deletes them at the end of the build, exactly as the Vite/webpack plugins do (Rollup: `writeBundle`; esbuild:
+`onEnd`, so it works with the esbuild JS API, `tsup` and any tool that accepts esbuild plugins; Rspack:
+`afterEmit`), with the same SRI guard. With esbuild the plugin turns source maps on when you did not ask for any
+(`sourcemap` unset or `false`; an explicit `external`/`linked`/`inline`/`both` is left alone). Rspack stamps after emit rather than inside the compilation, so an Rspack build
+that adds Subresource Integrity hashes is refused, not stamped (§2 covers that case).
+
+**What these do not cover.** **Angular's builder does not accept esbuild plugins**, so `bugseeEsbuildPlugin`
+cannot be used with `ng build`: use the post-build recipe in §2. Bun's bundler, `tsc` and `swc` have no hook
+either (also §2). Next.js on webpack uses the webpack plugin.
 
 **Where the settings come from.** For every `BUGSEE_*` setting the lookup order is: the **plugin option**, then
 the **process environment**, then the **`.env.bugsee-build-plugin`** file. The setup wizard writes the app token
@@ -125,6 +133,20 @@ bugsee-cli sourcemaps inject ./dist
 BUGSEE_APP_TOKEN=… bugsee-cli debug-files upload ./dist \
   --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
 ```
+
+**Angular (17+, `ng build` with the esbuild application builder).** There is no plugin hook, so add the CLI as a
+step after the build (for example an npm script or a CI step):
+
+```bash
+ng build --source-map            # or "sourceMap": true in angular.json; the output lands in dist/<project>/browser
+export BUGSEE_APP_TOKEN=…        # the CLI does not read .env.bugsee-build-plugin
+bugsee-cli sourcemaps inject dist/<project>/browser
+bugsee-cli debug-files upload dist/<project>/browser \
+  --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
+```
+
+If you enable `"subresourceIntegrity": true`, `inject` refuses to run (it would invalidate the integrity hashes
+Angular writes into `index.html`); turn that option off for builds you symbolicate.
 
 `inject` must run **before deployment** so the shipped bundle carries the debug-ID + the `_bugseeDebugIds` runtime
 stub the SDK reads. This is exactly what the plugins automate; the CLI is the same engine, just invoked by hand.

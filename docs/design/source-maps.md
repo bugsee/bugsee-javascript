@@ -124,8 +124,14 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 are conveniences, not the mechanism: `bugsee-cli` operates on a finished output dir independent of the bundler, so the
 **universal path is the standalone CLI post-build step** (`sourcemaps inject` → `debug-files upload`; run before
 deploy). See `docs/source-maps-usage.md §2`. To widen the zero-config plugin experience cheaply, `@bugsee/bundler-plugin-core`
-also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core) — transitively covering
-Angular 17+ (esbuild), Vite/meta-framework internals (Rollup) and Rspack/Next-webpack. Deno/Bun stay CLI-post-build.
+also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core). Their end-of-build hooks
+are Rollup `writeBundle`, esbuild `onEnd` (registered through unplugin's `esbuild.setup`; skipped on a failed build
+or `write: false`; the plugin also turns `sourcemap` on when unset/`false`) and Rspack `afterEmit`, each calling
+`runPluginUpload` with the same SRI guard as Vite and webpack (#184; real esbuild and Rspack builds are exercised in
+`plugin.real-build.test.ts`). Rspack has no in-compilation stamp stage wired, so it takes the post-emit inject path
+(an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
+plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
+uses the webpack plugin. Bun/`tsc`/`swc` stay CLI-post-build.
 
 **Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
 debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,
@@ -170,8 +176,8 @@ still runs, `{injected: false, uploaded: false}`.
 - **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
   an inline script with no `src`.
 - **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
-  `writeBundle` for vite and rollup only. Users driving `bugsee-cli` directly — Angular 17+, esbuild,
-  Deno — get no guard, and Angular's `subresourceIntegrity: true` is exactly the config this protects
+  `writeBundle` for vite and rollup, `afterEmit` for webpack and Rspack, and `onEnd` for esbuild. Users driving
+  `bugsee-cli` directly — Angular 17+, Deno — get no guard from the plugin, and Angular's `subresourceIntegrity: true` is exactly the config this protects
   against. Tracked: the same check belongs in `sourcemaps inject` itself.
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
