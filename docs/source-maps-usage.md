@@ -36,7 +36,10 @@ pairs a bundle with its sibling `.map` anyway). An explicit value, including `fa
 (an ESM + CJS pair) are uploaded one after another, and each upload deletes only the maps that existed when it
 started. Use `outdir`: with `outfile` the plugin uploads the whole directory the file is in (every `.js` and
 `.map` there, not just yours) and says so in a notice; an `outfile` in the project directory itself or above it (a bare
-`outfile: 'bundle.js'`) is refused, with a notice, because that would make the whole project the output directory.
+`outfile: 'bundle.js'`), or directly in a package root (a `package.json` with a `name`, or next to `src/` or
+`node_modules/`), is refused, with a notice, because that would make the whole project the output directory (a
+`dist/cjs/package.json` marker is fine). Under `failOnError`, a build that finds no maps because another build into
+the same directory already uploaded (and deleted) them is not a failure; a lone build that emitted no maps still is.
 Development builds do not upload and leave the local maps alone unless you set `uploadInDevelopment: true`:
 Rspack states its mode (only `development` is skipped; `none` and `production` upload), esbuild states none, so only `NODE_ENV=development` marks a
 dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Rspack stamps after emit rather than inside the compilation,

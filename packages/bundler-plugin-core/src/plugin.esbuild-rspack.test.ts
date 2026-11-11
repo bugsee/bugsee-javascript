@@ -770,7 +770,7 @@ describe('guards and notices (review round 3)', () => {
     const root = mkdtempSync(join(tmpdir(), 'bugsee-pkgroot-'));
     try {
       mkdirSync(join(root, 'packages', 'a'), { recursive: true });
-      writeFileSync(join(root, 'packages', 'a', 'package.json'), '{}');
+      writeFileSync(join(root, 'packages', 'a', 'package.json'), '{"name":"a"}');
       const notices: string[] = [];
       await esbuildRun(
         { appToken: 'tok', onNotice: (m) => notices.push(m) },
@@ -778,6 +778,32 @@ describe('guards and notices (review round 3)', () => {
       ).end();
       expect(uploadSpy).not.toHaveBeenCalled();
       expect(notices.some((m) => m.includes('Nothing was uploaded'))).toBe(true);
+      // A package.json WITHOUT a name and with no src/ or node_modules/ is a marker (dist/cjs), not a package.
+      mkdirSync(join(root, 'dist', 'cjs'), { recursive: true });
+      writeFileSync(join(root, 'dist', 'cjs', 'package.json'), '{"type":"commonjs"}');
+      await esbuildRun(
+        { appToken: 'tok', onNotice: () => undefined },
+        { outfile: 'dist/cjs/index.js', absWorkingDir: root },
+      ).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+      uploadSpy.mockClear();
+      // ...but one next to a src/ (a nameless package root) is refused.
+      mkdirSync(join(root, 'lib', 'src'), { recursive: true });
+      writeFileSync(join(root, 'lib', 'package.json'), '{"private":true}');
+      await esbuildRun(
+        { appToken: 'tok', onNotice: () => undefined },
+        { outfile: 'lib/index.js', absWorkingDir: root },
+      ).end();
+      expect(uploadSpy).not.toHaveBeenCalled();
+      // An unreadable/invalid package.json is no package root either.
+      mkdirSync(join(root, 'bad'), { recursive: true });
+      writeFileSync(join(root, 'bad', 'package.json'), '{not json');
+      await esbuildRun(
+        { appToken: 'tok', onNotice: () => undefined },
+        { outfile: 'bad/index.js', absWorkingDir: root },
+      ).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+      uploadSpy.mockClear();
       // The same directory is fine as an `outdir` target (a package may hold a dist with its own package.json).
       await esbuildRun({ appToken: 'tok' }, { outdir: 'packages/a', absWorkingDir: root }).end();
       expect(uploadSpy).toHaveBeenCalledTimes(1);
@@ -809,11 +835,68 @@ describe('guards and notices (review round 3)', () => {
     applyRspack({ appToken: 'tok', onNotice: (m) => notices.push(m) }, off.compiler);
     applyRspack({ appToken: 'tok', onNotice: (m) => notices.push(m) }, off.compiler);
     expect(notices.filter((m) => m.includes('devtool'))).toHaveLength(2); // one per plugin instance
+    // A development build with devtool unset gets only the dev-skip notice (its default is eval), not this one.
+    const devNotices: string[] = [];
+    const dev = rspackCompiler('/out', 'development');
+    applyRspack({ appToken: 'tok', onNotice: (m) => devNotices.push(m) }, dev.compiler);
+    expect(devNotices.filter((m) => m.includes('devtool'))).toEqual([]);
     const withMaps = rspackCompiler('/out', 'production');
     (withMaps.compiler.options as { devtool?: string }).devtool = 'source-map';
     const quiet: string[] = [];
     applyRspack({ appToken: 'tok', onNotice: (m) => quiet.push(m) }, withMaps.compiler);
     applyRspack({ appToken: 'tok', disabled: true, onNotice: (m) => quiet.push(m) }, off.compiler);
     expect(quiet.filter((m) => m.includes('devtool'))).toEqual([]);
+  });
+});
+
+describe('a sweep by an earlier run lets a later run of the same directory find nothing', () => {
+  const ok = { injected: true, uploaded: true, deletedMaps: ['/abs/s1/a.map'] as string[] };
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    orchSpy.mockReset();
+    orchSpy.mockImplementation(async () => ok);
+    uploadSpy.mockImplementation(async (resolved: unknown, outDir: string, deps: unknown) => {
+      const r = resolved as ResolvedPluginOptions;
+      await (deps as { uploadSourcemaps: (o: unknown) => Promise<unknown> }).uploadSourcemaps({
+        outDir,
+        failOnError: r.failOnError,
+        onError: r.onError,
+      });
+      return undefined;
+    });
+  });
+  const allowEmptyOf = (call: number) =>
+    (orchSpy.mock.calls[call]?.[0] as { allowEmpty?: boolean }).allowEmpty;
+
+  it('the second build, which began before the first run swept, is allowed an empty directory', async () => {
+    const a = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s1' });
+    const b = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s1' });
+    a.start();
+    b.start();
+    await a.end();
+    await b.end();
+    expect(allowEmptyOf(0)).toBeUndefined(); // nothing swept yet: strict
+    expect(allowEmptyOf(1)).toBe(true);
+  });
+
+  it('a build that began AFTER the sweep is not excused', async () => {
+    const a = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s2' });
+    a.start();
+    await a.end();
+    const later = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s2' });
+    later.start();
+    await later.end();
+    expect(allowEmptyOf(1)).toBeUndefined();
+  });
+
+  it('a run that deleted nothing is not a sweep', async () => {
+    orchSpy.mockImplementation(async () => ({ injected: true, uploaded: true, deletedMaps: [] }));
+    const a = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s3' });
+    const b = esbuildRun({ appToken: 'tok', failOnError: true }, { outdir: '/abs/s3' });
+    a.start();
+    b.start();
+    await a.end();
+    await b.end();
+    expect(allowEmptyOf(1)).toBeUndefined();
   });
 });

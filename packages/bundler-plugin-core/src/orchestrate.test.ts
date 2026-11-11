@@ -58,6 +58,18 @@ describe('uploadSourcemaps', () => {
   // …unless the caller asked for strictness. `failOnError` is for teams who would rather the build
   // stopped than ship un-symbolicatable crashes, and "this build produced no maps at all" is exactly
   // the misconfiguration they want it to catch.
+  it('allowEmpty keeps --allow-empty under failOnError (maps another run already uploaded)', async () => {
+    const { run, calls } = fakeRun();
+    await uploadSourcemaps({
+      ...base,
+      failOnError: true,
+      allowEmpty: true,
+      run,
+      deleteMapFiles: async () => [],
+    });
+    expect(calls[1]?.args).toContain('--allow-empty');
+  });
+
   it('omits --allow-empty under failOnError, so an empty build still fails loudly', async () => {
     const { run, calls } = fakeRun();
     await uploadSourcemaps({ ...base, failOnError: true, run, deleteMapFiles: async () => [] });

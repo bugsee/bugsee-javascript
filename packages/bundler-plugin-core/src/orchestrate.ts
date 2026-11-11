@@ -41,6 +41,12 @@ export interface UploadSourcemapsOptions {
    * were never sent and must not be deleted.
    */
   deleteMapFiles?: (dir: string, only?: readonly string[]) => Promise<string[]>;
+  /**
+   * Pass `--allow-empty` even under `failOnError`. For a run whose maps were already uploaded (and deleted) by
+   * another run of the same directory: "no maps" is then success, not the misconfiguration `failOnError` exists
+   * to catch. Default: `--allow-empty` unless `failOnError`.
+   */
+  allowEmpty?: boolean;
   /** Injectable `.map` lister for that snapshot (default {@link listMapFiles}). */
   listMapFiles?: (dir: string) => Promise<string[]>;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
@@ -244,7 +250,8 @@ export async function uploadSourcemaps(
     // The maps that exist NOW are the ones this upload covers. Another build into the same directory (tsup's
     // esm + cjs) may write more while the upload is in flight; deleting those would lose them unsent.
     const uploadedSet = await (options.listMapFiles ?? listMapFiles)(outDir).catch(() => undefined);
-    const emptyFlag = options.failOnError === true ? [] : ['--allow-empty'];
+    const emptyFlag =
+      options.failOnError === true && options.allowEmpty !== true ? [] : ['--allow-empty'];
     await run(
       [
         'debug-files',

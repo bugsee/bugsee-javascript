@@ -2,7 +2,7 @@
 // vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createUnplugin, type UnpluginFactory, type UnpluginInstance } from 'unplugin';
 import {
@@ -244,12 +244,14 @@ interface DirActivity {
   inflight: number;
   /** Bumped at every build start: lets a run tell that the directory was touched while it ran. */
   starts: number;
+  /** Runs that uploaded and deleted maps: a later run of a build that began earlier may find nothing left. */
+  sweeps: number;
 }
 const dirActivity = new Map<string, DirActivity>();
 const activityOf = (outDir: string): DirActivity => {
   let activity = dirActivity.get(outDir);
   if (activity === undefined) {
-    activity = { inflight: 0, starts: 0 };
+    activity = { inflight: 0, starts: 0, sweeps: 0 };
     dirActivity.set(outDir, activity);
   }
   return activity;
@@ -274,27 +276,36 @@ async function waitForIdle(activity: DirActivity): Promise<void> {
  * itself and never retried. A failure is captured; if another build started while the step ran (or one is
  * still running) it is retried after a bounded wait, otherwise it is reported as configured.
  */
-function settledUpload(outDir: string): typeof defaultUploadSourcemaps {
+function settledUpload(outDir: string, sweepsAtStart: number): typeof defaultUploadSourcemaps {
   const activity = activityOf(outDir);
   return async (options) => {
     for (let attempt = 1; ; attempt++) {
       const startsBefore = activity.starts;
+      // A build that was already running when this attempt began may write between inject and upload too.
+      const busyBefore = activity.inflight > 0;
       const captured: unknown[] = [];
       let thrown: { error: unknown } | undefined;
       let result: Awaited<ReturnType<typeof defaultUploadSourcemaps>> | undefined;
       try {
         result = await defaultUploadSourcemaps({
           ...options,
+          // An earlier run of this directory already swept (uploaded and deleted) maps since this build began,
+          // this build's among them (dual-format builds into one outdir): finding none is then success, even
+          // under failOnError. A lone map-less build has no such sweep and still fails.
+          allowEmpty: activity.sweeps > sweepsAtStart ? true : options.allowEmpty,
           onError: (error) => captured.push(error),
         });
       } catch (error) {
         thrown = { error };
       }
       if (thrown === undefined && captured.length === 0) {
+        if ((result?.deletedMaps.length ?? 0) > 0) {
+          activity.sweeps++;
+        }
         return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
       }
       if (
-        (activity.starts !== startsBefore || activity.inflight > 0) &&
+        (busyBefore || activity.starts !== startsBefore || activity.inflight > 0) &&
         attempt < uploadTuning.attempts
       ) {
         await waitForIdle(activity);
@@ -307,6 +318,24 @@ function settledUpload(outDir: string): typeof defaultUploadSourcemaps {
       return result as Awaited<ReturnType<typeof defaultUploadSourcemaps>>;
     }
   };
+}
+
+/**
+ * Whether `dir` looks like a package's root rather than an output folder: a package.json with a `name`, or a
+ * `src/` or `node_modules/` next to it. (A `dist/cjs/package.json` holding only `{"type":"commonjs"}` is a marker.)
+ */
+function isPackageRoot(dir: string): boolean {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+      name?: unknown;
+    };
+    if (typeof manifest.name === 'string' && manifest.name !== '') {
+      return true;
+    }
+    return existsSync(join(dir, 'src')) || existsSync(join(dir, 'node_modules'));
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `dir` is `project` or one of its ancestors (a segment-aware test: `..cache` is not `..`). */
@@ -570,10 +599,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       setup(build: EsbuildBuildLike) {
         const outDir = esbuildOutputDir(build.initialOptions);
         const activity = outDir === undefined ? undefined : activityOf(outDir);
+        let sweepsAtStart = 0;
         build.onStart(() => {
           if (activity !== undefined) {
             activity.inflight++;
             activity.starts++;
+            sweepsAtStart = activity.sweeps;
           }
         });
         build.onEnd(async (result) => {
@@ -607,10 +638,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
             const outfileOnly = (outdir === undefined || outdir === '') && outfile !== undefined;
             // An `outfile` directly inside a package root (it holds a package.json) is the same hazard seen
             // from a monorepo root: the whole package would be the output directory.
-            if (
-              isSameOrAbove(outDir, project) ||
-              (outfileOnly && existsSync(join(outDir, 'package.json')))
-            ) {
+            if (isSameOrAbove(outDir, project) || (outfileOnly && isPackageRoot(outDir))) {
               say(
                 `esbuild output ${outfile ?? outdir} is the project directory itself (or above it, or a package root), so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` pointing at a dedicated output directory.`,
               );
@@ -628,7 +656,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           await serialUpload(outDir, () =>
             runPluginUpload(forOutput(outDir), outDir, {
               bundler: {},
-              uploadSourcemaps: settledUpload(outDir),
+              uploadSourcemaps: settledUpload(outDir, sweepsAtStart),
             }),
           );
         });
@@ -648,7 +676,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // integrity hashes the stamp would invalidate.
       // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
       // nothing. Said once, like esbuild's `sourcemap: false`.
-      if (resolved.enabled && !compiler.options.devtool) {
+      // Judged on the RESOLVED default: an unset `devtool` is `eval` in development (the dev-skip notice covers
+      // that build) and false otherwise.
+      if (
+        resolved.enabled &&
+        !compiler.options.devtool &&
+        !(compiler.options.mode === 'development' && !resolved.uploadInDevelopment)
+      ) {
         say(
           'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
         );
