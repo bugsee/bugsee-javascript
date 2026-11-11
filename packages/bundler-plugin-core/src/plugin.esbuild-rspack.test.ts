@@ -281,7 +281,7 @@ describe('rspack: upload after emit', () => {
 
   it('passes the bundler mode on, and treats an unset mode as production (same as webpack)', async () => {
     const dev = rspackCompiler('/out', 'development');
-    applyRspack({ appToken: 'tok' }, dev.compiler);
+    applyRspack({ appToken: 'tok', uploadInDevelopment: true }, dev.compiler);
     await dev.taps[0]?.fn();
     expect(bundlerOf(0)).toEqual({ isProduction: false, configuration: 'development' });
     const unset = rspackCompiler('/out');
@@ -304,5 +304,107 @@ describe('rspack: upload after emit', () => {
       await taps[0]?.fn();
     }
     expect(uploadSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('development builds do not upload (and do not delete the local maps) by default', () => {
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
+
+  it('rspack: mode development is skipped, with one notice; production and an unset mode are not', async () => {
+    const notices: string[] = [];
+    const dev = rspackCompiler('/out', 'development');
+    applyRspack({ appToken: 'tok', onNotice: (m) => notices.push(m) }, dev.compiler);
+    await dev.taps[0]?.fn();
+    await dev.taps[0]?.fn();
+    expect(uploadSpy).not.toHaveBeenCalled();
+    // Said once (other notices, e.g. about an unbakeable identity on this fake compiler, are not ours).
+    const devNotices = notices.filter((m) => m.includes('uploadInDevelopment'));
+    expect(devNotices).toHaveLength(1);
+    for (const mode of ['production', undefined]) {
+      const c = rspackCompiler('/out', mode);
+      applyRspack({ appToken: 'tok' }, c.compiler);
+      await c.taps[0]?.fn();
+    }
+    expect(uploadSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rspack: uploadInDevelopment opts back in', async () => {
+    const c = rspackCompiler('/out', 'development');
+    applyRspack({ appToken: 'tok', uploadInDevelopment: true }, c.compiler);
+    await c.taps[0]?.fn();
+    expect(uploadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('esbuild: NODE_ENV=development is skipped; any other value uploads', async () => {
+    const saved = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'development';
+      const notices: string[] = [];
+      await esbuildRun(
+        { appToken: 'tok', onNotice: (m) => notices.push(m) },
+        { outdir: '/abs/dist' },
+      ).end();
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(notices[0]).toContain('esbuild development build');
+      await esbuildRun(
+        { appToken: 'tok', uploadInDevelopment: true },
+        { outdir: '/abs/dist' },
+      ).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+      process.env.NODE_ENV = 'production';
+      await esbuildRun({ appToken: 'tok' }, { outdir: '/abs/dist' }).end();
+      expect(uploadSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      if (saved === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = saved;
+      }
+    }
+  });
+
+  it('a disabled plugin says nothing about development builds', async () => {
+    const notices: string[] = [];
+    const c = rspackCompiler('/out', 'development');
+    applyRspack({ appToken: 'tok', disabled: true, onNotice: (m) => notices.push(m) }, c.compiler);
+    await c.taps[0]?.fn();
+    expect(notices).toEqual([]);
+  });
+});
+
+describe('esbuild: a bare outfile in the project directory is refused', () => {
+  beforeEach(() => {
+    uploadSpy.mockReset();
+    uploadSpy.mockImplementation(async () => undefined);
+  });
+
+  it('uploads nothing and says why (outfile: "bundle.js" would make the whole project the output dir)', async () => {
+    const notices: string[] = [];
+    await esbuildRun(
+      { appToken: 'tok', onNotice: (m) => notices.push(m) },
+      { outfile: 'bundle.js', absWorkingDir: '/proj/app' },
+    ).end();
+    expect(uploadSpy).not.toHaveBeenCalled();
+    expect(notices.some((m) => m.includes('project directory itself'))).toBe(true);
+  });
+
+  it('also against the cwd when there is no absWorkingDir', async () => {
+    await esbuildRun(
+      { appToken: 'tok', onNotice: () => undefined },
+      { outfile: 'bundle.js' },
+    ).end();
+    expect(uploadSpy).not.toHaveBeenCalled();
+  });
+
+  it('an outfile in a SUBdirectory, and any outdir (even the project dir), still upload', async () => {
+    await esbuildRun(
+      { appToken: 'tok', onNotice: () => undefined },
+      { outfile: 'dist/bundle.js', absWorkingDir: '/proj/app' },
+    ).end();
+    await esbuildRun({ appToken: 'tok' }, { outdir: '.', absWorkingDir: '/proj/app' }).end();
+    expect(uploadSpy).toHaveBeenCalledTimes(2);
   });
 });

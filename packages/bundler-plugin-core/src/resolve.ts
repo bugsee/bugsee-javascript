@@ -115,6 +115,15 @@ export interface BugseePluginOptions {
    * output (or {@link BugseePluginOptions.projectRoot}), scope included.
    */
   packageId?: string;
+  /**
+   * Upload from a build the bundler calls DEVELOPMENT. Default `false` (#196 review).
+   *
+   * Every esbuild watch rebuild and every Rspack `mode: 'development'` build would otherwise spawn
+   * `bugsee-cli`, upload dev bundles as symbols and delete the local `.map`s devtools rely on. Rspack states
+   * its mode; esbuild states none, so there only `NODE_ENV=development` marks a dev build. (Vite, Rollup and
+   * webpack are not gated by this option.)
+   */
+  uploadInDevelopment?: boolean;
 }
 
 /** Map `BUGSEE_REGISTER_BUILD` onto the setting. An unrecognised value is NOT a setting. */
@@ -169,6 +178,8 @@ export interface ResolvedPluginOptions {
   registerBuild: RegisterBuildSetting;
   /** Explicit `package_id`; `undefined` means "the nearest package.json". */
   packageId: string | undefined;
+  /** Whether a build the bundler calls development still uploads. Default false. */
+  uploadInDevelopment: boolean;
   /**
    * `define` entries that bake the app's version/build into its bundle (`__BUGSEE_APP_VERSION__`,
    * `__BUGSEE_APP_BUILD__`, JSON-encoded). Only values that were actually found are present — never the
@@ -243,6 +254,7 @@ export function resolvePluginOptions(
     registerBuild:
       options.registerBuild ?? registerBuildFromEnv(env.BUGSEE_REGISTER_BUILD) ?? 'release',
     packageId: options.packageId,
+    uploadInDevelopment: options.uploadInDevelopment ?? false,
     nodeEnv: env.NODE_ENV,
   };
 }

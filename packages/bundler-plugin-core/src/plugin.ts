@@ -261,6 +261,23 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     }
     return values;
   };
+  // A notice said once per distinct text.
+  const say = (message: string): void => {
+    if (!reported.has(message)) {
+      reported.add(message);
+      notify(resolved)(message);
+    }
+  };
+  // esbuild / Rspack dev builds do not upload (and so do not delete the local maps) unless asked to.
+  const skipDevelopment = (isProduction: boolean | undefined, bundlerName: string): boolean => {
+    if (!resolved.enabled || resolved.uploadInDevelopment || isProduction !== false) {
+      return false;
+    }
+    say(
+      `${bundlerName} development build: source maps were not uploaded and were left in place. Set \`uploadInDevelopment: true\` to upload from dev builds too.`,
+    );
+    return true;
+  };
   // `resolved` is assigned right below; `loadFile` only reads it after that (it is `let` for the hook refresh).
   let resolved = resolvePluginOptions(options, process.env);
   let env = mergeBuildPluginEnv(process.env, loadFile(undefined));
@@ -464,11 +481,24 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
               (outdir === undefined || outdir === '') &&
               outfile !== undefined
             ) {
-              const note = `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`;
-              if (!reported.has(note)) {
-                reported.add(note);
-                notify(resolved)(note);
-              }
+              say(
+                `esbuild \`outfile\` builds are uploaded per DIRECTORY: every .js and .map in ${outDir} is stamped and uploaded, not only ${outfile}. Use \`outdir\` to keep other files out of it.`,
+              );
+            }
+            // esbuild states no mode: only NODE_ENV=development marks a dev build.
+            if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild')) {
+              return;
+            }
+            // A bare `outfile` in the project directory would make the WHOLE project the output
+            // directory (inject + map deletion walk it): refuse rather than touch unrelated files.
+            if (
+              (outdir === undefined || outdir === '') &&
+              outDir === resolve(build.initialOptions.absWorkingDir ?? process.cwd())
+            ) {
+              say(
+                `esbuild \`outfile\` ${outfile} is in the project directory itself, so uploading would stamp and delete maps across the whole project. Nothing was uploaded: use \`outdir\` (a dedicated output directory).`,
+              );
+              return;
             }
             await serialUpload(outDir, () =>
               runPluginUpload(forOutput(outDir), outDir, { bundler: {} }),
@@ -491,10 +521,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // integrity hashes the stamp would invalidate.
       compiler.hooks.afterEmit.tapPromise(name, async () => {
         const dir = compiler.options.output?.path;
-        if (typeof dir === 'string' && dir !== '') {
-          await runPluginUpload(forOutput(dir), dir, {
-            bundler: webpackBuild(compiler.options.mode),
-          });
+        const bundler = webpackBuild(compiler.options.mode);
+        if (
+          typeof dir === 'string' &&
+          dir !== '' &&
+          !skipDevelopment(bundler.isProduction, 'Rspack')
+        ) {
+          await runPluginUpload(forOutput(dir), dir, { bundler });
         }
       });
     },
