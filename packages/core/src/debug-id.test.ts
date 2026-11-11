@@ -5,6 +5,7 @@ import {
   buildDebugIdMap,
   readDebugIds,
   runtimeMapsStacks,
+  setDebugIdRegistrationVerifier,
 } from './debug-id';
 import { parseV8Stack, type StackFrame } from './stack';
 
@@ -131,50 +132,102 @@ describe('runtimeMapsStacks', () => {
   });
 });
 
-describe('applyDebugIds under runtime source-map support (#185)', () => {
-  // With `node --enable-source-maps` the registration key's top frame is mapped to an ORIGINAL file
-  // (`src/main.js`), and error frames are original positions too. Stamping the bundle's debug-id onto them
-  // makes the backend remap an already-mapped position -> a wrong line.
-  const mappedRegistry = { [bundleStack('/app/src/main.js')]: 'bundle-id' };
+describe('buildDebugIdMap with an accept predicate', () => {
+  it('keeps only registrations the predicate accepts, passing (top-frame file, debugId)', () => {
+    const seen: [string, string][] = [];
+    const map = buildDebugIdMap(
+      {
+        [bundleStack('/app/src/main.js')]: 'mapped-id',
+        [bundleStack('/app/dist/app.js')]: 'real-id',
+      },
+      parseV8Stack,
+      (file, id) => {
+        seen.push([file, id]);
+        return file.includes('dist');
+      },
+    );
+    expect([...map]).toEqual([['/app/dist/app.js', 'real-id']]);
+    expect(seen).toEqual([
+      ['/app/src/main.js', 'mapped-id'],
+      ['/app/dist/app.js', 'real-id'],
+    ]);
+  });
+});
 
-  it('stamps nothing when the runtime already maps stacks', () => {
-    const frames: StackFrame[] = [{ file: '/app/src/main.js', line: 3, column: 3 }];
-    applyDebugIds(frames, {
-      globalObject: { _bugseeDebugIds: mappedRegistry },
+describe('applyDebugIds under runtime source-map support (#185)', () => {
+  // With `node --enable-source-maps` AND a map on disk, the registration key's top frame is mapped to an
+  // ORIGINAL file (`src/main.js`). Joining on it stamps the bundle's id onto already-mapped frames -> the
+  // backend remaps them again -> a wrong line. Without the map on disk (the plugin default: maps are deleted
+  // after upload) nothing is mapped and the plain join is correct. So the guard is PER REGISTRATION.
+  const registry = {
+    [bundleStack('/app/src/main.js')]: 'mapped-id', // registered under a mapping runtime
+    [bundleStack('/app/dist/other.js')]: 'other-id', // a bundle whose map is absent
+  };
+  const verify = (file: string, id: string): boolean =>
+    file === '/app/dist/other.js' && id === 'other-id';
+  const frames = (): StackFrame[] => [
+    { file: '/app/src/main.js', line: 3, column: 3 },
+    { file: '/app/dist/other.js', line: 1, column: 9 },
+  ];
+
+  it('while the runtime maps stacks, drops registrations the verifier rejects and keeps verified ones', () => {
+    const f = frames();
+    applyDebugIds(f, {
+      globalObject: { _bugseeDebugIds: registry },
+      parseStack: parseV8Stack,
+      runtimeMapsStacks: true,
+      verifyRegistration: verify,
+    });
+    expect(f[0]?.debugId).toBeUndefined();
+    expect(f[1]?.debugId).toBe('other-id');
+  });
+
+  it('does not consult the verifier when the runtime does not map stacks', () => {
+    const f = frames();
+    applyDebugIds(f, {
+      globalObject: { _bugseeDebugIds: registry },
+      parseStack: parseV8Stack,
+      runtimeMapsStacks: false,
+      verifyRegistration: () => false,
+    });
+    expect(f.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
+  });
+
+  it('keeps every registration when mapping is on but no verifier exists (browser / Electron renderer)', () => {
+    const f = frames();
+    applyDebugIds(f, {
+      globalObject: { _bugseeDebugIds: registry },
       parseStack: parseV8Stack,
       runtimeMapsStacks: true,
     });
-    expect(frames[0]?.debugId).toBeUndefined();
+    expect(f.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
   });
 
-  it('still stamps when the runtime does not map stacks', () => {
-    const frames: StackFrame[] = [{ file: '/app/src/main.js', line: 3, column: 3 }];
-    applyDebugIds(frames, {
-      globalObject: { _bugseeDebugIds: mappedRegistry },
-      parseStack: parseV8Stack,
-      runtimeMapsStacks: false,
-    });
-    expect(frames[0]?.debugId).toBe('bundle-id');
-  });
-
-  it('defaults the probe to the live process: stamping is off while process.sourceMapsEnabled', () => {
+  it('uses the installed process-wide verifier by default, and the live process probe', () => {
     const g = globalThis as unknown as {
       process?: { sourceMapsEnabled?: boolean };
       _bugseeDebugIds?: Record<string, string>;
     };
     const real = g.process;
     const prev = g._bugseeDebugIds;
-    g._bugseeDebugIds = mappedRegistry;
+    g._bugseeDebugIds = registry;
+    setDebugIdRegistrationVerifier(verify);
     try {
       g.process = { sourceMapsEnabled: true };
-      const off: StackFrame[] = [{ file: '/app/src/main.js' }];
-      applyDebugIds(off);
-      expect(off[0]?.debugId).toBeUndefined();
+      const mapped = frames();
+      applyDebugIds(mapped);
+      expect(mapped.map((x) => x.debugId)).toEqual([undefined, 'other-id']);
       g.process = { sourceMapsEnabled: false };
-      const on: StackFrame[] = [{ file: '/app/src/main.js' }];
-      applyDebugIds(on);
-      expect(on[0]?.debugId).toBe('bundle-id');
+      const plain = frames();
+      applyDebugIds(plain);
+      expect(plain.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
+      setDebugIdRegistrationVerifier(undefined);
+      g.process = { sourceMapsEnabled: true };
+      const none = frames();
+      applyDebugIds(none);
+      expect(none.map((x) => x.debugId)).toEqual(['mapped-id', 'other-id']);
     } finally {
+      setDebugIdRegistrationVerifier(undefined);
       g.process = real;
       if (prev === undefined) delete g._bugseeDebugIds;
       else g._bugseeDebugIds = prev;

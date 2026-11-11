@@ -193,15 +193,29 @@ is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
 
 ## 7.2 Runtime-mapped stacks (`node --enable-source-maps`, #185)
 
-With `node --enable-source-maps` (or `process.setSourceMapsEnabled(true)`) Node rewrites `Error.stack` to ORIGINAL
-positions before the SDK sees it, including the stack the injected stub registers (its top frame becomes e.g.
-`src/main.js:4:1`, since the appended stub has no mapping of its own). Measured through the real crash builder
-(`instrumentation-tests/test/sourcemaps-runtime.e2e.ts`): a frame at `src/main.js:3:3` was stamped with the bundle's
-debug-id, so the backend would remap an already-mapped position, a wrong line. `applyDebugIds` therefore stamps NOTHING
-when `process.sourceMapsEnabled === true` (`runtimeMapsStacks`, read through a `globalThis` cast). Already-original
-frames need no id. Trade-off: a deployment that sets the flag but ships no map files gets minified frames without an id
-(the no-plugin appVersion/appBuild fallback). Bun does not map `Error.stack` and has no `process.sourceMapsEnabled`
-(Bun 1.4.4, measured), so it keeps stamping, which is correct.
+With `node --enable-source-maps` Node rewrites `Error.stack` to ORIGINAL positions before the SDK sees it, but only
+when the bundle's `.map` is readable AND source maps were enabled before the bundle loaded
+(`process.setSourceMapsEnabled(true)` affects only modules loaded afterwards). Then the stack the injected stub
+registers is mapped too: its top frame becomes e.g. `src/main.js:4:1` (the appended stub has no mapping of its own),
+so the `file -> debugId` join stamps the bundle's id onto already-mapped frames (measured: `src/main.js:3:3` got the
+id; the backend remaps it again, a wrong line).
+
+Two cases look the same from `process.sourceMapsEnabled` but are different, so a global switch is wrong:
+- the plugin DELETES `*.map` after upload by default; with the flag on and no map on disk nothing is mapped, the
+  registration key and the error frames both stay on `dist/app.js`, and the plain join is correct;
+- the flag turned on after the bundle loaded: same, frames are unmapped and the join is correct.
+
+So the guard is PER REGISTRATION. While `process.sourceMapsEnabled === true` (`runtimeMapsStacks`, read through a
+`globalThis` cast), `applyDebugIds` keeps a registration only if the injected verifier proves its top-frame file is the
+stamped bundle. `@bugsee/node` installs that verifier at launch (`createStampedBundleVerifier`): the file's tail must
+carry `//# debugId=<the registered id>` (the same marker `bundler-plugin-core` reads). A mapped registration points at
+`src/main.js`, which has no stamp, so it is dropped and the frames stay unstamped (already original, no id needed).
+Core stays runtime-portable: no `node:fs`, the verifier is injected (`setDebugIdRegistrationVerifier` / the
+`verifyRegistration` option). With no verifier (browsers, Electron renderers: Chromium does not map `Error.stack`
+even where `process.sourceMapsEnabled` reads true) every registration is kept, i.e. the previous behaviour.
+Known limit: a registration whose top-frame path was scrubbed to `node_modules/...` (a stamped bundle shipped inside
+a dependency) cannot be resolved and is not joined while the flag is on. Bun does not map `Error.stack` and has no
+`process.sourceMapsEnabled` (Bun 1.4.4, measured), so it keeps stamping, which is correct.
 
 ---
 

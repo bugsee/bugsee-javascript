@@ -1,11 +1,14 @@
 // Issue #185 — `node --enable-source-maps` vs the debug-ID -> file lookup.
 //
-// Builds a REAL bundle with esbuild (+ external map), stamps it the way `bugsee-cli sourcemaps inject` does
-// (runtime stub + `//# debugId=` comment appended AFTER the bundle, so the stub has no source-map mapping),
-// then runs it in a real node/bun process through the REAL crash builder (`buildCrashJson`) and reads back
-// which frames got a debug-ID. The bundle's debug-ID tells the backend "this position is in the MINIFIED
-// bundle, remap it"; stamping a frame that the runtime already mapped to an original `src/*.js` position would
-// make the backend remap it AGAIN and show a wrong line.
+// Builds a REAL minified-position bundle with esbuild (+ external map), stamps it the way
+// `bugsee-cli sourcemaps inject` does (the runtime stub and the `//# debugId=` comment APPENDED after the whole bundle,
+// so the stub has no source-map mapping of its own), then runs it in a real node/bun process through the REAL crash
+// builder (`buildCrashJson`) and reads back which frames got a debug-ID.
+//
+// A debug-ID tells the backend "this position is in the stamped bundle, remap it". Stamping a frame the runtime already
+// mapped to an original `src/*.js` position makes the backend remap it AGAIN -> a wrong line. But the flag alone does
+// not mean frames are mapped: the plugin deletes `*.map` after upload by default (then Node cannot map anything), and
+// `process.setSourceMapsEnabled(true)` only affects modules loaded afterwards. Those cases must stay stamped.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,24 +32,26 @@ interface Result {
 
 describe('debug-ID stamping under runtime source-map support (#185)', () => {
   let dir: string;
-  let bundle: string;
-  beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'bugsee-sm-rt-'));
-    mkdirSync(join(dir, 'src'));
-    mkdirSync(join(dir, 'dist'));
+  /** Build roots: one keeps `app.js.map` on disk, one has it deleted (the plugin's default after upload). */
+  let withMap: string;
+  let noMap: string;
+
+  function build(root: string, keepMap: boolean): void {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'dist'));
     writeFileSync(
-      join(dir, 'src', 'a.js'),
+      join(root, 'src', 'a.js'),
       "export function boom() {\n  throw new Error('boom from a');\n}\n",
     );
     writeFileSync(
-      join(dir, 'src', 'main.js'),
+      join(root, 'src', 'main.js'),
       "import { boom } from './a.js';\nexport function fail() {\n  boom();\n}\n",
     );
-    bundle = join(dir, 'dist', 'app.js');
+    const bundle = join(root, 'dist', 'app.js');
     execFileSync(
       join(pkgRoot, 'node_modules', '.bin', 'esbuild'),
       [
-        join(dir, 'src', 'main.js'),
+        join(root, 'src', 'main.js'),
         '--bundle',
         '--platform=node',
         '--format=cjs',
@@ -56,62 +61,97 @@ describe('debug-ID stamping under runtime source-map support (#185)', () => {
       ],
       { stdio: 'inherit' },
     );
-    // inject: stub + id comment go BEFORE the trailing sourceMappingURL comment, as the CLI leaves it.
-    const lines = readFileSync(bundle, 'utf8').split('\n');
-    const at = lines.findIndex((l) => l.startsWith('//# sourceMappingURL='));
-    lines.splice(at, 0, STUB, `//# debugId=${DEBUG_ID}`);
-    writeFileSync(bundle, lines.join('\n'));
+    // inject: stub, then the id comment LAST, appended after the whole bundle (bugsee-cli inject/mod.rs).
+    const source = readFileSync(bundle, 'utf8');
+    writeFileSync(bundle, `${source.replace(/\n$/, '')}\n${STUB}\n//# debugId=${DEBUG_ID}\n`);
+    if (!keepMap) rmSync(`${bundle}.map`);
+  }
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'bugsee-sm-rt-'));
+    withMap = join(dir, 'with-map');
+    noMap = join(dir, 'no-map');
+    mkdirSync(withMap);
+    mkdirSync(noMap);
+    build(withMap, true);
+    build(noMap, false);
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  function run(bin: string, args: string[], sourceMaps?: 'on' | 'off'): Result {
+  function run(
+    bin: string,
+    root: string,
+    args: string[],
+    sourceMaps: 'on' | 'off' | 'late',
+  ): Result {
     const out = execFileSync(bin, [...args, SCENARIO], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        BUNDLE_PATH: bundle,
-        ...(sourceMaps ? { SOURCE_MAPS: sourceMaps } : {}),
+        BUNDLE_PATH: join(root, 'dist', 'app.js'),
+        APP_ROOT: root,
+        SOURCE_MAPS: sourceMaps,
       },
     });
     return JSON.parse(out.trim().split('\n').at(-1) as string) as Result;
   }
 
+  const bundleFrames = (r: Result) => r.frames.filter((f) => f.at.includes('dist/app.js'));
+  const originalFrames = (r: Result) => r.frames.filter((f) => f.at.includes('src/'));
+
   for (const target of runtimeTargets()) {
-    const { bin } = target;
+    const { bin, name } = target;
+    const flag = ['--enable-source-maps'];
+
+    it.skipIf(bin === undefined)(`${name}: source maps off -> bundle frames are stamped`, () => {
+      const r = run(bin as string, withMap, [], 'off');
+      expect(r.sourceMapsEnabled).not.toBe(true);
+      expect(r.registrationTopFrames[0]).toContain('dist/app.js');
+      expect(bundleFrames(r).length).toBeGreaterThan(0);
+      for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+    });
+
     it.skipIf(bin === undefined)(
-      `${target.name}: default (no source maps) stamps the bundle frames`,
+      `${name}: --enable-source-maps never stamps an already-mapped frame`,
       () => {
-        const r = run(bin as string, [], 'off');
-        expect(r.sourceMapsEnabled).not.toBe(true);
-        expect(r.registrationTopFrames[0]).toContain('dist/app.js');
-        const user = r.frames.filter((f) => f.at.includes('dist/app.js'));
-        expect(user.length).toBeGreaterThan(0);
-        for (const f of user) expect(f.debug_id).toBe(DEBUG_ID);
+        const r = run(bin as string, withMap, flag, 'on');
+        if (name === 'node') {
+          // Node maps the stacks BEFORE the SDK sees them: error frames AND the registration key's top frame are
+          // original `src/*.js` positions, so the bundle's id would be wrong for every one of them.
+          expect(r.sourceMapsEnabled).toBe(true);
+          expect(r.registrationTopFrames[0]).toContain('/src/');
+          expect(originalFrames(r).length).toBeGreaterThanOrEqual(2);
+          expect(r.frames.map((f) => f.debug_id)).not.toContain(DEBUG_ID);
+        } else {
+          // Measured (Bun 1.4.4): Bun does NOT apply source maps to Error.stack and has no
+          // `process.sourceMapsEnabled`, so frames stay on the bundle and stamping them is correct.
+          expect(originalFrames(r)).toHaveLength(0);
+          expect(bundleFrames(r).length).toBeGreaterThan(0);
+          for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+        }
       },
     );
 
     it.skipIf(bin === undefined)(
-      `${target.name}: --enable-source-maps never stamps an already-mapped frame`,
+      `${name}: flag on but the map was deleted (plugin default) -> nothing is mapped, frames stay stamped`,
       () => {
-        const r = run(bin as string, ['--enable-source-maps'], 'on');
-        const original = r.frames.filter((f) => f.at.includes('/src/'));
-        if (target.name === 'node') {
-          // Node maps the stacks BEFORE the SDK sees them: error frames AND the registration key's top frame
-          // are original `src/*.js` positions, so the bundle's id would be wrong for every one of them.
-          expect(r.sourceMapsEnabled).toBe(true);
-          expect(r.registrationTopFrames[0]).toContain('/src/');
-          expect(original.length).toBeGreaterThanOrEqual(2);
-        }
-        // Whatever the runtime did, a frame that points at an ORIGINAL source must carry no debug-id.
-        for (const f of original) expect(f.debug_id).toBeUndefined();
-        if (target.name === 'bun') {
-          // Measured (Bun 1.4.4): Bun does NOT apply source maps to Error.stack (no `process.sourceMapsEnabled`),
-          // so frames stay on the bundle and stamping them is correct.
-          expect(original).toHaveLength(0);
-          for (const f of r.frames.filter((x) => x.at.includes('dist/app.js'))) {
-            expect(f.debug_id).toBe(DEBUG_ID);
-          }
-        }
+        const r = run(bin as string, noMap, flag, 'on');
+        expect(r.registrationTopFrames[0]).toContain('dist/app.js');
+        expect(originalFrames(r)).toHaveLength(0);
+        expect(bundleFrames(r).length).toBeGreaterThan(0);
+        for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
+      },
+    );
+
+    it.skipIf(bin === undefined)(
+      `${name}: source maps enabled AFTER the bundle loaded -> frames are unmapped and stay stamped`,
+      () => {
+        const r = run(bin as string, withMap, [], 'late');
+        if (name === 'node') expect(r.sourceMapsEnabled).toBe(true);
+        expect(r.registrationTopFrames[0]).toContain('dist/app.js');
+        expect(originalFrames(r)).toHaveLength(0);
+        expect(bundleFrames(r).length).toBeGreaterThan(0);
+        for (const f of bundleFrames(r)) expect(f.debug_id).toBe(DEBUG_ID);
       },
     );
   }

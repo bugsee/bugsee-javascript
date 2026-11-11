@@ -1310,6 +1310,17 @@ recorded" was false.
   Still open from #120: WebKit/Firefox projects, the 22-secret smoke, `document.open`. #119 (other masking-option
   gaps on re-observed observers) is untouched.
 
+### 2026-11-11 — `node --enable-source-maps` vs debug-ID stamping (#185)
+
+Reproduced through the real crash builder (esbuild bundle + CLI-shaped stub, real node/bun processes,
+`instrumentation-tests/test/sourcemaps-runtime.e2e.ts`): with the flag and a map on disk Node maps the registration
+key's top frame to `src/main.js`, so a frame at `src/main.js:3:3` was stamped with the bundle's id (wrong line after the
+backend remaps). A global skip on the flag was rejected (review): with the plugin-default deleted maps, or the flag
+enabled after load, nothing is mapped and the join is correct. Fix: `applyDebugIds` validates each registration while
+`process.sourceMapsEnabled` through an injected verifier (`setDebugIdRegistrationVerifier`; `@bugsee/node` installs
+`createStampedBundleVerifier`, which requires the top-frame file's tail to carry `//# debugId=<id>`). Bun does not map
+`Error.stack` (measured), unaffected. Design: `docs/design/source-maps.md` §7.2.
+
 ### 2026-11-09 — Replay moves onto upstream rrweb 2.2.1 → `krassx/rrweb-2.2.1-a625`
 
 Fork `bugsee-port-2.2.1` (merge of rrweb-io/rrweb tag `rrweb@2.2.1` into `bugsee-port-2.2.0-iframe-block`; one

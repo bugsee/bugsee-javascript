@@ -66,6 +66,7 @@ import {
   setCarrierClient,
   setCarrierLastLaunch,
   setCarrierStatus,
+  setDebugIdRegistrationVerifier,
   setStackAppRoot,
   TransportToken,
   withTransportHeaders,
@@ -92,6 +93,7 @@ import { createRequestScopedActiveSpanStore } from './active-span-store';
 import { createNodeAppIdentitySource } from './app-identity-source';
 import { type CpuProfiler, createCpuProfiler } from './cpu-profiler';
 import { type CapturedDataStore, ensureSecureDataRoot, resolveDataLocation } from './data-location';
+import { createStampedBundleVerifier } from './debug-id-verifier';
 import {
   createUncaughtExceptionProvider,
   createUnhandledRejectionProvider,
@@ -637,6 +639,11 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
   // capture. Dependency frames are already handled without this — they truncate at `node_modules` —
   // but application frames have no such landmark.
   setStackAppRoot(options.appRoot ?? safeCwd());
+  // #185: under `--enable-source-maps` a debug-ID registration can be mapped to an original file; core only joins
+  // on registrations whose top-frame file still carries the stamp (the filesystem half core cannot have).
+  setDebugIdRegistrationVerifier(
+    createStampedBundleVerifier({ appRoot: options.appRoot ?? safeCwd() }),
+  );
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
 
