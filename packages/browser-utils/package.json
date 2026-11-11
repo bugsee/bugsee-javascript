@@ -33,7 +33,7 @@
     "@bugsee/util": "workspace:*"
   },
   "devDependencies": {
-    "fake-indexeddb": "^6.2.6"
+    "fake-indexeddb": "^6.2.7"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
