@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { applyDebugIds, attachDebugIds, buildDebugIdMap, readDebugIds } from './debug-id';
+import {
+  applyDebugIds,
+  attachDebugIds,
+  buildDebugIdMap,
+  readDebugIds,
+  runtimeMapsStacks,
+} from './debug-id';
 import { parseV8Stack, type StackFrame } from './stack';
 
 // A V8 `Error().stack` whose TOP frame is the bundle's own file (what the injected stub captures).
@@ -89,6 +95,87 @@ describe('applyDebugIds', () => {
       applyDebugIds(frames);
       expect(frames[0]?.debugId).toBe('g-id');
     } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+});
+
+describe('runtimeMapsStacks', () => {
+  it('is true only when the runtime reports `process.sourceMapsEnabled === true`', () => {
+    expect(runtimeMapsStacks({ sourceMapsEnabled: true })).toBe(true);
+    expect(runtimeMapsStacks({ sourceMapsEnabled: false })).toBe(false);
+    expect(runtimeMapsStacks({})).toBe(false); // Bun / browser polyfills: property absent
+    expect(runtimeMapsStacks({ sourceMapsEnabled: 'yes' })).toBe(false);
+  });
+
+  it('is false without a process object (browsers, workers, edge)', () => {
+    expect(runtimeMapsStacks(undefined)).toBe(false);
+    expect(runtimeMapsStacks(null)).toBe(false);
+    expect(runtimeMapsStacks(1)).toBe(false);
+  });
+
+  it('defaults to the live `globalThis.process`', () => {
+    const g = globalThis as unknown as { process?: { sourceMapsEnabled?: boolean } };
+    const real = g.process;
+    try {
+      g.process = { sourceMapsEnabled: true };
+      expect(runtimeMapsStacks()).toBe(true);
+      g.process = {};
+      expect(runtimeMapsStacks()).toBe(false);
+      g.process = undefined;
+      expect(runtimeMapsStacks()).toBe(false);
+    } finally {
+      g.process = real;
+    }
+  });
+});
+
+describe('applyDebugIds under runtime source-map support (#185)', () => {
+  // With `node --enable-source-maps` the registration key's top frame is mapped to an ORIGINAL file
+  // (`src/main.js`), and error frames are original positions too. Stamping the bundle's debug-id onto them
+  // makes the backend remap an already-mapped position -> a wrong line.
+  const mappedRegistry = { [bundleStack('/app/src/main.js')]: 'bundle-id' };
+
+  it('stamps nothing when the runtime already maps stacks', () => {
+    const frames: StackFrame[] = [{ file: '/app/src/main.js', line: 3, column: 3 }];
+    applyDebugIds(frames, {
+      globalObject: { _bugseeDebugIds: mappedRegistry },
+      parseStack: parseV8Stack,
+      runtimeMapsStacks: true,
+    });
+    expect(frames[0]?.debugId).toBeUndefined();
+  });
+
+  it('still stamps when the runtime does not map stacks', () => {
+    const frames: StackFrame[] = [{ file: '/app/src/main.js', line: 3, column: 3 }];
+    applyDebugIds(frames, {
+      globalObject: { _bugseeDebugIds: mappedRegistry },
+      parseStack: parseV8Stack,
+      runtimeMapsStacks: false,
+    });
+    expect(frames[0]?.debugId).toBe('bundle-id');
+  });
+
+  it('defaults the probe to the live process: stamping is off while process.sourceMapsEnabled', () => {
+    const g = globalThis as unknown as {
+      process?: { sourceMapsEnabled?: boolean };
+      _bugseeDebugIds?: Record<string, string>;
+    };
+    const real = g.process;
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = mappedRegistry;
+    try {
+      g.process = { sourceMapsEnabled: true };
+      const off: StackFrame[] = [{ file: '/app/src/main.js' }];
+      applyDebugIds(off);
+      expect(off[0]?.debugId).toBeUndefined();
+      g.process = { sourceMapsEnabled: false };
+      const on: StackFrame[] = [{ file: '/app/src/main.js' }];
+      applyDebugIds(on);
+      expect(on[0]?.debugId).toBe('bundle-id');
+    } finally {
+      g.process = real;
       if (prev === undefined) delete g._bugseeDebugIds;
       else g._bugseeDebugIds = prev;
     }

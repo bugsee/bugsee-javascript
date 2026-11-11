@@ -191,6 +191,20 @@ is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
 
 ---
 
+## 7.2 Runtime-mapped stacks (`node --enable-source-maps`, #185)
+
+With `node --enable-source-maps` (or `process.setSourceMapsEnabled(true)`) Node rewrites `Error.stack` to ORIGINAL
+positions before the SDK sees it, including the stack the injected stub registers (its top frame becomes e.g.
+`src/main.js:4:1`, since the appended stub has no mapping of its own). Measured through the real crash builder
+(`instrumentation-tests/test/sourcemaps-runtime.e2e.ts`): a frame at `src/main.js:3:3` was stamped with the bundle's
+debug-id, so the backend would remap an already-mapped position, a wrong line. `applyDebugIds` therefore stamps NOTHING
+when `process.sourceMapsEnabled === true` (`runtimeMapsStacks`, read through a `globalThis` cast). Already-original
+frames need no id. Trade-off: a deployment that sets the flag but ships no map files gets minified frames without an id
+(the no-plugin appVersion/appBuild fallback). Bun does not map `Error.stack` and has no `process.sourceMapsEnabled`
+(Bun 1.4.4, measured), so it keeps stamping, which is correct.
+
+---
+
 ## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
 - Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.

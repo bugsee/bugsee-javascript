@@ -179,6 +179,7 @@ export {
   attachDebugIds,
   buildDebugIdMap,
   readDebugIds,
+  runtimeMapsStacks,
 } from './debug-id';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {

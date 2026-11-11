@@ -50,14 +50,43 @@ export function attachDebugIds(frames: StackFrame[], debugIdMap: Map<string, str
 }
 
 /**
+ * Does the runtime already rewrite `Error.stack` through source maps (`node --enable-source-maps`,
+ * `process.setSourceMapsEnabled(true)`)? Reads `process.sourceMapsEnabled` ONLY through a `globalThis` cast, so this
+ * stays runtime-portable: browsers/workers/edge have no such `process`, Bun does not define the property.
+ */
+export function runtimeMapsStacks(
+  proc: unknown = (globalThis as unknown as { process?: unknown }).process,
+): boolean {
+  if (typeof proc !== 'object' || proc === null) {
+    return false;
+  }
+  return (proc as { sourceMapsEnabled?: unknown }).sourceMapsEnabled === true;
+}
+
+/**
  * Resolve + stamp debug-IDs onto `frames` in place, reading the registration global (default `globalThis`)
  * and parsing registered stacks with `parseStack` (default {@link parseV8Stack}). A no-op when no build
  * injected debug-IDs.
+ *
+ * Also a no-op when the runtime maps stacks itself ({@link runtimeMapsStacks}; override via
+ * `options.runtimeMapsStacks`). Then the frames are ALREADY original-source positions and the registration key's
+ * top frame was mapped too, so the `file -> debugId` join is meaningless: a frame landing in the file the stub
+ * happened to map to would be stamped with the bundle's id and the backend would remap an already-mapped
+ * position (a wrong line). An unstamped, already-original frame is correct; a stamped one is not. (Trade-off: a
+ * deployment that runs with the flag but ships NO map files gets unmapped frames without an id, i.e. the same
+ * appVersion/appBuild fallback as having no plugin.)
  */
 export function applyDebugIds(
   frames: StackFrame[],
-  options: { globalObject?: unknown; parseStack?: (stack: string) => StackFrame[] } = {},
+  options: {
+    globalObject?: unknown;
+    parseStack?: (stack: string) => StackFrame[];
+    runtimeMapsStacks?: boolean;
+  } = {},
 ): void {
+  if (options.runtimeMapsStacks ?? runtimeMapsStacks()) {
+    return;
+  }
   const globalObject = options.globalObject ?? (globalThis as unknown);
   const debugIds = readDebugIds(globalObject);
   if (Object.keys(debugIds).length === 0) {
