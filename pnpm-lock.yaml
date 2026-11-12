@@ -419,9 +419,9 @@ importers:
 
   packages/bundler-plugin-core:
     dependencies:
-      '@bugsee/bugsee-cli':
-        specifier: ^0.7.13
-        version: 0.7.13
+      '@bugsee/cli':
+        specifier: ^0.9.0
+        version: 0.9.0
       '@bugsee/core':
         specifier: workspace:*
         version: link:../core
@@ -2016,10 +2016,47 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@bugsee/bugsee-cli@0.7.13':
-    resolution: {integrity: sha512-nx/yFZTrnJNEeD1a2Cmze7tKy/BlKnY+WFY7UmSsBveDVf1cm05xejfhSSO2KKk21VYnoc5Ew+tPe6yob1DluQ==}
-    engines: {node: '>=14.14', npm: '>=6'}
-    deprecated: Exits 0 when the binary is killed by a signal. Upgrade to 0.8.2 or use @bugsee/cli.
+  '@bugsee/cli-darwin-arm64@0.9.0':
+    resolution: {integrity: sha512-9vQKunidrJwKhc2vt3DQPP4I33CCwZz+CKv/HuVrnzpHC/7ya8zYMYqR8bBxBryWXehqPeiqqhmfxOnAk5L1OQ==}
+    engines: {node: '>=14.18'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@bugsee/cli-darwin-x64@0.9.0':
+    resolution: {integrity: sha512-hEeDrDSBwcXG0pJ6PDfNFFhXVMlYpeLeaqVWJSFISxSkEW/i7n+eGXV4S6rgesbcR2LImq5IjfbK2aB95e0muA==}
+    engines: {node: '>=14.18'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@bugsee/cli-linux-arm64@0.9.0':
+    resolution: {integrity: sha512-ajdKJg8HwG20rh7jScVgw715xzDsEr0xCfL9kFTJhWfja/TTxHq4FzqHhnjkQ9ihGU7pcmra8VuY45tkYXM1Zg==}
+    engines: {node: '>=14.18'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@bugsee/cli-linux-x64@0.9.0':
+    resolution: {integrity: sha512-HgUbudf0WWRsXaTgjcvKO+A3RUZN9SmUfiYss9fEOSuAgQIbblKMSNsCv9dj2aKCDGu/iSB9qEdVzzW7wA1f0A==}
+    engines: {node: '>=14.18'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@bugsee/cli-win32-arm64@0.9.0':
+    resolution: {integrity: sha512-16DKGkJqCpmBICXWmenLGRInCbAncSGvGZ5uVFipXTFhDLjaFdbxX+rOPs4Jzd+QBxttrIWJhtCpPOzIcAd9cg==}
+    engines: {node: '>=14.18'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@bugsee/cli-win32-x64@0.9.0':
+    resolution: {integrity: sha512-h2AcHeuQHHjBMcr8TqBdAexPKpCUjgmPtv/19xsO8LYj/MOq7JG9xzjnCiWWX9gQnY/fKxuufIl+W2142FILew==}
+    engines: {node: '>=14.18'}
+    cpu: [x64]
+    os: [win32]
+
+  '@bugsee/cli@0.9.0':
+    resolution: {integrity: sha512-nbBd7hHRYxmAVRMLhQBA9ZePPs4NbR+ItHzf2KW2y8OTo+NtCDdxxT4aEDSCN4CyT0F41hkFCzKsXz2SbEgSsw==}
+    engines: {node: '>=14.18'}
     hasBin: true
 
   '@bugsee/rrweb-record@file:vendor/rrweb-record':
@@ -10465,9 +10502,32 @@ snapshots:
   '@bruits/satteri-win32-x64-msvc@0.10.5':
     optional: true
 
-  '@bugsee/bugsee-cli@0.7.13':
-    dependencies:
-      detect-libc: 2.1.2
+  '@bugsee/cli-darwin-arm64@0.9.0':
+    optional: true
+
+  '@bugsee/cli-darwin-x64@0.9.0':
+    optional: true
+
+  '@bugsee/cli-linux-arm64@0.9.0':
+    optional: true
+
+  '@bugsee/cli-linux-x64@0.9.0':
+    optional: true
+
+  '@bugsee/cli-win32-arm64@0.9.0':
+    optional: true
+
+  '@bugsee/cli-win32-x64@0.9.0':
+    optional: true
+
+  '@bugsee/cli@0.9.0':
+    optionalDependencies:
+      '@bugsee/cli-darwin-arm64': 0.9.0
+      '@bugsee/cli-darwin-x64': 0.9.0
+      '@bugsee/cli-linux-arm64': 0.9.0
+      '@bugsee/cli-linux-x64': 0.9.0
+      '@bugsee/cli-win32-arm64': 0.9.0
+      '@bugsee/cli-win32-x64': 0.9.0
 
   '@bugsee/rrweb-record@file:vendor/rrweb-record(@rrweb/types@2.2.2)(rrweb@2.2.2)':
     optionalDependencies:

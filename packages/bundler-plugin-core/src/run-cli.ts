@@ -81,35 +81,41 @@ export class BugseeCliError extends Error {
   }
 }
 
+/** The slice of `@bugsee/cli`'s programmatic entry this module uses. */
+export interface BugseeCliPackage {
+  /** Absolute path to the platform binary; THROWS when there is none for this platform. */
+  binaryPath(): string;
+}
+
 /**
- * Resolve the `bugsee-cli` launcher: an explicit `BUGSEE_CLI_PATH` override wins, otherwise the
- * launcher script inside the installed `@bugsee/bugsee-cli` package, resolved from THIS module.
+ * Resolve the `bugsee-cli` binary: an explicit `BUGSEE_CLI_PATH` override wins, otherwise the native binary
+ * reported by the installed `@bugsee/cli` package's `binaryPath()`, resolved from THIS module.
  *
- * It used to return the bare name `bugsee-cli` and rely on PATH. `@bugsee/bugsee-cli` is a dependency
- * of this package, not of the consuming project, so under pnpm its bin is never linked into that
- * project's root `node_modules/.bin` — a real consumer's build failed with ENOENT, and it only ever
- * worked inside this monorepo because the binary happened to be on PATH there. Resolving through
- * `require.resolve` is independent of PATH, of the package manager's layout, and of which script the
- * build was started from.
+ * It used to return the bare name `bugsee-cli` and rely on PATH. `@bugsee/cli` is a dependency of this
+ * package, not of the consuming project, so under pnpm its bin is never linked into that project's root
+ * `node_modules/.bin` — a real consumer's build failed with ENOENT, and it only ever worked inside this
+ * monorepo because the binary happened to be on PATH there. Resolving through the package is independent
+ * of PATH, of the package manager's layout, and of which script the build was started from.
  *
- * `BUGSEE_CLI_PATH` remains the escape hatch for locked-down/offline CI that blocks the download.
+ * `BUGSEE_CLI_PATH` remains the escape hatch for locked-down CI (musl, `--no-optional`, mirrors that omit
+ * the per-platform packages).
  */
 export function resolveBugseeCli(
   env: EnvRecord = process.env,
-  /** Injectable module resolution, so the not-installed fallback below is reachable in a test. */
-  resolveModule: (specifier: string) => string = (specifier) =>
-    createRequire(import.meta.url).resolve(specifier),
+  /** Injectable package loading, so the not-installed fallback below is reachable in a test. */
+  loadCli: (specifier: string) => BugseeCliPackage = (specifier) =>
+    createRequire(import.meta.url)(specifier) as BugseeCliPackage,
 ): string {
   const override = env.BUGSEE_CLI_PATH;
   if (override !== undefined && override.trim() !== '') {
     return override;
   }
   try {
-    // The package's `bin` entry — a small node launcher that execs the downloaded platform binary.
-    return resolveModule('@bugsee/bugsee-cli/run-bugsee-cli.js');
+    return loadCli('@bugsee/cli').binaryPath();
   } catch {
-    // Not installed (a consumer who deliberately pruned it, or an exotic layout): fall back to PATH
-    // so an explicitly-provisioned binary still works, rather than failing outright here.
+    // Not installed (a consumer who deliberately pruned it), or installed with no binary for this platform
+    // (`binaryPath()` throws): fall back to PATH so an explicitly-provisioned binary still works, rather
+    // than failing outright here.
     return 'bugsee-cli';
   }
 }
@@ -170,9 +176,8 @@ export async function runBugseeCli(
 ): Promise<SpawnResult> {
   const env = options.env ?? process.env;
   const binary = (options.resolveBinary ?? resolveBugseeCli)(env);
-  // The resolved default is the package's node launcher, a `.js` file. Running it through
-  // `process.execPath` rather than executing it directly keeps this working on Windows, where a
-  // `.js` file is not spawnable and there is no `.cmd` shim for a transitive dependency's bin.
+  // The default is a native binary, spawned directly. Only a `.js` launcher supplied through
+  // `BUGSEE_CLI_PATH` goes through `process.execPath`: a `.js` file is not spawnable on Windows.
   const isScript = binary.endsWith('.js');
   const command = isScript ? process.execPath : binary;
   const commandArgs = isScript ? [binary, ...args] : args;
