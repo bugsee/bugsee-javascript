@@ -18,7 +18,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { extname, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, normalize } from 'node:path';
 import { resolveBugseeCli, runBugseeCli } from '@bugsee/bundler-plugin-core';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
@@ -229,6 +229,8 @@ describe('SRI: a webpack-subresource-integrity page still loads after Bugsee sta
   it('uses the real bugsee-cli, not a stand-in', () => {
     // Guards the premise: a fake binary could make both tests above pass without touching SRI.
     expect(process.env.BUGSEE_CLI_PATH).toBeUndefined();
-    expect(resolveBugseeCli()).toMatch(/bugsee-cli/);
+    // An ABSOLUTE path: the bare-name PATH fallback would also match /bugsee-cli/ without proving the
+    // installed @bugsee/cli binary is the one in use.
+    expect(isAbsolute(resolveBugseeCli())).toBe(true);
   });
 });

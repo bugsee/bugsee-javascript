@@ -54,7 +54,8 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
 **Decision (D0): the JS side does NOT reimplement any of this.** No JS upload/discovery/pack/inject. The plugins
 **collect context and SPAWN `bugsee-cli`** — exactly like `@sentry/webpack-plugin` shells out to the Rust `sentry-cli`.
 (An earlier v1 draft reimplemented upload+discovery in a `@bugsee/cli` JS package; that was removed once `bugsee-cli`
-was found — it duplicated the Rust engine and collided on the npm name.)
+was found — it duplicated the Rust engine and collided on the npm name; the `@bugsee/cli` name now belongs to the
+official package that ships the Rust binary, see §4.)
 
 ## 3. Identity model (decided)
 
@@ -72,7 +73,7 @@ the existing `/v2/apps/{token}/symbols` envelope as `uuid`. `bugsee-cli` already
    │     └─ @bugsee/bundler-plugin-core  (unplugin factory)
    │           ├─ collect context { outDir, appToken, appVersion, appBuild, endpoint, deleteMaps, dryRun,
    │           │                  stripSourcesContent }
-   │           ├─ resolve the bugsee-cli binary (dep @bugsee/bugsee-cli, or PATH / BUGSEE_CLI_PATH)
+   │           ├─ resolve the bugsee-cli binary (dep @bugsee/cli's binaryPath(), or PATH / BUGSEE_CLI_PATH)
    │           ├─ after the bundle is written:  spawn `bugsee-cli sourcemaps inject <outDir>`
    │           ├─ then:                          spawn `bugsee-cli debug-files upload <outDir> --type sourcemaps …`
    │           └─ delete client `.map`s by default (privacy)
@@ -87,8 +88,8 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 
 **Packages:**
 - `@bugsee/bundler-plugin-core` — unplugin factory + a `bugsee-cli` **resolver/spawner** (`runBugseeCli(args, opts)`)
-  + context collection + the inject→upload→delete orchestration. `@bugsee/bugsee-cli` (the cargo-dist binary) is an
-  optional dependency; also resolvable from PATH / `BUGSEE_CLI_PATH`.
+  + context collection + the inject→upload→delete orchestration. `@bugsee/cli` (a front package + one optional dependency per platform carrying the Rust binary; no
+  install-time download) is a dependency; it replaced the deprecated `@bugsee/bugsee-cli` (frozen at 0.8.2) (#183); also resolvable from PATH / `BUGSEE_CLI_PATH`.
 - `@bugsee/vite-plugin` / `@bugsee/webpack-plugin` — per-bundler entry points (`unplugin/vite`, `unplugin/webpack`).
 
 ## 5. Decisions
@@ -100,13 +101,13 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 | **D2** | Plugins built on `unplugin` over a shared `@bugsee/bundler-plugin-core` | One core, many bundlers (vite/webpack now; rollup/esbuild/rspack later — meta-framework adapters need rollup). |
 | **D3** | Injection = `bugsee-cli sourcemaps inject` run after the bundle is written | The CLI owns injection (single owner, no double-inject). |
 | **D4** | Delete client `.map`s by default after upload | Privacy. Opt-out flag. |
-| **D5** | Binary resolution: `@bugsee/bugsee-cli` dep → `BUGSEE_CLI_PATH` → PATH; a clear error if unresolved | Works in CI + local; spawn-only (no JS fallback, per decision). |
+| **D5** | Binary resolution: `BUGSEE_CLI_PATH` → `@bugsee/cli` dep (`binaryPath()`) → PATH; a clear error if unresolved | Works in CI + local; spawn-only (no JS fallback, per decision). |
 | **D6** | The runtime debug-ID attach is a SEPARATE, SDK-side slice | It's the only piece the CLI can't do; keep it decoupled from the build tooling. |
 
 ## 6. Slice plan (each: design → red test → green → per-entity mutator loop → review → commit)
 
 - **SM-A — `@bugsee/bundler-plugin-core`.** (a) `runBugseeCli(args, {token, endpoint, cwd, dryRun})` — resolve the binary
-  (`@bugsee/bugsee-cli` → `BUGSEE_CLI_PATH` → PATH), spawn via an injectable `spawn` seam, surface exit code/stderr;
+  (`BUGSEE_CLI_PATH` → `@bugsee/cli` `binaryPath()` → PATH), spawn via an injectable `spawn` seam, surface exit code/stderr;
   (b) `uploadSourcemaps(context)` — orchestrate `sourcemaps inject` → `debug-files upload --type sourcemaps` → delete
   `.map`s; (c) the unplugin factory that wires build-end → `uploadSourcemaps`. Test-first with a fake spawn (no real
   binary): assert argv + ordering + delete + error handling.

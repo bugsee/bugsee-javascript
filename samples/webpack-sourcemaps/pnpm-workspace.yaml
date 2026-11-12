@@ -55,10 +55,10 @@ overrides:
   '@bugsee/webview': 'file:../../.local-registry/bugsee-webview.tgz'
   '@bugsee/webworker': 'file:../../.local-registry/bugsee-webworker.tgz'
 
-# @bugsee/bugsee-cli's postinstall downloads the prebuilt Rust `bugsee-cli` binary the bundler
-# plugins (@bugsee/webpack-plugin -> @bugsee/bundler-plugin-core) spawn for the source-map/debug-id
-# upload step. This is its own pnpm workspace root (new-sample.mjs), so the root allowBuilds list
-# does not apply here — repeat it.
+# @bugsee/cli carries the prebuilt Rust `bugsee-cli` binary the bundler plugins (@bugsee/webpack-plugin ->
+# @bugsee/bundler-plugin-core) spawn for the source-map/debug-id upload step, as a per-platform optional
+# dependency (no install-time download), so its postinstall (a --no-optional fallback only) stays off.
+# This is its own pnpm workspace root (new-sample.mjs), so the root allowBuilds list does not apply here.
 allowBuilds:
-  '@bugsee/bugsee-cli': true
+  '@bugsee/cli': false
   esbuild: true

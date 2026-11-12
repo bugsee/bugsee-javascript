@@ -31,7 +31,7 @@ let root: string;
 /** How long the collector holds each answer; a slow backend is what exposes overlapping-build races. */
 let delayMs = 0;
 
-// The real `bugsee-cli` binary is downloaded by its postinstall. Locally a missing binary SKIPS these tests
+// The real `bugsee-cli` binary comes from the `@bugsee/cli` per-platform optional dependency. Locally a missing binary SKIPS these tests
 // with a reason; CI (or BUGSEE_REQUIRE_CLI=1) requires it, so a CI run can never go green testing less.
 const cli = resolveBugseeCli();
 const cliProbe = cli.endsWith('.js')
@@ -263,11 +263,14 @@ function pauseAfterInjectWrapper(dir: string): {
   const injected = join(dir, 'injected.flag');
   const proceed = join(dir, 'proceed.flag');
   const wrapper = join(dir, 'pause-after-inject.js');
+  // A native binary (the @bugsee/cli default) is spawned directly; a `.js` launcher goes through node.
+  const command = cli.endsWith('.js') ? process.execPath : cli;
+  const commandArgs = cli.endsWith('.js') ? [cli] : [];
   writeFileSync(
     wrapper,
     `const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const r = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...process.argv.slice(2)], { stdio: 'inherit' });
+const r = spawnSync(${JSON.stringify(command)}, ${JSON.stringify(commandArgs)}.concat(process.argv.slice(2)), { stdio: 'inherit' });
 if (process.argv[2] === 'sourcemaps' && !fs.existsSync(${JSON.stringify(injected)})) {
   fs.writeFileSync(${JSON.stringify(injected)}, '1');
   for (let i = 0; i < 2000 && !fs.existsSync(${JSON.stringify(proceed)}); i++) {
@@ -704,15 +707,16 @@ describeReal(
         },
       };
       const before = requests.length;
-      const strict = run('esbuild-nometa-strict', { failOnError: true }, {});
-      // the second plugin comes AFTER ours, so it wins
-      strict.build.catch(() => undefined);
+      const strict = makeApp('esbuild-nometa-strict');
+      // the second plugin comes AFTER ours, so it wins. (A stray, un-awaited metafile-on build of this app
+      // used to run alongside and upload for real; the old node launcher was slow enough that its request
+      // landed after the assertion below, the native @bugsee/cli binary is not.)
       await expect(
         esbuild({
-          entryPoints: [strict.app.entry],
+          entryPoints: [strict.entry],
           bundle: true,
-          outdir: strict.app.out,
-          absWorkingDir: strict.app.dir,
+          outdir: strict.out,
+          absWorkingDir: strict.dir,
           sourcemap: 'external',
           logLevel: 'silent',
           plugins: [
