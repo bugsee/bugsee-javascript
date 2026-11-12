@@ -20,8 +20,10 @@ export function resolveConfig(
   env: unknown,
 ): { appToken: string; options: BugseeEdgeLaunchOptions } {
   const value = typeof config === 'function' ? config(env) : config;
-  if (typeof value === 'string') {
-    return { appToken: value, options: {} };
+  // Anything that is not an options object is taken as the token itself — including the `undefined` an unset
+  // secret yields (`(env) => env.BUGSEE_APP_TOKEN`) — so launch() reports it instead of this destructure throwing.
+  if (typeof value !== 'object' || value === null) {
+    return { appToken: value as string, options: {} };
   }
   const { appToken, ...options } = value;
   return { appToken, options };

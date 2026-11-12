@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { getCarrierClient, setCarrierClient } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import { launch } from './launch';
 
@@ -35,5 +35,16 @@ describe('@bugsee/node launch() with a missing app token', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('defers to a live client: a bad token returns it with the repeat-launch error', async () => {
+    const carrier = {};
+    const live = { isLaunched: () => true } as never;
+    setCarrierClient(live, carrier);
+    const onError = vi.fn();
+    const client = launch(undefined as unknown as string, { carrier, onError });
+    expect(client).toBe(live);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/more than once/);
   });
 });

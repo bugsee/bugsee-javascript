@@ -9,7 +9,8 @@ export function isValidAppToken(appToken: unknown): appToken is string {
 
 const describeReceived = (value: unknown): string => {
   if (value === null) return 'null';
-  if (typeof value === 'string') return 'an empty string';
+  if (typeof value === 'string')
+    return value.length === 0 ? 'an empty string' : 'a whitespace-only string';
   return typeof value;
 };
 

@@ -44,10 +44,12 @@ describe('createDisabledClientForMissingToken', () => {
     const onError = vi.fn();
     createDisabledClientForMissingToken(42, { onError });
     expect((onError.mock.calls[0]?.[0] as Error).message).toContain('got number');
-    createDisabledClientForMissingToken('  ', { onError });
+    createDisabledClientForMissingToken('', { onError });
     expect((onError.mock.calls[1]?.[0] as Error).message).toContain('got an empty string');
+    createDisabledClientForMissingToken('  ', { onError });
+    expect((onError.mock.calls[2]?.[0] as Error).message).toContain('got a whitespace-only string');
     createDisabledClientForMissingToken(null, { onError });
-    expect((onError.mock.calls[2]?.[0] as Error).message).toContain('got null');
+    expect((onError.mock.calls[3]?.[0] as Error).message).toContain('got null');
   });
 
   it('falls back to console.warn when no onError is given', () => {
