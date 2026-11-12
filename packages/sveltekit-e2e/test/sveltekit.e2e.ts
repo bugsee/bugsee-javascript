@@ -114,7 +114,7 @@ describe('@bugsee/sveltekit — real SvelteKit boot e2e', () => {
 
   it('the documented Kit 3 `sveltekit({ preprocess })` wiring runs the component-annotate preprocessor (README example)', async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain('<h1 data-bugsee-component="routes">'); // routes/+page.svelte -> enclosing dir name
+    expect(html).toMatch(/<h1[^>]*data-bugsee-component="routes"/); // routes/+page.svelte -> enclosing dir name
   });
 
   it('reports a thrown endpoint as an uploaded bundle (moat server-error path)', async () => {
