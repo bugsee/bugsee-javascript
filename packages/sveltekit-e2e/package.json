@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@bugsee/e2e-kit": "workspace:*",
+    "@bugsee/svelte-plugin-component-annotate": "workspace:*",
     "@bugsee/sveltekit": "workspace:*",
     "@bugsee/util": "workspace:*"
   },
