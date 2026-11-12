@@ -19,6 +19,19 @@ export function readDebugIds(globalObject: unknown): Record<string, string> {
   return typeof ids === 'object' && ids !== null ? (ids as Record<string, string>) : {};
 }
 
+/** An injected predicate must never take a report down: a throw is a rejection. */
+function accepts(
+  accept: (file: string, debugId: string) => boolean,
+  file: string,
+  debugId: string,
+): boolean {
+  try {
+    return accept(file, debugId);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build a `file → debugId` map from the registration map: parse each registered stack and key the debug-ID
  * by its TOP frame's file (the bundle that registered it).
@@ -26,11 +39,12 @@ export function readDebugIds(globalObject: unknown): Record<string, string> {
 export function buildDebugIdMap(
   debugIds: Record<string, string>,
   parseStack: (stack: string) => StackFrame[],
+  accept?: (file: string, debugId: string) => boolean,
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const [stack, debugId] of Object.entries(debugIds)) {
     const file = parseStack(stack)[0]?.file;
-    if (file !== undefined) {
+    if (file !== undefined && (accept === undefined || accepts(accept, file, debugId))) {
       map.set(file, debugId);
     }
   }
@@ -49,14 +63,90 @@ export function attachDebugIds(frames: StackFrame[], debugIdMap: Map<string, str
   }
 }
 
+const FLAG = '--enable-source-maps';
+
+/**
+ * Does the runtime already rewrite `Error.stack` through source maps (`node --enable-source-maps`,
+ * `process.setSourceMapsEnabled(true)`)? Reads `process.sourceMapsEnabled` ONLY through a `globalThis` cast, so this
+ * stays runtime-portable: browsers/workers/edge have no such `process`, Bun does not define the property.
+ */
+export function runtimeMapsStacks(
+  proc: unknown = (globalThis as unknown as { process?: unknown }).process,
+): boolean {
+  try {
+    return probe(proc);
+  } catch {
+    return false; // a hostile / exotic `process` shim (a throwing getter) is "not mapping"
+  }
+}
+
+/** `--enable-source-maps`, or its `=true` / `=1` form; `=false` / `=0` / anything else is not on. */
+function isFlagOn(token: unknown): boolean {
+  return token === FLAG || token === `${FLAG}=true` || token === `${FLAG}=1`;
+}
+
+function probe(proc: unknown): boolean {
+  if (typeof proc !== 'object' || proc === null) {
+    return false;
+  }
+  const { sourceMapsEnabled, execArgv, env } = proc as {
+    sourceMapsEnabled?: unknown;
+    execArgv?: unknown;
+    env?: { NODE_OPTIONS?: unknown } | null;
+  };
+  if (sourceMapsEnabled !== undefined) {
+    return sourceMapsEnabled === true;
+  }
+  // Older Node (< 18.19 / 20.7) maps stacks under the flag but has no `process.sourceMapsEnabled`: read the launch flags.
+  // Wrongly true here is harmless (the verifier then checks each registration); wrongly false is the #185 bug.
+  // A runtime `process.setSourceMapsEnabled(true)` on those versions cannot be observed (documented limit).
+  if (Array.isArray(execArgv) && execArgv.some(isFlagOn)) {
+    return true;
+  }
+  const options = env?.NODE_OPTIONS;
+  return (
+    typeof options === 'string' &&
+    options
+      .split(/\s+/)
+      .map((token) => token.replace(/^"|"$/g, '')) // Node strips double quotes only
+      .some(isFlagOn)
+  );
+}
+
+/** Does this registration (its top-frame file + debug-id) really belong to the stamped bundle? */
+export type RegistrationVerifier = (file: string, debugId: string) => boolean;
+
+let installedVerifier: RegistrationVerifier | undefined;
+
+/**
+ * Install the process-wide registration verifier (a platform with a filesystem: `@bugsee/node`). Module state,
+ * like `setStackAppRoot`: core is runtime-portable and cannot read files itself. `undefined` removes it.
+ */
+export function setDebugIdRegistrationVerifier(verifier: RegistrationVerifier | undefined): void {
+  installedVerifier = verifier;
+}
+
 /**
  * Resolve + stamp debug-IDs onto `frames` in place, reading the registration global (default `globalThis`)
  * and parsing registered stacks with `parseStack` (default {@link parseV8Stack}). A no-op when no build
  * injected debug-IDs.
+ *
+ * When the runtime maps stacks itself ({@link runtimeMapsStacks}; override via `options.runtimeMapsStacks`) AND a
+ * verifier is available (`options.verifyRegistration`, else the installed one), each registration is checked: one
+ * whose top-frame file is NOT the stamped bundle was source-mapped to an ORIGINAL file, and joining on it would
+ * stamp the bundle's id onto already-mapped frames (the backend remaps them again: a wrong line, #185). The check is
+ * per registration, never a global switch: the flag only says the process CAN map, not that this bundle's map is on
+ * disk (the plugin deletes maps after upload by default) or was enabled before the bundle loaded; in those cases
+ * the registration is intact and the plain join is correct. Without a verifier every registration is kept.
  */
 export function applyDebugIds(
   frames: StackFrame[],
-  options: { globalObject?: unknown; parseStack?: (stack: string) => StackFrame[] } = {},
+  options: {
+    globalObject?: unknown;
+    parseStack?: (stack: string) => StackFrame[];
+    runtimeMapsStacks?: boolean;
+    verifyRegistration?: RegistrationVerifier;
+  } = {},
 ): void {
   const globalObject = options.globalObject ?? (globalThis as unknown);
   const debugIds = readDebugIds(globalObject);
@@ -64,5 +154,12 @@ export function applyDebugIds(
     return;
   }
   const parseStack = options.parseStack ?? parseV8Stack;
-  attachDebugIds(frames, buildDebugIdMap(debugIds, parseStack));
+  const verifier = options.verifyRegistration ?? installedVerifier;
+  // No verifier (browsers, Electron renderers, a node process that never launched): exactly the pre-#185 join, and the
+  // runtime is not even probed.
+  const verify =
+    verifier !== undefined && (options.runtimeMapsStacks ?? runtimeMapsStacks())
+      ? verifier
+      : undefined;
+  attachDebugIds(frames, buildDebugIdMap(debugIds, parseStack, verify));
 }

@@ -178,7 +178,10 @@ export {
   applyDebugIds,
   attachDebugIds,
   buildDebugIdMap,
+  type RegistrationVerifier,
   readDebugIds,
+  runtimeMapsStacks,
+  setDebugIdRegistrationVerifier,
 } from './debug-id';
 export { checkOrSetAlreadyCaught } from './dedup';
 export {

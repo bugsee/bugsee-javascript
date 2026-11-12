@@ -191,6 +191,47 @@ is a change to the spawn model in §4 and is tracked as OPEN-FINDINGS D3.
 
 ---
 
+## 7.2 Runtime-mapped stacks (`node --enable-source-maps`, #185)
+
+With `node --enable-source-maps` Node rewrites `Error.stack` to ORIGINAL positions before the SDK sees it, but only
+when the bundle's `.map` is readable AND source maps were enabled before the bundle loaded
+(`process.setSourceMapsEnabled(true)` affects only modules loaded afterwards). Then the stack the injected stub
+registers is mapped too: its top frame becomes e.g. `src/main.js:4:1` (the appended stub has no mapping of its own),
+so the `file -> debugId` join stamps the bundle's id onto already-mapped frames (measured: `src/main.js:3:3` got the
+id; the backend remaps it again, a wrong line).
+
+Two cases look the same from `process.sourceMapsEnabled` but are different, so a global switch is wrong:
+- the plugin DELETES `*.map` after upload by default; with the flag on and no map on disk nothing is mapped, the
+  registration key and the error frames both stay on `dist/app.js`, and the plain join is correct;
+- the flag turned on after the bundle loaded: same, frames are unmapped and the join is correct.
+
+So the guard is PER REGISTRATION. While `process.sourceMapsEnabled === true` (`runtimeMapsStacks`, read through a
+`globalThis` cast), `applyDebugIds` keeps a registration only if the injected verifier proves its top-frame file is the
+stamped bundle. `@bugsee/node` installs that verifier at launch (`createStampedBundleVerifier`): the file's tail must
+carry `//# debugId=<the registered id>` (the same marker `bundler-plugin-core` reads). A mapped registration points at
+`src/main.js`, which has no stamp, so it is dropped and the frames stay unstamped (already original, no id needed).
+Core stays runtime-portable: no `node:fs`, the verifier is injected (`setDebugIdRegistrationVerifier` / the
+`verifyRegistration` option). With no verifier (browsers, Electron renderers: Chromium does not map `Error.stack`
+even where `process.sourceMapsEnabled` reads true) every registration is kept, i.e. the previous behaviour.
+The verifier reads the path the way core scrubs it, which is not always a plain path: ESM frames arrive
+percent-encoded (core strips `file://` without URL-decoding): `/…/my%20app/dist/app.mjs` outside the app root,
+`./dist/my%20chunk.mjs` UNDER it (the common case: `launch()` sets the app root to the cwd), possibly with an import
+`?v=1`/`#hash`, and on Windows as `/C:/…`. It tries the literal path first, then the decoded form with the query
+stripped, then the stripped literal. Answers are cached per (file, id), bounded to 4096 registrations (reports cost no
+file I/O after the first for any realistic build; a build with more stamped chunks than that re-reads). Old Node
+(18.0-18.18, 20.0-20.6) has no `process.sourceMapsEnabled`, so the probe falls back to `--enable-source-maps` in
+`execArgv` / `NODE_OPTIONS` (tokenized on whitespace, double quotes stripped as Node does; `=true`/`=1` forms count, `=false`/`=0` do not); an explicit property always wins. A runtime
+`process.setSourceMapsEnabled(true)` on those old versions cannot be observed. With no verifier installed the runtime is
+not probed at all. Not handled: a FIFO-backed path (`/dev/fd/N`) would block the synchronous open; a bundle rewritten in
+place during a deploy keeps its cached verdict until restart. Known limits: a path scrubbed to
+`node_modules/...` has no `./` prefix and is resolved against `process.cwd()`, not the app root, so it verifies when
+the first `node_modules` sits in the cwd and is not joined (flag on) in a hoisted monorepo or when `appRoot` differs
+from the cwd. Separately (pre-existing): encoded ESM paths never match the app root, so they ship as absolute paths.
+Windows hosts were not run. Bun does not map `Error.stack` and has no
+`process.sourceMapsEnabled` (Bun 1.4.4, measured), so it keeps stamping, which is correct.
+
+---
+
 ## 8. Deferred
 - A real-`bugsee-cli` integration e2e (needs the built Rust binary in the harness) — follow-up once CI has it.
 - Turbopack loader for Next.js (`turbopack.rules`) — Next-adapter follow-up.

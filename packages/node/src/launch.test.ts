@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TraceProducer } from '@bugsee/capture';
 import {
+  applyDebugIds,
   type BundleStore,
   BundleStoreToken,
   CaptureDataEntryBase,
@@ -39,9 +40,11 @@ import {
   type NativeCrashSource,
   parseLocation,
   ReportMarkerStoreToken,
+  type StackFrame,
   type StoredEntry,
   serializeBundle,
   serviceToken,
+  setDebugIdRegistrationVerifier,
   setStackAppRoot,
   TransportToken,
 } from '@bugsee/core';
@@ -4052,5 +4055,34 @@ describe('launch — environment.app.uptime_s (snapshot at session start)', () =
     clients.push(client);
     expect('uptime_s' in (internals?.getEnvironment().app ?? {})).toBe(false);
     expect(onError).toHaveBeenCalledWith(boom);
+  });
+});
+
+describe('launch — debug-ID registrations under runtime source-map support (#185)', () => {
+  afterEach(() => {
+    setStackAppRoot(undefined);
+    setDebugIdRegistrationVerifier(undefined);
+  });
+
+  it('installs a verifier that accepts the stamped bundle and rejects a mapped original file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bugsee-sm-launch-'));
+    try {
+      const id = '11111111-2222-5333-8444-555555555555';
+      mkdirSync(join(root, 'dist'));
+      mkdirSync(join(root, 'src'));
+      writeFileSync(join(root, 'dist', 'app.js'), `x\n//# debugId=${id}\n`);
+      writeFileSync(join(root, 'src', 'main.js'), 'export {};\n');
+      launchTracked('tok', baseOptions({ carrier: {}, appRoot: root }));
+      const stack = (file: string) => `Error\n    at <anonymous> (${file}:1:1)`;
+      const registry = { [stack(`${root}/dist/app.js`)]: id, [stack(`${root}/src/main.js`)]: id };
+      const frames = [{ file: './dist/app.js' }, { file: './src/main.js' }] as StackFrame[];
+      applyDebugIds(frames, {
+        globalObject: { _bugseeDebugIds: registry },
+        runtimeMapsStacks: true,
+      });
+      expect(frames.map((f) => f.debugId)).toEqual([id, undefined]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
