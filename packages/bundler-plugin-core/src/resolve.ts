@@ -8,6 +8,7 @@ import {
   type FixedIdentity,
   findAppIdentity,
 } from './app-identity';
+import { collectDebugIdsOf } from './debug-ids';
 import {
   uploadSourcemaps as defaultUploadSourcemaps,
   type UploadSourcemapsResult,
@@ -115,6 +116,15 @@ export interface BugseePluginOptions {
    * output (or {@link BugseePluginOptions.projectRoot}), scope included.
    */
   packageId?: string;
+  /**
+   * Upload from a build the bundler calls DEVELOPMENT. Default `false` (#196 review).
+   *
+   * Every esbuild watch rebuild and every Rspack `mode: 'development'` build would otherwise spawn
+   * `bugsee-cli`, upload dev bundles as symbols and delete the local `.map`s devtools rely on. Rspack states
+   * its mode; esbuild states none, so there only `NODE_ENV=development` marks a dev build. (Vite, Rollup and
+   * webpack are not gated by this option.)
+   */
+  uploadInDevelopment?: boolean;
 }
 
 /** Map `BUGSEE_REGISTER_BUILD` onto the setting. An unrecognised value is NOT a setting. */
@@ -169,6 +179,8 @@ export interface ResolvedPluginOptions {
   registerBuild: RegisterBuildSetting;
   /** Explicit `package_id`; `undefined` means "the nearest package.json". */
   packageId: string | undefined;
+  /** Whether a build the bundler calls development still uploads. Default false. */
+  uploadInDevelopment: boolean;
   /**
    * `define` entries that bake the app's version/build into its bundle (`__BUGSEE_APP_VERSION__`,
    * `__BUGSEE_APP_BUILD__`, JSON-encoded). Only values that were actually found are present — never the
@@ -220,7 +232,9 @@ export function resolvePluginOptions(
   env: EnvRecord,
   deps: AppIdentityDeps = {},
 ): ResolvedPluginOptions {
-  const appToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  // A whitespace-only token (an `export BUGSEE_APP_TOKEN=" "` left in a CI template) is no token.
+  const rawToken = options.appToken ?? env.BUGSEE_APP_TOKEN ?? '';
+  const appToken = rawToken.trim() === '' ? '' : rawToken;
   // The BASELINE identity, from the working directory; never throws (see `projectRoot` on
   // ResolvedPluginOptions). The bundler hooks refine it from the bundler's own project directory.
   return {
@@ -243,6 +257,7 @@ export function resolvePluginOptions(
     registerBuild:
       options.registerBuild ?? registerBuildFromEnv(env.BUGSEE_REGISTER_BUILD) ?? 'release',
     packageId: options.packageId,
+    uploadInDevelopment: options.uploadInDevelopment ?? false,
     nodeEnv: env.NODE_ENV,
   };
 }
@@ -262,6 +277,15 @@ export async function runPluginUpload(
     bundler?: BundlerBuildContext;
     /** The bundles were stamped inside the build (stamp-assets.ts); skip the post-emit inject. */
     preStamped?: boolean;
+    /**
+     * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
+     * run of the same directory, and registers from these bundles only.
+     */
+    files?: {
+      scripts: readonly string[];
+      maps: readonly string[];
+      stylesheetMaps?: readonly string[];
+    };
   } = {},
 ): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {
@@ -272,7 +296,9 @@ export async function runPluginUpload(
   // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps
   // while the other was still reading them. A concurrent caller JOINS the in-flight run and
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
-  const inFlight = runsByDir.get(outDir);
+  // A run over a build's OWN files (`deps.files`) neither joins nor is joined: it touches nothing another run
+  // of the directory touches, so there is nothing to coordinate.
+  const inFlight = deps.files === undefined ? runsByDir.get(outDir) : undefined;
   if (inFlight !== undefined) {
     return inFlight;
   }
@@ -295,6 +321,7 @@ export async function runPluginUpload(
       // Omitted unless true, so the orchestrator's argument stays exactly what it was for every
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
+      ...(deps.files !== undefined ? { files: deps.files } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps
     // into the bundles — and regardless of whether the maps made it, because a build exists either
@@ -307,6 +334,9 @@ export async function runPluginUpload(
       endpoint: resolved.endpoint,
       setting: resolved.registerBuild,
       bundler: deps.bundler ?? {},
+      ...(deps.files !== undefined
+        ? { collectDebugIds: () => collectDebugIdsOf(deps.files?.scripts ?? []) }
+        : {}),
       env: resolved.nodeEnv !== undefined ? { NODE_ENV: resolved.nodeEnv } : {},
       ...(resolved.packageId !== undefined ? { packageId: resolved.packageId } : {}),
       // The nearest package.json above the OUTPUT names the package that built it. The process cwd
@@ -332,6 +362,9 @@ export async function runPluginUpload(
   // sequential caller (watch mode) find the slot free on its next call. It holds because this function
   // is `async` and so adds a thenable-adoption tick; the non-async variant reverses the two, leaving
   // the slot still held when the caller resumes. Not the pure refactor it looks like.
+  if (deps.files !== undefined) {
+    return run;
+  }
   runsByDir.set(outDir, run);
   void run
     .catch(() => undefined)

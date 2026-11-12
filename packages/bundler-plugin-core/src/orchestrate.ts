@@ -35,8 +35,26 @@ export interface UploadSourcemapsOptions {
   stripSourcesContent?: boolean;
   /** Injectable `bugsee-cli` runner (default {@link runBugseeCli}). */
   run?: RunFn;
-  /** Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). */
-  deleteMapFiles?: (dir: string) => Promise<string[]>;
+  /**
+   * Injectable `.map` deleter (default {@link defaultDeleteMapFiles}). `only` is the set of maps that existed
+   * when the upload started: maps another build wrote into the same directory while the upload was in flight
+   * were never sent and must not be deleted.
+   */
+  deleteMapFiles?: (dir: string, only?: readonly string[]) => Promise<string[]>;
+  /**
+   * The build's OWN output files, when the caller knows them (esbuild's metafile). The CLI is then given exactly
+   * these paths instead of the directory, and exactly these maps are deleted, only after a confirmed upload.
+   * Nothing walks the directory, so a build can never touch (stamp, upload under its own options, or delete) a
+   * file another build wrote there. `scripts` are the `.js`/`.mjs`/`.cjs` outputs, `maps` the `.map` outputs.
+   */
+  files?: {
+    scripts: readonly string[];
+    maps: readonly string[];
+    /** Maps the CLI is not given (stylesheet maps); deleted with `maps`, only after a confirmed upload. */
+    stylesheetMaps?: readonly string[];
+  };
+  /** Injectable `.map` lister for the delete snapshot of a directory run (default {@link listMapFiles}). */
+  listMapFiles?: (dir: string) => Promise<string[]>;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
   findSri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -103,12 +121,22 @@ const NEVER_WALK = new Set([
  */
 const MAX_DELETE_DEPTH = 6;
 
-/** Recursively delete every build `*.map` under `dir`; returns the deleted paths. */
-export async function defaultDeleteMapFiles(dir: string, depth = 0): Promise<string[]> {
+/** Paths per CLI call: keeps a build with thousands of outputs under the OS command-line length limit. */
+export const MAX_PATHS_PER_CALL = 200;
+function inBatches<T>(items: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += MAX_PATHS_PER_CALL) {
+    batches.push(items.slice(i, i + MAX_PATHS_PER_CALL));
+  }
+  return batches;
+}
+
+/** Recursively list every build `*.map` under `dir`. */
+export async function listMapFiles(dir: string, depth = 0): Promise<string[]> {
   if (depth > MAX_DELETE_DEPTH) {
     return [];
   }
-  const deleted: string[] = [];
+  const found: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const full = join(dir, entry.name);
@@ -118,13 +146,40 @@ export async function defaultDeleteMapFiles(dir: string, depth = 0): Promise<str
       if (NEVER_WALK.has(entry.name) || entry.name.startsWith('.')) {
         continue;
       }
-      deleted.push(...(await defaultDeleteMapFiles(full, depth + 1)));
+      found.push(...(await listMapFiles(full, depth + 1)));
     } else if (entry.isFile() && entry.name.endsWith('.map')) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+/**
+ * Delete build `*.map` files under `dir`; returns the deleted paths. With `only`, just those (already
+ * listed, so the same exclusions applied); a file that is already gone is not an error.
+ */
+export async function defaultDeleteMapFiles(
+  dir: string,
+  only?: readonly string[],
+): Promise<string[]> {
+  const targets = only ?? (await listMapFiles(dir));
+  const deleted: string[] = [];
+  for (const full of targets) {
+    try {
       await unlink(full);
       deleted.push(full);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
     }
   }
   return deleted;
+}
+
+/** Where a contained upload failure goes when the user gave no `onError`. */
+function defaultUploadErrorHandler(error: unknown): void {
+  console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
 }
 
 /** Drive `bugsee-cli`: inject debug-IDs into the build, upload the source-maps, then delete the client maps. */
@@ -140,14 +195,11 @@ export async function uploadSourcemaps(
     throw new Error('uploadSourcemaps: appToken is required');
   }
   const run = options.run ?? runBugseeCli;
+  const files = options.files;
   const deleteMaps = options.deleteMaps ?? true;
   const dryFlag = dryRun ? ['--dry-run'] : [];
   const cliOptions: RunBugseeCliOptions = { token: appToken, endpoint };
-  const onError =
-    options.onError ??
-    ((error: unknown): void => {
-      console.warn(`[bugsee] source-map upload skipped: ${String(error)}`);
-    });
+  const onError = options.onError ?? defaultUploadErrorHandler;
 
   try {
     if (options.preStamped === true) {
@@ -195,7 +247,15 @@ export async function uploadSourcemaps(
       }
 
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
-      await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+      if (files === undefined) {
+        await run(['sourcemaps', 'inject', outDir, ...dryFlag], cliOptions);
+      } else {
+        // A script and its map may land in different batches: harmless, the debug-id is derived from the
+        // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
+        for (const batch of inBatches([...files.scripts, ...files.maps])) {
+          await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+        }
+      }
     }
 
     // 2. Upload the maps, keyed by the injected debug-ID (+ version/build metadata).
@@ -212,24 +272,41 @@ export async function uploadSourcemaps(
     // the CLI otherwise exits 10 on it. Under `failOnError` it is NOT passed: a team that asked for
     // strictness wants "this build produced no maps at all" to stop the build, which is exactly the
     // misconfiguration that silently costs them symbolication later.
+    //
+    // A DIRECTORY run snapshots the maps that exist now: they are the ones this upload covers, and only they
+    // may be deleted (a map written meanwhile was never sent). If the snapshot cannot be taken, nothing is
+    // deleted afterwards and that is reported. A FILE run (`files`) names its maps up front.
+    let snapshot: string[] | undefined;
+    let snapshotError: unknown;
+    if (files === undefined && deleteMaps && !dryRun) {
+      try {
+        snapshot = await (options.listMapFiles ?? listMapFiles)(outDir);
+      } catch (error) {
+        snapshotError = error;
+      }
+    }
     const emptyFlag = options.failOnError === true ? [] : ['--allow-empty'];
-    await run(
-      [
-        'debug-files',
-        'upload',
-        outDir,
-        '--type',
-        'sourcemaps',
-        '--version',
-        appVersion,
-        '--build',
-        appBuild,
-        ...emptyFlag,
-        ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
-        ...dryFlag,
-      ],
-      cliOptions,
-    );
+    const uploadArgs = (targets: readonly string[]): string[] => [
+      'debug-files',
+      'upload',
+      ...targets,
+      '--type',
+      'sourcemaps',
+      '--version',
+      appVersion,
+      '--build',
+      appBuild,
+      ...emptyFlag,
+      ...(options.stripSourcesContent === true ? ['--strip-sources-content'] : []),
+      ...dryFlag,
+    ];
+    if (files === undefined) {
+      await run(uploadArgs([outDir]), cliOptions);
+    } else {
+      for (const batch of inBatches(files.maps)) {
+        await run(uploadArgs(batch), cliOptions);
+      }
+    }
 
     // A dry run stops here: nothing was uploaded, so nothing justifies deleting the only copy of the
     // user's maps.
@@ -239,8 +316,22 @@ export async function uploadSourcemaps(
 
     // 3. Delete the client .map files (privacy) — only after a CONFIRMED upload. Deleting after a failure
     //    would destroy the only copy of the mapping while the symbols were never delivered.
+    if (snapshotError !== undefined) {
+      // Fail CLOSED: with no snapshot, deleting "every map found" could remove maps that were never uploaded.
+      const failure = new Error(
+        `the source maps were uploaded but could not be listed for deletion, so none were deleted: ${String(snapshotError)}`,
+      );
+      if (options.failOnError === true) {
+        throw failure;
+      }
+      onError(failure);
+      return { injected: true, uploaded: true, deletedMaps: [], ...vcsEcho };
+    }
     const deletedMaps = deleteMaps
-      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir)
+      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(
+          outDir,
+          files === undefined ? snapshot : [...files.maps, ...(files.stylesheetMaps ?? [])],
+        )
       : [];
     return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {

@@ -41,7 +41,7 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
   the plugin option `stripSourcesContent` (default off), uploads each map without its embedded source: file,
   line and column symbolication are unaffected, the snippet beside a frame is what is lost, and the maps on disk
   are untouched. Same release refuses to inject into an SRI build from the CLI side too, so a user driving
-  `bugsee-cli` directly (Angular, esbuild, Deno) gets the guard the plugin already had.
+  `bugsee-cli` directly (Angular, Bun) gets the guard the plugin already had.
 - **Since v0.7.10** (bugsee-cli #42) the maps upload SEVERAL AT A TIME — `--concurrency N` is a ceiling that, left
   unset, scales with the batch (one per 8 maps, min 4, max 8). Measured against a mock with 50 ms of latency: 200 maps
   took 23.58 s serially and 4.10 s scaled. The cap is deliberately modest because a CI box on a thin uplink is
@@ -120,12 +120,35 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 
 ## 7. Coverage across targets + map identity (analysis)
 
-**Targets without a plugin hook (Bun's built-in bundler, Deno, `tsc`/`swc`, Angular, custom pipelines).** The plugins
+**Targets without a plugin hook (Bun's built-in bundler, `tsc`/`swc`, Angular, custom pipelines).** The plugins
 are conveniences, not the mechanism: `bugsee-cli` operates on a finished output dir independent of the bundler, so the
 **universal path is the standalone CLI post-build step** (`sourcemaps inject` → `debug-files upload`; run before
 deploy). See `docs/source-maps-usage.md §2`. To widen the zero-config plugin experience cheaply, `@bugsee/bundler-plugin-core`
-also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core) — transitively covering
-Angular 17+ (esbuild), Vite/meta-framework internals (Rollup) and Rspack/Next-webpack. Deno/Bun stay CLI-post-build.
+also exports `bugseeRollupPlugin` / `bugseeEsbuildPlugin` / `bugseeRspackPlugin` (same core). Their end-of-build hooks
+are Rollup `writeBundle`, esbuild `onEnd` (registered through unplugin's `esbuild.setup`; skipped on a failed build
+or `write: false`, which is what tsup always sets, with a notice; the plugin sets `sourcemap: 'external'` only when it is
+unset, and says so when it is `false`) and Rspack `afterEmit`, each calling
+`runPluginUpload` with the same SRI guard as Vite and webpack (#184; real esbuild and Rspack builds are exercised in
+`plugin.real-build.test.ts`). Rspack has no in-compilation stamp stage wired, so it takes the post-emit inject path
+(an SRI build is refused, not stamped). They do **not** cover **Angular**: its builder does not accept esbuild
+plugins, so Angular uses the documented CLI post-build recipe (`docs/source-maps-usage.md §2`). Next.js on webpack
+uses the webpack plugin. Bun, tsup and `tsc`/`swc` stay CLI-post-build (tsup via `onSuccess`).
+esbuild builds work on **per-build file lists**: the plugin sets `metafile: true` and, in `onEnd`, takes the build's own
+outputs from `result.metafile`: the `.js`/`.mjs`/`.cjs` scripts and the maps OF THOSE SCRIPTS. It runs
+`sourcemaps inject <scripts + their maps>` then `debug-files upload <those maps>` (200 paths per CLI call). Stylesheet
+maps (`.css.map`) are withheld from the CLI (named as explicit paths they have no debug-id and fail the whole call) and
+are deleted together with the script maps, only after a confirmed upload. Deleting is limited to exactly those files.
+Invariants: a build only touches files it wrote, so nothing is deleted without being uploaded, nothing is uploaded
+under another build's options, nested/concurrent builds never wait for each other, and there is no per-directory
+state (watch mode needs none). A build that emits JavaScript the plugin cannot upload must not pass silently: under
+`failOnError` it fails, otherwise it is a notice (once per message). That covers a build with scripts but no script map
+(`sourcemap: 'inline'`/`false`), a result with no metafile (another plugin turned it off), and maps whose bundle has an
+extension `inject` does not stamp (`outExtension: '.bundle.jsx'`). A stylesheet-only build (metafile present, no
+scripts, no stray maps) is a quiet no-op. Build registration reads only the build's own bundles. (An earlier design serialised and retried uploads per directory;
+four review rounds each found a new race in it, and per-build file lists remove the whole class.) Rspack/webpack
+keep the directory-wide `afterEmit` path, whose delete step is limited to the maps that existed when the upload
+started and fails closed if they cannot be listed; a Rspack `MultiCompiler` whose compilers share one `output.path`
+keeps the webpack behaviour of joining the in-flight run for that directory.
 
 **Identifying the correct final map (multi-layer).** The identity is the bundle's own `//# sourceMappingURL` + the
 debug-ID: `inject` follows each bundle's sourceMappingURL to its declared map and stamps the SAME debug-ID into both,
@@ -170,9 +193,10 @@ still runs, `{injected: false, uploaded: false}`.
 - **Importmap integrity** (`<script type="importmap">` whose JSON body carries an `integrity` map) —
   an inline script with no `src`.
 - **The standalone CLI path.** The guard lives in `@bugsee/bundler-plugin-core`, which wires
-  `writeBundle` for vite and rollup only. Users driving `bugsee-cli` directly — Angular 17+, esbuild,
-  Deno — get no guard, and Angular's `subresourceIntegrity: true` is exactly the config this protects
-  against. Tracked: the same check belongs in `sourcemaps inject` itself.
+  `writeBundle` for vite and rollup, `afterEmit` for webpack and Rspack, and `onEnd` for esbuild. Users driving
+  `bugsee-cli` directly (Angular 17+, Bun, `tsc`) get no guard from the plugin, but the CLI has its own as of
+  0.7.13: `sourcemaps inject` refuses an SRI build unless `--allow-sri` is passed. Angular's
+  `subresourceIntegrity: true` is exactly the config this protects against.
 
 It does see, and refuses: `<script integrity src=…>` and `<link rel=modulepreload|preload integrity href=…>`
 in any `.html` under the output directory, quoted or bare, in any attribute order, with a whitespace-padded

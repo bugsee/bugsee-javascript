@@ -99,3 +99,22 @@ export async function collectDebugIds(dir: string, depth = 0): Promise<string[]>
   }
   return ids;
 }
+
+/** The debug-ids stamped into exactly these files (a build's own outputs): same reading rules as the directory walk. */
+export async function collectDebugIdsOf(paths: readonly string[]): Promise<string[]> {
+  const ids: string[] = [];
+  for (const path of paths) {
+    if (!STAMPED.test(path)) {
+      continue;
+    }
+    try {
+      const id = readDebugId(await readTail(path));
+      if (id !== undefined) {
+        ids.push(id);
+      }
+    } catch {
+      // Unreadable: this bundle contributes nothing, and the build is not failed for it.
+    }
+  }
+  return ids;
+}

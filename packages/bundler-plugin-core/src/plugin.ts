@@ -1,5 +1,5 @@
 // SM-A3 — the unplugin factory. Wires each bundler's "output written" hook to the guarded upload:
-// vite/rollup `writeBundle` and webpack `afterEmit`. The per-bundler entry points (@bugsee/vite-plugin,
+// vite/rollup `writeBundle`, webpack/rspack `afterEmit` and esbuild `onEnd`. The per-bundler entry points (@bugsee/vite-plugin,
 // @bugsee/webpack-plugin) are thin wrappers over `bugseeUnplugin`. The output-dir resolver is a pure,
 // tested helper; the framework hook registration is thin glue exercised by the real-build e2e (SM-B/SM-C).
 import { dirname, resolve } from 'node:path';
@@ -12,6 +12,7 @@ import {
   UNBAKEABLE_IDENTITY,
 } from './app-identity';
 import { bakeIdentity, type ParseChunk } from './bake-identity';
+import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { BundlerBuildContext } from './register-build';
 import {
   type BugseePluginOptions,
@@ -58,7 +59,7 @@ interface WebpackCompilationLike {
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
 interface WebpackCompilerLike {
-  options: { output?: { path?: string }; mode?: string; plugins?: unknown[] };
+  options: { output?: { path?: string }; mode?: string; plugins?: unknown[]; devtool?: unknown };
   /** The base directory of the build (webpack's `context`, default the cwd). */
   context?: string;
   hooks: {
@@ -195,10 +196,110 @@ function webpackBuild(mode: string | undefined): BundlerBuildContext {
   return { isProduction: effective === 'production', configuration: effective };
 }
 
+/** The slice of esbuild's plugin `build` object the end-of-build upload reads. */
+interface EsbuildBuildLike {
+  initialOptions: { outdir?: string; outfile?: string; absWorkingDir?: string; write?: boolean };
+  onEnd(callback: (result: EsbuildEndResult) => void | Promise<void>): void;
+}
+
+/** What esbuild hands `onEnd`: the errors, and (we ask for it) the metafile listing the build's own outputs. */
+interface EsbuildEndResult {
+  errors: readonly unknown[];
+  metafile?: { outputs: Record<string, unknown> };
+}
+
+/**
+ * The files THIS build wrote, from its metafile (paths are relative to `absWorkingDir`), split into the bundles
+ * `sourcemaps inject` stamps and the maps it uploads. The whole esbuild upload runs on these lists and nothing
+ * else, which is what keeps it correct with no coordination at all: a build only touches files it wrote, so
+ * nothing is deleted without having been uploaded, nothing is uploaded under another build's options (or
+ * another plugin instance's), a nested or concurrent build never waits for anything, and watch mode needs no
+ * state between rebuilds.
+ */
+function esbuildOwnFiles(
+  result: EsbuildEndResult,
+  base: string,
+): { scripts: string[]; maps: string[]; stylesheetMaps: string[]; strayMaps: string[] } {
+  const outputs = Object.keys(result.metafile?.outputs ?? {}).map((file) => resolve(base, file));
+  const scripts = outputs.filter((file) => /\.[cm]?js$/.test(file));
+  const owned = new Set(scripts);
+  return {
+    scripts,
+    // Only the maps of the build's own SCRIPTS are named to the CLI: it skips a `.css.map` when scanning a
+    // directory, but a stylesheet map named as an explicit path has no debug-id and fails the whole call.
+    maps: outputs.filter((file) => file.endsWith('.map') && owned.has(file.slice(0, -4))),
+    // Deleted with the rest after a confirmed upload (they embed the source too), never sent.
+    stylesheetMaps: outputs.filter((file) => file.endsWith('.css.map')),
+    // Maps whose bundle is not a recognised script (an `outExtension` like `.bundle.jsx`, which `inject` does not
+    // stamp): the build emitted maps the plugin cannot upload, which is not the same as having none.
+    strayMaps: outputs.filter(
+      (file) =>
+        file.endsWith('.map') && !file.endsWith('.css.map') && !owned.has(file.slice(0, -4)),
+    ),
+  };
+}
+
+/** The directory esbuild's metafile paths are relative to. */
+function esbuildBase(options: EsbuildBuildLike['initialOptions']): string {
+  return resolve(options.absWorkingDir ?? process.cwd());
+}
+
+/** esbuild's output directory: `outdir`, else the directory of `outfile`, resolved against `absWorkingDir`. */
+function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string | undefined {
+  const out = resolveOutputDir({ dir: options.outdir, file: options.outfile });
+  if (out === undefined) {
+    return undefined;
+  }
+  try {
+    return resolve(esbuildBase(options), out);
+  } catch {
+    // The working directory is gone (`process.cwd()` throws) and the path is relative: nothing to upload.
+    return undefined;
+  }
+}
+
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
   options = {},
 ) => {
-  const resolved = resolvePluginOptions(options, process.env);
+  // Lookup order for every BUGSEE_* setting: plugin option, process environment, then the nearest
+  // `.env.bugsee-build-plugin` (env-file.ts; it only fills variables the environment does not set). The
+  // baseline looks from the working directory; a bundler that reports its project directory (Vite `root`,
+  // webpack `context`, esbuild `absWorkingDir`) re-resolves from there, below.
+  // A file that WAS found but gave nothing is said once (never its contents), so a UTF-16 or empty file is
+  // not a silent "no token".
+  const reported = new Set<string>();
+  const loadFile = (root: string | undefined): Record<string, string> => {
+    if (options.disabled) {
+      return {};
+    }
+    const { values, problem } = loadBuildPluginEnv(root);
+    if (problem !== undefined && !reported.has(problem)) {
+      reported.add(problem);
+      notify(resolved)(problem);
+    }
+    return values;
+  };
+  // A notice said once per distinct text.
+  const say = (message: string): void => {
+    if (!reported.has(message)) {
+      reported.add(message);
+      notify(resolved)(message);
+    }
+  };
+  // esbuild / Rspack dev builds do not upload (and so do not delete the local maps) unless asked to.
+  const skipDevelopment = (isProduction: boolean | undefined, bundlerName: string): boolean => {
+    if (!resolved.enabled || resolved.uploadInDevelopment || isProduction !== false) {
+      return false;
+    }
+    say(
+      `${bundlerName} development build: nothing was uploaded, and any source maps on disk were left in place. Set \`uploadInDevelopment: true\` to upload from dev builds too.`,
+    );
+    return true;
+  };
+  // `resolved` is assigned right below; `loadFile` only reads it after that (it is `let` for the hook refresh).
+  let resolved = resolvePluginOptions(options, process.env);
+  let env = mergeBuildPluginEnv(process.env, loadFile(undefined));
+  resolved = resolvePluginOptions(options, env);
   const name = 'bugsee';
 
   // The app identity comes from the BUNDLER's project directory (Vite `root`, webpack `context`, esbuild
@@ -214,7 +315,11 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     fixed: FixedIdentity,
     userDefines: Record<string, unknown>,
   ): ResolvedIdentity => {
-    bundlerIdentity = resolveIdentity(options, process.env, root, {}, fixed);
+    if (root !== undefined) {
+      env = mergeBuildPluginEnv(process.env, loadFile(root));
+      resolved = resolvePluginOptions(options, env);
+    }
+    bundlerIdentity = resolveIdentity(options, env, root, {}, fixed);
     if (resolved.enabled) {
       unreadableIdentityNotices(fixed, bundlerIdentity.identityDefines, userDefines).forEach(
         notify(resolved),
@@ -231,7 +336,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     let identity = identityByOutDir.get(outDir);
     if (identity === undefined) {
       // Starting inside build output, a `{"type":"commonjs"}` marker there is not the app's manifest.
-      identity = resolveIdentity(options, process.env, outDir, { skipMarkers: true });
+      identity = resolveIdentity(options, env, outDir, { skipMarkers: true });
       identityByOutDir.set(outDir, identity);
     }
     return identity;
@@ -354,7 +459,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
     },
     esbuild: {
       // esbuild's `define` is a plain string map; a key the user already set is kept.
-      config(initialOptions: { define?: Record<string, string>; absWorkingDir?: string }) {
+      config(initialOptions: {
+        define?: Record<string, string>;
+        absWorkingDir?: string;
+        sourcemap?: boolean | string;
+        metafile?: boolean;
+      }) {
         const { identityDefines } = identityFromRoot(
           initialOptions.absWorkingDir,
           fixedIdentityFromDefines(initialOptions.define),
@@ -364,6 +474,87 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         if (Object.keys(define).length > 0) {
           initialOptions.define = define;
         }
+        // Make the build EMIT the maps this plugin exists to upload. Only when the user said nothing:
+        // `external`, not `true`, because `true` appends a `//# sourceMappingURL` comment and the map is
+        // deleted after upload, leaving a shipped bundle that points at a missing file. The CLI pairs a
+        // bundle with its sibling `<file>.map` without the comment. An explicit `false` (or any other
+        // value) is the user's choice and is left alone; with `false` there is nothing to upload, and a notice says so.
+        // Not for a development build (NODE_ENV=development) that will not upload: it would pay for maps
+        // nothing references. `uploadInDevelopment` keeps them.
+        if (resolved.enabled && initialOptions.sourcemap === false) {
+          say(
+            'esbuild `sourcemap: false` emits no source maps, so there is nothing to upload (the plugin leaves an explicit false alone). Remove it, or use `sourcemap: "external"`, to symbolicate this build.',
+          );
+        }
+        if (
+          resolved.enabled &&
+          initialOptions.sourcemap === undefined &&
+          (resolved.uploadInDevelopment || resolved.nodeEnv !== 'development')
+        ) {
+          initialOptions.sourcemap = 'external';
+        }
+        // The metafile is how the plugin learns which files THIS build wrote (see `esbuildOwnFiles`).
+        if (resolved.enabled) {
+          initialOptions.metafile = true;
+        }
+      },
+      // End of the build (#184): upload what esbuild wrote, as Vite/Rollup `writeBundle` do. unplugin's own
+      // `writeBundle` mapping carries no esbuild result, so the hook is registered here; it runs on every
+      // watch rebuild.
+      setup(build: EsbuildBuildLike) {
+        const outDir = esbuildOutputDir(build.initialOptions);
+        build.onEnd(async (result) => {
+          // A failed build wrote nothing worth uploading.
+          if (result.errors.length > 0 || outDir === undefined) {
+            return;
+          }
+          // `write: false`: esbuild hands the files to the caller, who writes them later (tsup ALWAYS does
+          // this), so they are not on disk when this hook runs. Say so instead of doing nothing silently.
+          if (build.initialOptions.write === false) {
+            if (resolved.enabled) {
+              say(
+                'esbuild runs with `write: false` (tsup always does), so the output is not on disk when the plugin runs and nothing was uploaded. Run the bugsee-cli post-build step instead (`bugsee-cli sourcemaps inject <outDir>` then `bugsee-cli debug-files upload <outDir> --type sourcemaps`, e.g. from tsup `onSuccess`); see docs/source-maps-usage.md section 2.',
+              );
+            }
+            return;
+          }
+          // esbuild states no mode: only NODE_ENV=development marks a dev build.
+          if (skipDevelopment(resolved.nodeEnv !== 'development', 'esbuild') || !resolved.enabled) {
+            return;
+          }
+          // A problem that means this build's JavaScript is NOT being symbolicated: the misconfiguration
+          // `failOnError` exists to stop (else one notice). Judged on THIS build's outputs only.
+          const problem = (message: string): void => {
+            if (resolved.failOnError) {
+              throw new Error(message);
+            }
+            say(message);
+          };
+          if (result.metafile === undefined) {
+            // The plugin asks for it, but another plugin (or esbuild itself) may have turned it off.
+            problem(
+              `esbuild build into ${outDir} returned no metafile (did another plugin set metafile: false?), so the build's own files are unknown and nothing was uploaded.`,
+            );
+            return;
+          }
+          const files = esbuildOwnFiles(result, esbuildBase(build.initialOptions));
+          if (files.scripts.length === 0) {
+            if (files.strayMaps.length > 0) {
+              problem(
+                `esbuild build into ${outDir} emitted maps for outputs that are not .js, .mjs or .cjs (outExtension?), which bugsee-cli cannot stamp, so nothing was uploaded.`,
+              );
+            }
+            return; // otherwise a stylesheet-only build: nothing to symbolicate
+          }
+          if (files.maps.length === 0) {
+            problem(
+              `esbuild build into ${outDir} emitted no .map files, so there is nothing to upload (sourcemap: 'inline' or false?). Use sourcemap: 'external' or 'linked'.`,
+            );
+            return;
+          }
+          const { strayMaps: _stray, ...own } = files;
+          await runPluginUpload(forOutput(outDir), outDir, { bundler: {}, files: own });
+        });
       },
     },
     rspack(compiler: WebpackCompilerLike) {
@@ -375,6 +566,34 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         taken,
       );
       injectDefines(compiler, DefinePlugin, identityDefines, taken);
+      // End of the build (#184): upload after emit, as webpack does. Rspack's in-build stamp stage is not
+      // wired, so the post-emit inject path runs and keeps the SRI guard that refuses a build whose
+      // integrity hashes the stamp would invalidate.
+      // Rspack's production default is `devtool: false`: no maps are emitted and the upload silently finds
+      // nothing. Said once, like esbuild's `sourcemap: false`.
+      // Judged on the RESOLVED default: an unset `devtool` is `eval` in development (the dev-skip notice covers
+      // that build) and false otherwise.
+      if (
+        resolved.enabled &&
+        !compiler.options.devtool &&
+        !(compiler.options.mode === 'development' && !resolved.uploadInDevelopment)
+      ) {
+        say(
+          'Rspack `devtool` is off, so no source maps are emitted and there is nothing to upload. Set `devtool: "source-map"` for builds you want symbolicated (ignore this if you emit maps another way).',
+        );
+      }
+      compiler.hooks.afterEmit.tapPromise(name, async () => {
+        const dir = compiler.options.output?.path;
+        const bundler = webpackBuild(compiler.options.mode);
+        // Only `development` is skipped: `mode: 'none'` is a legitimate release setting (own minification).
+        if (
+          typeof dir === 'string' &&
+          dir !== '' &&
+          !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
+        ) {
+          await runPluginUpload(forOutput(dir), dir, { bundler });
+        }
+      });
     },
     webpack(compiler: WebpackCompilerLike) {
       const DefinePlugin = compiler.webpack?.DefinePlugin;
@@ -448,9 +667,11 @@ export const bugseeUnplugin: UnpluginInstance<BugseePluginOptions | undefined> =
   createUnplugin(bugseeUnpluginFactory);
 
 // Convenience per-bundler factories over the same core. `@bugsee/vite-plugin` / `@bugsee/webpack-plugin`
-// ship the two most common ones as their own packages; these cover the esbuild-based toolchains (Angular 17+,
-// Bun where its plugin hooks suffice), Rollup (Vite/meta-frameworks internals), and Rspack. Any other target
-// (Deno, tsc/swc, or a build with no plugin hook) uses the standalone `bugsee-cli` post-build step instead.
+// ship the two most common ones as their own packages; these cover plain esbuild builds (the esbuild JS API,
+// any tool that accepts esbuild plugins and lets esbuild write the files; NOT tsup, which sets
+// `write: false`), Rollup, and Rspack. Angular's builder does NOT accept esbuild
+// plugins, and Bun/tsc/swc have no usable hook: those use the standalone `bugsee-cli` post-build step
+// (`sourcemaps inject` then `debug-files upload`) instead.
 export const bugseeRollupPlugin = bugseeUnplugin.rollup;
 export const bugseeEsbuildPlugin = bugseeUnplugin.esbuild;
 export const bugseeRspackPlugin = bugseeUnplugin.rspack;

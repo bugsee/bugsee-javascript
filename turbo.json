@@ -10,11 +10,13 @@
       "dependsOn": ["^build"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      "env": ["BUGSEE_REQUIRE_CLI"]
     },
     "test:coverage": {
       "dependsOn": ["^build"],
-      "outputs": ["coverage/**"]
+      "outputs": ["coverage/**"],
+      "env": ["BUGSEE_REQUIRE_CLI"]
     },
     "test:unit": {
       "dependsOn": ["^build"],

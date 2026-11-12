@@ -26,19 +26,89 @@ module.exports = { devtool: 'source-map', plugins: [bugseeWebpackPlugin({ appTok
 ```
 
 Other bundlers are exported from `@bugsee/bundler-plugin-core` (same core, `unplugin`-based):
-`bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. These transitively cover **Angular 17+**
-(esbuild builder), **Vite/meta-framework internals** (Rollup), and **Rspack/Next-webpack**.
+`bugseeRollupPlugin`, `bugseeEsbuildPlugin`, `bugseeRspackPlugin`. Each injects debug-IDs, uploads the maps and
+deletes them at the end of the build, exactly as the Vite/webpack plugins do (Rollup: `writeBundle`; esbuild:
+`onEnd`, so it works with the esbuild JS API and any tool that accepts esbuild plugins AND lets esbuild write the files; Rspack:
+`afterEmit`), with the same SRI guard. With esbuild the plugin sets `sourcemap: 'external'` when you did not set `sourcemap` at all (external, so the
+shipped bundle carries no `//# sourceMappingURL` comment pointing at a map that is deleted after upload; the CLI
+pairs a bundle with its sibling `.map` anyway). An explicit value, including `false`, is left alone: with
+`false` there are no maps to upload, and the plugin says so through `onNotice`.
 
-**Options** (all optional except a token, which may also come from env):
+**The esbuild plugin works on the files THIS build wrote.** It asks esbuild for the metafile and hands the CLI
+exactly the build's own bundles and maps (in batches of 200 paths), never the directory. So a build only ever
+touches files it wrote: nothing is deleted without having been uploaded, nothing is uploaded under another build's
+options or another plugin instance's, builds sharing an output directory (an ESM + CJS pair, a worker sub-build,
+two plugin instances) never wait for or affect each other, and watch mode keeps no state between rebuilds. Under
+`failOnError`, a build whose own outputs contain no `.map` (for example `sourcemap: 'inline'`) fails, judged on that
+build alone; without `failOnError` it is a notice. The same goes for a build whose result carries no metafile (another
+plugin set `metafile: false`) and for maps of outputs that are not `.js`/`.mjs`/`.cjs` (an `outExtension` such as
+`.bundle.jsx`, which the CLI does not stamp). A stylesheet-only build is a quiet no-op, and `.css.map` files are
+never sent (they are deleted with the script maps after a successful upload). The upload never walks the output
+directory (the one read-only exception is the Subresource-Integrity check, which looks at the `.html` files under it).
+`outfile` and `outdir` behave alike, wherever they point.
+Development builds do not upload and leave the local maps alone unless you set `uploadInDevelopment: true`:
+Rspack states its mode (only `development` is skipped; `none` and `production` upload), esbuild states none, so only `NODE_ENV=development` marks a
+dev build (a bare `esbuild --watch` without it uploads on every rebuild, so set it or disable the plugin there). Rspack stamps after emit rather than inside the compilation,
+so an Rspack build that adds Subresource Integrity hashes is refused, not stamped (§2 covers that case).
+
+**tsup is not covered by the esbuild plugin.** tsup always runs esbuild with `write: false` and writes the files
+itself afterwards, so nothing is on disk when the plugin's end-of-build hook runs. The plugin then uploads nothing
+and says so through `onNotice`. Use the CLI after the build instead, e.g. in `tsup.config.ts` (with
+`sourcemap: true` and `BUGSEE_APP_TOKEN` exported):
+
+```ts
+onSuccess:
+  'bugsee-cli sourcemaps inject dist && ' +
+  'bugsee-cli debug-files upload dist --type sourcemaps ${APP_VERSION:+--version "$APP_VERSION"} ${APP_BUILD:+--build "$APP_BUILD"} && ' +
+  'find dist -name "*.map" -delete',
+```
+
+The `${VAR:+...}` parts leave the flag out when the variable is unset (an empty `--version ""` would be sent
+otherwise). The last step deletes the maps after a successful upload, which is what the plugins do by default; the
+shipped bundles keep their `//# sourceMappingURL` comment, which then points at a file that is not there
+(harmless; drop the line if you want the maps to ship). The same applies to any tool that calls esbuild with
+`write: false`.
+
+For **Rspack**, set `devtool: 'source-map'`: its production default is `devtool: false`, which emits no maps, so
+there is nothing to upload (the plugin says so through `onNotice`).
+
+**What these do not cover.** **Angular's builder does not accept esbuild plugins**, so `bugseeEsbuildPlugin`
+cannot be used with `ng build`: use the post-build recipe in §2. Bun's bundler, `tsc` and `swc` have no hook
+either (also §2). Next.js on webpack uses the webpack plugin.
+
+**Where the settings come from.** The lookup order is: the **plugin option**, then the **process environment**,
+then the **`.env.bugsee-build-plugin`** file. The setup wizard writes the app token to that file (kept out of
+version control) in your project root, as Sentry's plugin does with `.env.sentry-build-plugin`.
+
+- *Which settings.* Only `BUGSEE_APP_TOKEN`, `BUGSEE_APP_VERSION` and `BUGSEE_APP_BUILD` are read from the file.
+  `BUGSEE_ENDPOINT`, `BUGSEE_CLI_PATH` and the others are environment / plugin-option only, on purpose: a file
+  that could set them could send every upload, token included, to another host or choose which binary runs.
+  (`BUGSEE_CLI_PATH` is read from the process environment only.)
+- *Which file.* The nearest copy at or above the bundler's project directory (Vite `root`, webpack/Rspack
+  `context`, esbuild `absWorkingDir`; the working directory for Rollup, which reports none), but only up to the
+  repository or workspace root (a directory holding `.git` or `pnpm-workspace.yaml`). With no such root, only the
+  project directory itself is read. The home directory and everything above it are never read, so a stray
+  `~/.env.bugsee-build-plugin` cannot give a token to every project below it.
+- *Format.* UTF-8 `KEY=value` lines; optional `export`, quotes, `#` comments.
+- *Precedence.* The file only fills gaps: a variable the environment already carries is never overridden, and
+  `process.env` is never written to. A blank (whitespace-only) environment variable counts as unset, the same
+  rule the version and build already follow.
+- *Failure.* A missing, unreadable or malformed file never fails the build; without a token the plugin no-ops. A
+  file that is found but unusable (unreadable, UTF-16/binary, holding none of the three keys or only empty values, or sitting in the home directory when that is your project directory) is reported once
+  through `onNotice`, naming the file but never its contents.
+- `bugsee-cli` run by hand (§2) does NOT read this file: export `BUGSEE_APP_TOKEN` there.
+
+**Options** (all optional except a token, which may also come from env or that file):
 
 | option | env fallback | default | meaning |
 |---|---|---|---|
-| `appToken` | `BUGSEE_APP_TOKEN` | — | required to upload; absent ⇒ the plugin no-ops |
+| `appToken` | `BUGSEE_APP_TOKEN` (then `.env.bugsee-build-plugin`) | — | required to upload; absent ⇒ the plugin no-ops |
 | `appVersion` | `BUGSEE_APP_VERSION`, then the `version` of the nearest `package.json` at or above the bundler's project directory (Vite `root`, webpack `context`, esbuild `absWorkingDir`; a nearest manifest with no version means none) | `0.0.0` | recorded on the symbol; a fallback join key. Blank or whitespace-only values count as unset. A real value is also baked into the bundle, so the app's SDK reports it (Vite, esbuild, webpack 5, Rspack and Rollup; on webpack 4 nothing can be baked, so only an explicit value is recorded). A `define` you set for `__BUGSEE_APP_VERSION__` is used as the recorded value when it is a plain string; for an expression (or on webpack 4 with no explicit value) the recorded value is left at the default and the plugin warns through `onNotice` until you set `appVersion` too |
 | `appBuild` | `BUGSEE_APP_BUILD`, then the CI commit id (`GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`, `CI_COMMIT_SHA`, `CIRCLE_SHA1`, `BUILDKITE_COMMIT`, `SOURCE_VERSION`, `RENDER_GIT_COMMIT`, `COMMIT_REF`, `CF_PAGES_COMMIT_SHA`, `GIT_COMMIT`) | `0` | recorded on the symbol; a fallback join key. A real value is also baked into the bundle, so the app's SDK reports it (same bundler coverage and `define` rule as `appVersion`) |
 | `endpoint` | `BUGSEE_ENDPOINT` | `https://api.bugsee.com` | API endpoint |
 | `deleteMaps` | — | `true` | delete client `.map`s after upload (privacy) |
 | `dryRun` | — | `false` | run the CLI with `--dry-run` (no upload, no delete) |
+| `uploadInDevelopment` | — | `false` | esbuild / Rspack only: upload from builds the bundler calls development (see §1) |
 | `disabled` | — | `false` | turn the plugin off (e.g. dev builds) |
 | `vcs` | — | `true` | capture the build's commit SHA / branch (see §1.1); `false` records nothing at all, even an explicit `commit` |
 | `commit` | `BUGSEE_BUILD_COMMIT` | detected | explicit commit SHA for this build |
@@ -96,16 +166,16 @@ vs the branch head), the tree reads clean and the recorded SHA still is not what
 `commit` (or set `BUGSEE_BUILD_COMMIT`) with the SHA. An explicit value skips the dirty check. It must be
 7-64 hex characters — a branch name or tag is ignored rather than sent.
 
-## 2. Any other target — the universal CLI step (Bun, Deno, tsc/swc, Angular, no-plugin builds)
+## 2. Any other target — the universal CLI step (Bun, tsup, tsc/swc, Angular, no-plugin builds)
 
 The plugins are **not** the mechanism — `bugsee-cli` operates on a finished output directory, whatever produced
-it. For toolchains without a usable plugin hook (Bun's built-in bundler, Deno, `tsc`/`swc`, custom pipelines), run
+it. For toolchains without a usable plugin hook (Bun's built-in bundler, tsup, `tsc`/`swc`, custom pipelines), run
 the CLI as a **post-build step**:
 
 ```bash
 # 1. build with EXTERNAL source maps enabled, e.g.:
 bun build ./src/index.ts --outdir dist --sourcemap=external
-#   deno … (emits maps) · tsc --sourceMap · ng build --source-map · esbuild --sourcemap …
+#   tsc --sourceMap · ng build --source-map · esbuild --sourcemap …
 
 # 2. inject debug-IDs into the built bundles + their maps (BEFORE you deploy):
 bugsee-cli sourcemaps inject ./dist
@@ -114,6 +184,21 @@ bugsee-cli sourcemaps inject ./dist
 BUGSEE_APP_TOKEN=… bugsee-cli debug-files upload ./dist \
   --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
 ```
+
+**Angular (17+, `ng build` with the esbuild application builder).** There is no plugin hook, so add the CLI as a
+step after the build (for example an npm script or a CI step):
+
+```bash
+ng build --source-map            # or "sourceMap": true in angular.json; the output lands in dist/<project>/browser
+export BUGSEE_APP_TOKEN=…        # the CLI does not read .env.bugsee-build-plugin
+bugsee-cli sourcemaps inject dist/<project>/browser
+bugsee-cli debug-files upload dist/<project>/browser \
+  --type sourcemaps --version "$APP_VERSION" --build "$APP_BUILD"
+```
+
+If you enable `"subresourceIntegrity": true`, bugsee-cli 0.7.13 `inject` refuses to run (it would invalidate the
+integrity hashes Angular writes into `index.html`) unless you pass `--allow-sri`, which you should only do if
+the hashes are recomputed after it runs; otherwise turn that option off for builds you symbolicate.
 
 `inject` must run **before deployment** so the shipped bundle carries the debug-ID + the `_bugseeDebugIds` runtime
 stub the SDK reads. This is exactly what the plugins automate; the CLI is the same engine, just invoked by hand.
@@ -135,4 +220,4 @@ stub the SDK reads. This is exactly what the plugins automate; the CLI is the sa
   (and `debug-files upload --dry-run`) to see the pairings/uploads without performing them.
 - **Not covered: bytecode targets.** React-Native/Hermes compiles JS → bytecode, which drops the injected comment
   and stub, so the running code reports no debug-ID. That needs a Hermes-specific compose flow and is handled by the
-  separate React-Native SDK, not this (web/node/bun/deno) SDK.
+  separate React-Native SDK, not this (web/node/bun) SDK.

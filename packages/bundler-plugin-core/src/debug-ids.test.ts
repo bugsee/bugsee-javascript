@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { collectDebugIds, readDebugId } from './debug-ids';
+import { collectDebugIds, collectDebugIdsOf, readDebugId } from './debug-ids';
 
 // The exact tail `bugsee-cli sourcemaps inject` appends (src/inject/mod.rs, `runtime_stub`).
 const stub = (id: string): string =>
@@ -122,5 +122,31 @@ describe('collectDebugIds', () => {
     await writeFile(join(dir, 'index.js'), `a();${stub(ID_A)}`);
 
     expect(await collectDebugIds(dir)).toEqual([ID_A]);
+  });
+});
+
+describe('collectDebugIdsOf', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-ids-of-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads the ids of exactly the given bundles, skipping non-bundles, unstamped and missing files', async () => {
+    await writeFile(join(dir, 'a.js'), `x;${stub(ID_A)}`);
+    await writeFile(join(dir, 'b.mjs'), `x;${stub(ID_B)}`);
+    await writeFile(join(dir, 'foreign.cjs'), `x;${stub('11111111-1111-5111-8111-111111111111')}`);
+    await writeFile(join(dir, 'plain.js'), 'console.log(1)');
+    await writeFile(join(dir, 'a.js.map'), `{"debug_id":"${ID_A}"}`);
+    const ids = await collectDebugIdsOf([
+      join(dir, 'a.js'),
+      join(dir, 'b.mjs'),
+      join(dir, 'plain.js'),
+      join(dir, 'a.js.map'),
+      join(dir, 'missing.js'),
+    ]);
+    expect(ids).toEqual([ID_A, ID_B]); // not foreign.cjs: it was not in the list
   });
 });
