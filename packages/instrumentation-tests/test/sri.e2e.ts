@@ -18,7 +18,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { extname, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, normalize } from 'node:path';
 import { resolveBugseeCli, runBugseeCli } from '@bugsee/bundler-plugin-core';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
