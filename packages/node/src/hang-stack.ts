@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { buildCrashJson, type CrashJson } from '@bugsee/core';
 import type { CpuProfile } from './cpu-profiler';
 
@@ -43,13 +44,29 @@ const isNode = (value: unknown): value is ProfileNode => {
   );
 };
 
+/**
+ * The profiler reports every script as a percent-encoded `file://` URL, CommonJS included, where an
+ * `Error.stack` carries the raw filesystem path. Decode it so the frame matches the path an uncaught crash
+ * reports (and so the app-root scrub, which matches raw paths, can make it relative).
+ */
+function filePath(url: string): string {
+  if (!url.startsWith('file://')) {
+    return url;
+  }
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return url; // a malformed URL (wrong host, bad escape): keep it as the profiler gave it
+  }
+}
+
 /** One V8 `at …` line. The profile's line/column are 0-based, a stack's are 1-based. */
 function frameLine(frame: ProfileNode['callFrame']): string {
   const name = frame.functionName;
   if (frame.url === '') {
     return `    at ${name} (<anonymous>)`;
   }
-  const where = `${frame.url}:${frame.lineNumber + 1}:${frame.columnNumber + 1}`;
+  const where = `${filePath(frame.url)}:${frame.lineNumber + 1}:${frame.columnNumber + 1}`;
   return name === '' ? `    at ${where}` : `    at ${name} (${where})`;
 }
 

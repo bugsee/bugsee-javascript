@@ -130,6 +130,25 @@ describe('hangCrashFromProfile', () => {
     expect(frames.map((f) => f.user)).toEqual([true, true, false]);
   });
 
+  it("decodes the profiler's percent-encoded file URLs to the raw path an Error.stack would carry", () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      { id: 2, fn: 'spin', url: 'file:///srv/my%20dir/a.js', line: 0, col: 0 },
+    ];
+    const frames = hangCrashFromProfile(profile(nodes, [2]), opts)?.exception.frames ?? [];
+    expect(frames[0]?.data?.source).toBe('/srv/my dir/a.js');
+  });
+
+  it('keeps a malformed file URL rather than losing the frame', () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      { id: 2, fn: 'spin', url: 'file://remote-host/srv/a.js', line: 0, col: 0 },
+    ];
+    const frames = hangCrashFromProfile(profile(nodes, [2]), opts)?.exception.frames ?? [];
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.data?.member).toBe('spin');
+  });
+
   it('caps a pathologically deep stack, keeping the leaf end', () => {
     const nodes: N[] = [{ id: 1, fn: '(root)', children: [2] }];
     for (let i = 2; i <= 200; i += 1) {
