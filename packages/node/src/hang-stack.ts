@@ -9,7 +9,7 @@ import type { CpuProfile } from './cpu-profiler';
 //
 // It goes through the SAME crash builder every other report uses (a synthetic Error whose `stack` is the
 // profile's frames in V8's format), so path scrubbing, the runtime-internal/`user` classification and the
-// debug-id stamp are not re-implemented here.
+// debug-id stamp are not re-implemented here. `handled: true`, as Android's hang report: the process did not crash.
 
 /** Frames kept, leaf end first. Bounds a runaway recursion; the grouping location is at the top anyway. */
 const MAX_FRAMES = 64;
@@ -77,6 +77,11 @@ export function hangCrashFromProfile(
   if (samples === undefined || samples.length === 0) {
     return undefined;
   }
+  // A segment restarted after the stall (another collect got there first) holds only what ran since: its hottest
+  // frame would be confidently wrong, so a profile that does not span the window yields no crash at all.
+  if (profile.endTime - profile.startTime < options.windowMs * 1000) {
+    return undefined;
+  }
   const nodes = new Map<number, ProfileNode>();
   for (const candidate of profile.nodes) {
     if (isNode(candidate)) {
@@ -111,11 +116,14 @@ export function hangCrashFromProfile(
 
   const parents = parentsOf(nodes);
   const lines: string[] = [];
+  // Steps are bounded by the node count, so a (malformed) parent cycle through skipped pseudo frames ends too.
+  let steps = 0;
   for (
     let id: number | undefined = hottest;
-    id !== undefined && lines.length < MAX_FRAMES;
+    id !== undefined && lines.length < MAX_FRAMES && steps <= nodes.size;
     id = parents.get(id)
   ) {
+    steps += 1;
     const frame = nodes.get(id)?.callFrame;
     if (frame !== undefined && !PSEUDO.has(frame.functionName)) {
       lines.push(frameLine(frame));
@@ -125,7 +133,7 @@ export function hangCrashFromProfile(
   const error = new Error(options.reason);
   error.name = 'AppHang';
   error.stack = `AppHang: ${options.reason}\n${lines.join('\n')}`;
-  const crash = buildCrashJson(error, { handled: false });
+  const crash = buildCrashJson(error, { handled: true });
   crash.exception.domain = options.domain;
   return crash;
 }

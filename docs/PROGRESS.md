@@ -763,7 +763,7 @@ Profiler all present).
   `signatures` (the worker derives the signature from the frames). No profile or no application stack → unchanged
   report (own signature, no crash.json) — an empty crash.json would collapse every hang into one issue. The
   profiling controller `hold()`s the segment ~3s so the fair→medium→severe burst (delivered together once the loop
-  frees) all see the stall and still bundle `profile.json`. Renderer-gone hangs need the worker's minidump
+  frees) all see the stall (their `profile.json` too, unless a slow upload delays a later report's snapshot past the hold). A profile spanning less than the stall window yields no crash.json. Renderer-gone hangs need the worker's minidump
   stackwalk (not an SDK change).
 - **Bun (B):** both inherited by `@bugsee/bun` via node-tier reuse; capability-guarded (degrade to no-op if
   worker_threads/inspector absent). Deferred: Node-only live-inspector `Debugger.pause` stack; main-thread-misuse.

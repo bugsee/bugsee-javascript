@@ -27,7 +27,7 @@ const node = (n: N) => ({
 const profile = (nodes: N[], samples: number[], deltaUs = 1000): CpuProfile => ({
   nodes: nodes.map(node),
   startTime: 0,
-  endTime: samples.length * deltaUs,
+  endTime: 10_000_000, // spans any window the tests use
   samples,
   timeDeltas: samples.map(() => deltaUs),
 });
@@ -55,7 +55,7 @@ describe('hangCrashFromProfile', () => {
     expect(crash).toBeDefined();
     expect(crash?.exception_type).toBe('error');
     expect(crash?.ndkCrash).toBe(false);
-    expect(crash?.handled).toBe(false);
+    expect(crash?.handled).toBe(true);
     expect(crash?.exception.name).toBe('AppHang');
     expect(crash?.exception.reason).toBe('Event loop blocked for 12000ms');
     expect(crash?.exception.domain).toBe('AppHang::Severe');
@@ -88,6 +88,14 @@ describe('hangCrashFromProfile', () => {
     // 2ms window over [3,3,5]: sees 5 and one 3 (a 1-1 tie → newest wins). One sample more would make 3 win.
     const crash = hangCrashFromProfile(profile(TREE, [3, 3, 5]), { ...opts, windowMs: 2 });
     expect(crash?.exception.frames[0]?.data?.member).toBe('render');
+  });
+
+  it('is undefined when the profile does not span the window (a segment restarted after the stall)', () => {
+    const short = { ...profile(TREE, [3, 3, 3]), endTime: 2999 };
+    expect(hangCrashFromProfile(short, { ...opts, windowMs: 3 })).toBeUndefined();
+    expect(
+      hangCrashFromProfile({ ...short, endTime: 3000 }, { ...opts, windowMs: 3 }),
+    ).toBeDefined();
   });
 
   it('is undefined when nothing but idle/program/GC ran in the window', () => {
@@ -138,6 +146,15 @@ describe('hangCrashFromProfile', () => {
     expect(frames).toHaveLength(64);
     expect(frames[0]?.data?.member).toBe('f200');
     expect(frames[63]?.data?.member).toBe('f137');
+  });
+
+  it('terminates on a parent cycle made of skipped pseudo frames', () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      { id: 2, fn: '(program)', children: [1, 3] },
+      { id: 3, fn: 'parse', url: 'file:///srv/lib.js', line: 0, col: 0 },
+    ];
+    expect(hangCrashFromProfile(profile(nodes, [3]), opts)?.exception.frames).toHaveLength(1);
   });
 
   it('does not let a malformed node take the report down', () => {

@@ -100,6 +100,7 @@ class HangDetectionProvider extends DetectionProviderBase {
       }
       this.#submit(domain, durationMs, crash);
     });
+    this.#pending = this.#pending.catch(() => undefined); // one failed submit must not stall later reports
   }
 
   #submit(domain: string, durationMs: number, crash?: CrashJson): void {
