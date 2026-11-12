@@ -25,7 +25,7 @@ export interface ProfilingControllerDeps {
  * main thread hears all of them at once, when the block ends: only the first would otherwise see the stall in
  * its profile (the collect restarts the segment, so the rest would get an empty one).
  */
-const HOLD_MS = 3000;
+const HOLD_MS = 3000; // any report in that window shares the held segment, not only a hang's
 
 export interface ProfilingController {
   /** Start sampling + the rolling-restart timer. */
@@ -71,7 +71,10 @@ export function createProfilingController(deps: ProfilingControllerDeps): Profil
       void profiler.start();
       handle = scheduler.setInterval(() => {
         held = undefined; // never keep a stale segment for a whole window
-        void collect(false); // discard — the rolling tick just caps the segment length
+        // The tick caps the segment length, but it can run just BEFORE the watchdog's hang message is handled
+        // (a block that started in a check-phase callback), taking the stall with it: retain it briefly so the
+        // hang report's hold() still sees it.
+        void collect(true);
       }, rollingIntervalMs);
     },
 

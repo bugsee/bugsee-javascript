@@ -124,12 +124,14 @@ describe('createProfilingController', () => {
   });
 
   it('SERIALIZES overlapping collects (a report during a rolling tick never double-stops the session)', async () => {
+    let clockMs = 0;
     const p = fakeProfiler({ defer: true });
     const s = fakeScheduler();
     const c = createProfilingController({
       profiler: p.profiler,
       scheduler: s.scheduler,
       rollingIntervalMs: 60_000,
+      now: () => (clockMs += 4000), // every read is past the hold TTL: the tick's segment is not reusable
     });
     c.start();
     s.fire(); // rolling collect #1 — pending (deferred)
@@ -240,14 +242,18 @@ describe('createProfilingController', () => {
       expect(p.calls.collect).toBe(2);
     });
 
-    it('the rolling tick drops the held segment so it is never retained for a whole window', async () => {
-      const { p, s, c } = mk({ t: 0 });
+    it('the rolling tick replaces the held segment, and retains its own for a hang report that follows it', async () => {
+      const now = { t: 0 };
+      const { p, s, c } = mk(now);
       await c.hold();
-      s.fire();
+      s.fire(); // an overdue tick that ran just before the hang message
       await flush();
-      expect(p.calls.collect).toBe(2);
+      expect(p.calls.collect).toBe(2); // the tick collected afresh rather than reusing the old hold
       await c.hold();
-      expect(p.calls.collect).toBe(3);
+      expect(p.calls.collect).toBe(2); // ...and the hang's hold() reuses the tick's segment
+      now.t = 3000;
+      await c.hold();
+      expect(p.calls.collect).toBe(3); // never retained beyond the TTL
     });
 
     it('serializes with snapshot(): a snapshot queued behind a hold reuses its segment', async () => {
