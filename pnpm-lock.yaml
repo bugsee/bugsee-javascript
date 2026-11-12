@@ -1293,6 +1293,9 @@ importers:
       '@bugsee/e2e-kit':
         specifier: workspace:*
         version: link:../e2e-kit
+      '@bugsee/svelte-plugin-component-annotate':
+        specifier: workspace:*
+        version: link:../svelte-plugin-component-annotate
       '@bugsee/sveltekit':
         specifier: workspace:*
         version: link:../sveltekit
