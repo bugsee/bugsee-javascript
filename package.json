@@ -22,6 +22,7 @@
     "format": "biome format --write .",
     "check:cycles": "madge --circular --extensions ts packages",
     "check:publishable": "node scripts/check-publishable.mjs",
+    "check:dist-sourcemaps": "node scripts/check-dist-sourcemaps.mjs",
     "mutation": "turbo run mutation",
     "changeset": "changeset",
     "version-packages": "changeset version",

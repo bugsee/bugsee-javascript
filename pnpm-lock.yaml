@@ -1200,6 +1200,9 @@ importers:
       '@bugsee/rrweb-record':
         specifier: file:../../vendor/rrweb-record
         version: file:vendor/rrweb-record(@rrweb/types@2.2.1)(rrweb@2.2.1)
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1

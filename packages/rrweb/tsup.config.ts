@@ -1,5 +1,15 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig } from 'tsup';
 import { baseConfig } from '../../tsup.config.base';
+import {
+  dedupeTrailingSourceMap,
+  stripInlineSourceMapPlugin,
+} from './build/strip-inline-sourcemap';
+
+// The guard test builds into a temp dir (BUGSEE_RRWEB_OUT_DIR + `--out-dir`) so it never cleans the real
+// dist/ while a concurrent turbo `build` is writing it.
+const outDir = process.env.BUGSEE_RRWEB_OUT_DIR ?? 'dist';
 
 // @bugsee/rrweb: the thin record-path wrapper.
 //
@@ -13,4 +23,16 @@ export default defineConfig({
   ...baseConfig,
   entry: ['src/index.ts'],
   noExternal: ['@bugsee/rrweb-record'],
+  // The vendored bundle inlines a worker as a template literal ending in a sourceMappingURL comment; see
+  // strip-inline-sourcemap.ts (Angular's esbuild builder would otherwise cut the closing backtick).
+  // Exactly one inlined comment exists in the vendored bundle (the image-bitmap worker); any other count
+  // means a vendor bump changed it and this transform needs a look.
+  esbuildPlugins: [stripInlineSourceMapPlugin({ expected: 1 })],
+  // tsup writes the trailing `//# sourceMappingURL=` twice; keep one so the file has exactly one, last.
+  onSuccess: async () => {
+    for (const name of ['index.js', 'index.cjs']) {
+      const f = join(outDir, name);
+      writeFileSync(f, dedupeTrailingSourceMap(readFileSync(f, 'utf8')));
+    }
+  },
 });
