@@ -40,7 +40,7 @@ export interface HangDetectionProviderDeps {
    * The CPU profile covering the stall, when profiling is on. Resolving undefined (or an unusable profile, or
    * rejecting) keeps the plain hang report: a crash.json with no frames would make every hang one issue.
    */
-  blockingProfile?: () => Promise<CpuProfile | undefined>;
+  blockingProfile?: (stallMs: number) => Promise<CpuProfile | undefined>;
   /** Watchdog factory — tests inject a fake to drive onHang without a real worker. Default the real one. */
   createWatchdog?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
 }
@@ -86,7 +86,7 @@ class HangDetectionProvider extends DetectionProviderBase {
     this.#pending = this.#pending.then(async () => {
       let crash: CrashJson | undefined;
       try {
-        const profile = await source();
+        const profile = await source(durationMs);
         crash =
           profile !== undefined
             ? hangCrashFromProfile(profile, {

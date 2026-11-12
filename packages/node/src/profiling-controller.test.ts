@@ -173,6 +173,7 @@ describe('createProfilingController', () => {
   });
 
   describe('hold() — the hang-report segment', () => {
+    const STALL = 5000; // a stall long enough that the held segment is always after its start
     const mk = (nowRef: { t: number }) => {
       const p = fakeProfiler();
       const s = fakeScheduler();
@@ -188,7 +189,7 @@ describe('createProfilingController', () => {
 
     it('collects the segment and returns the profile', async () => {
       const { p, c } = mk({ t: 0 });
-      expect(await c.hold()).toEqual(p.profile);
+      expect(await c.hold(STALL)).toEqual(p.profile);
       expect(p.calls.collect).toBe(1);
     });
 
@@ -201,33 +202,33 @@ describe('createProfilingController', () => {
         rollingIntervalMs: 60_000,
       });
       c.start();
-      expect(await c.hold()).toBeUndefined();
-      await c.hold();
+      expect(await c.hold(STALL)).toBeUndefined();
+      await c.hold(STALL);
       expect(p.calls.collect).toBe(2); // nothing was retained, so the second call collects again
     });
 
     it('a second hold() within the TTL reuses the held segment instead of collecting an empty one', async () => {
       const now = { t: 0 };
       const { p, c } = mk(now);
-      await c.hold();
+      await c.hold(STALL);
       now.t = 2999;
-      expect(await c.hold()).toEqual(p.profile);
+      expect(await c.hold(STALL)).toEqual(p.profile);
       expect(p.calls.collect).toBe(1);
     });
 
     it('collects afresh once the TTL has passed', async () => {
       const now = { t: 0 };
       const { p, c } = mk(now);
-      await c.hold();
+      await c.hold(STALL);
       now.t = 3000;
-      await c.hold();
+      await c.hold(STALL);
       expect(p.calls.collect).toBe(2);
     });
 
     it('snapshot() within the TTL returns the held segment (the hang report keeps its profile.json)', async () => {
       const now = { t: 0 };
       const { p, c } = mk(now);
-      await c.hold();
+      await c.hold(STALL);
       now.t = 10;
       const entries = await c.snapshot(1700);
       expect(entries[0]?.data).toEqual(p.profile);
@@ -242,18 +243,65 @@ describe('createProfilingController', () => {
       expect(p.calls.collect).toBe(2);
     });
 
-    it('the rolling tick replaces the held segment, and retains its own for a hang report that follows it', async () => {
+    it('a LATE rolling tick (it ran behind a block) retains its segment for the hang report that follows it', async () => {
       const now = { t: 0 };
       const { p, s, c } = mk(now);
-      await c.hold();
-      s.fire(); // an overdue tick that ran just before the hang message
+      await c.hold(STALL);
+      now.t = 60_251; // 251ms behind its interval
+      s.fire();
       await flush();
       expect(p.calls.collect).toBe(2); // the tick collected afresh rather than reusing the old hold
-      await c.hold();
-      expect(p.calls.collect).toBe(2); // ...and the hang's hold() reuses the tick's segment
-      now.t = 3000;
-      await c.hold();
+      now.t = 60_300;
+      await c.hold(STALL);
+      expect(p.calls.collect).toBe(2); // the hang's hold() reuses the tick's segment
+      now.t = 63_251;
+      await c.hold(STALL);
       expect(p.calls.collect).toBe(3); // never retained beyond the TTL
+    });
+
+    it('an ON-TIME rolling tick retains nothing (its segment predates any later stall)', async () => {
+      const now = { t: 0 };
+      const { p, s, c } = mk(now);
+      now.t = 60_250; // exactly on the slack boundary: not late
+      s.fire();
+      await flush();
+      now.t = 62_500;
+      await c.hold(STALL);
+      expect(p.calls.collect).toBe(2); // hold() collected its own
+    });
+
+    it('lateness is measured between ticks, not from launch', async () => {
+      const now = { t: 0 };
+      const { p, s, c } = mk(now);
+      now.t = 60_000;
+      s.fire();
+      await flush();
+      now.t = 120_100; // 60.1s after the previous tick: on time
+      s.fire();
+      await flush();
+      await c.hold(STALL);
+      expect(p.calls.collect).toBe(3);
+    });
+
+    it('never reuses a held segment taken before the stall began (an earlier hang, or an earlier tick)', async () => {
+      const now = { t: 0 };
+      const { p, c } = mk(now);
+      await c.hold(STALL); // an earlier hang's segment, taken at 0
+      now.t = 1000;
+      await c.hold(500); // a new stall that began at 500
+      expect(p.calls.collect).toBe(2);
+      now.t = 1100;
+      await c.hold(500); // the stall began at 600, the held segment was taken at 1000: reusable
+      expect(p.calls.collect).toBe(2);
+    });
+
+    it('a segment taken exactly when the stall began is not reusable (it ended before the stall)', async () => {
+      const now = { t: 0 };
+      const { p, c } = mk(now);
+      await c.hold(STALL); // taken at 0
+      now.t = 1000;
+      await c.hold(1000); // the stall began at 0
+      expect(p.calls.collect).toBe(2);
     });
 
     it('serializes with snapshot(): a snapshot queued behind a hold reuses its segment', async () => {
@@ -266,7 +314,7 @@ describe('createProfilingController', () => {
         now: () => 0,
       });
       c.start();
-      const held = c.hold();
+      const held = c.hold(STALL);
       const snap = c.snapshot(5);
       await flush();
       p.resolveNext(aProfile({ endTime: 7 }));
@@ -277,9 +325,9 @@ describe('createProfilingController', () => {
 
     it('stop() drops the held segment', async () => {
       const { p, c } = mk({ t: 0 });
-      await c.hold();
+      await c.hold(STALL);
       c.stop();
-      await c.hold();
+      await c.hold(STALL);
       expect(p.calls.collect).toBe(2);
     });
   });

@@ -27,6 +27,9 @@ export interface ProfilingControllerDeps {
  */
 const HOLD_MS = 3000; // any report in that window shares the held segment, not only a hang's
 
+/** A rolling tick this much later than its interval ran behind a block: its segment may hold a stall. */
+const LATE_TICK_MS = 250;
+
 export interface ProfilingController {
   /** Start sampling + the rolling-restart timer. */
   start(): void;
@@ -35,8 +38,10 @@ export interface ProfilingController {
   /**
    * Collect the current segment for a HANG report and retain it for a few seconds, so the burst of escalation
    * reports (and the profile.json each bundles) all see the stall. Resolves undefined when there is no profile.
+   * `stallMs` is the stall's measured length: a retained segment taken before the stall began (an earlier hang's,
+   * or an earlier tick's) is never reused, so a hang cannot be reported with another one's frames.
    */
-  hold(): Promise<CpuProfile | undefined>;
+  hold(stallMs: number): Promise<CpuProfile | undefined>;
   /** Stop the rolling timer and the profiler. */
   stop(): void;
 }
@@ -46,13 +51,18 @@ export function createProfilingController(deps: ProfilingControllerDeps): Profil
   const now = deps.now ?? Date.now;
   let handle: unknown;
   let held: { profile: CpuProfile; at: number } | undefined;
+  let lastTickAt = now();
 
   // Serialize every collect() so the rolling tick and a report never stop+restart the session at once.
   // profiler.collect() resolves (never rejects), so the chain stays settled.
   let chain: Promise<unknown> = Promise.resolve();
-  const collect = (retain: boolean): Promise<CpuProfile | undefined> => {
+  const collect = (retain: boolean, notBefore?: number): Promise<CpuProfile | undefined> => {
     const next = chain.then(async () => {
-      if (held !== undefined && now() - held.at < HOLD_MS) {
+      if (
+        held !== undefined &&
+        now() - held.at < HOLD_MS &&
+        (notBefore === undefined || held.at > notBefore)
+      ) {
         return held.profile;
       }
       held = undefined;
@@ -69,12 +79,16 @@ export function createProfilingController(deps: ProfilingControllerDeps): Profil
   return {
     start() {
       void profiler.start();
+      lastTickAt = now();
       handle = scheduler.setInterval(() => {
         held = undefined; // never keep a stale segment for a whole window
-        // The tick caps the segment length, but it can run just BEFORE the watchdog's hang message is handled
-        // (a block that started in a check-phase callback), taking the stall with it: retain it briefly so the
-        // hang report's hold() still sees it.
-        void collect(true);
+        // The tick caps the segment length, but a tick that ran LATE ran behind a block, just BEFORE the
+        // watchdog's hang message was handled, taking the stall with it: retain that one briefly so the hang
+        // report's hold() still sees it. An on-time tick holds nothing of a later stall, so it keeps nothing.
+        const at = now();
+        const late = at - lastTickAt > rollingIntervalMs + LATE_TICK_MS;
+        lastTickAt = at;
+        void collect(late);
       }, rollingIntervalMs);
     },
 
@@ -83,7 +97,7 @@ export function createProfilingController(deps: ProfilingControllerDeps): Profil
       return profile ? [new CaptureDataEntryBase('profile', now, profile)] : [];
     },
 
-    hold: () => collect(true),
+    hold: (stallMs) => collect(true, now() - stallMs),
 
     stop() {
       held = undefined;

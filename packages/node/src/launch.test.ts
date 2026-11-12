@@ -2532,6 +2532,12 @@ describe('launch — capture recovery', () => {
     // The hang's own profile is still in the bundle (the report reused the held segment, not an empty one).
     expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual(cpuProfile);
     expect(cpuProfiler.collect).toHaveBeenCalledTimes(1);
+    // The rest of a burst reuses the held segment (the stall length reaches the controller, so it is reusable).
+    onHang?.('medium', 6000);
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.filter(([u]) => u === 'https://s3.test/put')).toHaveLength(2),
+    );
+    expect(cpuProfiler.collect).toHaveBeenCalledTimes(1);
   });
 
   it('without profiling a hang ships no crash.json and keeps its AppHang signature', async () => {

@@ -251,6 +251,17 @@ describe('createHangDetectionProvider', () => {
       ]);
     });
 
+    it('tells the profile source how long the stall was', async () => {
+      const asked: number[] = [];
+      const { fw } = make(async (stallMs) => {
+        asked.push(stallMs);
+        return stalled;
+      });
+      fw.hang('medium', 6123);
+      await flush();
+      expect(asked).toEqual([6123]);
+    });
+
     it('keeps reporting after a submit throws (one failure must not stall the chain)', async () => {
       const fw = fakeWatchdog();
       const reports: ReportingRequest[] = [];

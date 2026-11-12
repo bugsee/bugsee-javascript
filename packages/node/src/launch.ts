@@ -1164,7 +1164,10 @@ function buildLaunch(appToken: string, options: BugseeLaunchOptions = {}): Launc
       // The stall's frames come from the rolling CPU profile (opt-in): without profiling a hang keeps its
       // fixed AppHang::* signature. Late-bound — the controller is built above, but only when profiling is on.
       ...(profilingController !== undefined
-        ? { blockingProfile: () => profilingController?.hold() ?? Promise.resolve(undefined) }
+        ? {
+            blockingProfile: (stallMs) =>
+              profilingController?.hold(stallMs) ?? Promise.resolve(undefined),
+          }
         : {}),
       ...(options.hangWatchdogFactory !== undefined
         ? { createWatchdog: options.hangWatchdogFactory }
