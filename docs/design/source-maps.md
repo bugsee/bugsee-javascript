@@ -54,7 +54,8 @@ cargo-dist under the `@bugsee` scope — the `@sentry/cli` model) already does t
 **Decision (D0): the JS side does NOT reimplement any of this.** No JS upload/discovery/pack/inject. The plugins
 **collect context and SPAWN `bugsee-cli`** — exactly like `@sentry/webpack-plugin` shells out to the Rust `sentry-cli`.
 (An earlier v1 draft reimplemented upload+discovery in a `@bugsee/cli` JS package; that was removed once `bugsee-cli`
-was found — it duplicated the Rust engine and collided on the npm name.)
+was found — it duplicated the Rust engine and collided on the npm name; the `@bugsee/cli` name now belongs to the
+official package that ships the Rust binary, see §4.)
 
 ## 3. Identity model (decided)
 
