@@ -62,8 +62,7 @@ minimumReleaseAgeExclude:
   # gap) and is not on the npm registry at all (installed from a local tarball via the
   # `overrides` above). pnpm 11's minimumReleaseAge supply-chain check tries to look each one up on
   # the public registry regardless of the `file:` resolution and fails closed on the 404. Excluding
-  # them by exact name@version is the same workaround the root pnpm-workspace.yaml uses for
-  # @bugsee/bugsee-cli@0.7.2.
+  # them by exact name@version is the workaround for the same fail-closed lookup.
   - '@bugsee/adapter-kit@0.0.0'
   - '@bugsee/angular@0.0.0'
   - '@bugsee/astro@0.0.0'

@@ -59,9 +59,8 @@ the scenario catalog, plus every `@bugsee/react`-specific API (`BugseeErrorBound
 
 ## The source-map half
 
-`@bugsee/vite-plugin` does not run out of the box against a tarball install: `resolveBugseeCli()` assumes `bugsee-cli` is on `PATH`, which only holds inside the
-monorepo. The escape hatch is `BUGSEE_CLI_PATH` (see the build command above). Once pointed at the
-real binary, the rest of the pipeline works correctly: `pnpm build` injects a `//# debugId=<uuid>`
+`@bugsee/vite-plugin` runs out of the box against a tarball install: `resolveBugseeCli()` finds the
+binary through `@bugsee/cli` (`BUGSEE_CLI_PATH` is only an override). The pipeline: `pnpm build` injects a `//# debugId=<uuid>`
 comment + a `_bugseeDebugIds` runtime stamp into every chunk, uploads the real source maps via
 `bugsee-cli`, and deletes the client-facing `.map` files. Throwing from the **minified** production
 bundle (`node scripts/prod-sourcemap-check.mjs` against `pnpm preview`) and checking the resulting
