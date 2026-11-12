@@ -16,7 +16,7 @@
     "@bugsee/opentelemetry": "workspace:*",
     "@bugsee/performance": "workspace:*",
     "@opentelemetry/api": "^1.10.0",
-    "@opentelemetry/sdk-trace": "^3.0.0"
+    "@opentelemetry/sdk-trace": "^3.1.0"
   },
   "license": "MIT"
 }
