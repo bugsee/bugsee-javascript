@@ -17,11 +17,11 @@ Open http://localhost:5302. `pnpm dev` runs both the local API (`server/api-serv
 and the Vite dev server (port 5302) together via `concurrently`; `pnpm dev:api` / `pnpm dev:app` run
 them separately.
 
-**Production build** — see "The source-map half" below before running this; `bugsee-cli` does not
-resolve out of the box:
+**Production build** — see "The source-map half" below. `bugsee-cli` resolves out of the box
+(through `@bugsee/cli`); set `BUGSEE_CLI_PATH` only to override it:
 
 ```bash
-BUGSEE_CLI_PATH="$(pwd)/node_modules/.pnpm/@bugsee+bugsee-cli@0.7.4/node_modules/@bugsee/bugsee-cli/run-bugsee-cli.js" pnpm build
+pnpm build
 pnpm preview               # serves dist/ on :5302 + the API on :5330
 ```
 
