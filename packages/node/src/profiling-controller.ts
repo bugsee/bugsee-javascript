@@ -81,13 +81,18 @@ export function createProfilingController(deps: ProfilingControllerDeps): Profil
       void profiler.start();
       lastTickAt = now();
       handle = scheduler.setInterval(() => {
-        held = undefined; // never keep a stale segment for a whole window
         // The tick caps the segment length, but a tick that ran LATE ran behind a block, just BEFORE the
         // watchdog's hang message was handled, taking the stall with it: retain that one briefly so the hang
         // report's hold() still sees it. An on-time tick holds nothing of a later stall, so it keeps nothing.
         const at = now();
         const late = at - lastTickAt > rollingIntervalMs + LATE_TICK_MS;
         lastTickAt = at;
+        // A fresh held segment already bounds the segment length and holds a stall: a tick landing after it (a
+        // block that ran in a timer callback delivers the hang message first) must not discard it.
+        if (held !== undefined && at - held.at < HOLD_MS) {
+          return;
+        }
+        held = undefined; // never keep a stale segment for a whole window
         void collect(late);
       }, rollingIntervalMs);
     },

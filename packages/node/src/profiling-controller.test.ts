@@ -259,6 +259,19 @@ describe('createProfilingController', () => {
       expect(p.calls.collect).toBe(3); // never retained beyond the TTL
     });
 
+    it("a tick that lands right after a hang's hold leaves the held stall alone (no collect, no discard)", async () => {
+      const now = { t: 60_300 };
+      const { p, s, c } = mk(now);
+      await c.hold(STALL); // the hang's segment, taken at 60300
+      now.t = 60_400;
+      s.fire(); // the overdue tick, handled after the hang message
+      await flush();
+      expect(p.calls.collect).toBe(1);
+      const entries = await c.snapshot(5); // the hang report's profile.json is still the stall
+      expect(entries[0]?.data).toEqual(p.profile);
+      expect(p.calls.collect).toBe(1);
+    });
+
     it('an ON-TIME rolling tick retains nothing (its segment predates any later stall)', async () => {
       const now = { t: 0 };
       const { p, s, c } = mk(now);
