@@ -44,6 +44,7 @@ import {
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDisabledClientForMissingToken,
   createDiskPressure,
   createDurableUploadPipeline,
   createMemoryCaptureStore,
@@ -703,6 +704,11 @@ export async function launchCore(
   appToken: string,
   options: BugseeLaunchOptions = {},
 ): Promise<LaunchResult> {
+  // A missing / empty / non-string token must not reject the host's startup: report once, return a disabled client.
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return { client: { ...disabled, showReportDialog: async () => null }, internals: undefined };
+  }
   const carrier = options.carrier;
   const owned = getCarrierClient(carrier) === undefined;
   if (owned) {
