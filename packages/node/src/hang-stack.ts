@@ -72,12 +72,19 @@ function frameLine(frame: ProfileNode['callFrame']): string {
 
 /**
  * Is this the application's own code, as opposed to the profiler's pseudo-frames, a native builtin (no script:
- * `JSON.parse`, `sort`, a regex exec) or a runtime module (`node:internal/...`)? A builtin or runtime frame on
+ * `JSON.parse`, `sort`, a regex exec) or a runtime/SDK module (`node:internal/...`, Bun's `internal:...`, `@bugsee/*`)? A builtin or runtime frame on
  * top would group every hang that ends in the same builtin into one issue whatever called it, so time spent
  * there is attributed to the application frame that called in.
  */
 function isApplicationFrame(frame: ProfileNode['callFrame']): boolean {
-  return frame.url !== '' && !frame.url.startsWith('node:'); // the pseudo-frames have no script either
+  const { url } = frame; // the pseudo-frames have no script either
+  // `node:` is Node's runtime, `internal:` Bun's; the SDK's own packages sit between the app and its work too.
+  return (
+    url !== '' &&
+    !url.startsWith('node:') &&
+    !url.startsWith('internal:') &&
+    !url.includes('/@bugsee/')
+  );
 }
 
 /** The `id`s of the node's ancestors are not stored, only its children: invert them once. */

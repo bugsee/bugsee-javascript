@@ -217,6 +217,20 @@ describe('hangCrashFromProfile', () => {
     ]);
   });
 
+  it.each([
+    ['Bun runtime library', 'internal:util/inspect'],
+    ['Node runtime module', 'node:path'],
+    ['the SDK itself', 'file:///srv/node_modules/@bugsee/core/dist/index.js'],
+  ])('attributes time spent in %s to the application caller', (_what, url) => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      { id: 2, fn: 'handler', url: 'file:///srv/app.js', line: 0, col: 0, children: [3] },
+      { id: 3, fn: 'busy', url, line: 0, col: 0 },
+    ];
+    const crash = hangCrashFromProfile(profile(nodes, [3, 3, 3]), opts);
+    expect(crash?.exception.frames[0]?.data?.member).toBe('handler');
+  });
+
   it('caps a pathologically deep stack, keeping the leaf end', () => {
     const nodes: N[] = [{ id: 1, fn: '(root)', children: [2] }];
     for (let i = 2; i <= 200; i += 1) {
