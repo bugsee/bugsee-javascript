@@ -104,6 +104,39 @@ afterEach(() => {
 });
 
 describe('launchRenderer', () => {
+  it('a missing app token reports once, returns a disabled client and wires nothing (no launch, no hello, no control)', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const onError = vi.fn();
+    const client = await launchRenderer(undefined as unknown as string, {
+      launch: f.launch,
+      bridge: b.bridge,
+      onError,
+      carrier: {},
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/app token is missing/);
+    expect(client.isLaunched()).toBe(false);
+    await expect(client.showReportDialog()).resolves.toBeNull();
+    expect(f.received).toBeUndefined();
+    expect(b.hellos).toEqual([]);
+    // no slot was taken: a later valid launch proceeds
+    const live = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    expect(f.received?.appToken).toBe('tok');
+    expect(live).toBe(f.client);
+  });
+
+  it('a bad token while this page already has a live renderer returns that live client', async () => {
+    const f = fakeLaunch();
+    const b = fakeBridge();
+    const live = await launchRenderer('tok', { launch: f.launch, bridge: b.bridge });
+    const again = await launchRenderer(undefined as unknown as string, {
+      launch: f.launch,
+      bridge: b.bridge,
+    });
+    expect(again).toBe(live);
+  });
+
   it('runs the browser launch with a streaming captureStore injected + forwards options', async () => {
     const f = fakeLaunch();
     const client = await launchRenderer('tok', { launch: f.launch, post: () => {}, replay: true });

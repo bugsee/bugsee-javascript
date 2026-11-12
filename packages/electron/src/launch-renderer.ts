@@ -13,6 +13,7 @@ import { createTraceSuppression } from '@bugsee/capture';
 import {
   asInternalClient,
   BlackoutToken,
+  createDisabledClientForMissingToken,
   getCarrierBlackout,
   LifecycleEvents,
   resolveFailOnBoolean,
@@ -99,6 +100,13 @@ export function launchRenderer(
   const existing = page[RENDERER_SLOT];
   if (existing !== undefined && (existing.client === undefined || existing.client.isLaunched())) {
     return existing.launch;
+  }
+  // A missing / empty / non-string token: report once and return a disabled client WITHOUT wiring the stream, the control
+  // channel or the hello — a renderer that can never contribute must not announce itself to main. (A live renderer was
+  // handled above, so a repeat call with a bad token still returns the running client.)
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return Promise.resolve({ ...disabled, showReportDialog: async () => null });
   }
   // A re-run replaces a client main has stopped: retire its control subscription first, so a reply meant for the
   // NEW session cannot also run the old handler (double onSessionId / BlackoutStarted).
