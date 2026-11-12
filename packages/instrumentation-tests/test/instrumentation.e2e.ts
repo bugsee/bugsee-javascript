@@ -322,6 +322,31 @@ describe.each(
         ].join('\n'),
       ).toBe(true);
     });
+
+    // Held by the profile, turned into frames: the AppHang report's crash.json names WHERE the loop blocked, so
+    // the backend groups hangs by that frame. Asserted across every hang bundle for the reason the profile test
+    // above spells out: a CPU-starved runner adds genuine extra episodes that did not see the deliberate spin.
+    it('a delivered AppHang report carries a crash.json whose frames hold the blocking function', () => {
+      const hangs = bundles.filter((b) => b.request.source.mechanism === 'hang');
+      type Crash = {
+        exception: { name: string; domain?: string; frames: Array<{ data?: { member?: string } }> };
+      };
+      const crashes = hangs
+        .filter((b) => b.files['crash.json'] !== undefined)
+        .map((b) => parseJson<Crash>(b.files['crash.json']));
+      expect(
+        crashes.length,
+        `no AppHang bundle carries crash.json (${hangs.length} delivered)`,
+      ).toBeGreaterThan(0);
+      for (const crash of crashes) {
+        expect(crash.exception.name).toBe('AppHang');
+        expect(crash.exception.domain).toMatch(/^AppHang::(Fair|Medium|Severe)$/);
+      }
+      expect(
+        crashes.some((c) => c.exception.frames.some((f) => f.data?.member === 'e2eHangSpin')),
+        `e2eHangSpin is in none of the ${crashes.length} hang crash.json(s)`,
+      ).toBe(true);
+    });
   });
 
   describe('server scenario: node:http incoming request → per-request context', () => {

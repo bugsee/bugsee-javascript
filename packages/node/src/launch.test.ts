@@ -2474,6 +2474,93 @@ describe('launch — capture recovery', () => {
     expect(req.labels).toContain('AppHang::Severe');
   });
 
+  it('with profiling on, a hang ships a crash.json of the stall (frames + AppHang domain) alongside profile.json', async () => {
+    const transport = uploadTransport();
+    const cpuProfile = {
+      nodes: [
+        {
+          id: 1,
+          callFrame: { functionName: '(root)', url: '', lineNumber: -1, columnNumber: -1 },
+          children: [2],
+        },
+        {
+          id: 2,
+          callFrame: {
+            functionName: 'crunch',
+            url: 'file:///srv/app.js',
+            lineNumber: 9,
+            columnNumber: 2,
+          },
+        },
+      ],
+      startTime: 0,
+      endTime: 3000,
+      samples: [2, 2, 2],
+      timeDeltas: [1000, 1000, 1000],
+    };
+    const cpuProfiler = {
+      running: false,
+      start: async () => {},
+      collect: vi.fn(async () => cpuProfile),
+      stop: async () => cpuProfile,
+    };
+    let onHang: ((l: HangLevel, d: number) => void) | undefined;
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        scheduler: fakeScheduler().scheduler,
+        profiling: true,
+        cpuProfiler,
+        hangWatchdogFactory: (deps) => {
+          onHang = deps.onHang;
+          return { start() {}, stop() {} };
+        },
+      }),
+    );
+    onHang?.('severe', 12_000);
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([u]) => u === 'https://s3.test/put')).toBe(true),
+    );
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    const crash = JSON.parse(strFromU8(files['crash.json'] as Uint8Array));
+    expect(crash.exception.domain).toBe('AppHang::Severe');
+    expect(crash.exception.frames[0].data).toMatchObject({ member: 'crunch', line: 10, column: 3 });
+    expect(JSON.parse(strFromU8(files['request.json'] as Uint8Array)).signatures).toBeUndefined();
+    // The hang's own profile is still in the bundle (the report reused the held segment, not an empty one).
+    expect(JSON.parse(strFromU8(files['profile.json'] as Uint8Array))).toEqual(cpuProfile);
+    expect(cpuProfiler.collect).toHaveBeenCalledTimes(1);
+  });
+
+  it('without profiling a hang ships no crash.json and keeps its AppHang signature', async () => {
+    const transport = uploadTransport();
+    let onHang: ((l: HangLevel, d: number) => void) | undefined;
+    launchTracked(
+      'tok',
+      baseOptions({
+        transport,
+        captureStore: memStore(),
+        scheduler: fakeScheduler().scheduler,
+        hangWatchdogFactory: (deps) => {
+          onHang = deps.onHang;
+          return { start() {}, stop() {} };
+        },
+      }),
+    );
+    onHang?.('fair', 3000);
+    await vi.waitFor(() =>
+      expect(transport.mock.calls.some(([u]) => u === 'https://s3.test/put')).toBe(true),
+    );
+    const put = transport.mock.calls.find(([u]) => u === 'https://s3.test/put');
+    const files = unzipSync((put?.[1] as HttpRequestOptions).body as Uint8Array);
+    expect('crash.json' in files).toBe(false);
+    expect(JSON.parse(strFromU8(files['request.json'] as Uint8Array)).signatures).toEqual([
+      'AppHang::Fair',
+    ]);
+  });
+
   it('does not start hang detection when detectHangs is false', () => {
     let started = false;
     launchTracked(

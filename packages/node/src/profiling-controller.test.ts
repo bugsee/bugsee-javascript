@@ -169,4 +169,112 @@ describe('createProfilingController', () => {
     expect(s.cleared()).toBe(false);
     expect(p.calls.stop).toBe(1); // profiler.stop() is still called (idempotent no-op when not running)
   });
+
+  describe('hold() — the hang-report segment', () => {
+    const mk = (nowRef: { t: number }) => {
+      const p = fakeProfiler();
+      const s = fakeScheduler();
+      const c = createProfilingController({
+        profiler: p.profiler,
+        scheduler: s.scheduler,
+        rollingIntervalMs: 60_000,
+        now: () => nowRef.t,
+      });
+      c.start();
+      return { p, s, c };
+    };
+
+    it('collects the segment and returns the profile', async () => {
+      const { p, c } = mk({ t: 0 });
+      expect(await c.hold()).toEqual(p.profile);
+      expect(p.calls.collect).toBe(1);
+    });
+
+    it('returns undefined when there is no profile, and holds nothing', async () => {
+      const p = fakeProfiler({ profile: undefined });
+      const s = fakeScheduler();
+      const c = createProfilingController({
+        profiler: p.profiler,
+        scheduler: s.scheduler,
+        rollingIntervalMs: 60_000,
+      });
+      c.start();
+      expect(await c.hold()).toBeUndefined();
+      await c.hold();
+      expect(p.calls.collect).toBe(2); // nothing was retained, so the second call collects again
+    });
+
+    it('a second hold() within the TTL reuses the held segment instead of collecting an empty one', async () => {
+      const now = { t: 0 };
+      const { p, c } = mk(now);
+      await c.hold();
+      now.t = 2999;
+      expect(await c.hold()).toEqual(p.profile);
+      expect(p.calls.collect).toBe(1);
+    });
+
+    it('collects afresh once the TTL has passed', async () => {
+      const now = { t: 0 };
+      const { p, c } = mk(now);
+      await c.hold();
+      now.t = 3000;
+      await c.hold();
+      expect(p.calls.collect).toBe(2);
+    });
+
+    it('snapshot() within the TTL returns the held segment (the hang report keeps its profile.json)', async () => {
+      const now = { t: 0 };
+      const { p, c } = mk(now);
+      await c.hold();
+      now.t = 10;
+      const entries = await c.snapshot(1700);
+      expect(entries[0]?.data).toEqual(p.profile);
+      expect(entries[0]?.timestamp).toBe(1700);
+      expect(p.calls.collect).toBe(1);
+    });
+
+    it('snapshot() alone never retains (a later snapshot collects a fresh segment)', async () => {
+      const { p, c } = mk({ t: 0 });
+      await c.snapshot(1);
+      await c.snapshot(2);
+      expect(p.calls.collect).toBe(2);
+    });
+
+    it('the rolling tick drops the held segment so it is never retained for a whole window', async () => {
+      const { p, s, c } = mk({ t: 0 });
+      await c.hold();
+      s.fire();
+      await flush();
+      expect(p.calls.collect).toBe(2);
+      await c.hold();
+      expect(p.calls.collect).toBe(3);
+    });
+
+    it('serializes with snapshot(): a snapshot queued behind a hold reuses its segment', async () => {
+      const p = fakeProfiler({ defer: true });
+      const s = fakeScheduler();
+      const c = createProfilingController({
+        profiler: p.profiler,
+        scheduler: s.scheduler,
+        rollingIntervalMs: 60_000,
+        now: () => 0,
+      });
+      c.start();
+      const held = c.hold();
+      const snap = c.snapshot(5);
+      await flush();
+      p.resolveNext(aProfile({ endTime: 7 }));
+      expect(await held).toEqual(aProfile({ endTime: 7 }));
+      expect((await snap)[0]?.data).toEqual(aProfile({ endTime: 7 }));
+      expect(p.calls.collect).toBe(1);
+    });
+
+    it('stop() drops the held segment', async () => {
+      const { p, c } = mk({ t: 0 });
+      await c.hold();
+      c.stop();
+      await c.hold();
+      expect(p.calls.collect).toBe(2);
+    });
+  });
 });
