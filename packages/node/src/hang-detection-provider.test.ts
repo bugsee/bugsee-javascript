@@ -131,7 +131,7 @@ describe('createHangDetectionProvider', () => {
       samples: [2, 2, 2],
       timeDeltas: [1000, 1000, 1000],
     };
-    const make = (blockingProfile: () => Promise<CpuProfile | undefined>) => {
+    const make = (blockingProfile: (stallMs: number) => Promise<CpuProfile | undefined>) => {
       const fw = fakeWatchdog();
       const reports: ReportingRequest[] = [];
       const p = createHangDetectionProvider({
