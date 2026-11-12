@@ -156,12 +156,15 @@ jobs:
       - name: Install Playwright's browsers (Chromium, Firefox, WebKit)
         # Hosted-runner DNS/mirror outages make `apt` hang for ~20 minutes before failing (seen 2026-11-11),
         # so bound each attempt and retry; apt itself is told to retry and give up quickly.
-        timeout-minutes: 15
+        timeout-minutes: 17
         run: |
           echo 'Acquire::Retries "5"; Acquire::http::Timeout "20"; Acquire::https::Timeout "20";' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
           for attempt in 1 2 3; do
-            if timeout 240 pnpm --filter @bugsee/instrumentation-tests exec playwright install --with-deps chromium firefox webkit; then exit 0; fi
-            echo "Playwright install failed (attempt $attempt)"; sleep $((attempt * 20))
+            if timeout -k 15 240 pnpm --filter @bugsee/instrumentation-tests exec playwright install --with-deps chromium firefox webkit; then exit 0; fi
+            echo "Playwright install failed (attempt $attempt)"
+            [ "$attempt" -lt 3 ] || break
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 20))
           done
           exit 1
 
