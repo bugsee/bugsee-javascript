@@ -1191,15 +1191,15 @@ importers:
   packages/rrweb:
     dependencies:
       '@rrweb/types':
-        specifier: ^2.2.1
-        version: 2.2.1
+        specifier: ^2.2.2
+        version: 2.2.2
       rrweb:
-        specifier: ^2.2.1
-        version: 2.2.1
+        specifier: ^2.2.2
+        version: 2.2.2
     devDependencies:
       '@bugsee/rrweb-record':
         specifier: file:../../vendor/rrweb-record
-        version: file:vendor/rrweb-record(@rrweb/types@2.2.1)(rrweb@2.2.1)
+        version: file:vendor/rrweb-record(@rrweb/types@2.2.2)(rrweb@2.2.2)
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -2025,8 +2025,8 @@ packages:
   '@bugsee/rrweb-record@file:vendor/rrweb-record':
     resolution: {directory: vendor/rrweb-record, type: directory}
     peerDependencies:
-      '@rrweb/types': ^2.2.1
-      rrweb: ^2.2.1
+      '@rrweb/types': ^2.2.2
+      rrweb: ^2.2.2
     peerDependenciesMeta:
       '@rrweb/types':
         optional: true
@@ -4192,11 +4192,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@rrweb/types@2.2.1':
-    resolution: {integrity: sha512-GGUGQXekOJ35Ab644SO6iWU7vWpXiGPz1B5egTsPEwNTHv+syXWOoe2rXwB1NQOs64XirHzHqYX6SSYaJme3Cg==}
+  '@rrweb/types@2.2.2':
+    resolution: {integrity: sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w==}
 
-  '@rrweb/utils@2.2.1':
-    resolution: {integrity: sha512-aRubNFue2PeI6ZlesjNfAJeXE2okDEiIpspvC03aotTRgbmJ0SXSsrBbYcWVCM6o7E5aNolmb7m7SKmUyCLDnQ==}
+  '@rrweb/utils@2.2.2':
+    resolution: {integrity: sha512-C078kPGG4iJ6uuSPELy/RkXZ6Ge3rUsSrX0KYzbtSjoCwMErrqF0RMbWjxpUROI0Hx7ewKeiDTp+Og9AYzYzjg==}
 
   '@rspack/binding-darwin-arm64@2.2.9':
     resolution: {integrity: sha512-aIHkk/wngpwgWkwVQFz2AIkmG9WpWtWlkqy4BlYhs5a7l9z0BrB0kXnUb6VSbqZ7Tc3cRepKw7ipkGjKa8KKXw==}
@@ -8232,8 +8232,8 @@ packages:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
 
-  rrdom@2.2.1:
-    resolution: {integrity: sha512-nUrhXH2DyD62+9hru7mrPhtbF0CVobMdJzhl0uIgoMtaLS2vN4mNrRL/DmC/gpEH4EO0JlmWH7lzdqaY90fGgA==}
+  rrdom@2.2.2:
+    resolution: {integrity: sha512-hVe7bm9dw8Rluj1MIKh6fPDkc7RC5ri7PQi5eggXd3SN8WDt+uoNtceSIZC6ouMXzjqoMkQYJmIKmQEFc0mHCw==}
 
   rrweb-cssom@0.7.1:
     resolution: {integrity: sha512-TrEMa7JGdVm0UThDJSx7ddw5nVm3UJS9o9CCIZ72B1vSyEZoziDqBYP3XIoi/12lKrJR8rE3jeFHMok2F/Mnsg==}
@@ -8241,11 +8241,11 @@ packages:
   rrweb-cssom@0.8.0:
     resolution: {integrity: sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==}
 
-  rrweb-snapshot@2.2.1:
-    resolution: {integrity: sha512-BkpFnPYoSKjSGe9rWnSo5ZQH0OnIzubTl7Lk3vyX6ktM1NaXkkPQwx3SNhdhrDS0Ja+ndlvYaNF0I1WG0exCtQ==}
+  rrweb-snapshot@2.2.2:
+    resolution: {integrity: sha512-/0w4Xzd/Tw5a80dmEmv8/YkFitJYoMOnbtmt0jCAEdZ1w0nDSw5hvf59E/oDLy+z+x+vCcT0ibI+IYWeuCHegQ==}
 
-  rrweb@2.2.1:
-    resolution: {integrity: sha512-+6DFkxeHakI7180j/AtJU6cP41aZxUm/lK1zMjTNsRG6IWFLSYco3IK3Yl2llCcPAbeLoNL9V6p178DgL99ZvQ==}
+  rrweb@2.2.2:
+    resolution: {integrity: sha512-LUvR1mbcTTaNkn5OiR0r2neuH86quaQsmucT07N4Yd7YFdxPtr9qMQ2e//1FkbWKa1L3JGmPIQtgv83VPJe3mQ==}
 
   run-applescript@7.1.0:
     resolution: {integrity: sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q==}
@@ -10469,10 +10469,10 @@ snapshots:
     dependencies:
       detect-libc: 2.1.2
 
-  '@bugsee/rrweb-record@file:vendor/rrweb-record(@rrweb/types@2.2.1)(rrweb@2.2.1)':
+  '@bugsee/rrweb-record@file:vendor/rrweb-record(@rrweb/types@2.2.2)(rrweb@2.2.2)':
     optionalDependencies:
-      '@rrweb/types': 2.2.1
-      rrweb: 2.2.1
+      '@rrweb/types': 2.2.2
+      rrweb: 2.2.2
 
   '@capsizecss/unpack@4.0.1':
     dependencies:
@@ -12849,9 +12849,9 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.65.1':
     optional: true
 
-  '@rrweb/types@2.2.1': {}
+  '@rrweb/types@2.2.2': {}
 
-  '@rrweb/utils@2.2.1': {}
+  '@rrweb/utils@2.2.2': {}
 
   '@rspack/binding-darwin-arm64@2.2.9':
     optional: true
@@ -17738,28 +17738,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  rrdom@2.2.1:
+  rrdom@2.2.2:
     dependencies:
-      rrweb-snapshot: 2.2.1
+      rrweb-snapshot: 2.2.2
 
   rrweb-cssom@0.7.1: {}
 
   rrweb-cssom@0.8.0: {}
 
-  rrweb-snapshot@2.2.1:
+  rrweb-snapshot@2.2.2:
     dependencies:
       postcss: 8.5.32
 
-  rrweb@2.2.1:
+  rrweb@2.2.2:
     dependencies:
-      '@rrweb/types': 2.2.1
-      '@rrweb/utils': 2.2.1
+      '@rrweb/types': 2.2.2
+      '@rrweb/utils': 2.2.2
       '@types/css-font-loading-module': 0.0.7
       '@xstate/fsm': 1.6.5
       base64-arraybuffer: 1.0.2
       mitt: 3.0.1
-      rrdom: 2.2.1
-      rrweb-snapshot: 2.2.1
+      rrdom: 2.2.2
+      rrweb-snapshot: 2.2.2
 
   run-applescript@7.1.0: {}
 

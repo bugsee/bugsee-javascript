@@ -1,7 +1,7 @@
 {
   "name": "@bugsee/rrweb-record",
-  "version": "2.2.1",
-  "description": "Prebuilt, record-only rrweb bundle (Bugsee hardened) for @bugsee/rrweb. Built from bugsee-port-2.2.1 (upstream rrweb 2.2.1). Intended git pin: github:bugsee/rrweb#5a46e7db3c97c1e87ded58e1b83c6f5ef43fec34.",
+  "version": "2.2.2",
+  "description": "Prebuilt, record-only rrweb bundle (Bugsee hardened) for @bugsee/rrweb. Built from bugsee-port-2.2.2 (upstream rrweb 2.2.2).",
   "license": "MIT",
   "type": "module",
   "main": "./record.js",
@@ -20,8 +20,8 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "@rrweb/types": "^2.2.1",
-    "rrweb": "^2.2.1"
+    "@rrweb/types": "^2.2.2",
+    "rrweb": "^2.2.2"
   },
   "peerDependenciesMeta": {
     "@rrweb/types": { "optional": true },

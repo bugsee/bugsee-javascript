@@ -14,19 +14,19 @@ describe('@bugsee/rrweb wrapper', () => {
     expect(typeof record).toBe('function');
   });
 
-  it('is wired to the 2.2.1 record-only bundle', () => {
+  it('is wired to the 2.2.2 record-only bundle', () => {
     const pkg = JSON.parse(
       readFileSync(join(dirname(require.resolve('@bugsee/rrweb-record')), 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(pkg.version).toBe('2.2.1');
+    expect(pkg.version).toBe('2.2.2');
   });
 
-  // Provenance pin: the vendored bundle is the ONLY copy until bugsee/rrweb has bugsee-dist-2.2.1, so a
+  // Provenance pin: the vendored bundle is the ONLY copy until bugsee/rrweb has bugsee-dist-2.2.2, so a
   // silent swap (e.g. a plain upstream build) must fail loudly. Update together with the README when rebuilt.
   it('pins the vendored record.js by sha256', () => {
     const file = join(dirname(require.resolve('@bugsee/rrweb-record')), 'record.js');
     const sha = createHash('sha256').update(readFileSync(file)).digest('hex');
-    expect(sha).toBe('b87d6029f188501f9208036a6213b4455d150d279b96b2ad30234d0c5b423135');
+    expect(sha).toBe('14b28561c371d25da7557b7f8446aabdc4b335cfbfd308457632d3b7d252ed3c');
   });
 
   it('records media interaction for a <video> inside an iframe (cross-realm nodeName check)', async () => {
