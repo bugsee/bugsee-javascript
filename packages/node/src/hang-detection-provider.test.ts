@@ -251,6 +251,28 @@ describe('createHangDetectionProvider', () => {
       ]);
     });
 
+    it('keeps reporting after a submit throws (one failure must not stall the chain)', async () => {
+      const fw = fakeWatchdog();
+      const reports: ReportingRequest[] = [];
+      const p = createHangDetectionProvider({
+        thresholds: T,
+        createWatchdog: fw.create,
+        blockingProfile: async () => stalled,
+      });
+      let first = true;
+      p.start(fakeClient, (r) => {
+        if (first) {
+          first = false;
+          throw new Error('sink down');
+        }
+        reports.push(r);
+      });
+      fw.hang('fair', 3000);
+      fw.hang('medium', 5000);
+      await flush();
+      expect(reports.map((r) => r.report.labels?.[0])).toEqual(['AppHang::Medium']);
+    });
+
     it('keeps escalation reports in order', async () => {
       const { fw, reports } = make(async () => stalled);
       fw.hang('fair', 3000);
