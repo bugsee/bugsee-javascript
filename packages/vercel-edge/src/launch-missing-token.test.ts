@@ -36,4 +36,21 @@ describe('@bugsee/vercel-edge launch() with a missing app token', () => {
       warn.mockRestore();
     }
   });
+
+  it('a bad token never replaces a live client, and a valid launch after a disabled one still works', async () => {
+    const carrier = {};
+    const onError = vi.fn();
+    const disabled = launchEdge(undefined as unknown as string, { carrier, onError });
+    expect(disabled.isLaunched()).toBe(false);
+    const live = launchEdge('tok', { carrier, captureNetwork: false, onError });
+    expect(live).not.toBe(disabled);
+    expect(live.isLaunched()).toBe(true);
+    expect(getCarrierClient(carrier)).toBe(live);
+    onError.mockClear();
+    const again = launchEdge(undefined as unknown as string, { carrier, onError });
+    expect(again).toBe(live);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/more than once/);
+    await live.stop();
+  });
 });

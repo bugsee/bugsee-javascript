@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDisabledClientForMissingToken, isValidAppToken } from './app-token';
-import { getCarrierClient } from './carrier';
+import { getCarrierClient, setCarrierClient } from './carrier';
 
 describe('isValidAppToken', () => {
   it('accepts a non-empty string', () => {
@@ -83,5 +83,13 @@ describe('createDisabledClientForMissingToken', () => {
     expect(() => client.setAttribute('k', 'v')).not.toThrow();
     expect(() => client.logException(new Error('x'))).not.toThrow();
     await expect(client.stop()).resolves.toBeDefined();
+  });
+
+  it('defers to the live client: a bad token while a client owns the carrier is left to the repeat-launch path', () => {
+    const carrier = {};
+    setCarrierClient({} as never, carrier);
+    const onError = vi.fn();
+    expect(createDisabledClientForMissingToken(undefined, { onError, carrier })).toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
   });
 });

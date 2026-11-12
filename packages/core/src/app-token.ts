@@ -1,4 +1,5 @@
 import { reportGuarded } from '@bugsee/util';
+import { getCarrierClient } from './carrier';
 import { type BugseeClient, createClient } from './client';
 
 /** A usable app token is a string with at least one non-whitespace character. */
@@ -25,9 +26,14 @@ const describeReceived = (value: unknown): string => {
  */
 export function createDisabledClientForMissingToken(
   appToken: unknown,
-  options: { onError?: (error: unknown) => void; carrier?: object },
+  options: { onError?: (error: unknown) => void; carrier?: object | undefined },
 ): BugseeClient | undefined {
   if (isValidAppToken(appToken)) {
+    return undefined;
+  }
+  // A client already owns the process: let the platform's own repeat-launch path hand THAT client back (a
+  // handler that calls `launch(env.TOKEN)` on every invocation must not swap the live client for a dead one).
+  if (getCarrierClient(options.carrier) !== undefined) {
     return undefined;
   }
   const error = new Error(
@@ -44,8 +50,10 @@ export function createDisabledClientForMissingToken(
       // a broken console must not crash the host either
     }
   }
+  // Deliberately NO carrier: a real client claims carrier-level state (blackout ownership, the lifecycle slot),
+  // and a placeholder must not take any of it from a live client or leave it behind for a later valid launch.
   const client = createClient({
-    ...(options.carrier !== undefined ? { carrier: options.carrier } : {}),
+    ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
   // Never started, and `launch()` must not start it either: it is a placeholder, not a session.
   return { ...client, launch: () => {} };
