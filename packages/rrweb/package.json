@@ -28,8 +28,8 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@rrweb/types": "^2.2.1",
-    "rrweb": "^2.2.1"
+    "@rrweb/types": "^2.2.2",
+    "rrweb": "^2.2.2"
   },
   "devDependencies": {
     "@bugsee/rrweb-record": "file:../../vendor/rrweb-record",

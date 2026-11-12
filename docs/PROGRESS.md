@@ -1321,6 +1321,19 @@ enabled after load, nothing is mapped and the join is correct. Fix: `applyDebugI
 `createStampedBundleVerifier`, which requires the top-frame file's tail to carry `//# debugId=<id>`). The verifier decodes the percent-encoded ESM frames core leaves (`./dist/my%20chunk.mjs`, `?v=1`), caches verdicts (4096), and old Node (no `process.sourceMapsEnabled`) falls back to `--enable-source-maps` in `execArgv`/`NODE_OPTIONS`. Bun does not map
 `Error.stack` (measured), unaffected. Design: `docs/design/source-maps.md` §7.2.
 
+### 2026-11-12 — Replay moves onto upstream rrweb 2.2.2 (closes #189, #194)
+
+Fork `bugsee-port-2.2.2` (`36632a33bc59c040d8d1abdc218a24aa3cdeedbd`: upstream tag `rrweb@2.2.2` merged into
+`bugsee-port-2.2.0-iframe-block`, local only, not pushed to `bugsee/rrweb`). Same single textual conflict as 2.2.1
+(`rrweb-snapshot/src/snapshot.ts`, iframe-load gate): P4 `!isBlockedNode` kept over upstream's
+`_isBlockedElement`. The upstream merge re-introduced `instanceof HTMLMediaElement` in
+`initMediaInteractionObserver`, so the `AUDIO`/`VIDEO` `nodeName` guard was re-applied (the iframe-media test in
+`packages/rrweb/src/index.test.ts` covers it). Record-only bundle 198460 B / 62529 B gzip (2.2.1: 198322 / 62407);
+a second clean rebuild was byte-identical (sha256 `14b28561...ed3c`, pinned in the test). 2.2.2 is a dependency
+patch for the record path (the 2.2.1..2.2.2 upstream diff also touches the build config and player/web-extension
+packages, which are not part of the record bundle). `rrweb` / `@rrweb/types` bumped to `^2.2.2`. This also closes
+#189 (the 2.2.1 follow-up: the fork rebuild itself landed in #190 as a vendored bundle).
+
 ### 2026-11-09 — Replay moves onto upstream rrweb 2.2.1 → `krassx/rrweb-2.2.1-a625`
 
 Fork `bugsee-port-2.2.1` (merge of rrweb-io/rrweb tag `rrweb@2.2.1` into `bugsee-port-2.2.0-iframe-block`; one
