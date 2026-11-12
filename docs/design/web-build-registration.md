@@ -55,10 +55,8 @@ Status: **BUILT (slices 1–4), 2026-09-23.** Written 2026-09-19. Closes §6 of
 > plugin yet (§8 of the audit), so plain Vite/webpack builds are unaffected today; it needs deciding
 > before one does.
 >
-> **Follow-up.** `@bugsee/bundler-plugin-core` still pins `@bugsee/bugsee-cli ^0.7.11`, because
-> 0.7.12 was not yet on npm and a frozen-lockfile install cannot resolve an unpublished version.
-> Against 0.7.11 a release build's registration fails (no `--artifact`) and is contained as a warning.
-> Bump to `^0.7.12` once it is published.
+> **Follow-up (resolved, #183).** `@bugsee/bundler-plugin-core` now depends on `@bugsee/cli ^0.9.0`
+> (the deprecated `@bugsee/bugsee-cli` pin that blocked this is gone).
 
 Product direction (2026-09-19): **a web build SHOULD register a build, and by default only a release
 one.** The Android Gradle plugin and the iOS agent are the reference for both the principles and the

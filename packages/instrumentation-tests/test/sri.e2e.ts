@@ -229,6 +229,8 @@ describe('SRI: a webpack-subresource-integrity page still loads after Bugsee sta
   it('uses the real bugsee-cli, not a stand-in', () => {
     // Guards the premise: a fake binary could make both tests above pass without touching SRI.
     expect(process.env.BUGSEE_CLI_PATH).toBeUndefined();
-    expect(resolveBugseeCli()).toMatch(/bugsee-cli/);
+    // An ABSOLUTE path: the bare-name PATH fallback would also match /bugsee-cli/ without proving the
+    // installed @bugsee/cli binary is the one in use.
+    expect(isAbsolute(resolveBugseeCli())).toBe(true);
   });
 });

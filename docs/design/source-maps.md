@@ -88,7 +88,7 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 **Packages:**
 - `@bugsee/bundler-plugin-core` — unplugin factory + a `bugsee-cli` **resolver/spawner** (`runBugseeCli(args, opts)`)
   + context collection + the inject→upload→delete orchestration. `@bugsee/cli` (a front package + one optional dependency per platform carrying the Rust binary; no
-  install-time download) is a dependency; it replaced the deprecated, unpublished `@bugsee/bugsee-cli` (#183); also resolvable from PATH / `BUGSEE_CLI_PATH`.
+  install-time download) is a dependency; it replaced the deprecated `@bugsee/bugsee-cli` (frozen at 0.8.2) (#183); also resolvable from PATH / `BUGSEE_CLI_PATH`.
 - `@bugsee/vite-plugin` / `@bugsee/webpack-plugin` — per-bundler entry points (`unplugin/vite`, `unplugin/webpack`).
 
 ## 5. Decisions
@@ -100,7 +100,7 @@ debugId ⇒ server falls back to `appVersion`/`appBuild`.
 | **D2** | Plugins built on `unplugin` over a shared `@bugsee/bundler-plugin-core` | One core, many bundlers (vite/webpack now; rollup/esbuild/rspack later — meta-framework adapters need rollup). |
 | **D3** | Injection = `bugsee-cli sourcemaps inject` run after the bundle is written | The CLI owns injection (single owner, no double-inject). |
 | **D4** | Delete client `.map`s by default after upload | Privacy. Opt-out flag. |
-| **D5** | Binary resolution: `@bugsee/cli` dep (`binaryPath()`) → `BUGSEE_CLI_PATH` → PATH; a clear error if unresolved | Works in CI + local; spawn-only (no JS fallback, per decision). |
+| **D5** | Binary resolution: `BUGSEE_CLI_PATH` → `@bugsee/cli` dep (`binaryPath()`) → PATH; a clear error if unresolved | Works in CI + local; spawn-only (no JS fallback, per decision). |
 | **D6** | The runtime debug-ID attach is a SEPARATE, SDK-side slice | It's the only piece the CLI can't do; keep it decoupled from the build tooling. |
 
 ## 6. Slice plan (each: design → red test → green → per-entity mutator loop → review → commit)
