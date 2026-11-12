@@ -38,8 +38,8 @@ function recordingSpawn(result: { code: number; stdout?: string; stderr?: string
 }
 
 describe('resolveBugseeCli — properties', () => {
-  // What the resolver returns without an override: the launcher inside the installed
-  // @bugsee/bugsee-cli package, resolved from this module rather than looked up on PATH.
+  // What the resolver returns without an override: the native binary of the installed
+  // @bugsee/cli package, resolved from this module rather than looked up on PATH.
   const resolvedDefault = resolveBugseeCli({});
 
   it('uses the override exactly when it carries something other than whitespace', () => {
@@ -58,7 +58,7 @@ describe('resolveBugseeCli — properties', () => {
         const resolved = resolveBugseeCli(env as EnvRecord);
         expect(resolved).toBe(resolvedDefault);
         // Never the bare name: relying on PATH is what made a real consumer's build fail with ENOENT.
-        expect(resolved).toMatch(/run-bugsee-cli\.js$/);
+        expect(resolved).not.toMatch(/\.js$/);
       }),
       { numRuns: 200 },
     );

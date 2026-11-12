@@ -24,16 +24,43 @@ describe('resolveBugseeCli', () => {
   });
 
   it('ignores an empty/whitespace override', () => {
-    expect(resolveBugseeCli({ BUGSEE_CLI_PATH: '   ' })).toMatch(/run-bugsee-cli\.js$/);
+    expect(resolveBugseeCli({ BUGSEE_CLI_PATH: '   ' })).toBe(resolveBugseeCli({}));
   });
 
-  it('falls back to the bare name when @bugsee/bugsee-cli is not installed', () => {
+  it('falls back to the bare name when @bugsee/cli is not installed', () => {
     // A consumer who pruned the dependency, or an exotic layout: better to try PATH — where they may
     // have provisioned the binary themselves — than to fail here with a resolution error.
-    const missing = (): string => {
+    const missing = (): { binaryPath(): string } => {
       throw new Error('MODULE_NOT_FOUND');
     };
     expect(resolveBugseeCli({}, missing)).toBe('bugsee-cli');
+  });
+
+  it('falls back to the bare name when @bugsee/cli is installed but has no binary for this platform', () => {
+    // binaryPath() THROWS in that case (musl, --no-optional, an unsupported arch); PATH is still worth a try.
+    const noBinary = {
+      binaryPath: (): string => {
+        throw new Error('bugsee-cli binary not found');
+      },
+    };
+    expect(resolveBugseeCli({}, () => noBinary)).toBe('bugsee-cli');
+  });
+
+  it("returns the path @bugsee/cli's binaryPath() reports, loading it by its package name", () => {
+    const specifiers: string[] = [];
+    const resolved = resolveBugseeCli({}, (specifier) => {
+      specifiers.push(specifier);
+      return { binaryPath: () => '/pkg/@bugsee/cli-x/bin/bugsee-cli' };
+    });
+    expect(resolved).toBe('/pkg/@bugsee/cli-x/bin/bugsee-cli');
+    expect(specifiers).toEqual(['@bugsee/cli']);
+  });
+
+  it('still runs an explicitly-provided .js launcher through node', async () => {
+    const { spawn, calls } = fakeSpawn({ code: 0 });
+    await runBugseeCli(['x'], { spawn, env: { BUGSEE_CLI_PATH: '/opt/run.js' } });
+    expect(calls[0]?.command).toBe(process.execPath);
+    expect(calls[0]?.args).toEqual(['/opt/run.js', 'x']);
   });
 
   it('spawns an explicitly-provided non-.js binary directly, with no node wrapper', async () => {
@@ -46,15 +73,14 @@ describe('resolveBugseeCli', () => {
     expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', './dist']);
   });
 
-  it('resolves the launcher inside the installed @bugsee/bugsee-cli package', () => {
-    // Not the bare name. `@bugsee/bugsee-cli` is a dependency of THIS package, so under pnpm its bin
-    // is never linked into a consuming project's root node_modules/.bin — a real consumer's build
-    // failed with ENOENT, and it only ever worked inside this monorepo because the binary happened to
-    // be on PATH there. Resolved from the installed package instead, which is package-manager and
-    // PATH independent.
+  it('resolves the native binary of the installed @bugsee/cli package', () => {
+    // Not the bare name. `@bugsee/cli` is a dependency of THIS package, so under pnpm its bin is never
+    // linked into a consuming project's root node_modules/.bin — a real consumer's build failed with
+    // ENOENT, and it only ever worked inside this monorepo because the binary happened to be on PATH
+    // there. Resolved from the installed package instead, which is package-manager and PATH independent.
     const resolved = resolveBugseeCli({});
     expect(resolved).not.toBe('bugsee-cli');
-    expect(resolved).toMatch(/run-bugsee-cli\.js$/);
+    expect(resolved).not.toMatch(/\.js$/);
     expect(existsSync(resolved)).toBe(true);
   });
 });
@@ -64,11 +90,10 @@ describe('runBugseeCli', () => {
     const { spawn, calls } = fakeSpawn({ code: 0, stdout: 'ok' });
     const result = await runBugseeCli(['sourcemaps', 'inject', './dist'], { spawn, env: {} });
     expect(result).toEqual({ code: 0, stdout: 'ok', stderr: '' });
-    // A `.js` launcher runs through node, not directly: a `.js` file is not spawnable on Windows and
-    // a transitive dependency's bin has no `.cmd` shim there.
-    expect(calls[0]?.command).toBe(process.execPath);
-    expect(calls[0]?.args?.[0]).toMatch(/run-bugsee-cli\.js$/);
-    expect(calls[0]?.args?.slice(1)).toEqual(['sourcemaps', 'inject', './dist']);
+    // The default is @bugsee/cli's NATIVE binary: spawned directly, with no node launcher in between
+    // (the launcher would cost a second process and re-map exit codes).
+    expect(calls[0]?.command).toBe(resolveBugseeCli({}));
+    expect(calls[0]?.args).toEqual(['sourcemaps', 'inject', './dist']);
   });
 
   it('passes the token/endpoint via env vars (never on argv)', async () => {
