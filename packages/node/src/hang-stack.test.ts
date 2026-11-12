@@ -27,9 +27,10 @@ const node = (n: N) => ({
 const profile = (nodes: N[], samples: number[], deltaUs = 1000): CpuProfile => ({
   nodes: nodes.map(node),
   startTime: 0,
-  endTime: 10_000_000, // spans any window the tests use
+  // The first delta is the idle lead-in since the profile started, so it spans any window the tests use.
+  endTime: 10_000_000 + (samples.length - 1) * deltaUs,
   samples,
-  timeDeltas: samples.map(() => deltaUs),
+  timeDeltas: samples.map((_, i) => (i === 0 ? 10_000_000 : deltaUs)),
 });
 
 // root → main(app.js) → parse(lib.js) ; main → render(app.js)
@@ -46,7 +47,7 @@ const TREE: N[] = [
 const opts = {
   windowMs: 1000,
   domain: 'AppHang::Severe',
-  reason: 'Event loop blocked for 12000ms',
+  reason: 'Event loop blocked (AppHang::Severe)',
 };
 
 describe('hangCrashFromProfile', () => {
@@ -57,7 +58,7 @@ describe('hangCrashFromProfile', () => {
     expect(crash?.ndkCrash).toBe(false);
     expect(crash?.handled).toBe(true);
     expect(crash?.exception.name).toBe('AppHang');
-    expect(crash?.exception.reason).toBe('Event loop blocked for 12000ms');
+    expect(crash?.exception.reason).toBe('Event loop blocked (AppHang::Severe)');
     expect(crash?.exception.domain).toBe('AppHang::Severe');
     expect(crash?.exception.frames.map((f) => f.data)).toEqual([
       { source: '/srv/lib.js', member: 'parse', line: 1, column: 1 },
@@ -109,7 +110,7 @@ describe('hangCrashFromProfile', () => {
 
   it('skips samples that point at an unknown node and tolerates missing timeDeltas', () => {
     const p = profile(TREE, [99, 3]);
-    delete (p as { timeDeltas?: number[] }).timeDeltas;
+    delete (p as { timeDeltas?: number[] }).timeDeltas; // no deltas: the window cannot be placed, all samples count
     expect(hangCrashFromProfile(p, opts)?.exception.frames[0]?.data?.member).toBe('parse');
   });
 
@@ -122,12 +123,64 @@ describe('hangCrashFromProfile', () => {
     ];
     const crash = hangCrashFromProfile(profile(nodes, [4]), opts);
     const frames = crash?.exception.frames ?? [];
+    // The native leaf's time is attributed to the application frame that called it (see the next tests).
     expect(frames.map((f) => f.trace)).toEqual([
-      'at parse (<anonymous>)',
       'at <anonymous> (/srv/app.js:5:2)',
       'at <anonymous> (node:internal/main/run_main_module:1:1)',
     ]);
-    expect(frames.map((f) => f.user)).toEqual([true, true, false]);
+    expect(frames.map((f) => f.user)).toEqual([true, false]);
+  });
+
+  it("attributes a native builtin's time to its application caller, so different callers do not group together", () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2, 4] },
+      { id: 2, fn: 'routeA', url: 'file:///srv/a.js', line: 0, col: 0, children: [3] },
+      { id: 3, fn: 'parse' }, // JSON.parse
+      { id: 4, fn: 'routeB', url: 'file:///srv/b.js', line: 0, col: 0, children: [5] },
+      { id: 5, fn: 'parse' },
+    ];
+    const a = hangCrashFromProfile(profile(nodes, [3, 3, 3]), opts);
+    const b = hangCrashFromProfile(profile(nodes, [5, 5, 5]), opts);
+    expect(a?.exception.frames[0]?.data?.member).toBe('routeA');
+    expect(b?.exception.frames[0]?.data?.member).toBe('routeB');
+  });
+
+  it("pools a builtin's samples with its caller's own, across different builtins", () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2, 5] },
+      { id: 2, fn: 'busy', url: 'file:///srv/a.js', line: 0, col: 0, children: [3, 4] },
+      { id: 3, fn: 'parse' },
+      { id: 4, fn: 'sort' },
+      { id: 5, fn: 'other', url: 'file:///srv/b.js', line: 0, col: 0 },
+    ];
+    // 2+2 samples under `busy` (self + builtins) beat 3 in `other`.
+    const crash = hangCrashFromProfile(profile(nodes, [3, 3, 4, 4, 5, 5, 5]), opts);
+    expect(crash?.exception.frames[0]?.data?.member).toBe('busy');
+  });
+
+  it('is undefined when the only time was in runtime internals or builtins with no application caller', () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      {
+        id: 2,
+        fn: 'tick',
+        url: 'node:internal/process/task_queues',
+        line: 0,
+        col: 0,
+        children: [3],
+      },
+      { id: 3, fn: 'parse' },
+    ];
+    expect(hangCrashFromProfile(profile(nodes, [2, 3]), opts)).toBeUndefined();
+  });
+
+  it('anchors the window at the profile END: samples older than the stall are not the stall', () => {
+    // The last sample is 1ms in, and the profile runs on idle to 10s: a 3s window ending at 10s sees none.
+    const p = { ...profile(TREE, [3]), timeDeltas: [1000], endTime: 10_000_000 };
+    expect(hangCrashFromProfile(p, { ...opts, windowMs: 3000 })).toBeUndefined();
+    // ...but a sample inside the trailing window counts.
+    const recent = { ...profile(TREE, [3]), timeDeltas: [9_999_000], endTime: 10_000_000 };
+    expect(hangCrashFromProfile(recent, { ...opts, windowMs: 3000 })).toBeDefined();
   });
 
   it("decodes the profiler's percent-encoded file URLs to the raw path an Error.stack would carry", () => {
@@ -147,6 +200,21 @@ describe('hangCrashFromProfile', () => {
     const frames = hangCrashFromProfile(profile(nodes, [2]), opts)?.exception.frames ?? [];
     expect(frames).toHaveLength(1);
     expect(frames[0]?.data?.member).toBe('spin');
+  });
+
+  it('keeps a native builtin that sits BETWEEN application frames, rendered as V8 does', () => {
+    const nodes: N[] = [
+      { id: 1, fn: '(root)', children: [2] },
+      { id: 2, fn: 'main', url: 'file:///srv/app.js', line: 0, col: 0, children: [3] },
+      { id: 3, fn: 'map', children: [4] }, // Array.prototype.map calling back into the app
+      { id: 4, fn: 'cb', url: 'file:///srv/app.js', line: 4, col: 2 },
+    ];
+    const frames = hangCrashFromProfile(profile(nodes, [4]), opts)?.exception.frames ?? [];
+    expect(frames.map((f) => f.trace)).toEqual([
+      'at cb (/srv/app.js:5:3)',
+      'at map (<anonymous>)',
+      'at main (/srv/app.js:1:1)',
+    ]);
   });
 
   it('caps a pathologically deep stack, keeping the leaf end', () => {

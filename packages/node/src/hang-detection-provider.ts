@@ -92,7 +92,8 @@ class HangDetectionProvider extends DetectionProviderBase {
             ? hangCrashFromProfile(profile, {
                 windowMs: durationMs,
                 domain,
-                reason: `Event loop blocked for ${durationMs}ms`,
+                // Stable per level: the measured duration varies per occurrence and must not feed grouping.
+                reason: `Event loop blocked (${domain})`,
               })
             : undefined;
       } catch {

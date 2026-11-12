@@ -2494,9 +2494,9 @@ describe('launch — capture recovery', () => {
         },
       ],
       startTime: 0,
-      endTime: 20_000_000,
+      endTime: 20_002_000,
       samples: [2, 2, 2],
-      timeDeltas: [1000, 1000, 1000],
+      timeDeltas: [20_000_000, 1000, 1000],
     };
     const cpuProfiler = {
       running: false,

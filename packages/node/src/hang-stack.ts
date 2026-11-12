@@ -25,7 +25,7 @@ interface ProfileNode {
 }
 
 export interface HangCrashOptions {
-  /** The trailing slice of the profile to look at, in ms: the stall (the level's threshold), not older work. */
+  /** The trailing slice of the profile to look at, in ms: the measured stall, not older work. */
   windowMs: number;
   /** `AppHang::Fair|Medium|Severe`. */
   domain: string;
@@ -70,6 +70,16 @@ function frameLine(frame: ProfileNode['callFrame']): string {
   return name === '' ? `    at ${where}` : `    at ${name} (${where})`;
 }
 
+/**
+ * Is this the application's own code, as opposed to the profiler's pseudo-frames, a native builtin (no script:
+ * `JSON.parse`, `sort`, a regex exec) or a runtime module (`node:internal/...`)? A builtin or runtime frame on
+ * top would group every hang that ends in the same builtin into one issue whatever called it, so time spent
+ * there is attributed to the application frame that called in.
+ */
+function isApplicationFrame(frame: ProfileNode['callFrame']): boolean {
+  return frame.url !== '' && !frame.url.startsWith('node:'); // the pseudo-frames have no script either
+}
+
 /** The `id`s of the node's ancestors are not stored, only its children: invert them once. */
 function parentsOf(nodes: Map<number, ProfileNode>): Map<number, number> {
   const parents = new Map<number, number>();
@@ -83,7 +93,7 @@ function parentsOf(nodes: Map<number, ProfileNode>): Map<number, number> {
 
 /**
  * The `crash.json` for a hang, from the CPU profile taken at its report; undefined when the profile holds no
- * application stack in the window (nothing sampled, or only idle/program/GC), so the report ships as it does
+ * application stack in the window (nothing sampled, or only idle/program/GC or runtime internals), so the report ships as it does
  * without profiling rather than with an empty crash.
  */
 export function hangCrashFromProfile(
@@ -106,15 +116,33 @@ export function hangCrashFromProfile(
     }
   }
 
-  // Self samples per node over the trailing window, newest first. `timeDeltas[i]` is the gap before sample i.
+  const parents = parentsOf(nodes);
+  /** The call site a sample's time belongs to: itself, or its nearest ancestor that is application code. */
+  const callSite = (start: number): number | undefined => {
+    let id: number | undefined = start;
+    for (let steps = 0; id !== undefined && steps <= nodes.size; steps += 1) {
+      const frame = nodes.get(id)?.callFrame;
+      if (frame !== undefined && isApplicationFrame(frame)) {
+        return id;
+      }
+      id = parents.get(id);
+    }
+    return undefined;
+  };
+
+  // Self samples per call site over the trailing window, newest first. `timeDeltas[i]` is the gap before sample
+  // i, and the newest sample may itself be older than the profile's end (the loop was idle since).
   const windowUs = options.windowMs * 1000;
   const counts = new Map<number, number>();
   let elapsedUs = 0;
+  if (timeDeltas !== undefined) {
+    const sampledUs = timeDeltas.reduce((sum, delta) => sum + delta, 0);
+    elapsedUs = Math.max(0, profile.endTime - profile.startTime - sampledUs);
+  }
   for (let i = samples.length - 1; i >= 0 && elapsedUs < windowUs; i -= 1) {
-    const id = samples[i] as number;
-    const node = nodes.get(id);
-    if (node !== undefined && !PSEUDO.has(node.callFrame.functionName)) {
-      counts.set(id, (counts.get(id) ?? 0) + 1);
+    const site = callSite(samples[i] as number);
+    if (site !== undefined) {
+      counts.set(site, (counts.get(site) ?? 0) + 1);
     }
     elapsedUs += timeDeltas?.[i] ?? 0;
   }
@@ -131,7 +159,6 @@ export function hangCrashFromProfile(
     return undefined;
   }
 
-  const parents = parentsOf(nodes);
   const lines: string[] = [];
   // Steps are bounded by the node count, so a (malformed) parent cycle through skipped pseudo frames ends too.
   let steps = 0;

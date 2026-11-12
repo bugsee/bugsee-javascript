@@ -127,9 +127,9 @@ describe('createHangDetectionProvider', () => {
         },
       ],
       startTime: 0,
-      endTime: 20_000_000,
+      endTime: 20_002_000,
       samples: [2, 2, 2],
-      timeDeltas: [1000, 1000, 1000],
+      timeDeltas: [20_000_000, 1000, 1000],
     };
     const make = (blockingProfile: (stallMs: number) => Promise<CpuProfile | undefined>) => {
       const fw = fakeWatchdog();
@@ -151,7 +151,7 @@ describe('createHangDetectionProvider', () => {
       expect(reports).toHaveLength(1);
       const r = reports[0] as ReportingRequest;
       expect(exceptionOf(r)?.domain).toBe('AppHang::Severe');
-      expect(exceptionOf(r)?.reason).toBe('Event loop blocked for 12000ms');
+      expect(exceptionOf(r)?.reason).toBe('Event loop blocked (AppHang::Severe)');
       expect(exceptionOf(r)?.frames[0]?.data).toEqual({
         source: '/srv/app.js',
         member: 'crunch',
@@ -180,7 +180,8 @@ describe('createHangDetectionProvider', () => {
           },
         ],
         samples: [3, 3, 3, 2],
-        timeDeltas: [1000, 1000, 1000, 1000],
+        timeDeltas: [20_000_000, 1000, 1000, 1000],
+        endTime: 20_003_000,
       };
       const { fw, reports } = make(async () => window);
       fw.hang('fair', 1); // a 1ms window: only the newest sample
@@ -225,7 +226,8 @@ describe('createHangDetectionProvider', () => {
           },
         ],
         samples: [3, 3, 3, 2],
-        timeDeltas: [1000, 1000, 1000, 1000],
+        timeDeltas: [20_000_000, 1000, 1000, 1000],
+        endTime: 20_003_000,
       };
       const { fw, reports } = make(async () => older);
       fw.hang('fair', 4);
