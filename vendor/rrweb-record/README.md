@@ -4,7 +4,7 @@ Prebuilt record-only bundle of the Bugsee-hardened rrweb fork. `@bugsee/rrweb` i
 
 ## Provenance
 
-- Source: `bugsee-port-2.2.2` (`36632a33bc59c040d8d1abdc218a24aa3cdeedbd`, local merge, not yet pushed to `bugsee/rrweb`)
+- Source: `bugsee-port-2.2.2` (`36632a33bc59c040d8d1abdc218a24aa3cdeedbd`, branch `bugsee-port-2.2.2` on `bugsee/rrweb`)
   - merge of upstream tag `rrweb@2.2.2` into `bugsee-port-2.2.0-iframe-block`
   - P4 iframe-block kept over the weaker upstream #1964 check
   - media-element guard (from 2.2.1) uses `AUDIO`/`VIDEO` `nodeName` (cross-realm; upstream `instanceof HTMLMediaElement` dropped iframe media)

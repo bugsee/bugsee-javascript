@@ -1324,7 +1324,7 @@ enabled after load, nothing is mapped and the join is correct. Fix: `applyDebugI
 ### 2026-11-12 — Replay moves onto upstream rrweb 2.2.2 (closes #189, #194)
 
 Fork `bugsee-port-2.2.2` (`36632a33bc59c040d8d1abdc218a24aa3cdeedbd`: upstream tag `rrweb@2.2.2` merged into
-`bugsee-port-2.2.0-iframe-block`, local only, not pushed to `bugsee/rrweb`). Same single textual conflict as 2.2.1
+`bugsee-port-2.2.0-iframe-block`, pushed to `bugsee/rrweb` as branch `bugsee-port-2.2.2`). Same single textual conflict as 2.2.1
 (`rrweb-snapshot/src/snapshot.ts`, iframe-load gate): P4 `!isBlockedNode` kept over upstream's
 `_isBlockedElement`. The upstream merge re-introduced `instanceof HTMLMediaElement` in
 `initMediaInteractionObserver`, so the `AUDIO`/`VIDEO` `nodeName` guard was re-applied (the iframe-media test in
