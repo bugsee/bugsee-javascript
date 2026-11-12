@@ -1,4 +1,4 @@
-import { getCarrierClient } from '@bugsee/core';
+import { BugseeStatus, getCarrierClient, getCarrierStatus } from '@bugsee/core';
 import { describe, expect, it, vi } from 'vitest';
 import { launch } from './launch';
 
@@ -22,6 +22,8 @@ describe('@bugsee/browser launch() with a missing app token', () => {
     expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/app token is missing/);
     expect(client.isLaunched()).toBe(false);
     expect(getCarrierClient(carrier)).toBeUndefined();
+    expect(getCarrierStatus(carrier)).not.toBe(BugseeStatus.Launching);
+    expect(getCarrierStatus(carrier)).not.toBe(BugseeStatus.Launched);
     expect(() => client.setAttribute('k', 'v')).not.toThrow();
     await expect(client.showReportDialog()).resolves.toBeNull();
     await client.stop();

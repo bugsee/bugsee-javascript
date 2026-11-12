@@ -94,4 +94,17 @@ describe('createDisabledClientForMissingToken', () => {
     expect(createDisabledClientForMissingToken(undefined, { onError, carrier })).toBeUndefined();
     expect(onError).not.toHaveBeenCalled();
   });
+
+  it('never throws when console.warn itself throws', () => {
+    const c = (globalThis as unknown as { console: { warn: (m: string) => void } }).console;
+    const warn = vi.spyOn(c, 'warn').mockImplementation(() => {
+      throw new Error('broken console');
+    });
+    try {
+      expect(() => createDisabledClientForMissingToken(undefined, {})).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
