@@ -34,6 +34,7 @@ import {
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDisabledClientForMissingToken,
   createDiskPressure,
   createDurableUploadPipeline,
   createFileCaptureStore,
@@ -623,6 +624,12 @@ const warnToConsole = (message: string): void => {
 // The public composition root's lifecycle shell: it publishes Launched once a client was built (the Node
 // launch is synchronous, so Launching is never observable here) and records the arguments for relaunch().
 export function launchCore(appToken: string, options: BugseeLaunchOptions = {}): LaunchResult {
+  // A missing / empty / non-string token (`launch(process.env.BUGSEE_APP_TOKEN)` with the variable unset) must not
+  // crash the host at startup: report once, hand back a disabled client, claim nothing.
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return { client: disabled, internals: undefined };
+  }
   const result = buildLaunch(appToken, options);
   if (result.internals !== undefined) {
     setCarrierLastLaunch(appToken, options, options.carrier);

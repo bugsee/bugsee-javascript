@@ -33,6 +33,7 @@ import {
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDisabledClientForMissingToken,
   createDurableUploadPipeline,
   createMemoryCaptureStore,
   createServiceContainer,
@@ -214,6 +215,11 @@ const internalTagged = (transport: HttpTransport): HttpTransport =>
 
 /** Launch the Bugsee worker SDK. A per-worker singleton (a repeat call is ignored). Returns the started client. */
 export function launch(appToken: string, options: BugseeWorkerLaunchOptions = {}): Bugsee {
+  // A missing / empty / non-string token must not crash the host at startup: report once, return a disabled client.
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return disabled;
+  }
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
   const carrier = options.carrier;

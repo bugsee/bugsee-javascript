@@ -18,6 +18,7 @@ import {
   createBugseeApi,
   createBundleUploader,
   createClient,
+  createDisabledClientForMissingToken,
   createMemoryCaptureStore,
   createPartitionedCaptureStore,
   createServiceContainer,
@@ -216,6 +217,11 @@ const internalTagged = (transport: HttpTransport): HttpTransport =>
 
 /** Launch the edge SDK. A per-isolate singleton (a repeat call is ignored). Returns the started client. */
 export function launchEdge(appToken: string, options: BugseeEdgeLaunchOptions = {}): Bugsee {
+  // A missing / empty / non-string token must not crash the host at startup: report once, return a disabled client.
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return disabled;
+  }
   const sdkVersion = options.sdkVersion ?? SDK_VERSION;
   const baseUrl = options.endpoint ?? DEFAULT_ENDPOINT;
   const carrier = options.carrier;

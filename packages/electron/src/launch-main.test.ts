@@ -106,6 +106,24 @@ function fakeLaunch(options: { internals?: boolean } = {}) {
 }
 
 describe('launchMain', () => {
+  it('a missing app token reports once, returns a disabled client and arms nothing (no launch, no receiver)', () => {
+    const ipc = fakeIpcMain();
+    const f = fakeLaunch();
+    const onError = vi.fn();
+    const client = launchMain(undefined as unknown as string, {
+      ipcMain: ipc.ipcMain,
+      launch: f.launch,
+      onError,
+      carrier: {},
+    });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/app token is missing/);
+    expect(client.isLaunched()).toBe(false);
+    expect(f.received).toBeUndefined();
+    expect(ipc.has(BUGSEE_STREAM_CHANNEL)).toBe(false);
+  });
+
   it('runs node launch (options minus ipcMain/launch) and starts the receiver on the stream channel', () => {
     const ipc = fakeIpcMain();
     const f = fakeLaunch();

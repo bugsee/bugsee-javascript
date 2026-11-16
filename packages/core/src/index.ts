@@ -40,6 +40,7 @@ export {
   type PackageVersionIo,
   resolveAppIdentity,
 } from './app-identity';
+export { createDisabledClientForMissingToken, isValidAppToken } from './app-token';
 export {
   addReportAttachment,
   decodeRequestFromMarker,

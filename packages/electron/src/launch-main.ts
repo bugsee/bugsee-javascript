@@ -11,6 +11,7 @@ import {
   type AppIdentity,
   BlackoutToken,
   CaptureStoreToken,
+  createDisabledClientForMissingToken,
   createDiskPressure,
   createSystemClock,
   createVisualResetGate,
@@ -266,6 +267,13 @@ function ownerResolver(
 
 /** Launch Bugsee in the Electron main process: it owns the session and merges all renderers' capture. */
 export function launchMain(appToken: string, options: LaunchMainOptions): Bugsee {
+  // A missing / empty / non-string token: report once and hand back a disabled client BEFORE any Electron wiring is built
+  // (trackers, receiver, crash reporter), so nothing is armed for a session that cannot exist. With a client already
+  // on the carrier this is a no-op and the repeat-launch path below handles it.
+  const disabled = createDisabledClientForMissingToken(appToken, options);
+  if (disabled !== undefined) {
+    return disabled;
+  }
   const {
     ipcMain,
     app,

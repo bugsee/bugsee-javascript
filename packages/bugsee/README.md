@@ -28,6 +28,8 @@ import { launch } from '@bugsee/bugsee';
 launch('YOUR_APP_TOKEN');
 ```
 
+A missing app token never crashes your app. `launch(process.env.BUGSEE_APP_TOKEN)` with the variable unset (`undefined`), or an empty, whitespace-only or non-string token, reports one clear error ("Bugsee: the app token is missing ...") through your `onError` option (or `console.warn` when you gave none) and returns a disabled client: nothing is captured or uploaded, every method is safe to call, and a later `launch()` with a valid token still works.
+
 In the browser `launch()` returns a `Promise` of the client (await it only if you need the client right away). On a server it returns the client directly.
 
 ```ts
