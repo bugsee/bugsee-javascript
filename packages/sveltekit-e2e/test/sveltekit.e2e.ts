@@ -71,6 +71,17 @@ describe('@bugsee/sveltekit — real SvelteKit boot e2e', () => {
   beforeAll(async () => {
     collector = await startMockCollector();
 
+    const annotate = spawnSync(
+      'pnpm',
+      ['--filter', '@bugsee/svelte-plugin-component-annotate', 'build'],
+      {
+        cwd: appDir,
+        encoding: 'utf8',
+      },
+    );
+    if (annotate.status !== 0)
+      throw new Error(`annotate build failed:\n${annotate.stdout}\n${annotate.stderr}`);
+
     const build = spawnSync('pnpm', ['exec', 'vite', 'build'], { cwd: appDir, encoding: 'utf8' });
     if (build.status !== 0) throw new Error(`vite build failed:\n${build.stdout}\n${build.stderr}`);
 
@@ -99,6 +110,11 @@ describe('@bugsee/sveltekit — real SvelteKit boot e2e', () => {
   it('injects the trace <meta> into the SSR HTML of a page (handle → transformPageChunk)', async () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain('<meta name="traceparent"');
+  });
+
+  it('the documented Kit 3 `sveltekit({ preprocess })` wiring runs the component-annotate preprocessor (README example)', async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    expect(html).toMatch(/<h1[^>]*data-bugsee-component="routes"/); // routes/+page.svelte -> enclosing dir name
   });
 
   it('reports a thrown endpoint as an uploaded bundle (moat server-error path)', async () => {
