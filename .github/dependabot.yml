@@ -27,8 +27,8 @@ updates:
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
       # The bundler plugins SPAWN this binary and depend on its flag contract (`sourcemaps inject`,
       # `debug-files upload --allow-empty`, ...). 0.x minors are breaking; bump it by hand, against the
-      # real CLI, together with `minimumReleaseAgeExclude` in pnpm-workspace.yaml.
-      - dependency-name: '@bugsee/bugsee-cli'
+      # real CLI (and add a `minimumReleaseAgeExclude` entry to pnpm-workspace.yaml if the release is too new).
+      - dependency-name: '@bugsee/cli'
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
       # React, react-dom and their typings move together; a lone bump produces an invalid pair (react-dom
       # 19 with react 18). Adapters declare `react >= 18`, so a major is a compatibility decision.

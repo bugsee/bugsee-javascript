@@ -2,7 +2,7 @@
 
 Bugsee de-minifies production stack traces by matching each frame to its source map via a **debug-ID** — a
 per-build UUID injected into the shipped bundle and stamped into the map. The heavy lifting is done by the Rust
-**`bugsee-cli`** (packaged for npm under `@bugsee`); the JS bundler plugins are thin conveniences that run it at
+**`bugsee-cli`** (packaged for npm as `@bugsee/cli`; the bundler plugins depend on it and spawn its native binary directly); the JS bundler plugins are thin conveniences that run it at
 build end. See `docs/design/source-maps.md` for the architecture.
 
 ## 1. Bundler plugins (zero-config)

@@ -43,6 +43,7 @@ export {
 } from './resolve';
 export {
   BugseeCliError,
+  type BugseeCliPackage,
   type EnvRecord,
   type RunBugseeCliOptions,
   resolveBugseeCli,
