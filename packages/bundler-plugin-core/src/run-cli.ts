@@ -57,6 +57,8 @@ export interface RunBugseeCliOptions {
   spawn?: SpawnFn;
   /** Injectable binary resolver (defaults to {@link resolveBugseeCli}). */
   resolveBinary?: (env: EnvRecord) => string;
+  /** Injectable `@bugsee/cli` loader for the default resolver (tests). */
+  loadCli?: (specifier: string) => BugseeCliPackage;
   /** Base environment (defaults to `process.env`). */
   env?: EnvRecord;
   /**
@@ -102,21 +104,33 @@ export interface BugseeCliPackage {
  */
 export function resolveBugseeCli(
   env: EnvRecord = process.env,
+  loadCli?: (specifier: string) => BugseeCliPackage,
+): string {
+  return resolveBugseeCliDetailed(env, loadCli).path;
+}
+
+/** {@link resolveBugseeCli}, plus WHY it fell back to the bare PATH name (`@bugsee/cli`'s own diagnostic). */
+export function resolveBugseeCliDetailed(
+  env: EnvRecord = process.env,
   /** Injectable package loading, so the not-installed fallback below is reachable in a test. */
   loadCli: (specifier: string) => BugseeCliPackage = (specifier) =>
     createRequire(import.meta.url)(specifier) as BugseeCliPackage,
-): string {
+): { path: string; reason?: string } {
   const override = env.BUGSEE_CLI_PATH;
   if (override !== undefined && override.trim() !== '') {
-    return override;
+    return { path: override };
   }
   try {
-    return loadCli('@bugsee/cli').binaryPath();
-  } catch {
+    return { path: loadCli('@bugsee/cli').binaryPath() };
+  } catch (error) {
     // Not installed (a consumer who deliberately pruned it), or installed with no binary for this platform
     // (`binaryPath()` throws): fall back to PATH so an explicitly-provisioned binary still works, rather
     // than failing outright here.
-    return 'bugsee-cli';
+    // The reason is kept: `@bugsee/cli` names musl / `--no-optional` / missing platform scopes precisely.
+    return {
+      path: 'bugsee-cli',
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -175,7 +189,10 @@ export async function runBugseeCli(
   options: RunBugseeCliOptions = {},
 ): Promise<SpawnResult> {
   const env = options.env ?? process.env;
-  const binary = (options.resolveBinary ?? resolveBugseeCli)(env);
+  const resolved = options.resolveBinary
+    ? { path: options.resolveBinary(env) }
+    : resolveBugseeCliDetailed(env, options.loadCli);
+  const binary = resolved.path;
   // The default is a native binary, spawned directly. Only a `.js` launcher supplied through
   // `BUGSEE_CLI_PATH` goes through `process.execPath`: a `.js` file is not spawnable on Windows.
   const isScript = binary.endsWith('.js');
@@ -210,9 +227,17 @@ export async function runBugseeCli(
       signal: controller.signal,
     });
   } catch (error) {
-    throw timedOut
-      ? new Error(`bugsee-cli ${args.join(' ')} timed out after ${timeoutMs}ms`)
-      : error;
+    if (timedOut) {
+      throw new Error(`bugsee-cli ${args.join(' ')} timed out after ${timeoutMs}ms`);
+    }
+    if (resolved.reason !== undefined && (error as { code?: unknown }).code === 'ENOENT') {
+      // The bare-name PATH fallback found nothing: say why the package gave no binary, and the way out.
+      throw new Error(
+        `bugsee-cli was not found (${resolved.reason}). Install @bugsee/cli with its optional platform package, or set BUGSEE_CLI_PATH to a bugsee-cli binary.`,
+        { cause: error },
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }

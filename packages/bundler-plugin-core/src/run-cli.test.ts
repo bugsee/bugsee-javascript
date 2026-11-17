@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BugseeCliError,
   resolveBugseeCli,
+  resolveBugseeCliDetailed,
   runBugseeCli,
   type SpawnFn,
   spawnOptionsFor,
@@ -82,6 +83,92 @@ describe('resolveBugseeCli', () => {
     expect(resolved).not.toBe('bugsee-cli');
     expect(resolved).not.toMatch(/\.js$/);
     expect(existsSync(resolved)).toBe(true);
+  });
+});
+
+describe('resolveBugseeCliDetailed', () => {
+  const failing = (message: string) => () => ({
+    binaryPath: (): string => {
+      throw new Error(message);
+    },
+  });
+
+  it('carries binaryPath()’s own diagnostic when it falls back to the bare name', () => {
+    expect(resolveBugseeCliDetailed({}, failing('publishes glibc Linux builds only'))).toEqual({
+      path: 'bugsee-cli',
+      reason: 'publishes glibc Linux builds only',
+    });
+  });
+
+  it('carries the load failure when @bugsee/cli is not installed', () => {
+    const missing = (): never => {
+      throw new Error('MODULE_NOT_FOUND');
+    };
+    expect(resolveBugseeCliDetailed({}, missing)).toEqual({
+      path: 'bugsee-cli',
+      reason: 'MODULE_NOT_FOUND',
+    });
+  });
+
+  it('stringifies a non-Error throw', () => {
+    const odd = (): never => {
+      throw 'boom';
+    };
+    expect(resolveBugseeCliDetailed({}, odd).reason).toBe('boom');
+  });
+
+  it('has no reason when the binary resolves, or when the override is used', () => {
+    expect(resolveBugseeCliDetailed({}, () => ({ binaryPath: () => '/x/bin' }))).toEqual({
+      path: '/x/bin',
+    });
+    expect(resolveBugseeCliDetailed({ BUGSEE_CLI_PATH: '/o' })).toEqual({ path: '/o' });
+  });
+});
+
+describe('a missing binary explains itself', () => {
+  const enoent = (): Promise<never> =>
+    Promise.reject(Object.assign(new Error('spawn bugsee-cli ENOENT'), { code: 'ENOENT' }));
+  const noBinary = () => ({
+    binaryPath: (): string => {
+      throw new Error('publishes glibc Linux builds only');
+    },
+  });
+
+  it('adds the resolver’s reason and BUGSEE_CLI_PATH to an ENOENT on the PATH fallback', async () => {
+    const error = await runBugseeCli(['x'], { spawn: enoent, env: {}, loadCli: noBinary }).catch(
+      (e: Error) => e,
+    );
+    expect((error as Error).message).toContain('publishes glibc Linux builds only');
+    expect((error as Error).message).toContain('BUGSEE_CLI_PATH');
+    expect(((error as Error).cause as Error).message).toBe('spawn bugsee-cli ENOENT');
+  });
+
+  it('leaves an ENOENT alone when the binary was resolved (no reason to add)', async () => {
+    const error = await runBugseeCli(['x'], {
+      spawn: enoent,
+      env: {},
+      loadCli: () => ({ binaryPath: () => '/x/bin' }),
+    }).catch((e: Error) => e);
+    expect((error as Error).message).toBe('spawn bugsee-cli ENOENT');
+  });
+
+  it('leaves a non-ENOENT failure alone', async () => {
+    const boom = new Error('EACCES');
+    const error = await runBugseeCli(['x'], {
+      spawn: () => Promise.reject(boom),
+      env: {},
+      loadCli: noBinary,
+    }).catch((e: Error) => e);
+    expect(error).toBe(boom);
+  });
+
+  it('does not wrap when an injected resolveBinary is used', async () => {
+    const error = await runBugseeCli(['x'], {
+      spawn: enoent,
+      env: {},
+      resolveBinary: () => 'bugsee-cli',
+    }).catch((e: Error) => e);
+    expect((error as Error).message).toBe('spawn bugsee-cli ENOENT');
   });
 });
 
