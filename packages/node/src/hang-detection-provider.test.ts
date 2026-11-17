@@ -299,6 +299,34 @@ describe('createHangDetectionProvider', () => {
       ]);
     });
 
+    it('submits the plain signature report when the profile never settles, and keeps later reports flowing', async () => {
+      const fw = fakeWatchdog();
+      const reports: ReportingRequest[] = [];
+      let calls = 0;
+      const p = createHangDetectionProvider({
+        thresholds: T,
+        createWatchdog: fw.create,
+        blockingProfileTimeoutMs: 15,
+        blockingProfile: () => {
+          calls += 1;
+          return calls === 1
+            ? new Promise<CpuProfile | undefined>(() => {})
+            : Promise.resolve(stalled);
+        },
+      });
+      p.start(fakeClient, (r) => reports.push(r));
+      fw.hang('fair', 3000);
+      fw.hang('medium', 5000);
+      await new Promise((r) => setTimeout(r, 80));
+      expect(reports.map((r) => r.report.labels?.[0])).toEqual([
+        'AppHang::Fair',
+        'AppHang::Medium',
+      ]);
+      expect(reports[0]?.report.signatures).toEqual(['AppHang::Fair']);
+      expect(reports[0]?.report.crash).toBeUndefined();
+      expect(reports[1]?.report.crash).toBeDefined();
+    });
+
     it('does not deliver a report whose profile resolves after stop()', async () => {
       const { fw, reports, p } = make(async () => stalled);
       fw.hang('fair', 3000);

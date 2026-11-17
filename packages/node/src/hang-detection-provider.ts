@@ -41,6 +41,8 @@ export interface HangDetectionProviderDeps {
    * rejecting) keeps the plain hang report: a crash.json with no frames would make every hang one issue.
    */
   blockingProfile?: (stallMs: number) => Promise<CpuProfile | undefined>;
+  /** Longest wait for the profile before the plain signature report goes out instead (ms). Default 5000. */
+  blockingProfileTimeoutMs?: number;
   /** Watchdog factory — tests inject a fake to drive onHang without a real worker. Default the real one. */
   createWatchdog?: (deps: EventLoopWatchdogDeps) => EventLoopWatchdog;
 }
@@ -53,9 +55,11 @@ class HangDetectionProvider extends DetectionProviderBase {
   // Escalation reports (fair → medium → severe) arrive together; chaining keeps them in order while each
   // awaits its profile.
   #pending: Promise<unknown> = Promise.resolve();
+  readonly #profileTimeoutMs: number;
 
   constructor(deps: HangDetectionProviderDeps) {
     super();
+    this.#profileTimeoutMs = deps.blockingProfileTimeoutMs ?? 5000;
     this.#blockingProfile = deps.blockingProfile;
     const create = deps.createWatchdog ?? createEventLoopWatchdog;
     this.#watchdog = create({
@@ -86,7 +90,7 @@ class HangDetectionProvider extends DetectionProviderBase {
     this.#pending = this.#pending.then(async () => {
       let crash: CrashJson | undefined;
       try {
-        const profile = await source(durationMs);
+        const profile = await this.#withDeadline(source(durationMs));
         crash =
           profile !== undefined
             ? hangCrashFromProfile(profile, {
@@ -102,6 +106,16 @@ class HangDetectionProvider extends DetectionProviderBase {
       this.#submit(domain, durationMs, crash);
     });
     this.#pending = this.#pending.catch(() => undefined); // one failed submit must not stall later reports
+  }
+
+  /** A profile source that never settles must not hold back this and every later report: give up with undefined. */
+  #withDeadline(profile: Promise<CpuProfile | undefined>): Promise<CpuProfile | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), this.#profileTimeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+    });
+    return Promise.race([profile, expired]).finally(() => clearTimeout(timer));
   }
 
   #submit(domain: string, durationMs: number, crash?: CrashJson): void {
