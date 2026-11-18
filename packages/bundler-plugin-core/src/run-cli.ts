@@ -231,9 +231,10 @@ export async function runBugseeCli(
       throw new Error(`bugsee-cli ${args.join(' ')} timed out after ${timeoutMs}ms`);
     }
     if (resolved.reason !== undefined && (error as { code?: unknown }).code === 'ENOENT') {
-      // The bare-name PATH fallback found nothing: say why the package gave no binary, and the way out.
+      // ENOENT is ambiguous (a missing binary OR a missing cwd), so keep the wording neutral and carry both
+      // the cwd and the original message; the install guidance is conditional.
       throw new Error(
-        `bugsee-cli was not found (${resolved.reason}). Install @bugsee/cli with its optional platform package, or set BUGSEE_CLI_PATH to a bugsee-cli binary.`,
+        `bugsee-cli could not be started (${(error as Error).message}; cwd: ${options.cwd ?? process.cwd()}). If the binary is missing: ${resolved.reason}. Install @bugsee/cli with its optional platform package, or set BUGSEE_CLI_PATH to a bugsee-cli binary.`,
         { cause: error },
       );
     }

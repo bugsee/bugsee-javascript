@@ -140,6 +140,9 @@ describe('a missing binary explains itself', () => {
     );
     expect((error as Error).message).toContain('publishes glibc Linux builds only');
     expect((error as Error).message).toContain('BUGSEE_CLI_PATH');
+    expect((error as Error).message).toContain('could not be started');
+    expect((error as Error).message).toContain('spawn bugsee-cli ENOENT');
+    expect((error as Error).message).toContain(`cwd: ${process.cwd()}`);
     expect(((error as Error).cause as Error).message).toBe('spawn bugsee-cli ENOENT');
   });
 
