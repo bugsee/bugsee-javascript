@@ -757,6 +757,14 @@ Profiler all present).
   is `unref()`'d so default-ON never blocks a clean exit. Per-episode dedup (each distinct hang re-reports — a
   documented divergence from Android's per-session, right for a long-running server). Blocking stack comes from
   the CPU profile in the same bundle. `mechanism: 'hang'` added to the wire.
+- **Hang `crash.json` (#14, 2026-11-12):** with `profiling` on, the hang report now ships a `crash.json`
+  (`exception.name` `AppHang`, `domain: AppHang::*`, frames = the hottest non-idle stack of the profile's trailing
+  stall window, built through the normal `buildCrashJson` so scrubbing/debug-ids/`user` apply) and drops the fixed
+  `signatures` (the worker derives the signature from the frames). No profile or no application stack → unchanged
+  report (own signature, no crash.json) — an empty crash.json would collapse every hang into one issue. The
+  profiling controller `hold()`s the segment ~3s so the fair→medium→severe burst (delivered together once the loop
+  frees) all see the stall (their `profile.json` too, unless a slow upload delays a later report's snapshot past the hold). A profile spanning less than the stall window yields no crash.json. Renderer-gone hangs need the worker's minidump
+  stackwalk (not an SDK change).
 - **Bun (B):** both inherited by `@bugsee/bun` via node-tier reuse; capability-guarded (degrade to no-op if
   worker_threads/inspector absent). Deferred: Node-only live-inspector `Debugger.pause` stack; main-thread-misuse.
 
