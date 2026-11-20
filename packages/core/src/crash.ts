@@ -249,10 +249,6 @@ function buildException(
 }
 
 /**
- * Build the structured crash.json container from a thrown value. A non-Error gets a SYNTHETIC
- * exception rather than nothing at all — see {@link syntheticException}.
- */
-/**
  * Stamp debug-ids onto a synthetic exception's frames, CONTAINED. Stamping parses every registered stack with the
  * injected `parseStack`; a parser that throws must cost the stamp, never the report. This path's frames used to be
  * parsed only inside `callSiteFrames`, which contains a failing parser, so an unguarded stamp would be a new way to lose
@@ -436,6 +432,10 @@ export function applyExceptionOptions(
   return crash;
 }
 
+/**
+ * Build the structured crash.json container from a thrown value. A non-Error gets a SYNTHETIC
+ * exception rather than nothing at all — see {@link syntheticException}.
+ */
 export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson {
   if (!(error instanceof Error)) {
     return {
