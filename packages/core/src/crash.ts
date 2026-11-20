@@ -249,9 +249,22 @@ function buildException(
 }
 
 /**
- * Build the structured crash.json container from a thrown value. A non-Error gets a SYNTHETIC
- * exception rather than nothing at all — see {@link syntheticException}.
+ * Stamp debug-ids onto a synthetic exception's frames, CONTAINED. Stamping parses every registered stack with the
+ * injected `parseStack`; a parser that throws must cost the stamp, never the report. This path's frames used to be
+ * parsed only inside `callSiteFrames`, which contains a failing parser, so an unguarded stamp would be a new way to lose
+ * the report of a value that had no stack in the first place.
  */
+function stampDebugIds(
+  frames: StackFrame[],
+  stamp: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
+): void {
+  try {
+    applyDebugIds(frames, stamp);
+  } catch {
+    // unstamped frames still ship; the worker falls back to the verbatim trace
+  }
+}
+
 /**
  * The exception for a value that is NOT an Error.
  *
@@ -270,17 +283,22 @@ function buildException(
 function syntheticException(
   value: unknown,
   frames: StackFrame[] = [],
-  enrichFrames?: FrameEnricher,
-  stamp?: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
+  enrichFrames: FrameEnricher | undefined,
+  stamp: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
 ): CrashException {
   // The enricher runs here too. It used to run only on the Error path, so `logException('payment
   // failed')` shipped frames with neither locals nor source context — on the one path where the frames
   // are the CALLER's own and a report-site capture lines up with them exactly. Offered even with NO frames: an enricher may SUPPLY them
   // (async-origin capture gives a cross-realm DOMException, which is not `instanceof Error`, its call site), and a frameless report has
   // no grouping signature at all. An enricher with nothing for a bare value returns it unchanged.
+  // The caller-site frames are stamped BEFORE the enricher sees them, exactly as `buildException` stamps `parsed`: the
+  // worker symbolicates by per-frame `debug_id` and a frame without one ships minified, with the report still `ready`.
+  // Stamping only the enricher's replacement (`enriched !== frames`) left the common case, frames passed through
+  // untouched, unstamped.
+  stampDebugIds(frames, stamp);
   const enriched = enrichFrames !== undefined ? enrichFrames(value, frames, { depth: 0 }) : frames;
-  if (enriched !== frames && stamp !== undefined) {
-    applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
+  if (enriched !== frames) {
+    stampDebugIds(enriched, stamp); // frames an enricher SUPPLIED were never stamped above
   }
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
@@ -414,6 +432,10 @@ export function applyExceptionOptions(
   return crash;
 }
 
+/**
+ * Build the structured crash.json container from a thrown value. A non-Error gets a SYNTHETIC
+ * exception rather than nothing at all — see {@link syntheticException}.
+ */
 export function buildCrashJson(error: unknown, options: BuildCrashOptions = {}): CrashJson {
   if (!(error instanceof Error)) {
     return {

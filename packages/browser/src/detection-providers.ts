@@ -1,5 +1,5 @@
 import type { AsyncOriginReporting } from '@bugsee/capture';
-import type { CrashJson, DetectionProvider } from '@bugsee/core';
+import type { CrashJson, DetectionProvider, StackFrame } from '@bugsee/core';
 import {
   applyDebugIds,
   buildCrashJson,
@@ -79,6 +79,14 @@ function crashOf(value: unknown, origins?: AsyncOriginReporting): CrashJson {
   });
 }
 
+/** The frame an `error` event with no thrown value knows about: its `filename:lineno:colno`, path-scrubbed and
+ *  stamped with the source-map debug-ID of the bundle it names (when a build injected one). */
+function errorEventFrame(event: ErrorEvent): StackFrame {
+  const frame = parseLocation(`${event.filename}:${event.lineno}:${event.colno}`);
+  applyDebugIds([frame], { parseStack });
+  return frame;
+}
+
 /**
  * The crash for an `error` event. Prefer the thrown value; when the event carries none — a cross-origin
  * "Script error." has no `.error` — synthesise the exception from what the EVENT knows (its message and
@@ -89,17 +97,27 @@ function crashOfErrorEvent(event: ErrorEvent, origins?: AsyncOriginReporting): C
   if (event.error != null) {
     return crashOf(event.error, origins);
   }
+  if (event.filename) {
+    // As a caller-site frame of a non-Error, so it takes the SAME conversion a real stack's frames do: the structured
+    // position AND the `debug_id` the worker symbolicates by (a hand-built `{ trace, user }` carried neither).
+    const crash = buildCrashJson(
+      { message: event.message },
+      { parseStack, handled: false, syntheticFrames: [errorEventFrame(event)] },
+    );
+    crash.exception.name = 'Error';
+    if (!event.message) {
+      // The carrier object has no message to show, and its JSON would be shipped as the reason instead.
+      delete crash.exception.reason;
+    }
+    return crash;
+  }
+  // A cross-origin "Script error." has neither a thrown value nor a filename, and the page cannot learn
+  // more (hiding that is the point of the restriction). An issue is grouped on its frames, so ZERO
+  // frames made every occurrence an issue of its own. One fixed frame makes them one issue. There is
+  // no file, so nothing to symbolicate and no debug-id to attach.
   const crash = crashOf(new Error(event.message));
   crash.exception.name = 'Error';
-  if (event.filename) {
-    const frame = parseLocation(`${event.filename}:${event.lineno}:${event.colno}`);
-    crash.exception.frames = [{ trace: formatStack([frame]).trim(), user: true }];
-  } else {
-    // A cross-origin "Script error." has neither a thrown value nor a filename, and the page cannot learn
-    // more (hiding that is the point of the restriction). An issue is grouped on its frames, so ZERO
-    // frames made every occurrence an issue of its own. One fixed frame makes them one issue.
-    crash.exception.frames = [{ trace: 'at <cross-origin script>', user: true }];
-  }
+  crash.exception.frames = [{ trace: 'at <cross-origin script>', user: true }];
   return crash;
 }
 
@@ -115,8 +133,7 @@ function describeErrorEvent(
   }
   const summary = event.message;
   if (event.filename) {
-    const frame = parseLocation(`${event.filename}:${event.lineno}:${event.colno}`);
-    return { summary, description: formatStack([frame]) };
+    return { summary, description: formatStack([errorEventFrame(event)]) };
   }
   return { summary };
 }
