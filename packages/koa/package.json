@@ -41,7 +41,7 @@
     "@bugsee/util": "workspace:*",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.5",
-    "koa": "^3.2.1"
+    "koa": "^3.3.0"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
