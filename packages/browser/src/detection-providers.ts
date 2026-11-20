@@ -105,6 +105,10 @@ function crashOfErrorEvent(event: ErrorEvent, origins?: AsyncOriginReporting): C
       { parseStack, handled: false, syntheticFrames: [errorEventFrame(event)] },
     );
     crash.exception.name = 'Error';
+    if (!event.message) {
+      // The carrier object has no message to show, and its JSON would be shipped as the reason instead.
+      delete crash.exception.reason;
+    }
     return crash;
   }
   // A cross-origin "Script error." has neither a thrown value nor a filename, and the page cannot learn

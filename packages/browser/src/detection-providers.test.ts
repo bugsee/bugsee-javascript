@@ -159,6 +159,21 @@ describe('createWindowErrorProvider', () => {
     }
   });
 
+  it('ships no reason for an error event with a filename but an EMPTY message (not a JSON dump of the carrier)', () => {
+    const w = fakeWindow();
+    const requests = started(createWindowErrorProvider(w.win));
+    w.emit('error', {
+      error: null,
+      message: '',
+      filename: 'https://app.test/page.js',
+      lineno: 1,
+      colno: 2,
+    });
+    const crash = requests[0]?.report.crash as CrashJson;
+    expect(crash.exception.name).toBe('Error');
+    expect('reason' in crash.exception).toBe(false);
+  });
+
   it('ships no debug_id for an error event from a file no bundle registered', () => {
     const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
     const prev = g._bugseeDebugIds;
