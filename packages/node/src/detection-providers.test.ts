@@ -202,3 +202,48 @@ describe('detection providers — the frame enricher', () => {
     expect(crash?.exception.frames[0]).not.toHaveProperty('variables');
   });
 });
+
+describe('debug-ids on node crash frames', () => {
+  // The worker symbolicates per frame by `debug_id`; a frame without one ships minified and the report still comes
+  // back `ready`. The stub a build injects registers `new Error().stack` per bundle, keyed by its top frame's file.
+  const withRegistered = (fn: () => void) => {
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { 'Error\n    at reg (file:///app/work.js:1:1)': 'dbg-node' };
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  };
+
+  it.each([
+    ['uncaughtException', createUncaughtExceptionProvider],
+    ['unhandledRejection', createUnhandledRejectionProvider],
+  ] as const)('stamps the frames of an Error on %s', (event, create) => {
+    withRegistered(() => {
+      const p = fakeProcess();
+      const requests = started(create(p.proc));
+      const err = new Error('boom');
+      err.stack = 'Error: boom\n    at doWork (file:///app/work.js:3:7)'; // ESM: a file:// URL
+      p.emit(event, err);
+      const crash = requests[0]?.report.crash as CrashJson;
+      expect(crash.exception.frames[0]?.debug_id).toBe('dbg-node');
+    });
+  });
+
+  it('stamps the frames an enricher supplies for a rejected NON-Error', () => {
+    withRegistered(() => {
+      const p = fakeProcess();
+      const requests = started(
+        createUnhandledRejectionProvider(p.proc, () => [
+          { function: 'origin', file: '/app/work.js', line: 9, column: 1 },
+        ]),
+      );
+      p.emit('unhandledRejection', false);
+      const crash = requests[0]?.report.crash as CrashJson;
+      expect(crash.exception.frames[0]?.debug_id).toBe('dbg-node');
+    });
+  });
+});

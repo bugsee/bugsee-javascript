@@ -90,6 +90,75 @@ describe('buildCrashJson', () => {
     expect(crash?.exception.frames[0]?.debug_id).toBe('dbg-uuid');
   });
 
+  describe('debug-ids on the caller-site frames of a thrown NON-Error', () => {
+    // `throw false`, `Promise.reject({...})`, an Angular `HttpErrorResponse`: the value has no stack, so the frames are the
+    // caller's (`callSiteFrames`). They are the ONLY frames the report has, and the worker symbolicates per frame by
+    // `debug_id`; a frame without one ships minified and the report still comes back `ready` (never `missing_sym`).
+    const registrationStack = 'Error\n    at https://app.example/chunk-A.js:9:9';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-A' } };
+    const callSite = (): StackFrame[] => [
+      { function: 'handleError', file: 'https://app.example/chunk-A.js', line: 3, column: 4 },
+      { function: 'other', file: 'https://app.example/unregistered.js', line: 5, column: 6 },
+    ];
+
+    it('stamps them when NO enricher is configured', () => {
+      const crash = buildCrashJson(false, {
+        parseStack: parseV8Stack,
+        globalObject,
+        syntheticFrames: callSite(),
+      });
+      expect(crash.exception.frames.map((f) => f.debug_id)).toEqual(['dbg-A', undefined]);
+    });
+
+    it('stamps them when the enricher hands back the SAME array (the stamp must not hinge on identity)', () => {
+      const crash = buildCrashJson(
+        { status: 500 },
+        {
+          parseStack: parseV8Stack,
+          globalObject,
+          syntheticFrames: callSite(),
+          enrichFrames: (_value, frames) => frames,
+        },
+      );
+      expect(crash.exception.frames.map((f) => f.debug_id)).toEqual(['dbg-A', undefined]);
+    });
+
+    it('stamps them when the enricher decorates them in place and returns the same array', () => {
+      const crash = buildCrashJson('payment failed', {
+        parseStack: parseV8Stack,
+        globalObject,
+        syntheticFrames: callSite(),
+        enrichFrames: (_value, frames) => {
+          for (const frame of frames) frame.variables = { seen: 'yes' };
+          return frames;
+        },
+      });
+      expect(crash.exception.frames.map((f) => f.debug_id)).toEqual(['dbg-A', undefined]);
+      expect(crash.exception.frames[0]?.variables).toEqual({ seen: 'yes' });
+    });
+
+    it('stamps the enricher’s replacement frames and the caller-site frames it dropped are not resurrected', () => {
+      const crash = buildCrashJson(0, {
+        parseStack: parseV8Stack,
+        globalObject,
+        syntheticFrames: callSite(),
+        enrichFrames: () => [
+          { function: 'origin', file: 'https://app.example/chunk-A.js', line: 7, column: 8 },
+        ],
+      });
+      expect(crash.exception.frames.map((f) => [f.data?.line, f.debug_id])).toEqual([[7, 'dbg-A']]);
+    });
+
+    it('ships no debug_id when the build injected none', () => {
+      const crash = buildCrashJson(false, {
+        parseStack: parseV8Stack,
+        globalObject: {},
+        syntheticFrames: callSite(),
+      });
+      expect(crash.exception.frames.every((f) => f.debug_id === undefined)).toBe(true);
+    });
+  });
+
   it('tells an enricher how deep in the cause chain it is (0 = the reported error), so it can act on the reported error only', () => {
     const calls: Array<{ message: string; depth: number | undefined }> = [];
     const inner = errorWith('Error', 'inner', 'Error: inner\n    at i (a.js:1:1)');
@@ -124,6 +193,34 @@ describe('buildCrashJson', () => {
     const crash = buildCrashJson(outer, { parseStack: parseV8Stack });
     expect(crash?.exception.cause?.name).toBe('RangeError');
     expect(crash?.exception.cause?.frames[0]?.trace).toBe('at f (a.js:2:2)');
+  });
+
+  it('stamps the debug_id on EVERY link of the cause chain, not just the reported error', () => {
+    // The cause is often the frame that matters (and a React component stack rides in as one): the worker
+    // symbolicates each link by its own per-frame `debug_id`.
+    const registrationStack = 'Error\n    at reg (https://app.example/chunk-A.js:9:9)';
+    const globalObject = { _bugseeDebugIds: { [registrationStack]: 'dbg-A' } };
+    const root = errorWith(
+      'Error',
+      'root',
+      'Error: root\n    at r (https://app.example/chunk-A.js:1:1)',
+    );
+    const mid = errorWith(
+      'Error',
+      'mid',
+      'Error: mid\n    at m (https://app.example/other.js:2:2)',
+    );
+    const outer = errorWith(
+      'Error',
+      'outer',
+      'Error: outer\n    at o (https://app.example/chunk-A.js:3:3)',
+    );
+    (mid as { cause?: unknown }).cause = root;
+    (outer as { cause?: unknown }).cause = mid;
+    const crash = buildCrashJson(outer, { parseStack: parseV8Stack, globalObject });
+    expect(crash.exception.frames[0]?.debug_id).toBe('dbg-A');
+    expect(crash.exception.cause?.frames[0]?.debug_id).toBeUndefined(); // other.js registered nothing
+    expect(crash.exception.cause?.cause?.frames[0]?.debug_id).toBe('dbg-A');
   });
 
   it('guards a cause CYCLE (self-cause does not recurse / loop)', () => {

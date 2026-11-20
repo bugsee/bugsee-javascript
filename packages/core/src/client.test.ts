@@ -912,6 +912,35 @@ describe('createClient — crash.json', () => {
     expect(members.some((m: string | undefined) => m?.includes('logException'))).toBe(false);
   });
 
+  it.each([
+    ['false', false],
+    ['a plain object (an Angular HttpErrorResponse)', { status: 500 }],
+    ['a string', 'payment failed'],
+  ])('stamps the debug_id of the caller’s bundle onto the frames of a thrown NON-Error: %s', async (_label, thrown) => {
+    // The injected build stub registers `new Error().stack` per bundle; its top frame is the bundle's own file, which is
+    // THIS file here. The worker symbolicates by per-frame `debug_id` and a frame without one ships minified, with
+    // the report still `ready`: this is the shape of an Angular `ErrorHandler` getting `false`.
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { [new Error().stack as string]: 'dbg-bundle' };
+    try {
+      const { uploadPipeline, enqueue } = fakeUpload();
+      const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });
+      async function applicationCode(): Promise<void> {
+        await client.logException(thrown);
+      }
+      await applicationCode();
+      const crash = crashOf(enqueue.mock.calls[0]?.[0] as Bundle);
+      const frame = crash.exception.frames.find(
+        (f: { data?: { member?: string } }) => f.data?.member === 'applicationCode',
+      );
+      expect(frame?.debug_id).toBe('dbg-bundle');
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+
   it('skipFrames on a non-Error counts from the APPLICATION frame, not the SDK wrapper', async () => {
     const { uploadPipeline, enqueue } = fakeUpload();
     const client = createClient({ uploadPipeline, appToken: 'tok', getEnvironment });

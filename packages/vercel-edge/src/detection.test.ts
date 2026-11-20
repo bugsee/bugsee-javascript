@@ -114,3 +114,23 @@ describe('createEdgeUnhandledRejectionProvider', () => {
     expect(() => provider.stop()).not.toThrow();
   });
 });
+
+describe('createEdgeUnhandledRejectionProvider — debug-ids', () => {
+  it('stamps the V8 frames of the reason with the debug-id its bundle registered', () => {
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { 'Error\n    at reg (worker.js:1:1)': 'dbg-edge' };
+    try {
+      const t = fakeTarget();
+      const requests = start(createEdgeUnhandledRejectionProvider(t.target));
+      const err = new Error('rejected');
+      err.stack = 'Error: rejected\n    at handler (worker.js:5:9)';
+      t.emit('unhandledrejection', { reason: err });
+      const crash = requests[0]?.report.crash as CrashJson;
+      expect(crash.exception.frames[0]?.debug_id).toBe('dbg-edge');
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+});

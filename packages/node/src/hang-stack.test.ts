@@ -264,3 +264,33 @@ describe('hangCrashFromProfile', () => {
     expect(hangCrashFromProfile(p, opts)?.exception.frames[0]?.data?.member).toBe('parse');
   });
 });
+
+describe('hangCrashFromProfile — debug-ids', () => {
+  // The profiler reports `file://` URLs and the registration stub's `Error().stack` carries either a URL (ESM) or a raw
+  // path (CommonJS). Both are normalised by the frame parser to ONE key, so the hang's frames still join their source map.
+  const withRegistered = (registration: string, fn: () => void) => {
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { [registration]: 'dbg-hang' };
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  };
+
+  it.each([
+    ['an ESM bundle (file:// URL)', 'Error\n    at reg (file:///srv/lib.js:1:1)'],
+    ['a CommonJS bundle (raw path)', 'Error\n    at reg (/srv/lib.js:1:1)'],
+  ])('stamps the blocking frame of %s', (_label, registration) => {
+    withRegistered(registration, () => {
+      const crash = hangCrashFromProfile(profile(TREE, [3, 3, 3, 5]), opts);
+      const byMember = Object.fromEntries(
+        (crash?.exception.frames ?? []).map((f) => [f.data?.member, f.debug_id]),
+      );
+      expect(byMember.parse).toBe('dbg-hang'); // lib.js
+      expect(byMember.main).toBeUndefined(); // app.js registered nothing
+    });
+  });
+});

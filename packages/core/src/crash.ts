@@ -278,9 +278,16 @@ function syntheticException(
   // are the CALLER's own and a report-site capture lines up with them exactly. Offered even with NO frames: an enricher may SUPPLY them
   // (async-origin capture gives a cross-realm DOMException, which is not `instanceof Error`, its call site), and a frameless report has
   // no grouping signature at all. An enricher with nothing for a bare value returns it unchanged.
+  // The caller-site frames are stamped BEFORE the enricher sees them, exactly as `buildException` stamps `parsed`: the
+  // worker symbolicates by per-frame `debug_id` and a frame without one ships minified, with the report still `ready`.
+  // Stamping only the enricher's replacement (`enriched !== frames`) left the common case, frames passed through
+  // untouched, unstamped.
+  if (stamp !== undefined) {
+    applyDebugIds(frames, stamp);
+  }
   const enriched = enrichFrames !== undefined ? enrichFrames(value, frames, { depth: 0 }) : frames;
   if (enriched !== frames && stamp !== undefined) {
-    applyDebugIds(enriched, stamp); // see buildException: the worker signs after symbolicating by debug_id
+    applyDebugIds(enriched, stamp); // frames an enricher SUPPLIED were never stamped above
   }
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the

@@ -125,6 +125,63 @@ describe('createWindowErrorProvider', () => {
     });
   });
 
+  it('gives the frame of an error event WITHOUT a thrown value its debug_id and structured position', () => {
+    // The worker symbolicates per frame by `debug_id`, from the frame's `trace` (data is the fallback). This frame
+    // used to be hand-built as `{ trace, user }`: no `debug_id`, so a minified `filename:lineno:colno` shipped as is.
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { 'Error\n    at reg (https://app.test/page.js:1:1)': 'dbg-event' };
+    try {
+      const w = fakeWindow();
+      const requests = started(createWindowErrorProvider(w.win));
+      w.emit('error', {
+        error: null,
+        message: 'Uncaught ReferenceError: x is not defined',
+        filename: 'https://app.test/page.js',
+        lineno: 12,
+        colno: 5,
+      });
+      const crash = requests[0]?.report.crash as CrashJson;
+      expect(crash.exception.frames).toEqual([
+        {
+          trace: 'at <anonymous> (https://app.test/page.js:12:5)',
+          user: true,
+          debug_id: 'dbg-event',
+          data: { source: 'https://app.test/page.js', line: 12, column: 5 },
+        },
+      ]);
+      expect(crash.exception.name).toBe('Error');
+      expect(crash.exception.reason).toBe('Uncaught ReferenceError: x is not defined');
+      expect(requests[0]?.report.description).toContain('debugId=dbg-event');
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+
+  it('ships no debug_id for an error event from a file no bundle registered', () => {
+    const g = globalThis as { _bugseeDebugIds?: Record<string, string> };
+    const prev = g._bugseeDebugIds;
+    g._bugseeDebugIds = { 'Error\n    at reg (https://app.test/other.js:1:1)': 'dbg-other' };
+    try {
+      const w = fakeWindow();
+      const requests = started(createWindowErrorProvider(w.win));
+      w.emit('error', {
+        error: undefined,
+        message: 'x',
+        filename: 'https://app.test/page.js',
+        lineno: 1,
+        colno: 2,
+      });
+      const frame = (requests[0]?.report.crash as CrashJson).exception.frames[0];
+      expect(frame?.debug_id).toBeUndefined();
+      expect(requests[0]?.report.description).not.toContain('debugId=');
+    } finally {
+      if (prev === undefined) delete g._bugseeDebugIds;
+      else g._bugseeDebugIds = prev;
+    }
+  });
+
   it('falls back to message when event.error is undefined (not just null)', () => {
     const w = fakeWindow();
     const requests = started(createWindowErrorProvider(w.win));
