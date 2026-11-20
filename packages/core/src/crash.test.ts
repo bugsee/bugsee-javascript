@@ -149,6 +149,23 @@ describe('buildCrashJson', () => {
       expect(crash.exception.frames.map((f) => [f.data?.line, f.debug_id])).toEqual([[7, 'dbg-A']]);
     });
 
+    it('still ships the report, unstamped, when the stack parser throws while stamping', () => {
+      // `parseStack` is injected, and stamping parses every registered stack with it. Before stamping existed on this path a
+      // throwing parser was contained by `callSiteFrames`; it must not cost the report now.
+      const crash = buildCrashJson(false, {
+        parseStack: () => {
+          throw new Error('parser blew up');
+        },
+        globalObject,
+        syntheticFrames: callSite(),
+        enrichFrames: (_value, frames) => [...frames],
+      });
+      expect(crash.exception.name).toBe('Boolean');
+      expect(crash.exception.reason).toBe('false');
+      expect(crash.exception.frames.map((f) => f.data?.line)).toEqual([3, 5]);
+      expect(crash.exception.frames.every((f) => f.debug_id === undefined)).toBe(true);
+    });
+
     it('ships no debug_id when the build injected none', () => {
       const crash = buildCrashJson(false, {
         parseStack: parseV8Stack,

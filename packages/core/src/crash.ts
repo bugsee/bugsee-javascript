@@ -253,6 +253,23 @@ function buildException(
  * exception rather than nothing at all — see {@link syntheticException}.
  */
 /**
+ * Stamp debug-ids onto a synthetic exception's frames, CONTAINED. Stamping parses every registered stack with the
+ * injected `parseStack`; a parser that throws must cost the stamp, never the report. This path's frames used to be
+ * parsed only inside `callSiteFrames`, which contains a failing parser, so an unguarded stamp would be a new way to lose
+ * the report of a value that had no stack in the first place.
+ */
+function stampDebugIds(
+  frames: StackFrame[],
+  stamp: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
+): void {
+  try {
+    applyDebugIds(frames, stamp);
+  } catch {
+    // unstamped frames still ship; the worker falls back to the verbatim trace
+  }
+}
+
+/**
  * The exception for a value that is NOT an Error.
  *
  * JS throws non-Errors routinely — a string, a plain object, a rejected promise's value — and
@@ -270,8 +287,8 @@ function buildException(
 function syntheticException(
   value: unknown,
   frames: StackFrame[] = [],
-  enrichFrames?: FrameEnricher,
-  stamp?: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
+  enrichFrames: FrameEnricher | undefined,
+  stamp: { globalObject: unknown; parseStack: (stack: string) => StackFrame[] },
 ): CrashException {
   // The enricher runs here too. It used to run only on the Error path, so `logException('payment
   // failed')` shipped frames with neither locals nor source context — on the one path where the frames
@@ -282,12 +299,10 @@ function syntheticException(
   // worker symbolicates by per-frame `debug_id` and a frame without one ships minified, with the report still `ready`.
   // Stamping only the enricher's replacement (`enriched !== frames`) left the common case, frames passed through
   // untouched, unstamped.
-  if (stamp !== undefined) {
-    applyDebugIds(frames, stamp);
-  }
+  stampDebugIds(frames, stamp);
   const enriched = enrichFrames !== undefined ? enrichFrames(value, frames, { depth: 0 }) : frames;
-  if (enriched !== frames && stamp !== undefined) {
-    applyDebugIds(enriched, stamp); // frames an enricher SUPPLIED were never stamped above
+  if (enriched !== frames) {
+    stampDebugIds(enriched, stamp); // frames an enricher SUPPLIED were never stamped above
   }
   // Through the SAME conversion a real Error's frames take, so a synthetic frame is indistinguishable
   // downstream: it carries `trace`, the `user` classification and any debug-id, and symbolicates the
