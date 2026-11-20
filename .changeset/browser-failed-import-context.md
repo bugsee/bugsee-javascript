@@ -1,0 +1,5 @@
+---
+'@bugsee/browser': patch
+---
+
+A failed dynamic `import()` (and other errors a browser reports without a stack) no longer produces a report titled "TypeError at Unknown location". Safari rejects a failed module load with a bare `Importing a module script failed.` that has no stack and no URL; Chrome and Firefox name the module in the message but also ship no frames. The report now carries one frame naming the failed module, taken from the message where the browser gives it and otherwise inferred from the Resource Timing entry of the failed script fetch (same-origin only, flagged as inferred; one fixed `<unknown module>` frame when nothing identifies it, so those occurrences still group). The report description adds the page route (query string dropped), online state and the scripts that had just loaded. JavaScriptCore's own `sourceURL`/`line`/`column` on a stackless SyntaxError or evaluation error becomes a frame as well. A real stack, and the async-origin call site of a platform rejection, always take precedence.
