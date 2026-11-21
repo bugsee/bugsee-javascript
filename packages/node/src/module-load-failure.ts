@@ -17,6 +17,8 @@ import { parseLocation } from '@bugsee/core';
 
 /** The frame function of a module that failed to resolve or load. */
 export const IMPORT_FRAME_FUNCTION = 'import()';
+/** The frame function when the failure does not say whether it was an `import()` or a `require()`. */
+export const LOAD_FRAME_FUNCTION = 'load()';
 /** The frame function when the failing load was a `require()` (CommonJS). */
 export const REQUIRE_FRAME_FUNCTION = 'require()';
 
@@ -27,7 +29,6 @@ const FAILED_RESOLUTION_CODES = new Set([
   'ERR_PACKAGE_PATH_NOT_EXPORTED',
   'ERR_PACKAGE_IMPORT_NOT_DEFINED',
   'ERR_UNKNOWN_FILE_EXTENSION',
-  'ERR_INVALID_MODULE_SPECIFIER',
   'ERR_REQUIRE_ESM',
   'ERR_REQUIRE_ASYNC_MODULE',
 ]);
@@ -40,6 +41,14 @@ const NOT_FOUND = /Cannot find (?:module|package) '([^']+)'/;
 const DIR_IMPORT = /^Directory import '([^']+)'/;
 // `Package subpath './sub' is not defined by "exports" in /abs/node_modules/pkg/package.json imported from /abs/y.mjs`
 const NOT_EXPORTED = /^Package subpath '([^']+)'/;
+// The package a `package.json` path in the message belongs to: `/app/node_modules/@scope/pkg/package.json` -> `@scope/pkg`.
+const PACKAGE_OF_JSON = /node_modules\/((?:@[^/\n]+\/)?[^/\n]+)\/package\.json/;
+// `Package import specifier "#x" is not defined in package /app/package.json imported from /app/y.mjs`
+const IMPORT_NOT_DEFINED = /^Package import specifier "([^"]+)"/;
+// `require() of ES Module /app/esm.mjs from /app/y.js not supported.`
+const REQUIRE_ESM = /^require\(\) of ES Module (\S+) from (\S+) not supported/;
+// `require() cannot be used on an ESM graph with top-level await. ...\nRequired module: /app/tla.mjs`
+const REQUIRED_MODULE = /^Required module: ([^\n]+)/m;
 // `Unknown file extension ".xyz" for /abs/component.xyz`
 const UNKNOWN_EXTENSION = /^Unknown file extension "[^"]*" for ([^\n]+)/;
 // the importer, wherever the message names it
@@ -61,8 +70,8 @@ export interface ModuleLoadFailure {
   importer?: string;
   /** Node's / Bun's error code (`ERR_MODULE_NOT_FOUND`). */
   code?: string;
-  /** `import` or `require`: how the load was requested. */
-  via: 'import' | 'require';
+  /** `import` or `require`: how the load was requested; undefined when nothing in the error says. */
+  via?: 'import' | 'require';
   /** CommonJS `require()` chain, innermost first. */
   requireStack: string[];
   /** A named export the module does not provide (`import { x } from './m'`). */
@@ -168,24 +177,42 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
 
   const requireStack = stringList(prop(value, 'requireStack'));
   const url = str(value, 'url');
+  const requireEsm = REQUIRE_ESM.exec(message);
+  const exported = NOT_EXPORTED.exec(message);
+  const exportedIn = exported === null ? null : PACKAGE_OF_JSON.exec(message);
+  let exportedModule: string | undefined;
+  if (exported !== null) {
+    const subpath = exported[1] as string;
+    exportedModule =
+      exportedIn === null ? subpath : `${exportedIn[1]}/${subpath.replace(/^\.\//, '')}`;
+  }
   const module =
     str(value, 'specifier') ??
     (url !== undefined ? toPath(url) : undefined) ??
+    exportedModule ??
     (NOT_FOUND.exec(message) ??
       DIR_IMPORT.exec(message) ??
-      NOT_EXPORTED.exec(message) ??
-      UNKNOWN_EXTENSION.exec(message))?.[1];
-  const importer = str(value, 'referrer') ?? IMPORTED_FROM.exec(message)?.[1] ?? requireStack[0];
+      IMPORT_NOT_DEFINED.exec(message) ??
+      UNKNOWN_EXTENSION.exec(message) ??
+      REQUIRED_MODULE.exec(message) ??
+      requireEsm)?.[1];
+  const importedFrom = IMPORTED_FROM.exec(message)?.[1];
+  const importer = str(value, 'referrer') ?? importedFrom ?? requireEsm?.[2] ?? requireStack[0];
   const importKind = str(value, 'importKind');
-  // `require()` of an ES module raises these two, with no require stack on them.
+  // Said only on evidence. `require()` of an ES module raises these two codes (no require stack on them); an ESM loader error
+  // carries a `url`, an `imported from` clause or Bun's `importKind`. A CommonJS `require('pkg/sub')` blocked by `exports` has
+  // none of these, so it stays unknown.
   const viaRequire =
     requireStack.length > 0 ||
     importKind === 'require-call' ||
     code === 'ERR_REQUIRE_ESM' ||
     code === 'ERR_REQUIRE_ASYNC_MODULE';
+  const viaImport =
+    importKind !== undefined || url !== undefined || importedFrom !== undefined || isBunResolve;
+  const via = viaRequire ? 'require' : viaImport ? 'import' : undefined;
   return {
     kind: 'resolution',
-    via: viaRequire ? 'require' : 'import',
+    ...(via !== undefined ? { via } : {}),
     requireStack,
     ...(module !== undefined ? { module } : {}),
     ...(importer !== undefined ? { importer } : {}),
@@ -212,7 +239,12 @@ function failureFrame(failure: ModuleLoadFailure): StackFrame | undefined {
   }
   if (failure.module === undefined) return undefined;
   return {
-    function: failure.via === 'require' ? REQUIRE_FRAME_FUNCTION : IMPORT_FRAME_FUNCTION,
+    function:
+      failure.via === 'require'
+        ? REQUIRE_FRAME_FUNCTION
+        : failure.via === 'import'
+          ? IMPORT_FRAME_FUNCTION
+          : LOAD_FRAME_FUNCTION,
     file: scrub(failure.module),
   };
 }
@@ -243,7 +275,7 @@ export function describeModuleLoadFailure(value: unknown): string | undefined {
     if (failure.module !== undefined) lines.push(`Failed module: ${scrub(failure.module)}`);
     if (failure.importer !== undefined) lines.push(`Imported from: ${scrub(failure.importer)}`);
     // Only said when the load is known: with no module and no stack to go on, a default would be a guess.
-    if (failure.module !== undefined) {
+    if (failure.via !== undefined) {
       lines.push(`Loaded via: ${failure.via === 'require' ? 'require()' : 'import'}`);
     }
     if (failure.missingExport !== undefined) lines.push(`Missing export: ${failure.missingExport}`);

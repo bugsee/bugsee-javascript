@@ -277,7 +277,7 @@ describe('describeModuleLoadFailure', () => {
 
   it('says only what it knows', () => {
     const bare = Object.assign(new Error('nope'), { code: 'ERR_REQUIRE_ESM' });
-    expect(describeModuleLoadFailure(bare)).toBe('Code: ERR_REQUIRE_ESM');
+    expect(describeModuleLoadFailure(bare)).toBe('Loaded via: require()\nCode: ERR_REQUIRE_ESM');
     const noCode = bunResolve({ code: undefined });
     expect(describeModuleLoadFailure(noCode)).not.toContain('Code:');
   });
@@ -298,7 +298,7 @@ describe('review follow-ups', () => {
         `Package subpath './sub' is not defined by "exports" in /app/node_modules/pkg/package.json imported from /app/a.mjs`,
       ),
     );
-    expect(failure?.module).toBe('./sub');
+    expect(failure?.module).toBe('pkg/sub');
     expect(failure?.importer).toBe('/app/a.mjs');
   });
 
@@ -331,8 +331,8 @@ describe('review follow-ups', () => {
   });
 
   it('does not claim how a module of unknown name was loaded', () => {
-    const text = describeModuleLoadFailure(coded('ERR_INVALID_MODULE_SPECIFIER', 'something odd'));
-    expect(text).toBe('Code: ERR_INVALID_MODULE_SPECIFIER');
+    const text = describeModuleLoadFailure(coded('ERR_UNKNOWN_FILE_EXTENSION', 'something odd'));
+    expect(text).toBe('Code: ERR_UNKNOWN_FILE_EXTENSION');
   });
 
   it('elides the payload of a data: or blob: specifier and caps a long one', () => {
@@ -382,5 +382,75 @@ describe('review follow-ups', () => {
       },
     });
     expect(() => detectModuleLoadFailure(aggregate)).not.toThrow();
+  });
+});
+
+describe('probed Node message shapes (v26)', () => {
+  const coded = (code: string, message: string): Error =>
+    Object.assign(new Error(message), { code });
+
+  it('a CommonJS require of an unexported subpath names the package and does not claim an import', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        `Package subpath './sub' is not defined by "exports" in /app/node_modules/@s/pkg/package.json`,
+      ),
+    );
+    expect(failure?.module).toBe('@s/pkg/sub');
+    expect(failure?.via).toBeUndefined();
+    expect(failure?.importer).toBeUndefined();
+    const frames = moduleLoadFrameEnricher(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        `Package subpath './sub' is not defined by "exports" in /app/node_modules/@s/pkg/package.json`,
+      ),
+      [],
+    );
+    expect(frames[0]?.function).toBe('load()');
+  });
+
+  it('an unexported subpath from a bare path (no node_modules) keeps the subpath', () => {
+    expect(
+      detectModuleLoadFailure(
+        coded(
+          'ERR_PACKAGE_PATH_NOT_EXPORTED',
+          'Package subpath \'./x\' is not defined by "exports" in /p/package.json',
+        ),
+      )?.module,
+    ).toBe('./x');
+  });
+
+  it('require() of an ES module names the module and its requirer', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_REQUIRE_ESM',
+        'require() of ES Module /app/esm.mjs from /app/t.cjs not supported.\nInstead change ...',
+      ),
+    );
+    expect(failure).toMatchObject({
+      module: '/app/esm.mjs',
+      importer: '/app/t.cjs',
+      via: 'require',
+    });
+  });
+
+  it('require() of an ESM graph with top-level await names the required module', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_REQUIRE_ASYNC_MODULE',
+        'require() cannot be used on an ESM graph with top-level await. Use import() instead.\nRequired module: /app/tla.mjs\nRequire stack:\n- /app/t.cjs',
+      ),
+    );
+    expect(failure).toMatchObject({ module: '/app/tla.mjs', via: 'require' });
+  });
+
+  it('an undefined package import names the specifier and its importer', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_IMPORT_NOT_DEFINED',
+        'Package import specifier "#nope" is not defined in package /app/package.json imported from /app/t.cjs',
+      ),
+    );
+    expect(failure).toMatchObject({ module: '#nope', importer: '/app/t.cjs', via: 'import' });
   });
 });
