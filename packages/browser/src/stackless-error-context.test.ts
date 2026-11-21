@@ -212,12 +212,88 @@ describe('hostile inputs never throw', () => {
       },
     });
 
-  it('treats responseStatus 0 as a failed fetch (a CORS or network error on a module script)', () => {
-    const failure = detectModuleLoadFailure(
+  it('treats a same-origin responseStatus 0 as a failed fetch, a cross-origin one as unknown (an opaque success reports it too)', () => {
+    const same = detectModuleLoadFailure(
+      safari(),
+      env([entry(`${ORIGIN}/lazy.js`, { responseStatus: 0, transferSize: 10 })]),
+    );
+    expect(same?.failedUrl).toBe(`${ORIGIN}/lazy.js`);
+    const cross = detectModuleLoadFailure(
       safari(),
       env([entry('https://cdn.other.com/lib.js', { responseStatus: 0 })]),
     );
-    expect(failure?.failedUrl).toBe('https://cdn.other.com/lib.js');
+    expect(cross?.failedUrl).toBeUndefined();
+    expect(cross?.recentScripts).toEqual(['https://cdn.other.com/lib.js']);
+  });
+
+  it('still trusts an explicit 4xx from another origin', () => {
+    const failure = detectModuleLoadFailure(
+      safari(),
+      env([entry('https://cdn.other.com/gone.js', { responseStatus: 404 })]),
+    );
+    expect(failure?.failedUrl).toBe('https://cdn.other.com/gone.js');
+  });
+
+  it('names the failure that ended last, not the request that started last', () => {
+    const failure = detectModuleLoadFailure(
+      safari(),
+      env([
+        entry(`${ORIGIN}/a.js`, { ...FAILED, startTime: 0, responseEnd: 990 }),
+        entry(`${ORIGIN}/b.js`, { ...FAILED, startTime: 100, responseEnd: 200 }),
+      ]),
+    );
+    expect(failure?.failedUrl).toBe(`${ORIGIN}/a.js`);
+  });
+
+  it('does not name a failure older than ten seconds', () => {
+    const failure = detectModuleLoadFailure(
+      safari(),
+      env([entry(`${ORIGIN}/old.js`, { ...FAILED, responseEnd: 1 })], {
+        performance: {
+          getEntriesByType: () => [entry(`${ORIGIN}/old.js`, { ...FAILED, responseEnd: 1 })],
+          now: () => 20_000,
+        },
+      }),
+    );
+    expect(failure?.failedUrl).toBeUndefined();
+  });
+
+  it('keeps a hash route but never a fragment that carries a credential', () => {
+    const at = (hash: string) =>
+      describeStacklessContext(
+        safari(),
+        env([], {
+          location: { href: '', origin: ORIGIN, pathname: '/auth/callback', hash },
+        }),
+      );
+    expect(at('#/apps/9')).toContain(`Page: ${ORIGIN}/auth/callback#/apps/9`);
+    const leaked = at('#access_token=eyJSECRET&refresh_token=r&token_type=bearer');
+    expect(leaked).toContain(`Page: ${ORIGIN}/auth/callback`);
+    expect(leaked).not.toContain('SECRET');
+    expect(leaked).not.toContain('access_token');
+  });
+
+  it('survives global getters that throw while the environment is acquired', () => {
+    const keys = ['performance', 'location', 'navigator'] as const;
+    const saved = keys.map((k) => Object.getOwnPropertyDescriptor(globalThis, k));
+    try {
+      for (const k of keys) {
+        Object.defineProperty(globalThis, k, {
+          configurable: true,
+          get() {
+            throw new Error('hostile');
+          },
+        });
+      }
+      expect(() => stacklessFrames(safari())).not.toThrow();
+      expect(describeStacklessContext(safari())).toContain('Failed module: unknown');
+    } finally {
+      keys.forEach((k, i) => {
+        const descriptor = saved[i];
+        if (descriptor === undefined) Reflect.deleteProperty(globalThis, k);
+        else Object.defineProperty(globalThis, k, descriptor);
+      });
+    }
   });
 
   it('survives a message getter that throws', () => {

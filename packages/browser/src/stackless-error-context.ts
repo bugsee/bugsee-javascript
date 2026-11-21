@@ -1,5 +1,6 @@
 import type { FrameEnricher, StackFrame } from '@bugsee/core';
 import { parseLocation } from '@bugsee/core';
+import { sanitizeLocationUrl } from '@bugsee/protocol';
 
 // Context for an error the browser reports WITHOUT a stack, so the report is more than "TypeError at Unknown location".
 //
@@ -11,13 +12,19 @@ import { parseLocation } from '@bugsee/core';
 // Both are recoverable from what the page still has: the message, the error's own location fields and the Resource Timing
 // buffer (a failed module fetch leaves an entry whose transfer and body sizes are zero). Everything here is best-effort and
 // pure reads: it never throws and never invents a module it cannot point at.
+// Known limit: the Resource Timing buffer holds 250 entries and stops recording when full, so in a long-lived page "recent"
+// scripts can be the oldest ones and a late failure may leave no entry; the module is then reported unknown, never guessed.
 
 const SAFARI_IMPORT_FAILED = /^importing a module script failed\.?$/i;
 const CHROME_IMPORT_FAILED = /failed to fetch dynamically imported module:\s*(\S+)/i;
 const FIREFOX_IMPORT_FAILED = /error loading dynamically imported module:?\s*(\S*)/i;
 
-/** How recent a zero-size script entry must be to be blamed for a failure raised now. */
-const FAILED_ENTRY_MAX_AGE_MS = 60_000;
+/**
+ * How recent a failed-looking script entry must be to be blamed for a failure raised now. A rejection reaches the page within
+ * moments of its fetch failing, so a short window keeps an older, unrelated failure (a retry loop, a 404 handled earlier) from
+ * being named for a connection reset that left no entry of its own.
+ */
+const FAILED_ENTRY_MAX_AGE_MS = 10_000;
 /** Successfully loaded scripts listed as "where the page was" — enough to name the current chunk, not a waterfall. */
 const RECENT_SCRIPTS = 5;
 
@@ -55,13 +62,21 @@ export interface ModuleLoadFailure {
   recentScripts: string[];
 }
 
+/** One global read that a hostile getter cannot turn into a thrown error. */
+function read<T>(key: 'performance' | 'location' | 'navigator'): T | undefined {
+  try {
+    return (globalThis as unknown as Record<string, T | undefined>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
 function hostEnv(): StacklessEnv {
-  const g = globalThis as unknown as {
-    performance?: StacklessEnv['performance'];
-    location?: StacklessEnv['location'];
-    navigator?: StacklessEnv['navigator'];
+  return {
+    performance: read<StacklessEnv['performance']>('performance'),
+    location: read<StacklessEnv['location']>('location'),
+    navigator: read<StacklessEnv['navigator']>('navigator'),
   };
-  return { performance: g.performance, location: g.location, navigator: g.navigator };
 }
 
 function scrub(url: string): string {
@@ -105,23 +120,18 @@ function sameOrigin(env: StacklessEnv, url: string): boolean {
 }
 
 /**
- * Did this fetch fail? With `responseStatus` (Chrome, newer Safari) a 4xx/5xx or 0 is decisive for any origin. Without it, a
- * body of zero bytes with zero transfer is the signature of a failed request — but a cross-origin entry without
- * `Timing-Allow-Origin` reports zero sizes for a SUCCESS too, so that inference is limited to the page's own origin.
+ * Did this fetch fail? A `responseStatus` of 4xx/5xx (Chrome, newer Safari) is decisive for any origin. Everything else is
+ * limited to the page's own origin: a cross-origin entry without `Timing-Allow-Origin` reports zero sizes AND a zero status for
+ * a SUCCESS too (an opaque response), so neither can be read as a failure there. For a same-origin entry a zero status or a
+ * body of zero bytes with zero transfer is the signature of a failed request.
  */
 function looksFailed(env: StacklessEnv, entry: ResourceEntryLike): boolean {
   if (typeof entry.responseStatus === 'number' && entry.responseStatus !== 0) {
     return entry.responseStatus >= 400;
   }
-  if (typeof entry.responseStatus === 'number' && entry.responseStatus === 0) {
-    return true;
-  }
-  return (
-    sameOrigin(env, entry.name) &&
-    entry.transferSize === 0 &&
-    entry.encodedBodySize === 0 &&
-    entry.decodedBodySize === 0
-  );
+  if (!sameOrigin(env, entry.name)) return false;
+  if (entry.responseStatus === 0) return true;
+  return entry.transferSize === 0 && entry.encodedBodySize === 0 && entry.decodedBodySize === 0;
 }
 
 /**
@@ -151,6 +161,7 @@ export function detectModuleLoadFailure(
   if (named !== '') {
     return { failedUrl: scrub(named), source: 'message', recentScripts };
   }
+  // The entry that FAILED most recently: the buffer is ordered by start time, and an older request can finish after a newer one.
   const failed = entries
     .filter((entry) => looksFailed(env, entry))
     .filter(
@@ -159,7 +170,13 @@ export function detectModuleLoadFailure(
         entry.responseEnd === undefined ||
         now - entry.responseEnd <= FAILED_ENTRY_MAX_AGE_MS,
     )
-    .pop();
+    .reduce<ResourceEntryLike | undefined>(
+      (latest, entry) =>
+        latest === undefined || (entry.responseEnd ?? 0) >= (latest.responseEnd ?? 0)
+          ? entry
+          : latest,
+      undefined,
+    );
   return failed === undefined
     ? { recentScripts }
     : { failedUrl: scrub(failed.name), source: 'timing', recentScripts };
@@ -186,13 +203,17 @@ function importFrame(failure: ModuleLoadFailure): StackFrame {
   return { function: IMPORT_FRAME_FUNCTION, file: failure.failedUrl ?? UNKNOWN_MODULE };
 }
 
-/** The route the user is on: path plus hash route, with query strings and credentials dropped. */
+/**
+ * The route the user is on: path plus a HASH ROUTE (`#/a/b`), run through the SDK's own address sanitizer so a token in the
+ * path or the query is redacted by the same policy as the `url` trace. A fragment that is not a route (`#access_token=...`, the
+ * usual carrier of an OAuth or magic-link secret) and any query string are dropped before the sanitizer ever sees them.
+ */
 function pageOf(env: StacklessEnv): string | undefined {
   const loc = env.location;
   if (loc === undefined) return undefined;
   try {
-    const hashPath = loc.hash.split('?')[0] ?? '';
-    return `${loc.origin}${loc.pathname}${hashPath}`;
+    const hash = loc.hash.startsWith('#/') ? (loc.hash.split('?')[0] ?? '') : '';
+    return sanitizeLocationUrl(`${loc.origin}${loc.pathname}${hash}`);
   } catch {
     return undefined;
   }
