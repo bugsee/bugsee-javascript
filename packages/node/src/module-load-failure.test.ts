@@ -277,12 +277,110 @@ describe('describeModuleLoadFailure', () => {
 
   it('says only what it knows', () => {
     const bare = Object.assign(new Error('nope'), { code: 'ERR_REQUIRE_ESM' });
-    expect(describeModuleLoadFailure(bare)).toBe('Loaded via: import\nCode: ERR_REQUIRE_ESM');
+    expect(describeModuleLoadFailure(bare)).toBe('Code: ERR_REQUIRE_ESM');
     const noCode = bunResolve({ code: undefined });
     expect(describeModuleLoadFailure(noCode)).not.toContain('Code:');
   });
 
   it('is undefined for any other error', () => {
     expect(describeModuleLoadFailure(new Error('x'))).toBeUndefined();
+  });
+});
+
+describe('review follow-ups', () => {
+  const coded = (code: string, message: string): Error =>
+    Object.assign(new Error(message), { code });
+
+  it('names the module and importer of an unexported package subpath', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        `Package subpath './sub' is not defined by "exports" in /app/node_modules/pkg/package.json imported from /app/a.mjs`,
+      ),
+    );
+    expect(failure?.module).toBe('./sub');
+    expect(failure?.importer).toBe('/app/a.mjs');
+  });
+
+  it('names the directory of a directory import and its importer', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_UNSUPPORTED_DIR_IMPORT',
+        "Directory import '/app/dir' is not supported resolving ES modules imported from /app/a.mjs",
+      ),
+    );
+    expect(failure?.module).toBe('/app/dir');
+    expect(failure?.importer).toBe('/app/a.mjs');
+  });
+
+  it('names the file of an unknown extension', () => {
+    const failure = detectModuleLoadFailure(
+      coded('ERR_UNKNOWN_FILE_EXTENSION', 'Unknown file extension ".xyz" for /app/component.xyz'),
+    );
+    expect(failure?.module).toBe('/app/component.xyz');
+  });
+
+  it('reports a require() of an ES module as a require, with or without a require stack', () => {
+    for (const code of ['ERR_REQUIRE_ESM', 'ERR_REQUIRE_ASYNC_MODULE']) {
+      const text = describeModuleLoadFailure(
+        coded(code, "require() of ES Module '/app/esm.mjs' not supported"),
+      );
+      expect(detectModuleLoadFailure(coded(code, 'x'))?.via).toBe('require');
+      expect(text).toBeDefined();
+    }
+  });
+
+  it('does not claim how a module of unknown name was loaded', () => {
+    const text = describeModuleLoadFailure(coded('ERR_INVALID_MODULE_SPECIFIER', 'something odd'));
+    expect(text).toBe('Code: ERR_INVALID_MODULE_SPECIFIER');
+  });
+
+  it('elides the payload of a data: or blob: specifier and caps a long one', () => {
+    const data = coded(
+      'ERR_MODULE_NOT_FOUND',
+      "Cannot find module 'data:text/javascript,SECRET' imported from /app/a.mjs",
+    );
+    expect(describeModuleLoadFailure(data)).toContain('Failed module: data:<elided>');
+    expect(describeModuleLoadFailure(data)).not.toContain('SECRET');
+    const long = coded(
+      'ERR_MODULE_NOT_FOUND',
+      `Cannot find module '/${'a'.repeat(1000)}' imported from /app/a.mjs`,
+    );
+    expect(describeModuleLoadFailure(long)?.split('\n')[0]?.length).toBeLessThan(400);
+  });
+
+  it('reads a Windows drive path and a UNC path from a syntax-error header', () => {
+    for (const [header, file] of [
+      ['C:\\app\\x.js', 'C:\\app\\x.js'],
+      ['\\\\server\\share\\x.js', '\\\\server\\share\\x.js'],
+    ] as const) {
+      const error = new SyntaxError('Unexpected token');
+      error.stack = `${header}:3\nconst = 1;\n      ^\n\nSyntaxError: Unexpected token`;
+      expect(detectModuleLoadFailure(error)?.position).toEqual({ file, line: 3, column: 7 });
+    }
+  });
+
+  it('survives a throwing requireStack index and an errors getter that changes its answer', () => {
+    const stack = ['/app/a.cjs'];
+    Object.defineProperty(stack, '1', {
+      get() {
+        throw new Error('hostile');
+      },
+    });
+    stack.length = 2;
+    const error = coded('MODULE_NOT_FOUND', "Cannot find module './m'");
+    Object.assign(error, { requireStack: stack });
+    expect(detectModuleLoadFailure(error)?.requireStack).toEqual(['/app/a.cjs']);
+
+    let reads = 0;
+    const aggregate = new AggregateError([], 'bundle failed');
+    Object.defineProperty(aggregate, 'errors', {
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error('hostile');
+        return [];
+      },
+    });
+    expect(() => detectModuleLoadFailure(aggregate)).not.toThrow();
   });
 });

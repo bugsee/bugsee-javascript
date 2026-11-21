@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import type { FrameEnricher, StackFrame } from '@bugsee/core';
 import { parseLocation } from '@bugsee/core';
 
@@ -31,12 +32,25 @@ const FAILED_RESOLUTION_CODES = new Set([
   'ERR_REQUIRE_ASYNC_MODULE',
 ]);
 
+// The message shapes Node uses. Each is anchored on a fixed prefix and uses no nested or lazy repetition, so none can backtrack
+// badly on a hostile message.
 // `Cannot find module '/abs/x.mjs' imported from /abs/y.mjs`, `Cannot find package 'p' imported from ...`.
-const NOT_FOUND = /Cannot find (?:module|package) '([^']+)'(?: imported from (.+?))?$/m;
+const NOT_FOUND = /Cannot find (?:module|package) '([^']+)'/;
+// `Directory import '/abs/dir' is not supported resolving ES modules imported from /abs/y.mjs`
+const DIR_IMPORT = /^Directory import '([^']+)'/;
+// `Package subpath './sub' is not defined by "exports" in /abs/node_modules/pkg/package.json imported from /abs/y.mjs`
+const NOT_EXPORTED = /^Package subpath '([^']+)'/;
+// `Unknown file extension ".xyz" for /abs/component.xyz`
+const UNKNOWN_EXTENSION = /^Unknown file extension "[^"]*" for ([^\n]+)/;
+// the importer, wherever the message names it
+const IMPORTED_FROM = / imported from ([^\n]+)/;
+// Longest specifier or path shipped in a frame or description line: a `data:` URL can be kilobytes of inline source.
+const MAX_SPECIFIER = 300;
 // Bun's stackless SyntaxError for a missing named export: `Export named 'x' not found in module '/abs/y.mjs'.`
 const BUN_MISSING_EXPORT = /^Export named '([^']+)' not found in module '([^']+)'\.?$/;
 // Node's SyntaxError header: `<file>:<line>` / the source line / the caret line.
-const SYNTAX_HEADER = /^((?:file:\/\/)?\/[^\n]*?):(\d+)\n[^\n]*\n( *)\^/;
+// The file is a POSIX path, a `file://` URL, a Windows drive path (`C:\app\x.js`) or a UNC path (`\\server\share\x.js`).
+const SYNTAX_HEADER = /^((?:file:\/\/|[A-Za-z]:[\\/]|\\\\|\/)[^\n]*?):(\d+)\n[^\n]*\n( *)\^/;
 
 export interface ModuleLoadFailure {
   /** What failed: a SyntaxError found in a module's source, or a module that could not be resolved/loaded. */
@@ -75,24 +89,33 @@ function str(value: unknown, key: string): string | undefined {
 function toPath(location: string): string {
   if (!location.startsWith('file://')) return location;
   try {
-    return decodeURIComponent(new URL(location).pathname);
+    return fileURLToPath(location);
   } catch {
     return location.slice('file://'.length);
   }
 }
 
+/** The array's strings, each element read through `prop` so a throwing index getter costs that element, not the report. */
 function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === 'string')
-    : [];
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const entry = prop(value, String(i));
+    if (typeof entry === 'string') out.push(entry);
+  }
+  return out;
+}
+
+function objectList(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  const out: unknown[] = [];
+  for (let i = 0; i < value.length; i++) out.push(prop(value, String(i)));
+  return out;
 }
 
 function syntaxPosition(value: unknown): ModuleLoadFailure['position'] | undefined {
   // Bun: the build error itself, or the first of an AggregateError's `errors`.
-  const candidates = [
-    value,
-    ...(Array.isArray(prop(value, 'errors')) ? (prop(value, 'errors') as unknown[]) : []),
-  ];
+  const candidates = [value, ...objectList(prop(value, 'errors'))];
   for (const candidate of candidates) {
     const position = prop(candidate, 'position');
     const file = str(position, 'file');
@@ -144,13 +167,22 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
   if (!isBunResolve && (code === undefined || !FAILED_RESOLUTION_CODES.has(code))) return undefined;
 
   const requireStack = stringList(prop(value, 'requireStack'));
-  const found = NOT_FOUND.exec(message);
   const url = str(value, 'url');
   const module =
-    str(value, 'specifier') ?? (url !== undefined ? toPath(url) : undefined) ?? found?.[1];
-  const importer = str(value, 'referrer') ?? found?.[2] ?? requireStack[0];
+    str(value, 'specifier') ??
+    (url !== undefined ? toPath(url) : undefined) ??
+    (NOT_FOUND.exec(message) ??
+      DIR_IMPORT.exec(message) ??
+      NOT_EXPORTED.exec(message) ??
+      UNKNOWN_EXTENSION.exec(message))?.[1];
+  const importer = str(value, 'referrer') ?? IMPORTED_FROM.exec(message)?.[1] ?? requireStack[0];
   const importKind = str(value, 'importKind');
-  const viaRequire = requireStack.length > 0 || importKind === 'require-call';
+  // `require()` of an ES module raises these two, with no require stack on them.
+  const viaRequire =
+    requireStack.length > 0 ||
+    importKind === 'require-call' ||
+    code === 'ERR_REQUIRE_ESM' ||
+    code === 'ERR_REQUIRE_ASYNC_MODULE';
   return {
     kind: 'resolution',
     via: viaRequire ? 'require' : 'import',
@@ -162,7 +194,11 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
 }
 
 function scrub(path: string): string {
-  return parseLocation(path).file ?? path;
+  // A `data:` / `blob:` specifier IS its payload (inline source, possibly a secret): keep the scheme, drop the rest.
+  const inline = /^(data|blob):/i.exec(path);
+  if (inline !== null) return `${(inline[1] as string).toLowerCase()}:<elided>`;
+  const file = parseLocation(path).file ?? path;
+  return file.length > MAX_SPECIFIER ? `${file.slice(0, MAX_SPECIFIER)}...` : file;
 }
 
 /** The frame that stands for the failed load, placed at the top of the stack so the report names it. */
@@ -206,7 +242,10 @@ export function describeModuleLoadFailure(value: unknown): string | undefined {
   } else {
     if (failure.module !== undefined) lines.push(`Failed module: ${scrub(failure.module)}`);
     if (failure.importer !== undefined) lines.push(`Imported from: ${scrub(failure.importer)}`);
-    lines.push(`Loaded via: ${failure.via === 'require' ? 'require()' : 'import'}`);
+    // Only said when the load is known: with no module and no stack to go on, a default would be a guess.
+    if (failure.module !== undefined) {
+      lines.push(`Loaded via: ${failure.via === 'require' ? 'require()' : 'import'}`);
+    }
     if (failure.missingExport !== undefined) lines.push(`Missing export: ${failure.missingExport}`);
     if (failure.code !== undefined) lines.push(`Code: ${failure.code}`);
     if (failure.requireStack.length > 0) {
