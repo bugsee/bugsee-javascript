@@ -92,6 +92,10 @@ const NOT_A_WIRE_NAME: Readonly<
     reason: "the on-disk subdirectory 'capture'",
     literals: { capture: 1 },
   },
+  'node/src/module-load-failure.ts': {
+    reason: "the Node error property 'url' (the URL of the module that failed to load)",
+    literals: { url: 1 },
+  },
   'node/src/recover-instances.ts': {
     reason: "the on-disk subdirectory 'capture'",
     literals: { capture: 1 },
