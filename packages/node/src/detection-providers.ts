@@ -2,6 +2,7 @@ import process from 'node:process';
 import type { CrashJson, DetectionProvider } from '@bugsee/core';
 import {
   buildCrashJson,
+  composeFrameEnrichers,
   DetectionProviderBase,
   describeThrown,
   type FrameEnricher,
@@ -9,6 +10,7 @@ import {
   parseV8Stack,
 } from '@bugsee/core';
 import { BugseeOption } from '@bugsee/protocol';
+import { describeModuleLoadFailure, moduleLoadFrameEnricher } from './module-load-failure';
 import { markOwnHandler } from './process-policy';
 
 // Node crash/error detection providers (the globalErrorInterceptor equivalent on Node).
@@ -29,10 +31,14 @@ export interface ProcessEvents {
 function describeError(value: unknown): { summary: string; description?: string } {
   if (value instanceof Error) {
     const summary = value.message || value.name;
-    if (value.stack) {
-      return { summary, description: formatStack(parseV8Stack(value.stack)) };
-    }
-    return { summary };
+    // A failed module load: the failed module first (the runtime's own stack is loader internals, or absent in Bun), then whatever
+    // stack there is.
+    const moduleFailure = describeModuleLoadFailure(value);
+    const frames = value.stack ? formatStack(parseV8Stack(value.stack)) : undefined;
+    const description = [moduleFailure, frames]
+      .filter((part) => part !== undefined && part !== '')
+      .join('\n');
+    return description === '' ? { summary } : { summary, description };
   }
   return { summary: describeThrown(value) };
 }
@@ -46,10 +52,15 @@ function describeError(value: unknown): { summary: string; description?: string 
  * could not see it: they drive `logException`, which does go through the client.
  */
 function crashOf(value: unknown, enrichFrames?: FrameEnricher): CrashJson | undefined {
+  // The failed module goes in last, after the locals enricher has seen the runtime's own frames.
+  const enrich = composeFrameEnrichers([
+    ...(enrichFrames !== undefined ? [enrichFrames] : []),
+    moduleLoadFrameEnricher,
+  ]);
   return buildCrashJson(value, {
     parseStack: parseV8Stack,
     handled: false,
-    ...(enrichFrames !== undefined ? { enrichFrames } : {}),
+    ...(enrich !== undefined ? { enrichFrames: enrich } : {}),
   });
 }
 
