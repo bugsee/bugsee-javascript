@@ -451,6 +451,45 @@ describe('probed Node message shapes (v26)', () => {
         'Package import specifier "#nope" is not defined in package /app/package.json imported from /app/t.cjs',
       ),
     );
-    expect(failure).toMatchObject({ module: '#nope', importer: '/app/t.cjs', via: 'import' });
+    expect(failure).toMatchObject({ module: '#nope', importer: '/app/t.cjs' });
+    // the CommonJS loader raises this too, so `imported from` does not say it was an import()
+    expect(failure?.via).toBeUndefined();
+  });
+
+  it('the root of a package with no "exports" main names the package, in ESM and CJS messages', () => {
+    const esm = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'No "exports" main defined in /app/node_modules/pkg/package.json imported from /app/m.mjs',
+      ),
+    );
+    expect(esm).toMatchObject({ module: 'pkg', importer: '/app/m.mjs' });
+    const cjs = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'No "exports" main defined in /app/node_modules/pkg/package.json',
+      ),
+    );
+    expect(cjs?.module).toBe('pkg');
+  });
+
+  it('reads Windows separators in the package path', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        'Package subpath \'./sub\' is not defined by "exports" in C:\\app\\node_modules\\@s\\pkg\\package.json',
+      ),
+    );
+    expect(failure?.module).toBe('@s/pkg/sub');
+  });
+
+  it('require() of an ES module in a path with spaces still names both paths', () => {
+    const failure = detectModuleLoadFailure(
+      coded(
+        'ERR_REQUIRE_ESM',
+        'require() of ES Module /my app/x.mjs from /my app/z.cjs not supported.\nInstead ...',
+      ),
+    );
+    expect(failure).toMatchObject({ module: '/my app/x.mjs', importer: '/my app/z.cjs' });
   });
 });

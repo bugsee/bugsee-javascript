@@ -42,11 +42,15 @@ const DIR_IMPORT = /^Directory import '([^']+)'/;
 // `Package subpath './sub' is not defined by "exports" in /abs/node_modules/pkg/package.json imported from /abs/y.mjs`
 const NOT_EXPORTED = /^Package subpath '([^']+)'/;
 // The package a `package.json` path in the message belongs to: `/app/node_modules/@scope/pkg/package.json` -> `@scope/pkg`.
-const PACKAGE_OF_JSON = /node_modules\/((?:@[^/\n]+\/)?[^/\n]+)\/package\.json/;
+// Either separator: on Windows the path is `C:\app\node_modules\@scope\pkg\package.json`.
+const PACKAGE_OF_JSON = /node_modules[\\/]((?:@[^\\/\n]+[\\/])?[^\\/\n]+)[\\/]package\.json/;
+// `No \"exports\" main defined in /app/node_modules/pkg/package.json [imported from ...]`: the package root, with no subpath.
+const NO_EXPORTS_MAIN = /^No "exports" main defined in /;
 // `Package import specifier "#x" is not defined in package /app/package.json imported from /app/y.mjs`
 const IMPORT_NOT_DEFINED = /^Package import specifier "([^"]+)"/;
 // `require() of ES Module /app/esm.mjs from /app/y.js not supported.`
-const REQUIRE_ESM = /^require\(\) of ES Module (\S+) from (\S+) not supported/;
+// Lazy but anchored and bounded by `[^\n]`, so a path with a space still matches and nothing backtracks badly.
+const REQUIRE_ESM = /^require\(\) of ES Module ([^\n]+?) from ([^\n]+?) not supported/;
 // `require() cannot be used on an ESM graph with top-level await. ...\nRequired module: /app/tla.mjs`
 const REQUIRED_MODULE = /^Required module: ([^\n]+)/m;
 // `Unknown file extension ".xyz" for /abs/component.xyz`
@@ -105,6 +109,11 @@ function toPath(location: string): string {
 }
 
 /** The array's strings, each element read through `prop` so a throwing index getter costs that element, not the report. */
+/** A package name with the platform separator normalized to `/`. */
+function slashed(name: string): string {
+  return name.replace(/\\/g, '/');
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -180,11 +189,16 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
   const requireEsm = REQUIRE_ESM.exec(message);
   const exported = NOT_EXPORTED.exec(message);
   const exportedIn = exported === null ? null : PACKAGE_OF_JSON.exec(message);
+  const noMain = NO_EXPORTS_MAIN.test(message) ? PACKAGE_OF_JSON.exec(message) : null;
   let exportedModule: string | undefined;
   if (exported !== null) {
     const subpath = exported[1] as string;
     exportedModule =
-      exportedIn === null ? subpath : `${exportedIn[1]}/${subpath.replace(/^\.\//, '')}`;
+      exportedIn === null
+        ? subpath
+        : `${slashed(exportedIn[1] as string)}/${subpath.replace(/^\.\//, '')}`;
+  } else if (noMain !== null) {
+    exportedModule = slashed(noMain[1] as string);
   }
   const module =
     str(value, 'specifier') ??
@@ -207,8 +221,14 @@ export function detectModuleLoadFailure(value: unknown): ModuleLoadFailure | und
     importKind === 'require-call' ||
     code === 'ERR_REQUIRE_ESM' ||
     code === 'ERR_REQUIRE_ASYNC_MODULE';
+  // `imported from` does not settle it for the two errors the CommonJS loader shares with the ESM resolver.
+  const sharedResolver =
+    code === 'ERR_PACKAGE_IMPORT_NOT_DEFINED' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED';
   const viaImport =
-    importKind !== undefined || url !== undefined || importedFrom !== undefined || isBunResolve;
+    importKind !== undefined ||
+    url !== undefined ||
+    (importedFrom !== undefined && !sharedResolver) ||
+    isBunResolve;
   const via = viaRequire ? 'require' : viaImport ? 'import' : undefined;
   return {
     kind: 'resolution',
