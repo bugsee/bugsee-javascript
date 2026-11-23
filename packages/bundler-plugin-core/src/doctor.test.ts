@@ -429,6 +429,8 @@ describe('diagnoseBuildOutput', () => {
       put('index.html', `<script src="gone.js" integrity="${sri('x')}"></script>`);
       const report = await run();
       expect(ids(report)).not.toContain('sri.unstamped-hazard');
+      expect(ids(report)).not.toContain('doctor.internal-error');
+      expect(report.summary.errors).toBe(0);
     });
 
     it('a stamped script whose pin matches its bytes is fine', async () => {

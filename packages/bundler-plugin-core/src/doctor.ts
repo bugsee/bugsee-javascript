@@ -14,7 +14,7 @@ import { findAppIdentity } from './app-identity';
 import { readDebugId } from './debug-ids';
 import { loadBuildPluginEnv, mergeBuildPluginEnv } from './env-file';
 import type { EnvRecord } from './run-cli';
-import { findIntegrityMismatches, findSriProtectedScripts } from './sri';
+import { findSriProtectedScripts, passesIntegrity } from './sri';
 import { isProjectRootOrAbove, MAX_WALK_DEPTH, NEVER_WALK } from './stamp-files';
 import { lastSourceMappingUrl, localPointerTarget } from './verify-stamp';
 
@@ -765,10 +765,21 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
   const pinned = await findSriProtectedScripts(dir);
   if (pinned.length > 0) {
     const unstampedPinned: typeof pinned = [];
+    const mismatches: typeof pinned = [];
     for (const p of pinned) {
+      // The same guards as every other read: not through a symlinked directory that leads out, and only a
+      // regular file of bounded size (a FIFO or `/dev/zero` is never opened). The bytes read here are also
+      // what the integrity check judges, so nothing is read twice.
+      const real = await realpath(p.script).catch(() => undefined);
+      if (real === undefined || !isInside(realDir, real)) {
+        continue;
+      }
       const read = await readRegular(p.script, maxBundleBytes);
       if (!read.ok) {
         continue; // a pin to a file that is not there is stale, not something stamping would break
+      }
+      if (!passesIntegrity(p.integrity, read.bytes)) {
+        mismatches.push(p);
       }
       if (readDebugId(read.bytes.toString('utf8')) === undefined) {
         unstampedPinned.push(p);
@@ -783,7 +794,6 @@ async function diagnose(dirInput: string, options: DoctorOptions): Promise<Docto
         details: { scripts: unstampedPinned.map((p) => rel(dir, p.script)) },
       });
     }
-    const mismatches = await findIntegrityMismatches(dir);
     if (mismatches.length > 0) {
       add({
         id: 'sri.mismatch',

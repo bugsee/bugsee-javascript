@@ -167,7 +167,7 @@ type SriAlgorithm = (typeof SRI_ALGORITHMS)[number];
  * ignored; of what remains only the STRONGEST algorithm is compared; any one digest of it matching is
  * enough. A value with no algorithm the browser knows means no check at all.
  */
-function passesIntegrity(integrity: string, bytes: Buffer): boolean {
+export function passesIntegrity(integrity: string, bytes: Buffer): boolean {
   const byAlgorithm = new Map<SriAlgorithm, string[]>();
   for (const token of integrity.split(/\s+/)) {
     // `alg-base64[?options]` — the options suffix is allowed by the grammar and has no effect here.

@@ -1,6 +1,7 @@
 // Robustness of the doctor: it must never throw, never read what it should not, never be quadratic, and must
 // resolve sources the way the build did. Each test pins one reviewed failure mode.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   mkdirSync,
@@ -464,5 +465,52 @@ describe('--ignore cannot hide a hard failure (round 3)', () => {
     const empty = await run({ ignore: ['output.no-js', 'map.public-leftover'] });
     expect(ids(empty)).toEqual(['output.no-js']);
     expect(empty.ignored).toBeUndefined();
+  });
+});
+
+describe('SRI reads are as guarded as every other read (review thread)', () => {
+  const sri = (bytes: string | Buffer): string =>
+    `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+  const page = (src: string, integrity: string): string =>
+    `<script src="${src}" integrity="${integrity}"></script>`;
+
+  it('a pinned script that is a FIFO never hangs the doctor', async () => {
+    if (spawnSync('mkfifo', [join(dist, 'app.js')]).status !== 0) {
+      return;
+    }
+    put('index.html', page('app.js', sri('x')));
+    const report = await run();
+    // the walk does not list a FIFO; the point is that the pin does not open it either
+    expect(ids(report)).toContain('output.no-js');
+    expect(ids(report)).not.toContain('sri.mismatch');
+    expect(ids(report)).not.toContain('sri.unstamped-hazard');
+  }, 10_000);
+
+  it('a pinned symlink to /dev/zero is refused, never read', async () => {
+    symlinkSync('/dev/zero', join(dist, 'zero.js'));
+    put('index.html', page('zero.js', sri('x')));
+    const report = await run();
+    expect(find(report, 'output.unreadable')?.details).toEqual({
+      files: ['zero.js is a symbolic link'],
+    });
+    expect(ids(report)).not.toContain('sri.mismatch');
+  }, 10_000);
+
+  it('a pinned script reached through a symlinked directory is not read or hashed', async () => {
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'app.js'), `x${stamp(ID_A)}`);
+    symlinkSync(outside, join(dist, 'vendor'));
+    put('index.html', page('vendor/app.js', sri('something else')));
+    const report = await run();
+    expect(ids(report)).not.toContain('sri.mismatch');
+    expect(ids(report)).not.toContain('sri.unstamped-hazard');
+  });
+
+  it('a pinned regular script whose bytes no longer match is still sri.mismatch (read once)', async () => {
+    put('app.js', `c${stamp(ID_A)}`);
+    put('index.html', page('app.js', sri('c')));
+    const report = await run();
+    expect(find(report, 'sri.mismatch')?.details).toEqual({ scripts: ['app.js'] });
   });
 });
