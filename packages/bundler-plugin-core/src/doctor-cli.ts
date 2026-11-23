@@ -31,6 +31,15 @@ Options:
 
 Exit codes: 0 ok, 1 warnings only (with --strict), 2 errors.`;
 
+/** Flags that take no value: `--strict=false` must be refused, not read as `--strict`. */
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  '--json',
+  '--strict',
+  '--no-env',
+  '--deployed',
+  '--help',
+]);
+
 export interface DoctorCliIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
@@ -56,10 +65,13 @@ export async function runDoctorCli(argv: readonly string[], io: DoctorCliIo): Pr
     let arg = argv[i] as string;
     // `--key=value` is the same as `--key value`
     let inline: string | undefined;
-    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    const eq = !onlyPositionals && arg.startsWith('--') ? arg.indexOf('=') : -1;
     if (eq > 2) {
       inline = arg.slice(eq + 1);
       arg = arg.slice(0, eq);
+    }
+    if (inline !== undefined && BOOLEAN_FLAGS.has(arg)) {
+      return usage(`${arg} does not take a value`);
     }
     if (onlyPositionals) {
       if (dir !== undefined) {

@@ -367,3 +367,15 @@ describe.skipIf(process.getuid?.() === 0)('an unreadable output directory', () =
     }
   });
 });
+
+describe('CRLF bundles (a Windows toolchain)', () => {
+  it('an inline map after a CRLF line is still map.inline, and a pointer with CR is paired', async () => {
+    put('a.js', `a\r\n//# sourceMappingURL=data:application/json;base64,e30=\r\n${stamp(ID_A)}`);
+    put('b.js', `b\r\n//# sourceMappingURL=maps/b.map\r\n${stamp(ID_B)}`);
+    put('maps/b.map', mapJson({ debugId: ID_A }));
+    const report = await run();
+    expect(find(report, 'map.inline')?.details).toEqual({ files: ['a.js'] });
+    expect(find(report, 'stamp.map-id-mismatch')?.file).toBe('maps/b.map');
+    expect(ids(report)).not.toContain('map.hidden');
+  });
+});

@@ -169,6 +169,35 @@ describe('runDoctorCli', () => {
     expect(err).toContain('Unknown option --');
   });
 
+  it.each([
+    '--json',
+    '--strict',
+    '--no-env',
+    '--deployed',
+    '--help',
+  ])('%s takes no value: `=value` is a usage error, not silently dropped', async (flag) => {
+    const { code, out, err } = await cli([dist, `${flag}=false`]);
+    expect(code).toBe(2);
+    expect(out).toBe('');
+    expect(err).toContain(`${flag} does not take a value`);
+  });
+
+  it('after `--`, an argument containing `=` is a plain directory name', async () => {
+    const odd = join(root, '--odd=dir');
+    mkdirSync(odd);
+    writeFileSync(join(odd, 'a.js'), stamped);
+    const here = process.cwd();
+    process.chdir(root);
+    try {
+      const { code, out } = await cli(['--no-env', '--', '--odd=dir']);
+      expect(code).toBe(0);
+      expect(out).toContain('--odd=dir');
+      expect(out).toContain('1 bundle(s)');
+    } finally {
+      process.chdir(here);
+    }
+  });
+
   it('an unknown --ignore ID is warned about on stderr but not fatal', async () => {
     writeFileSync(join(dist, 'a.js'), stamped);
     const { code, err } = await cli([dist, '--no-env', '--ignore', 'map.public-leftvoer']);
