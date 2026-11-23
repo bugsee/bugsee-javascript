@@ -989,7 +989,8 @@ describe('outputs announce their names at generateBundle, so the first write alr
       await h.writeBundle(a, bundleOf('a'));
       await h.writeBundle(b, bundleOf('b'));
       expect(siblingsOf(0)?.slice().sort()).toEqual(['b.js', 'b.js.map']);
-      expect(siblingsOf(1)).toEqual([]);
+      // a already finished, but its names stay known: its maps (left on disk by `deleteMaps: false`) are not b's
+      expect(siblingsOf(1)?.slice().sort()).toEqual(['a.js', 'a.js.map']);
     });
 
     it(`${kind}: an output that only GENERATED (bundle.generate never writes) cannot hide this one's own maps`, async () => {
@@ -1063,11 +1064,29 @@ describe('outputs announce their names at generateBundle, so the first write alr
       await h.writeBundle(b, js('b'));
       expect(flag(0)).toBeUndefined();
       expect(flag(1)).toBeUndefined(); // 'a' had no maps, and '/other' is not this directory
-      expect(siblingsOf(1)).toEqual([]); // the unrelated announced output is no sibling
+      expect(siblingsOf(1)).toEqual(['a.js']); // a finished sibling stays known; the unrelated announced output is no sibling
       await h.writeBundle(other, bundleOf('o'));
       await h.generateBundle.handler(c, js('c'), true);
       await h.writeBundle(c, js('c'));
       expect(flag(3)).toBeUndefined(); // '/other' wrote maps, in a different directory
+    });
+
+    it(`${kind}: every finished output stays known (not only the last), and a re-write of the same names is not its own sibling`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const [a, b, c, again] = [{ dir: '/out' }, { dir: '/out' }, { dir: '/out' }, { dir: '/out' }];
+      for (const [o, n] of [
+        [a, 'a'],
+        [b, 'b'],
+        [c, 'c'],
+      ] as const) {
+        await h.generateBundle.handler(o, bundleOf(n), true);
+        await h.writeBundle(o, bundleOf(n));
+      }
+      expect(siblingsOf(2)?.slice().sort()).toEqual(['a.js', 'a.js.map', 'b.js', 'b.js.map']);
+      await h.generateBundle.handler(again, bundleOf('a'), true);
+      await h.writeBundle(again, bundleOf('a')); // same names as the first output
+      expect(siblingsOf(3)?.slice().sort()).toEqual(['b.js', 'b.js.map', 'c.js', 'c.js.map']);
     });
 
     it(`${kind}: a new build forgets outputs that never wrote (buildStart)`, async () => {

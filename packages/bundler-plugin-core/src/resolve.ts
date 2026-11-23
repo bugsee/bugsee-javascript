@@ -335,6 +335,9 @@ export async function runPluginUpload(
   outDir: string,
   deps: Parameters<typeof runPluginUploadInner>[2] = {},
 ): Promise<PluginRunResult | undefined> {
+  if (!resolved.enabled) {
+    return undefined; // before any path resolution: a disabled plugin does nothing, whatever the cwd
+  }
   const mine = deps.files === undefined ? deps.ownFiles : undefined;
   const key = dirKey(outDir);
   if (mine !== undefined) {
@@ -388,9 +391,7 @@ async function runPluginUploadInner(
   } = {},
   mine?: readonly string[],
 ): Promise<PluginRunResult | undefined> {
-  if (!resolved.enabled) {
-    return undefined;
-  }
+  // (the caller, runPluginUpload, has already returned for a disabled plugin)
   // One pipeline per output DIRECTORY. `writeBundle` fires once per OUTPUT, so a multi-output
   // config whose entries resolve to the same directory — `[{ dir: 'dist' }, { file: 'dist/legacy.js' }]`,
   // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps

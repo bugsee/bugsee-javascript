@@ -287,6 +287,7 @@ export async function uploadSourcemaps(
       const bundle = map.slice(0, -'.map'.length);
       if (
         /\.[cm]?js$/i.test(bundle) &&
+        own(bundle) && // a foreign bundle (another output's) is never handed to inject
         (await access(bundle).then(
           () => true,
           () => false,
@@ -405,7 +406,8 @@ export async function uploadSourcemaps(
       }
       return undefined;
     } finally {
-      await snapshot.dispose();
+      // A failed spill removal is a diagnostic: it must not replace the (possibly strict) result being returned.
+      await snapshot.dispose().catch(reportContinuing);
     }
   };
 
@@ -681,8 +683,14 @@ export async function uploadSourcemaps(
       const siblingHasMaps =
         options.siblingsHaveMaps === true ||
         (options.siblingOwnFiles ?? []).some((name) => name.endsWith('.map'));
+      // "This output has no maps": by ITS names when they are known (a stale or foreign map in the directory
+      // is not this output's), else by what the directory walk found.
+      const ownHasNoMaps =
+        options.ownFiles !== undefined
+          ? !options.ownFiles.some((name) => name.endsWith('.map'))
+          : everything.length === 0;
       if (deletable.length === 0) {
-        if (options.failOnError === true && !(everything.length === 0 && siblingHasMaps)) {
+        if (options.failOnError === true && !(ownHasNoMaps && siblingHasMaps)) {
           throw new Error(
             `no source maps with a debug-ID were found in ${outDir}, so nothing was uploaded`,
           );

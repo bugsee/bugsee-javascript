@@ -580,7 +580,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   const announced = new Map<string, Map<object, string[]>>();
   // Directories an output WITH maps has already written in this build: an unmapped output that comes after it
   // (its sibling already finished and left the registry) still has nothing to do. Cleared with a new build.
-  const mappedDirs = new Set<string>();
+  const finishedNames = new Map<string, string[]>();
   const stampBundle = async (
     output: OutputLike,
     bundle: RollupBundleLike,
@@ -637,9 +637,17 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       // A name THIS output emitted is never a sibling's: a leftover announcement from `bundle.generate()` (which
       // never writes) has the same names and must not hide this output's own maps.
       const mine = new Set(Object.keys(bundle ?? {}));
-      const siblingsHaveMaps = [...mappedDirs].some((dir) => relativeUnder(key, dir) !== undefined);
-      if ([...mine].some((name) => name.endsWith('.map'))) {
-        mappedDirs.add(key);
+      // Outputs that already wrote in this build: their names stay known (with `deleteMaps: false` their maps
+      // are still on disk, and a later output must not take them for foreign and upload them again).
+      const finished = [...finishedNames].flatMap(([dir, names]) => {
+        const prefix = relativeUnder(key, dir);
+        return prefix === undefined
+          ? []
+          : names.filter((n) => !mine.has(n)).map((n) => (prefix === '' ? n : `${prefix}/${n}`));
+      });
+      const siblingsHaveMaps = finished.some((name) => name.endsWith('.map'));
+      if (bundle !== undefined) {
+        finishedNames.set(key, [...(finishedNames.get(key) ?? []), ...mine]);
       }
       const siblings = [...(group ?? [])]
         .filter(([other]) => other !== output)
@@ -649,7 +657,8 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           nested.flatMap(([dir, g]) =>
             [...g.values()].flat().map((name) => `${relativeUnder(key, dir)}/${name}`),
           ),
-        );
+        )
+        .concat(finished);
       group?.delete(output);
       if (group?.size === 0) {
         announced.delete(key);
@@ -732,7 +741,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       },
       buildStart() {
         announced.clear();
-        mappedDirs.clear();
+        finishedNames.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) =>
@@ -774,7 +783,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       buildStart() {
         unbakedOutDirs.clear();
         announced.clear();
-        mappedDirs.clear();
+        finishedNames.clear();
       },
       generateBundle: generateBundleHook,
       writeBundle: (output: OutputLike, bundle?: object) => uploadForOutput(output, {}, bundle),

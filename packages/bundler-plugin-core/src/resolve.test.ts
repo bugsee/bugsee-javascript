@@ -364,6 +364,20 @@ describe('one pipeline per output directory', () => {
     expect(seen[1]).toEqual([]);
   });
 
+  it('a disabled plugin returns before any path resolution (a removed cwd must not make it reject)', async () => {
+    const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+      throw new Error('ENOENT: uv_cwd');
+    });
+    try {
+      const off = { ...resolved, enabled: false };
+      await expect(
+        runPluginUpload(off, 'relative/dist', { ownFiles: ['a.js'] }),
+      ).resolves.toBeUndefined();
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
   it('a failed in-flight run does not stop the waiting second output from running', async () => {
     const calls: string[] = [];
     let first = true;

@@ -272,9 +272,10 @@ the stamped result back as a **string source** (`new RawSource(text)`), decoded 
 an asset whose bytes are not valid UTF-8 refuses the whole stamp BEFORE anything is written (`store.check`, a
 two-phase write-back), and the build falls back to stamping after emit. Vite and Rollup name chunks before
 `generateBundle` (the names are final there) and esbuild / the CLI stamp after the hash step, so none of them is
-affected; a hashed-lazy-chunk real build of each runs in Chromium (`instrumentation-tests/test/lazy-chunk.e2e.ts`,
-which also covers Rspack with `SubresourceIntegrityPlugin` and checks that every bundle's `sourceMappingURL` and
-map `file` name a file that exists).
+affected; a hashed-lazy-chunk real build of webpack, Rspack, Rollup and Vite (7 and 8) runs in Chromium
+(`instrumentation-tests/test/lazy-chunk.e2e.ts`; there is no esbuild or direct-CLI build in that suite, and
+stamping after emit does not take part in `RealContentHashPlugin` at all). It also covers Rspack with `SubresourceIntegrityPlugin` and checks that every bundle's `sourceMappingURL` and
+map `file` name a file that exists.
 
 ### Vite workers (sub-builds), and the catch-up
 
@@ -334,8 +335,10 @@ pre-stamped upload, and the post-emit path (which, when siblings exist, also upl
 the directory, so a sibling's maps are neither uploaded, nor reported as "not produced by this build", nor deleted).
 **`failOnError` and an output with no maps:** an output whose own map set is empty while a sibling output of the
 same directory has maps has nothing to do and does NOT fail ("no source maps with a debug-ID were found" is for a lone
-output, or when no sibling has maps either). The sibling counts when it is announced and about to write, or has
-already written and finished in this build (an unmapped output that comes LAST must not fail because its mapped
+output, or when no sibling has maps either). "This output has no maps" is judged by ITS names when they are known, so a stale or foreign map in the directory
+does not defeat it. The sibling counts when it is announced and about to write, or has
+already written and finished in this build (its names stay known to later outputs of the build, so with
+`deleteMaps: false` its maps left on disk are not uploaded a second time) (an unmapped output that comes LAST must not fail because its mapped
 sibling got there first). An output whose own map exists but is unkeyed still fails. **Only an output that will
 write is a sibling:** `bundle.generate()` (`isWrite === false`) is never announced, so a generate-only mapped output
 cannot make a later unmapped write pass silently. **Nested directories:** an output written into `dist/b` while
