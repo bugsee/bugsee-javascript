@@ -48,6 +48,8 @@ export interface BugseeNextContext {
   sri?: boolean;
   /** `withBugsee` itself turned `productionBrowserSourceMaps` on (the app did not ask for browser maps). */
   forcedMaps?: boolean;
+  /** Browser source maps are written for this build (the app asked for them, or Bugsee turned them on). */
+  browserMaps?: boolean;
   /** A notice said once per distinct text (a no-op when `silent`). */
   say(message: string): void;
 }

@@ -9,7 +9,9 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -44,36 +46,42 @@ beforeAll(() => {
     stdio: 'ignore',
   });
   app = mkdtempSync(join(tmpdir(), 'bugsee-packed-'));
-  const tarballs = join(app, '.tarballs');
-  mkdirSync(tarballs);
-  const overrides: Record<string, string> = {};
+  const modules = join(app, 'node_modules');
+  mkdirSync(join(modules, '@bugsee'), { recursive: true });
+  // The packed tarballs, unpacked as an app's node_modules (pnpm applies each `publishConfig`).
   for (const [name, dir] of closure) {
-    const out = mkdtempSync(join(tarballs, 'p-'));
+    const target = join(modules, name);
+    mkdirSync(target, { recursive: true });
+    const out = mkdtempSync(join(tmpdir(), 'bugsee-pack-'));
     execFileSync('pnpm', ['pack', '--pack-destination', out], { cwd: dir, stdio: 'ignore' });
-    overrides[name] = `file:${join(out, readdirSync(out)[0] as string)}`;
+    execFileSync('tar', [
+      '-xzf',
+      join(out, readdirSync(out)[0] as string),
+      '-C',
+      target,
+      '--strip-components=1',
+    ]);
+    rmSync(out, { recursive: true, force: true });
   }
-  writeFileSync(
-    join(app, 'package.json'),
-    JSON.stringify({
-      name: 'app',
-      version: '3.2.1',
-      private: true,
-      dependencies: { '@bugsee/nextjs': overrides['@bugsee/nextjs'] },
-    }),
-  );
-  // A CLEAN install of the packed tarballs, as a user gets them: every `@bugsee/*` the packed manifests name is
-  // redirected to its tarball (they are not on a registry), everything else comes from the offline store. A
-  // dependency a package forgot to declare is simply not there, instead of being found through the monorepo.
-  writeFileSync(
-    join(app, 'pnpm-workspace.yaml'),
-    `overrides:\n${Object.entries(overrides)
-      .map(([name, spec]) => `  '${name}': '${spec}'`)
-      .join('\n')}\n`,
-  );
-  execFileSync('pnpm', ['install', '--offline', '--no-frozen-lockfile', '--ignore-scripts'], {
-    cwd: app,
-    stdio: 'pipe',
-  });
+  // Third-party dependencies, and ONLY the ones the packed manifests DECLARE. No registry, no package store: each
+  // declared dependency is linked from where the monorepo installed it (its own transitive dependencies resolve from
+  // that real location). A dependency a package uses but forgot to declare is therefore missing here, exactly as it
+  // would be for a user, which a monorepo-wide node_modules would hide.
+  for (const [name] of closure) {
+    const packed = JSON.parse(readFileSync(join(modules, name, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+    for (const dep of Object.keys({ ...packed.dependencies, ...packed.optionalDependencies })) {
+      if (closure.has(dep)) continue;
+      const installed = join(closure.get(name) as string, 'node_modules', dep);
+      const link = join(modules, dep);
+      if (!existsSync(installed) || existsSync(link)) continue;
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(realpathSync(installed), link);
+    }
+  }
+  writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'app', version: '3.2.1' }));
 }, 900_000);
 
 afterAll(() => {

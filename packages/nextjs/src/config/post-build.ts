@@ -79,7 +79,7 @@ async function postBuild(
   const shared = (client.shared?.length ?? 0) + (server?.shared?.length ?? 0);
   if (shared > 0) {
     context.say(
-      `${shared} bundle(s) share one source map with another bundle (Next 15's Turbopack does this for its runtime chunks), so they were left unstamped: a map carries one debug-ID.`,
+      `${shared} bundle(s) share one source map with another bundle (Next 15's Turbopack does this for its runtime chunks), so they were left unstamped: a map carries one debug-ID. The shared map itself was neither uploaded nor deleted: if it is in \`.next/static\` it is publicly served (it holds Turbopack's runtime source, not yours).`,
     );
   }
 
@@ -99,7 +99,9 @@ async function postBuild(
   if (server !== undefined) {
     await runFor(join(distDir, 'server'), server, {
       deleteMaps: context.deleteServerMaps,
-      registerBuild: false,
+      // The build is registered once. When the browser run had nothing to upload (the app turned browser maps off),
+      // the server run registers it instead, so the build record is not lost.
+      ...(client.scripts.length === 0 ? {} : { registerBuild: false }),
     });
   }
 }

@@ -8,8 +8,10 @@
 // The result composes with what the app already has: a config object, a (phase) function or an async one; the
 // app's own `webpack` function, `compiler.runAfterProductionCompile`, `compiler.define` and
 // `productionBrowserSourceMaps` are called, kept or extended, never replaced. Nothing runs for `next dev`.
+
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { APP_BUILD_DEFINE, APP_VERSION_DEFINE } from '@bugsee/bundler-plugin-core';
 import { type BugseeNextContext, createBugseeContext, type WithBugseeOptions } from './context';
 import { type PostBuildMetadata, runPostBuild } from './post-build';
 import { NO_HOOK_NOTICE, TURBOPACK_SRI_NOTICE } from './sri';
@@ -108,14 +110,28 @@ function extendConfig<C extends NextConfigObject>(
     turbopack && nextVersion !== undefined && !versionAtLeast(nextVersion, MIN_TURBOPACK_HOOK);
   const uploadAvailable = !turbopack || (!noHook && !sri);
   // Bugsee turns browser maps on only when the app said nothing AND an upload is possible.
+  // A dry run uploads and deletes nothing, so it would leave the forced maps public: not forced then.
   const forced =
     baseContext.resolved.enabled &&
+    !baseContext.resolved.dryRun &&
     config.productionBrowserSourceMaps === undefined &&
     uploadAvailable;
+  // The version and build the app's OWN `compiler.define` bakes into the bundle are what the runtime SDK reports,
+  // so they are what the upload and the build registration are labelled with (a string value; anything else keeps
+  // the resolved identity).
+  const userDefine = (config.compiler?.define ?? {}) as Record<string, unknown>;
+  const definedVersion = userDefine[APP_VERSION_DEFINE];
+  const definedBuild = userDefine[APP_BUILD_DEFINE];
   const context: BugseeNextContext = {
     ...baseContext,
+    resolved: {
+      ...baseContext.resolved,
+      ...(typeof definedVersion === 'string' ? { appVersion: definedVersion } : {}),
+      ...(typeof definedBuild === 'string' ? { appBuild: definedBuild } : {}),
+    },
     ...(sri ? { sri: true } : {}),
     ...(forced ? { forcedMaps: true } : {}),
+    browserMaps: forced || config.productionBrowserSourceMaps === true,
   };
   const { resolved } = context;
 

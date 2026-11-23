@@ -5,9 +5,17 @@ import { withBugsee } from './with-bugsee';
 // The compilation kind Next's webpack function is called with decides which policy a plugin instance gets
 // (browser maps are public and deleted, server maps are kept), so it is pinned here at the seam.
 const created = vi.hoisted(() => [] as string[]);
-const contexts = vi.hoisted(() => [] as Array<{ sri?: boolean; forcedMaps?: boolean }>);
+const contexts = vi.hoisted(
+  () =>
+    [] as Array<{
+      sri?: boolean;
+      forcedMaps?: boolean;
+      browserMaps?: boolean;
+      resolved: { appVersion?: string; appBuild?: string };
+    }>,
+);
 vi.mock('./webpack-plugin', () => ({
-  createNextWebpackPlugin: (context: { sri?: boolean; forcedMaps?: boolean }, kind: string) => {
+  createNextWebpackPlugin: (context: (typeof contexts)[number], kind: string) => {
     created.push(kind);
     contexts.push(context);
     return { apply: () => undefined };
@@ -79,5 +87,63 @@ describe('withBugsee: whether Bugsee turned the browser maps on', () => {
     expect(forced({ productionBrowserSourceMaps: true })).toBeUndefined();
     expect(forced({ productionBrowserSourceMaps: false })).toBeUndefined();
     expect(forced({ experimental: { sri: {} } })).toBe(true);
+  });
+});
+
+describe('withBugsee: what the plugins are told about the build', () => {
+  const run = (config: object, resolved: object = {}) => {
+    contexts.length = 0;
+    const ctx = {
+      ...context,
+      resolved: {
+        enabled: true,
+        identityDefines: {},
+        appVersion: '1.0.0',
+        appBuild: '7',
+        ...resolved,
+      },
+    };
+    const out = withBugsee(
+      config,
+      {},
+      {
+        env: {},
+        cwd: () => '/app',
+        createContext: () => ctx as never,
+        nextVersion: () => '16.4.6',
+      },
+    ) as { webpack?: Webpack; productionBrowserSourceMaps?: boolean };
+    out.webpack?.({}, { dev: false, isServer: false });
+    return { out, seen: contexts[0] };
+  };
+
+  it('labels the upload with the version and build the APP\u2019s own define bakes into the bundle', () => {
+    const { seen } = run({
+      compiler: { define: { __BUGSEE_APP_VERSION__: '9.9.9', __BUGSEE_APP_BUILD__: 'b-42' } },
+    });
+    expect(seen?.resolved).toMatchObject({ appVersion: '9.9.9', appBuild: 'b-42' });
+  });
+
+  it('keeps the resolved identity when the app defines nothing, or defines a non-string', () => {
+    expect(run({}).seen?.resolved).toMatchObject({ appVersion: '1.0.0', appBuild: '7' });
+    expect(
+      run({ compiler: { define: { __BUGSEE_APP_VERSION__: 5 } } }).seen?.resolved,
+    ).toMatchObject({ appVersion: '1.0.0' });
+  });
+
+  it('does not force browser maps on a dry run (it would leave them public: nothing is uploaded or deleted)', () => {
+    const { out, seen } = run({}, { dryRun: true });
+    expect(out).not.toHaveProperty('productionBrowserSourceMaps');
+    expect(seen?.forcedMaps).toBeUndefined();
+    expect(
+      run({ productionBrowserSourceMaps: true }, { dryRun: true }).out.productionBrowserSourceMaps,
+    ).toBe(true);
+  });
+
+  it('says whether browser maps are written at all', () => {
+    expect(run({}).seen?.browserMaps).toBe(true);
+    expect(run({ productionBrowserSourceMaps: true }).seen?.browserMaps).toBe(true);
+    expect(run({ productionBrowserSourceMaps: false }).seen?.browserMaps).toBe(false);
+    expect(run({}, { dryRun: true }).seen?.browserMaps).toBe(false);
   });
 });

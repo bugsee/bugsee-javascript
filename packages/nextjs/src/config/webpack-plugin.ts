@@ -182,6 +182,39 @@ export function nextAssetStore(
   };
 }
 
+/**
+ * The emitted scripts paired with their maps: a map named `<script>.map` beside it, or the one the compilation
+ * recorded for the script (`info.related.sourceMap`, which SourceMapDevToolPlugin sets and which may name a map
+ * elsewhere) when that map was emitted.
+ */
+export function pairRecorded(
+  compilation: CompilationLike,
+  outDir: string,
+  emitted: readonly string[],
+): BuildFiles {
+  const base = partitionBuildFiles(emitted);
+  const present = new Set(emitted);
+  const scripts = new Set(base.scripts);
+  const maps = new Set(base.maps);
+  for (const { name } of compilation.getAssets()) {
+    const script = resolve(outDir, withoutQuery(name));
+    if (!SCRIPT_ASSET.test(name) || scripts.has(script) || !present.has(script)) {
+      continue;
+    }
+    const related = compilation.getAsset(name)?.info?.related?.sourceMap;
+    const recorded = Array.isArray(related) ? related[0] : related;
+    const map =
+      recorded === undefined || recorded === null
+        ? undefined
+        : resolve(outDir, withoutQuery(recorded));
+    if (map !== undefined && present.has(map)) {
+      scripts.add(script);
+      maps.add(map);
+    }
+  }
+  return { ...base, scripts: [...scripts].sort(), maps: [...maps].sort() };
+}
+
 /** The webpack plugin for one Next compilation. */
 export function createNextWebpackPlugin(
   context: BugseeNextContext,
@@ -199,7 +232,11 @@ export function createNextWebpackPlugin(
   const forKind: ResolvedPluginOptions = {
     ...resolved,
     deleteMaps: kind === 'client' ? resolved.deleteMaps : context.deleteServerMaps,
-    registerBuild: kind === 'client' ? resolved.registerBuild : false,
+    // Once per `next build`: the browser compilation, or the server one when the app has no browser maps.
+    registerBuild:
+      kind === 'client' || (kind === 'server' && context.browserMaps === false)
+        ? resolved.registerBuild
+        : false,
   };
 
   return {
@@ -234,11 +271,12 @@ export function createNextWebpackPlugin(
                 }
                 state = {
                   preStamped: true,
-                  stampedBundles: stamped.map((name) => store.real(name)),
+                  // On disk there is no `?query` (webpack drops it when it writes the file).
+                  stampedBundles: stamped.map((name) => withoutQuery(store.real(name))),
                   stampedMaps: Object.fromEntries(
                     Object.entries(maps).map(([bundle, map]) => [
-                      store.real(bundle),
-                      store.real(map),
+                      withoutQuery(store.real(bundle)),
+                      withoutQuery(store.real(map)),
                     ]),
                   ),
                 };
@@ -283,7 +321,7 @@ export function createNextWebpackPlugin(
             emitted.push(path);
           }
         }
-        const files: BuildFiles = partitionBuildFiles(emitted);
+        const files: BuildFiles = pairRecorded(compilation, outDir, emitted);
         // No upload will follow: the browser maps Bugsee itself turned on (the app did not ask for them) must not
         // be left in `.next/static`, which is served publicly. Only this compilation's own files, only the ones
         // Bugsee forced; maps the app enabled stay.

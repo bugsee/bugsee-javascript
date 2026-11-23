@@ -4,6 +4,7 @@ import {
   type CompilerLike,
   createNextWebpackPlugin,
   nextAssetStore,
+  pairRecorded,
   removeFile,
   type WebpackPluginDeps,
 } from './webpack-plugin';
@@ -934,5 +935,111 @@ describe('removeFile', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('pairRecorded', () => {
+  const emitted = (names: string[]) => names.map((n) => `/o/${n}`);
+
+  it('pairs a script with the map the compilation recorded for it, wherever that map is', () => {
+    const { compilation } = fakeCompilation(
+      { 'static/a.js': 'x', 'maps/a.js.map': 'm', 'static/b.js': 'x', 'static/b.js.map': 'm' },
+      { 'static/a.js': 'maps/a.js.map' },
+    );
+    const files = pairRecorded(
+      compilation,
+      '/o',
+      emitted(['static/a.js', 'maps/a.js.map', 'static/b.js', 'static/b.js.map']),
+    );
+    expect(files.scripts).toEqual(['/o/static/a.js', '/o/static/b.js']);
+    expect(files.maps).toEqual(['/o/maps/a.js.map', '/o/static/b.js.map']);
+  });
+
+  it('accepts a recorded list and a ?query on the recorded map', () => {
+    const { compilation } = fakeCompilation(
+      { 'a.js': 'x', 'm/a.js.map?v': 'm' },
+      { 'a.js': ['m/a.js.map?v', 'other'] },
+    );
+    expect(pairRecorded(compilation, '/o', emitted(['a.js', 'm/a.js.map'])).maps).toEqual([
+      '/o/m/a.js.map',
+    ]);
+  });
+
+  it('ignores a recorded map that was not emitted, and scripts with none recorded', () => {
+    const { compilation } = fakeCompilation(
+      { 'a.js': 'x', 'b.js': 'x', 'c.txt': 'x' },
+      { 'a.js': 'gone.js.map' },
+    );
+    const files = pairRecorded(compilation, '/o', emitted(['a.js', 'b.js', 'c.txt']));
+    expect(files.scripts).toEqual([]);
+    expect(files.maps).toEqual([]);
+  });
+
+  it('does not pair a script that was not itself emitted', () => {
+    const { compilation } = fakeCompilation(
+      { 'a.js': 'x', 'm/a.js.map': 'm' },
+      { 'a.js': 'm/a.js.map' },
+    );
+    expect(pairRecorded(compilation, '/o', emitted(['m/a.js.map'])).scripts).toEqual([]);
+  });
+});
+
+describe('createNextWebpackPlugin: queries, recorded maps, registration', () => {
+  it('hands the on-disk re-check query-free names (the file on disk has no ?query)', async () => {
+    const d = deps({
+      stamp: vi.fn(async (store) => {
+        store.names();
+        return { stamped: ['static/a.js'], maps: { 'static/a.js': 'static/a.js.map' }, bundles: 1 };
+      }),
+    });
+    const fake = fakeCompiler({ path: '/o' });
+    createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation({ 'static/a.js?v=1': 'x', 'static/a.js.map?v=1': 'm' });
+    fake.startCompilation(c.compilation);
+    await c.run();
+    await fake.emit(c.compilation);
+    const [, , options] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      unknown,
+      unknown,
+      { stampedBundles: string[]; stampedMaps: Record<string, string> },
+    ];
+    expect(options.stampedBundles).toEqual(['static/a.js']);
+    expect(options.stampedMaps).toEqual({ 'static/a.js': 'static/a.js.map' });
+  });
+
+  it('uploads maps a script\u2019s recorded relationship names even when none sits beside it', async () => {
+    const d = deps();
+    const fake = fakeCompiler({ path: '/o' });
+    createNextWebpackPlugin(context(), 'client', d).apply(fake.compiler);
+    const c = fakeCompilation(
+      { 'static/a.js': 'x', 'maps/a.js.map': 'm' },
+      { 'static/a.js': 'maps/a.js.map' },
+    );
+    fake.startCompilation(c.compilation);
+    await fake.emit(c.compilation);
+    expect(d.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('the server compilation registers the build only when the app writes no browser maps', async () => {
+    const reg = async (browserMaps: boolean | undefined, kind: 'client' | 'server' | 'edge') => {
+      const d = deps();
+      const fake = fakeCompiler({ path: '/o' });
+      createNextWebpackPlugin(
+        context({}, { ...(browserMaps === undefined ? {} : { browserMaps }) }),
+        kind,
+        d,
+      ).apply(fake.compiler);
+      const c = fakeCompilation({ 'a.js': 'x', 'a.js.map': 'm' });
+      fake.startCompilation(c.compilation);
+      await fake.emit(c.compilation);
+      return (d.upload as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+        registerBuild: unknown;
+      };
+    };
+    expect((await reg(false, 'server')).registerBuild).toBe('release');
+    expect((await reg(true, 'server')).registerBuild).toBe(false);
+    expect((await reg(undefined, 'server')).registerBuild).toBe(false);
+    expect((await reg(false, 'edge')).registerBuild).toBe(false);
+    expect((await reg(false, 'client')).registerBuild).toBe('release');
   });
 });

@@ -586,12 +586,12 @@ describe('withBugsee — Subresource Integrity', () => {
     expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
   });
 
-  it('webpack + SRI + dryRun: a failed stamp deletes nothing, and says so', async () => {
+  it('webpack + SRI + dryRun: browser maps are not forced on, so none are written or left public', async () => {
     const built = await sriFailing('sri-webpack-dry', 'failOnError: false, dryRun: true,');
     expect(built.status, built.log.split('\n').slice(-30).join('\n')).toBe(0);
     expect(built.uploads).toEqual([]);
-    expect(maps(join(built.dir, '.next', 'static')).length).toBeGreaterThan(0);
-    expect(built.log).toMatch(/Dry run: nothing was deleted/);
+    expect(maps(join(built.dir, '.next', 'static'))).toEqual([]);
+    expect(built.log).not.toMatch(/Dry run: nothing was deleted/);
   });
 
   it('turbopack + SRI + maps the APP asked for: they stay, the notice says they are public, said once', async () => {

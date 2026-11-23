@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -229,9 +229,35 @@ describe('collectBuildFiles', () => {
     });
   });
 
-  it('stops at a depth limit instead of walking an unbounded tree', async () => {
-    bundle(`${Array.from({ length: 14 }, (_, i) => `d${i}`).join('/')}/a.js`);
+  it('collects deeply nested output: no depth cutoff silently drops a route\u2019s bundle', async () => {
+    const deep = `${Array.from({ length: 30 }, (_, i) => `d${i}`).join('/')}/page.js`;
+    bundle(deep);
     bundle('top.js');
-    expect((await collectBuildFiles(root)).scripts).toEqual([join(root, 'top.js')]);
+    const scripts = (await collectBuildFiles(root)).scripts;
+    expect(scripts).toHaveLength(2);
+    expect(scripts).toContain(join(root, deep));
+  });
+
+  it('reads only the END of a bundle to find its pointer', async () => {
+    // A pointer-looking comment at the START of a large file is not the bundle\u2019s pointer; only the tail counts.
+    put('big.js', `//# sourceMappingURL=big.js.map\n${'x'.repeat(40_000)}\nend();\n`);
+    put('big.js.map');
+    expect((await collectBuildFiles(root)).scripts).toEqual([]);
+    put('big2.js', `${'x'.repeat(40_000)}\n//# sourceMappingURL=big2.js.map\n`);
+    put('big2.js.map');
+    expect((await collectBuildFiles(root)).scripts).toEqual([join(root, 'big2.js')]);
+  });
+
+  it('reports a directory it cannot read instead of calling it empty', async () => {
+    put('locked/a.js');
+    chmodSync(join(root, 'locked'), 0o000);
+    try {
+      if (process.getuid?.() === 0) {
+        return; // root reads it anyway
+      }
+      await expect(collectBuildFiles(root)).rejects.toThrow(/EACCES/);
+    } finally {
+      chmodSync(join(root, 'locked'), 0o755);
+    }
   });
 });

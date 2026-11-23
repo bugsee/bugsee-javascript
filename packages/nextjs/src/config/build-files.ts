@@ -1,7 +1,7 @@
 // Which files of a Next build the upload covers, named explicitly. The upload never walks `.next` and never
 // takes a directory: it is handed exactly these paths, so it cannot stamp, upload or delete a file that is not
 // part of the build it is looking at (the webpack compilations and the Turbopack output share `.next`).
-import { readdir, readFile } from 'node:fs/promises';
+import { open, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 /** A build's bundles and the maps that belong to them. */
@@ -17,27 +17,43 @@ export interface BuildFiles {
 }
 
 const SCRIPT = /\.[cm]?js$/i;
-const MAX_DEPTH = 12;
+/** How much of the END of a file is read to find its source-map comment (the comment is a line or two). */
+const TAIL_BYTES = 16 * 1024;
 /** Directories that are never build output, wherever they appear (a route may well be called `cache`). */
 const SKIP = new Set(['node_modules']);
 
-async function listFiles(dir: string, depth: number): Promise<string[]> {
-  if (depth > MAX_DEPTH) {
-    return [];
+/** The last {@link TAIL_BYTES} of a file as text (the whole file when it is smaller). */
+async function readTail(file: string): Promise<string> {
+  const handle = await open(file, 'r');
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
   }
+}
+
+async function listFiles(dir: string): Promise<string[]> {
   let entries: import('node:fs').Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    // A directory the build did not produce (no `server` output, say) contributes nothing.
-    return [];
+  } catch (error) {
+    // A directory the build did not produce (no `server` output, say) contributes nothing; any other failure
+    // (EACCES, EIO) is NOT "nothing to upload" and is left to the caller's failure policy.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
   }
   const found: string[] = [];
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIP.has(entry.name)) {
-        found.push(...(await listFiles(full, depth + 1)));
+        found.push(...(await listFiles(full)));
       }
     } else if (entry.isFile()) {
       found.push(full);
@@ -84,7 +100,7 @@ export function mapPointerOf(file: string, code: string): string | undefined {
  */
 export async function pairByPointer(
   files: readonly string[],
-  read: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
+  read: (file: string) => Promise<string> = readTail,
 ): Promise<BuildFiles> {
   const present = new Set(files);
   const pointers = new Map<string, string>();
@@ -123,5 +139,5 @@ export async function pairByPointer(
 
 /** The build files under `dir` (recursively), paired by pointer; none when `dir` does not exist. */
 export async function collectBuildFiles(dir: string): Promise<BuildFiles> {
-  return pairByPointer(await listFiles(dir, 0));
+  return pairByPointer(await listFiles(dir));
 }

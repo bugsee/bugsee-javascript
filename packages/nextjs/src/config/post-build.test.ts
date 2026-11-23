@@ -117,6 +117,23 @@ describe('runPostBuild', () => {
     expect(d.upload).toHaveBeenCalledTimes(2);
   });
 
+  it('says the shared map itself stays (and is public) when it is in .next/static', async () => {
+    const ctx = context();
+    const d = deps({ '/app/.next/static': { ...files('c'), shared: ['/d/x.js'] } });
+    await runPostBuild(ctx, metadata, d);
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('neither uploaded nor deleted'));
+    expect(ctx.say).toHaveBeenCalledWith(expect.stringContaining('publicly served'));
+  });
+
+  it('registers the build from the server run when the browser had nothing to upload', async () => {
+    const d = deps({ '/app/.next/server': files('s') });
+    await runPostBuild(context(), metadata, d);
+    const [resolved] = (d.upload as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      Record<string, unknown>,
+    ];
+    expect(resolved.registerBuild).toBe('release');
+  });
+
   it('stays quiet about shared maps when there are none', async () => {
     const ctx = context();
     await runPostBuild(ctx, metadata, deps({ '/app/.next/static': files('c') }));
