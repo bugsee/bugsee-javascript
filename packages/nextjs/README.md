@@ -63,6 +63,49 @@ export const middleware = withBugseeMiddleware((request, event) => {
 });
 ```
 
+## Source maps (build integration)
+
+`withBugsee` makes `next build` upload source maps to Bugsee, so a minified browser, server or edge stack trace is shown against your original source. It handles both bundlers: webpack (`next build --webpack`, the default up to Next 15) and Turbopack (the default in Next 16).
+
+```js
+// next.config.mjs
+import { withBugsee } from "@bugsee/nextjs/config";
+
+export default withBugsee(
+  {
+    // your Next config: an object, a (phase) function, or an async one
+  },
+  {
+    // BUGSEE_APP_TOKEN in the environment (or .env.bugsee-build-plugin) works too
+    appToken: process.env.BUGSEE_APP_TOKEN,
+  },
+);
+```
+
+CommonJS works as well: `const { withBugsee } = require("@bugsee/nextjs/config");` in `next.config.js`.
+
+What it does, for a production build:
+
+- Turns on `productionBrowserSourceMaps` (only when you did not set it) so the browser bundles have maps to upload.
+- **webpack**: adds one Bugsee plugin to each of the client, server and edge compilations. Each stamps a debug ID into its bundles inside the build (before Subresource Integrity hashes are taken) and, after emit, uploads the maps of exactly the files that compilation wrote.
+- **Turbopack**: has no plugin API, so the upload runs from Next's `compiler.runAfterProductionCompile` hook (Next 15.4.1 or later): after Turbopack wrote `.next` and before Next generates the static pages, it stamps the written bundles with the real `bugsee-cli sourcemaps inject` (verified, and undone if a stamp does not verify), uploads the maps and removes them.
+- Deletes the browser maps (`.next/static/**/*.map`, which `next start` and CDNs serve publicly) after a confirmed upload. Server and edge maps stay on disk (`deleteServerMaps` to remove them).
+- Bakes `appVersion` / `appBuild` into every bundle (`compiler.define`) for the runtime SDK.
+
+Your own config is kept: your `webpack` function runs first (sync or async) and its result is extended, your `compiler.runAfterProductionCompile` runs before ours, `compiler.define` keys you set win, and `productionBrowserSourceMaps: false` is respected. `next dev`, `next start` and `next export` are not touched.
+
+Options are those of the Bugsee bundler plugins (`appToken`, `appVersion`, `appBuild`, `endpoint`, `deleteMaps`, `dryRun`, `failOnError`, `stripSourcesContent`, `disabled`, `vcs`, `commit`, `registerBuild`, `onError`, `onNotice`, see `@bugsee/webpack-plugin`), plus:
+
+| Option | Default | |
+| --- | --- | --- |
+| `serverSourceMaps` | `true` | Emit and upload server and edge maps. With webpack the server and edge compilations get `devtool: "source-map"` if you left it unset; Next's own `experimental.serverSourceMaps` is never changed. |
+| `deleteServerMaps` | `false` | Delete server and edge maps after a confirmed upload. |
+| `silent` | `false` | Suppress configuration notices (failures are still reported). |
+
+Without a token the integration changes nothing about what Next emits and uploads nothing. Run `next build` from the project directory: the token file, version and build lookup start there.
+
+Turbopack and Subresource Integrity: Turbopack hashes its output (`experimental.sri`) before the post-build hook runs, so stamping afterwards would make the browser refuse your scripts. An SRI build under Turbopack is therefore left exactly as Next wrote it, with a notice, and no maps are uploaded; build with `--webpack` to upload maps for an SRI build (webpack stamps before the hashes are taken).
+
 ## Options
 
 Both `register(appToken, options)` and `registerClient(appToken, options)` accept the SDK launch options. The most relevant ones:
@@ -76,6 +119,7 @@ Both `register(appToken, options)` and `registerClient(appToken, options)` accep
 - `@bugsee/nextjs`: `register`, `onRequestError`, `createOnRequestError`, `getBugseeTraceData`.
 - `@bugsee/nextjs/client`: `registerClient`, `onRouterTransitionStart`, plus the React adapter.
 - `@bugsee/nextjs/middleware`: `withBugseeMiddleware`.
+- `@bugsee/nextjs/config`: `withBugsee` (build-time; import it from `next.config`, never from app code).
 - `@bugsee/nextjs/server` and `@bugsee/nextjs/edge`: the Node.js and Edge compositions that `register()` loads for you.
 
 ## Links
