@@ -23,7 +23,7 @@ import { formatIssues, type StampIssue, verifyStamp } from './verify-stamp';
 /** The slice of a compilation's asset table this needs — no bundler types in the core. */
 export interface AssetStore {
   names(): string[];
-  read(name: string): Buffer | string;
+  read(name: string): Buffer;
   update(name: string, content: Buffer): void;
   /**
    * Called for EVERY asset about to be written back, before ANY is: throw to refuse the whole stamp (a store
@@ -147,8 +147,7 @@ export async function stampAssets(
   try {
     const before = new Map<string, Buffer>();
     for (const name of staged) {
-      const content = store.read(name);
-      const bytes = typeof content === 'string' ? Buffer.from(content) : content;
+      const bytes = store.read(name);
       before.set(stagedAs(name), bytes);
       const path = join(root, stagedAs(name));
       await mkdir(dirname(path), { recursive: true });

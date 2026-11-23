@@ -1013,3 +1013,179 @@ describe('ownFiles: only what THIS build emitted is deleted', () => {
     expect(await left()).toEqual(['other.css.map']);
   });
 });
+
+describe("catch-up: the build's OWN script maps that carry no debug-id (Vite workers) are stamped before the upload", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'bugsee-catchup-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const STAMPED = `w();\n//# sourceMappingURL=w.js.map\n${STAMP_FOR_CATCHUP()}`;
+  function STAMP_FOR_CATCHUP(): string {
+    return `\n;1;\n//# debugId=${ID}\n`;
+  }
+  const plainMap = '{"version":3,"sources":["w.ts"],"names":[],"mappings":"AAAA"}';
+  /** A faithful-enough CLI: inject stamps the bundle if it is not (appending), and puts its id in the map. */
+  const cli = () => {
+    const calls: string[][] = [];
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      calls.push(args);
+      if (args[1] === 'inject') {
+        const paths = args.slice(2);
+        for (const path of paths.filter((x) => /\.js$/.test(x))) {
+          const code = await readFile(path, 'utf8');
+          if (!code.includes('//# debugId=')) {
+            await writeFile(path, code + STAMP_FOR_CATCHUP());
+          }
+        }
+        for (const path of paths.filter((x) => x.endsWith('.map'))) {
+          await writeFile(
+            path,
+            JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), debugId: ID }),
+          );
+        }
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    return { run, calls };
+  };
+  const opts = (extra: object = {}) => ({
+    ...base,
+    outDir: dir,
+    preStamped: true,
+    verifySri: async () => [],
+    findSri: async () => [],
+    ownFiles: ['w.js', 'w.js.map'],
+    onNotice: () => undefined,
+    ...extra,
+  });
+
+  it('an already-stamped worker whose map lost its id: injected (idempotent), then uploaded and deleted, no error', async () => {
+    await writeFile(join(dir, 'w.js'), STAMPED);
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const { run, calls } = cli();
+    const onError = vi.fn();
+    const result = await uploadSourcemaps(opts({ run, onError, stampedBundles: ['w.js'] }));
+    const inject = calls.find((c) => c[1] === 'inject') as string[];
+    expect(inject.slice(2)).toEqual([join(dir, 'w.js'), join(dir, 'w.js.map')]);
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).toBe(STAMPED); // untouched
+    expect(onError).not.toHaveBeenCalled();
+    expect(result.uploaded).toBe(true);
+    expect(await readdir(dir)).toEqual(['w.js']);
+  });
+
+  it('an UNSTAMPED worker (Vite 7: never in the stamped bundle) is stamped with its map, unless SRI pins it', async () => {
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const { run } = cli();
+    await uploadSourcemaps(opts({ run }));
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).toContain('//# debugId=');
+    expect(await readdir(dir)).toEqual(['w.js']);
+
+    // Pinned by an integrity hash: stamping would break the page, so it is left alone and said.
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const notices: string[] = [];
+    const second = cli();
+    await uploadSourcemaps(
+      opts({
+        run: second.run,
+        findSri: async () => [
+          { html: join(dir, 'index.html'), script: join(dir, 'w.js'), integrity: 'sha384-X' },
+        ],
+        onNotice: (m: string) => notices.push(m),
+      }),
+    );
+    expect(second.calls.some((c) => c[1] === 'inject')).toBe(false);
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).not.toContain('debugId');
+    expect(await readdir(dir)).toContain('w.js.map');
+    expect(notices.join('\n')).toContain('w.js');
+    expect(notices.join('\n')).toContain('Subresource Integrity');
+  });
+
+  it('says a blocked (SRI-pinned, unstamped) worker on console.warn when no notice sink is given', async () => {
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await uploadSourcemaps(
+        opts({
+          run: cli().run,
+          onNotice: undefined,
+          findSri: async () => [
+            { html: join(dir, 'i.html'), script: join(dir, 'w.js'), integrity: 'sha384-X' },
+          ],
+        }),
+      );
+      expect(String(warn.mock.calls[0]?.[0])).toContain('Subresource Integrity');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a pinned worker that is ALREADY stamped is still caught up (its bytes do not change)', async () => {
+    await writeFile(join(dir, 'w.js'), STAMPED);
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const { run, calls } = cli();
+    await uploadSourcemaps(
+      opts({
+        run,
+        findSri: async () => [
+          { html: join(dir, 'i.html'), script: join(dir, 'w.js'), integrity: 'sha384-X' },
+        ],
+      }),
+    );
+    expect(calls.some((c) => c[1] === 'inject')).toBe(true);
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).toBe(STAMPED);
+  });
+
+  it('never touches a map this build did not emit (a publicDir vendor script), nor without ownFiles, nor on a dry run', async () => {
+    await writeFile(join(dir, 'vendor.js'), 'v();\n//# sourceMappingURL=vendor.js.map\n');
+    await writeFile(join(dir, 'vendor.js.map'), plainMap);
+    for (const extra of [
+      {},
+      { ownFiles: undefined },
+      { dryRun: true, ownFiles: ['vendor.js', 'vendor.js.map'] },
+    ]) {
+      const { run, calls } = cli();
+      await uploadSourcemaps(opts({ run, ...extra }));
+      expect(calls.some((c) => c[1] === 'inject')).toBe(false);
+    }
+    expect(await readFile(join(dir, 'vendor.js'), 'utf8')).not.toContain('debugId');
+  });
+
+  it('a map with no bundle beside it, or a css map, is not a catch-up candidate', async () => {
+    await writeFile(join(dir, 'w.js.map'), plainMap); // no w.js
+    await writeFile(join(dir, 'a.css.map'), plainMap);
+    await writeFile(join(dir, 'x.ts'), 'x();\n'); // a file beside the map that is not a script bundle
+    await writeFile(join(dir, 'x.ts.map'), plainMap);
+    const { run, calls } = cli();
+    const onError = vi.fn();
+    await uploadSourcemaps(
+      opts({ run, onError, ownFiles: ['w.js.map', 'a.css.map', 'x.ts', 'x.ts.map'] }),
+    );
+    expect(calls.some((c) => c[1] === 'inject')).toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+    expect(await readFile(join(dir, 'x.ts'), 'utf8')).toBe('x();\n');
+  });
+
+  it('a catch-up stamp that does not verify is restored and reported (thrown under failOnError)', async () => {
+    await writeFile(join(dir, 'w.js'), 'w();\n//# sourceMappingURL=w.js.map\n');
+    await writeFile(join(dir, 'w.js.map'), plainMap);
+    const broken = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'w.js'), '{{');
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    await uploadSourcemaps(opts({ run: broken, onError: (e: unknown) => errors.push(e) }));
+    expect(await readFile(join(dir, 'w.js'), 'utf8')).toBe('w();\n//# sourceMappingURL=w.js.map\n');
+    expect(String(errors[0])).toContain('did not verify');
+    await expect(uploadSourcemaps(opts({ run: broken, failOnError: true }))).rejects.toThrow(
+      /did not verify/,
+    );
+  });
+});

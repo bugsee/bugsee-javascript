@@ -7,7 +7,15 @@
 // its result back as a string source.
 //
 // Real webpack and Rspack builds, the real bugsee-cli, a real Chromium that triggers the lazy `import()`.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize } from 'node:path';
@@ -19,6 +27,7 @@ import HtmlWebpackPlugin from 'html-webpack-plugin';
 import { type Browser, chromium } from 'playwright';
 import { rollup } from 'rollup';
 import { build as viteBuild } from 'vite';
+import { build as vite7Build } from 'vite7';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import webpack from 'webpack';
 
@@ -323,4 +332,115 @@ describe('a content-hashed lazy chunk still loads after the in-build stamp', () 
     } as never);
     await expectHealthy(out, before);
   }, 120_000);
+});
+
+// Vite builds a worker through its own sub-build and copies it into the output, regenerating (Vite 8) or
+// emitting after our generateBundle (Vite 7) its map: the worker bundle must still carry the SAME debug id as its
+// map, and the worker must run in a real browser and register its id.
+describe('Vite workers in a real browser', () => {
+  let wroot: string;
+  let wbrowser: Browser;
+  beforeAll(async () => {
+    wroot = realpathSync(mkdtempSync(join(tmpdir(), 'bugsee-worker-e2e-')));
+    // The previous describe closed the shared collector in its afterAll: start our own.
+    collector = createServer((req, res) => {
+      requests.push(req.url ?? '');
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({ ok: false, error: { type: 'DuplicateSymbolsFoundError', code: 16004 } }),
+        );
+      });
+    });
+    await new Promise<void>((r) => collector.listen(0, '127.0.0.1', r));
+    endpoint = `http://127.0.0.1:${(collector.address() as { port: number }).port}`;
+    wbrowser = await chromium.launch({ headless: true });
+  }, 60_000);
+  afterAll(async () => {
+    await wbrowser?.close();
+    await new Promise<void>((r) => collector?.close(() => r()));
+    if (wroot) rmSync(wroot, { recursive: true, force: true });
+  });
+
+  // The registration stub is appended AFTER the worker's own code, so report on a later task.
+  const WORKER =
+    'setTimeout(() => postMessage({ ok: true, ids: Object.keys(self._bugseeDebugIds ?? {}).length }), 0);\n';
+  const forms = {
+    url: "const w = new Worker(new URL('./w.js', import.meta.url), { type: 'module' });\nw.onmessage = (e) => { window.__worker = e.data; };\n",
+    query:
+      "import W from './w.js?worker';\nconst w = new W();\nw.onmessage = (e) => { window.__worker = e.data; };\n",
+  } as const;
+
+  for (const [label, build] of [
+    ['Vite 8', viteBuild],
+    ['Vite 7', vite7Build],
+  ] as const) {
+    for (const form of ['url', 'query'] as const) {
+      for (const failOnError of [true, false]) {
+        it(`${label}, ${form} worker (failOnError ${failOnError}): runs, registers its id, map carries the same id`, async () => {
+          const dir = join(wroot, `${label}-${form}-${failOnError}`.replace(/\W+/g, '-'));
+          mkdirSync(join(dir, 'src'), { recursive: true });
+          writeFileSync(
+            join(dir, 'index.html'),
+            '<!doctype html><html><body><script type="module" src="/src/index.js"></script></body></html>\n',
+          );
+          writeFileSync(join(dir, 'src', 'index.js'), forms[form]);
+          writeFileSync(join(dir, 'src', 'w.js'), WORKER);
+          const out = join(dir, 'dist');
+          const before = requests.length;
+          const errors: unknown[] = [];
+          await build({
+            root: dir,
+            configFile: false,
+            logLevel: 'silent',
+            plugins: [
+              bugseeVitePlugin({
+                ...pluginOptions(),
+                failOnError,
+                onError: (e: unknown) => errors.push(e),
+              }) as never,
+            ],
+            build: { outDir: out, emptyOutDir: true, minify: false, sourcemap: true },
+          } as never);
+          expect(errors.map(String)).toEqual([]);
+          expect(requests.length, 'maps uploaded').toBeGreaterThan(before);
+          // every bundle (main + worker) has a map with the SAME id
+          const assets = readdirSync(join(out, 'assets'));
+          const bundles = assets.filter((f) => f.endsWith('.js'));
+          expect(bundles.length).toBeGreaterThanOrEqual(2);
+          for (const bundle of bundles) {
+            const id = /\/\/# debugId=([0-9a-f-]{36})/.exec(
+              readFileSync(join(out, 'assets', bundle), 'utf8'),
+            )?.[1];
+            expect(id, `${bundle} stamped`).toBeDefined();
+            const map = JSON.parse(readFileSync(join(out, 'assets', `${bundle}.map`), 'utf8')) as {
+              debugId?: string;
+            };
+            expect(map.debugId, `${bundle}.map`).toBe(id);
+          }
+          const { url, server } = await serve(out);
+          const page = await wbrowser.newPage();
+          try {
+            await page.goto(url);
+            await page
+              .waitForFunction(
+                () => (window as { __worker?: unknown }).__worker !== undefined,
+                null,
+                { timeout: 5_000 },
+              )
+              .catch(() => undefined);
+            const worker = await page.evaluate(
+              () => (window as { __worker?: { ok: boolean; ids: number } }).__worker,
+            );
+            expect(worker?.ok).toBe(true);
+            expect(worker?.ids, 'the worker registered its debug id').toBeGreaterThanOrEqual(1);
+          } finally {
+            await page.close();
+            await new Promise<void>((r) => server.close(() => r()));
+          }
+        }, 120_000);
+      }
+    }
+  }
 });

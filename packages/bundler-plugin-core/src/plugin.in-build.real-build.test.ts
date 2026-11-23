@@ -1055,3 +1055,74 @@ describeReal('Rspack: # in a file name is part of the name', () => {
     });
   }
 });
+
+// Vite builds a worker through its OWN sub-build and then copies the worker code into the main output while
+// REGENERATING the worker's `.map` (Vite 8) or emitting both after our generateBundle (Vite 7): the worker file is
+// stamped without its map carrying the id, or not stamped at all. The upload catches up the build's OWN unkeyed
+// script maps (inject is idempotent on an already-stamped bundle and puts its id in the map).
+describeReal('Vite workers: the worker bundle and its map carry the same debug-id', () => {
+  const workerApp = (name: string, form: 'url' | 'query'): { dir: string; out: string } => {
+    const app = makeApp(name, { lazy: false });
+    writeFileSync(join(app.dir, 'w.js'), "postMessage('worker-ok');\n");
+    writeFileSync(
+      join(app.dir, 'index.js'),
+      form === 'url'
+        ? "const w = new Worker(new URL('./w.js', import.meta.url), { type: 'module' });\nw.onmessage = (e) => console.log(e.data);\n"
+        : "import W from './w.js?worker';\nconst w = new W();\nw.onmessage = (e) => console.log(e.data);\n",
+    );
+    return app;
+  };
+  const idOf = (code: string): string | undefined =>
+    /\/\/# debugId=([0-9a-f-]{36})/.exec(code)?.[1];
+
+  for (const [label, build] of [
+    ['Vite 8 (Rolldown)', viteBuild],
+    ['Vite 7 (Rollup)', vite7Build],
+  ] as const) {
+    for (const form of ['url', 'query'] as const) {
+      for (const failOnError of [true, false]) {
+        it(`${label}, ${form} worker (failOnError ${failOnError}): stamped, same id in its map, uploaded and deleted`, async () => {
+          const app = workerApp(
+            `vite-worker-${label.replace(/\W+/g, '')}-${form}-${failOnError}`,
+            form,
+          );
+          const before = requests.length;
+          const errors: unknown[] = [];
+          // Keep the maps for the first build so their ids can be compared.
+          await build(
+            viteConfig(app, [
+              bugseeVite({
+                failOnError,
+                deleteMaps: false,
+                onError: (e: unknown) => errors.push(e),
+                onNotice: () => undefined,
+              }),
+            ]),
+          );
+          expect(errors.map(String)).toEqual([]);
+          expect(requests.length, 'uploaded').toBeGreaterThan(before);
+          const files = readdirSync(join(app.out, 'assets'));
+          const bundles = files.filter((f) => f.endsWith('.js'));
+          expect(bundles.length).toBeGreaterThanOrEqual(2); // main + worker
+          for (const bundle of bundles) {
+            const id = idOf(readFileSync(join(app.out, 'assets', bundle), 'utf8'));
+            expect(id, `${bundle} stamped`).toBeDefined();
+            const map = JSON.parse(
+              readFileSync(join(app.out, 'assets', `${bundle}.map`), 'utf8'),
+            ) as { debugId?: string };
+            expect(map.debugId, `${bundle}.map carries the same id`).toBe(id);
+          }
+          // And with the default (delete after a confirmed upload) nothing is left behind.
+          const app2 = workerApp(
+            `vite-worker-del-${label.replace(/\W+/g, '')}-${form}-${failOnError}`,
+            form,
+          );
+          await build(viteConfig(app2, [bugseeVite({ failOnError, onNotice: () => undefined })]));
+          expect(
+            (readdirSync(join(app2.out, 'assets')) as string[]).filter((f) => f.endsWith('.map')),
+          ).toEqual([]);
+        });
+      }
+    }
+  }
+});
