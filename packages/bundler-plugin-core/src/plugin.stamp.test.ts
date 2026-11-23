@@ -25,7 +25,9 @@ const makePlugin = (options?: BugseePluginOptions, framework = 'rollup'): Unplug
   bugseeUnpluginFactory(options, { framework } as never) as UnpluginOptions;
 
 const depsOf = (call: number) =>
-  uploadSpy.mock.calls[call]?.[2] as { preStamped?: boolean; bundler?: unknown } | undefined;
+  uploadSpy.mock.calls[call]?.[2] as
+    | { preStamped?: boolean; bundler?: unknown; stampedBundles?: string[] }
+    | undefined;
 
 beforeEach(() => {
   uploadSpy.mockClear();
@@ -114,12 +116,14 @@ describe('rspack: stamps inside the compilation', () => {
     expect(stampSpy).toHaveBeenCalledOnce();
   });
 
-  it('uploads without re-injecting after emit (preStamped)', async () => {
+  it('uploads without re-injecting after emit (preStamped), naming the bundles it stamped', async () => {
+    stampSpy.mockImplementation(async () => ({ stamped: ['main.js'] }));
     const r = rspackCompiler();
     apply({ appToken: 'tok' }, r.compiler);
     await r.compile();
     await r.afterEmit();
     expect(depsOf(0)?.preStamped).toBe(true);
+    expect(depsOf(0)?.stampedBundles).toEqual(['main.js']);
   });
 
   it('reads and writes the compilation asset table, through rspack own RawSource', async () => {
@@ -250,50 +254,81 @@ describe('vite / rollup: stamps in generateBundle, before anything is written or
       });
 
       it('then uploads without re-injecting, once: the flag is consumed by the write', async () => {
+        stampSpy.mockImplementation(async () => ({ stamped: ['a.js'] }));
         const p = makePlugin({ appToken: 'tok' });
         const h = hooksOf(p, kind);
-        await h.generateBundle.handler({ dir: '/out' }, bundle());
-        await h.writeBundle({ dir: '/out' });
-        await h.writeBundle({ dir: '/out' }); // a write with no generateBundle before it: not stamped
+        const output = { dir: '/out' };
+        await h.generateBundle.handler(output, bundle());
+        await h.writeBundle(output);
+        await h.writeBundle(output); // a write with no generateBundle before it: not stamped
         expect(depsOf(0)?.preStamped).toBe(true);
+        // The on-disk re-check is told exactly which bundles the stamp wrote.
+        expect(depsOf(0)?.stampedBundles).toEqual(['a.js']);
         expect(depsOf(1)?.preStamped).toBeUndefined();
+        expect(depsOf(1)?.stampedBundles).toBeUndefined();
       });
 
-      it('tracks each output directory on its own', async () => {
+      it('tracks each output on its own', async () => {
         stampSpy.mockImplementationOnce(async () => ({ stamped: [] }));
         stampSpy.mockImplementationOnce(async () => {
           throw new Error('second output failed');
         });
         const p = makePlugin({ appToken: 'tok', onError: () => undefined });
         const h = hooksOf(p, kind);
-        await h.generateBundle.handler({ dir: '/a' }, bundle());
-        await h.generateBundle.handler({ file: '/b/out.js' }, bundle());
-        await h.writeBundle({ dir: '/a' });
-        await h.writeBundle({ file: '/b/out.js' });
+        const [first, second] = [{ dir: '/a' }, { file: '/b/out.js' }];
+        await h.generateBundle.handler(first, bundle());
+        await h.generateBundle.handler(second, bundle());
+        await h.writeBundle(first);
+        await h.writeBundle(second);
         expect(depsOf(0)?.preStamped).toBe(true);
         expect(depsOf(1)?.preStamped).toBeUndefined();
       });
 
-      it('a stale success never vouches for the next build of the same directory', async () => {
-        const p = makePlugin({ appToken: 'tok', onError: () => undefined });
+      it("two outputs written CONCURRENTLY into one directory never consume each other's answer", async () => {
+        // A stamped output beside one that could not be stamped (inline maps), same folder.
+        const p = makePlugin({ appToken: 'tok', onNotice: () => undefined });
         const h = hooksOf(p, kind);
-        await h.generateBundle.handler({ dir: '/out' }, bundle());
-        // (the write of build 1 never happened) build 2's stamp fails:
-        stampSpy.mockImplementationOnce(async () => {
-          throw new Error('boom');
-        });
+        const [stamped, unstamped] = [{ file: '/out/a.js' }, { file: '/out/b.js' }];
+        const inline = bundle();
+        delete inline['a.js.map'];
+        await h.generateBundle.handler(stamped, bundle());
+        await h.generateBundle.handler(unstamped, inline);
+        // Writes land in the opposite order of the generateBundles.
+        await h.writeBundle(unstamped);
+        await h.writeBundle(stamped);
+        expect(depsOf(0)?.preStamped).toBeUndefined(); // the unstamped output keeps the post-emit path + SRI refusal
+        expect(depsOf(1)?.preStamped).toBe(true);
+      });
+
+      it('a write whose generateBundle used a different options object is not vouched for', async () => {
+        const h = hooksOf(makePlugin({ appToken: 'tok' }), kind);
         await h.generateBundle.handler({ dir: '/out' }, bundle());
         await h.writeBundle({ dir: '/out' });
         expect(depsOf(0)?.preStamped).toBeUndefined();
       });
 
+      it('a stale success never vouches for the next build of the same output', async () => {
+        const p = makePlugin({ appToken: 'tok', onError: () => undefined });
+        const h = hooksOf(p, kind);
+        const output = { dir: '/out' };
+        await h.generateBundle.handler(output, bundle());
+        // (the write of build 1 never happened) build 2's stamp fails:
+        stampSpy.mockImplementationOnce(async () => {
+          throw new Error('boom');
+        });
+        await h.generateBundle.handler(output, bundle());
+        await h.writeBundle(output);
+        expect(depsOf(0)?.preStamped).toBeUndefined();
+      });
+
       it('a build that cannot be stamped in memory is not vouched for by the previous stamp either', async () => {
         const h = hooksOf(makePlugin({ appToken: 'tok', onNotice: () => undefined }), kind);
-        await h.generateBundle.handler({ dir: '/out' }, bundle()); // stamped; its write never happened
+        const output = { dir: '/out' };
+        await h.generateBundle.handler(output, bundle()); // stamped; its write never happened
         const unstampable = bundle();
         delete unstampable['a.js.map'];
-        await h.generateBundle.handler({ dir: '/out' }, unstampable);
-        await h.writeBundle({ dir: '/out' });
+        await h.generateBundle.handler(output, unstampable);
+        await h.writeBundle(output);
         expect(depsOf(0)?.preStamped).toBeUndefined();
       });
 
@@ -303,8 +338,9 @@ describe('vite / rollup: stamps in generateBundle, before anything is written or
         });
         const onError = vi.fn();
         const h = hooksOf(makePlugin({ appToken: 'tok', onError }), kind);
-        await h.generateBundle.handler({ dir: '/out' }, bundle());
-        await h.writeBundle({ dir: '/out' });
+        const output = { dir: '/out' };
+        await h.generateBundle.handler(output, bundle());
+        await h.writeBundle(output);
         expect(onError).toHaveBeenCalledOnce();
         expect(depsOf(0)?.preStamped).toBeUndefined();
       });
@@ -364,9 +400,10 @@ describe('vite / rollup: stamps in generateBundle, before anything is written or
         );
         const b = bundle();
         delete b['a.js.map'];
-        await h.generateBundle.handler({ dir: '/out' }, b);
-        await h.generateBundle.handler({ dir: '/out' }, b);
-        await h.writeBundle({ dir: '/out' });
+        const output = { dir: '/out' };
+        await h.generateBundle.handler(output, b);
+        await h.generateBundle.handler(output, b);
+        await h.writeBundle(output);
         expect(stampSpy).not.toHaveBeenCalled();
         expect(notices).toHaveLength(1);
         expect(notices[0]).toContain('a.js');

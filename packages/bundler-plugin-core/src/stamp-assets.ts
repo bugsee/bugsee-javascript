@@ -78,6 +78,20 @@ export async function stampAssets(
   if (!staged.some((name) => BUNDLE.test(name))) {
     return { stamped: [] };
   }
+  // Staging writes each asset to a file named after it. Two names that differ only by case are two
+  // assets in the bundler but ONE file on a case-insensitive disk (macOS, Windows), where the second would
+  // overwrite the first and verification would compare the wrong bytes. Refuse rather than guess: the
+  // caller's fallback stamps the real output directory, where such a collision cannot exist.
+  const seen = new Map<string, string>();
+  for (const name of staged) {
+    const clash = seen.get(name.toLowerCase());
+    if (clash !== undefined && clash !== name) {
+      throw new Error(
+        `assets ${clash} and ${name} differ only by case, so they cannot be staged side by side on a case-insensitive file system`,
+      );
+    }
+    seen.set(name.toLowerCase(), name);
+  }
   const dryRun = options.dryRun ?? false;
   const root = await mkdtemp(join(tmpdir(), 'bugsee-stamp-'));
   try {

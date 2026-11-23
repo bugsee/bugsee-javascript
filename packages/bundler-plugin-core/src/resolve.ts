@@ -277,6 +277,8 @@ export async function runPluginUpload(
     bundler?: BundlerBuildContext;
     /** The bundles were stamped inside the build (stamp-assets.ts); skip the post-emit inject. */
     preStamped?: boolean;
+    /** The bundles the in-build stamp wrote (relative to the output directory), for the on-disk re-check. */
+    stampedBundles?: readonly string[];
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -321,6 +323,7 @@ export async function runPluginUpload(
       // Omitted unless true, so the orchestrator's argument stays exactly what it was for every
       // build that did not take the in-build path.
       ...(deps.preStamped === true ? { preStamped: true } : {}),
+      ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
     });
     // AFTER the upload, because the build id is derived from the debug-ids its inject step stamps

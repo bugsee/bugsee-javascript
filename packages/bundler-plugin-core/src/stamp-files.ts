@@ -2,12 +2,28 @@
 //
 // The in-build path verifies in memory (stamp-assets.ts). The POST-EMIT path lets `bugsee-cli` rewrite the
 // output in place, so to be able to say "that stamp is not safe, put the original back" the original bytes
-// have to be taken BEFORE the rewrite. That is what the snapshot is for: it holds the build's own scripts
+// have to be taken BEFORE the rewrite. That is what the snapshot is for: it covers the build's own scripts
 // and maps (bounded by the same walk rules the map deletion uses), and nothing else.
+//
+// The originals are SPILLED to a temp directory with a content hash beside them, not held in memory: a
+// build can have hundreds of megabytes of scripts and maps, and the verification only ever needs one
+// bundle and its map at a time.
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { type StampIssue, verifyStamp } from './verify-stamp';
+import {
+  access,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path, { dirname, join, resolve, sep } from 'node:path';
+import { resolveMapName, type StampIssue, verifyStamp, verifyStampedPairs } from './verify-stamp';
 
 /**
  * Directories never descended into when walking build output.
@@ -70,57 +86,223 @@ async function walkStampable(dir: string, depth = 0): Promise<string[]> {
 /** Where to look: a directory (walked), or exactly the files a build reported as its own. */
 export type SnapshotTarget = { dir: string } | { files: readonly string[] };
 
-/** The bytes of every stampable file in `target`, keyed by absolute path. A file that is gone is skipped. */
-export async function snapshotStampFiles(target: SnapshotTarget): Promise<Map<string, Buffer>> {
-  const paths = 'dir' in target ? await walkStampable(target.dir) : target.files;
-  const snapshot = new Map<string, Buffer>();
-  for (const path of paths) {
-    try {
-      snapshot.set(path, await readFile(path));
-    } catch {
-      // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
-    }
-  }
-  return snapshot;
+/** What is kept of one original: where it was spilled, and its content hash (to tell what changed). */
+export interface SnapshotEntry {
+  spill: string;
+  hash: string;
 }
 
-/** The map of a bundle, or the bundle of a map. */
-const partner = (path: string): string =>
-  path.endsWith('.map') ? path.slice(0, -'.map'.length) : `${path}.map`;
+/** The originals of the build's scripts and maps, on disk in a private temp directory. */
+export interface StampSnapshot {
+  entries: Map<string, SnapshotEntry>;
+  spillDir: string;
+  /** Remove the spill directory. Always call it. */
+  dispose(): Promise<void>;
+}
+
+const sha1 = (bytes: Buffer): string => createHash('sha1').update(bytes).digest('hex');
 
 /**
- * Verify what inject left on disk against the `before` snapshot, and put the ORIGINAL bytes back for every
- * file that failed — together with its partner (a bundle and its map are restored as a pair, so a build is
- * never left half-stamped: a bundle with an id and a map without one is worse than neither).
+ * Whether `dir` is a project root or something that contains one: the working directory, any ancestor of
+ * it, or a directory holding a `package.json`. That is what a mis-resolved output directory looks like
+ * (a bare `output.file: 'bundle.js'` resolves to `'.'`), and a snapshot-and-restore there would reach
+ * across the project tree. Callers refuse to snapshot or restore it.
+ */
+export async function isProjectRootOrAbove(dir: string): Promise<boolean> {
+  // Real paths: the cwd is reported resolved (macOS /private/var), an output directory may be spelled
+  // through a symlink.
+  const full = await realpath(dir).catch(() => resolve(dir));
+  let cwd = '';
+  try {
+    cwd = await realpath(process.cwd());
+  } catch {
+    // The working directory is gone: only the package.json test below can still answer.
+  }
+  if (cwd !== '' && (cwd === full || cwd.startsWith(full.endsWith(sep) ? full : full + sep))) {
+    return true;
+  }
+  try {
+    await access(join(full, 'package.json'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Spill the originals of every stampable file in `target`. A file that is gone is skipped. */
+export async function snapshotStampFiles(
+  target: SnapshotTarget,
+  /** Where the spill directory is created (default: the OS temp directory). */
+  spillRoot: string = tmpdir(),
+): Promise<StampSnapshot> {
+  const paths = 'dir' in target ? await walkStampable(target.dir) : target.files;
+  const spillDir = await mkdtemp(join(spillRoot, 'bugsee-orig-'));
+  const entries = new Map<string, SnapshotEntry>();
+  let index = 0;
+  for (const original of paths) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(original);
+    } catch {
+      // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
+      continue;
+    }
+    const spill = join(spillDir, String(index++));
+    await writeFile(spill, bytes);
+    entries.set(original, { spill, hash: sha1(bytes) });
+  }
+  return {
+    entries,
+    spillDir,
+    dispose: () => rm(spillDir, { recursive: true, force: true }),
+  };
+}
+
+export interface RestoreOptions {
+  /** Injectable JavaScript parser for the verification (default: acorn). */
+  parse?: (code: string) => boolean;
+  /** Injectable restore of one file from its spilled original (default: write temp, then rename). */
+  restoreFile?: (spill: string, target: string) => Promise<void>;
+}
+
+/** Atomic restore: the target is either the stamped file or the original, never half of either. */
+export async function restoreAtomically(spill: string, target: string): Promise<void> {
+  const temp = join(dirname(target), `.bugsee-restore-${process.pid}-${Date.now()}`);
+  try {
+    await writeFile(temp, await readFile(spill));
+    await rename(temp, target);
+  } catch (error) {
+    await unlink(temp).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Verify what inject left on disk against the snapshot, and put the ORIGINAL bytes back for every file that
+ * failed — together with its partner (a bundle and its map are restored as a pair, so a build is never
+ * left half-stamped: a bundle with an id and a map without one is worse than neither). The bundle goes back
+ * first. A restore that fails is not swallowed: it is returned by name in `failed`, and the others still run.
  *
- * Returns the issues (empty when the stamp is sound) and the paths restored.
+ * Only one bundle and its map are held in memory at a time. The pair is resolved from the bundle's own
+ * `sourceMappingURL`, so a map with a custom name is held to its bundle too.
  */
 export async function verifyAndRestore(
-  before: ReadonlyMap<string, Buffer>,
-  parser?: (code: string) => boolean,
-): Promise<{ issues: StampIssue[]; restored: string[] }> {
-  const after = new Map<string, Buffer>();
-  for (const path of before.keys()) {
+  snapshot: StampSnapshot,
+  options: RestoreOptions = {},
+): Promise<{
+  issues: StampIssue[];
+  restored: string[];
+  failed: Array<{ path: string; error: string }>;
+}> {
+  const { entries } = snapshot;
+  const read = async (file: string): Promise<Buffer | undefined> => {
     try {
-      after.set(path, await readFile(path));
+      return await readFile(file);
     } catch {
-      // Deleted meanwhile: not part of the comparison.
+      return undefined; // deleted meanwhile: not part of the comparison
+    }
+  };
+  const original = (file: string): Promise<Buffer> =>
+    readFile((entries.get(file) as SnapshotEntry).spill);
+
+  // What changed, by hash — one file in memory at a time.
+  const changed: string[] = [];
+  for (const [file, entry] of entries) {
+    const now = await read(file);
+    if (now !== undefined && sha1(now) !== entry.hash) {
+      changed.push(file);
     }
   }
-  const issues = verifyStamp(before, after, parser);
+
+  const issues: StampIssue[] = [];
+  const partner = new Map<string, string>();
+  const paired = new Set<string>();
+  const stampedBundles = changed.filter((file) => /\.[cm]?js$/.test(file));
+  for (const bundle of stampedBundles) {
+    const after = (await read(bundle)) as Buffer;
+    const map = resolveMapName(bundle, after.toString('utf8'), (n) => entries.has(n), path);
+    paired.add(map);
+    const before = new Map([[bundle, await original(bundle)]]);
+    const now = new Map([[bundle, after]]);
+    if (entries.has(map)) {
+      partner.set(bundle, map);
+      partner.set(map, bundle);
+      before.set(map, await original(map));
+      const mapNow = await read(map);
+      if (mapNow !== undefined) {
+        now.set(map, mapNow);
+      }
+    }
+    issues.push(...verifyStamp(before, now, options.parse));
+  }
+  for (const file of changed) {
+    if (file.endsWith('.map') && !paired.has(file)) {
+      issues.push(
+        ...verifyStamp(
+          new Map([[file, await original(file)]]),
+          new Map([[file, (await read(file)) as Buffer]]),
+          options.parse,
+        ),
+      );
+    }
+  }
+
   const toRestore = new Set<string>();
   for (const { name } of issues) {
     toRestore.add(name);
-    if (before.has(partner(name))) {
-      toRestore.add(partner(name));
+    const other = partner.get(name);
+    if (other !== undefined) {
+      toRestore.add(other);
     }
   }
+  const restoreFile = options.restoreFile ?? restoreAtomically;
   const restored: string[] = [];
-  for (const path of [...toRestore].sort()) {
-    await writeFile(path, before.get(path) as Buffer);
-    restored.push(path);
+  const failed: Array<{ path: string; error: string }> = [];
+  // Bundles before maps: if the run dies halfway, a bundle with no id beside a map with one is the
+  // lesser harm (the upload then fails loudly) than a stamped bundle beside an unstamped map.
+  const order = [...toRestore].sort(
+    (a, b) => Number(a.endsWith('.map')) - Number(b.endsWith('.map')) || a.localeCompare(b),
+  );
+  for (const file of order) {
+    try {
+      await restoreFile((entries.get(file) as SnapshotEntry).spill, file);
+      restored.push(file);
+    } catch (error) {
+      failed.push({ path: file, error: String(error) });
+    }
   }
-  return { issues, restored };
+  return { issues, restored, failed };
+}
+
+/**
+ * Check the named bundles AS THEY ARE ON DISK after the bundler wrote them (the in-build path): each bundle
+ * with a map must carry a debugId its map shares (verifyStampedPairs). Only these bundles are judged — never
+ * the directory — so a file that was not part of the bundle (a `public/` script, a stale file with
+ * `emptyOutDir: false`) is not mistaken for one the stamp missed. One bundle and its map in memory at a time.
+ */
+export async function verifyStampedOnDisk(bundles: readonly string[]): Promise<StampIssue[]> {
+  const issues: StampIssue[] = [];
+  for (const bundle of bundles) {
+    let code: Buffer;
+    try {
+      code = await readFile(bundle);
+    } catch {
+      continue;
+    }
+    const files = new Map([[bundle, code]]);
+    const pointed = resolveMapName(bundle, code.toString('utf8'), () => true, path);
+    try {
+      files.set(pointed, await readFile(pointed));
+    } catch {
+      // The pointer names no file: the `<bundle>.map` sibling inject pairs by default.
+      await readFile(`${bundle}.map`).then(
+        (bytes) => files.set(`${bundle}.map`, bytes),
+        () => undefined,
+      );
+    }
+    issues.push(...verifyStampedPairs(files));
+  }
+  return issues;
 }
 
 /** Script maps are the ones inject keys and the CLI uploads; a stylesheet map is neither. */

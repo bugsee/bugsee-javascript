@@ -1,7 +1,7 @@
 // IN-BUILD STAMPING, PART 2 — what happens AFTER `sourcemaps inject` rewrote the output on disk, and what is
 // allowed to delete the maps. Real temp directories; a fake CLI that edits them the way a (mis)behaving
 // inject would.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -199,6 +199,63 @@ describe('post-emit stamp verification', () => {
     expect(await readFile(join(deep, 'deep.js'), 'utf8')).toBe('{{');
   });
 
+  it('does not snapshot or restore a directory that is the project root (or above): it says so, and inject still runs', async () => {
+    await writeFile(join(dir, 'package.json'), '{}');
+    await seed();
+    const { run } = cli({ 'a.js': '{{' });
+    const errors: unknown[] = [];
+    await uploadSourcemaps(opts({ run, onError: (e: unknown) => errors.push(e) }));
+    expect(run.mock.calls.some((c) => c[0][1] === 'inject')).toBe(true);
+    expect(String(errors[0])).toContain('project root');
+    expect(await read('a.js')).toBe('{{'); // nothing was restored: nothing was snapshotted
+  });
+
+  it('names a file it could not restore, and says it still carries the unverified stamp', async () => {
+    await seed();
+    const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+      if (args[1] === 'inject') {
+        await writeFile(join(dir, 'a.js'), `a();\n{{${STAMP}`);
+        await chmod(dir, 0o555); // restore cannot create its temp file
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const errors: unknown[] = [];
+    try {
+      await uploadSourcemaps(
+        opts({ run, onError: (e: unknown) => errors.push(e), outDir: join(dir, '.') }),
+      );
+    } finally {
+      await chmod(dir, 0o755);
+    }
+    expect(String(errors[0])).toContain('COULD NOT restore');
+    expect(String(errors[0])).toContain('a.js');
+  });
+
+  it('spills the originals outside memory and removes the spill directory afterwards, success or failure', async () => {
+    await seed();
+    const spillRoot = await mkdtemp(join(tmpdir(), 'bugsee-spillroot-'));
+    try {
+      const seen: string[][] = [];
+      const run = vi.fn(async (args: string[]): Promise<SpawnResult> => {
+        if (args[1] === 'inject') {
+          seen.push(await readdir(spillRoot)); // while inject runs, the originals are on disk
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      await uploadSourcemaps(opts({ run, spillRoot }));
+      expect(seen[0]).toHaveLength(1);
+      expect(await readdir(spillRoot)).toEqual([]);
+
+      const failing = vi.fn(async (): Promise<SpawnResult> => {
+        throw new Error('cli exploded');
+      });
+      await uploadSourcemaps(opts({ run: failing, spillRoot, onError: () => undefined }));
+      expect(await readdir(spillRoot)).toEqual([]);
+    } finally {
+      await rm(spillRoot, { recursive: true, force: true });
+    }
+  });
+
   it('the pre-stamped path never runs inject (and so never restores anything)', async () => {
     await seed();
     const { run } = cli({ 'a.js': '{{' });
@@ -360,6 +417,7 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
     outDir: dir,
     run: ok,
     preStamped: true,
+    stampedBundles: ['a.js'],
     verifySri: async () => [],
     ...extra,
   });
@@ -399,6 +457,40 @@ describe('an in-build stamp is checked again on disk, after the bundler wrote th
     await writeFile(join(dir, 'a.js.map'), '{"version":3}');
     const onError = vi.fn();
     await uploadSourcemaps(opts({ onError, dryRun: true }));
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('judges only the bundles the stamp wrote: an unstamped vendor script with a map beside them is not a failure', async () => {
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=a.js.map\n${STAMP}`);
+    await writeFile(join(dir, 'a.js.map'), JSON.stringify({ debugId: ID }));
+    await writeFile(join(dir, 'vendor.min.js'), 'v();\n//# sourceMappingURL=vendor.min.js.map\n');
+    await writeFile(join(dir, 'vendor.min.js.map'), '{"version":3}');
+    const onError = vi.fn();
+    await uploadSourcemaps(opts({ onError, deleteMaps: false, failOnError: true }));
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('with an output directory of "." only the named bundles are read (never the project tree)', async () => {
+    const onError = vi.fn();
+    await uploadSourcemaps(
+      opts({
+        outDir: '.',
+        stampedBundles: ['no-such-bundle-bugsee.js'],
+        onError,
+        deleteMaps: false,
+        failOnError: true,
+      }),
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('without stampedBundles the on-disk re-check has nothing to name and does not run', async () => {
+    await writeFile(join(dir, 'a.js'), `a();\n//# sourceMappingURL=a.js.map\n${STAMP}`);
+    await writeFile(join(dir, 'a.js.map'), '{"version":3}');
+    const onError = vi.fn();
+    await uploadSourcemaps(
+      opts({ stampedBundles: undefined, onError, deleteMaps: false, failOnError: true }),
+    );
     expect(onError).not.toHaveBeenCalled();
   });
 

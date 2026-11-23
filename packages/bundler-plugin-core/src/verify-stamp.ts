@@ -8,6 +8,7 @@
 //
 // Pure: it takes the bytes from before and after and returns what is wrong. What to DO about it
 // (leave the asset alone in-build, restore the file after emit) is the caller's.
+import path, { posix } from 'node:path';
 import { parse } from 'acorn';
 import { readDebugId } from './debug-ids';
 
@@ -66,6 +67,34 @@ function lastSourceMappingUrl(code: string): string | undefined {
     last = match[1];
   }
   return last;
+}
+
+/**
+ * The name of the map that belongs to the bundle `name` whose text is `text`.
+ *
+ * The map a debugger loads is the one the bundle's `sourceMappingURL` points at, and a bundler may name it
+ * anything (`sourcemapFileName(s)`, Rolldown), so the pair is resolved from the pointer, relative to the
+ * bundle's directory. A pointer that is absent, remote, `data:`, root-absolute, malformed or that names a
+ * file `exists` does not know falls back to the `<bundle>.map` sibling inject pairs by default.
+ */
+export function resolveMapName(
+  name: string,
+  text: string,
+  exists: (candidate: string) => boolean,
+  api: Pick<typeof posix, 'dirname' | 'join'> = posix,
+): string {
+  const pointer = lastSourceMappingUrl(text);
+  if (pointer !== undefined && !/^([a-z][a-z0-9+.-]*:|\/)/i.test(pointer)) {
+    try {
+      const candidate = api.join(api.dirname(name), decodeURI(pointer));
+      if (exists(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // malformed escape: not a name we can follow
+    }
+  }
+  return `${name}.map`;
 }
 
 /** Reasons a changed bundle is not a faithful stamp of `before`. */
@@ -141,6 +170,7 @@ export function verifyStamp(
     return was !== undefined && now !== undefined && !now.equals(was);
   };
   const ids = new Map<string, string | undefined>();
+  const mapOf = new Map<string, string>();
 
   for (const name of before.keys()) {
     if (!BUNDLE.test(name) || !changed(name)) {
@@ -152,6 +182,10 @@ export function verifyStamp(
       parser,
     );
     ids.set(name, id);
+    mapOf.set(
+      name,
+      resolveMapName(name, (after.get(name) as Buffer).toString('utf8'), (n) => after.has(n)),
+    );
     for (const reason of reasons) {
       issues.push({ name, reason });
     }
@@ -159,7 +193,7 @@ export function verifyStamp(
 
   // Every stamped bundle's map (changed or not) must now carry the bundle's id.
   for (const [bundle, bundleId] of ids) {
-    const map = `${bundle}.map`;
+    const map = mapOf.get(bundle) as string;
     const bytes = after.get(map);
     if (bytes === undefined) {
       continue; // a bundle with no map: nothing to symbolicate against, nothing to match
@@ -178,8 +212,9 @@ export function verifyStamp(
   }
 
   // A changed map whose bundle was not stamped in this run: only held to being a JSON object.
+  const pairedMaps = new Set(mapOf.values());
   for (const name of before.keys()) {
-    if (name.endsWith('.map') && changed(name) && !ids.has(name.slice(0, -'.map'.length))) {
+    if (name.endsWith('.map') && changed(name) && !pairedMaps.has(name)) {
       if (mapDebugId(after.get(name) as Buffer) === null) {
         issues.push({ name, reason: 'the stamped map is not valid JSON (an object)' });
       }
@@ -201,14 +236,19 @@ export function verifyStamp(
 export function verifyStampedPairs(files: ReadonlyMap<string, Buffer>): StampIssue[] {
   const issues: StampIssue[] = [];
   for (const [name, bytes] of files) {
-    const mapBytes = files.get(`${name}.map`);
-    if (!BUNDLE.test(name) || mapBytes === undefined) {
+    if (!BUNDLE.test(name)) {
       continue;
     }
-    const bundleId = readDebugId(bytes.toString('utf8'));
+    const text = bytes.toString('utf8');
+    const map = resolveMapName(name, text, (n) => files.has(n), path);
+    const mapBytes = files.get(map);
+    if (mapBytes === undefined) {
+      continue;
+    }
+    const bundleId = readDebugId(text);
     const mapId = mapDebugId(mapBytes);
     if (mapId === null) {
-      issues.push({ name: `${name}.map`, reason: 'the map is not valid JSON (an object)' });
+      issues.push({ name: map, reason: 'the map is not valid JSON (an object)' });
     } else if (bundleId === undefined && mapId === undefined) {
       issues.push({
         name,
@@ -221,12 +261,12 @@ export function verifyStampedPairs(files: ReadonlyMap<string, Buffer>): StampIss
       });
     } else if (mapId === undefined) {
       issues.push({
-        name: `${name}.map`,
+        name: map,
         reason: `the map has no debugId (its bundle carries ${bundleId})`,
       });
     } else if (mapId !== bundleId) {
       issues.push({
-        name: `${name}.map`,
+        name: map,
         reason: `the map's debugId ${mapId} does not match its bundle's debugId comment ${bundleId}`,
       });
     }

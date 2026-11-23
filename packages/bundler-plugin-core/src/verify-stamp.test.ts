@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatIssues, parseScript, verifyStamp, verifyStampedPairs } from './verify-stamp';
+import {
+  formatIssues,
+  parseScript,
+  resolveMapName,
+  verifyStamp,
+  verifyStampedPairs,
+} from './verify-stamp';
 
 const ID = 'b039c7fb-d958-5fe6-b76f-136179e9a728';
 const OTHER_ID = '4adb7053-e754-594c-96b5-09c18263b153';
@@ -329,5 +335,99 @@ describe('formatIssues', () => {
     const issues = ['a', 'b', 'c', 'd', 'e'].map((name) => ({ name, reason: `bad ${name}` }));
     expect(formatIssues(issues)).toBe('a: bad a; b: bad b; c: bad c; and 2 more');
     expect(formatIssues(issues.slice(0, 2))).toBe('a: bad a; b: bad b');
+  });
+});
+
+describe('resolveMapName — which map belongs to a bundle', () => {
+  const has =
+    (...names: string[]) =>
+    (n: string) =>
+      names.includes(n);
+  it('follows a relative sourceMappingURL from the bundle directory', () => {
+    expect(
+      resolveMapName(
+        'assets/a.js',
+        'x\n//# sourceMappingURL=maps/a.map\n',
+        has('assets/maps/a.map'),
+      ),
+    ).toBe('assets/maps/a.map');
+    expect(
+      resolveMapName('assets/a.js', 'x\n//# sourceMappingURL=../m/a%20b.map\n', has('m/a b.map')),
+    ).toBe('m/a b.map');
+  });
+  it('falls back to <bundle>.map when the pointer is absent, remote, data:, absolute, malformed, or names nothing', () => {
+    for (const pointer of [
+      '',
+      'https://cdn.test/a.map',
+      'data:application/json;base64,e30=',
+      '/abs/a.map',
+      '%E0%A4%A.map',
+    ]) {
+      const text = pointer === '' ? 'x\n' : `x\n//# sourceMappingURL=${pointer}\n`;
+      expect(resolveMapName('a.js', text, has('a.js.map'))).toBe('a.js.map');
+    }
+    expect(resolveMapName('a.js', 'x\n//# sourceMappingURL=gone.map\n', has('a.js.map'))).toBe(
+      'a.js.map',
+    );
+  });
+});
+
+describe('resolveMapName — never follows a pointer that is not a local file', () => {
+  it('ignores a remote, data: or root-absolute pointer even when every candidate "exists"', () => {
+    for (const pointer of [
+      'https://cdn.test/a.map',
+      'data:application/json;base64,e30=',
+      '/abs/a.map',
+    ]) {
+      expect(resolveMapName('a.js', `x\n//# sourceMappingURL=${pointer}\n`, () => true)).toBe(
+        'a.js.map',
+      );
+    }
+  });
+});
+
+describe('a bad map of a changed bundle is reported once, not twice', () => {
+  it('verifyStamp', () => {
+    const code = 'a();\n//# sourceMappingURL=a.js.map\n';
+    const issues = verifyStamp(
+      new Map([
+        ['a.js', buf(code)],
+        ['a.js.map', buf(mapJson())],
+      ]),
+      new Map([
+        ['a.js', buf(code + STUB)],
+        ['a.js.map', buf('nope')],
+      ]),
+    );
+    expect(issues.filter((i) => i.name === 'a.js.map')).toHaveLength(1);
+  });
+});
+
+describe('custom map names (sourcemapFileName / Rolldown)', () => {
+  const code = 'x();\n//# sourceMappingURL=maps/a.map\n';
+  it('verifyStamp holds a map named by the pointer to the bundle id', () => {
+    const before = new Map([
+      ['a.js', buf(code)],
+      ['maps/a.map', buf(mapJson())],
+    ]);
+    const bad = new Map([
+      ['a.js', buf(code + STUB)],
+      ['maps/a.map', buf(mapJson())],
+    ]);
+    expect(verifyStamp(before, bad).map((i) => i.name)).toEqual(['maps/a.map']);
+    const good = new Map([
+      ['a.js', buf(code + STUB)],
+      ['maps/a.map', buf(stampedMap())],
+    ]);
+    expect(verifyStamp(before, good)).toEqual([]);
+  });
+  it('verifyStampedPairs resolves the pair from the pointer too', () => {
+    const files = (map: string) =>
+      new Map([
+        ['/o/a.js', buf(code + STUB)],
+        ['/o/maps/a.map', buf(map)],
+      ]);
+    expect(verifyStampedPairs(files(stampedMap()))).toEqual([]);
+    expect(verifyStampedPairs(files(mapJson())).map((i) => i.name)).toEqual(['/o/maps/a.map']);
   });
 });

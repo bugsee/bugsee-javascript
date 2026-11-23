@@ -270,6 +270,12 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
   }
 }
 
+/** What an in-build stamp reports: whether it took, and which bundles it wrote (relative to the output). */
+interface InBuildStamp {
+  preStamped: boolean;
+  stampedBundles?: string[];
+}
+
 export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefined> = (
   options = {},
 ) => {
@@ -368,12 +374,12 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // what lets the upload skip the post-emit inject (and its SRI refusal). A failure is contained and
   // NOT silent about what happens next: the post-emit path takes over and still carries the refusal, so a
   // failed in-build stamp degrades to the old safe behaviour rather than to a page nobody checked.
-  const stampInBuild = async (store: AssetStore): Promise<boolean> => {
+  const stampInBuild = async (store: AssetStore): Promise<InBuildStamp> => {
     try {
-      await stampAssets(store, { dryRun: resolved.dryRun });
-      // True on a dry run too: the preview must follow the path the real run takes, and the real run
+      const { stamped } = await stampAssets(store, { dryRun: resolved.dryRun });
+      // Stamped on a dry run too: the preview must follow the path the real run takes, and the real run
       // would not refuse an SRI build — it would stamp it here.
-      return true;
+      return { preStamped: true, stampedBundles: stamped };
     } catch (error) {
       if (resolved.failOnError) {
         throw error;
@@ -385,7 +391,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
             `[bugsee] in-build debug-ID stamping failed; falling back to stamping after emit: ${String(e)}`,
           ))
       )(error);
-      return false;
+      return { preStamped: false };
     }
   };
 
@@ -395,34 +401,37 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // final bytes and the SRI plugin then hashes the STAMPED bytes — for the HTML and for the lazy-chunk
   // table alike. Nothing is rewritten after emit. Returns whether THIS compilation was stamped; reset per
   // compilation, so in watch mode a stamp from the previous build cannot vouch for this one.
-  const tapProcessAssetsStamp = (compiler: WebpackCompilerLike): (() => boolean) => {
-    let preStamped = false;
+  const tapProcessAssetsStamp = (compiler: WebpackCompilerLike): (() => InBuildStamp) => {
+    let state: InBuildStamp = { preStamped: false };
     const api = compiler.webpack ?? compiler.rspack;
     const stage = api?.Compilation?.PROCESS_ASSETS_STAGE_DEV_TOOLING;
     const RawSource = api?.sources?.RawSource;
     const thisCompilation = compiler.hooks.thisCompilation;
     if (resolved.enabled && stage !== undefined && RawSource !== undefined && thisCompilation) {
       thisCompilation.tap(name, (compilation) => {
-        preStamped = false;
+        state = { preStamped: false };
         compilation.hooks.processAssets.tapPromise({ name, stage: stage + 1 }, async () => {
-          preStamped = await stampInBuild(webpackAssetStore(compilation, RawSource));
+          state = await stampInBuild(webpackAssetStore(compilation, RawSource));
         });
       });
     }
-    return () => preStamped;
+    return () => state;
   };
 
   // Vite and Rollup: stamp in `generateBundle`, where chunks (`code`) and their `.map` assets are in memory.
-  // Whether the output directory's bundle was stamped is kept per directory (a Vite app builds a client
-  // and a server into different ones), set by every generateBundle and CONSUMED by the matching write, so
-  // a stamp can never carry over to a later build of the same directory.
-  const stampedOutputs = new Map<string, boolean>();
+  // Whether an output was stamped is kept per OUTPUT (the options object both hooks receive), not per
+  // directory: two outputs written concurrently into one folder (`output.file` siblings, a stamped output
+  // beside an inline-map one) must not consume each other's answer, or an unstamped one would skip the
+  // post-emit inject and its SRI refusal. Set by every generateBundle, CONSUMED by the matching write, so
+  // a stamp can never carry over to a later build. An output whose write cannot be matched is simply
+  // not stamped: the safe answer.
+  const stampedOutputs = new WeakMap<object, InBuildStamp>();
   const stampBundle = async (output: OutputLike, bundle: RollupBundleLike): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir === undefined || !resolved.enabled) {
       return;
     }
-    stampedOutputs.set(outDir, false);
+    stampedOutputs.set(output, { preStamped: false });
     const unstampable = rollupUnstampableMaps(bundle);
     if (unstampable.length > 0) {
       say(
@@ -432,7 +441,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       );
       return;
     }
-    stampedOutputs.set(outDir, await stampInBuild(rollupAssetStore(bundle)));
+    stampedOutputs.set(output, await stampInBuild(rollupAssetStore(bundle)));
   };
   // Not `order: 'pre'` by taste: Vite builds `index.html` (and runs `transformIndexHtml`, where an SRI
   // plugin hashes the chunks) in its own generateBundle, so ours must run first. Plugins sharing the
@@ -448,11 +457,13 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   ): Promise<void> => {
     const outDir = resolveOutputDir(output);
     if (outDir !== undefined) {
-      const preStamped = stampedOutputs.get(outDir) === true;
-      stampedOutputs.delete(outDir);
+      const stamp = stampedOutputs.get(output);
+      stampedOutputs.delete(output);
       await runPluginUpload(forOutput(outDir), outDir, {
         bundler,
-        ...(preStamped ? { preStamped: true } : {}),
+        ...(stamp?.preStamped === true
+          ? { preStamped: true, stampedBundles: stamp.stampedBundles }
+          : {}),
       });
     }
   };
@@ -690,7 +701,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
           dir !== '' &&
           !skipDevelopment(compiler.options.mode !== 'development', 'Rspack')
         ) {
-          await runPluginUpload(forOutput(dir), dir, { bundler, preStamped: preStamped() });
+          await runPluginUpload(forOutput(dir), dir, { bundler, ...preStamped() });
         }
       });
     },
@@ -711,7 +722,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         if (typeof dir === 'string' && dir !== '') {
           await runPluginUpload(forOutput(dir), dir, {
             bundler: webpackBuild(compiler.options.mode),
-            preStamped: preStamped(),
+            ...preStamped(),
           });
         }
       });
