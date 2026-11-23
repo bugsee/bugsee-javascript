@@ -373,6 +373,96 @@ describe('findSriProtectedScripts', () => {
     // the CLI's own "path does not exist", not as an unhandled error from a guard.
     expect(await findSriProtectedScripts(join(await fixture(), 'nope'))).toEqual([]);
   });
+
+  // Angular's esbuild builder (v21+) pins its LAZY chunks through an import map's `integrity` table, not through
+  // a tag: measured on @angular/build 22.3 in Chromium, a stamped lazy chunk was blocked ("Failed to find a valid
+  // digest in the 'integrity' attribute ... The resource has been blocked") while the page's entry scripts ran.
+  describe('an import map integrity table', () => {
+    const importMap = (table: unknown, attrs = 'type="importmap"') =>
+      `<script ${attrs}>${typeof table === 'string' ? table : JSON.stringify({ integrity: table })}</script>`;
+
+    it('finds the scripts it pins, resolving relative and root-relative keys', async () => {
+      const dir = await fixture();
+      await write(dir, 'chunk-a.js', 'a');
+      await write(dir, 'assets/chunk-b.mjs', 'b');
+      await write(
+        dir,
+        'index.html',
+        importMap({ './chunk-a.js': 'sha384-A', '/assets/chunk-b.mjs': 'sha384-B' }),
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([
+        { html: join(dir, 'index.html'), script: join(dir, 'chunk-a.js'), integrity: 'sha384-A' },
+        {
+          html: join(dir, 'index.html'),
+          script: join(dir, 'assets', 'chunk-b.mjs'),
+          integrity: 'sha384-B',
+        },
+      ]);
+    });
+
+    it('lists a script pinned both by a tag and by the map once', async () => {
+      const dir = await fixture();
+      await write(dir, 'main.js', 'a');
+      await write(
+        dir,
+        'index.html',
+        `${importMap({ './main.js': 'sha384-M' })}<script src="main.js" integrity="sha384-M"></script>`,
+      );
+      expect(await findSriProtectedScripts(dir)).toHaveLength(1);
+    });
+
+    it('ignores a map that is not JSON, has no integrity table, or pins something that is not ours', async () => {
+      const dir = await fixture();
+      await write(dir, 'a.js', 'a');
+      await write(dir, 'data.json', '{}');
+      await write(dir, 'index.html', importMap('{ not json'));
+      await write(dir, 'two.html', importMap({ imports: { x: './a.js' } }.imports));
+      await write(
+        dir,
+        'three.html',
+        '<script type="importmap">{"imports":{"x":"./a.js"}}</script>',
+      );
+      await write(dir, 'four.html', '<script type="importmap">{"integrity":[1]}</script>');
+      await write(
+        dir,
+        'five.html',
+        importMap({
+          'https://cdn.test/x.js': 'sha384-X',
+          './data.json': 'sha384-D',
+          './a.js': '',
+          './b.js': 42,
+        }),
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([]);
+    });
+
+    it('does not read a script that is not an import map, or one inside a comment', async () => {
+      const dir = await fixture();
+      await write(dir, 'a.js', 'a');
+      await write(
+        dir,
+        'index.html',
+        `${importMap({ './a.js': 'sha384-A' }, 'type="application/json"')}${importMap({ './a.js': 'sha384-A' }, 'data-type="importmap"')}<!-- ${importMap({ './a.js': 'sha384-A' })} -->`,
+      );
+      expect(await findSriProtectedScripts(dir)).toEqual([]);
+    });
+
+    it('is re-sealed with the rest of the page, so a stamped lazy chunk still loads', async () => {
+      const dir = await fixture();
+      const digest = (text: string) => createHash('sha384').update(text).digest('base64');
+      await write(dir, 'chunk.js', 'lazy();');
+      const html = await write(
+        dir,
+        'index.html',
+        importMap({ './chunk.js': `sha384-${digest('lazy();')}` }),
+      );
+      const pins = await findSriProtectedScripts(dir);
+      await write(dir, 'chunk.js', 'lazy();\n//# debugId=x');
+      expect((await resealIntegrity(pins, [dir])).files).toEqual([html]);
+      expect(await findIntegrityMismatches(dir)).toEqual([]);
+      expect(await readFile(html, 'utf8')).toContain(digest('lazy();\n//# debugId=x'));
+    });
+  });
 });
 
 // The question a browser actually asks: does the file's digest match what the page pinned? Used after

@@ -55,6 +55,31 @@ const INTEGRITY_ATTR = /[\s"'<]integrity\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 const SRC_ATTR = /[\s"'<]src\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 const HREF_ATTR = /[\s"'<]href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i;
 
+// An import map's `integrity` table pins modules by URL — how Angular's esbuild builder (v21+) pins its lazy
+// chunks, which no tag mentions. The browser enforces it exactly like a tag's attribute.
+const IMPORT_MAP = /<script\b[^>]*?\stype\s*=\s*("|')?importmap\1?[^>]*>([\s\S]*?)<\/script\s*>/gi;
+
+/** `{ integrity, url }` for every entry of every import map's `integrity` table in `markup`. */
+function importMapPins(markup: string): { integrity: string; url: string }[] {
+  const pins: { integrity: string; url: string }[] = [];
+  for (const [, , body = ''] of markup.matchAll(IMPORT_MAP)) {
+    let table: unknown;
+    try {
+      table = (JSON.parse(body) as { integrity?: unknown }).integrity;
+    } catch {
+      continue; // not JSON: the browser ignores such a map too
+    }
+    if (typeof table === 'object' && table !== null) {
+      for (const [url, integrity] of Object.entries(table)) {
+        if (typeof integrity === 'string') {
+          pins.push({ integrity, url });
+        }
+      }
+    }
+  }
+  return pins;
+}
+
 const unquote = (value: string): string =>
   (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
     ? value.slice(1, -1)
@@ -141,20 +166,25 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
       ...(markup.match(PRELOAD_TAG) ?? [])
         .filter((tag) => PRELOADS_SCRIPT.test(tag))
         .map((tag) => ({ tag, url: HREF_ATTR.exec(tag)?.[1] })),
-    ];
-    for (const { tag, url } of tags) {
+    ].map(({ tag, url }) => {
       const integrity = INTEGRITY_ATTR.exec(tag)?.[1];
+      return {
+        integrity: integrity === undefined ? undefined : unquote(integrity),
+        url: url === undefined ? undefined : unquote(url),
+      };
+    });
+    for (const { integrity, url } of [...tags, ...importMapPins(markup)]) {
       // An empty `integrity` pins nothing — browsers treat it as no check at all.
-      if (integrity === undefined || unquote(integrity).trim() === '' || url === undefined) {
+      if (integrity === undefined || integrity.trim() === '' || url === undefined) {
         continue;
       }
-      const script = resolveLocalScript(outDir, htmlDir, unquote(url));
+      const script = resolveLocalScript(outDir, htmlDir, url);
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
       if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(script)) {
         continue;
       }
       seen.add(script);
-      found.push({ html, script, integrity: unquote(integrity).trim() });
+      found.push({ html, script, integrity: integrity.trim() });
     }
   }
   return found;
