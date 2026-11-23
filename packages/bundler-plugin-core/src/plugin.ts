@@ -66,7 +66,7 @@ interface WebpackCompilationLike {
         info?: { related?: { sourceMap?: string | string[] | null } };
       }
     | undefined;
-  updateAsset(name: string, source: unknown): void;
+  updateAsset(name: string, source: unknown, info?: object): void;
 }
 
 /** Minimal shape of the webpack compiler we tap (avoids a webpack type dependency in the core). */
@@ -248,7 +248,11 @@ function webpackAssetStore(
     // (the runtime asked for a chunk that did not exist: ChunkLoadError). JS and its map are UTF-8 text.
     check: (name, content) => void asText(name, content),
     update: (name, content) =>
-      compilation.updateAsset(realName(name), new RawSource(asText(name, content))),
+      // The info marks what was stamped; it is carried across RealContentHashPlugin's rename (measured on real
+      // webpack and Rspack), which is how the final names are recovered at `afterEmit`.
+      compilation.updateAsset(realName(name), new RawSource(asText(name, content)), {
+        bugseeStamped: true,
+      }),
     // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
     mapOf: (name) => {
       const related = compilation.getAsset(realName(name))?.info?.related?.sourceMap;
@@ -333,14 +337,14 @@ function esbuildOutputDir(options: EsbuildBuildLike['initialOptions']): string |
 
 /** The compilation handed to `afterEmit`: enough to list every asset this build emitted. */
 interface AssetNamesLike {
-  getAssets?(): ReadonlyArray<{ name: string }>;
+  getAssets?(): ReadonlyArray<{ name: string; info?: object }>;
 }
 
 /**
  * The stamp's bundle / map names as the DISK has them. webpack's RealContentHashPlugin renames `[contenthash]`
  * assets AFTER the in-build stamp, so the names the stamp reported are stale; when the compilation is known,
- * the on-disk re-check is given the final script names instead (every script asset was staged, so every one
- * was stamped) and finds each map by its pointer.
+ * the on-disk re-check is given the final names of the assets the stamp wrote (marked in their asset info) and
+ * finds each map by its pointer.
  */
 const finalStampNames = (
   compilation: AssetNamesLike | undefined,
@@ -349,12 +353,33 @@ const finalStampNames = (
   return assets === undefined
     ? {}
     : {
+        // Only assets the stamp itself wrote (marked in their info): a script a plugin emitted after the stamp
+        // stage was never stamped and must not be judged as if it had been.
         stampedBundles: assets
+          .filter(
+            (asset) =>
+              (asset.info as { bugseeStamped?: boolean } | undefined)?.bugseeStamped === true,
+          )
           .map((asset) => cutAtQuery(asset.name))
           .filter((name) => /\.[cm]?js$/i.test(name)),
         stampedMaps: undefined,
       };
 };
+
+/** The stamped bundle names that are still in the final bundle (all of them when the bundle is unknown). */
+const stampedStillPresent = (
+  names: string[] | undefined,
+  bundle: object | undefined,
+): string[] | undefined => (bundle === undefined ? names : names?.filter((name) => name in bundle));
+
+/** The stamped bundle -> map names whose bundle is still in the final bundle. */
+const stampedMapsStillPresent = (
+  maps: Record<string, string> | undefined,
+  bundle: object | undefined,
+): Record<string, string> | undefined =>
+  bundle === undefined || maps === undefined
+    ? maps
+    : Object.fromEntries(Object.entries(maps).filter(([name]) => name in bundle));
 
 /** The names this build emitted, as the `ownFiles` the upload deletes by (absent when not known). */
 const ownFilesOf = (compilation: AssetNamesLike | undefined): { ownFiles?: string[] } => {
@@ -591,8 +616,9 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
         ...(stamp?.preStamped === true
           ? {
               preStamped: true,
-              stampedBundles: stamp.stampedBundles,
-              stampedMaps: stamp.stampedMaps,
+              // Only chunks still in the FINAL bundle: a later plugin may have removed (or inlined) one.
+              stampedBundles: stampedStillPresent(stamp.stampedBundles, bundle),
+              stampedMaps: stampedMapsStillPresent(stamp.stampedMaps, bundle),
             }
           : {}),
       });

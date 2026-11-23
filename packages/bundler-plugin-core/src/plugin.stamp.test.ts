@@ -71,8 +71,8 @@ describe('rspack: stamps inside the compilation', () => {
       },
       getAssets: () => [{ name: 'main.js' }, { name: 'main.js.map' }],
       getAsset: (name: string) => ({ source: { buffer: () => Buffer.from(`content of ${name}`) } }),
-      updateAsset: (name: string, source: unknown) => {
-        updated.push({ name, source });
+      updateAsset: (name: string, source: unknown, info?: unknown) => {
+        updated.push({ name, source, info } as never);
       },
     };
     const compilations: Array<(c: unknown) => void> = [];
@@ -374,15 +374,28 @@ describe('rspack: stamps inside the compilation', () => {
     await r.compile();
     await (r.afterEmitWith as (c: unknown) => Promise<void>)({
       getAssets: () => [
-        { name: 'main.NEWHASH.js' },
+        { name: 'main.NEWHASH.js', info: { bugseeStamped: true } },
         { name: 'main.NEWHASH.js.map' },
         { name: 'x.css' },
-        { name: 'q.js?h' },
+        { name: 'q.js?h', info: { bugseeStamped: true } },
+        { name: 'sw.js' }, // emitted after the stamp stage: never staged, never stamped
+        { name: 'sw.js.map' },
       ],
     });
     const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
     expect(deps.stampedBundles).toEqual(['main.NEWHASH.js', 'q.js']);
     expect(deps.stampedMaps).toBeUndefined();
+  });
+
+  it('marks every asset it writes back (asset info survives the contenthash rename)', async () => {
+    stampSpy.mockImplementation(async (store) => {
+      (store as { update(n: string, c: Buffer): void }).update('main.js', Buffer.from('stamped'));
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    expect((r.updated[0] as { info?: unknown }).info).toEqual({ bugseeStamped: true });
   });
 
   it('does not stamp for a disabled plugin', async () => {
@@ -865,7 +878,12 @@ describe('webpack: after [contenthash] renames, the on-disk re-check gets the FI
       hooks: {
         processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
       },
-      getAssets: () => [{ name: 'm.NEW.js' }, { name: 'm.NEW.js.map' }, { name: 'q.js?h' }],
+      getAssets: () => [
+        { name: 'm.NEW.js', info: { bugseeStamped: true } },
+        { name: 'm.NEW.js.map' },
+        { name: 'q.js?h', info: { bugseeStamped: true } },
+        { name: 'sw.js' },
+      ],
       getAsset: () => undefined,
       updateAsset: () => undefined,
     };
@@ -893,5 +911,54 @@ describe('webpack: after [contenthash] renames, the on-disk re-check gets the FI
     const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
     expect(deps.stampedBundles).toEqual(['m.NEW.js', 'q.js']);
     expect(deps.stampedMaps).toBeUndefined();
+  });
+});
+
+describe('vite/rollup: the on-disk re-check judges only stamped chunks that are still in the FINAL bundle', () => {
+  it('drops a stamped chunk a later plugin removed from the bundle', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['a.js', 'gone.js'],
+      maps: { 'a.js': 'a.js.map', 'gone.js': 'gone.js.map' },
+      bundles: 2,
+    }));
+    for (const kind of ['vite', 'rollup'] as const) {
+      uploadSpy.mockClear();
+      const hooks = makePlugin({ appToken: 'tok' })[kind] as unknown as {
+        generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+        writeBundle: (o: object, b?: object) => Promise<void>;
+      };
+      const output = { dir: '/out' };
+      await hooks.generateBundle.handler(output, {
+        'a.js': { type: 'chunk', fileName: 'a.js', code: 'x', map: {} },
+        'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+      });
+      await hooks.writeBundle(output, { 'a.js': {}, 'a.js.map': {} }); // gone.js was deleted by a later generateBundle
+      const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: Record<string, string> };
+      expect(deps.stampedBundles).toEqual(['a.js']);
+      expect(deps.stampedMaps).toEqual({ 'a.js': 'a.js.map' });
+    }
+  });
+});
+
+describe("vite/rollup: without a final bundle the stamp's own names are used unchanged", () => {
+  it('passes stampedBundles and stampedMaps through when writeBundle gets no bundle', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['a.js'],
+      maps: { 'a.js': 'a.js.map' },
+      bundles: 1,
+    }));
+    const hooks = makePlugin({ appToken: 'tok' }).rollup as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+    };
+    const output = { dir: '/out' };
+    await hooks.generateBundle.handler(output, {
+      'a.js': { type: 'chunk', fileName: 'a.js', code: 'x', map: {} },
+      'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+    });
+    await hooks.writeBundle(output);
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: Record<string, string> };
+    expect(deps.stampedBundles).toEqual(['a.js']);
+    expect(deps.stampedMaps).toEqual({ 'a.js': 'a.js.map' });
   });
 });
