@@ -18,7 +18,7 @@ import {
 } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { bugseeRollupPlugin, bugseeRspackPlugin } from '@bugsee/bundler-plugin-core';
 import { bugseeVitePlugin } from '@bugsee/vite-plugin';
 import { bugseeWebpackPlugin } from '@bugsee/webpack-plugin';
@@ -45,9 +45,15 @@ const TYPES: Record<string, string> = {
 
 async function serve(dir: string): Promise<{ url: string; server: Server }> {
   const server = createServer((req, res) => {
-    const path = normalize(
-      join(dir, (req.url ?? '/').split('?')[0] === '/' ? 'index.html' : (req.url as string)),
-    );
+    // Contain the request inside `dir`: a path-aware check (a raw prefix also accepts a sibling directory).
+    const requested = (req.url ?? '/').split('?')[0] as string;
+    const path = resolve(dir, `.${requested === '/' ? '/index.html' : requested}`);
+    const inside = relative(dir, path);
+    if (inside.startsWith('..') || isAbsolute(inside)) {
+      res.statusCode = 403;
+      res.end();
+      return;
+    }
     try {
       res.setHeader('content-type', TYPES[extname(path)] ?? 'application/octet-stream');
       res.end(readFileSync(path));

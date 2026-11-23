@@ -2,6 +2,16 @@
 // with environment variables, applies defaults, and decides whether the plugin is active (a token is
 // required; a build without one is a no-op rather than an error). Pure + injectable for testing.
 
+import { readlinkSync, realpathSync } from 'node:fs';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  sep,
+} from 'node:path';
 import {
   type AppIdentityDeps,
   appIdentityDefines,
@@ -265,8 +275,87 @@ export function resolvePluginOptions(
 /** What a plugin run reports: the source-map upload, plus the build registration when it ran. */
 export type PluginRunResult = UploadSourcemapsResult & { build?: RegisterJsBuildResult };
 
-/** Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled. */
+/**
+ * One key per physical directory, whatever the spelling (`dist`, `dist/`, `./dist`, an absolute path, a symlink):
+ * the real path of the deepest ancestor that exists, plus the not-yet-created rest (a directory that does not
+ * exist yet when the first output announces itself must key the same once it does).
+ */
+export function dirKey(dir: string, depth = 0): string {
+  let head = resolvePath(dir);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync.native(head), ...rest); // native: the canonical spelling (case-folded on APFS/NTFS)
+    } catch {
+      // A symlink whose target does not exist YET (the build will create it) still names that target.
+      const target = depth < 40 ? readLinkTarget(head) : undefined;
+      if (target !== undefined) {
+        return join(dirKey(target, depth + 1), ...rest);
+      }
+      const parent = dirname(head);
+      /* v8 ignore next 3 -- only when even the filesystem root cannot be resolved */
+      if (parent === head) {
+        return join(head, ...rest);
+      }
+      rest.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
+function readLinkTarget(path: string): string | undefined {
+  try {
+    return resolvePath(dirname(path), readlinkSync(path));
+  } catch {
+    return undefined; // not a symlink (or not there)
+  }
+}
+
+/**
+ * The path of `child` relative to `parent` when it is `parent` itself ('') or inside it, else undefined. A parent
+ * output's directory walk also covers the maps of an output written into a nested directory (`dist` and
+ * `dist/b`), so those are siblings too, under their relative path.
+ */
+export function relativeUnder(parent: string, child: string): string | undefined {
+  const rel = relative(parent, child);
+  return rel.startsWith('..') || isAbsolute(rel) ? undefined : rel.split(sep).join('/');
+}
+
+/** The ownFiles of every output of a directory that is pending or running (see {@link runPluginUpload}). */
+const ownersByDir = new Map<string, Set<readonly string[]>>();
+
+/**
+ * Run the upload for a resolved config against a build output dir — a no-op when the plugin is disabled.
+ *
+ * Every output of one directory that knows its own names (`ownFiles`) registers them while it is pending or
+ * running, so each run can leave the OTHERS' maps to their own output (N outputs: N uploads, not N times all).
+ */
 export async function runPluginUpload(
+  resolved: ResolvedPluginOptions,
+  outDir: string,
+  deps: Parameters<typeof runPluginUploadInner>[2] = {},
+): Promise<PluginRunResult | undefined> {
+  const mine = deps.files === undefined ? deps.ownFiles : undefined;
+  const key = dirKey(outDir);
+  if (mine !== undefined) {
+    const group = ownersByDir.get(key) ?? new Set<readonly string[]>();
+    group.add(mine);
+    ownersByDir.set(key, group);
+  }
+  try {
+    return await runPluginUploadInner(resolved, outDir, deps, mine);
+  } finally {
+    if (mine !== undefined) {
+      const group = ownersByDir.get(key);
+      group?.delete(mine);
+      if (group?.size === 0) {
+        ownersByDir.delete(key);
+      }
+    }
+  }
+}
+
+async function runPluginUploadInner(
   resolved: ResolvedPluginOptions,
   outDir: string,
   deps: {
@@ -289,6 +378,10 @@ export async function runPluginUpload(
     stampedMaps?: Readonly<Record<string, string>>;
     /** The names this build emitted (relative to the output directory): what it may delete. */
     ownFiles?: readonly string[];
+    /** Names other outputs of the same directory announced (their maps are theirs to upload and delete). */
+    siblingOwnFiles?: readonly string[];
+    /** An output of this directory that has maps already wrote and finished in this build. */
+    siblingsHaveMaps?: boolean;
     /**
      * The build's own outputs (esbuild's metafile). The run then touches exactly these files, never joins another
      * run of the same directory, and registers from these bundles only.
@@ -299,6 +392,7 @@ export async function runPluginUpload(
       stylesheetMaps?: readonly string[];
     };
   } = {},
+  mine?: readonly string[],
 ): Promise<PluginRunResult | undefined> {
   if (!resolved.enabled) {
     return undefined;
@@ -308,11 +402,21 @@ export async function runPluginUpload(
   // both `dist` — used to start two concurrent pipelines over one tree, with one deleting maps
   // while the other was still reading them. A concurrent caller JOINS the in-flight run and
   // gets its result; the entry is released on settle, so `vite build --watch` still uploads every rebuild.
+  const dirKey0 = dirKey(outDir); // once: a directory created meanwhile must not change the key
   // A run over a build's OWN files (`deps.files`) neither joins nor is joined: it touches nothing another run
   // of the directory touches, so there is nothing to coordinate.
-  const inFlight = deps.files === undefined ? runsByDir.get(outDir) : undefined;
-  if (inFlight !== undefined) {
-    return inFlight;
+  // A caller that knows which files ITS output emitted (`ownFiles`) does not join: the in-flight run was
+  // started with another output's names, and would treat this one's maps as "not produced by this build".
+  // It WAITS for that run (no concurrent pipelines over one tree) and then runs itself.
+  for (;;) {
+    const inFlight = deps.files === undefined ? runsByDir.get(dirKey0) : undefined;
+    if (inFlight === undefined) {
+      break;
+    }
+    if (deps.ownFiles === undefined) {
+      return inFlight;
+    }
+    await inFlight.catch(() => undefined);
   }
   const uploadSourcemaps = deps.uploadSourcemaps ?? defaultUploadSourcemaps;
   const registerJsBuild = deps.registerJsBuild ?? defaultRegisterJsBuild;
@@ -336,7 +440,24 @@ export async function runPluginUpload(
       ...(deps.preStamped === true ? { preStamped: true } : {}),
       ...(deps.stampedBundles !== undefined ? { stampedBundles: deps.stampedBundles } : {}),
       ...(deps.stampedMaps !== undefined ? { stampedMaps: deps.stampedMaps } : {}),
-      ...(deps.ownFiles !== undefined ? { ownFiles: deps.ownFiles } : {}),
+      ...(deps.siblingsHaveMaps === true ? { siblingsHaveMaps: true } : {}),
+      ...(deps.ownFiles !== undefined
+        ? {
+            ownFiles: deps.ownFiles,
+            siblingOwnFiles: [
+              ...(deps.siblingOwnFiles ?? []),
+              ...[...ownersByDir].flatMap(([dir, group]) => {
+                const prefix = relativeUnder(dirKey0, dir);
+                return prefix === undefined
+                  ? []
+                  : [...group]
+                      .filter((names) => names !== mine)
+                      .flat()
+                      .map((name) => (prefix === '' ? name : `${prefix}/${name}`));
+              }),
+            ],
+          }
+        : {}),
       ...(deps.files !== undefined ? { files: deps.files } : {}),
       ...(deps.resealSri === true ? { resealSri: true } : {}),
       ...(deps.resealDirs !== undefined ? { resealDirs: deps.resealDirs } : {}),
@@ -384,11 +505,11 @@ export async function runPluginUpload(
   if (deps.files !== undefined) {
     return run;
   }
-  runsByDir.set(outDir, run);
+  runsByDir.set(dirKey0, run);
   void run
     .catch(() => undefined)
     .finally(() => {
-      runsByDir.delete(outDir);
+      runsByDir.delete(dirKey0);
     });
   return run;
 }

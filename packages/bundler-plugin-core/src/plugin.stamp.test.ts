@@ -29,10 +29,16 @@ const outsideError = () =>
 const makePlugin = (options?: BugseePluginOptions, framework = 'rollup'): UnpluginOptions =>
   bugseeUnpluginFactory(options, { framework } as never) as UnpluginOptions;
 
-const depsOf = (call: number) =>
-  uploadSpy.mock.calls[call]?.[2] as
-    | { preStamped?: boolean; bundler?: unknown; stampedBundles?: string[] }
-    | undefined;
+/** The deps of the nth upload call. A missing call FAILS the test: "the upload was skipped" is never a pass. */
+const depsOf = (call: number) => {
+  const entry = uploadSpy.mock.calls[call];
+  if (entry === undefined) {
+    throw new Error(
+      `expected an upload call #${call}, but only ${uploadSpy.mock.calls.length} happened`,
+    );
+  }
+  return entry[2] as { preStamped?: boolean; bundler?: unknown; stampedBundles?: string[] };
+};
 
 beforeEach(() => {
   uploadSpy.mockClear();
@@ -65,8 +71,8 @@ describe('rspack: stamps inside the compilation', () => {
       },
       getAssets: () => [{ name: 'main.js' }, { name: 'main.js.map' }],
       getAsset: (name: string) => ({ source: { buffer: () => Buffer.from(`content of ${name}`) } }),
-      updateAsset: (name: string, source: unknown) => {
-        updated.push({ name, source });
+      updateAsset: (name: string, source: unknown, info?: unknown) => {
+        updated.push({ name, source, info } as never);
       },
     };
     const compilations: Array<(c: unknown) => void> = [];
@@ -98,11 +104,14 @@ describe('rspack: stamps inside the compilation', () => {
       processAssets,
       updated,
       afterEmit: () => afterEmit[0]?.(),
+      afterEmitWith: (c: unknown) => (afterEmit[0] as (c: unknown) => Promise<void>)(c),
       compile: async () => {
+        // Each compilation runs ITS OWN processAssets taps only (taps registered by earlier ones are gone).
+        const first = processAssets.length;
         for (const fn of compilations) {
           fn(compilation);
         }
-        for (const tap of processAssets) {
+        for (const tap of processAssets.slice(first)) {
           await tap.fn();
         }
       },
@@ -265,6 +274,7 @@ describe('rspack: stamps inside the compilation', () => {
     });
     await r.compile();
     await r.afterEmit();
+    expect(stampSpy).toHaveBeenCalledTimes(2); // once per compilation, not once per accumulated tap
     expect(depsOf(1)?.preStamped).toBe(false);
   });
 
@@ -351,6 +361,41 @@ describe('rspack: stamps inside the compilation', () => {
     expect(outcome[1]).toContain('not valid UTF-8');
     expect(r.updated).toHaveLength(1); // only the explicit update wrote anything
     expect((r.updated[0]?.source as { value: string }).value).toBe('\uFEFFbom');
+  });
+
+  it('after [contenthash] renames, the on-disk re-check is told the FINAL script names (the stamp ran before the rename)', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['main.OLDHASH.js'],
+      maps: { 'main.OLDHASH.js': 'main.OLDHASH.js.map' },
+      bundles: 1,
+    }));
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    await (r.afterEmitWith as (c: unknown) => Promise<void>)({
+      getAssets: () => [
+        { name: 'main.NEWHASH.js', info: { bugseeStamped: true } },
+        { name: 'main.NEWHASH.js.map' },
+        { name: 'x.css' },
+        { name: 'q.js?h', info: { bugseeStamped: true } },
+        { name: 'sw.js' }, // emitted after the stamp stage: never staged, never stamped
+        { name: 'sw.js.map' },
+      ],
+    });
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
+    expect(deps.stampedBundles).toEqual(['main.NEWHASH.js', 'q.js']);
+    expect(deps.stampedMaps).toBeUndefined();
+  });
+
+  it('marks every asset it writes back (asset info survives the contenthash rename)', async () => {
+    stampSpy.mockImplementation(async (store) => {
+      (store as { update(n: string, c: Buffer): void }).update('main.js', Buffer.from('stamped'));
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const r = rspackCompiler();
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    expect((r.updated[0] as { info?: unknown }).info).toEqual({ bugseeStamped: true });
   });
 
   it('does not stamp for a disabled plugin', async () => {
@@ -817,4 +862,223 @@ describe('the zero-staged guard: only ? ends a webpack extension (# is part of t
     expect(notices).toEqual([]);
     expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
   });
+});
+
+describe('webpack: after [contenthash] renames, the on-disk re-check gets the FINAL script names', () => {
+  it('passes the final script asset names (query cut) and no stale map names', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['m.OLD.js'],
+      maps: { 'm.OLD.js': 'm.OLD.js.map' },
+      bundles: 1,
+    }));
+    const after: Array<(c?: unknown) => Promise<void>> = [];
+    const taps: Array<() => Promise<void>> = [];
+    const compilations: Array<(c: unknown) => void> = [];
+    const compilation = {
+      hooks: {
+        processAssets: { tapPromise: (_o: unknown, fn: () => Promise<void>) => taps.push(fn) },
+      },
+      getAssets: () => [
+        { name: 'm.NEW.js', info: { bugseeStamped: true } },
+        { name: 'm.NEW.js.map' },
+        { name: 'q.js?h', info: { bugseeStamped: true } },
+        { name: 'sw.js' },
+      ],
+      getAsset: () => undefined,
+      updateAsset: () => undefined,
+    };
+    const compiler = {
+      options: { output: { path: '/o' }, mode: 'production', devtool: 'source-map' },
+      hooks: {
+        afterEmit: {
+          tapPromise: (_n: string, fn: (c?: unknown) => Promise<void>) => after.push(fn),
+        },
+        thisCompilation: { tap: (_n: string, fn: (c: unknown) => void) => compilations.push(fn) },
+      },
+      webpack: {
+        Compilation: { PROCESS_ASSETS_STAGE_DEV_TOOLING: 500 },
+        sources: { RawSource: class {} },
+      },
+    };
+    (
+      makePlugin({ appToken: 'tok', onNotice: () => undefined }, 'webpack').webpack as (
+        c: unknown,
+      ) => void
+    )(compiler);
+    for (const fn of compilations) fn(compilation);
+    for (const t of taps) await t();
+    await after[0]?.(compilation);
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: unknown };
+    expect(deps.stampedBundles).toEqual(['m.NEW.js', 'q.js']);
+    expect(deps.stampedMaps).toBeUndefined();
+  });
+});
+
+describe('vite/rollup: the on-disk re-check judges only stamped chunks that are still in the FINAL bundle', () => {
+  it('drops a stamped chunk a later plugin removed from the bundle', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['a.js', 'gone.js'],
+      maps: { 'a.js': 'a.js.map', 'gone.js': 'gone.js.map' },
+      bundles: 2,
+    }));
+    for (const kind of ['vite', 'rollup'] as const) {
+      uploadSpy.mockClear();
+      const hooks = makePlugin({ appToken: 'tok' })[kind] as unknown as {
+        generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+        writeBundle: (o: object, b?: object) => Promise<void>;
+      };
+      const output = { dir: '/out' };
+      await hooks.generateBundle.handler(output, {
+        'a.js': { type: 'chunk', fileName: 'a.js', code: 'x', map: {} },
+        'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+      });
+      await hooks.writeBundle(output, { 'a.js': {}, 'a.js.map': {} }); // gone.js was deleted by a later generateBundle
+      const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: Record<string, string> };
+      expect(deps.stampedBundles).toEqual(['a.js']);
+      expect(deps.stampedMaps).toEqual({ 'a.js': 'a.js.map' });
+    }
+  });
+});
+
+describe("vite/rollup: without a final bundle the stamp's own names are used unchanged", () => {
+  it('passes stampedBundles and stampedMaps through when writeBundle gets no bundle', async () => {
+    stampSpy.mockImplementation(async () => ({
+      stamped: ['a.js'],
+      maps: { 'a.js': 'a.js.map' },
+      bundles: 1,
+    }));
+    const hooks = makePlugin({ appToken: 'tok' }).rollup as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+    };
+    const output = { dir: '/out' };
+    await hooks.generateBundle.handler(output, {
+      'a.js': { type: 'chunk', fileName: 'a.js', code: 'x', map: {} },
+      'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+    });
+    await hooks.writeBundle(output);
+    const deps = depsOf(0) as { stampedBundles?: string[]; stampedMaps?: Record<string, string> };
+    expect(deps.stampedBundles).toEqual(['a.js']);
+    expect(deps.stampedMaps).toEqual({ 'a.js': 'a.js.map' });
+  });
+});
+
+describe('outputs announce their names at generateBundle, so the first write already knows its siblings', () => {
+  const hooksOf2 = (kind: 'vite' | 'rollup') =>
+    makePlugin({ appToken: 'tok', onNotice: () => undefined })[kind] as unknown as {
+      generateBundle: {
+        handler: (o: object, b: Record<string, unknown>, isWrite?: boolean) => Promise<void>;
+      };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+      buildStart?: () => void;
+    };
+  const bundleOf = (name: string) => ({
+    [`${name}.js`]: { type: 'chunk', fileName: `${name}.js`, code: 'x', map: {} },
+    [`${name}.js.map`]: { type: 'asset', fileName: `${name}.js.map`, source: '{}' },
+  });
+  const siblingsOf = (call: number) =>
+    (uploadSpy.mock.calls[call]?.[2] as { siblingOwnFiles?: string[] }).siblingOwnFiles;
+
+  for (const kind of ['vite', 'rollup'] as const) {
+    it(`${kind}: the first output to write is told the others' names; the last is told none`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const [a, b] = [{ file: '/out/a.js' }, { file: '/out/b.js' }];
+      await h.generateBundle.handler(a, bundleOf('a'));
+      await h.generateBundle.handler(b, bundleOf('b'));
+      await h.writeBundle(a, bundleOf('a'));
+      await h.writeBundle(b, bundleOf('b'));
+      expect(siblingsOf(0)?.slice().sort()).toEqual(['b.js', 'b.js.map']);
+      expect(siblingsOf(1)).toEqual([]);
+    });
+
+    it(`${kind}: an output that only GENERATED (bundle.generate never writes) cannot hide this one's own maps`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ dir: '/out' }, bundleOf('a')); // generate(): same names, never written
+      const written = { dir: '/out' };
+      await h.generateBundle.handler(written, bundleOf('a'));
+      await h.writeBundle(written, bundleOf('a'));
+      expect(siblingsOf(0)).toEqual([]); // a name this output emitted is never a "sibling's"
+    });
+
+    it(`${kind}: a generate()-only output (isWrite false) is never announced as a sibling`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ dir: '/out' }, bundleOf('g'), false);
+      const written = { dir: '/out' };
+      await h.generateBundle.handler(written, bundleOf('w'), true);
+      await h.writeBundle(written, bundleOf('w'));
+      expect(siblingsOf(0)).toEqual([]);
+    });
+
+    it(`${kind}: an output written into a NESTED directory is a sibling under its relative path`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const [parent, child] = [{ dir: '/out' }, { dir: '/out/b' }];
+      await h.generateBundle.handler(parent, bundleOf('p'));
+      await h.generateBundle.handler(child, bundleOf('c'));
+      await h.writeBundle(parent, bundleOf('p'));
+      await h.writeBundle(child, bundleOf('c'));
+      expect(siblingsOf(0)?.slice().sort()).toEqual(['b/c.js', 'b/c.js.map']);
+      expect(siblingsOf(1)).toEqual([]); // the child's walk never sees the parent's files
+    });
+
+    it(`${kind}: an unmapped output after a mapped one FINISHED is told a sibling had maps (only for a real write)`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const flag = (call: number) =>
+        (uploadSpy.mock.calls[call]?.[2] as { siblingsHaveMaps?: boolean }).siblingsHaveMaps;
+      const [m, u] = [{ dir: '/out' }, { dir: '/out' }];
+      await h.generateBundle.handler(m, bundleOf('m'), true);
+      await h.writeBundle(m, bundleOf('m'));
+      await h.generateBundle.handler(u, { 'u.js': bundleOf('u')['u.js'] }, true);
+      await h.writeBundle(u, { 'u.js': bundleOf('u')['u.js'] });
+      expect(flag(0)).toBeUndefined(); // an output is not its own sibling
+      expect(flag(1)).toBe(true);
+      // a new build forgets it
+      h.buildStart?.();
+      const lone = { dir: '/out' };
+      await h.generateBundle.handler(lone, { 'l.js': bundleOf('l')['l.js'] }, true);
+      await h.writeBundle(lone, { 'l.js': bundleOf('l')['l.js'] });
+      expect(flag(2)).toBeUndefined();
+    });
+
+    it(`${kind}: an output WITHOUT maps does not count as one that had maps; an unrelated directory is no sibling`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      const flag = (call: number) =>
+        (uploadSpy.mock.calls[call]?.[2] as { siblingsHaveMaps?: boolean }).siblingsHaveMaps;
+      const js = (n: string) => ({ [`${n}.js`]: bundleOf(n)[`${n}.js`] });
+      const [a, b, other, c] = [
+        { dir: '/out' },
+        { dir: '/out' },
+        { dir: '/other' },
+        { dir: '/out' },
+      ];
+      await h.generateBundle.handler(a, js('a'), true);
+      await h.writeBundle(a, js('a'));
+      await h.generateBundle.handler(other, bundleOf('o'), true); // mapped, but another directory
+      await h.generateBundle.handler(b, js('b'), true);
+      await h.writeBundle(b, js('b'));
+      expect(flag(0)).toBeUndefined();
+      expect(flag(1)).toBeUndefined(); // 'a' had no maps, and '/other' is not this directory
+      expect(siblingsOf(1)).toEqual([]); // the unrelated announced output is no sibling
+      await h.writeBundle(other, bundleOf('o'));
+      await h.generateBundle.handler(c, js('c'), true);
+      await h.writeBundle(c, js('c'));
+      expect(flag(3)).toBeUndefined(); // '/other' wrote maps, in a different directory
+    });
+
+    it(`${kind}: a new build forgets outputs that never wrote (buildStart)`, async () => {
+      uploadSpy.mockClear();
+      const h = hooksOf2(kind);
+      await h.generateBundle.handler({ file: '/out/dead.js' }, bundleOf('dead')); // never written
+      h.buildStart?.();
+      const live = { file: '/out/live.js' };
+      await h.generateBundle.handler(live, bundleOf('live'));
+      await h.writeBundle(live, bundleOf('live'));
+      expect(siblingsOf(0)).toEqual([]);
+    });
+  }
 });
