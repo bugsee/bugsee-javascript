@@ -192,19 +192,46 @@ function unreadableIdentityNotices(
   return notices;
 }
 
-/** A compilation's asset table as the core's `AssetStore`. */
+/** An asset name without its `?query` / `#fragment`: webpack writes `x.js?h` to disk as `x.js`. */
+const withoutQuery = (name: string): string => name.replace(/[?#].*$/, '');
+
+/**
+ * A compilation's asset table as the core's `AssetStore`.
+ *
+ * Asset names can carry a `?query` (`[name].js?[contenthash]`) that the file on disk does not, and inject
+ * matches by extension, so the store presents (and stages) the QUERY-FREE name and maps it back to the real
+ * asset name for every read and write. Two assets that would collide once cleaned keep their real names.
+ */
 function webpackAssetStore(
   compilation: WebpackCompilationLike,
   RawSource: new (buffer: Buffer) => unknown,
 ): AssetStore {
+  const real = new Map<string, string>();
+  const refresh = (): void => {
+    real.clear();
+    const counts = new Map<string, number>();
+    const names = compilation.getAssets().map((asset) => asset.name);
+    for (const name of names) {
+      counts.set(withoutQuery(name), (counts.get(withoutQuery(name)) ?? 0) + 1);
+    }
+    for (const name of names) {
+      const clean = withoutQuery(name);
+      real.set(counts.get(clean) === 1 ? clean : name, name);
+    }
+  };
+  const realName = (name: string): string => real.get(name) ?? name;
   return {
-    names: () => compilation.getAssets().map((asset) => asset.name),
-    read: (name) => compilation.getAsset(name)?.source.buffer() ?? Buffer.alloc(0),
-    update: (name, content) => compilation.updateAsset(name, new RawSource(content)),
+    names: () => {
+      refresh();
+      return [...real.keys()];
+    },
+    read: (name) => compilation.getAsset(realName(name))?.source.buffer() ?? Buffer.alloc(0),
+    update: (name, content) => compilation.updateAsset(realName(name), new RawSource(content)),
     // The compilation records which asset is a bundle's source map (SourceMapDevToolPlugin: info.related).
     mapOf: (name) => {
-      const related = compilation.getAsset(name)?.info?.related?.sourceMap;
-      return (Array.isArray(related) ? related[0] : related) ?? undefined;
+      const related = compilation.getAsset(realName(name))?.info?.related?.sourceMap;
+      const map = Array.isArray(related) ? related[0] : related;
+      return map === undefined || map === null ? undefined : withoutQuery(map);
     },
   };
 }
@@ -400,9 +427,22 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
   // what lets the upload skip the post-emit inject (and its SRI refusal). A failure is contained and
   // NOT silent about what happens next: the post-emit path takes over and still carries the refusal, so a
   // failed in-build stamp degrades to the old safe behaviour rather than to a page nobody checked.
-  const stampInBuild = async (store: AssetStore): Promise<InBuildStamp> => {
+  const stampInBuild = async (
+    store: AssetStore,
+    /** Every name the build emitted (default: what the store lists). */
+    emitted: string[] = store.names(),
+  ): Promise<InBuildStamp> => {
     try {
-      const { stamped, maps } = await stampAssets(store, { dryRun: resolved.dryRun });
+      const { stamped, maps, bundles } = await stampAssets(store, { dryRun: resolved.dryRun });
+      // Never claim a stamp that staged nothing while the build emitted scripts: the post-emit path (which
+      // reads real file names off the disk) has to run, and it is said.
+      const scripts = emitted.filter((name) => /\.[cm]?js([?#]|$)/i.test(name));
+      if (bundles === 0 && scripts.length > 0) {
+        say(
+          `no debug-ID could be stamped inside the build (none of ${scripts.slice(0, 3).join(', ')}${scripts.length > 3 ? ', …' : ''} matched), so stamping after emit instead.`,
+        );
+        return { preStamped: false };
+      }
       // Stamped on a dry run too: the preview must follow the path the real run takes, and the real run
       // would not refuse an SRI build — it would stamp it here.
       return { preStamped: true, stampedBundles: stamped, stampedMaps: maps };
@@ -480,7 +520,7 @@ export const bugseeUnpluginFactory: UnpluginFactory<BugseePluginOptions | undefi
       );
       return;
     }
-    stampedOutputs.set(output, await stampInBuild(rollupAssetStore(bundle)));
+    stampedOutputs.set(output, await stampInBuild(rollupAssetStore(bundle), Object.keys(bundle)));
   };
   // Not `order: 'pre'` by taste: Vite builds `index.html` (and runs `transformIndexHtml`, where an SRI
   // plugin hashes the chunks) in its own generateBundle, so ours must run first. Plugins sharing the

@@ -927,3 +927,54 @@ describeReal('ownership: only what this build emitted is deleted', () => {
     expect(mapsLeft(app.out)).toEqual(['src/old.d.ts.map', 'vendor/foreign.css.map']);
   });
 });
+
+// webpack/Rspack asset names can carry a ?query (`[name].js?[contenthash]`); the disk name does not. The stamp
+// must match, stage and write back through the query, and the deletion by identity must too.
+describeReal('Rspack: asset names with a ?query', () => {
+  for (const failOnError of [true, false]) {
+    it(`[name].js?[contenthash] and a chunkFilename query: stamped, uploaded, all of this build's maps deleted (failOnError ${failOnError})`, async () => {
+      const app = makeApp(`rspack-query-${failOnError}`);
+      const before = requests.length;
+      const errors: unknown[] = [];
+      const result = await new Promise<{ errors: unknown[] }>((resolve, reject) => {
+        const compiler = rspack({
+          context: app.dir,
+          mode: 'production',
+          entry: join(app.dir, 'index.js'),
+          devtool: 'source-map',
+          output: {
+            path: app.out,
+            filename: '[name].js?[contenthash]',
+            chunkFilename: '[name].js?[contenthash]',
+          },
+          plugins: [
+            bugseeRspackPlugin({
+              ...pluginOptions(),
+              failOnError,
+              onError: (e: unknown) => errors.push(e),
+            }),
+          ],
+        });
+        compiler.run((err, stats) =>
+          compiler.close(() =>
+            err
+              ? reject(err)
+              : resolve({
+                  errors: [...(stats as { compilation: { errors: unknown[] } }).compilation.errors],
+                }),
+          ),
+        );
+      });
+      expect(result.errors.map(String)).toEqual([]);
+      expect(errors.map(String)).toEqual([]);
+      expect(requests.length, 'uploaded').toBeGreaterThan(before);
+      const files = readdirSync(app.out, { recursive: true }) as string[];
+      expect(files.filter((f) => f.endsWith('.map'))).toEqual([]);
+      const bundles = files.filter((f) => /\.js$/.test(f));
+      expect(bundles.length).toBeGreaterThanOrEqual(2);
+      for (const bundle of bundles) {
+        expect(readFileSync(join(app.out, bundle), 'utf8'), bundle).toMatch(/\/\/# debugId=/);
+      }
+    });
+  }
+});

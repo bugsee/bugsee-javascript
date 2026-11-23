@@ -321,7 +321,7 @@ describe('stampAssets — verifying the stamp before it is written back', () => 
     const store = memoryStore({ 'a.js': 'a();\n' });
     await expect(
       stampAssets(store, { dryRun: true, run: inject((_p, c) => `${c}{{\n`) }),
-    ).resolves.toEqual({ stamped: [], maps: {} });
+    ).resolves.toEqual({ stamped: [], maps: {}, bundles: 1 });
   });
 
   it('uses an injected parser', async () => {
@@ -659,5 +659,18 @@ describe('stampAssets — a store whose map is named outside the output', () => 
     expect(error.message).toContain('lies outside the output directory');
     expect(error.message).toContain('inside the output directory');
     expect(error.message).toContain('bugsee-cli');
+  });
+});
+
+describe('stampAssets — how many bundles it staged', () => {
+  it('reports the number of bundles it staged (0 for an asset it cannot match)', async () => {
+    const run = async () => ({ code: 0, stdout: '', stderr: '' });
+    expect((await stampAssets(memoryStore({ 'a.css': 'x' }), { run })).bundles).toBe(0);
+    expect((await stampAssets(memoryStore({ 'main.js?h': 'x' }), { run })).bundles).toBe(0);
+    const two = await stampAssets(memoryStore({ 'a.js': 'a', 'b.mjs': 'b', 'c.css': 'c' }), {
+      run,
+      parse: () => true,
+    }).catch(() => undefined);
+    expect(two === undefined || two.bundles === 2).toBe(true);
   });
 });

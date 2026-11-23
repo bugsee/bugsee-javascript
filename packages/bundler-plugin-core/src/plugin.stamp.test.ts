@@ -149,6 +149,42 @@ describe('rspack: stamps inside the compilation', () => {
     expect(seen).toEqual(['maps/main.js.map', undefined, 'm1.map', undefined]);
   });
 
+  it('the compilation store strips ?query / #fragment for matching and staging, and writes back under the REAL name', async () => {
+    const seen: Record<string, unknown> = {};
+    stampSpy.mockImplementation(async (store) => {
+      const st = store as {
+        names(): string[];
+        read(n: string): Buffer;
+        update(n: string, c: Buffer): void;
+        mapOf(n: string): string | undefined;
+      };
+      seen.names = st.names();
+      seen.read = st.read('main.js').toString();
+      seen.map = st.mapOf('main.js');
+      st.update('main.js', Buffer.from('stamped'));
+      st.update('main.js.map', Buffer.from('{}'));
+      return { stamped: ['main.js'], maps: {}, bundles: 1 };
+    });
+    const r = rspackCompiler();
+    (r.compilation as Record<string, unknown>).getAssets = () => [
+      { name: 'main.js?h1' },
+      { name: 'main.js.map?h2' },
+      { name: 'dup.js?a' },
+      { name: 'dup.js?b' },
+    ];
+    (r.compilation as Record<string, unknown>).getAsset = (name: string) => ({
+      source: { buffer: () => Buffer.from(`content of ${name}`) },
+      info: name === 'main.js?h1' ? { related: { sourceMap: 'main.js.map?h2' } } : undefined,
+    });
+    apply({ appToken: 'tok' }, r.compiler);
+    await r.compile();
+    // dup.js?a and dup.js?b would collide once cleaned: both keep their real (unmatchable) names.
+    expect(seen.names).toEqual(['main.js', 'main.js.map', 'dup.js?a', 'dup.js?b']);
+    expect(seen.read).toBe('content of main.js?h1');
+    expect(seen.map).toBe('main.js.map');
+    expect(r.updated.map((u) => u.name)).toEqual(['main.js?h1', 'main.js.map?h2']);
+  });
+
   it('uploads without re-injecting after emit (preStamped), naming the bundles it stamped', async () => {
     stampSpy.mockImplementation(async () => ({
       stamped: ['main.js'],
@@ -585,4 +621,41 @@ describe("the plugin hands the build's emitted names to the upload (ownFiles)", 
       expect((uploadSpy.mock.calls[0]?.[2] as { ownFiles?: string[] }).ownFiles).toBeUndefined();
     });
   }
+});
+
+describe('an in-build stamp that staged NO bundle although the build emitted scripts never claims preStamped', () => {
+  it('falls back to the post-emit path and says so (never a silent skip)', async () => {
+    stampSpy.mockImplementation(async () => ({ stamped: [], maps: {}, bundles: 0 }));
+    const notices: string[] = [];
+    const hooks = makePlugin({ appToken: 'tok', onNotice: (m: string) => notices.push(m) })
+      .rollup as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+    };
+    const output = { dir: '/out' };
+    await hooks.generateBundle.handler(output, {
+      'a.js?h': { type: 'asset', fileName: 'a.js?h', source: 'x' },
+    });
+    await hooks.writeBundle(output);
+    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBeUndefined();
+    expect(notices.join('\n')).toContain('a.js?h');
+    expect(notices.join('\n')).toContain('after emit');
+  });
+
+  it('a build with no scripts at all (css only) is simply pre-stamped, with no notice', async () => {
+    stampSpy.mockImplementation(async () => ({ stamped: [], maps: {}, bundles: 0 }));
+    const notices: string[] = [];
+    const hooks = makePlugin({ appToken: 'tok', onNotice: (m: string) => notices.push(m) })
+      .rollup as unknown as {
+      generateBundle: { handler: (o: object, b: Record<string, unknown>) => Promise<void> };
+      writeBundle: (o: object, b?: object) => Promise<void>;
+    };
+    const output = { dir: '/out' };
+    await hooks.generateBundle.handler(output, {
+      'a.css': { type: 'asset', fileName: 'a.css', source: 'x' },
+    });
+    await hooks.writeBundle(output);
+    expect((uploadSpy.mock.calls[0]?.[2] as { preStamped?: boolean }).preStamped).toBe(true);
+    expect(notices).toEqual([]);
+  });
 });

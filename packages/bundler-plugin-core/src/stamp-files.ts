@@ -85,7 +85,10 @@ export function ownedBy(
   if (ownFiles === undefined) {
     return (file) => !isFencedPath(relative(outDir, file));
   }
-  const normal = (name: string): string => posix.normalize(name.replace(/\\/g, '/'));
+  // webpack names carry `?query` / `#fragment` that never reach the disk (`x.js.map?h` is written as
+  // `x.js.map`), and a bundler that writes such a name literally is matched the same way on both sides.
+  const normal = (name: string): string =>
+    posix.normalize(name.replace(/\\/g, '/').replace(/[?#].*$/, ''));
   const owned = new Set(ownFiles.map(normal));
   return (file) => owned.has(normal(relative(outDir, file)));
 }

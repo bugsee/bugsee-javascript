@@ -605,3 +605,13 @@ describe('an uppercase A.JS / A.JS.map pair goes through snapshot, verify and re
     await snap.dispose();
   });
 });
+
+describe('ownedBy — webpack names carry ?query / #fragment that never reach the disk', () => {
+  it('matches main.js.map?hash (own) against main.js.map (on disk), and a literal ?name on disk against its asset', () => {
+    const own = ownedBy('/o/dist', ['main.js.map?abc123', 'src/x.css.map#frag', 'lit.js?h']);
+    expect(own('/o/dist/main.js.map')).toBe(true);
+    expect(own('/o/dist/src/x.css.map')).toBe(true);
+    expect(own('/o/dist/lit.js?h')).toBe(true); // Rollup writes the name literally
+    expect(own('/o/dist/other.js.map')).toBe(false);
+  });
+});

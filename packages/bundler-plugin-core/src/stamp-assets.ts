@@ -62,6 +62,8 @@ export class StampVerificationError extends Error {
 export interface StampAssetsResult {
   /** The bundles inject rewrote (their maps are rewritten alongside, and not listed), sorted. */
   stamped: string[];
+  /** How many bundles were staged for inject (0: nothing the stamp could match, whatever the store holds). */
+  bundles: number;
   /** Each stamped bundle's source map, by real asset name, where it has one: what the on-disk re-check uses. */
   maps: Record<string, string>;
 }
@@ -89,7 +91,7 @@ export async function stampAssets(
 ): Promise<StampAssetsResult> {
   const staged = store.names().filter((name) => STAGED.test(name) && staysInside(name));
   if (!staged.some((name) => BUNDLE.test(name))) {
-    return { stamped: [], maps: {} };
+    return { stamped: [], maps: {}, bundles: 0 };
   }
   // A map that is not the bundle's sibling is staged AS the sibling (and written back at its real name).
   const stageName = new Map<string, string>();
@@ -154,8 +156,9 @@ export async function stampAssets(
       {},
     );
 
+    const bundles = staged.filter((name) => BUNDLE.test(name)).length;
     if (dryRun) {
-      return { stamped: [], maps: {} };
+      return { stamped: [], maps: {}, bundles };
     }
     // Read everything back and verify BEFORE writing anything: a bad stamp must leave the build exactly
     // as the bundler produced it, which an interleaved read-and-update could not promise.
@@ -186,7 +189,7 @@ export async function stampAssets(
         maps[bundle] = map;
       }
     }
-    return { stamped: stamped.sort(), maps };
+    return { stamped: stamped.sort(), maps, bundles };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
