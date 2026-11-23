@@ -876,6 +876,12 @@ describe("a run over the build's own files", () => {
 // A build whose only copies of its script hashes are in its HTML (Angular's esbuild builder) can be stamped
 // after emit, if the hashes are then re-written to match: inject runs with `--allow-sri`, the pages are
 // re-sealed, and the result is verified. The guard that refuses a hashed build stays for every other caller.
+/** Clean before the stamp (first call), reports `pins` afterwards. */
+const afterStamp = (pins: { html: string; script: string; integrity: string }[]) => {
+  let calls = 0;
+  return async () => (calls++ === 0 ? [] : pins);
+};
+
 describe('uploadSourcemaps with resealSri', () => {
   const pin = {
     html: '/build/dist/index.html',
@@ -953,7 +959,7 @@ describe('uploadSourcemaps with resealSri', () => {
   it('reports a page that still does not verify, restores, and uploads nothing', async () => {
     const { run, calls } = fakeRun();
     const onError = vi.fn();
-    await uploadSourcemaps({ ...sealed({ verifySri: async () => [pin] }), run, onError });
+    await uploadSourcemaps({ ...sealed({ verifySri: afterStamp([pin]) }), run, onError });
     expect(String(onError.mock.calls[0]?.[0])).toContain('index.html');
     expect(String(onError.mock.calls[0]?.[0])).toContain('main.js');
     expect(calls.map((c) => c.args[0])).not.toContain('debug-files');
@@ -963,7 +969,7 @@ describe('uploadSourcemaps with resealSri', () => {
     const { run } = fakeRun();
     await expect(
       uploadSourcemaps({
-        ...sealed({ verifySri: async () => [pin, pin] }),
+        ...sealed({ verifySri: afterStamp([pin, pin]) }),
         run,
         failOnError: true,
       }),

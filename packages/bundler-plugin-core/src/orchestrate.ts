@@ -11,6 +11,7 @@ import {
   findSriProtectedScripts,
   findStaleDigests,
   findStaleServiceWorkerEntries,
+  hasServiceWorkerManifest,
   listResealFiles,
   resealIntegrity,
   type SriProtectedScript,
@@ -133,6 +134,8 @@ export interface UploadSourcemapsOptions {
   resealDirs?: readonly string[];
   /** Directories whose page pins are verified after the re-seal (default: `[outDir]`): the whole output root of an SSR build. */
   verifyDirs?: readonly string[];
+  /** Injectable: does any directory hold a service worker manifest (default {@link hasServiceWorkerManifest}). */
+  hasServiceWorker?: (dirs: readonly string[]) => Promise<boolean>;
   /** Injectable re-sealer (default {@link resealIntegrity}). */
   reseal?: typeof resealIntegrity;
   /** Injectable restore of one file from its spilled original, for the re-seal rollback (default: write temp, then rename). */
@@ -501,10 +504,29 @@ export async function uploadSourcemaps(
       // 0a. The digest of every script as the build emitted it, for the re-seal: the stale hashes are found by
       //     what the files WERE, wherever a copy sits (a tag, an import map, a table in the runtime chunk). Not
       //     on a dry run: nothing is written.
-      const digests =
-        resealing && !dryRun
-          ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
-          : undefined;
+      //     Only when something can need it: a page that pins a hash (`pinned`), or a service worker manifest.
+      //     Without either, the snapshot, the second spill, the swap walk and the verify would be pure cost.
+      const sealDirs = options.resealDirs ?? [outDir];
+      const needsReseal =
+        resealing &&
+        !dryRun &&
+        (pinned.length > 0 ||
+          (await (options.hasServiceWorker ?? hasServiceWorkerManifest)(sealDirs)));
+      const digests = needsReseal
+        ? await (options.snapshotDigests ?? snapshotScriptDigests)([outDir])
+        : undefined;
+      const verifyDirs = options.verifyDirs ?? [outDir];
+      const verify = options.verifySri ?? findIntegrityMismatches;
+      const pinKey = (pin: SriProtectedScript): string => `${pin.html}\0${pin.script}`;
+      // Pins that were wrong BEFORE we touched anything are not ours to fail on.
+      const preExisting = new Set<string>();
+      if (digests !== undefined) {
+        for (const dir of verifyDirs) {
+          for (const pin of await verify(dir)) {
+            preExisting.add(pinKey(pin));
+          }
+        }
+      }
 
       // 0a'. Everything the stamp AND the re-seal may write — scripts, maps, pages, server modules — so a re-seal
       //      that fails can put the build back exactly as the bundler emitted it (the stamp's own snapshot below
@@ -573,8 +595,17 @@ export async function uploadSourcemaps(
         try {
           await (options.reseal ?? resealIntegrity)(digests, options.resealDirs ?? [outDir]);
           const broken: SriProtectedScript[] = [];
-          for (const dir of options.verifyDirs ?? [outDir]) {
-            broken.push(...(await (options.verifySri ?? findIntegrityMismatches)(dir)));
+          const already: SriProtectedScript[] = [];
+          for (const dir of verifyDirs) {
+            for (const pin of await verify(dir)) {
+              (preExisting.has(pinKey(pin)) ? already : broken).push(pin);
+            }
+          }
+          if (already.length > 0) {
+            (options.onNotice ?? ((m: string) => console.warn(`[bugsee] ${m}`)))(
+              `${already.length} integrity pin(s) did not match their file even before the stamp (for example ` +
+                `${already[0]?.html} pins ${already[0]?.script}), so they were left as they were and are not a result of this step`,
+            );
           }
           if (broken.length > 0) {
             const [first] = broken as [SriProtectedScript, ...SriProtectedScript[]];

@@ -1,7 +1,7 @@
 // An SSR build's server modules embed the page, SRI hashes included, so re-sealing the browser directory alone leaves
 // the server serving stale hashes (measured: every script blocked). When the output is named by its browser directory
 // (`--dist`, or `--output-path` pointing at it) the output ROOT has to be found from it.
-import { lstatSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 
 type PathApi = Pick<typeof path, 'relative' | 'isAbsolute' | 'sep' | 'join' | 'dirname'>;
@@ -20,6 +20,23 @@ const isRealDirectory = (p: string): boolean => {
     return false;
   }
 };
+
+/** Files an Angular SSR build writes to its server output (`server.mjs`, or the engine manifests and server entry). */
+const ANGULAR_SERVER_FILE =
+  /^(?:server|main\.server)\.mjs$|^index\.server\.html$|^angular-app(?:-engine)?-manifest\.mjs$/;
+
+/** Whether `dir` looks like Angular's server output: a marker file in it, or in a locale directory of it. */
+function looksLikeAngularServer(dir: string): boolean {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).some((entry) =>
+      entry.isDirectory()
+        ? readdirSync(path.join(dir, entry.name)).some((name) => ANGULAR_SERVER_FILE.test(name))
+        : ANGULAR_SERVER_FILE.test(entry.name),
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** How far above the output directory the root is looked for: `browser/` -> root, `browser/<locale>/` -> two. */
 const MAX_LEVELS_UP = 2;
@@ -41,7 +58,9 @@ export function findServerRoot(outDir: string, cwd: string, api: PathApi = path)
     }
     const browser = api.join(root, 'browser');
     if (outDir !== browser && !isStrictlyInside(outDir, browser, api)) {
-      unmatched ??= api.join(root, 'server');
+      if (isStrictlyInside(root, cwd, api) && looksLikeAngularServer(api.join(root, 'server'))) {
+        unmatched ??= api.join(root, 'server');
+      }
       continue;
     }
     if (isStrictlyInside(root, cwd, api)) {

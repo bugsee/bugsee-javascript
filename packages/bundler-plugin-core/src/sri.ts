@@ -15,9 +15,9 @@
 // runtime chunk (`__webpack_require__.sriHashes`), so patching the HTML alone would still break
 // every dynamic import.
 import { createHash } from 'node:crypto';
-import type { Dirent } from 'node:fs';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { createReadStream, type Dirent } from 'node:fs';
+import { access, readdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 
 /** One `<script>` whose `integrity` pins a file in the build output. */
 export interface SriProtectedScript {
@@ -110,6 +110,21 @@ const resolveLocalScript = (outDir: string, htmlDir: string, src: string): strin
 
 const HTML_FILE = /\.x?html?$/i;
 
+const fileExists = async (file: string): Promise<boolean> => {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Whether `dir` is `root` or below it. */
+const isUnder = (root: string, dir: string): boolean => {
+  const rel = relative(root, dir);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+};
+
 const walkFiles = async (dir: string, wanted: RegExp, depth = 0): Promise<string[]> => {
   if (depth > MAX_DEPTH) {
     return [];
@@ -178,7 +193,18 @@ export async function findSriProtectedScripts(outDirInput: string): Promise<SriP
       if (integrity === undefined || integrity.trim() === '' || url === undefined) {
         continue;
       }
-      const script = resolveLocalScript(outDir, htmlDir, url);
+      let script = resolveLocalScript(outDir, htmlDir, url);
+      if (script !== undefined && url.startsWith('/') && !(await fileExists(script))) {
+        // A root-relative src is served from the directory the page was built into, which is not the scanned
+        // root when that root is an SSR output (browser/ beside server/): look from the page's own directory up.
+        const bare = (url.split(/[?#]/)[0] ?? '').trim();
+        for (let d = htmlDir; isUnder(outDir, d); d = dirname(d)) {
+          if (await fileExists(join(d, bare))) {
+            script = join(d, bare);
+            break;
+          }
+        }
+      }
       // Only a JS file we emit can be broken by inject; a `.mjs`/`.cjs` counts, a `.wasm` does not.
       if (script === undefined || !/\.[cm]?js$/i.test(script) || seen.has(script)) {
         continue;
@@ -418,6 +444,16 @@ export async function findStaleDigests(
   return stale;
 }
 
+/** Whether any directory holds an `ngsw.json`: the one thing besides a pinned hash that a re-seal has to fix. */
+export async function hasServiceWorkerManifest(dirs: readonly string[]): Promise<boolean> {
+  for (const dir of dirs) {
+    if ((await walkFiles(resolve(dir), /^ngsw\.json$/)).length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 interface ManifestEntry {
@@ -427,17 +463,37 @@ interface ManifestEntry {
   actual: string | undefined;
 }
 
-/** The file a manifest URL names, looked for under the manifest's directory with leading segments dropped (base href). */
-async function readManifestTarget(dir: string, url: string): Promise<Buffer | undefined> {
+/** SHA-1 (hex) of a file, streamed. `undefined` when there is no such regular file (a missing path, a directory). */
+async function sha1OfFile(path: string): Promise<string | undefined> {
+  try {
+    return await new Promise<string>((done, fail) => {
+      const hash = createHash('sha1');
+      createReadStream(path)
+        .on('error', fail)
+        .on('data', (chunk) => hash.update(chunk))
+        .on('end', () => done(hash.digest('hex')));
+    });
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      return undefined;
+    }
+    throw error; // a file that is there but cannot be read must not look like "nothing to compare"
+  }
+}
+
+/**
+ * SHA-1 of the file a manifest URL names, looked for under the manifest's directory with leading segments dropped
+ * (base href). Streamed: a manifest lists every cached asset, media included, and none is buffered whole.
+ */
+async function hashManifestTarget(dir: string, url: string): Promise<string | undefined> {
   const segments = url.split('/').filter((segment) => segment !== '' && segment !== '.');
   if (segments.includes('..')) {
     return undefined;
   }
   for (let from = 0; from < segments.length; from++) {
-    try {
-      return await readFile(join(dir, ...segments.slice(from)));
-    } catch {
-      // not there: try without the next leading segment
+    const digest = await sha1OfFile(join(dir, ...segments.slice(from)));
+    if (digest !== undefined) {
+      return digest;
     }
   }
   return undefined;
@@ -469,12 +525,7 @@ async function findManifests(
       if (typeof recorded !== 'string') {
         continue;
       }
-      const bytes = await readManifestTarget(dirname(path), url);
-      entries.push({
-        url,
-        recorded,
-        actual: bytes === undefined ? undefined : createHash('sha1').update(bytes).digest('hex'),
-      });
+      entries.push({ url, recorded, actual: await hashManifestTarget(dirname(path), url) });
     }
     manifests.push({ path, entries });
   }

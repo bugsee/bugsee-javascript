@@ -63,6 +63,7 @@ export {
   findSriProtectedScripts,
   findStaleDigests,
   findStaleServiceWorkerEntries,
+  hasServiceWorkerManifest,
   listResealFiles,
   resealIntegrity,
   type ScriptDigests,

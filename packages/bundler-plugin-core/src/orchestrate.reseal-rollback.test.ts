@@ -49,6 +49,12 @@ function build() {
   return { root, out, server };
 }
 
+/** A verifier whose pins are fine until the stamp ran: the first call (before) is clean, later ones report `pins`. */
+const brokenAfterStamp = (pins: { html: string; script: string; integrity: string }[]) => {
+  let calls = 0;
+  return async () => (calls++ === 0 ? [] : pins);
+};
+
 const snapshot = (...dirs: string[]) =>
   Object.fromEntries(
     dirs.flatMap((dir) =>
@@ -116,9 +122,9 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
     const { out, server } = build();
     const before = snapshot(out, server);
     const { opts, calls, errors } = options(out, server, {
-      verifySri: async () => [
+      verifySri: brokenAfterStamp([
         { html: join(out, 'index.html'), script: join(out, 'main.js'), integrity: 'sha384-X' },
-      ],
+      ]),
     });
     const result = await uploadSourcemaps(opts);
     expect(snapshot(out, server)).toEqual(before);
@@ -230,7 +236,7 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
       verifyDirs: [out, server],
       verifySri: async (dir: string) => {
         seen.push(dir);
-        return dir === server
+        return seen.length > 2 && dir === server
           ? [
               {
                 html: join(server, 'fr/index.html'),
@@ -242,7 +248,7 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
       },
     });
     const result = await uploadSourcemaps(opts);
-    expect(seen).toEqual([out, server]);
+    expect(seen).toEqual([out, server, out, server]); // before the stamp, then after the re-seal
     expect(snapshot(out, server)).toEqual(before);
     expect(calls).not.toContain('upload');
     expect(result).toMatchObject({ injected: false, uploaded: false });
@@ -259,7 +265,96 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
       },
     });
     await uploadSourcemaps(opts);
-    expect(seen).toEqual([out]);
+    expect(seen).toEqual([out, out]);
+  });
+
+  // A pin that was already wrong before we touched anything (a page pinning a file another step changed) is not ours:
+  // it is said, and it must not roll back a re-seal that did its job.
+  it('does not roll back for a pin that was already broken before the stamp, and says so', async () => {
+    const { out, server } = build();
+    writeFileSync(join(out, 'vendor.js'), 'vendor();');
+    writeFileSync(
+      join(out, 'other.html'),
+      `<script src="vendor.js" integrity="${sha384('NOT THE FILE')}"></script>`,
+    );
+    const { opts, calls, errors } = options(out, server, { verifyDirs: [out] });
+    const notices: string[] = [];
+    const result = await uploadSourcemaps({ ...opts, onNotice: (m: string) => notices.push(m) });
+    expect(errors).toEqual([]);
+    expect(result.uploaded).toBe(true);
+    expect(calls).toContain('upload');
+    expect(notices.join('\n')).toMatch(/even before the stamp.*vendor\.js/s);
+  });
+
+  it('still rolls back for a pin that WAS valid and is broken after', async () => {
+    const { out, server } = build();
+    let call = 0;
+    const { opts, calls } = options(out, server, {
+      // before the stamp nothing is wrong; after the re-seal one page is
+      verifySri: async () =>
+        call++ === 0
+          ? []
+          : [
+              {
+                html: join(out, 'index.html'),
+                script: join(out, 'main.js'),
+                integrity: 'sha384-X',
+              },
+            ],
+    });
+    const result = await uploadSourcemaps(opts);
+    expect(result).toMatchObject({ injected: false, uploaded: false });
+    expect(calls).not.toContain('upload');
+  });
+
+  it('a pre-existing bad pin that a re-seal run cannot make worse is not a failure, but a NEW one beside it is', async () => {
+    const { out, server } = build();
+    const old = { html: join(out, 'a.html'), script: join(out, 'v.js'), integrity: 'sha384-A' };
+    const fresh = {
+      html: join(out, 'index.html'),
+      script: join(out, 'main.js'),
+      integrity: 'sha384-B',
+    };
+    let call = 0;
+    const { opts, errors } = options(out, server, {
+      verifySri: async () => (call++ === 0 ? [old] : [old, fresh]),
+    });
+    await uploadSourcemaps(opts);
+    expect(String(errors[0])).toContain('main.js');
+    expect(String(errors[0])).not.toContain('(and');
+  });
+
+  // The re-seal machinery (digest snapshot, a second spill of every file, the swap walk, the verify) is only worth
+  // its cost when something can need it: a page that pins a hash, or a service worker manifest.
+  it('skips the whole re-seal when nothing pins a hash and there is no service worker manifest', async () => {
+    const { out, server } = build();
+    writeFileSync(join(out, 'index.html'), '<p>no pins</p>');
+    const snapshotDigests = vi.fn(async () => new Map());
+    const reseal = vi.fn(async () => ({ files: [] }));
+    const { opts } = options(out, server, { snapshotDigests, reseal, spillRoot: join(out, '..') });
+    await uploadSourcemaps(opts);
+    expect(snapshotDigests).not.toHaveBeenCalled();
+    expect(reseal).not.toHaveBeenCalled();
+  });
+
+  it('still re-seals a service worker manifest when no page pins a hash', async () => {
+    const { out, server } = build();
+    writeFileSync(join(out, 'index.html'), '<p>no pins</p>');
+    const js = readFileSync(join(out, 'main.js'), 'utf8');
+    writeFileSync(
+      join(out, 'ngsw.json'),
+      JSON.stringify({ hashTable: { '/main.js': createHash('sha1').update(js).digest('hex') } }),
+    );
+    const { opts, errors } = options(out, server);
+    await uploadSourcemaps(opts);
+    expect(errors).toEqual([]);
+    const table = JSON.parse(readFileSync(join(out, 'ngsw.json'), 'utf8')).hashTable;
+    expect(table['/main.js']).toBe(
+      createHash('sha1')
+        .update(readFileSync(join(out, 'main.js')))
+        .digest('hex'),
+    );
+    expect(table['/main.js']).not.toBe(createHash('sha1').update(js).digest('hex'));
   });
 
   it('seals a build with a real service worker manifest (control)', async () => {
@@ -283,9 +378,9 @@ describeReal('uploadSourcemaps re-seal rollback', () => {
   it('names a file it could not restore', async () => {
     const { out, server } = build();
     const { opts, errors } = options(out, server, {
-      verifySri: async () => [
+      verifySri: brokenAfterStamp([
         { html: join(out, 'index.html'), script: join(out, 'main.js'), integrity: 'sha384-X' },
-      ],
+      ]),
       restoreFile: async (_spill: string, target: string) => {
         throw new Error(`EPERM on ${target}`);
       },

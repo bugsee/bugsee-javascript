@@ -230,7 +230,8 @@ export async function uploadAngularSourcemaps(
 
   const run = deps.runPluginUpload ?? runPluginUpload;
   const result = await run(resolved, outDir, {
-    // Only acts when the build pins script hashes; then inject runs with --allow-sri and the page is re-sealed.
+    // The re-seal (digest snapshot, spill, swap, verify) runs only when a page pins a script hash or a service worker
+    // manifest exists; then inject runs with --allow-sri and the hashes are re-written. Otherwise it costs nothing.
     resealSri: true,
     // The server modules of an SSR build embed the page, hashes included.
     resealDirs:

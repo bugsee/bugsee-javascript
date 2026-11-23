@@ -346,6 +346,41 @@ describe('findSriProtectedScripts', () => {
     ]);
   });
 
+  it('resolves a root-relative src against the directory the page was built into when it is not at the scanned root', async () => {
+    // Scanning an SSR output root: browser/index.html says `/main.js`, which is browser/main.js, not <root>/main.js.
+    const dir = await fixture();
+    await write(dir, 'browser/main.js', 'a');
+    await write(dir, 'browser/fr/chunk.js', 'b');
+    await write(dir, 'browser/index.html', '<script src="/main.js" integrity="sha384-A"></script>');
+    await write(
+      dir,
+      'browser/fr/index.html',
+      '<script src="/chunk.js" integrity="sha384-B"></script>',
+    );
+    await write(dir, 'top.html', '<script src="/main.js" integrity="sha384-C"></script>');
+    const scripts = (await findSriProtectedScripts(dir)).map((p) => p.script).sort();
+    // top.html's `/main.js` is the scanned root's own (absent) file; the two nested pages find theirs by looking up.
+    expect(scripts).toEqual(
+      [join(dir, 'browser/fr/chunk.js'), join(dir, 'browser/main.js'), join(dir, 'main.js')].sort(),
+    );
+  });
+
+  it('never looks above the scanned root for a root-relative src', async () => {
+    const dir = await fixture();
+    await write(dir, 'main.js', 'outside the scanned directory');
+    await write(dir, 'browser/index.html', '<script src="/main.js" integrity="sha384-A"></script>');
+    const found = await findSriProtectedScripts(join(dir, 'browser'));
+    expect(found.map((p) => p.script)).toEqual([join(dir, 'browser', 'main.js')]);
+  });
+
+  it('a root-relative src that exists nowhere keeps its scanned-root path (a stale pin, as before)', async () => {
+    const dir = await fixture();
+    await write(dir, 'browser/index.html', '<script src="/gone.js" integrity="sha384-A"></script>');
+    expect((await findSriProtectedScripts(dir)).map((p) => p.script)).toEqual([
+      join(dir, 'gone.js'),
+    ]);
+  });
+
   it('does not treat a SIBLING directory with a shared prefix as inside the output', async () => {
     const root = await fixture();
     const outDir = join(root, 'dist');

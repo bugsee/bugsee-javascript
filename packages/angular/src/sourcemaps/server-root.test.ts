@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,7 +57,7 @@ describe('findServerRoot', () => {
 
   it('does not take an unrelated server/ for the output root, and says it could not tell', async () => {
     await file('o/dist/main.js');
-    await dir('o/server');
+    await file('o/server/server.mjs');
     const found = findServerRoot(join(cwd, 'o/dist'), cwd);
     expect(found).toMatchObject({ notice: expect.stringContaining('browser') });
     expect((found as { notice: string }).notice).toMatch(/--output-path/);
@@ -65,15 +65,74 @@ describe('findServerRoot', () => {
 
   it('a custom browser directory name (outputPath.browser) is not guessed: it is said', async () => {
     await file('o/client/fr/main.js');
-    await dir('o/server/fr');
+    await file('o/server/fr/main.server.mjs');
     expect(findServerRoot(join(cwd, 'o/client/fr'), cwd)).toMatchObject({
       notice: expect.stringContaining('o/server'),
     });
   });
 
+  // A server/ that is not an Angular SSR output is nobody's business: no notice on every CI run.
+  it('says nothing about a hand-written server/ (Express beside Angular) or a backend next to a client dist', async () => {
+    await file('server/index.js'); // project root server/
+    await file('dist/main.js');
+    expect(findServerRoot(join(cwd, 'dist'), cwd)).toBeUndefined();
+    await file('apps/dist/client/main.js');
+    await file('apps/dist/server/app.js'); // a backend build, no Angular server markers
+    expect(findServerRoot(join(cwd, 'apps/dist/client'), cwd)).toBeUndefined();
+  });
+
+  it.each([
+    'server.mjs',
+    'main.server.mjs',
+    'index.server.html',
+    'angular-app-manifest.mjs',
+    'angular-app-engine-manifest.mjs',
+  ])('recognises an Angular server output by %s', async (marker) => {
+    await file('o/client/main.js');
+    await file(`o/server/${marker}`);
+    expect(findServerRoot(join(cwd, 'o/client'), cwd)).toMatchObject({
+      notice: expect.any(String),
+    });
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'an unreadable server/ is not taken for an Angular one',
+    async () => {
+      await file('o/client/main.js');
+      await file('o/server/server.mjs');
+      await chmod(join(cwd, 'o/server'), 0o000);
+      try {
+        expect(findServerRoot(join(cwd, 'o/client'), cwd)).toBeUndefined();
+      } finally {
+        await chmod(join(cwd, 'o/server'), 0o755);
+      }
+    },
+  );
+
+  it('an unmatched server/ outside the project is not reported either', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'bugsee-ng-outside2-'));
+    try {
+      await mkdir(join(outside, 'server'));
+      await writeFile(join(outside, 'server', 'server.mjs'), '');
+      await mkdir(join(outside, 'client'));
+      expect(findServerRoot(join(outside, 'client'), cwd)).toBeUndefined();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('names the NEAREST unmatched server/ when two levels both have one', async () => {
+    await file('o/x/y/main.js');
+    await file('o/x/server/server.mjs');
+    await file('o/server/server.mjs');
+    const found = findServerRoot(join(cwd, 'o/x/y'), cwd) as { notice: string };
+    expect(found.notice).toContain(join(cwd, 'o/x/server'));
+    expect(found.notice).not.toContain(join(cwd, 'o/server'));
+  });
+
   it('looks at most two levels up: a root three levels above is not found', async () => {
     await file('o/browser/a/b/main.js');
-    await dir('o/server');
+    await file('o/server/server.mjs');
     expect(findServerRoot(join(cwd, 'o/browser/a/b'), cwd)).toBeUndefined();
   });
 

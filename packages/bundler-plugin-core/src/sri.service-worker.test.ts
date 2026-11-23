@@ -3,7 +3,7 @@
 // corrupt and stops serving it. Measured on @angular/build 22.3 + @angular/service-worker: every entry is
 // sha1(file bytes), the key is the path from the manifest's directory, and the file is formatted JSON.
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -55,6 +55,21 @@ describe('findStaleDigests', () => {
     expect(stale[0]?.script).toBe(join(root, 'browser/main.js'));
     await resealIntegrity(before, [root]);
     expect(await findStaleDigests(before, [root])).toEqual([]);
+  });
+
+  it('lists a file once even when it holds the old digests of several changed scripts', async () => {
+    await write('a.js', 'a();');
+    await write('b.js', 'b();');
+    const page = await write(
+      'index.html',
+      `sha384-${sha('sha384', 'a();')} sha384-${sha('sha384', 'b();')}`,
+    );
+    const before = await snapshotScriptDigests([root]);
+    await write('a.js', 'a2();');
+    await write('b.js', 'b2();');
+    expect(await findStaleDigests(before, [root])).toEqual([
+      { file: page, script: expect.stringMatching(/[ab]\.js$/) },
+    ]);
   });
 
   it('says nothing when no script changed, or a changed script is gone', async () => {
@@ -148,6 +163,38 @@ describe('service worker manifests', () => {
     expect(await Promise.all(files.map((f) => readFile(f, 'utf8')))).toEqual(texts);
     expect(await findStaleServiceWorkerEntries([root])).toEqual([]);
   });
+
+  it('hashes a large listed asset by streaming it (no whole-file buffer), and still reconciles it', async () => {
+    const big = Buffer.alloc(3 * 1024 * 1024, 7);
+    await mkdir(join(root, 'media'), { recursive: true });
+    await writeFile(join(root, 'media/clip.bin'), big);
+    await write('ngsw.json', manifest({ '/media/clip.bin': 'stale' }));
+    expect(await findStaleServiceWorkerEntries([root])).toHaveLength(1);
+    await resealIntegrity(new Map(), [root]);
+    expect(await readFile(join(root, 'ngsw.json'), 'utf8')).toContain(
+      createHash('sha1').update(big).digest('hex'),
+    );
+  });
+
+  it('an entry that names a directory is skipped, like one whose file is gone', async () => {
+    await mkdir(join(root, 'assets'), { recursive: true });
+    await write('ngsw.json', manifest({ '/assets': 'x' }));
+    expect(await findStaleServiceWorkerEntries([root])).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'a file it cannot read is an error, not a silent skip',
+    async () => {
+      const secret = await write('locked.js', 'x');
+      await write('ngsw.json', manifest({ '/locked.js': sha1('x') }));
+      await chmod(secret, 0o000);
+      try {
+        await expect(findStaleServiceWorkerEntries([root])).rejects.toThrow(/EACCES/);
+      } finally {
+        await chmod(secret, 0o644);
+      }
+    },
+  );
 
   it('does not look in node_modules, and does not follow a key out of the manifest directory', async () => {
     await write('node_modules/p/ngsw.json', manifest({ '/m.js': 'x' }));
