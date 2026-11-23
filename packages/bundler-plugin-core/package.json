@@ -44,6 +44,9 @@
     "vite7": "npm:vite@7.3.6"
   },
   "publishConfig": {
+    "bin": {
+      "bugsee-sourcemaps-doctor": "./dist/doctor-cli.js"
+    },
     "main": "./dist/index.cjs",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts",
