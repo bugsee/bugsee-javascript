@@ -397,7 +397,11 @@ alike); otherwise webpack. `NEXT_RSPACK` (the experimental Rspack adapter) is no
 leaves them for a retry). `.next/server` is never served and a server run with source maps reads it, so server and
 edge maps stay unless `deleteServerMaps`. The build is registered once (browser run). The app version and build are baked
 through `compiler.define` (applies to all three runtimes; repeating the keys in `defineServer` is a Next error,
-measured). Only bundles that have a map are stamped on Turbopack.
+measured). Only bundles that have a map are stamped on Turbopack, and bundles are paired with maps by the
+`sourceMappingURL` pointer inside each bundle: Turbopack does not name a map after its bundle (Next 16.4:
+`0ihtwxitjxx9w.js` points at `1wkfrb_3m2k-z.js.map`), and Next 15.5's Turbopack points two runtime chunks at ONE map.
+A map carries one debug-ID (the hash of bundle + map), so such bundles are left unstamped (a notice counts them) and
+their shared map stays on disk, unuploaded; they are Turbopack's runtime, not the app.
 
 **Composition.** The app's `webpack` function runs first (sync or async) and its result is extended; its
 `compiler.runAfterProductionCompile` runs before ours; its `compiler.define` keys win; `productionBrowserSourceMaps`
