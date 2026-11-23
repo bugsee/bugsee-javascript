@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readDebugId } from './debug-ids';
-import { type AssetStore, stampAssets } from './stamp-assets';
+import {
+  type AssetStore,
+  rollupAssetStore,
+  rollupUnstampableMaps,
+  StampVerificationError,
+  stampAssets,
+} from './stamp-assets';
 
 /** An in-memory stand-in for a webpack compilation's asset table. */
 function memoryStore(initial: Record<string, string>): AssetStore & {
@@ -74,6 +80,8 @@ describe('stampAssets — with the real bugsee-cli', () => {
     expect(result.stamped).toEqual([]);
   });
 });
+
+const STAMP_COMMENT = '//# debugId=b039c7fb-d958-5fe6-b76f-136179e9a728';
 
 describe('stampAssets — the round trip', () => {
   const fakeInject =
@@ -162,7 +170,9 @@ describe('stampAssets — the round trip', () => {
     // map information it carries survive untouched.
     const store = memoryStore({ 'a.js': 'x()\n', 'b.js': 'y()\n' });
     await stampAssets(store, {
-      run: fakeInject((path, content) => (path === 'a.js' ? `${content}//# stamped\n` : undefined)),
+      run: fakeInject((path, content) =>
+        path === 'a.js' ? `${content};1;\n${STAMP_COMMENT}\n` : undefined,
+      ),
     });
     expect(store.updates).toEqual(['a.js']);
   });
@@ -223,5 +233,230 @@ describe('stampAssets — the round trip', () => {
       },
     }).catch(() => undefined);
     await expect(access(staged)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('stampAssets — verifying the stamp before it is written back', () => {
+  const inject =
+    (edit: (path: string, content: string) => string | undefined) => async (args: string[]) => {
+      const { readdir, readFile, writeFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      const root = args[2] as string;
+      for (const entry of await readdir(root, { withFileTypes: true })) {
+        const next = edit(entry.name, await readFile(join(root, entry.name), 'utf8'));
+        if (next !== undefined) {
+          await writeFile(join(root, entry.name), next);
+        }
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+  it('writes NOTHING back when any stamped bundle no longer parses (all or nothing)', async () => {
+    const store = memoryStore({ 'a.js': 'a();\n', 'b.js': 'b();\n' });
+    await expect(
+      stampAssets(store, {
+        run: inject((path, content) =>
+          path === 'a.js'
+            ? `${content};1;\n${STAMP_COMMENT}\n`
+            : `${content}{{\n${STAMP_COMMENT}\n`,
+        ),
+      }),
+    ).rejects.toThrow(StampVerificationError);
+    expect(store.updates).toEqual([]);
+    expect(store.assets.get('a.js')).toBe('a();\n');
+  });
+
+  it('names the asset and the reason, and keeps every issue on the error', async () => {
+    const store = memoryStore({ 'a.js': 'a();\n' });
+    const error = (await stampAssets(store, { run: inject((_p, c) => `${c}{{\n`) }).catch(
+      (e: unknown) => e,
+    )) as StampVerificationError;
+    expect(error).toBeInstanceOf(StampVerificationError);
+    expect(error.message).toContain('a.js');
+    expect(error.message).toContain('no longer parses');
+    expect(error.issues.map((i) => i.name)).toContain('a.js');
+    expect(error.name).toBe('StampVerificationError');
+  });
+
+  it('flags a stamp whose bundle and map disagree', async () => {
+    const store = memoryStore({
+      'a.js': 'a();\n//# sourceMappingURL=a.js.map\n',
+      'a.js.map': '{"version":3,"sources":[],"names":[],"mappings":""}',
+    });
+    await expect(
+      stampAssets(store, {
+        run: inject((path, content) =>
+          path === 'a.js'
+            ? `${content};1;\n${STAMP_COMMENT}\n`
+            : content.replace(/\}$/, ',"debugId":"4adb7053-e754-594c-96b5-09c18263b153"}'),
+        ),
+      }),
+    ).rejects.toThrow(/does not match/);
+    expect(store.updates).toEqual([]);
+  });
+
+  it('a dry run is not verified (it writes nothing, whatever it finds)', async () => {
+    const store = memoryStore({ 'a.js': 'a();\n' });
+    await expect(
+      stampAssets(store, { dryRun: true, run: inject((_p, c) => `${c}{{\n`) }),
+    ).resolves.toEqual({ stamped: [] });
+  });
+
+  it('uses an injected parser', async () => {
+    const store = memoryStore({ 'a.js': 'a();\n' });
+    const parse = vi.fn(() => true);
+    await stampAssets(store, {
+      parse,
+      run: inject((_p, c) => `${c};1;\n${STAMP_COMMENT}\n`),
+    });
+    expect(parse).toHaveBeenCalled();
+  });
+});
+
+describe('rollupAssetStore — a Rollup / Vite output bundle as an asset table', () => {
+  const chunk = (fileName: string, code: string, extra: object = {}) => ({
+    type: 'chunk' as const,
+    fileName,
+    code,
+    map: { version: 3 },
+    ...extra,
+  });
+  const asset = (fileName: string, source: string | Uint8Array) => ({
+    type: 'asset' as const,
+    fileName,
+    source,
+  });
+
+  it('lists chunks and the map / script assets, and nothing else', () => {
+    const store = rollupAssetStore({
+      'a.js': chunk('a.js', 'x'),
+      'a.js.map': asset('a.js.map', '{}'),
+      'index.html': asset('index.html', '<p/>'),
+      'vendor.js': asset('vendor.js', 'v'),
+      'logo.png': asset('logo.png', new Uint8Array([1])),
+    });
+    expect(store.names().sort()).toEqual(['a.js', 'a.js.map', 'vendor.js']);
+  });
+
+  it('reads a chunk as its code and an asset as its source, string or bytes', () => {
+    const store = rollupAssetStore({
+      'a.js': chunk('a.js', 'héllo'),
+      'a.js.map': asset('a.js.map', '{"a":1}'),
+      'b.js.map': asset('b.js.map', new Uint8Array(Buffer.from('{"b":2}'))),
+    });
+    expect(store.read('a.js').toString('utf8')).toBe('héllo');
+    expect(store.read('a.js.map').toString('utf8')).toBe('{"a":1}');
+    expect(store.read('b.js.map').toString('utf8')).toBe('{"b":2}');
+  });
+
+  it('writes a chunk back to .code, and an asset back in the type it had', () => {
+    const bundle = {
+      'a.js': chunk('a.js', 'x'),
+      'a.js.map': asset('a.js.map', '{}'),
+      'b.js.map': asset('b.js.map', new Uint8Array([1])),
+    };
+    const store = rollupAssetStore(bundle);
+    store.update('a.js', Buffer.from('stamped ✓'));
+    store.update('a.js.map', Buffer.from('{"debugId":"x"}'));
+    store.update('b.js.map', Buffer.from('bytes'));
+    expect(bundle['a.js'].code).toBe('stamped ✓');
+    expect(bundle['a.js.map'].source).toBe('{"debugId":"x"}');
+    expect(bundle['b.js.map'].source).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(bundle['b.js.map'].source as Uint8Array).toString()).toBe('bytes');
+  });
+
+  it('carries the stamped ids onto chunk.map too, so a bundler that rebuilds the map from it keeps them', () => {
+    // Vite rewrites a chunk with dynamic imports AFTER generateBundle hooks and regenerates its `.map`
+    // asset from `chunk.map`, keeping only what `chunk.map` carries (its `debugId`). Measured, Vite 7.3/8.3.
+    const map: Record<string, unknown> = { version: 3 };
+    const bundle = {
+      'a.js': chunk('a.js', 'x', { map }),
+      'a.js.map': asset('a.js.map', '{}'),
+      'b.js': chunk('b.js', 'y', { map: null }),
+      'b.js.map': asset('b.js.map', '{}'),
+      'c.js': chunk('c.js', 'z', { map: { version: 3 }, sourcemapFileName: 'maps/c.map' }),
+      'maps/c.map': asset('maps/c.map', '{}'),
+    };
+    const store = rollupAssetStore(bundle);
+    store.update('a.js.map', Buffer.from('{"debugId":"ID-1","debug_id":"ID-1"}'));
+    store.update('b.js.map', Buffer.from('{"debugId":"ID-2"}'));
+    store.update('maps/c.map', Buffer.from('{"debug_id":"ID-3"}'));
+    expect(map).toEqual({ version: 3, debugId: 'ID-1', debug_id: 'ID-1' });
+    expect(bundle['b.js'].map).toBeNull(); // nothing to carry onto
+    expect(bundle['c.js'].map).toEqual({ version: 3, debug_id: 'ID-3', debugId: 'ID-3' });
+  });
+
+  it('leaves chunk.map alone when the new map is not JSON or has no id', () => {
+    const map: Record<string, unknown> = { version: 3 };
+    const bundle = { 'a.js': chunk('a.js', 'x', { map }), 'a.js.map': asset('a.js.map', '{}') };
+    const store = rollupAssetStore(bundle);
+    store.update('a.js.map', Buffer.from('not json'));
+    store.update('a.js.map', Buffer.from('{"version":3}'));
+    store.update('a.js.map', Buffer.from('[1]'));
+    expect(map).toEqual({ version: 3 });
+  });
+
+  it('reads an unknown name as empty rather than throwing', () => {
+    expect(rollupAssetStore({}).read('nope.js').length).toBe(0);
+  });
+
+  it('stamps a Rollup bundle through the real bugsee-cli, map included', async () => {
+    const bundle = {
+      'a.js': chunk('a.js', 'console.log(1);\n//# sourceMappingURL=a.js.map'),
+      'a.js.map': asset(
+        'a.js.map',
+        '{"version":3,"file":"a.js","sources":["a.ts"],"names":[],"mappings":"AAAA"}',
+      ),
+    };
+    const result = await stampAssets(rollupAssetStore(bundle));
+    const id = readDebugId(bundle['a.js'].code);
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.parse(bundle['a.js.map'].source as string).debugId).toBe(id);
+    expect(result.stamped).toEqual(['a.js']);
+  });
+});
+
+describe('rollupUnstampableMaps — chunks whose map cannot be stamped in memory', () => {
+  it('is empty when every mapped chunk has its map as a bundle asset', () => {
+    expect(
+      rollupUnstampableMaps({
+        'a.js': { type: 'chunk', fileName: 'a.js', code: '', map: {} },
+        'a.js.map': { type: 'asset', fileName: 'a.js.map', source: '{}' },
+        'b.js': { type: 'chunk', fileName: 'b.js', code: '', map: null },
+      }),
+    ).toEqual([]);
+  });
+
+  it('names a chunk that has a map but no map asset (older Rollup, inline maps)', () => {
+    expect(
+      rollupUnstampableMaps({
+        'a.js': { type: 'chunk', fileName: 'a.js', code: '', map: {} },
+        'b.js': { type: 'chunk', fileName: 'b.js', code: '', map: {} },
+        'b.js.map': { type: 'asset', fileName: 'b.js.map', source: '{}' },
+      }),
+    ).toEqual(['a.js']);
+  });
+
+  it('honours a custom sourcemapFileName', () => {
+    expect(
+      rollupUnstampableMaps({
+        'a.js': {
+          type: 'chunk',
+          fileName: 'a.js',
+          code: '',
+          map: {},
+          sourcemapFileName: 'maps/a.map',
+        },
+        'maps/a.map': { type: 'asset', fileName: 'maps/a.map', source: '{}' },
+      }),
+    ).toEqual([]);
+  });
+
+  it('only considers script chunks', () => {
+    expect(
+      rollupUnstampableMaps({
+        'a.css': { type: 'chunk', fileName: 'a.css', code: '', map: {} },
+      }),
+    ).toEqual([]);
   });
 });

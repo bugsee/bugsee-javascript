@@ -5,7 +5,16 @@ import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type RunBugseeCliOptions, runBugseeCli, type SpawnResult } from './run-cli';
 import { findIntegrityMismatches, findSriProtectedScripts, type SriProtectedScript } from './sri';
+import {
+  MAX_WALK_DEPTH,
+  NEVER_WALK,
+  partitionByKeyed,
+  type SnapshotTarget,
+  snapshotStampFiles,
+  verifyAndRestore,
+} from './stamp-files';
 import type { VcsMetadata } from './vcs';
+import { formatIssues, verifyStampedPairs } from './verify-stamp';
 
 /** The `runBugseeCli` shape, injectable for tests. */
 export type RunFn = (args: string[], options: RunBugseeCliOptions) => Promise<SpawnResult>;
@@ -55,6 +64,11 @@ export interface UploadSourcemapsOptions {
   };
   /** Injectable `.map` lister for the delete snapshot of a directory run (default {@link listMapFiles}). */
   listMapFiles?: (dir: string) => Promise<string[]>;
+  /**
+   * Injectable keyed-map check for the deletion step (default {@link partitionByKeyed}): which of the
+   * candidate maps carry a debug-id, i.e. were actually keyed for upload, and so may be deleted.
+   */
+  partitionMaps?: typeof partitionByKeyed;
   /** Injectable SRI scan (default {@link findSriProtectedScripts}). */
   findSri?: (dir: string) => Promise<SriProtectedScript[]>;
   /**
@@ -94,33 +108,6 @@ export interface UploadSourcemapsResult {
   vcs?: VcsMetadata;
 }
 
-/**
- * Directories never descended into when deleting `.map` files.
- *
- * A relative `output.file` resolves the output dir to `'.'` — `path.dirname('bundle.js') === '.'`, an
- * entirely ordinary Rollup library config — so the walk started at the PROJECT ROOT. With no exclusions it
- * unlinked dependency source maps under `node_modules/` (breaking debugging until a reinstall) and a
- * developer's own authored maps under `src/`. Silent, unrecoverable loss in the working tree, on by default.
- */
-const NEVER_WALK = new Set([
-  'node_modules',
-  'src',
-  '.git',
-  '.next',
-  '.nuxt',
-  '.svelte-kit',
-  '.cache',
-  'test',
-  'tests',
-  '__tests__',
-]);
-
-/**
- * Depth limit for the walk. Build output is shallow (`dist/assets/chunk.js.map` is 2); an unbounded walk
- * from a mis-resolved root could traverse an entire disk.
- */
-const MAX_DELETE_DEPTH = 6;
-
 /** Paths per CLI call: keeps a build with thousands of outputs under the OS command-line length limit. */
 export const MAX_PATHS_PER_CALL = 200;
 function inBatches<T>(items: readonly T[]): T[][] {
@@ -133,7 +120,7 @@ function inBatches<T>(items: readonly T[]): T[][] {
 
 /** Recursively list every build `*.map` under `dir`. */
 export async function listMapFiles(dir: string, depth = 0): Promise<string[]> {
-  if (depth > MAX_DELETE_DEPTH) {
+  if (depth > MAX_WALK_DEPTH) {
     return [];
   }
   const found: string[] = [];
@@ -213,10 +200,11 @@ export async function uploadSourcemaps(
         const error = new Error(
           `${first.script} no longer matches the integrity hash ${first.html} pins` +
             (broken.length > 1 ? ` (and ${broken.length - 1} more)` : '') +
-            `, so the browser will refuse to run it. Bugsee stamps debug-IDs inside the build at ` +
-            `PROCESS_ASSETS_STAGE_DEV_TOOLING + 1, before webpack-subresource-integrity hashes at ` +
-            `PROCESS_ASSETS_STAGE_OPTIMIZE_INLINE; a plugin that hashes EARLIER than that sees the ` +
-            `bytes before the stamp. Move that plugin's hashing later, or disable this plugin for this build.`,
+            `, so the browser will refuse to run it. Bugsee stamps debug-IDs inside the build, before the ` +
+            `bundler writes its output (webpack/Rspack: PROCESS_ASSETS_STAGE_DEV_TOOLING + 1; Vite/Rollup: ` +
+            `generateBundle, order 'pre'). A plugin that hashes EARLIER than that sees the bytes before the ` +
+            `stamp, and one that rewrites the file AFTER it changes bytes that were already hashed. Run the ` +
+            `hashing after this plugin (list this plugin first), or disable this plugin for this build.`,
         );
         if (options.failOnError === true) {
           throw error;
@@ -225,6 +213,28 @@ export async function uploadSourcemaps(
         // page that is broken, not them. NOT through the default `onError` wording, which says the
         // upload was skipped; here it was not.
         (options.onError ?? ((e: unknown) => console.warn(`[bugsee] ${String(e)}`)))(error);
+      }
+      // 0''. The same stamp, as it is on disk after the bundler wrote the output. A later step can rewrite a
+      //      chunk or REGENERATE its map after the in-build stamp (Vite does, for dynamic-import preload
+      //      markers), and a bundle that looks stamped with a map that no longer carries its id cannot be
+      //      symbolicated. Nothing to restore here (no originals), so it is reported; the keyed check at
+      //      deletion keeps any map that lost its id. Not on a dry run: nothing was stamped.
+      if (!dryRun) {
+        const written = await snapshotStampFiles(
+          files === undefined ? { dir: outDir } : { files: [...files.scripts, ...files.maps] },
+        );
+        const lost = verifyStampedPairs(written);
+        if (lost.length > 0) {
+          const failure = new Error(
+            `the debug-IDs stamped inside the build did not survive intact to disk: they changed after the build wrote it, ` +
+              `or something rewrote a bundle or its map after Bugsee stamped it (${formatIssues(lost)}). ` +
+              `Affected maps cannot be matched to their bundle.`,
+          );
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
+        }
       }
     } else {
       // 0. Refuse outright if the build pins its own script hashes. `sourcemaps inject` appends bytes
@@ -241,10 +251,19 @@ export async function uploadSourcemaps(
             `hash of ${first.script}` +
             (pinned.length > 1 ? ` (and ${pinned.length - 1} more)` : '') +
             `. Injecting a debug-ID rewrites that file, so the browser would refuse to run it and the ` +
-            `page would load nothing. Source maps were NOT uploaded. See ` +
+            `page would load nothing. Source maps were NOT uploaded. Bundlers that let this plugin stamp ` +
+            `inside the build (webpack 5, Rspack, Vite, Rollup) avoid this; if one did and this still fired, its ` +
+            `in-build stamp failed (see the earlier warning). For esbuild or the standalone CLI, run ` +
+            `\`bugsee-cli sourcemaps inject\` BEFORE the step that computes the hashes. See ` +
             `https://github.com/bugsee/bugsee-javascript/blob/main/docs/design/source-maps.md#subresource-integrity`,
         );
       }
+
+      // 0b. Take the originals, so a stamp that does not verify can be undone (see below). Not on a dry run:
+      //     inject writes nothing, so there is nothing to undo.
+      const target: SnapshotTarget =
+        files === undefined ? { dir: outDir } : { files: [...files.scripts, ...files.maps] };
+      const original = dryRun ? undefined : await snapshotStampFiles(target);
 
       // 1. Inject debug-IDs (rewrites the built .js + .map in place).
       if (files === undefined) {
@@ -254,6 +273,25 @@ export async function uploadSourcemaps(
         // bundle's content, so each side stamps the same id (measured with 250 entries, none mismatched).
         for (const batch of inBatches([...files.scripts, ...files.maps])) {
           await run(['sourcemaps', 'inject', ...batch, ...dryFlag], cliOptions);
+        }
+      }
+
+      // 1b. VERIFY what inject wrote (verify-stamp.ts): every changed bundle still parses and keeps its map
+      //     pointer, the bytes are the original plus an appended stamp, every map is JSON whose debugId
+      //     matches its bundle. A failure puts the ORIGINAL bytes back (bundle and map as a pair) and is
+      //     reported — a script that no longer parses is a blank page, and shipping it silently is the one
+      //     outcome this must rule out. What did verify stays stamped and is uploaded below; the restored
+      //     maps carry no debugId, so the keyed check at deletion keeps them.
+      if (original !== undefined) {
+        const { issues, restored } = await verifyAndRestore(original);
+        if (issues.length > 0) {
+          const failure = new Error(
+            `the debug-ID stamp did not verify, so ${restored.length} file(s) were restored to the bundler's original bytes (${formatIssues(issues)})`,
+          );
+          if (options.failOnError === true) {
+            throw failure;
+          }
+          onError(failure);
         }
       }
     }
@@ -327,12 +365,26 @@ export async function uploadSourcemaps(
       onError(failure);
       return { injected: true, uploaded: true, deletedMaps: [], ...vcsEcho };
     }
-    const deletedMaps = deleteMaps
-      ? await (options.deleteMapFiles ?? defaultDeleteMapFiles)(
-          outDir,
-          files === undefined ? snapshot : [...files.maps, ...(files.stylesheetMaps ?? [])],
-        )
-      : [];
+    //    "The upload command exited 0" is not "this map was uploaded": the CLI skips a map with no debug-id.
+    //    Only a map that carries one was keyed for upload, so only those are deleted (stamp-files.ts).
+    let deletedMaps: string[] = [];
+    if (deleteMaps) {
+      const { deletable, kept } = await (options.partitionMaps ?? partitionByKeyed)(
+        files === undefined
+          ? (snapshot as string[])
+          : [...files.maps, ...(files.stylesheetMaps ?? [])],
+      );
+      deletedMaps = await (options.deleteMapFiles ?? defaultDeleteMapFiles)(outDir, deletable);
+      if (kept.length > 0) {
+        const failure = new Error(
+          `${kept.length} source map(s) carry no debug-ID, so they were not uploaded and were left on disk: ${kept.join(', ')}`,
+        );
+        if (options.failOnError === true) {
+          throw failure;
+        }
+        onError(failure);
+      }
+    }
     return { injected: true, uploaded: true, deletedMaps, ...vcsEcho };
   } catch (error) {
     // A telemetry side effect must not break a production deploy. Reported, never swallowed;

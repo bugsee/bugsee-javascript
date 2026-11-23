@@ -30,6 +30,7 @@
   "dependencies": {
     "@bugsee/cli": "^0.9.0",
     "@bugsee/core": "workspace:*",
+    "acorn": "^8.19.0",
     "magic-string": "^0.30.21",
     "unplugin": "^2.3.10"
   },
@@ -38,7 +39,9 @@
     "@types/node": "^22.20.5",
     "esbuild": "^0.28.2",
     "rollup": "^4.65.1",
-    "tsup": "^9.0.0"
+    "tsup": "^9.0.0",
+    "vite": "^8.3.5",
+    "vite7": "npm:vite@7.3.6"
   },
   "publishConfig": {
     "main": "./dist/index.cjs",
