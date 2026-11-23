@@ -7,7 +7,7 @@
     "url": "git+https://github.com/bugsee/bugsee-javascript.git",
     "directory": "packages/angular"
   },
-  "description": "Angular adapter: ErrorHandler + Router naming",
+  "description": "Angular adapter: ErrorHandler + Router naming, plus `ng add` and a source-map upload step",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -15,7 +15,12 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
-    }
+    },
+    "./sourcemaps": {
+      "types": "./src/sourcemaps/index.ts",
+      "import": "./src/sourcemaps/index.ts"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -30,17 +35,26 @@
   "dependencies": {
     "@bugsee/bugsee": "workspace:*",
     "@bugsee/browser": "workspace:*",
-    "@bugsee/web-adapter": "workspace:*"
+    "@bugsee/web-adapter": "workspace:*",
+    "@bugsee/bundler-plugin-core": "workspace:*"
   },
   "peerDependencies": {
     "@angular/core": ">=16",
-    "@angular/router": ">=16"
+    "@angular/router": ">=16",
+    "@angular-devkit/schematics": ">=16.1",
+    "@schematics/angular": ">=16.1"
   },
   "peerDependenciesMeta": {
     "@angular/core": {
       "optional": true
     },
     "@angular/router": {
+      "optional": true
+    },
+    "@angular-devkit/schematics": {
+      "optional": true
+    },
+    "@schematics/angular": {
       "optional": true
     }
   },
@@ -58,11 +72,32 @@
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
         }
-      }
+      },
+      "./sourcemaps": {
+        "import": {
+          "types": "./dist/sourcemaps/index.d.ts",
+          "default": "./dist/sourcemaps/index.js"
+        },
+        "require": {
+          "types": "./dist/sourcemaps/index.d.cts",
+          "default": "./dist/sourcemaps/index.cjs"
+        }
+      },
+      "./package.json": "./package.json"
     },
-    "access": "public"
+    "access": "public",
+    "bin": {
+      "bugsee-angular-upload": "./dist/sourcemaps/bin.js"
+    }
   },
   "devDependencies": {
-    "@bugsee/core": "workspace:*"
+    "@bugsee/core": "workspace:*",
+    "@angular-devkit/schematics": "22.3.0",
+    "@schematics/angular": "22.3.0",
+    "@types/node": "^22.20.5"
+  },
+  "schematics": "./dist/schematics/collection.json",
+  "ng-add": {
+    "save": "dependencies"
   }
 }
