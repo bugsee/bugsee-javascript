@@ -72,6 +72,12 @@ export function isFencedPath(relative: string): boolean {
     .some((segment) => NEVER_WALK.has(segment) || segment.startsWith('.'));
 }
 
+/** The name up to its `?query` (webpack drops it on disk). indexOf, not a regex: it runs on library input. */
+export function cutAtQuery(name: string): string {
+  const at = name.indexOf('?');
+  return at === -1 ? name : name.slice(0, at);
+}
+
 /**
  * Whether a file under `outDir` is one THIS build emitted. By IDENTITY: the names the bundler reports for its
  * own output (relative to the output directory; separators and a leading `./` normalised, case exact), not
@@ -92,9 +98,7 @@ export function ownedBy(
   // own name is known both literally and without its `?query`, and a file on disk is compared literally:
   // a stale `x#old.js.map` or `index.js?old` is never mistaken for this build's.
   const normal = (name: string): string => posix.normalize(name.replace(/\\/g, '/'));
-  const owned = new Set(
-    ownFiles.flatMap((name) => [normal(name), normal(name.replace(/\?.*$/, ''))]),
-  );
+  const owned = new Set(ownFiles.flatMap((name) => [normal(name), normal(cutAtQuery(name))]));
   return (file) => owned.has(normal(api.relative(outDir, file)));
 }
 
@@ -200,9 +204,14 @@ export async function snapshotStampFiles(
       let bytes: Buffer;
       try {
         bytes = await readFile(original);
-      } catch {
-        // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
-        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          // Gone between listing and reading (a concurrent build's cleanup): nothing to verify or restore.
+          continue;
+        }
+        // Anything else (EACCES, EISDIR, a transient I/O error) is NOT "gone": injecting with an incomplete
+        // snapshot would leave a file nothing can verify or restore. Abort (the spill is removed below).
+        throw error;
       }
       const spill = join(spillDir, String(index++));
       await writeFile(spill, bytes);
@@ -217,6 +226,39 @@ export async function snapshotStampFiles(
     spillDir,
     dispose: () => rm(spillDir, { recursive: true, force: true }),
   };
+}
+
+/** Whether `file` still has the bytes it had when the snapshot was taken (false when it changed or is gone). */
+export async function sameAsSnapshot(snapshot: StampSnapshot, file: string): Promise<boolean> {
+  const entry = snapshot.entries.get(file);
+  if (entry === undefined) {
+    return true;
+  }
+  try {
+    return sha1(await readFile(file)) === entry.hash;
+  } catch {
+    return false;
+  }
+}
+
+/** Put the ORIGINAL bytes of these files back (atomically); returns the ones that could not be restored. */
+export async function restorePaths(
+  snapshot: StampSnapshot,
+  files: readonly string[],
+): Promise<Array<{ path: string; error: string }>> {
+  const failed: Array<{ path: string; error: string }> = [];
+  for (const file of files) {
+    const entry = snapshot.entries.get(file);
+    if (entry === undefined) {
+      continue;
+    }
+    try {
+      await restoreAtomically(entry.spill, file);
+    } catch (error) {
+      failed.push({ path: file, error: String(error) });
+    }
+  }
+  return failed;
 }
 
 export interface RestoreOptions {
@@ -292,13 +334,29 @@ export async function verifyAndRestore(
   const paired = new Set<string>();
   const stampedBundles = changed.filter((file) => /\.[cm]?js$/i.test(file));
   for (const bundle of stampedBundles) {
-    const after = (await read(bundle)) as Buffer;
+    const after = await read(bundle);
+    if (after === undefined) {
+      continue; // removed since the change scan: nothing to compare, and a restore would not recreate it
+    }
     const map = resolveMapName(bundle, after.toString('utf8'), (n) => entries.has(n), path);
     paired.add(map);
-    const before = new Map([[bundle, await original(bundle)]]);
+    const originalBundle = await original(bundle);
+    // The ROLLBACK partner is the map the ORIGINAL bundle pointed at (a bad stamp may have changed the pointer);
+    // verification still looks at the current one.
+    const originalMap = resolveMapName(
+      bundle,
+      originalBundle.toString('utf8'),
+      (n) => entries.has(n),
+      path,
+    );
+    if (entries.has(originalMap)) {
+      partner.set(bundle, originalMap);
+      partner.set(originalMap, bundle);
+    }
+    const before = new Map([[bundle, originalBundle]]);
     const now = new Map([[bundle, after]]);
     if (entries.has(map)) {
-      partner.set(bundle, map);
+      partner.set(bundle, partner.get(bundle) ?? map);
       partner.set(map, bundle);
       before.set(map, await original(map));
       const mapNow = await read(map);
@@ -352,11 +410,24 @@ export async function verifyAndRestore(
   const order = [...toRestore].sort(
     (a, b) => Number(a.endsWith('.map')) - Number(b.endsWith('.map')) || a.localeCompare(b),
   );
+  const failedPaths = new Set<string>();
   for (const file of order) {
+    // A map is not restored when its bundle could not be: the stamped bundle would then point at an
+    // original map that does not carry its new id. Reported as incomplete; unrelated pairs still restore.
+    const pairedBundle = file.endsWith('.map') ? partner.get(file) : undefined;
+    if (pairedBundle !== undefined && failedPaths.has(pairedBundle)) {
+      failedPaths.add(file);
+      failed.push({
+        path: file,
+        error: `not restored: its bundle ${pairedBundle} could not be restored`,
+      });
+      continue;
+    }
     try {
       await restoreFile((entries.get(file) as SnapshotEntry).spill, file);
       restored.push(file);
     } catch (error) {
+      failedPaths.add(file);
       failed.push({ path: file, error: String(error) });
     }
   }
@@ -379,15 +450,25 @@ export async function verifyStampedOnDisk(
     let code: Buffer;
     try {
       code = await readFile(bundle);
-    } catch {
+    } catch (error) {
+      // The stamp named this bundle, so it must be there: say so rather than skip it (a stale or public
+      // script is never in `bundles`, so this does not judge them).
+      issues.push({
+        name: bundle,
+        reason: `the stamped bundle could not be read: ${String(error)}`,
+      });
       continue;
     }
     const files = new Map([[bundle, code]]);
     const pointed = resolveMapName(bundle, code.toString('utf8'), () => true, path);
     const hinted = known.get(bundle);
+    // The pair that was ACTUALLY loaded is the one verified (a missing known map must not make a loaded
+    // sibling go unchecked).
+    let hint: ReadonlyMap<string, string> = new Map();
     try {
       const first = hinted ?? pointed;
       files.set(first, await readFile(first));
+      hint = known; // only once the known map was really loaded
     } catch {
       // The pointer names no file: the `<bundle>.map` sibling inject pairs by default.
       await readFile(`${bundle}.map`).then(
@@ -395,7 +476,7 @@ export async function verifyStampedOnDisk(
         () => undefined,
       );
     }
-    issues.push(...verifyStampedPairs(files, known));
+    issues.push(...verifyStampedPairs(files, hint));
   }
   return issues;
 }

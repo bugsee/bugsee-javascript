@@ -502,3 +502,54 @@ describe('pointers with whitespace, and pointers that leave the output', () => {
     expect(issues.length).toBeGreaterThan(0);
   });
 });
+
+describe('a changed map is held to an UNCHANGED stamped bundle', () => {
+  const REG =
+    '!function(){try{var e=globalThis;e._bugseeDebugIds=e._bugseeDebugIds||{}}catch(e){}}();';
+  const stampedCode = (id: string) =>
+    `a();\n//# sourceMappingURL=a.js.map\n\n;${REG}\n//# debugId=${id}\n`;
+  it('flags a map that now carries a DIFFERENT id than its (unchanged, already stamped) bundle', () => {
+    const code = buf(stampedCode(ID));
+    const issues = verifyStamp(
+      new Map([
+        ['a.js', code],
+        ['a.js.map', buf(mapJson())],
+      ]),
+      new Map([
+        ['a.js', code],
+        ['a.js.map', buf(stampedMap(OTHER_ID))],
+      ]),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ name: 'a.js.map' });
+    expect(issues[0]?.reason).toContain(OTHER_ID);
+  });
+  it('accepts the map that matches it, and a map beside an unstamped bundle (JSON only)', () => {
+    const code = buf(stampedCode(ID));
+    expect(
+      verifyStamp(
+        new Map([
+          ['a.js', code],
+          ['a.js.map', buf(mapJson())],
+        ]),
+        new Map([
+          ['a.js', code],
+          ['a.js.map', buf(stampedMap(ID))],
+        ]),
+      ),
+    ).toEqual([]);
+    const plain = buf('a();\n//# sourceMappingURL=a.js.map\n');
+    expect(
+      verifyStamp(
+        new Map([
+          ['a.js', plain],
+          ['a.js.map', buf(mapJson())],
+        ]),
+        new Map([
+          ['a.js', plain],
+          ['a.js.map', buf(stampedMap(OTHER_ID))],
+        ]),
+      ),
+    ).toEqual([]);
+  });
+});
